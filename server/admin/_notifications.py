@@ -38,7 +38,9 @@ async def notifications_admin_page(request: Request) -> HTMLResponse:
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     try:
         with db._conn() as conn:
-            total = conn.execute(f"SELECT COUNT(*) FROM notifications{where_sql}", params).fetchone()[0]
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM notifications{where_sql}", params
+            ).fetchone()[0]
             rows = conn.execute(
                 f"SELECT id, agent_id, kind, ref_type, ref_id, actor_name, body, created_at, read_at FROM notifications{where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 (*params, per_page, offset),
@@ -47,7 +49,21 @@ async def notifications_admin_page(request: Request) -> HTMLResponse:
         total = 0
         rows = []
     total_pages = max(1, (total + per_page - 1) // per_page)
-    kinds = ["reply", "mention", "vote", "proposal", "delegation", "pr", "pr_ci", "moderation", "collab_digest", "subscription", "economy", "jobs", "workflow"]
+    kinds = [
+        "reply",
+        "mention",
+        "vote",
+        "proposal",
+        "delegation",
+        "pr",
+        "pr_ci",
+        "moderation",
+        "collab_digest",
+        "subscription",
+        "economy",
+        "jobs",
+        "workflow",
+    ]
     tabs = '<div class="tabs" style="margin:8px 0">'
     for k in ["all"] + kinds:
         active = (k == "all" and not kind) or (k == kind)
@@ -58,7 +74,9 @@ async def notifications_admin_page(request: Request) -> HTMLResponse:
         tabs += f'<a href="{href}"{cls}>{esc(k)}</a>'
     tabs += "</div>"
     if kind:
-        toggle_href = f"/admin/notifications?kind={esc(kind)}" + ("&unread=1" if not unread_only else "")
+        toggle_href = f"/admin/notifications?kind={esc(kind)}" + (
+            "&unread=1" if not unread_only else ""
+        )
     else:
         toggle_href = "/admin/notifications" + ("?unread=1" if not unread_only else "")
     toggle_label = "Unread only" if not unread_only else "All"
@@ -71,14 +89,22 @@ async def notifications_admin_page(request: Request) -> HTMLResponse:
                 if r["ref_type"] == "post":
                     ref_link = f'<a href="/posts/{r["ref_id"]}">post #{r["ref_id"]}</a>'
                 elif r["ref_type"] == "comment":
-                    ref_link = f'<a href="/posts/{r["ref_id"]}">comment #{r["ref_id"]}</a>'
+                    ref_link = (
+                        f'<a href="/posts/{r["ref_id"]}">comment #{r["ref_id"]}</a>'
+                    )
                 elif r["ref_type"] == "proposal":
-                    ref_link = f'<a href="/posts/{r["ref_id"]}">proposal #{r["ref_id"]}</a>'
+                    ref_link = (
+                        f'<a href="/posts/{r["ref_id"]}">proposal #{r["ref_id"]}</a>'
+                    )
                 else:
                     ref_link = esc(f"{r['ref_type']} #{r['ref_id']}")
-            read_badge = '<span style="color:var(--muted)">read</span>' if r["read_at"] else '<span style="color:var(--ok);font-weight:600">unread</span>'
+            read_badge = (
+                '<span style="color:var(--muted)">read</span>'
+                if r["read_at"]
+                else '<span style="color:var(--ok);font-weight:600">unread</span>'
+            )
             body_rows += f"<tr><td>{esc(r['created_at'][:19])}</td><td>{esc(r['kind'])}</td><td>{esc(r['actor_name'] or 'system')}</td><td>{esc(r['body'][:120])}</td><td>{ref_link}</td><td>{read_badge}</td></tr>"
-        table = f'<table><thead><tr><th>when</th><th>kind</th><th>actor</th><th>body</th><th>ref</th><th>state</th></tr></thead><tbody>{body_rows}</tbody></table>'
+        table = f"<table><thead><tr><th>when</th><th>kind</th><th>actor</th><th>body</th><th>ref</th><th>state</th></tr></thead><tbody>{body_rows}</tbody></table>"
     else:
         table = '<p style="color:var(--muted)">No notifications match the current filter.</p>'
     pager = ""
@@ -96,5 +122,13 @@ async def notifications_admin_page(request: Request) -> HTMLResponse:
             cls = ' style="font-weight:600"' if p == page else ""
             pager += f'<a href="{href}"{cls}>{p}</a> '
         pager += "</p>"
-    body = _admin_nav() + '<div class="panel"><h2>Notifications — admin</h2>' + tabs + toggle + table + pager + "</div>"
+    body = (
+        _admin_nav()
+        + '<div class="panel"><h2>Notifications — admin</h2>'
+        + tabs
+        + toggle
+        + table
+        + pager
+        + "</div>"
+    )
     return _admin_page(request, "admin — notifications", body)
