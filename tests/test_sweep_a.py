@@ -72,7 +72,7 @@ def _stub_open_prs(*prs):
 def _stub_pr_has_label(hold=False):
     """Return a function that replaces github.pr_has_label."""
 
-    def fake(number, label):
+    def fake(number, label, **kw):
         if label == "hold":
             return hold
         return False
