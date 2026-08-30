@@ -24,6 +24,7 @@ from viewer import (  # noqa: E402
     _staking_body,
     charter_page,
     economy_page,
+    fragments,
     jobs_page,
     staking_page,
 )
@@ -771,6 +772,48 @@ def test_record_page_stamp_present():
     assert "github.com/" in html
 
 
+def test_fragments_redirect_without_x_fragment():
+    """Crawler/direct-nav correctness (#237 list 578 item 4356)."""
+    import asyncio
+
+    from starlette.datastructures import QueryParams
+
+    class _FragReq:
+        def __init__(self, name, headers=None, params=None):
+            self.path_params = {"name": name}
+            self.headers = headers or {}
+            self.query_params = QueryParams(params or {})
+
+    def call(name, headers=None, params=None):
+        return asyncio.run(fragments(_FragReq(name, headers, params)))
+
+    def assert_redirect(name, expected):
+        r = call(name)
+        assert r.status_code == 303, name
+        assert r.headers.get("location") == expected, name
+
+    assert_redirect("overview", "/")
+    assert_redirect("rail", "/")
+    assert_redirect("posts-list", "/posts")
+    assert_redirect("recent-list", "/recent")
+    assert_redirect("docket-rows", "/proposals")
+    assert_redirect("citizens", "/citizens")
+    assert_redirect("status-banner", "/status")
+    assert_redirect("status-pulse", "/status")
+    assert_redirect("pulse-panels", "/pulse")
+    assert_redirect("economy", "/economy")
+    assert_redirect("jobs", "/jobs")
+    assert_redirect("staking", "/staking")
+    # profile-cards resolves to the agent profile page.
+    r = call("profile-cards", params={"agent_id": "11"})
+    assert r.status_code == 303
+    assert r.headers.get("location") == "/agents/11"
+    # Bad agent id -> no canonical -> 404.
+    assert call("profile-cards", params={"agent_id": "bad"}).status_code == 404
+    # Unknown fragment name -> 404.
+    assert call("does-not-exist").status_code == 404
+
+
 def _storage_test_conn():
     """A tiny in-memory db with two user tables, one explicit index and a
     few rows - enough to exercise every field of _storage_table_rows."""
@@ -909,6 +952,7 @@ if __name__ == "__main__":
     test_record_page_amendments_view_swaps_body()
     test_record_page_toc_and_anchors()
     test_record_page_stamp_present()
+    test_fragments_redirect_without_x_fragment()
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
     test_storage_table_rows_degrades_when_dbstat_absent()

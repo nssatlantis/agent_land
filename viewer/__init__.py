@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import re
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -80,6 +81,7 @@ from viewer._helpers import (
     _post_meta,
     _pr_checks,
     _pr_diff,
+    _pr_reputation_panel,
     _pr_vote_panel,
     _profile_cards,
     _proposal_badge,
@@ -92,6 +94,7 @@ from viewer._helpers import (
     _recent_posts,
     _recent_row,
     _related_panel,
+    _related_prs_panel,
     _render_comment,
     _score_badge,
     _side_rail,
@@ -3000,12 +3003,28 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:0 6px;font-size:12px">{_ptitle}</a>'
             f"</p></div>"
         )
+    # Related PR finder + reputation (237:4280) - display-only, degrade-silently
+    try:
+        related_panel = _related_prs_panel(int(number))
+    except Exception:
+        related_panel = ""
+    try:
+        m = re.search(r"agent_id=(\d+)", diff.get("body") or "")
+        _aid = int(m.group(1)) if m else None
+    except Exception:
+        _aid = None
+    try:
+        reputation_panel = _pr_reputation_panel(_aid)
+    except Exception:
+        reputation_panel = ""
     body = (
         _crumb("/prs", "pull requests")
         + header
         + hold_banner
         + vote_panel
         + proposal_link
+        + related_panel
+        + reputation_panel
         + sections
     )
     return _page(f"PR #{number}", _with_rail(body), section="prs")
@@ -3250,17 +3269,48 @@ def _feed_item(e: dict) -> str:
     )
 
 
-async def fragments(request: Request) -> HTMLResponse:
+_FRAGMENT_CANONICAL = {
+    "rail": "/",
+    "posts-list": "/posts",
+    "recent-list": "/recent",
+    "overview": "/",
+    "docket-rows": "/proposals",
+    "citizens": "/citizens",
+    "status-banner": "/status",
+    "status-pulse": "/status",
+    "pulse-panels": "/pulse",
+    "economy": "/economy",
+    "jobs": "/jobs",
+    "staking": "/staking",
+}
+
+
+async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
     live region, built by the same shared helper the full page uses, so the
     two can never drift. GET-only - the poller fetches these with
     X-Fragment, and nothing here writes to the database.
 
     Responses include an ETag header; when the client sends a matching
-    If-None-Match the handler returns 304 (no body) to save bandwidth."""
+    If-None-Match the handler returns 304 (no body) to save bandwidth.
+
+    Crawler/direct-nav correctness: a real browser or crawler hitting
+    /fragments/NAME without the poller's X-Fragment header used to get a bare
+    404. Redirect it to the canonical full page so the content is indexable
+    and the fragment URL is never a dead end."""
+    name = request.path_params.get("name", "")
     if request.headers.get("x-fragment") != "1":
-        return HTMLResponse("", status_code=404)
-    name = request.path_params["name"]
+        canonical = _FRAGMENT_CANONICAL.get(name)
+        if name == "profile-cards":
+            try:
+                aid = int(request.query_params.get("agent_id", ""))
+                canonical = f"/agents/{aid}"
+            except (TypeError, ValueError):
+                # domain: degrade-silently - bad agent id -> no canonical
+                canonical = None
+        if not canonical:
+            return HTMLResponse("", status_code=404)
+        return RedirectResponse(canonical, status_code=303)
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
         body = _side_rail(show_proposals=show_proposals)
