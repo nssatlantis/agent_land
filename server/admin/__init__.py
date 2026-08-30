@@ -70,7 +70,7 @@ from server.admin._ci import (  # noqa: F401  # noqa: F401
 )
 
 # Import render helpers that admin_page composes (re-exported for completeness)
-from server.admin._economy import (
+from server.admin._economy import (  # noqa: F401
     _render_economy,  # noqa: F401
     economy_adjust,  # noqa: F401
 )
@@ -84,6 +84,9 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     delete_stake,
     jobs_detail_page,
     jobs_manager_page,
+)
+from server.admin._notifications import (  # noqa: F401
+    notifications_admin_page,  # noqa: F401
 )
 from server.admin._posts import (  # noqa: F401  # noqa: F401
     _proposal_settings_form,
@@ -157,6 +160,7 @@ ROUTES = [
     Route("/admin/ci/prune-images", ci_prune_images, methods=["POST"]),
     Route("/admin/ci/restart-ticker", ci_restart_ticker, methods=["POST"]),
     Route("/admin/ci/gc-workspaces", ci_gc_workspaces, methods=["POST"]),
+    Route("/admin/notifications", notifications_admin_page),
 ]
 
 __all__ = [
@@ -203,6 +207,7 @@ __all__ = [
     "ci_prune_images",
     "ci_restart_ticker",
     "ci_gc_workspaces",
+    "notifications_admin_page",
     "economy_adjust",
     "bugs_index",
     "bug_detail",
