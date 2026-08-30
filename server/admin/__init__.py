@@ -74,6 +74,9 @@ from server.admin._economy import (
     _render_economy,  # noqa: F401
     economy_adjust,  # noqa: F401
 )
+from server.admin._notifications import (  # noqa: F401
+    notifications_admin_page,  # noqa: F401
+)
 from server.admin._jobs import (  # noqa: F401  # noqa: F401
     _render_jobs,
     _render_jobs_manager,
