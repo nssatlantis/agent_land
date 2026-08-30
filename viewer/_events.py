@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 
 from starlette.requests import Request
@@ -13,8 +14,6 @@ from events import CATEGORIES, event_total, query_events
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
-
-import datetime as _dt
 
 # -------------------------------------------------------- events page --
 
@@ -497,21 +496,21 @@ def _event_calendar(
     agent filters preserved. Capped months (>=2000 rows) are flagged so a citizen
     knows the heatmap may be partial."""
     try:
-        y, m = (int(x) for x in month.split('-'))
+        y, m = (int(x) for x in month.split("-"))
         if not (1 <= m <= 12):
             raise ValueError
         first = _dt.date(y, m, 1)
     except (ValueError, TypeError, AttributeError):
         # domain: degrade-silently - a malformed month renders nothing rather than 5xx
-        return ''
+        return ""
     ndays = (_dt.date(y + (m // 12), (m % 12) + 1, 1) - first).days
     maxc = max(counts.values()) if counts else 1
     cells = []
     for d in range(1, ndays + 1):
         c = counts.get(d, 0)
         intensity = (c / maxc) if maxc else 0.0
-        bg = f'rgba(34,197,94,{intensity:.2f})' if c else 'var(--bg-alt)'
-        href = f'/events?date={month}-{d:02d}{filters_qs}'
+        bg = f"rgba(34,197,94,{intensity:.2f})" if c else "var(--bg-alt)"
+        href = f"/events?date={month}-{d:02d}{filters_qs}"
         cells.append(
             f"<a class='cal-cell' title='{c} events' href='{href}' "
             f"style='display:inline-block;min-width:26px;height:26px;line-height:26px;"
@@ -520,10 +519,12 @@ def _event_calendar(
         )
     lead = first.weekday() % 7
     grid = "<div class='cal-grid' style='display:grid;grid-template-columns:repeat(7,1fr);gap:3px;max-width:240px;margin:8px 0'>"
-    grid += ''.join("<span style='visibility:hidden'>.</span>" for _ in range(lead))
-    grid += ''.join(cells)
-    grid += '</div>'
-    prev_m = f"/events?month={(first - _dt.timedelta(days=1)).strftime('%Y-%m')}{filters_qs}"
+    grid += "".join("<span style='visibility:hidden'>.</span>" for _ in range(lead))
+    grid += "".join(cells)
+    grid += "</div>"
+    prev_m = (
+        f"/events?month={(first - _dt.timedelta(days=1)).strftime('%Y-%m')}{filters_qs}"
+    )
     next_m = f"/events?month={(first + _dt.timedelta(days=ndays)).strftime('%Y-%m')}{filters_qs}"
     nav = (
         f"<div style='margin:4px 0'><a href='{prev_m}'>\u2039 Prev</a> "
@@ -533,14 +534,14 @@ def _event_calendar(
     cap = (
         " <span class='muted' style='font-size:.8em'>(capped at 2000 events \u2014 partial month)</span>"
         if capped
-        else ''
+        else ""
     )
     return (
         "<div class='cal' style='margin:8px 0'>"
         f"<div class='muted' style='font-size:.85em;margin-bottom:4px'>Event density{cap}</div>"
         + nav
         + grid
-        + '</div>'
+        + "</div>"
     )
 
 
@@ -568,15 +569,16 @@ def events_page(request: Request) -> HTMLResponse:
         except Exception:  # domain: user-input - invalid since date ignored gracefully
             since = None
     date = request.query_params.get("date") or None
+    month = ""
     if date:
         try:
-            _d = _dt.datetime.strptime(date, "%Y-%m-%d")
-            month = _d.strftime("%Y-%m")
+            month = _dt.datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m")
         except ValueError:  # domain: user-input - invalid date param ignored
             date = None
-            month = None
-    if not date:
-        month = (request.query_params.get("month") or "") or _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m")
+    if not month:
+        month = (request.query_params.get("month") or "") or _dt.datetime.now(
+            _dt.timezone.utc
+        ).strftime("%Y-%m")
         try:
             _dt.datetime.strptime(month, "%Y-%m")
         except ValueError:  # domain: user-input - malformed month falls back to current
@@ -622,7 +624,9 @@ def events_page(request: Request) -> HTMLResponse:
         page = min(page, total_pages)
         evts = _day[(page - 1) * per_page : page * per_page]
     else:
-        total = event_total(agent_id=agent_id, kind=kind, category=category, since=since)
+        total = event_total(
+            agent_id=agent_id, kind=kind, category=category, since=since
+        )
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = min(page, total_pages)
         evts = query_events(
