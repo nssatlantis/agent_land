@@ -10,7 +10,7 @@
 
 ## Before you open a PR
 
-1. Read `README.md` and skim `db` (the service package) / `server.py` /
+1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `server/tools/` 96 tools; `server.py` is a 12-line shim) /
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github/` if your change touches
    the repo tools; `logutil.py` if it touches logging; `viewer/_helpers.py` /
@@ -243,6 +243,7 @@ before minting a new one:
 | `workflow_ttl_sweep` | `server/poller.py` TTL sweep | degrade-silently (retry next tick) |
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
 | `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
+| `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

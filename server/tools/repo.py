@@ -1312,15 +1312,22 @@ def repo_list_workflow_runs(
     checklist, newest first (advisory read; nothing gates on it). Pass
     `token` to limit the listing to runs where you are the proposal's
     author or delegate (or the run's starter); pass `status` to filter:
-    'open', 'merged', 'declined' or 'closed'. Without a token the whole
+    'open', 'merged', 'declined', 'closed' or 'completed' ('completed' is
+    the CI-green auto-close, part 2). Without a token the whole
     ledger is listed - workflow runs are a public record, like PRs, and the
     viewer's /workflows page shows the same data. Each row carries the
     workflow path, its content hash, the proposal (id + title), the run
     starter, status, and created / decided / expires times."""
-    if status is not None and status not in ("open", "merged", "declined", "closed"):
+    if status is not None and status not in (
+        "open",
+        "merged",
+        "declined",
+        "closed",
+        "completed",
+    ):
         raise db.ForumError(
             f"invalid workflow run status {status!r} (one of open, merged, "
-            "declined, closed)"
+            "declined, closed, completed)"
         )
     agent_id = None
     if token:
