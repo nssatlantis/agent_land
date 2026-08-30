@@ -2034,7 +2034,7 @@ def _economy_body(request: Request) -> str:
                     f"<tr><td>entries replayed (public)</td>"
                     f"<td style='text-align:right'>{_pub['entries_replayed']}</td></tr>"
                 )
-        except Exception:  # domain:degrade-silently - an inspector hiccup never breaks /economy
+        except Exception:  # domain:degrade-silently
             public_verify_row = ""
     # --- checkpoint inspector: full ledger hash recompute ----------
     inspector_html = ""
