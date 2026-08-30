@@ -495,6 +495,7 @@ def main():
     test_pr_files_paginates_past_the_default_page()
     test_short_first_page_costs_one_request()
     test_pagination_cap_bounds_runaway_servers()
+    test_open_prs_paginates_past_the_default_page()
     test_request_text_follows_redirect_to_blob()
     test_supplement_enriches_thin_exit_code_annotations()
     test_apr_checks_fans_out_job_logs()
