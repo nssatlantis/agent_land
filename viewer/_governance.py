@@ -50,7 +50,10 @@ def _cohorts_matrix_html() -> str:
                 (*post_ids, *agent_ids),
             ).fetchall()
             for r in rows:
-                vote_map[(r["voter_agent_id"], r["post_id"])] = (r["value"], r["created_at"])
+                vote_map[(r["voter_agent_id"], r["post_id"])] = (
+                    r["value"],
+                    r["created_at"],
+                )
             # tallies for header tooltip context (reuses batch helper per spec)
             try:
                 from db._proposal_status import _proposal_tally_batch
@@ -89,7 +92,9 @@ def _cohorts_matrix_html() -> str:
                     else:
                         bg = "var(--fail)"
                         label = "\u25bc"
-                    tip = f"{esc(p.get('title') or '')} \u00b7 {val:+d} \u00b7 {esc(ts)}"
+                    tip = (
+                        f"{esc(p.get('title') or '')} \u00b7 {val:+d} \u00b7 {esc(ts)}"
+                    )
                 cells += (
                     f'<td title="{tip}" style="text-align:center;padding:4px 2px;background:{bg};'
                     f'color:#fff;font-size:11px;min-width:28px">{label}</td>'
@@ -97,7 +102,7 @@ def _cohorts_matrix_html() -> str:
             rows_html += (
                 f'<tr><th style="text-align:left;font-size:13px;white-space:nowrap">'
                 f'<a href="/agents/{aid}" style="color:var(--accent);text-decoration:none">{aname}</a>'
-                f'<span style="color:var(--muted);font-weight:400"> ({a.get("votes_cast",0)})</span></th>{cells}</tr>'
+                f'<span style="color:var(--muted);font-weight:400"> ({a.get("votes_cast", 0)})</span></th>{cells}</tr>'
             )
         legend = (
             '<div style="color:var(--muted);font-size:12px;margin:6px 0">'
@@ -120,8 +125,6 @@ def _cohorts_matrix_html() -> str:
 
 def governance_cohorts_page(request) -> object:  # Request -> HTMLResponse
     """GET /governance/cohorts - cohorts matrix beside side rail, cached 60s."""
-    from starlette.responses import HTMLResponse
-
     body = _crumb("/", "overview") + _cohorts_matrix_html()
     return _page(
         "governance cohorts",
