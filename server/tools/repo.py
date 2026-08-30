@@ -351,7 +351,11 @@ async def repo_propose_change(
     todo_reminder names unticked items when the link lands. Pass
     `todo_item_id` to bind one undone to-do item on the proposal to this
     PR: when the PR merges the system auto-checks that item done
-    (todo_linked on success, todo_link_error on failure). Pass
+    (todo_linked on success, todo_link_error on failure). When
+    FORUM_TODO_CLAIM_REQUIRED is on and the collaborative proposal's board
+    still has undone to-do items, todo_item_id is REQUIRED - naming no
+    item is refused before GitHub is reached (the PR must say which item
+    it delivers so the board can auto-tick it). Pass
     proposal_id with dry_run=False for the bind to stick."""
     db.require_active_agent(token)
     # One connection for the whole gate chain (require_active, the karma
@@ -388,6 +392,7 @@ async def repo_propose_change(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
+        db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
         db.require_claim_for_todo(
             conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
         )
