@@ -616,7 +616,9 @@ def economy_overview() -> dict:
                 pflows = _summarize_flows(
                     _flow_rows_between(conn, prev_start, prev_end)
                 )
-            except Exception:  # domain: degrade-silently - prev window never blocks overview
+            except (
+                Exception
+            ):  # domain: degrade-silently - prev window never blocks overview
                 pflows = _summarize_flows({})
             prev_windows[name] = pflows
         windows["all_time"] = _summarize_flows(_flow_rows(conn, None))
