@@ -1633,7 +1633,7 @@ def _pr_vote_sweep(
                 # with-statement would block on GH poll until it finishes.
                 pool = ThreadPoolExecutor(max_workers=2)
                 try:
-                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
+                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)
                     local_fut = pool.submit(
                         ci_runner.run_branch_ci_for_poller,  # type: ignore[arg-type]
                         number,
