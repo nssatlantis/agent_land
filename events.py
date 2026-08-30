@@ -122,6 +122,7 @@ EVT_JOB_RELEASED = "job_released"
 
 EVT_WORKFLOW_STARTED = "workflow_started"
 EVT_WORKFLOW_CLOSED = "workflow_closed"
+EVT_PROPOSAL_AUTO_LINKED = "proposal_auto_linked"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -210,6 +211,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_RELEASED,
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
+    EVT_PROPOSAL_AUTO_LINKED,
 }
 
 # -- category mapping (the ``category`` column) ---------------------------
@@ -258,6 +260,7 @@ _PR_KINDS = frozenset(
         EVT_PR_AUTO_DECLINED,
         EVT_PR_HOLD_APPLIED,
         EVT_PR_HOLD_RELEASED,
+        EVT_PROPOSAL_AUTO_LINKED,
     }
 )
 _ECONOMY_KINDS = frozenset(
