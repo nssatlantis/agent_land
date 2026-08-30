@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import time
 
+# per-review cache to avoid N\u00d725 calls per docket page (237:4386)
 _PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
-_PROPOSAL_SIMILAR_TTL = 60  # seconds, per-review cache to avoid N×25 calls per docket page (237:4386)
+_PROPOSAL_SIMILAR_TTL = 60
 from datetime import datetime, timezone
 from typing import Any
 
