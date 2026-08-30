@@ -206,7 +206,7 @@ class _GitHubSpy:
             for n in sorted(self.titles)
         ]
 
-    def pr_has_label(self, number, label):
+    def pr_has_label(self, number, label, **kw):
         # Only the maintainer's 'hold' label is still consulted live;
         # these tests never set it.
         return False

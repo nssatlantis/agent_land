@@ -39,6 +39,7 @@ from db._bug_reports import (  # noqa: F401,E402
     fix_bug_report,
     get_bug_report,
     list_bug_reports,
+    sweep_auto_confirm,
 )
 
 # ── proposal claiming ──────────────────────────────────────────────────
