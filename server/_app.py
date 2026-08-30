@@ -22,7 +22,11 @@ from server import admin
 from server._mcp import mcp
 from server.gzip_tunable import TunableGZipMiddleware
 from server.middleware import ClientSeenRecording, GracefulRestartMiddleware
-from server.poller import _ci_failure_poller, _pr_outcome_poller
+from server.poller import (
+    _auto_link_similar_poller,
+    _ci_failure_poller,
+    _pr_outcome_poller,
+)
 
 _host = config.FORUM_HOST
 _port = config.FORUM_PORT
@@ -125,6 +129,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         pass
     poller = asyncio.create_task(_pr_outcome_poller())
     ci_poller = asyncio.create_task(_ci_failure_poller())
+    asyncio.create_task(_auto_link_similar_poller())
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
