@@ -2041,12 +2041,12 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'><span class='{chain_cls}'>"
             f"{'yes' if seal['sealed_entry_count'] == seal['live_entry_count'] else 'no'}</span></td></tr>"
             f"<tr><td>sealed supply</td>"
-            f"<td style='text-align:right'>{esc(seal['sealed_supply_credits'])}</td></tr>"
+            f"<td style='text-align:right'>{esc(seal.get('sealed_supply_credits') or seal.get('sealed_supply_quarters', ''))}</td></tr>"
             f"<tr><td>live supply</td>"
-            f"<td style='text-align:right'>{esc(seal['live_supply_credits'])}</td></tr>"
+            f"<td style='text-align:right'>{esc(seal.get('live_supply_credits') or seal.get('live_supply_quarters', ''))}</td></tr>"
             f"<tr><td>supply match</td>"
             f"<td style='text-align:right'><span class='{chain_cls}'>"
-            f"{'yes' if seal['sealed_supply_quarters'] == seal['live_supply_quarters'] else 'no'}</span></td></tr>"
+            f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
             "</tbody></table></div>"
         )
 
