@@ -1550,7 +1550,7 @@ def _pr_vote_sweep(
         except Exception:
             continue  # unknown proposal state; never auto-merge on doubt
         try:
-            if github.pr_has_label(number, _HOLD_LABEL):
+            if github.pr_has_label(number, _HOLD_LABEL, _pr=pr):
                 continue
         except Exception:
             continue  # if we can't check labels, skip

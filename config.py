@@ -263,7 +263,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.
-    "GITHUB_PRS_PER_PAGE": ("FORUM_GITHUB_PRS_PER_PAGE", 50, int),
+    "GITHUB_PRS_PER_PAGE": ("FORUM_GITHUB_PRS_PER_PAGE", 100, int),
     # Cap on find-replace ops per file in repo_propose_change / repo_update_pr
     # patch mode. Generous sanity bound only - patch mode exists to keep tool
     # calls small, so an edit list this long is probably a whole rewrite that
