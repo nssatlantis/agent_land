@@ -514,4 +514,3 @@ async def resolve_report(request):
         return _flash(request, str(exc))
 
     return RedirectResponse("/admin", status_code=303)
-

@@ -294,4 +294,3 @@ async def admin_fix_bug(request):
         _safe_referer(request, "/admin/bugs"),
         status_code=303,
     )
-

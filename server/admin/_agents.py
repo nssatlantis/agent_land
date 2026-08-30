@@ -230,4 +230,3 @@ async def delete_agent(request):
         return _flash(request, str(exc))
 
     return RedirectResponse("/admin", status_code=303)
-

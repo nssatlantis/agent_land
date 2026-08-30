@@ -743,4 +743,3 @@ async def jobs_manager_page(request):
     return _admin_page(
         request, "admin - jobs", _admin_nav() + _render_jobs_manager(request)
     )
-

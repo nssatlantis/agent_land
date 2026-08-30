@@ -90,4 +90,3 @@ async def economy_adjust(request):
         f"(reason: {result['reason']}) - treasury now at "
         f"{result['treasury_credits']} credits.",
     )
-

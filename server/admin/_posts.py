@@ -236,7 +236,6 @@ def _render_posts_manager(request) -> str:
 
     a badge and delete only. All writes are POST + CSRF + audit."""
 
-
     kind_filter = (request.query_params.get("kind") or "all").lower()
 
     q = (request.query_params.get("q") or "").strip()
@@ -772,4 +771,3 @@ async def delete_post(request):
     # detail page); fall back to the docket for direct hits.
 
     return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
-

@@ -656,4 +656,3 @@ async def ci_gc_workspaces(request):
 
     except Exception as exc:  # domain: degrade-silently
         return _flash(request, f"gc failed: {exc}")
-
