@@ -865,6 +865,67 @@ def sweep_pr_comments(
     return notified
 
 
+def _workflow_ci_green_sweep(
+    open_prs: list[dict], checks_fn=github.pr_checks
+) -> list[int]:
+    """Auto-complete bound open workflow runs whose in-flight PR is CI-green
+    (per-PR lifecycle, part 2 — status 'completed', notified as kind
+    'workflow'). No-op when FORUM_WORKFLOW_CLOSE_ON_CI_GREEN is 0.
+
+    Only open runs that are BOUND to a PR still open on GitHub qualify: each
+    PR owns its run, and a green build closes it ahead of — and often instead
+    of — the merge outcome. The scan set is read once (restricted to the
+    live PR numbers so long-dead bindings are never re-fetched), CI state is
+    read per PR through the same tiered builder the failure sweep and
+    repo_pr_checks use, and the completion write is isolated per PR — one
+    bad check fetch or db write never blocks the rest of the batch, and the
+    sweep is idempotent (completed runs are not 'open', so a retry finds
+    nothing and re-notifies nobody). `checks_fn` is injectable so tests need
+    no GitHub. Returns the pr numbers completed."""
+    try:
+        if int(config.WORKFLOW_CLOSE_ON_CI_GREEN) <= 0:
+            return []
+    except Exception:  # domain: degrade-silently - default to ON
+        pass
+    open_numbers = {pr["number"] for pr in open_prs}
+    if not open_numbers:
+        return []
+    with db._conn() as conn:
+        runs = db.list_bound_open_runs(conn, pr_numbers=open_numbers)
+    bound_prs = sorted({r["pr_number"] for r in runs if r.get("pr_number")})
+    if not bound_prs:
+        return []
+    checks_results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(bound_prs))) as pool:
+        futures = {pool.submit(checks_fn, num): num for num in bound_prs}
+        for future in as_completed(futures):
+            pr_num = futures[future]
+            try:
+                checks_results[pr_num] = future.result()
+            except Exception as exc:  # domain: degrade-silently - one PR's check fetch failing must not block the batch
+                logutil.log(
+                    "ci_check_batch_error", pr_number=pr_num, error=str(exc)
+                )  # per-PR GitHub failure must not block others
+    green = [
+        num
+        for num in bound_prs
+        if (checks_results.get(num) or {}).get("state") == "success"
+    ]
+    completed: list[int] = []
+    for num in green:
+        try:
+            with db._conn() as conn:
+                db.complete_workflow_for_pr(conn, num)
+            completed.append(num)
+        except Exception as exc:
+            logutil.log(
+                "workflow_ci_green_failed",
+                pr_number=num,
+                error=str(exc),
+            )  # domain: never-lose-data - idempotent, retried next interval
+    return completed
+
+
 def _maybe_checkpoint_economy() -> None:
     """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
     have elapsed since the last one (0 disables). Delegates the
@@ -909,8 +970,8 @@ async def _ci_failure_poller() -> None:
     next interval.
 
     Merged with the vote poller (proposal #111 audit item 2375):
-    fetches open_prs once per interval and passes it to both the
-    CI-failure sweep and the vote sweep, halving GitHub API traffic.
+    fetches open_prs once per interval and passes it to the CI-failure,
+    workflow CI-green and vote sweeps, halving GitHub API traffic.
     Fast 30s poll for CI (local-first) + debounced direct trigger from
     repo_propose_change/repo_update_pr (15s coalesce) ensures host runs
     once for the final head while GitHub runs every intermediate."""
@@ -924,6 +985,7 @@ async def _ci_failure_poller() -> None:
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
+            await asyncio.to_thread(_workflow_ci_green_sweep, open_prs)
             sweep_actions = await asyncio.to_thread(_pr_vote_sweep, open_prs)
             await asyncio.to_thread(sweep_pr_comments, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
