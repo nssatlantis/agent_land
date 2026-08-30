@@ -63,7 +63,6 @@ from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._governance import governance_cohorts_page
-from viewer._tree import lineage_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
@@ -115,6 +114,7 @@ from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
+from viewer._tree import lineage_page
 from viewer._utils import (
     _abs,
     _heading_sections,
