@@ -572,9 +572,7 @@ def source_file_diff(path: str, ref: str | None = None) -> dict:
         local_size = p.stat().st_size if local_exists else None
         local_mtime = p.stat().st_mtime if local_exists else None
         local_text = (
-            p.read_text(encoding="utf-8", errors="replace")
-            if local_exists
-            else None
+            p.read_text(encoding="utf-8", errors="replace") if local_exists else None
         )
     except Exception:  # domain: degrade-silently
         local_exists = False
