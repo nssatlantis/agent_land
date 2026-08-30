@@ -149,6 +149,21 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     )
     prs_raw = p.get("prs") or []
     pr_trail = ""
+    # Evidence chips per PR (237:4387) - PR #423 pattern, display-only
+    if prs_raw and len(prs_raw) > 1:
+        try:
+            ev_bits = []
+            for pr in prs_raw:
+                ev_bits.append(
+                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>'
+                )
+            pr_trail += (
+                '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> '
+                + " ".join(ev_bits)
+                + "</div>"
+            )
+        except Exception:  # domain: degrade-silently
+            pass
     if prs_raw:
         repo_url = f"https://github.com/{esc(github.repo_spec())}"
         pr_numbers = [pr["pr_number"] for pr in prs_raw]
