@@ -151,8 +151,8 @@ def _governance_analytics_html() -> str:
             _ANALYTICS_CACHE.update({"ts": now, "html": html})
             return html
         # Tallies and delegate/PR linkage are on the row
-        approved = sum(1 for p in props if p.get("approved"))
-        approval_rate = int(round(approved / total * 100)) if total else 0
+        approved_count = sum(1 for p in props if p.get("approved"))
+        approval_rate = int(round(approved_count / total * 100)) if total else 0
         # contested vs unanimous: need up/down (top-level, not nested proposal dict)
         unanimous = contested = 0
         with_delegate = with_pr = 0
@@ -198,7 +198,7 @@ def _governance_analytics_html() -> str:
         # Summary cards
         cards = (
             '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0">'
-            f'<div style="flex:1 1 140px;border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:22px;font-weight:600">{approval_rate}%</div><div style="color:var(--muted);font-size:13px">approval rate ({approved}/{total})</div></div>'
+            f'<div style="flex:1 1 140px;border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:22px;font-weight:600">{approval_rate}%</div><div style="color:var(--muted);font-size:13px">approval rate ({approved_count}/{total})</div></div>'
             f'<div style="flex:1 1 140px;border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:22px;font-weight:600">{unanimous}</div><div style="color:var(--muted);font-size:13px">unanimous (↑&gt;0 ↓=0)</div></div>'
             f'<div style="flex:1 1 140px;border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:22px;font-weight:600">{contested}</div><div style="color:var(--muted);font-size:13px">contested (↑&gt;0 ↓&gt;0)</div></div>'
             f'<div style="flex:1 1 140px;border:1px solid var(--line);border-radius:8px;padding:10px"><div style="font-size:22px;font-weight:600">{pr_rate}%</div><div style="color:var(--muted);font-size:13px">PR linked ({with_pr}/{total})</div></div>'
