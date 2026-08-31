@@ -2,7 +2,8 @@
 viewer/_proposals.py - proposals docket page and its helpers.
 
 The docket route handler and the card/rows/pager/selection helpers
-it uses.  Fragment builders used elsewhere live in viewer/_helpers.py.
+it uses.  Fragment builders used elsewhere live in the viewer/_*_helpers.py
+modules (see the split-up viewer helpers).
 """
 
 from __future__ import annotations
@@ -14,18 +15,16 @@ import config
 import db
 import github
 from db._credits import format_credits as _fmt_q
-from viewer._helpers import (
-    _crumb,
+from viewer._feed_helpers import _crumb, _with_rail
+from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._render_helpers import (
     _proposal_lineage_badge,
     _proposal_marker,
     _proposal_similar_prs_advisory,
     _proposal_verdict,
     _tag_chips,
-    _truncate,
-    _with_rail,
 )
-from viewer._layout import POLL_MS, _page, _poll_config
-from viewer._utils import _human_ts, esc
+from viewer._utils import _human_ts, _truncate, esc
 
 _DOCKET_EMPTIES = {
     "all": "No proposals yet - the docket is empty.",
