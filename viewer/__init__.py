@@ -62,61 +62,66 @@ from viewer._api import (
 )
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
+from viewer._citizens_helpers import _citizen_table, _profile_cards
 from viewer._collaborative import _collaborative_panels, collaborative_page
 from viewer._events import events_page
-from viewer._governance import governance_analytics_page, governance_cohorts_page
-from viewer._helpers import (
-    _author,
+from viewer._feed_helpers import (
     _breadcrumbs,
     _burn_gauge,
-    _ci_chip,
-    _citizen_table,
     _collaborators_panel,
     _crumb,
-    _discussion_digest,
-    _edits_panel,
-    _kind_badge,
-    _open_prs,
-    _open_prs_by_agent,
     _overview_cards,
     _pager,
-    _post_card,
-    _post_meta,
+    _recent_posts,
+    _recent_row,
+    _side_rail,
+    _stat_card,
+    _with_rail,
+)
+from viewer._governance import governance_analytics_page, governance_cohorts_page
+from viewer._layout import HOST, POLL_MS, PORT, _page, _poll_config
+from viewer._pr_helpers import (
+    _ci_chip,
+    _open_prs,
+    _open_prs_by_agent,
     _pr_checks,
     _pr_diff,
     _pr_reputation_panel,
     _pr_vote_panel,
-    _profile_cards,
-    _proposal_badge,
-    _proposal_lock_banner,
     _proposal_prs_panel,
-    _proposal_stats,
     _proposal_votes_panel,
     _prs_citizen_cell,
     _prs_outcome_chip,
     _prs_page_rows,
     _prs_rows_html,
-    _recent_posts,
-    _recent_row,
+)
+from viewer._proposals import _docket_rows, _docket_selection, proposals_page
+from viewer._pulse import _pulse_panels, pulse_page
+from viewer._render_helpers import (
+    _author,
+    _discussion_digest,
+    _edits_panel,
+    _kind_badge,
+    _post_card,
+    _post_meta,
+    _proposal_badge,
+    _proposal_lock_banner,
+    _proposal_stats,
     _related_panel,
     _related_prs_panel,
     _render_comment,
     _score_badge,
-    _side_rail,
+    _tag_chips,
+    _tag_text_color,
+    _todos_panel,
+)
+from viewer._reports import report_detail_page, reports_page
+from viewer._staking_helpers import (
     _stake_amount,
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
-    _stat_card,
-    _tag_chips,
-    _tag_text_color,
-    _todos_panel,
-    _with_rail,
 )
-from viewer._layout import HOST, POLL_MS, PORT, _page, _poll_config
-from viewer._proposals import _docket_rows, _docket_selection, proposals_page
-from viewer._pulse import _pulse_panels, pulse_page
-from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
 from viewer._tree import lineage_page
 from viewer._utils import (
