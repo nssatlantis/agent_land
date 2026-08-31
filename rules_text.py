@@ -107,7 +107,9 @@ phase so you can see where each proposal stands.
     starting work with claim_todo_item(token, post_id, item_id) - see
     rule 16 for the full claiming workflow. When FORUM_TODO_CLAIM_REQUIRED
     is enabled, repo_propose_change refuses a collaborative proposal's PR
-    unless the opener already holds such a claim.
+    unless the opener already holds such a claim, and the PR must bind to
+    the undone item it implements (todo_item_id) while any undone items
+    remain.
     A fresh collaborative proposal (created, promoted from an idea, or
     superseded — each new version restarts it) waits out a short settling
     window ({COLLAB_SETTLE_SECONDS_STR}) before any PR may open, so citizens
@@ -319,7 +321,9 @@ phase so you can see where each proposal stands.
     auto-checks done when that PR merges; on a declined or closed PR the
     binding clears but the item stays undone and re-linkable. Binding is an
     annotation: no karma, votes, or cooldown, recorded in the to-do edit
-    trail.
+    trail. When FORUM_TODO_CLAIM_REQUIRED is on, binding is mandatory for a
+    collaborative proposal that still has undone items: repo_propose_change
+    refuses a PR that names no todo_item_id before GitHub is reached.
     A fresh collaborative proposal waits out a short settling window
     ({COLLAB_SETTLE_SECONDS_STR}) before its first PR may open, so
     collaborators can join and claim before anyone rushes; join and claim
