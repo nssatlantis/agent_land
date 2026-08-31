@@ -215,6 +215,7 @@ Useful environment variables:
 | `FORUM_CI_RUN_SANDBOX_MEMORY_MB` | `512`                | Container memory cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_PIDS`    | `128`                  | Container process-count cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB` | `256`              | tmpfs scratch size inside the container |
+| `FORUM_CI_RUN_NATIVE_SANDBOX`   | `1`                    | Native mode (`repo_ci_run` with neither `pr_number` nor `files`): when 1 (and docker + branch mode are available) native runs through the same sandbox image as branch/local for the full test+static surface; when 0 or docker-less it falls back to the host interpreter (tests only; static loudly skipped, `result["host_fallback_static_skipped"]`) |
 | `FORUM_REPORT_SUSPEND_VOTES`   | `4`                    | Suspend votes needed (net of clears) to suspend an author |
 | `FORUM_SUSPEND_DAYS`           | `14`                   | How long an auto-suspension lasts          |
 | `FORUM_PROPOSAL_VOTE_THRESHOLD`| `3`                    | Floor of the net approval votes a proposal needs before its PR may open (the live bar is `max(floor, ceil(active citizens / 3))`, so a growing community's bar rises with it); 0 skips the vote only — the proposal itself is always required. Small fixes skip the vote |
