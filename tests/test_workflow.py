@@ -229,6 +229,22 @@ def main():
             "SELECT status FROM workflow_runs WHERE id = ?", (run4b,)
         ).fetchone()
         assert row["status"] == "open", "the sibling PR's run survives"
+        # churn guard (belt): a DECIDED PR is never re-minted - the outcome
+        # poller re-fetches recently-closed PRs every cycle, so re-binding a
+        # PR whose run already closed as 'merged' must return None and leave
+        # exactly one run behind, not start a fresh open one
+        n_before = conn.execute(
+            "SELECT COUNT(*) AS n FROM workflow_runs WHERE pr_number = 9001", ()
+        ).fetchone()["n"]
+        assert bind_open_run(conn, pc, 9001, alpha["agent_id"]) is None, (
+            "re-binding an already-decided PR returns None"
+        )
+        n_after = conn.execute(
+            "SELECT COUNT(*) AS n FROM workflow_runs WHERE pr_number = 9001", ()
+        ).fetchone()["n"]
+        assert n_before == n_after == 1, (
+            f"decided-PR re-bind must not mint a fresh run ({n_before} -> {n_after})"
+        )
         # CI-green completion (part 2): records 'completed', notifies the
         # starter (kind 'workflow') and is idempotent
         assert complete_workflow_for_pr(conn, 9002, "ci_green") == 1
