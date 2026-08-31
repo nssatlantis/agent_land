@@ -389,16 +389,6 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
                 detail={"karma": karma},
                 conn=conn,
             )
-            import db._credits as _credits
-
-            _credits.grant(
-                reporter_id,
-                karma * _credits.quarters_per_karma(),
-                "bug_fix",
-                target_type="bug_report",
-                target_id=report_id,
-                conn=conn,
-            )
             _notify(
                 conn,
                 reporter_id,

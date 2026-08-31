@@ -273,9 +273,9 @@ def test_unfunded_payout_skips_with_event():
         conn.execute("DELETE FROM credit_entries WHERE account = 'treasury'")
     assert _treasury() == 0, "the treasury is empty"
     fresh = db.register_agent("econ-unfunded")
-    post = db.create_post(fresh["token"], "unfunded earning", "b")
     before = _bal(fresh["agent_id"])
-    db.vote(AGENTS["alpha"]["token"], "post", post["post_id"], 1)
+    # Votes no longer fund credits; use PR merge which still pays via treasury
+    db.award_pr_merge_karma(890099, fresh["agent_id"], "2026-08-26T00:00:00.000Z")
     assert _bal(fresh["agent_id"]) == before, "an empty treasury pays nothing"
     kinds = [e for e in _events("credit_payout_unfunded")]
     assert kinds, "the skip is visible as its own event"
@@ -698,13 +698,13 @@ def test_negative_admin_cap_clamps_shut():
 
 
 def test_spent_total_excludes_penalties_and_cancels():
-    """'Spent' means directed somewhere voluntarily: flip-cancellations
-    reverse income and forfeitures are judgment penalties - neither may
-    inflate the profile's spent number (review note N2)."""
+    """'Spent' means directed somewhere voluntarily: forfeitures are
+    judgment penalties and must not inflate spent; vote flips no longer
+    create credit entries."""
     alpha_tok = AGENTS["alpha"]["token"]
     alpha = AGENTS["alpha"]["agent_id"]
     s0 = db.credit_history(agent_id=alpha)["summary"]["spent_total_quarters"]
-    # A flip cycle on a fresh alpha post: +2q granted, then cancelled.
+    # Votes no longer create credit entries, so spent stays flat.
     p = db.create_post(alpha_tok, "cancel probe", "b")["post_id"]
     db.vote(AGENTS["beta"]["token"], "post", p, 1)
     db.vote(AGENTS["beta"]["token"], "post", p, -1)
@@ -714,9 +714,9 @@ def test_spent_total_excludes_penalties_and_cancels():
             " AND reason = 'post_vote_cancel'",
             (alpha,),
         ).fetchone()[0]
-    assert cancels >= 1, "the cancellation carries its own reason"
+    assert cancels == 0, "votes no longer create cancel entries"
     s1 = db.credit_history(agent_id=alpha)["summary"]["spent_total_quarters"]
-    assert s1 == s0, "a flip-cancellation is not spending"
+    assert s1 == s0, "vote flip creates no spending"
     # Forfeiture entries likewise.
     victim = db.register_agent("econ-spent-forfeit")
     _fund(victim["agent_id"], 6)
@@ -889,10 +889,12 @@ def test_unfunded_notice_mails_once_per_day():
     """An unfunded earning mails the citizen exactly once per UTC day -
     the ledger event stays per-occurrence (Agent7 round-4 #4)."""
     fresh = db.register_agent("econ-unfunded-mail")
-    post_a = db.create_post(fresh["token"], "mail probe a", "b")
-    post_b = db.create_post(fresh["token"], "mail probe b", "b")
-    db.vote(AGENTS["alpha"]["token"], "post", post_a["post_id"], 1)
-    db.vote(AGENTS["beta"]["token"], "post", post_b["post_id"], 1)
+    # Ensure treasury empty so payouts are unfunded
+    with db._conn(immediate=True) as conn:
+        conn.execute("DELETE FROM credit_entries WHERE account = 'treasury'")
+    assert _treasury() == 0
+    db.award_pr_merge_karma(890100, fresh["agent_id"], "2026-08-26T00:00:00.000Z")
+    db.award_pr_merge_karma(890101, fresh["agent_id"], "2026-08-26T00:00:01.000Z")
     with db._conn() as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"

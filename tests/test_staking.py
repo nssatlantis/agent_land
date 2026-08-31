@@ -205,7 +205,7 @@ def main():
         # alpha has ~4 ek; cap = int(4*0.33) = 1. Staking total=2 > 1 should fail.
         os.environ["FORUM_STAKE_MAX_FRACTION"] = "0.33"
         assert "aggregate" in expect_error(
-            db.stake, agents["alpha"]["token"], pid, 2, 1
+            db.stake, agents["alpha"]["token"], pid, 2, 1, currency="karma"
         ), "aggregate cap should block over-commitment"
         print("  stake aggregate cap: ok")
     finally:

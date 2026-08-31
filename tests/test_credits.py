@@ -75,25 +75,19 @@ def test_vote_earns_quarters_and_flips_adjust():
     author_id = AGENTS["gamma"]["agent_id"]  # the fresh post's author
     before = _bal(author_id)
     db.vote(agents["beta"]["token"], "post", pid, 1)
-    assert _bal(author_id) == before + 2, (
-        "+1 karma at ratio 0.5 = +2 quarters (0.5 credits)"
-    )
-    # Flip to downvote: the cancellation is clamped at the zero floor -
-    # it takes back what the wallet holds (the full -4 raw delta when the
-    # balance covers it), never crossing into negative.
+    assert _bal(author_id) == before, "votes grant karma only, no credits"
+    # Flip to downvote: no credit movement either.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == max(before - 2, 0), (
-        "flip cancels toward the floor, never below zero"
-    )
+    assert _bal(author_id) == before, "flip does not move credits"
     # Same-value re-vote is a no-op.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == max(before - 2, 0)
+    assert _bal(author_id) == before
 
 
 def test_vote_flip_never_farms():
     """up -> down -> up nets exactly one honest grant: the cancelled
     portion cannot be re-earned beyond the final state (review finding,
-    PR #402)."""
+    PR #402). After hotfix votes grant no credits, so balance never moves."""
     author = db.register_agent("econ-farm-author")
     pid_f = db.create_post(author["token"], "farm target", "b")["post_id"]
     before = _bal(author["agent_id"])
@@ -101,9 +95,7 @@ def test_vote_flip_never_farms():
     db.vote(t, "post", pid_f, 1)
     db.vote(t, "post", pid_f, -1)
     db.vote(t, "post", pid_f, 1)
-    assert _bal(author["agent_id"]) == before + 2, (
-        "a full cycle equals a single persistent upvote"
-    )
+    assert _bal(author["agent_id"]) == before, "votes no longer farm credits"
 
 
 def test_downvote_on_zero_balance_grants_nothing():
@@ -114,7 +106,7 @@ def test_downvote_on_zero_balance_grants_nothing():
     before = _bal(author_id)
     assert before >= 0
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == max(before - 2, 0), "the wallet floors at zero"
+    assert _bal(author_id) == before, "votes never move credits"
 
 
 def test_scale_zero_disables_earning():
@@ -149,8 +141,14 @@ def test_bug_fix_earns():
     rep = db.file_bug_report(agents["eta"]["token"], "Credits bug", "body", url=None)
     before = _bal(aid)
     db.fix_bug_report(rep["id"])
-    quarters = config.BUG_REPORT_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
-    assert _bal(aid) == before + quarters
+    assert _bal(aid) == before, "bug fixes grant karma only, no credits"
+    # Karma still granted via bug_rewards
+    with db._conn() as conn:
+        got = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM bug_rewards WHERE agent_id=?",
+            (aid,),
+        ).fetchone()[0]
+    assert got >= config.BUG_REPORT_KARMA
 
 
 def test_tag_create_spends_credits_and_floor_stays_karma():
@@ -162,6 +160,11 @@ def test_tag_create_spends_credits_and_floor_stays_karma():
     for v in voters:
         db.vote(agents[v]["token"], "post", pid, 1)
     aid = agents["alpha"]["agent_id"]
+    # Votes no longer fund credits; seed credits explicitly.
+    import db._credits as _cr_fund
+
+    with db._conn() as _c:
+        _cr_fund.grant(aid, 8, "admin_adjust", target_type="test", target_id=1, conn=_c)
     old = _arm("FORUM_TAG_CREATE_COST", "2.0")
     try:
         balance_before = _bal(aid)
@@ -582,10 +585,17 @@ def test_top_movers_shape():
 
 
 def test_events_under_own_categories():
+    # Votes no longer emit credit_earned; verify no post_vote credit event
     agents, pid = _setup()
+    before = len([e for e in events.query_events(kind="credit_earned", limit=100)])
     db.vote(agents["beta"]["token"], "post", pid, 1)
-    rows = [e for e in events.query_events(kind="credit_earned", limit=10)]
-    assert any(e["detail"]["reason"] == "post_vote" for e in rows)
+    rows = [e for e in events.query_events(kind="credit_earned", limit=100)]
+    assert not any(e["detail"]["reason"] == "post_vote" for e in rows)
+    # PR merge still emits credit_earned via treasury payout
+    aid = agents["theta"]["agent_id"]
+    db.award_pr_merge_karma(777002, aid, "2026-08-25T00:00:00.000Z")
+    rows2 = [e for e in events.query_events(kind="credit_earned", limit=100)]
+    assert len(rows2) > before
 
 
 def test_concurrent_spends_cannot_overspend():

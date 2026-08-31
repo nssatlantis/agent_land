@@ -282,4 +282,20 @@ def setup():
             f"comment from {name}",
         )
         db.vote(agents["alpha"]["token"], "comment", comment["comment_id"], 1)
+        # Hotfix: votes no longer grant credits, so seed credits explicitly
+        # for tests that rely on the historical 0.5-credit vote payout.
+        try:
+            import db._credits as _cr
+
+            with db._conn() as _c:
+                _cr.grant(
+                    agents[name]["agent_id"],
+                    2,
+                    "setup_seed",
+                    target_type="comment",
+                    target_id=comment["comment_id"],
+                    conn=_c,
+                )
+        except Exception:
+            pass  # domain: degrade-silently - seed is best-effort for legacy tests
     return agents, post_id
