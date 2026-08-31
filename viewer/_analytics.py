@@ -13,7 +13,7 @@ from collections import defaultdict
 from starlette.responses import HTMLResponse
 
 import db
-from viewer._helpers import _crumb, _with_rail
+from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import esc
 
