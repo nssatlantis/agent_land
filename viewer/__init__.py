@@ -2521,7 +2521,7 @@ def _economy_body(request: Request) -> str:
             _total_held_q = 0
             _job_rows = ""
             for _j in sorted(
-                _active_jobs, key=lambda x: x.get("job_id", 0), reverse=True
+                _active_jobs, key=lambda x: x.get("job_id") or 0, reverse=True
             )[:20]:
                 try:
                     _pay_q = int(_j.get("payment_quarters", 0) or 0)
@@ -2530,8 +2530,8 @@ def _economy_body(request: Request) -> str:
                     _rem = max(0, _total - _done)
                     _held = _pay_q * _rem
                     _total_held_q += _held
-                    _title_j = esc(_j.get("title") or f"job #{_j.get('job_id')}")
-                    _j_id = int(_j.get("job_id", 0))
+                    _title_j = esc(_j.get("title") or f"job #{_j.get('job_id') or 0}")
+                    _j_id = int(_j.get("job_id") or 0)
                     _pay_txt = esc(_fmt_q(_pay_q))
                     _held_txt = esc(_fmt_q(_held))
                     # timeline: sequential per-cycle releases, each _pay_q
