@@ -135,6 +135,7 @@ def _truncate_all():
             "bug_reports",
             "bug_rewards",
             "post_subscriptions",
+            "workflow_run_steps",
             "workflow_runs",
             "pr_ci_state",
             "pr_comment_seen",
