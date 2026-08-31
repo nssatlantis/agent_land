@@ -258,6 +258,7 @@ before minting a new one:
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
 | `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
 | `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
+| `workflow_steps_seed_failed` | `db/_core.py` boot steps backfill | degrade-silently (logged; unseeded runs lazy-seed on first read) |
 | `bug_sweep_confirm_failed` | `db/_core.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
@@ -384,6 +385,24 @@ claim.
 when a held item/list claim has no live bound PR - open the bound PR
 (bind via `repo_propose_change`'s `todo_item_id`, or `link_pr_to_todo_item`)
 or unclaim, so a held claim never quietly stalls its board.
+
+## Workflow steps
+
+Open create-pr runs snapshot their `## Steps` checklist into
+`workflow_run_steps` (per run: `step_key`, `position`, the step's text, a
+`done` flag, `done_at`, `done_by`). The run's starter, the proposal's author
+or its delegate tick manual steps with `repo_workflow_step(token, run_id,
+step_key)` (idempotent; audit is done_by/done_at - annotation-level, no
+karma/votes/cooldown/notifications). The keys `open` and `verify` are
+server-managed: `open` auto-ticks when the PR links to the run, `verify` when
+the linked PR turns CI-green or merges - a hand tick on either is refused, so
+a checklist can never be gamed to a state the server did not reach. While
+`FORUM_WORKFLOW_STEPS_ENFORCE=1` (default; 0 = advisory) `repo_propose_change`
+refuses until every step before `open` is ticked (create-pr steps 1-5), unless
+the call is a `dry_run=True` preview - validate-manifest rehearses dry-run
+first and would otherwise deadlock on its own step. `repo_workflow_status`
+mirrors the gate and run progress (steps + summary); the admin panel renders
+per-run chips.
 
 ## Tags
 
