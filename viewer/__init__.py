@@ -3574,10 +3574,10 @@ async def search_page(request: Request) -> HTMLResponse:
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )
-    pr_rows = "".join(
+    prs_html = "".join(
         f'<div class="rail-item"><a href="/prs/{r["number"]}">PR #{r["number"]}: {esc(r.get("title") or "")}</a>'
         f'<span class="rail-meta">{_prs_outcome_chip(r)} \xb7 {_prs_citizen_cell(r)} \xb7 '
-        f"updated {_human_ts(r.get('updated_at'))}</span></div>"
+        f"updated {_human_ts(r.get('updated_at') or '')}</span></div>"
         for r in prs
     )
     heading = f"Search: {esc(q_raw)}" if q_raw else "Search"
@@ -3605,7 +3605,7 @@ async def search_page(request: Request) -> HTMLResponse:
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
-        + f'<div class="search-group"><h3>Pull requests</h3>{pr_rows or empty}</div>'
+        + f'<div class="search-group"><h3>Pull requests</h3>{prs_html or empty}</div>'
         + pager
         + "</div>"
     )
