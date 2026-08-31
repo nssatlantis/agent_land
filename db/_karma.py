@@ -432,44 +432,26 @@ def link_pr_to_proposal(
             if row is not None and row["collaborative"]:
                 # Proposal #141: when TODO_CLAIM_REQUIRED is on, a new
                 # collaborative PR needs the opener to hold a claim on an
-                # undone to-do item (or, in list mode, a whole-list claim) -
-                # the board's own advice made binding, so two collaborators
-                # cannot build the same thing. Claims are swept first so an
+                # undone to-do item (or, in list/hybrid mode, a whole-list
+                # claim) - the board's own advice made binding, so two
+                # collaborators cannot build the same thing.  The mode-aware
+                # check lives in db._claiming.require_claim_for_todo, the
+                # single contract shared by the pre-open gate
+                # (repo_propose_change) and this link-time gate so the two
+                # call-sites can never drift. Claims are swept first so an
                 # expired one never satisfies the gate, and backfills above
                 # never reach this branch. Outcome-poller backfills of
                 # already-decided PRs pass enforce_claims=False: recording
                 # history for work the community already reviewed is
                 # bookkeeping, not a new contribution racing the board.
-                if config.TODO_CLAIM_REQUIRED > 0 and enforce_claims:
-                    from db._proposal_todos import _sweep_expired_claims
+                if (
+                    config.TODO_CLAIM_REQUIRED > 0
+                    and enforce_claims
+                    and agent_id is not None
+                ):
+                    from db._claiming import require_claim_for_todo
 
-                    _sweep_expired_claims(c, [post_id])
-                    if row["todo_claim_mode"]:
-                        held = c.execute(
-                            "SELECT COUNT(*) FROM todo_lists"
-                            " WHERE post_id = ? AND claimed_by_agent_id = ?",
-                            (post_id, agent_id),
-                        ).fetchone()[0]
-                        claim_verb = "claiming a whole to-do list"
-                        claim_tool = f"claim_todo_list(token, {post_id}, list_id)"
-                    else:
-                        held = c.execute(
-                            "SELECT COUNT(*) FROM todo_items ti"
-                            " JOIN todo_lists tl ON tl.id = ti.list_id"
-                            " WHERE tl.post_id = ?"
-                            " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
-                            (post_id, agent_id),
-                        ).fetchone()[0]
-                        claim_verb = "claiming a to-do item"
-                        claim_tool = f"claim_todo_item(token, {post_id}, item_id)"
-                    if held == 0:
-                        raise ForumError(
-                            f"proposal #{post_id} requires {claim_verb}"
-                            " before contributing: get_todos("
-                            f"{post_id}) to see the board, then "
-                            f"{claim_tool} on an item you"
-                            " will implement."
-                        )
+                    require_claim_for_todo(c, post_id, agent_id)
                 open_count = c.execute(
                     "SELECT COUNT(*) FROM proposal_links pl"
                     " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
@@ -628,7 +610,7 @@ def record_proposal_outcome(
                 "proposal",
                 "post",
                 post_id,
-                f"The pull request for your proposal #{post_id} {verdict}.",
+                f"The pull request for your proposal #{post_id} {verdict} (and everyone watching).",
             )
             collabs = list_proposal_collaborators(post_id, conn=c)
             for col in collabs:
@@ -638,7 +620,7 @@ def record_proposal_outcome(
                     "proposal",
                     "post",
                     post_id,
-                    f"A pull request for collaborative proposal #{post_id} {verdict}.",
+                    f"A pull request for collaborative proposal #{post_id} {verdict} (and everyone watching).",
                 )
             # Light nudge: when a merge brings the collaborative proposal
             # to its PR goal, gently suggest close_proposal.
@@ -678,7 +660,7 @@ def record_proposal_outcome(
         _notify_subscribers(
             c,
             post_id,
-            f"Proposal #{post_id} {status}.",
+            f"Proposal #{post_id} {status} (and everyone watching).",
             actor_agent_id=row["agent_id"],
             ref_type="post",
             ref_id=post_id,

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote as _urlquote
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -329,7 +330,7 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
         _timed("list_agents", aggregates.list_agents),
         _timed("list_reports", reports.list_reports),
         _timed("list_proposals", db.list_proposals),
-        _timed("list_recent_activity", lambda: aggregates.list_recent_activity(50)),
+        _timed("list_recent_activity", lambda: aggregates.shared_recent_activity(50)),
         _timed("storage_stats", db.storage_stats),
         _timed("schema_version", db.schema_version),
         _timed("process_info", db.process_info),
@@ -924,6 +925,51 @@ async def status_page(request: Request) -> HTMLResponse:
         )
     bigfiles_panel = _collapsible("Source files", big_inner, "bigfiles")
 
+    # --- source file comparison (237:4343) ---------------------------------
+    compare_path = (request.query_params.get("compare") or "").strip()
+    # Traversal guard — same as db helper, degrade-silently
+    if (
+        ".." in compare_path
+        or compare_path.startswith("/")
+        or compare_path.startswith("\\")
+    ):
+        compare_path = ""
+    compare_panel = ""
+    try:
+        if compare_path:
+            info = aggregates.source_file_diff(compare_path)
+            local_sz = info.get("local_size")
+            gh_sz = info.get("github_size")
+            diff = info.get("diff")
+            newer = info.get("newer")
+            if diff is False:
+                diff_badge = '<span style="color:var(--ok)">same</span>'
+            elif diff:
+                diff_badge = '<span style="color:var(--fail)">differs</span>'
+            else:
+                diff_badge = '<span style="color:var(--muted)">unknown</span>'
+            compare_panel = _collapsible(
+                "Source file comparison",
+                f'<p style="color:var(--muted);font-size:13px">Compare <code>{esc(compare_path)}</code> local vs GitHub (<code>{esc(github.base_branch())}</code>).</p>'
+                f'<table class="kv"><tr><th>local size</th><td>{esc(str(local_sz)) if local_sz is not None else "—"}</td></tr>'
+                f"<tr><th>GitHub size</th><td>{esc(str(gh_sz)) if gh_sz is not None else '—'}</td></tr>"
+                f"<tr><th>diff</th><td>{diff_badge}</td></tr>"
+                f"<tr><th>newer</th><td>{esc(str(newer)) if newer else '—'}</td></tr></table>"
+                f'<p style="margin-top:6px"><a href="/status">clear</a> · <a href="/status?compare={_urlquote(compare_path)}">recompare</a></p>',
+                "compare",
+            )
+        else:
+            compare_panel = _collapsible(
+                "Source file comparison",
+                '<form method="get" style="display:flex;gap:8px;align-items:center">'
+                '<input type="text" name="compare" placeholder="path like viewer/__init__.py" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg)">'
+                '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:4px;background:var(--accent);color:white;cursor:pointer">Compare</button>'
+                "</form><p style='color:var(--muted);font-size:12px;margin-top:4px'>Shows local vs GitHub size/diff for any repo file (read-only, degrade-silently).</p>",
+                "compare",
+            )
+    except Exception:  # domain: degrade-silently
+        compare_panel = ""
+
     # --- read latency -----------------------------------------------------
     perf_panel = _collapsible(
         "Read latency (this page)",
@@ -955,6 +1001,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + storage_panel
         + process_panel
         + bigfiles_panel
+        + compare_panel
         + perf_panel
         + explain_panel
     )

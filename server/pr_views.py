@@ -6,6 +6,7 @@ import asyncio
 
 import db
 import github
+import logutil
 
 
 async def _apply_pr_labels(
@@ -44,6 +45,48 @@ async def _apply_pr_labels(
         pass  # label failure must not block PR creation
 
 
+async def _aget_pr_revalidated(number: int) -> dict:
+    """The PR composite with the closed-PR cache seam: when the DB holds the
+    PR's row + ETag, the header is fetched conditionally - a 304 rebuilds the
+    composite from the stored row (provably current - GitHub said 'unchanged'),
+    a 200 refreshes the stored header/validator and feeds the fresh payload
+    straight into the composite. Any cache failure (unreadable row, dead
+    conditional read, absent head sha) falls back to the plain live composite,
+    so the caller's error surface is exactly today's."""
+    try:
+        cached = db.pr_row(number)
+    except Exception:
+        cached = None  # domain:degrade-silently - cache unreadable; live read
+    if cached is None:
+        return await github.aget_pr(number)
+    try:
+        payload, etag = await github.aconditional_raw_pr(
+            number, etag=cached.get("etag")
+        )
+    except Exception:
+        # domain:degrade-silently - conditional read failed; the live read
+        # below re-raises the same RepoError a plain fetch would today, so a
+        # real GitHub outage is never masked by cached data.
+        return await github.aget_pr(number)
+    if payload is not None:
+        try:
+            with db._conn() as conn:
+                db.pr_rows_upsert_from_raw(conn, payload, etag)
+        except Exception as exc:
+            # domain: degrade-silently - a failed refresh write only leaves
+            # the stored row stale until the next conditional read (whose
+            # 304/200 decides the right answer anyway); readers fall back to
+            # live GitHub, so the composite is never wrong, just older.
+            logutil.log("pr_rows_upsert_failed", pr_number=number, error=str(exc))
+        return await github.aget_pr(number, _pr=payload)
+    if cached.get("head_sha"):
+        return await github.aget_pr(number, _pr=github._synthetic_pr_raw(cached))
+    # 304 with no storable head sha (defensive - the new column always
+    # exists): the synthetic cannot rebuild the checks chain, so read live
+    # rather than present a broken composite.
+    return await github.aget_pr(number)
+
+
 async def _pr_view(
     number: int, token: str | None, *, include_diff: bool = False
 ) -> dict:
@@ -52,7 +95,7 @@ async def _pr_view(
     the proposal-hold note when the linked proposal's vote has not cleared,
     and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well."""
-    result = await github.aget_pr(number)
+    result = await _aget_pr_revalidated(number)
     votes = db.pr_vote_tally(number)
     threshold = db.pr_vote_threshold()
     votes["threshold"] = threshold
