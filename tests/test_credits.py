@@ -449,6 +449,86 @@ def test_history_category_filters():
         pass
 
 
+def test_tx_id_groups_atomic_flows():
+    """All legs of one atomic economic action share one tx_id, and
+    group_transactions collapses them into a single from -> to descriptor
+    the ledger renders as one transaction."""
+    import db._credits as cr
+
+    s = db.register_agent("txg-sender")
+    r = db.register_agent("txg-recip")
+    # A treasury payout (2 legs) and a transfer (amount + fee legs) must
+    # each be one transaction, with distinct tx_ids.
+    with db._conn() as conn:
+        cr.grant(s["agent_id"], 40, "admin_adjust", conn=conn)
+    old_fee = _arm("FORUM_TX_FEE_PERCENT", "1.0")
+    try:
+        db.transfer(s["token"], r["agent_id"], 1.0, note="tx group")
+    finally:
+        _unarm(old_fee, "FORUM_TX_FEE_PERCENT")
+
+    entries = db.credit_history(limit=30)["entries"]
+    assert all(e["tx_id"] is not None for e in entries), (
+        "new atomic writes are all stamped with a tx_id"
+    )
+    transfer_legs = [
+        e
+        for e in entries
+        if e["reason"]
+        in ("transfer_out", "transfer_in", "transfer_fee", "transfer_fee_intake")
+    ]
+    assert len(transfer_legs) == 4, (
+        f"expected 4 transfer legs, got {len(transfer_legs)}"
+    )
+    t_tx = {e["tx_id"] for e in transfer_legs}
+    assert len(t_tx) == 1, f"transfer legs must share one tx_id, got {t_tx}"
+
+    groups = db.group_transactions(entries)
+    tx = [g for g in groups if g["leg_count"] == 4]
+    assert len(tx) == 1, f"expected exactly one 4-leg transfer, got {len(tx)}"
+    tx = tx[0]
+    assert tx["from_name"] == "txg-sender" and tx["to_name"] == "txg-recip", (
+        f"transfer descriptor names sender + recipient, got "
+        f"{tx['from_name']} -> {tx['to_name']}"
+    )
+    assert tx["amount_quarters"] == 4  # 1.0 credit = 4 quarters
+    assert tx["fee_quarters"] == 1  # 1% of 1.0 credit = 1 quarter
+    assert tx["credit"] is True
+
+    payout = [g for g in groups if g["leg_count"] == 2 and g["to_name"] == "txg-sender"]
+    assert payout, "the grant payout should group into one 2-leg descriptor"
+    assert payout[0]["from_name"] == "Treasury"
+    assert payout[0]["credit"] is True
+
+
+def test_group_transactions_legacy_null_passthrough():
+    """A row with tx_id None (legacy / never stamped) passes through
+    group_transactions as a one-entry group, unchanged."""
+    legacy = {
+        "id": 1,
+        "agent_id": 5,
+        "agent_name": "zed",
+        "account": "agent",
+        "credits": "-1.00",
+        "delta_quarters": -4,
+        "reason": "spend",
+        "target_type": "item",
+        "target_id": 9,
+        "target_name": None,
+        "tx_id": None,
+        "created_at": "2026-01-01T00:00:00.000Z",
+    }
+    groups = db.group_transactions([legacy])
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["tx_id"] is None
+    assert g["from_name"] == "zed"
+    assert g["to_name"] is None
+    assert g["amount_quarters"] == 4
+    assert g["credit"] is False  # a pure debit has no positive agent leg
+    assert g["leg_count"] == 1
+
+
 def test_history_target_name_only_for_agent_targets():
     """A credit row whose target_id collides with a citizen's agent_id but
     whose target_type is not 'agent' must NOT resolve a phantom
