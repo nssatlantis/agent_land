@@ -15,6 +15,9 @@ _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_linksurf_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
+# This suite drives the link surface, not the guided-steps checklist - opt
+# out of the steps gate so a real (non-dry-run) open stays focused.
+os.environ["FORUM_WORKFLOW_STEPS_ENFORCE"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
