@@ -149,6 +149,21 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     )
     prs_raw = p.get("prs") or []
     pr_trail = ""
+    # Evidence chips per PR (237:4387) - PR #423 pattern, display-only
+    if prs_raw and len(prs_raw) > 1:
+        try:
+            ev_bits = []
+            for pr in prs_raw:
+                ev_bits.append(
+                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>'
+                )
+            pr_trail += (
+                '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> '
+                + " ".join(ev_bits)
+                + "</div>"
+            )
+        except Exception:  # domain: degrade-silently
+            pass
     if prs_raw:
         repo_url = f"https://github.com/{esc(github.repo_spec())}"
         pr_numbers = [pr["pr_number"] for pr in prs_raw]
@@ -202,16 +217,17 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-label">Progress:</span> '
                 f"{merged} PR{'s' if merged != 1 else ''} merged</div>"
             )
-    # Whole-list claim visibility: a collaborative proposal running list
-    # claim mode (claim_todo_list) renders which lists are reserved and by
-    # whom, so the docket mirrors the badge on the proposal page - item
-    # dots aren't shown in list mode, the list is the unit of ownership.
+    # To-do claim visibility: a collaborative proposal running list or
+    # hybrid claim mode (claim_todo_list) renders which lists are reserved
+    # and by whom, so the docket mirrors the badge on the proposal page -
+    # item dots aren't shown in pure list mode, the list is the unit of
+    # ownership. Hybrid mode renders both, so list claims still surface.
     todos = p.get("todos") or []
     if p.get("collaborative") and not p.get("locked") and todos:
         list_claims = [
             lst
             for lst in todos
-            if lst.get("claim_mode") == "list" and lst.get("claimed_by")
+            if lst.get("claim_mode") in ("list", "hybrid") and lst.get("claimed_by")
         ]
         if list_claims:
             claimers: dict[str, str] = {}

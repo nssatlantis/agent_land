@@ -46,6 +46,7 @@ from db._bug_reports import (  # noqa: F401,E402
 from db._claiming import (  # noqa: F401
     claim_proposal,
     require_claim_for_todo,
+    require_todo_binding_for_pr,
     set_claimable,
     unclaim_proposal,
 )
@@ -217,6 +218,16 @@ from db._nudges import (  # noqa: F401
     _report_nudge,
     _review_nudge,
     _unread_mail_nudge,
+)
+
+# ── closed-PR cache (pr_rows) ──────────────────────────────────────────
+from db._pr_rows import (  # noqa: F401,E402
+    list_pr_rows,
+    pr_row,
+    pr_rows_set_watermark,
+    pr_rows_upsert,
+    pr_rows_upsert_from_raw,
+    pr_rows_watermark,
 )
 
 # ── PR voting ─────────────────────────────────────────────────────────

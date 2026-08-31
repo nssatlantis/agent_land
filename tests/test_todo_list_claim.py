@@ -69,8 +69,8 @@ def _make_collab(mode="list", joiner="beta", nlists=2):
     todos = db.get_todos_for_post(pid)
     list_ids = [lst["id"] for lst in todos]
     item_ids = [lst["items"][0]["id"] for lst in todos]
-    if mode == "list":
-        db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "list")
+    if mode in ("list", "hybrid"):
+        db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, mode)
     if joiner:
         db.join_proposal(AGENTS[joiner]["token"], pid)
     return pid, list_ids, item_ids
@@ -326,6 +326,104 @@ def test_rewrite_drops_expired_list_claim():
     print("  rewrite does not restore expired list claim: ok")
 
 
+def test_hybrid_mode_allows_both_tools():
+    """Hybrid claim mode accepts both claim kinds: an item claim and a
+    whole-list claim can coexist on the same board."""
+    pid, list_ids, item_ids = _make_collab(mode="hybrid", joiner="beta")
+    with db._conn() as _conn:
+        mode = _conn.execute(
+            "SELECT todo_claim_mode FROM posts WHERE id = ?", (pid,)
+        ).fetchone()[0]
+    assert mode == 2, "hybrid stored as 2"
+    res = db.claim_todo_item(AGENTS["beta"]["token"], pid, item_ids[0])
+    assert res["item_id"] == item_ids[0], "item claim accepted in hybrid"
+    db.join_proposal(AGENTS["gamma"]["token"], pid)
+    res = db.claim_todo_list(AGENTS["gamma"]["token"], pid, list_ids[1])
+    assert res["title"] == "B", "list claim accepted in hybrid"
+    print("  hybrid mode allows both claim kinds: ok")
+
+
+def test_hybrid_item_under_claimed_list_refused():
+    """Hybrid collision rule: in hybrid mode a whole-list claim reserves its
+    items, so one citizen cannot claim_todo_item under another's claimed
+    list."""
+    pid, list_ids, item_ids = _make_collab(mode="hybrid", joiner="beta")
+    db.join_proposal(AGENTS["gamma"]["token"], pid)
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    err = expect_error(db.claim_todo_item, AGENTS["gamma"]["token"], pid, item_ids[0])
+    assert "list claimed by" in err and AGENTS["beta"]["name"] in err, err
+    # the list holder may still claim items in their own list
+    res = db.claim_todo_item(AGENTS["beta"]["token"], pid, item_ids[0])
+    assert res["item_id"] == item_ids[0], "list holder may claim own-list item"
+    print("  hybrid item under foreign claimed list refused: ok")
+
+
+def test_hybrid_switch_never_blocked():
+    """Switching TO hybrid is never blocked by held claims of either kind."""
+    # item claims held -> hybrid accepted
+    pid, list_ids, item_ids = _make_collab(mode=None, joiner="beta")
+    db.claim_todo_item(AGENTS["beta"]["token"], pid, item_ids[0])
+    res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "hybrid")
+    assert res["changed"] is True
+    # list claims held -> hybrid accepted
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[1])
+    res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "hybrid")
+    assert res["changed"] is False, "idempotent same-mode switch"
+    # hybrid round-trips into a pure mode once the opposite claims are gone
+    db.unclaim_todo_item(AGENTS["beta"]["token"], pid, item_ids[0])
+    db.unclaim_todo_list(AGENTS["beta"]["token"], pid, list_ids[1])
+    assert db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "item")["changed"]
+    print("  hybrid switch never blocked + round-trip: ok")
+
+
+def test_hybrid_get_todos_shape():
+    """In hybrid mode both claim kinds ride the board: list-level claim keys
+    AND per-item claim keys, with claim_mode == 'hybrid'."""
+    pid, list_ids, item_ids = _make_collab(mode="hybrid", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    db.claim_todo_item(AGENTS["beta"]["token"], pid, item_ids[1])
+    todos = db.get_todos_for_post(pid)
+    for lst in todos:
+        assert lst["claim_mode"] == "hybrid"
+        if lst["id"] == list_ids[0]:
+            assert lst["claimed_by"] == AGENTS["beta"]["name"]
+            assert (
+                lst["items"][0].get("claimed_by") is None
+                or lst["items"][0].get("claimed_by") == AGENTS["beta"]["name"]
+            )
+        elif lst["id"] == list_ids[1]:
+            assert "claimed_by" not in lst
+            assert lst["items"][0]["claimed_by"] == AGENTS["beta"]["name"], (
+                "item claim rides in hybrid mode"
+            )
+    print("  hybrid get_todos shape: ok")
+
+
+def test_hybrid_gate_accepts_either_reservation():
+    """PR-link gate in hybrid mode: a held item claim OR a held whole-list
+    claim satisfies link_pr_to_proposal (none is refused, naming both
+    remedies)."""
+    pid, list_ids, item_ids = _make_collab(mode="hybrid", joiner="gamma")
+    old = _set_flag("FORUM_TODO_CLAIM_REQUIRED", "1")
+    try:
+        # no claim: gate raises naming both tools
+        assert "requires claiming a to-do item or a whole to-do list" in expect_error(
+            db.link_pr_to_proposal, 93050 + pid, pid, AGENTS["gamma"]["agent_id"]
+        )
+        # item claim satisfies it
+        db.claim_todo_item(AGENTS["gamma"]["token"], pid, item_ids[0])
+        db.link_pr_to_proposal(93051 + pid, pid, AGENTS["gamma"]["agent_id"])
+        assert db.proposal_for_pr(93051 + pid) == pid
+        # a list claim satisfies it too (fresh proposal)
+        pid2, list_ids2, _ = _make_collab(mode="hybrid", joiner="delta")
+        db.claim_todo_list(AGENTS["delta"]["token"], pid2, list_ids2[0])
+        db.link_pr_to_proposal(93052 + pid2, pid2, AGENTS["delta"]["agent_id"])
+        assert db.proposal_for_pr(93052 + pid2) == pid2
+    finally:
+        _restore_flag("FORUM_TODO_CLAIM_REQUIRED", old)
+    print("  hybrid gate accepts item or list claim: ok")
+
+
 def test_close_proposal_releases_list_claims():
     """Auto-release on proposal close: close_proposal clears any remaining
     whole-list claims alongside per-item ones (release_claims_for_proposal)."""
@@ -441,6 +539,11 @@ def main():
     test_sweep_releases_expired_list_claim()
     test_rewrite_drops_expired_list_claim()
     test_release_functions_clear_list_claims()
+    test_hybrid_mode_allows_both_tools()
+    test_hybrid_item_under_claimed_list_refused()
+    test_hybrid_switch_never_blocked()
+    test_hybrid_get_todos_shape()
+    test_hybrid_gate_accepts_either_reservation()
     test_rewrite_preserves_list_claim()
     test_close_proposal_releases_list_claims()
     test_supersede_preserves_list_claim_and_goal()

@@ -466,6 +466,51 @@ def test_parse_summary_db_benchmark_median_parsed():
     assert summary["timings_median_ms"]["query_b"] == 123.45
 
 
+def test_run_ci_static_summary_parsed():
+    """'tests' harness (tests/run_ci.py) prints the tests' summary lines then a
+    STATIC SUMMARY/RESULT marker; _parse_summary must fold the static block into
+    the summary dict alongside the test file counts."""
+    stub = _StubTree(
+        "tests",
+        """
+        import sys
+        print("all 2 test files passed")
+        print("--- static checks ---")
+        print("compileall: ok")
+        print("mypy: 3 errors")
+        print("ruff check: 1 errors")
+        print("ruff format: 2 files would be reformatted")
+        print("STATIC SUMMARY: compileall=ok mypy=3 ruff_check=1 ruff_format=2 bash_n=ok")
+        print("STATIC RESULT: FAIL")
+        sys.exit(1)
+    """,
+    )
+    try:
+        result = ci_runner.run_checks(_uid(), "tester", "tests")
+        assert result["ok"] is False, "static fail must fail the run (exit 1)"
+        assert result["exit_code"] == 1
+        static = result["summary"]["static"]
+        assert static == {
+            "result": "fail",
+            "compileall": "ok",
+            "mypy_errors": 3,
+            "ruff_check_errors": 1,
+            "ruff_format_files": 2,
+            "bash_n": "ok",
+        }
+        assert result["summary"]["passed_files"] == 2
+        assert result["summary"]["failed_files"] == 0
+    finally:
+        stub.cleanup()
+
+
+def test_parse_static_summary_absent_when_not_static():
+    """A plain tests run (no STATIC marker) must not add a 'static' key."""
+    summary, _ = ci_runner._parse_summary("all 1 test files passed\n")
+    assert summary == {"passed_files": 1, "failed_files": 0}
+    assert "static" not in summary
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -474,6 +519,8 @@ def main():
     test_success_run_parses_summary_and_logs_event()
     test_failing_run_lists_failed_files()
     test_parse_summary_db_benchmark_median_parsed()
+    test_run_ci_static_summary_parsed()
+    test_parse_static_summary_absent_when_not_static()
     test_timeout_kills_and_reports()
     test_child_env_is_sanitized()
     test_cooldown_gate()

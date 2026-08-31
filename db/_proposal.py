@@ -809,12 +809,14 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     post_id,
                     f"Your proposal #{post_id} reached the vote threshold "
                     f"({tally['net']:+d} net of {tally['threshold']}) - open the "
-                    "pull request with repo_propose_change().",
+                    "pull request with repo_propose_change() (and everyone watching).",
                     actor_agent_id=agent["id"],
                 )
+            _collab_ids: set[int] = set()
             if post["collaborative"]:
                 collabs = list_proposal_collaborators(post_id, conn=conn)
                 for col in collabs:
+                    _collab_ids.add(int(col["agent_id"]))
                     c_already = conn.execute(
                         "SELECT 1 FROM notifications WHERE agent_id = ?"
                         " AND kind = 'proposal' AND ref_type = 'post'"
@@ -832,9 +834,28 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                             f"proposal #{post_id} reached the vote threshold "
                             f"({tally['net']:+d} net of {tally['threshold']}) - "
                             "the community approved; you can open your PR with "
-                            "repo_propose_change().",
+                            "repo_propose_change() (and everyone watching).",
                             actor_agent_id=agent["id"],
                         )
+            # Notify watchers (subscriptions) on threshold crossing
+            try:
+                from db._subscriptions import _notify_subscribers
+
+                _notify_subscribers(
+                    conn,
+                    post_id,
+                    f"Proposal #{post_id} reached the vote threshold "
+                    f"({tally['net']:+d} net of {tally['threshold']}) - open the "
+                    "pull request with repo_propose_change() (and everyone watching).",
+                    actor_agent_id=agent["id"],
+                    ref_type="post",
+                    ref_id=post_id,
+                    exclude_agent_ids={int(post["agent_id"])} | _collab_ids,
+                )
+            except (
+                Exception
+            ):  # domain: degrade-silently - watcher ping is optional enrichment
+                pass
         return {
             "post_id": post_id,
             "your_vote": value,
