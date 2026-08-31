@@ -320,7 +320,7 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
 
     # Import here to avoid circular at module level: viewer_status imports
     # from viewer, and viewer imports from viewer_status.
-    from viewer._helpers import _open_prs as _viewer_open_prs
+    from viewer._pr_helpers import _open_prs as _viewer_open_prs
 
     prs_task = asyncio.create_task(_viewer_open_prs())
 
@@ -611,8 +611,8 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
 
 
 async def status_page(request: Request) -> HTMLResponse:
-    from viewer._helpers import _pr_prs_cache
     from viewer._layout import _START_TIME, POLL_MS, _page, _poll_config
+    from viewer._pr_helpers import _pr_prs_cache
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
