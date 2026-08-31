@@ -944,10 +944,18 @@ def get_todos_list(
             where += " AND ti.done = 0"
         elif filter == "done":
             where += " AND ti.done = 1"
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM todo_items ti WHERE {where}",
+        # List-wide stats over the FULL list under the current filter (no
+        # LIMIT), so total_items / total_done stay constant across pages -
+        # the page-local "sum over the fetched items" would otherwise report
+        # a different done count on every page of a long list.
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS total,"
+            f" COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0) AS done"
+            f" FROM todo_items ti WHERE {where}",
             (list_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        total = total_row["total"]
+        total_done = total_row["done"]
         item_rows = conn.execute(
             f"SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
             f" ti.claimed_at, ti.pr_number, a.name AS claimed_by_name"
@@ -967,7 +975,7 @@ def get_todos_list(
         items.append(entry)
     list_entry["items"] = items
     list_entry["total_items"] = total
-    list_entry["total_done"] = sum(1 for it in items if it["done"])
+    list_entry["total_done"] = total_done
     list_entry["page"] = offset // limit + 1 if limit else 1
     list_entry["has_more"] = offset + len(items) < total
     return list_entry
@@ -986,7 +994,11 @@ def get_todos_page(
 
     Returns {post_id, total_lists, total_items, total_done, page, has_more,
     lists: [{id, title, claim_mode, total_items, done_items, remaining,
-    claimed_by?, claimed_by_id?, claimed_at?}...]}. filter='open'/'done'
+    claimed_by?, claimed_by_id?, claimed_at?}...]}. The top-level
+    total_lists / total_items / total_done are board-wide under the current
+    filter (constant while paging; get_todos_summary gives the unfiltered
+    whole-board shape), while each per-list total_items / done_items is that
+    list's filter-scoped count. filter='open'/'done'
     counts only matching items per list (lists are never dropped). limit
     clamps to MAX_PAGE_SIZE. Public read, no token. Raises for an unknown
     post id or an invalid filter."""
@@ -1005,6 +1017,24 @@ def get_todos_page(
         total_lists = conn.execute(
             "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
+        done_pred = "1=1"
+        if filter == "open":
+            done_pred = "ti.done = 0"
+        elif filter == "done":
+            done_pred = "ti.done = 1"
+        # Board-wide item totals under the current filter (independent of the
+        # page), so the top-level total_items / total_done stay constant while
+        # paging and mirror get_todos_summary's shape (summary is unfiltered,
+        # this is filter-scoped) - not a page-local sum.
+        board_row = conn.execute(
+            f"SELECT COUNT(*) AS total,"
+            f" COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0) AS done"
+            f" FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
+            f" WHERE tl.post_id = ? AND {done_pred}",
+            (post_id,),
+        ).fetchone()
+        board_total_items = board_row["total"]
+        board_total_done = board_row["done"]
         rows = conn.execute(
             "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
             " a.name AS claimed_name"
@@ -1017,11 +1047,6 @@ def get_todos_page(
         item_stats: dict[int, tuple[int, int]] = {}
         if list_ids:
             marks = ",".join("?" * len(list_ids))
-            done_pred = "1=1"
-            if filter == "open":
-                done_pred = "ti.done = 0"
-            elif filter == "done":
-                done_pred = "ti.done = 1"
             for r in conn.execute(
                 f"SELECT ti.list_id, COUNT(*) AS total,"
                 f" COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
@@ -1033,12 +1058,8 @@ def get_todos_page(
             ):
                 item_stats[r["list_id"]] = (r["total"], r["done"])
     lists_out: list[dict] = []
-    total_items = 0
-    total_done = 0
     for r in rows:
         total, done = item_stats.get(r["id"], (0, 0))
-        total_items += total
-        total_done += done
         entry: dict = {
             "id": r["id"],
             "title": r["title"],
@@ -1055,8 +1076,8 @@ def get_todos_page(
     return {
         "post_id": post_id,
         "total_lists": total_lists,
-        "total_items": total_items,
-        "total_done": total_done,
+        "total_items": board_total_items,
+        "total_done": board_total_done,
         "page": offset // limit + 1 if limit else 1,
         "has_more": offset + len(lists_out) < total_lists,
         "lists": lists_out,
@@ -1064,12 +1085,20 @@ def get_todos_page(
 
 
 def _fts_safe_phrase(query: str) -> str:
-    """Wrap a free-text query into a safe FTS5 phrase match: the whole query
-    becomes one double-quoted phrase with embedded quotes doubled, so arbitrary
-    user text never injects FTS operators. Matches FTS tokens in order within
-    the phrase; a partial match on the phrase prefix is not returned (FTS5
-    phrase semantics), which is the intended 'does this phrase exist' read."""
-    return '"' + query.replace('"', '""') + '"'
+    """Turn a free-text query into a safe FTS5 match expression. Each
+    whitespace-separated token becomes its own double-quoted phrase, joined by
+    a space - FTS5's implicit AND - so a multi-word query ('wire check') finds
+    items containing all the words anywhere, rather than requiring them
+    consecutive in one phrase. An already fully-quoted query ('"wire schema"')
+    is kept as one exact phrase. Every emitted token is quoted with embedded
+    quotes doubled, so arbitrary user text can never inject FTS operators or
+    raise. An empty/whitespace query yields '' (callers return zero hits)."""
+    q = query.strip()
+    if not q:
+        return ""
+    if q.startswith('"') and q.endswith('"') and len(q) >= 2:
+        return '"' + q[1:-1].replace('"', '""') + '"'
+    return " ".join('"' + t.replace('"', '""') + '"' for t in q.split() if t)
 
 
 def search_todos(
@@ -1082,7 +1111,11 @@ def search_todos(
     """Full-text search over a proposal's to-do items and list titles, per
     proposal. Matches item text and the title of the item's list (both
     indexed by todo_items_fts), so an agent can find 'the item that mentions
-    X' or 'which list covers Y' without pulling the whole board.
+    X' or 'which list covers Y' without pulling the whole board. A multi-word
+    query (e.g. 'wire check') matches items containing all the words anywhere
+    (AND of phrases), not a single consecutive phrase; wrap the query in
+    quotes ('"wire schema"') to require an exact phrase. An empty query or
+    empty board returns zero hits.
 
     Returns {post_id, query, total, page, has_more, hits: [{list_id,
     list_title, item_id, text, done, pr_number?, claimed_by?, claimed_by_id?,
