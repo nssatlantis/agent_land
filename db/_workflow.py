@@ -419,9 +419,12 @@ def bind_open_run(
     (idempotent against re-links), and otherwise a fresh bound open run
     starts — so a proposal launching several PRs holds one open run per PR.
     Returns the run id that now owns the PR, or None when no run could be
-    bound: a retro-link of an already-decided PR (agent_id None, its once-open
-    run long closed) has nothing to stamp or reuse and, with no known agent,
-    no fresh run may start (workflow_runs.agent_id is NOT NULL).
+    bound: a PR that already owns a run in ANY status has concluded its
+    lifecycle (merged/declined/closed on record, completed on CI green) and
+    is never re-minted - the outcome poller re-fetches recently-closed PRs
+    every cycle, so a decided PR being reprocessed must not grow fresh runs.
+    A retro-link with no open run and no known agent (workflow_runs.agent_id
+    is NOT NULL) is also refused.
     """
     _validate_workflow_path(_WORKFLOW_CREATE_PR_PATH)
     cur = conn.execute(
@@ -445,6 +448,16 @@ def bind_open_run(
     ).fetchone()
     if row is not None:
         return int(row["id"])
+    # Churn guard: a PR that already owns a run in ANY status (open
+    # state above, or merged/declined/closed/completed) has concluded - the
+    # poller re-processes recently-closed PRs every cycle, so a decided PR
+    # must never mint a fresh open run. One run per (path, pr), ever.
+    row = conn.execute(
+        "SELECT 1 FROM workflow_runs WHERE workflow_path = ? AND pr_number = ?",
+        (_WORKFLOW_CREATE_PR_PATH, pr_number),
+    ).fetchone()
+    if row is not None:
+        return None
     if agent_id is None:
         return None
     return start_workflow(
