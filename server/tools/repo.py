@@ -1211,10 +1211,16 @@ def repo_ci_run(
     as branch/local, so even a plain reference run gets the full
     `tests` test+static surface — `result["sandboxed"]` is True. Without
     docker (or with FORUM_CI_RUN_NATIVE_SANDBOX=0) it falls back to the host
-    interpreter: tests only, and `tests/run_ci.py` prints a LOUD static-skip
-    (the tail carries "STATIC RESULT: SKIPPED"), with
-    `result["host_fallback_static_skipped"]` True when checks="tests" — so a
-    host fallback is never mistaken for GitHub-CI parity.  With `pr_number`:
+    interpreter, which is full parity whenever that interpreter carries the
+    static tooling (mypy/ruff from requirements-dev.txt — e.g. installed into
+    the deployment venv): `tests/run_ci.py` then runs the whole test+static
+    surface. The host run is degraded ONLY when the tools are genuinely
+    absent — `tests/run_ci.py` prints a LOUD static-skip (the tail carries
+    "STATIC RESULT: SKIPPED") and
+    `result["host_fallback_static_skipped"]` is True when checks="tests"
+    (keyed on the actual static result, so a host run that did run static is
+    never flagged) — so a tests-only run is never mistaken for
+    GitHub-CI parity.  With `pr_number`:
     runs
     the MERGE of origin/main into that pull request's head - what CI actually
     tests - inside a mandatory Docker sandbox (network-off, read-only root fs,

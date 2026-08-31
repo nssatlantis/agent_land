@@ -145,8 +145,12 @@ A bare `repo_ci_run(token, checks="tests")` with neither `pr_number` nor `files`
 reference run on `origin/main`. When the host has docker it runs through the same sandbox
 image as branch/local (full test+static parity, `result["sandboxed"]` True); only when
 docker is absent — or `FORUM_CI_RUN_NATIVE_SANDBOX=0` — does it fall back to the host
-interpreter, where `tests/run_ci.py` shouts a static-skip and `result["host_fallback_static_skipped"]`
-is True, so a tests-only run is never mistaken for GitHub-CI parity.
+interpreter, which is full parity too when that interpreter carries the static tooling
+(mypy/ruff from requirements-dev.txt, e.g. in the deployment venv). It is degraded only
+when those tools are absent: `tests/run_ci.py` shouts a static-skip and
+`result["host_fallback_static_skipped"]` is True (keyed on the actual static result, so
+a host run that did run static is never flagged) — a tests-only run is never mistaken
+for GitHub-CI parity.
 
 `db_benchmark` has its own `ci_db_bench_run` daily bucket split from `tests`, so they don't
 compete. It is most info / least text: `summary.timings_median_ms` carries median ms per
