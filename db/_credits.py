@@ -133,16 +133,35 @@ def _insert_entry(
     reason: str,
     target_type: str | None,
     target_id: int | None,
+    *,
+    tx_id: int | None = None,
 ) -> None:
     """Append one ledger row.  Caller owns the transaction and has already
     validated balances; events are emitted by the public operations, one
-    event per economic action (a transfer writes two rows, one event)."""
+    event per economic action (a transfer writes two rows, one event).
+
+    tx_id groups every leg of one economic action under a single id so the
+    ledger renders the whole action as one transaction; pass the id minted
+    once by _new_tx_id(c) at the top of the operation."""
     c.execute(
         "INSERT INTO credit_entries"
-        " (agent_id, delta_quarters, reason, target_type, target_id, account)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (agent_id, delta_quarters, reason, target_type, target_id, account),
+        " (agent_id, delta_quarters, reason, target_type, target_id, account,"
+        "  tx_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agent_id, delta_quarters, reason, target_type, target_id, account, tx_id),
     )
+
+
+def _new_tx_id(c: sqlite3.Connection) -> int:
+    """Mint the next transaction id for an economic action.  Call exactly
+    once per operation, inside the operation's own write transaction, and
+    pass the result to every _insert_entry leg of that action.  Safe under
+    SQLite's single-writer model: all legs are written in the same write
+    transaction that reads MAX(tx_id), so no other writer can interleave
+    between the read and the inserts."""
+    return c.execute(
+        "SELECT COALESCE(MAX(tx_id), 0) + 1 FROM credit_entries"
+    ).fetchone()[0]
 
 
 def treasury_balance(conn: sqlite3.Connection) -> int:
@@ -244,6 +263,7 @@ def _grant_positive(
                 delta_quarters,
             )
             return False
+        tx_id = _new_tx_id(c)
         _insert_entry(
             c,
             None,
@@ -252,6 +272,7 @@ def _grant_positive(
             "payout_source",
             target_type,
             target_id,
+            tx_id=tx_id,
         )
         _insert_entry(
             c,
@@ -261,6 +282,7 @@ def _grant_positive(
             reason,
             target_type,
             target_id,
+            tx_id=tx_id,
         )
         events.log_event(
             events.EVT_CREDIT_EARNED,
@@ -276,6 +298,7 @@ def _grant_positive(
             conn=c,
         )
         return True
+    tx_id = _new_tx_id(c)
     _insert_entry(
         c,
         agent_id,
@@ -284,6 +307,7 @@ def _grant_positive(
         reason,
         target_type,
         target_id,
+        tx_id=tx_id,
     )
     events.log_event(
         events.EVT_CREDIT_EARNED,
@@ -377,6 +401,7 @@ def grant_earned(
         cancel_reason = f"{reason}_cancel"
         import events
 
+        tx_id = _new_tx_id(c)
         if config.TREASURY_FUNDS_PAYOUTS:
             # The cancelled portion goes back to the treasury.
             _insert_entry(
@@ -387,6 +412,7 @@ def grant_earned(
                 cancel_reason,
                 target_type,
                 target_id,
+                tx_id=tx_id,
             )
             _insert_entry(
                 c,
@@ -396,6 +422,7 @@ def grant_earned(
                 "payout_return",
                 target_type,
                 target_id,
+                tx_id=tx_id,
             )
         else:
             _insert_entry(
@@ -406,6 +433,7 @@ def grant_earned(
                 cancel_reason,
                 target_type,
                 target_id,
+                tx_id=tx_id,
             )
         events.log_event(
             events.EVT_CREDIT_EARNED,
@@ -467,6 +495,7 @@ def spend(
                 f"{format_credits(amount_quarters)} but you have "
                 f"{format_credits(balance)}."
             )
+        tx_id = _new_tx_id(c)
         _insert_entry(
             c,
             agent_id,
@@ -475,6 +504,7 @@ def spend(
             reason,
             target_type,
             target_id,
+            tx_id=tx_id,
         )
         if dest_treasury:
             _insert_entry(
@@ -485,6 +515,7 @@ def spend(
                 f"{reason}_intake",
                 target_type,
                 target_id,
+                tx_id=tx_id,
             )
         import events
 
@@ -526,6 +557,7 @@ def return_principal(
     if amount_quarters == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
+        tx_id = _new_tx_id(c)
         _insert_entry(
             c,
             agent_id,
@@ -534,6 +566,7 @@ def return_principal(
             reason,
             target_type,
             target_id,
+            tx_id=tx_id,
         )
         import events
 
@@ -591,6 +624,7 @@ def mint(
     if delta_quarters <= 0:
         raise ForumError("mint amount must be positive.")
     with _conn() if conn is None else nullcontext(conn) as c:
+        tx_id = _new_tx_id(c)
         _insert_entry(
             c,
             None,
@@ -599,6 +633,7 @@ def mint(
             reason,
             "economy",
             proposal_id,
+            tx_id=tx_id,
         )
         import events
 
@@ -646,6 +681,7 @@ def burn(
                 f"{format_credits(delta_quarters)} but the treasury holds "
                 f"{format_credits(treasury_balance(c))}."
             )
+        tx_id = _new_tx_id(c)
         _insert_entry(
             c,
             None,
@@ -654,6 +690,7 @@ def burn(
             reason,
             "economy",
             proposal_id,
+            tx_id=tx_id,
         )
         import events
 
@@ -758,6 +795,7 @@ def transfer_credits(
                 + f" needs {format_credits(needed)}, you have "
                 f"{format_credits(balance)}."
             )
+        tx_id = _new_tx_id(c)
         # Leg 1: leave the sender's wallet.
         _insert_entry(
             c,
@@ -767,6 +805,7 @@ def transfer_credits(
             "transfer_out",
             "agent",
             recipient_row["id"] if recipient_row else None,
+            tx_id=tx_id,
         )
         # Leg 2: arrive in the destination wallet.
         if recipient_row is not None:
@@ -778,6 +817,7 @@ def transfer_credits(
                 "transfer_in",
                 "agent",
                 sender_id,
+                tx_id=tx_id,
             )
         else:
             _insert_entry(
@@ -788,6 +828,7 @@ def transfer_credits(
                 "transfer_intake",
                 "agent",
                 sender_id,
+                tx_id=tx_id,
             )
         # Leg 3+4: the fee, always to the treasury.
         if fee_q:
@@ -799,6 +840,7 @@ def transfer_credits(
                 "transfer_fee",
                 "treasury",
                 None,
+                tx_id=tx_id,
             )
             _insert_entry(
                 c,
@@ -808,6 +850,7 @@ def transfer_credits(
                 "transfer_fee_intake",
                 "agent",
                 sender_id,
+                tx_id=tx_id,
             )
         import events
 
@@ -882,6 +925,7 @@ def forfeit_agent(
             return None
         to_treasury = balance // 2
         burned = balance - to_treasury
+        tx_id = _new_tx_id(c)
         if to_treasury > 0:
             _insert_entry(
                 c,
@@ -891,6 +935,7 @@ def forfeit_agent(
                 "forfeit_to_treasury",
                 "treasury",
                 None,
+                tx_id=tx_id,
             )
             _insert_entry(
                 c,
@@ -900,6 +945,7 @@ def forfeit_agent(
                 "forfeit_intake",
                 "agent",
                 agent_id,
+                tx_id=tx_id,
             )
         if burned > 0:
             _insert_entry(
@@ -910,6 +956,7 @@ def forfeit_agent(
                 "forfeit_burned",
                 "treasury",
                 None,
+                tx_id=tx_id,
             )
         import events
 
@@ -1134,7 +1181,7 @@ def history(
             f"   AS agent_name,"
             f" ta.name AS target_name,"
             f" e.delta_quarters, e.reason, e.target_type, e.target_id,"
-            f" e.created_at"
+            f" e.tx_id, e.created_at"
             f" FROM credit_entries e"
             f" LEFT JOIN agents a ON a.id = e.agent_id"
             f" LEFT JOIN agents ta ON ta.id = e.target_id"
@@ -1161,6 +1208,7 @@ def history(
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
                 "target_name": r["target_name"],
+                "tx_id": r["tx_id"],
                 "created_at": r["created_at"],
             }
             for r in rows[:limit]
@@ -1180,6 +1228,90 @@ def history(
             "has_more": len(rows) > limit,
             "summary": summary,
         }
+
+
+def group_transactions(entries: list[dict]) -> list[dict]:
+    """Collapse flat credit-history entries into one descriptor per
+    tx_id group, so the ledger can render a multi-leg action (a treasury
+    payout, a transfer, a forfeiture) as a single from -> to transaction
+    instead of one row per leg.  Legacy rows (tx_id None) and single-leg
+    actions pass through as one-entry groups, unchanged.  Returns
+    descriptors in ledger order (newest group first), each carrying
+    tx_id, from/to names + accounts, the principal amount that moved, any
+    transfer fee, the primary reason, and the group's newest created_at.
+    Pure read; the caller decides how to display it."""
+    groups: dict[object, list[dict]] = {}
+    order: list[object] = []
+    for e in entries:
+        key = e["tx_id"]
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(e)
+    return [_group_one_transaction(groups[k]) for k in order]
+
+
+def _group_one_transaction(legs: list[dict]) -> dict:
+    """Derive a single from -> to descriptor for one tx_id's legs.  The
+    wallet credit (positive agent leg) names the recipient; a transfer's
+    fee legs fold into fee_quarters; the largest non-fee debit names the
+    sender.  Falls back gracefully for pure debits and treasury-only
+    actions."""
+    to_leg = next(
+        (l for l in legs if l["account"] == "agent" and l["delta_quarters"] > 0),
+        None,
+    )
+    if to_leg is None:
+        to_leg = next(
+            (l for l in legs if l["account"] == "treasury" and l["delta_quarters"] > 0),
+            None,
+        )
+    non_fee_neg = [
+        l
+        for l in legs
+        if l["delta_quarters"] < 0
+        and l["reason"] not in ("transfer_fee", "transfer_fee_intake")
+    ]
+    from_leg = max(non_fee_neg, key=lambda l: -l["delta_quarters"], default=None)
+    fee_quarters = -sum(
+        l["delta_quarters"]
+        for l in legs
+        if l["reason"] in ("transfer_fee", "transfer_fee_intake")
+    )
+    if to_leg is not None:
+        amount_quarters = to_leg["delta_quarters"]
+        reason = to_leg["reason"]
+    elif from_leg is not None:
+        amount_quarters = -from_leg["delta_quarters"]
+        reason = from_leg["reason"]
+    else:
+        amount_quarters = 0
+        reason = legs[0]["reason"] if legs else ""
+    return {
+        "tx_id": legs[0]["tx_id"],
+        "created_at": max(l["created_at"] for l in legs),
+        "from_name": _leg_party(from_leg),
+        "from_account": from_leg["account"] if from_leg else None,
+        "to_name": _leg_party(to_leg),
+        "to_account": to_leg["account"] if to_leg else None,
+        "amount_quarters": amount_quarters,
+        "credits": format_credits(amount_quarters),
+        "fee_quarters": max(0, fee_quarters),
+        "credit": to_leg is not None and to_leg["account"] == "agent",
+        "reason": reason,
+        "leg_count": len(legs),
+        "legs": legs,
+    }
+
+
+def _leg_party(leg: dict | None) -> str | None:
+    """The display name of a ledger leg's account: the citizen's name, or
+    'Treasury' for the community account."""
+    if leg is None:
+        return None
+    if leg["account"] == "treasury":
+        return "Treasury"
+    return leg.get("agent_name") or "(deleted citizen)"
 
 
 def top_movers(limit: int = 5) -> list[dict]:
