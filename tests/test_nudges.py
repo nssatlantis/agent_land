@@ -112,6 +112,76 @@ def main():
         "bug nudge silenced after bug reports fixed"
     )
 
+    # _claim_ship_nudge: fires when a held to-do claim has no live bound
+    # PR, so a claimed-but-unshipped item never silently stalls its board.
+    from db._nudges import _IDLE_NUDGE_KEYS
+
+    assert "claim_ship_note" in _IDLE_NUDGE_KEYS, (
+        "claim_ship_note rides the idle nudge key set"
+    )
+    assert "claim_ship_note" not in db.whoami(nudge_a["token"]), (
+        "claim-ship nudge silent at baseline"
+    )
+    coco = db.create_proposal(
+        nudge_b["token"], "Claim ship nudge proposal", "body", collaborative=True
+    )["post_id"]
+    db.set_todos_for_post(
+        nudge_b["token"],
+        coco,
+        [{"title": "Shippable list", "items": [{"text": "a bound item"}]}],
+    )
+    db.join_proposal(nudge_a["token"], coco)
+    citem = db.get_todos_for_post(coco)[0]["items"][0]["id"]
+    db.claim_todo_item(nudge_a["token"], coco, citem)
+    cs = db.whoami(nudge_a["token"])
+    assert "claim_ship_note" in cs, "claim-ship nudge fires for a held item claim"
+    for ck in (
+        "repo_propose_change",
+        "todo_item_id",
+        "link_pr_to_todo_item",
+        "unclaim_todo_item",
+    ):
+        assert ck in cs["claim_ship_note"], f"{ck} named in the claim-ship note"
+    assert "no live bound PR" in cs["claim_ship_note"], "note names the gap"
+    assert "claim_ship_note" in db.my_profile(nudge_a["token"]), (
+        "my_profile carries the claim-ship nudge"
+    )
+    cs_ci = db.check_in(nudge_a["token"])
+    assert any("no live bound PR" in a for a in cs_ci["suggested_actions"]), (
+        "check_in suggests the claim-ship action"
+    )
+    db.unclaim_todo_item(nudge_a["token"], coco, citem)
+    assert "claim_ship_note" not in db.whoami(nudge_a["token"]), (
+        "claim-ship nudge silenced after unclaim"
+    )
+    db.claim_todo_item(nudge_a["token"], coco, citem)
+    db.link_pr_to_proposal(9003, coco, nudge_a["agent_id"])
+    db.bind_todo_item_to_pr(nudge_a["token"], coco, citem, 9003)
+    assert "claim_ship_note" not in db.whoami(nudge_a["token"]), (
+        "claim-ship nudge silenced once the item is bound to a live PR"
+    )
+    # Whole-list claims fire the same note with the list flagged.
+    coco2 = db.create_proposal(
+        nudge_c["token"], "Claim ship nudge list proposal", "body", collaborative=True
+    )["post_id"]
+    db.set_todos_for_post(
+        nudge_c["token"],
+        coco2,
+        [{"title": "Chunk list", "items": [{"text": "a chunk item"}]}],
+    )
+    db.set_todo_claim_mode(nudge_c["token"], coco2, "list")
+    db.join_proposal(nudge_a["token"], coco2)
+    clist = db.get_todos_for_post(coco2)[0]["id"]
+    db.claim_todo_list(nudge_a["token"], coco2, clist)
+    cs2 = db.whoami(nudge_a["token"])
+    assert "claim_ship_note" in cs2, "claim-ship nudge fires for a held list claim"
+    assert "list claim" in cs2["claim_ship_note"], "note names the list claim"
+    citem2 = db.get_todos_for_post(coco2)[0]["items"][0]["id"]
+    db.tick_todo_item(nudge_a["token"], coco2, citem2)
+    assert "claim_ship_note" not in db.whoami(nudge_a["token"]), (
+        "claim-ship nudge silenced once the list's work is done"
+    )
+
     # _assigned_nudge: fires when agent has delegated proposals.
     assert "assigned_note" not in db.whoami(nudge_a["token"]), (
         "no assigned nudge when no delegations"

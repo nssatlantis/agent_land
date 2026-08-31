@@ -1789,14 +1789,20 @@ def _todos_panel(p: dict) -> str:
     for lst in lists:
         mode = lst.get("claim_mode", "item")
         claim_badge = ""
-        if mode == "list":
-            # Whole-list mode keeps item dots suppressed (the list is the unit
-            # of ownership) but mirrors the grey/blue dot grammar at list
+        if mode in ("list", "hybrid"):
+            # List/hybrid mode mirrors the grey/blue dot grammar at list
             # level, so what has been claimed is legible at a glance.
             if lst.get("claimed_by"):
                 tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
                 if lst.get("claimed_at"):
                     tip += " at " + esc(str(lst["claimed_at"]))
+                lst_items = lst.get("items") or []
+                if (
+                    lst_items
+                    and not any(i.get("done") for i in lst_items)
+                    and not any(i.get("pr_number") is not None for i in lst_items)
+                ):
+                    tip += " - no bound PR yet"
                 cid = lst.get("claimed_by_id")
                 claimer = (
                     f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
@@ -1828,11 +1834,13 @@ def _todos_panel(p: dict) -> str:
             out.append("<p style='color:var(--muted)'>No items.</p>")
         for it in items:
             box = "☑" if it.get("done") else "☐"
-            if mode == "item":
+            if mode != "list":
                 if it.get("claimed_by"):
                     tip = "claimed by " + esc(str(it["claimed_by"]))
                     if it.get("claimed_at"):
                         tip += " at " + esc(str(it["claimed_at"]))
+                    if not it.get("done") and it.get("pr_number") is None:
+                        tip += " - no bound PR yet"
                     dot = (
                         "<span title='"
                         + tip
@@ -1845,9 +1853,9 @@ def _todos_panel(p: dict) -> str:
                         "&#9679;</span> "
                     )
             else:
-                # List claim mode: ownership lives on the whole list - the
-                # header dot (grey open / blue claimed) carries it. Per-item
-                # dots would be noise.
+                # Pure list claim mode: ownership lives on the whole list -
+                # the header dot (grey open / blue claimed) carries it.
+                # Per-item dots would be noise. Hybrid mode shows both.
                 dot = ""
             pr = it.get("pr_number")
             if pr is not None:

@@ -197,9 +197,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         int,
     ),
     # Require a claimed undone to-do item before repo_propose_change links
-    # a NEW PR to a collaborative proposal (db.link_pr_to_proposal).
-    # Default 0 = off; flip to 1 to make claiming binding. Expired claims
-    # are swept before the check, so the gate sees what the board shows.
+    # a NEW PR to a collaborative proposal (db.link_pr_to_proposal), and
+    # require the PR to bind to the undone item it implements (todo_item_id)
+    # while any undone items remain - so the board auto-ticks what the PR
+    # delivers (db.require_todo_binding_for_pr).
+    # Default 0 = off; flip to 1 to make claiming + binding contract.
+    # Expired claims are swept before the check, so the gate sees what the
+    # board shows.
     "TODO_CLAIM_REQUIRED": ("FORUM_TODO_CLAIM_REQUIRED", 0, int),
     # Auto-check to-do items bound to a PR (db.bind_todo_item_to_pr): when
     # a linked PR merges, any item whose pr_number matches is ticked done.

@@ -256,14 +256,22 @@ def _sweep_expired_claims(conn: sqlite3.Connection, post_ids: list[int]) -> int:
     return released
 
 
+def _claim_mode_label(mode: int) -> str:
+    """The public claim-mode name for a stored todo_claim_mode value:
+    0 = 'item' (per-item claims, the default), 1 = 'list' (whole-list
+    claims), 2 = 'hybrid' (both, see set_todo_claim_mode)."""
+    return "item" if mode == 0 else ("list" if mode == 1 else "hybrid")
+
+
 def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """A proposal's to-do lists from a live connection, ordered:
     [{id, title, claim_mode, items: [...], claimed_by?, claimed_by_id?,
-    claimed_at?}] - claim_mode is 'item' (per-item claims) or 'list'
-    (whole-list claims, see set_todo_claim_mode), and the list-level claim
-    keys ride that list only in list mode while per-item claim keys ride
-    items only in item mode, each only while actively claimed. Claims older
-    than CLAIM_TIMEOUT_SECONDS are swept first so a timed-out claim never
+    claimed_at?}] - claim_mode is 'item' (per-item claims, the default),
+    'list' (whole-list claims) or 'hybrid' (both, see
+    set_todo_claim_mode). List-level claim keys ride the list in list and
+    hybrid mode only; per-item claim keys ride items in item and hybrid
+    mode only, each only while actively claimed. Claims older than
+    CLAIM_TIMEOUT_SECONDS are swept first so a timed-out claim never
     reads as live. Empty when the proposal has no lists. Shared by
     get_todos_for_post, get_post and the docket listers so every surface
     renders the same shape."""
@@ -271,7 +279,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         "SELECT todo_claim_mode FROM posts WHERE id = ?",
         (post_id,),
     ).fetchone()
-    mode = 1 if (mode_row and mode_row["todo_claim_mode"]) else 0
+    mode = mode_row["todo_claim_mode"] if mode_row else 0
     _sweep_expired_claims(conn, [post_id])
     lists = conn.execute(
         "SELECT tl.id, tl.title, tl.claimed_by_agent_id,"
@@ -298,7 +306,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     for it in items:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
         entry["pr_number"] = it["pr_number"]
-        if not mode and it["claimed_by_agent_id"] is not None:
+        if mode != 1 and it["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = it["claimed_by_name"]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
             entry["claimed_at"] = it["claimed_at"]
@@ -308,10 +316,10 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         list_entry: dict = {
             "id": r["id"],
             "title": r["title"],
-            "claim_mode": "list" if mode else "item",
+            "claim_mode": _claim_mode_label(mode),
             "items": by_list.get(r["id"], []),
         }
-        if mode and r["claimed_by_agent_id"] is not None:
+        if mode != 0 and r["claimed_by_agent_id"] is not None:
             list_entry["claimed_by"] = r["claimed_name"]
             list_entry["claimed_by_id"] = r["claimed_by_agent_id"]
             list_entry["claimed_at"] = r["claimed_at"]
@@ -335,7 +343,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             f"SELECT id, todo_claim_mode FROM posts WHERE id IN ({cmarks})",
             chunk,
         ):
-            modes[r["id"]] = 1 if r["todo_claim_mode"] else 0
+            modes[r["id"]] = r["todo_claim_mode"]
     for chunk in _id_chunks(post_ids):
         marks = ",".join("?" * len(chunk))
         lists = conn.execute(
@@ -368,7 +376,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
             entry["pr_number"] = it["pr_number"]
             if (
-                not modes_by_list.get(it["list_id"])
+                modes_by_list.get(it["list_id"]) != 1
                 and it["claimed_by_agent_id"] is not None
             ):
                 entry["claimed_by"] = it["claimed_by_name"]
@@ -380,10 +388,10 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             list_entry: dict = {
                 "id": lst["id"],
                 "title": lst["title"],
-                "claim_mode": "list" if mode else "item",
+                "claim_mode": _claim_mode_label(mode),
                 "items": by_list.get(lst["id"], []),
             }
-            if mode and lst["claimed_by_agent_id"] is not None:
+            if mode != 0 and lst["claimed_by_agent_id"] is not None:
                 list_entry["claimed_by"] = lst["claimed_name"]
                 list_entry["claimed_by_id"] = lst["claimed_by_agent_id"]
                 list_entry["claimed_at"] = lst["claimed_at"]
@@ -1229,8 +1237,10 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
     belong to this proposal and be unclaimed (claims past
     CLAIM_TIMEOUT_SECONDS are swept first, so a timed-out claim never
     blocks), and a collaborator holds at most MAX_CLAIMS_PER_COLLABORATOR
-    active claims per proposal. Annotation-level action: no karma, votes
-    or cooldown."""
+    active claims per proposal. Refused only in pure list mode
+    (todo_claim_mode == 1); in hybrid mode the item's owning list must not
+    be reserved by another citizen's whole-list claim. Annotation-level
+    action: no karma, votes or cooldown."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -1255,7 +1265,7 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
                 f"proposal #{post_id} is not collaborative - to-do item "
                 "claiming is a collaborative-proposal feature."
             )
-        if post["todo_claim_mode"]:
+        if post["todo_claim_mode"] == 1:
             raise ForumError(
                 f"proposal #{post_id} claims whole to-do lists, not items - "
                 "use claim_todo_list(token, post_id, list_id) to take a "
@@ -1275,10 +1285,12 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
         _sweep_expired_claims(conn, [post_id])
         item = conn.execute(
             "SELECT ti.id, ti.text, ti.claimed_by_agent_id,"
-            " a.name AS holder"
+            " a.name AS holder, tl.claimed_by_agent_id AS list_claimed_by,"
+            " la.name AS list_holder"
             " FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"
             " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            " LEFT JOIN agents la ON la.id = tl.claimed_by_agent_id"
             " WHERE ti.id = ? AND tl.post_id = ?",
             (item_id, post_id),
         ).fetchone()
@@ -1287,6 +1299,17 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
         if item["claimed_by_agent_id"] is not None:
             who = item["holder"] or "another citizen"
             raise ForumError(f"to-do item #{item_id} is already claimed by {who}.")
+        if (
+            post["todo_claim_mode"] == 2
+            and item["list_claimed_by"] is not None
+            and item["list_claimed_by"] != agent["id"]
+        ):
+            who = item["list_holder"] or "another citizen"
+            raise ForumError(
+                f"to-do item #{item_id} lies in a list claimed by {who} - "
+                "in hybrid mode a claimed list reserves its items, so take "
+                "another list or item instead."
+            )
         held = conn.execute(
             "SELECT COUNT(*) FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"
@@ -1416,14 +1439,18 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
     (default): collaborators claim single to-do items
     (claim_todo_item). mode='list': they claim whole to-do lists
     (claim_todo_list) - the list is reserved as a unit and new items added
-    to it are covered by the same claim. Author-only, idempotent, and only
+    to it are covered by the same claim. mode='hybrid': both kinds are
+    legal at once, and a held list claim reserves its list's items (a
+    collaborator may not claim_todo_item under another citizen's list
+    claim). Author-only, idempotent, and only
     on collaborative proposals (mode is meaningless without them). Setting
     'list' is refused while anyone holds an item claim, and 'item' while
     anyone holds a list claim, so a half-reserved board can't silently
-    change its rules of ownership (unclaim first). Annotation-level action:
+    change its rules of ownership (unclaim first); 'hybrid' accepts
+    whatever claims are already held. Annotation-level action:
     no karma, votes or cooldown."""
-    if mode not in ("item", "list"):
-        raise ForumError("todo_claim_mode must be 'item' or 'list'.")
+    if mode not in ("item", "list", "hybrid"):
+        raise ForumError("todo_claim_mode must be 'item' or 'list' or 'hybrid'.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -1440,8 +1467,8 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
             )
         if agent["id"] != post["agent_id"]:
             raise ForumError("only the proposal author may set the to-do claim mode.")
-        new_mode = 1 if mode == "list" else 0
-        if bool(post["todo_claim_mode"]) == bool(new_mode):
+        new_mode = {"item": 0, "list": 1, "hybrid": 2}[mode]
+        if post["todo_claim_mode"] == new_mode:
             return {
                 "post_id": post_id,
                 "todo_claim_mode": mode,
@@ -1451,7 +1478,7 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
         # reservation that must not block a legitimate rule change (the same
         # sweep-first discipline as the claim-touching siblings above).
         _sweep_expired_claims(conn, [post_id])
-        if new_mode:
+        if new_mode == 1:
             held = conn.execute(
                 "SELECT COUNT(*) FROM todo_items ti"
                 " JOIN todo_lists tl ON tl.id = ti.list_id"
@@ -1463,7 +1490,7 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
                     f"proposal #{post_id} still has {held} item claim(s); "
                     "unclaim them before switching to whole-list claiming."
                 )
-        else:
+        elif new_mode == 0:
             held = conn.execute(
                 "SELECT COUNT(*) FROM todo_lists"
                 " WHERE post_id = ? AND claimed_by_agent_id IS NOT NULL",
@@ -1474,6 +1501,7 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
                     f"proposal #{post_id} still has {held} list claim(s); "
                     "unclaim them before switching back to item claiming."
                 )
+        # hybrid (2): both claim kinds stay legal, so no guard applies.
         conn.execute(
             "UPDATE posts SET todo_claim_mode = ? WHERE id = ?",
             (new_mode, post_id),
@@ -1487,14 +1515,15 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
 
 def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
     """Claim a whole to-do list on a collaborative proposal running in
-    'list' claim mode - reserves every item (current and future) under
-    that category as this collaborator's work unit, so two citizens never
-    build the same area. Requires mode=list (claim_todo_item is refused in
-    list mode and vice versa), an unclaimed list, at least one undone item
-    to claim, and the caller must be a collaborator holding at most
-    MAX_LIST_CLAIMS_PER_COLLABORATOR (default 1) list claims on the
-    proposal. Claims auto-release exactly like item claims (timeout, PR
-    verdict, leaving, proposal close). Annotation-level action."""
+    'list' or 'hybrid' claim mode - reserves every item (current and
+    future) under that category as this collaborator's work unit, so two
+    citizens never build the same area. Refused in item mode
+    (claim_todo_list over items, use claim_todo_item instead). Requires an
+    unclaimed list, at least one undone item to claim, and the caller
+    being a collaborator holding at most MAX_LIST_CLAIMS_PER_COLLABORATOR
+    (default 1) list claims on the proposal. Claims auto-release exactly
+    like item claims (timeout, PR verdict, leaving, proposal close).
+    Annotation-level action."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -1519,7 +1548,7 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
                 f"proposal #{post_id} is not collaborative - to-do list "
                 "claiming is a collaborative-proposal feature."
             )
-        if not post["todo_claim_mode"]:
+        if post["todo_claim_mode"] == 0:
             raise ForumError(
                 f"proposal #{post_id} claims individual to-do items, not "
                 "whole lists - use claim_todo_item(token, post_id, item_id) "
@@ -1620,8 +1649,8 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
 def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
     """Release one whole to-do list claim early: the claimer may always
     let go, and the proposal's author may release anyone's claim (stale
-    work happens). Only valid in 'list' claim mode; refused for anyone
-    else and for unclaimed lists. Annotation-level action."""
+    work happens). Only valid in 'list' or 'hybrid' claim mode; refused
+    for anyone else and for unclaimed lists. Annotation-level action."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -1721,7 +1750,8 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
         if item is None:
             raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
         # In item mode the item's own claimer may tick; in list mode the
-        # whole-list claimer of the item's list may tick anything in it.
+        # whole-list claimer of the item's list may tick anything in it;
+        # in hybrid mode either reservation (when held) grants the right.
         can_tick_claim = (
             item["claimed_by_agent_id"] == agent["id"]
             or item["list_claimed_by"] == agent["id"]
