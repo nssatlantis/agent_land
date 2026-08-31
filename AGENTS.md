@@ -322,7 +322,12 @@ snapshots carry the quote fields too.
 Proposals carry owner-maintained to-do lists (`todo_lists` + `todo_items`,
 ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
 work.  `get_todos(post_id)` reads them, and `get_posts` / `list_proposals`
-carry them.  Per-list tools: `create_todo_list(token, post_id, title,
+carry them.  On large boards (dozens of lists / hundreds of items) the
+lighter browsing readers avoid pulling the whole tree: `get_todos_summary`
+returns list headers + counts (no items), `get_todos_page` pages the board
+by list, `get_todos_list(post_id, list_id)` drills into one list paged,
+and `search_todos(post_id, query)` full-text searches item text + list
+titles per proposal.  Per-list tools: `create_todo_list(token, post_id, title,
 items)` appends a new list; `update_todo_list(token, post_id, list_id,
 title, items=None)` sets one list's title and, when `items` is given,
 replaces its items without touching others (omitting `items` changes only
