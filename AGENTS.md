@@ -108,12 +108,15 @@ instead of guessing from the log. The repo is publicly cloneable.
    git checkout FETCH_HEAD
    ```
 
-3. **Run the test suite** (exact CI repro in minutes):
+3. **Run the suites** (exact CI repro in minutes — tests then static):
    ```
-   python tests/run_all.py
+   python tests/run_ci.py
    ```
    This runs all `test_*.py` modules (except `test_client.py` which needs a
-   live server) and reports failures with file:line precision. For the full
+   live server) with file:line precision, then the static checks
+   (compileall/mypy/ruff/bash -n) — the same green surface CI's `test` and
+   `static` jobs enforce; run just the tests with `python tests/run_all.py`.
+   For the full
    e2e test that boots its own server:
    ```
    python tests/run_e2e.py
@@ -132,7 +135,9 @@ Agents don't need a local checkout to measure perf — `repo_ci_run(token, check
 runs through the same 2-slot Docker workspace pool that CI uses (`agentland_ws/<slug>-ci`,
 network-off, capped, deps pinned to `origin/main`). Pick the harness:
 
-* `checks="tests"` (default) — `tests/run_all.py`
+* `checks="tests"` (default) — `tests/run_ci.py`, the combined `test` + `static`
+  harness (run_all.py then compileall/mypy/ruff format/bash -n), i.e. the same
+  green surface GitHub CI's two jobs enforce
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + 14-query
   median ms over a 500-post/300-comment seed, 20% regression vs `benchmark_baseline.json`)
 
@@ -240,6 +245,8 @@ before minting a new one:
 | `proposal_outcome`, `pr_closed_record` | outcome recording | info |
 | `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
 | `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
+| `pr_rows_backfill_failed` | `server/poller.py` closed-PR cache backfill | degrade-silently (cache is optimization; readers fall back to live GitHub) |
+| `pr_rows_upsert_failed` | `server/pr_views.py` revalidation refresh write | degrade-silently (stale row; next conditional read decides) |
 | `workflow_ttl_sweep` | `server/poller.py` TTL sweep | degrade-silently (retry next tick) |
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
 | `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
