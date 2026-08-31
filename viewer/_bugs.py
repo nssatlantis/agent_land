@@ -196,7 +196,7 @@ def bugs_page(request):
         f"{''.join(cards)}"
         f"{pages_html}"
     )
-    return _page("Bugs", body, "bugs")
+    return _page("Bugs", body, section="bugs")
 
 
 def bug_detail_page(request):
@@ -205,7 +205,7 @@ def bug_detail_page(request):
         report = bug_reports_mod.get_bug_report(bug_id)
     except db.ForumError as exc:
         body = f'<h2>Bug #{bug_id}</h2><p style="color:var(--warn)">{esc(str(exc))}</p>'
-        return _page(f"Bug #{bug_id}", body, "bugs")
+        return _page(f"Bug #{bug_id}", body, section="bugs")
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
