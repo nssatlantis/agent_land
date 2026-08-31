@@ -66,12 +66,18 @@ def _count_formatted(result) -> int:
 def _run_static() -> int:
     print("--- static checks ---")
     if not (_module_available("mypy") and _module_available("ruff")):
-        print("mypy/ruff not installed in this interpreter; skipping static checks")
+        print(
+            "!!! STATIC CHECKS SKIPPED — running on the host interpreter without "
+            "mypy/ruff. This is the native host fallback: ONLY the test suite ran; "
+            "static checks were NOT executed and this run is NOT "
+            "GitHub-CI-equivalent. Use repo_ci_run(pr_number=...) or "
+            "repo_ci_run(files=...) to get the full test+static surface."
+        )
         print(
             "STATIC SUMMARY: compileall=skip mypy=-1 ruff_check=-1 "
             "ruff_format=-1 bash_n=skip"
         )
-        print("STATIC RESULT: SKIPPED")
+        print("STATIC RESULT: SKIPPED (native host fallback - static NOT run)")
         return 0
 
     failures = 0
