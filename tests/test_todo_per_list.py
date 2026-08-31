@@ -16,6 +16,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
 from tests._setup import db, init, setup  # noqa: E402
 
 
@@ -100,8 +101,8 @@ def main():
     assert len(current) == 1
     print("  4. delete_todo_list refuses last list: ok")
 
-    # -- 5. create_todo_list enforces max lists cap (cap is 5, we have 1)
-    for i in range(4):
+    # -- 5. create_todo_list enforces max lists cap (we already have 1)
+    for i in range(config.TODO_MAX_LISTS - 1):
         db.create_todo_list(alpha["token"], pid, f"List {i}", [])
     try:
         db.create_todo_list(alpha["token"], pid, "Over cap", [])
