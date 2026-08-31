@@ -341,7 +341,7 @@ def render_post(post_id: int) -> HTMLResponse:
             else ""
         )
         + _related_panel(p)
-        + _discussion_digest(p)
+        + _discussion_digest(p)  # 4388 governance digest (same as 4407)
         + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )

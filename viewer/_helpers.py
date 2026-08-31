@@ -1554,7 +1554,7 @@ def _side_rail(show_proposals: bool = True) -> str:
 
 
 def _discussion_digest(p: dict) -> str:
-    """Discussion digest for proposal posts (237:4407) - display-only.
+    """Discussion digest for proposal posts (237:4407, 4388) - display-only.
     Shows comment count, distinct participants, top 3 by score. Degrades
     silently - any data shape error yields empty string."""
     try:
