@@ -356,7 +356,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
-    "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 300, int),
+    "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 7200, int),
     # The job market (CHARTER IX.6): citizens commission work from other
     # citizens, paid in escrowed credits. CREATOR_MIN_KARMA makes posting
     # an earned privilege (workers need only be active citizens); recurring
