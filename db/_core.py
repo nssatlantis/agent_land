@@ -1508,6 +1508,22 @@ def init_db() -> None:
                 "ALTER TABLE credit_entries ADD COLUMN"
                 " account TEXT NOT NULL DEFAULT 'agent'"
             )
+        # The transaction-grouping column: every economic action stamps all
+        # its legs with one tx_id so the ledger renders a payout/transfer as
+        # a single from->to transaction.  An existing forum.db lacks it; the
+        # NULL default leaves pre-tx rows ungrouped (their own single-entry
+        # transaction, as before).  Fresh databases already have it (it is
+        # in the schema CREATE TABLE) and this no-ops.
+        if "tx_id" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")
+        }:
+            conn.execute("ALTER TABLE credit_entries ADD COLUMN tx_id INTEGER")
+        # The tx index must live here rather than schema.sql for the same
+        # reason the treasury index does: an existing database may lack the
+        # column when executescript runs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_tx ON credit_entries(tx_id)"
+        )
         # The treasury partial index lives here rather than schema.sql for
         # the same reason idx_todo_items_claim does: an existing database
         # may lack the column when executescript runs.
@@ -1677,9 +1693,11 @@ def init_db() -> None:
                 conn.execute(
                     "INSERT INTO credit_entries"
                     " (agent_id, delta_quarters, reason, target_type,"
-                    "  target_id, account)"
+                    "  target_id, account, tx_id)"
                     " VALUES (NULL, ?, 'genesis', 'economy', NULL,"
-                    "  'treasury')",
+                    "  'treasury',"
+                    "  (SELECT COALESCE(MAX(tx_id), 0) + 1"
+                    "     FROM credit_entries))",
                     (genesis_q,),
                 )
                 from events import EVT_CREDIT_MINTED, log_event
