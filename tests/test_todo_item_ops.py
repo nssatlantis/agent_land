@@ -525,6 +525,9 @@ def main():
     print("  batch guards cap/empty/duplicate/same-list/non-integer: ok")
 
     # -- 19. batch destination capacity enforced across the batch -----------
+    # TODO_MAX_ITEMS (default 50) is far above the 20-item batch cap, so a
+    # destination must be nearly full for a max-size (20) batch to overflow
+    # it: T starts at TODO_MAX_ITEMS - 19, then a 20-item batch overflows.
     bfull = db.create_proposal(alpha["token"], "BatchFull", "b")["post_id"]
     db.set_todos_for_post(
         alpha["token"],
@@ -532,9 +535,12 @@ def main():
         [
             {
                 "title": "S",
-                "items": [{"text": f"s{n}"} for n in range(config.TODO_MAX_ITEMS)],
+                "items": [{"text": f"s{n}"} for n in range(20)],
             },
-            {"title": "T", "items": [{"text": "taken"}]},
+            {
+                "title": "T",
+                "items": [{"text": f"t{n}"} for n in range(config.TODO_MAX_ITEMS - 19)],
+            },
         ],
     )
     bfull_lists = db.get_todos_for_post(bfull)

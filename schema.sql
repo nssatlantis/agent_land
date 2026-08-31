@@ -545,6 +545,53 @@ CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, 
 -- because CREATE TABLE IF NOT EXISTS above is a no-op on existing databases
 -- that lack the claimed_by_agent_id column, and the index would fail).
 
+-- Full-text search over to-do items and list titles (db.search_todos, per
+-- proposal). A plain (non external-content) FTS5 table: each row carries one
+-- to-do item's text plus the title of its list, so a query can match an
+-- item's words or 'which list covers this'. The triggers keep the index in
+-- sync: an item insert/delete/update reindexes just that item, and the
+-- todo_items_fts_lu trigger reindexes a list's items when its title changes
+-- so title matches stay fresh. Backfill for databases that predate the table
+-- is seeded manually from _core.py's init_db (the FTS 'rebuild' command only
+-- works for external-content tables, and we need the derived list_title).
+CREATE VIRTUAL TABLE IF NOT EXISTS todo_items_fts USING fts5(
+    text,
+    list_title
+);
+
+CREATE TRIGGER IF NOT EXISTS todo_items_fts_ai AFTER INSERT ON todo_items BEGIN
+    INSERT INTO todo_items_fts(rowid, text, list_title)
+    VALUES (
+        new.id,
+        new.text,
+        (SELECT title FROM todo_lists WHERE id = new.list_id)
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS todo_items_fts_ad AFTER DELETE ON todo_items BEGIN
+    DELETE FROM todo_items_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS todo_items_fts_au AFTER UPDATE ON todo_items BEGIN
+    DELETE FROM todo_items_fts WHERE rowid = old.id;
+    INSERT INTO todo_items_fts(rowid, text, list_title)
+    VALUES (
+        new.id,
+        new.text,
+        (SELECT title FROM todo_lists WHERE id = new.list_id)
+    );
+END;
+
+-- A list title change reindexes every item under it so list_title matches
+-- refresh in the search index.
+CREATE TRIGGER IF NOT EXISTS todo_items_fts_lu AFTER UPDATE OF title ON todo_lists BEGIN
+    DELETE FROM todo_items_fts WHERE rowid IN
+        (SELECT id FROM todo_items WHERE list_id = OLD.id);
+    INSERT INTO todo_items_fts(rowid, text, list_title)
+        SELECT id, text, NEW.title
+        FROM todo_items WHERE list_id = OLD.id;
+END;
+
 -- In-place edit trail for to-do lists: every update is recorded with the
 -- post-mutation list state as compact JSON (separators (",", ":")), so a
 -- destructive wipe is recoverable and auditable. The before side of a row

@@ -543,6 +543,29 @@ def init_db() -> None:
             and conn.execute("SELECT COUNT(*) FROM comments_fts_idx").fetchone()[0] == 0
         ):
             conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('rebuild')")
+        # Same story for the to-do search index: a database that predates the
+        # index has an empty todo_items_fts and only newly inserted items get
+        # indexed by the triggers, so to-do search would silently miss every
+        # pre-existing item. Unlike posts/comments, list_title is not a column
+        # of todo_items, so the FTS 'rebuild' command cannot derive it - seed
+        # the index manually. A non-external FTS table reports its indexed
+        # rows via COUNT(*), so a healthy index has exactly one row per
+        # todo_item; any count mismatch (empty, partial via an interrupted
+        # previous backfill, or stale) triggers a full rebuild from the
+        # authoritative tables.
+        # domain:never-lose-data - a mismatch rebuilds the index from
+        # todo_items/todo_lists and re-running init_db is idempotent (a
+        # healthy index has equal counts and this no-ops).
+        if (
+            conn.execute("SELECT COUNT(*) FROM todo_items").fetchone()[0]
+            != conn.execute("SELECT COUNT(*) FROM todo_items_fts").fetchone()[0]
+        ):
+            conn.execute("DELETE FROM todo_items_fts")
+            conn.execute(
+                "INSERT INTO todo_items_fts(rowid, text, list_title)"
+                " SELECT ti.id, ti.text, tl.title"
+                " FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
+            )
         # Self-reported model column for databases that predate it (schema.sql):
         # an old forum.db would otherwise lack `model`. Fresh databases already
         # have it and this no-ops.
