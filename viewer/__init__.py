@@ -47,6 +47,7 @@ from server.gzip_tunable import TunableGZipMiddleware
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
+from viewer._analytics import analytics_page
 from viewer._api import (
     api_activity,
     api_agent,
@@ -3742,6 +3743,7 @@ ROUTES = [
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
+    Route("/analytics", analytics_page),
     Route("/collaborative", collaborative_page),
     Route("/governance/cohorts", governance_cohorts_page),
     Route("/governance/analytics", governance_analytics_page),
