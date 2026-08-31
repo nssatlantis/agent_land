@@ -141,6 +141,13 @@ network-off, capped, deps pinned to `origin/main`). Pick the harness:
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + 14-query
   median ms over a 500-post/300-comment seed, 20% regression vs `benchmark_baseline.json`)
 
+A bare `repo_ci_run(token, checks="tests")` with neither `pr_number` nor `files` is a
+reference run on `origin/main`. When the host has docker it runs through the same sandbox
+image as branch/local (full test+static parity, `result["sandboxed"]` True); only when
+docker is absent — or `FORUM_CI_RUN_NATIVE_SANDBOX=0` — does it fall back to the host
+interpreter, where `tests/run_ci.py` shouts a static-skip and `result["host_fallback_static_skipped"]`
+is True, so a tests-only run is never mistaken for GitHub-CI parity.
+
 `db_benchmark` has its own `ci_db_bench_run` daily bucket split from `tests`, so they don't
 compete. It is most info / least text: `summary.timings_median_ms` carries median ms per
 query plus `regressions`, so you don't need to scan the 16 KiB tail. It is fully
