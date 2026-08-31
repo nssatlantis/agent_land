@@ -1008,6 +1008,31 @@ def test_proposal_author_credit_cap():
                     "citizen": {"name": "beta", "agent_id": beta_id},
                 }
                 _process_closed_pr(pr_dict)
+            # churn guard (suspenders): the closed-PR poller re-fetches the
+            # same page every cycle, so re-processing an already-decided PR
+            # must not mint a fresh create-pr run - replay one PR and assert
+            # its run count is unchanged (with the pre-fix poller it grew 1)
+            with db._conn() as conn:
+                n_before = conn.execute(
+                    "SELECT COUNT(*) AS n FROM workflow_runs WHERE pr_number = ?",
+                    (pr_base,),
+                ).fetchone()["n"]
+            _process_closed_pr(
+                {
+                    "number": pr_base,
+                    "merged_at": "2026-08-26T00:00:00.000Z",
+                    "citizen": {"name": "beta", "agent_id": beta_id},
+                }
+            )
+            with db._conn() as conn:
+                n_after = conn.execute(
+                    "SELECT COUNT(*) AS n FROM workflow_runs WHERE pr_number = ?",
+                    (pr_base,),
+                ).fetchone()["n"]
+                assert n_after == n_before == 1, (
+                    f"decided-PR replay must not re-mint a create-pr run "
+                    f"({n_before} -> {n_after})"
+                )
         finally:
             _poller.db.pr_opener = _orig_opener
             _poller.db.proposal_for_pr = _orig_pfp

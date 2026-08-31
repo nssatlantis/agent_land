@@ -134,7 +134,8 @@ def _process_closed_pr(pr: dict) -> None:
     # redirect karma or proposal lifecycle. The parse is the
     # fallback for PRs never linked in our database.
     opener = db.pr_opener(pr["number"]) or pr.get("citizen")
-    proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
+    db_linked = db.proposal_for_pr(pr["number"])
+    proposal_post_id = db_linked or pr.get("proposal_post_id")
     with db._conn() as conn:
         if proposal_post_id:
             status = (
@@ -152,13 +153,18 @@ def _process_closed_pr(pr: dict) -> None:
                     post_id=proposal_post_id,
                     status=status,
                 )
-            if opener:
+            if opener and not db_linked:
                 # Backfill the link for pre-existing PRs (ones opened
                 # before this feature, or whose opener didn't record a
                 # link); INSERT OR IGNORE never overwrites the opener's
                 # original record. enforce_claims=False: this PR is already
                 # decided - recording its history is bookkeeping, not a new
                 # contribution, so a verdict-released claim must not block it.
+                # Only ever runs when the DB genuinely lacks a link: the
+                # closed-PR poller re-fetches the same page each cycle, and
+                # an unconditional re-link used to drive bind_open_run into
+                # re-minting a create-pr run per re-process. Linking commits,
+                # so this converges after one pass.
                 db.link_pr_to_proposal(
                     pr["number"],
                     proposal_post_id,
