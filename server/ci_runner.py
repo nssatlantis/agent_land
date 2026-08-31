@@ -679,8 +679,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 _STATIC_SUMMARY_RE = re.compile(
-    r"^STATIC SUMMARY: compileall=(\w+) mypy=(\d+) ruff_check=(\d+) "
-    r"ruff_format=(\d+) bash_n=(\w+)$",
+    r"^STATIC SUMMARY: compileall=(\w+) mypy=(-?\d+) ruff_check=(-?\d+) "
+    r"ruff_format=(-?\d+) bash_n=(\w+)$",
     re.M,
 )
 
@@ -1357,11 +1357,20 @@ def run_checks(
             result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
         result["sandboxed"] = sandboxed
-        if mode == "native" and checks == "tests" and not sandboxed:
-            # Host fallback ran tests only; static was loudly skipped. A
-            # machine-readable flag so callers never mistake it for parity.
-            result["host_fallback_static_skipped"] = True
         result.update(pieces)
+        if mode == "native" and checks == "tests":
+            # A native host run is full parity once the host venv carries the
+            # static tooling (mypy/ruff from requirements-dev.txt): tests/run_ci.py
+            # then executes the whole surface and reports PASS/FAIL. Only when the
+            # tools are genuinely absent does it loudly skip static, so the flag is
+            # keyed on the actual parsed static result — never on how the command
+            # was dispatched (sandboxed vs host interpreter). A machine-readable
+            # marker so that degraded run is never mistaken for the real thing.
+            static_result = (
+                (result.get("summary") or {}).get("static", {}).get("result")
+            )
+            if static_result == "skipped":
+                result["host_fallback_static_skipped"] = True
         result["head_sha"] = head_sha
         detail = {
             "checks": checks,
