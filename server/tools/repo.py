@@ -1204,7 +1204,16 @@ def repo_ci_run(
     `tests` covers the same green surface GitHub CI enforces.
 
     Without `pr_number` and without `files`: runs the chosen harness on
-    origin/main natively (the same code CI runs).  With `pr_number`: runs
+    origin/main as a reference (GitHub-CI code). When the host has docker
+    (and the sandbox knobs are on) it runs through the same Docker sandbox
+    as branch/local, so even a plain reference run gets the full
+    `tests` test+static surface — `result["sandboxed"]` is True. Without
+    docker (or with FORUM_CI_RUN_NATIVE_SANDBOX=0) it falls back to the host
+    interpreter: tests only, and `tests/run_ci.py` prints a LOUD static-skip
+    (the tail carries "STATIC RESULT: SKIPPED"), with
+    `result["host_fallback_static_skipped"]` True when checks="tests" — so a
+    host fallback is never mistaken for GitHub-CI parity.  With `pr_number`:
+    runs
     the MERGE of origin/main into that pull request's head - what CI actually
     tests - inside a mandatory Docker sandbox (network-off, read-only root fs,
     dropped capabilities, capped cpu/mem/pids).  Branch mode refuses loudly
@@ -1226,9 +1235,9 @@ def repo_ci_run(
     hard timeout, per-agent cooldown and daily cap; branch runs draw on
     their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
     Every run lands in the public events ledger.  Returns {checks, mode, ok,
-    timed_out, exit_code, duration_seconds, head_sha, output_tail,
+    timed_out, exit_code, duration_seconds, head_sha, sandboxed, output_tail,
     output_truncated, summary?, failed_files?, pr_number?, base_sha?,
-    merge_conflict?, conflict_files?, local?}."""
+    merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}."""
     db.require_active_agent(token)
     who = db.whoami(token)
     import server.ci_runner as ci_runner
