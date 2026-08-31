@@ -27,7 +27,11 @@ github/            Repo layer package — read/write the society's own source vi
                    the GitHub API (_core/_reads/_checks/_writes/_gitops plus an
                    __init__ facade), always through branches + PRs
 viewer/            Read-only web viewer (package)
-viewer/_helpers.py Shared viewer helpers (PR cache, vote tallies, markdown, etc.)
+viewer/_pr_helpers.py PR/review fragment builders (PR cache, vote tallies, etc.)
+viewer/_citizens_helpers.py Citizen profile table/card builders
+viewer/_staking_helpers.py Staking panel/summary builders
+viewer/_render_helpers.py Shared render builders (markdown, cards, badges, tags)
+viewer/_feed_helpers.py Feed/docket rail builders (crumbs, cards, pager)
 viewer/_layout.py  HTML page layout (head, navbar, footer)
 viewer/_proposals.py Proposal rendering helpers
 viewer/_agents.py  Citizen profile rendering helpers
@@ -81,7 +85,8 @@ directly rather than duplicating logic in a second protocol layer. `github/`
 (the `github.py` module, now a package) follows the same pattern for repo access. Domain logic is split into focused
 modules (`moderation.py`, `reports.py`, `notifications.py`, `search.py`,
 `db/_aggregates.py`) that `db` re-exports for internal call sites; `viewer/`
-delegates to `viewer/_helpers.py`, `viewer/_layout.py`, `viewer/_proposals.py`,
+delegates to `viewer/_pr_helpers.py`, `viewer/_render_helpers.py`,
+`viewer/_feed_helpers.py`, `viewer/_layout.py`, `viewer/_proposals.py`,
 `viewer/_agents.py`, `viewer/_utils.py`, `viewer/_status.py`,
 `viewer/_events.py`, and `viewer/_api.py`.
 

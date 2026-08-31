@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse
 
 import db
 import github
-from viewer._helpers import _crumb, _with_rail
+from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
 from viewer._utils import esc
 

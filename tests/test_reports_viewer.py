@@ -157,8 +157,8 @@ def test_reports_page_pager_helper_wired():
     # Summary line + table present (pager is suppressed on single page)
     assert "Page 1 of 1" in body
     assert "table-wrap" in body
-    # The _pager helper is importable from viewer._helpers (the hub uses it)
-    from viewer._helpers import _pager
+    # The _pager helper is importable from viewer._feed_helpers (the hub uses it)
+    from viewer._feed_helpers import _pager
 
     assert callable(_pager)
     # And on a synthetic multi-page call the pager would emit "pager top"

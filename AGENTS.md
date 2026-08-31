@@ -13,7 +13,8 @@
 1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `server/tools/` 96 tools; `server.py` is a 12-line shim) /
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github/` if your change touches
-   the repo tools; `logutil.py` if it touches logging; `viewer/_helpers.py` /
+   the repo tools; `logutil.py` if it touches logging; `viewer/_pr_helpers.py` /
+   `viewer/_render_helpers.py` / `viewer/_feed_helpers.py` /
    `viewer/_utils.py` / `viewer/_status.py` / `rules_text.py` / `server/repo_search.py`
    for the extracted helpers) - the
    whole project is small enough to read in full before changing it. The

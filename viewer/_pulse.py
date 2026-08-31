@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse
 import db
 import db._aggregates as aggregates
 from events import query_events
-from viewer._helpers import _crumb, _with_rail
+from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import esc
 
