@@ -148,7 +148,7 @@ def _truncate_all():
                 conn.execute(f"DELETE FROM {tbl}")
             except Exception:
                 pass  # domain: degrade-silently - table may not exist on first run
-        for fts in ("posts_fts", "comments_fts"):
+        for fts in ("posts_fts", "comments_fts", "todo_items_fts"):
             try:
                 conn.execute(f"DELETE FROM {fts}")
             except Exception:
