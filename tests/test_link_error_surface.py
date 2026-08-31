@@ -70,6 +70,7 @@ def _restore_flag(old):
 
 def test_response_reports_link_failure_and_success():
     pid = _collab_board()
+    (bid,) = [it["id"] for it in db.get_todos_for_post(pid)[0]["items"]]
     seed_post = db.create_post(AGENTS["alpha"]["token"], "link-surface seed", "b")[
         "post_id"
     ]
@@ -121,6 +122,7 @@ def test_response_reports_link_failure_and_success():
                 file_path="docs/link-surface-probe.md",
                 content="probe\n",
                 proposal_id=pid,
+                todo_item_id=bid,
             )
         )
         assert resp.get("proposal_linked") is False, resp.get("proposal_linked")

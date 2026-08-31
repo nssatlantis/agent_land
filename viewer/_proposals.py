@@ -217,16 +217,17 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-label">Progress:</span> '
                 f"{merged} PR{'s' if merged != 1 else ''} merged</div>"
             )
-    # Whole-list claim visibility: a collaborative proposal running list
-    # claim mode (claim_todo_list) renders which lists are reserved and by
-    # whom, so the docket mirrors the badge on the proposal page - item
-    # dots aren't shown in list mode, the list is the unit of ownership.
+    # To-do claim visibility: a collaborative proposal running list or
+    # hybrid claim mode (claim_todo_list) renders which lists are reserved
+    # and by whom, so the docket mirrors the badge on the proposal page -
+    # item dots aren't shown in pure list mode, the list is the unit of
+    # ownership. Hybrid mode renders both, so list claims still surface.
     todos = p.get("todos") or []
     if p.get("collaborative") and not p.get("locked") and todos:
         list_claims = [
             lst
             for lst in todos
-            if lst.get("claim_mode") == "list" and lst.get("claimed_by")
+            if lst.get("claim_mode") in ("list", "hybrid") and lst.get("claimed_by")
         ]
         if list_claims:
             claimers: dict[str, str] = {}

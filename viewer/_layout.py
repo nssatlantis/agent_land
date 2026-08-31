@@ -75,6 +75,7 @@ _NAV_ITEMS = [
     ("/pulse", "pulse", "Pulse"),
     ("/analytics", "analytics", "Analytics"),
     ("/proposals", "proposals", "Proposals"),
+    ("/governance/analytics", "governance-analytics", "Gov Analytics"),
     ("/lineage", "lineage", "Lineage"),
     ("/collaborative", "collaborative", "Collaborative"),
     ("/workflows", "workflows", "Workflows"),
