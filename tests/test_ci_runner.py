@@ -527,7 +527,12 @@ def test_native_sandbox_routes_through_docker():
     tree = Path(tempfile.mkdtemp(prefix="agentland_ci_native_"))
     (tree / "tests").mkdir(parents=True, exist_ok=True)
     (tree / "tests" / "run_ci.py").write_text(
-        "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n", encoding="utf-8"
+        "import sys\n"
+        "print('all 1 test files passed')\n"
+        "print('STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=0 bash_n=ok')\n"
+        "print('STATIC RESULT: PASS')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
     )
     saved = {
         "prepare": ci_runner._prepare_tree,
@@ -572,7 +577,12 @@ def test_native_host_fallback_when_knob_off():
     tree = Path(tempfile.mkdtemp(prefix="agentland_ci_native_"))
     (tree / "tests").mkdir(parents=True, exist_ok=True)
     (tree / "tests" / "run_ci.py").write_text(
-        "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n", encoding="utf-8"
+        "import sys\n"
+        "print('all 1 test files passed')\n"
+        "print('STATIC SUMMARY: compileall=skip mypy=-1 ruff_check=-1 ruff_format=-1 bash_n=skip')\n"
+        "print('STATIC RESULT: SKIPPED')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
     )
     saved = {
         "prepare": ci_runner._prepare_tree,
@@ -591,6 +601,49 @@ def test_native_host_fallback_when_knob_off():
         assert holder["image_calls"] == 0, "host fallback must not build an image"
         assert result["sandboxed"] is False
         assert result["host_fallback_static_skipped"] is True
+    finally:
+        _restore()
+        for name, fn in saved.items():
+            setattr(ci_runner, name, fn)
+        _shutil_rmtree(tree)
+
+
+def test_native_host_fallback_with_static_tools_is_parity():
+    """Native host run (knob off, docker present) where the host interpreter
+    carries the static tooling must run static and therefore NOT be flagged
+    host_fallback_static_skipped - the flag is keyed on the parsed static
+    result, never on how the command was dispatched (host vs sandbox)."""
+    holder = {"image_calls": 0}
+    tree = Path(tempfile.mkdtemp(prefix="agentland_ci_native_"))
+    (tree / "tests").mkdir(parents=True, exist_ok=True)
+    (tree / "tests" / "run_ci.py").write_text(
+        "import sys\n"
+        "print('all 1 test files passed')\n"
+        "print('STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=0 bash_n=ok')\n"
+        "print('STATIC RESULT: PASS')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    saved = {
+        "prepare": ci_runner._prepare_tree,
+        "image": ci_runner._ensure_image,
+        "docker": ci_runner._docker_available,
+    }
+    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._docker_available = lambda: True
+    ci_runner._ensure_image = lambda tree_, rev: (
+        holder.__setitem__("image_calls", holder["image_calls"] + 1) or "fake:tag"
+    )
+    _shadow("CI_RUN_NATIVE_SANDBOX", 0)
+    _shadow("CI_RUN_BRANCH_ENABLED", 1)
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert holder["image_calls"] == 0, "host run must not build an image"
+        assert result["sandboxed"] is False
+        assert result["summary"]["static"]["result"] == "pass", "static actually ran"
+        assert "host_fallback_static_skipped" not in result, (
+            "host run that ran static is parity, never flagged"
+        )
     finally:
         _restore()
         for name, fn in saved.items():
@@ -628,6 +681,7 @@ def main():
     test_suspended_citizen_cannot_run_ci()
     test_native_sandbox_routes_through_docker()
     test_native_host_fallback_when_knob_off()
+    test_native_host_fallback_with_static_tools_is_parity()
     print("test_ci_runner: all ok")
 
 
