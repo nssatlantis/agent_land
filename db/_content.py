@@ -1129,25 +1129,6 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                 detail={"value": value},
                 conn=conn,
             )
-        # Karma Split: the author earns credits on the NET vote delta - a
-        # new vote grants once, a flip cancels (clamped at the zero floor
-        # by grant_earned: judgment never pushes a wallet negative, and a
-        # down/up cycle can never farm extra), a same-value re-vote is a
-        # no-op. Karma itself stays derived from this votes row; the entry
-        # is the credits mirror of that net movement.
-        import db._credits as _credits
-
-        _net = value - (prev_vote["value"] if prev_vote else 0)
-        _per = _credits.quarters_per_karma()
-        if _net:
-            _credits.grant_earned(
-                target["agent_id"],
-                _net * _per,
-                f"{target_type}_vote",
-                target_type=target_type,
-                target_id=target_id,
-                conn=conn,
-            )
         return {
             "target_type": target_type,
             "target_id": target_id,
