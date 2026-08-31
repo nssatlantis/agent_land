@@ -438,10 +438,9 @@ def _check_todo_write_access(
 # full snapshot (bare JSON list, separators (",", ":")) or a delta (a dict
 # {"v":2,"type":"delta","ops":[...]}). The before side of edit N is the after
 # side of edit N-1 - the readers replay the chain instead of storing it again,
-# and old_lists on compact rows carries _OLD_DERIVED (the column is NOT NULL).
-# Rows written before this format keep their own full old_lists snapshot,
-# which the readers pass through unchanged.
-_OLD_DERIVED = ""
+# and old_lists on compact rows carries _OLD_DERIVED (NULL sentinel, column is
+# nullable for compact rows; legacy rows keep their own snapshot).
+_OLD_DERIVED = None
 _DELTA_TYPE = "delta"
 
 

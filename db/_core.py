@@ -947,12 +947,49 @@ def init_db() -> None:
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
                     editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
-                    old_lists        TEXT NOT NULL,
+                    old_lists        TEXT,
                     new_lists        TEXT NOT NULL,
                     edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_todo_edits_post ON todo_edits(post_id);
             """)
+        else:
+            # Polish: old_lists "" sentinel -> NULL saves per-row overhead
+            # (TEXT 0 bytes vs 1). Existing DBs have TEXT NOT NULL (sentinel
+            # ""), fresh ones already nullable. Rebuild once if still NOT NULL.
+            try:
+                _ti = conn.execute("PRAGMA table_info(todo_edits)").fetchall()
+                _notnull = next((r[3] for r in _ti if r[1] == "old_lists"), 0)
+            except (
+                Exception
+            ):  # domain: degrade-silently - pragma probe never blocks boot
+                _notnull = 0
+            if _notnull == 1:
+                _fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                conn.executescript("""
+                    PRAGMA foreign_keys = OFF;
+                    BEGIN;
+                    CREATE TABLE todo_edits_new (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                        editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+                        old_lists        TEXT,
+                        new_lists        TEXT NOT NULL,
+                        edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    );
+                    INSERT INTO todo_edits_new (id, post_id, editor_agent_id, old_lists, new_lists, edited_at)
+                    SELECT id, post_id, editor_agent_id,
+                           CASE WHEN old_lists = '' THEN NULL ELSE old_lists END,
+                           new_lists, edited_at FROM todo_edits;
+                    DROP TABLE todo_edits;
+                    ALTER TABLE todo_edits_new RENAME TO todo_edits;
+                    CREATE INDEX idx_todo_edits_post ON todo_edits(post_id);
+                    COMMIT;
+                """)
+                try:
+                    conn.execute(f"PRAGMA foreign_keys = {'ON' if _fk else 'OFF'}")
+                except Exception:  # domain: degrade-silently
+                    pass
         # PR votes table for community governance on pull requests.
         if "pr_votes" not in existing_tables:
             conn.executescript("""

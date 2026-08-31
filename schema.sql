@@ -556,7 +556,7 @@ CREATE TABLE IF NOT EXISTS todo_edits (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
-    old_lists        TEXT NOT NULL,
+    old_lists        TEXT,
     new_lists        TEXT NOT NULL,
     edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
