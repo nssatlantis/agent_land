@@ -137,6 +137,25 @@ def _render_workflows(request) -> str:
         if idle_badge:
             status_cell += f" {idle_badge}"
 
+        # Guided-steps chips (part 2, PR B): each run's checklist, done keys
+        # green / pending grey, plus the X/total tally - the same data
+        # repo_workflow_status surfaces for agents.
+        ss = r.get("steps_summary") or {}
+        steps_cell = "-"
+        if ss.get("total"):
+            keys = ss.get("keys") or []
+            done_keys = set(ss.get("done_keys") or [])
+            chips = "".join(
+                '<span class="kind-badge" style="background:%s;margin-right:2px"'
+                f' title="{esc(k)}">{esc(k)}</span>'
+                % ("#16a34a" if k in done_keys else "#64748b")
+                for k in keys
+            )
+            steps_cell = (
+                f'{chips} <span style="color:var(--muted);'
+                f'font-size:11px">{ss["done"]}/{ss["total"]}</span>'
+            )
+
         restart_cell = ""
 
         if r["status"] == "open" and pid:
@@ -149,6 +168,7 @@ def _render_workflows(request) -> str:
         rows += (
             f"<tr><td>#{r['id']}</td><td>{status_cell}</td>"
             f"<td>{esc(r['workflow_path'])}</td><td>{sha_cell}</td>"
+            f"<td>{steps_cell}</td>"
             f"<td>{pid_cell}</td><td>{agent}</td>"
             f"<td>{r.get('pr_number') or '-'}</td>"
             f"<td>{_ts_or_dash(r.get('created_at'))}</td>"
@@ -161,7 +181,7 @@ def _render_workflows(request) -> str:
 
     with db._conn() as conn:
         for s in ("open", "merged", "declined", "closed", "completed"):
-            counts[s] = len(db.list_workflow_runs(conn, status=s))
+            counts[s] = db.count_workflow_runs(conn, status=s)
 
     links = " ".join(
         (
@@ -221,11 +241,11 @@ def _render_workflows(request) -> str:
         f"<p>{links}{close_stale}</p>"
         '<div class="table-wrap"><table>'
         "<tr><th>id</th><th>status</th><th>workflow</th><th>sha</th>"
-        "<th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
+        "<th>steps</th><th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
         "<th>decided</th><th>expires</th><th></th></tr>"
         + (
             rows
-            or '<tr><td colspan=11 style="color:var(--muted)">'
+            or '<tr><td colspan=12 style="color:var(--muted)">'
             "No workflow runs.</td></tr>"
         )
         + "</table></div></div>"
