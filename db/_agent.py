@@ -22,6 +22,7 @@ from db._nudges import (
     _assigned_nudge,
     _bug_nudge,
     _ci_nudge,
+    _claim_ship_nudge,
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
@@ -347,6 +348,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
         result.update(_bug_nudge(c))
+        result.update(_claim_ship_nudge(c, agent["id"]))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
@@ -485,6 +487,7 @@ def my_profile(token: str) -> dict:
         result.update(_bug_nudge(conn))
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
+        result.update(_claim_ship_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
@@ -581,6 +584,9 @@ def check_in(token: str) -> dict:
         ci_n = _ci_nudge(conn, agent["id"])
         if ci_n:
             actions.append(ci_n["ci_nudge"])
+        cs_n = _claim_ship_nudge(conn, agent["id"])
+        if cs_n:
+            actions.append(cs_n["claim_ship_note"])
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "

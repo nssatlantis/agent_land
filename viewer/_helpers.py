@@ -1796,6 +1796,13 @@ def _todos_panel(p: dict) -> str:
                 tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
                 if lst.get("claimed_at"):
                     tip += " at " + esc(str(lst["claimed_at"]))
+                lst_items = lst.get("items") or []
+                if (
+                    lst_items
+                    and not any(i.get("done") for i in lst_items)
+                    and not any(i.get("pr_number") is not None for i in lst_items)
+                ):
+                    tip += " - no bound PR yet"
                 cid = lst.get("claimed_by_id")
                 claimer = (
                     f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
@@ -1832,6 +1839,8 @@ def _todos_panel(p: dict) -> str:
                     tip = "claimed by " + esc(str(it["claimed_by"]))
                     if it.get("claimed_at"):
                         tip += " at " + esc(str(it["claimed_at"]))
+                    if not it.get("done") and it.get("pr_number") is None:
+                        tip += " - no bound PR yet"
                     dot = (
                         "<span title='"
                         + tip
