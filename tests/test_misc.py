@@ -2223,6 +2223,57 @@ def main():
         assert ticked["done"] == 1 and ticked["done_by"] == agents["beta"]["agent_id"]
     print("  workflow_run_steps migration + reseed: ok")
 
+    # --- migration: todo_items_fts recreated + backfilled (todo browsing) -----
+    # A database that predates the to-do search index (proposal #237 browsing)
+    # lacks todo_items_fts entirely. CREATE VIRTUAL TABLE IF NOT EXISTS is a
+    # no-op on an existing DB, so init_db() must recreate the empty table and
+    # seed it with the pre-existing to-do items (and their list titles), or
+    # search_todos would silently miss every pre-existing item.
+    saved_fts_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "todo_fts_migration.db")
+        db.init_db()
+        fts_a = db.register_agent("fts-mig-a")
+        mig_post = db.create_proposal(fts_a["token"], "FTS migration", "x")
+        mpid = mig_post["post_id"]
+        db.set_todos_for_post(
+            fts_a["token"],
+            mpid,
+            [
+                {
+                    "title": "Legacy List",
+                    "items": [{"text": "legacy item one"}, {"text": "second"}],
+                },
+                {"title": "Other", "items": [{"text": "third"}]},
+            ],
+        )
+        # search works right after a fresh boot (triggers seeded the index).
+        # "legacy" matches BOTH items under "Legacy List": item 1 via its own
+        # text and both via the list title (list_title is indexed per item
+        # row, so a title match surfaces every item in that list).
+        assert db.search_todos(mpid, "legacy")["total"] == 2
+        # Downgrade: drop the FTS virtual table (and its shadow tables) to
+        # simulate a board that predates the search index, then re-boot.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS todo_items_fts")
+        db.init_db()  # must recreate + backfill the index
+        assert db.search_todos(mpid, "legacy")["total"] == 2, (
+            "init_db backfills todo_items_fts for pre-existing boards"
+        )
+        assert db.search_todos(mpid, "Other")["total"] == 1, (
+            "backfill seeds list_title so title matches work after migration"
+        )
+        # idempotent on the migrated DB: rebooting leaves the index intact
+        db.init_db()
+        assert db.search_todos(mpid, "legacy")["total"] == 2, (
+            "re-boot does not duplicate or empty the backfilled index"
+        )
+        # a fresh board's items are reachable through the backfill path too
+        assert db.search_todos(mpid, "third")["total"] == 1
+    finally:
+        db.DB_PATH = saved_fts_db_path
+    print("  todo_items_fts migration + backfill: ok")
+
     # --- length caps: every write path enforces its knob -------------------
     # The caps (name/model/title/body/comment/query/reason) are enforced in
     # db against the live config value, and the check runs BEFORE any
