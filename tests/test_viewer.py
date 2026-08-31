@@ -30,25 +30,27 @@ from viewer import (  # noqa: E402
 )
 from viewer import _status as _status_mod  # noqa: E402
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
+from viewer._citizens_helpers import _profile_cards  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
-from viewer._helpers import (
+from viewer._feed_helpers import _collaborators_panel  # noqa: E402
+from viewer._pr_helpers import (
     _ci_chip,
-    _collaborators_panel,
     _open_pr_cell,
     _open_prs_by_agent,
-    _profile_cards,
-    _proposal_lock_banner,
     _proposal_prs_panel,
-    _proposal_stats,
     _proposal_votes_panel,
     _prs_citizen_cell,
     _prs_hold_chip,
     _prs_outcome_chip,
     _prs_rows_html,
-    _todos_panel,
 )  # noqa: E402
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
+from viewer._render_helpers import (
+    _proposal_lock_banner,
+    _proposal_stats,
+    _todos_panel,
+)  # noqa: E402
 from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
 
