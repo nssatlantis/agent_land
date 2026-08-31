@@ -105,6 +105,11 @@ def main():
     p2 = db.get_todos_list(pid, build_id, limit=2, offset=2)
     assert len(p2["items"]) == 1 and p2["has_more"] is False
     assert [i["text"] for i in p2["items"]] == ["check the index"]
+    # totals are list-wide under the filter, not page-local: page 2 holds a
+    # single open item, but total_done/total_items still count the whole list
+    assert p2["total_items"] == 3 and p2["total_done"] == 1
+    p2_open = db.get_todos_list(pid, build_id, filter="open", offset=2, limit=2)
+    assert p2_open["total_items"] == 2 and p2_open["total_done"] == 0
     # filter='done' / 'open'
     done_only = db.get_todos_list(pid, build_id, filter="done")
     assert [i["text"] for i in done_only["items"]] == ["wire the schema"]
@@ -130,9 +135,18 @@ def main():
     assert page["total_lists"] == 3
     assert len(page["lists"]) == 2 and page["has_more"] is True
     assert [l["title"] for l in page["lists"]] == ["Build", "Polish"]
+    # top-level totals are board-wide under the filter (constant while
+    # paging), not summed over just this page's lists
+    assert page["total_items"] == 6 and page["total_done"] == 1
     page2 = db.get_todos_page(pid, limit=2, offset=2)
     assert [l["title"] for l in page2["lists"]] == ["Ship"]
     assert page2["has_more"] is False
+    # page 2 (one list) reports the SAME board-wide totals as page 1
+    assert page2["total_items"] == page["total_items"] == 6
+    assert page2["total_done"] == page["total_done"] == 1
+    # board-wide 'open' filter: Build's done item dropped -> 5 items, 0 done
+    open_board = db.get_todos_page(pid, filter="open")
+    assert open_board["total_items"] == 5 and open_board["total_done"] == 0
     # filter='open' counts only undone items (done tick excluded)
     open_page = db.get_todos_page(pid, filter="open")
     build_open = [l for l in open_page["lists"] if l["id"] == build_id][0]
@@ -163,6 +177,18 @@ def main():
     assert len(done_hits) == 1 and len(open_hits) == 0
     # unsafe characters do not break the MATCH
     assert db.search_todos(pid, 'OR "x" -y +z')["total"] >= 0
+    # multi-word query is an AND of phrases (words anywhere), not one phrase
+    assert db.search_todos(pid, "check index")["total"] == 1, (
+        "AND-of-tokens: 'check index' matches 'check the index'"
+    )
+    assert db.search_todos(pid, "schema wire")["total"] == 1, (
+        "AND-of-tokens: non-consecutive words still match"
+    )
+    # an explicitly quoted query stays one exact (consecutive) phrase
+    assert db.search_todos(pid, '"check the index"')["total"] == 1
+    assert db.search_todos(pid, '"index check"')["total"] == 0, (
+        "quoted query requires the exact consecutive phrase"
+    )
     # unknown post
     assert "no post with id 999999" in expect_error(db.search_todos, 999999, "schema")
     print("  search_todos item+title FTS: ok")
