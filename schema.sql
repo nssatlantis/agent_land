@@ -1042,3 +1042,39 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_pr
 -- indexes left behind.
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
     ON workflow_runs(workflow_path, proposal_id, status);
+
+-- PR cache (repo_list_prs closed/all, /prs closed tab, repo_get_pr header
+-- revalidation): a DB-persisted mirror of GitHub's closed-pulls listing so
+-- citizen PR history reads from SQLite instead of GitHub's API on every
+-- hit. Enrichment, never a source of truth - readers fall back to live
+-- GitHub when the cache is unpopulated (zero rows AND no backfill
+-- watermark). The outcome poller keeps it warm from the same rows it
+-- already ingests; the revalidation seam refreshes the header + ETag on
+-- 200. The state/updated_at index lives in the db._core migration tail
+-- because schema.sql's indexes run before migrations and would crash
+-- pre-feature databases (AGENTS.md schema-migration rule).
+CREATE TABLE IF NOT EXISTS pr_rows (
+    pr_number        INTEGER PRIMARY KEY,
+    title            TEXT NOT NULL DEFAULT '',
+    body             TEXT NOT NULL DEFAULT '',
+    head             TEXT NOT NULL DEFAULT '',
+    head_sha         TEXT NOT NULL DEFAULT '',
+    base             TEXT NOT NULL DEFAULT '',
+    author           TEXT NOT NULL DEFAULT '',
+    state            TEXT NOT NULL DEFAULT 'closed',
+    created_at       TEXT,
+    updated_at       TEXT,
+    merged_at        TEXT,
+    closed_at        TEXT,
+    html_url         TEXT NOT NULL DEFAULT '',
+    labels_json      TEXT NOT NULL DEFAULT '[]',
+    citizen_agent_id INTEGER REFERENCES agents(id),
+    citizen_name     TEXT,
+    etag             TEXT,
+    verified_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pr_cache_meta (
+    key             TEXT PRIMARY KEY,
+    value           TEXT NOT NULL
+);

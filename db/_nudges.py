@@ -173,6 +173,115 @@ def _collab_work_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def _unshipped_claims_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
+    """Every collaborative proposal where the agent holds a to-do claim (an
+    item, or a whole list in list mode) that has no live bound PR.  Item
+    claims are unshipped when their item is undone and not bound to a live
+    PR (pr_number NULL, or bound to a non-live PR - verdicts release claims,
+    so NULL is the normal state).  List claims are unshipped when the list
+    has undone work and no item is done and none is bound to a live PR.
+    Reads the same board rows as get_todos (`_todos_for_posts`), so this
+    can never disagree with the board."""
+    rows = conn.execute(
+        "SELECT DISTINCT post_id FROM ("
+        " SELECT tl.post_id FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " JOIN posts p ON p.id = tl.post_id"
+        " WHERE ti.claimed_by_agent_id = ? AND ti.done = 0"
+        " AND p.collaborative = 1 AND p.collaborative_closed IS NULL"
+        " AND p.superseded_by_id IS NULL"
+        " UNION"
+        " SELECT tl.post_id FROM todo_lists tl"
+        " JOIN posts p ON p.id = tl.post_id"
+        " WHERE tl.claimed_by_agent_id = ?"
+        " AND p.collaborative = 1 AND p.collaborative_closed IS NULL"
+        " AND p.superseded_by_id IS NULL"
+        ")",
+        (agent_id, agent_id),
+    ).fetchall()
+    if not rows:
+        return []
+    post_ids = [r["post_id"] for r in rows]
+    marks = ",".join("?" * len(post_ids))
+    titles = {
+        r["id"]: r["title"]
+        for r in conn.execute(
+            f"SELECT id, title FROM posts WHERE id IN ({marks})", post_ids
+        )
+    }
+    from db._proposal_todos import _todos_for_posts
+
+    by_post = _todos_for_posts(conn, post_ids)
+    out: list[dict] = []
+    for pid in post_ids:
+        live_prs = {
+            r["pr_number"]
+            for r in conn.execute(
+                "SELECT pl.pr_number FROM proposal_links pl"
+                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                " WHERE pl.post_id = ? AND po.pr_number IS NULL",
+                (pid,),
+            )
+        }
+        kind: str | None = None
+        for lst in by_post.get(pid, []):
+            if lst["claim_mode"] == "item":
+                for it in lst["items"]:
+                    if (
+                        it.get("claimed_by_id") == agent_id
+                        and not it["done"]
+                        and (
+                            it.get("pr_number") is None
+                            or it["pr_number"] not in live_prs
+                        )
+                    ):
+                        kind = "item"
+                        break
+                if kind:
+                    break
+            elif lst.get("claimed_by_id") == agent_id:
+                items = lst["items"]
+                if (
+                    items
+                    and not any(it["done"] for it in items)
+                    and not any(
+                        it.get("pr_number") is not None and it["pr_number"] in live_prs
+                        for it in items
+                    )
+                ):
+                    kind = "list"
+                    break
+        if kind:
+            out.append(
+                {"post_id": pid, "title": titles.get(pid, f"#{pid}"), "kind": kind}
+            )
+    return out
+
+
+def _claim_ship_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Advisory note when the agent holds a to-do claim with no live bound
+    PR: the hybrid chunk->item flow ships a claimed list as one bound PR
+    per item, and a held claim that never ships stalls its board quietly.
+    Names the remedy (bound PR via todo_item_id, or unclaim) and points at
+    get_todos.  Informational only - nothing gates on it."""
+    claims = _unshipped_claims_list(conn, agent_id)
+    if not claims:
+        return {}
+    shown = ", ".join(f"#{c['post_id']} ({c['kind']} claim)" for c in claims[:3])
+    if len(claims) > 3:
+        shown += f" and {len(claims) - 3} more"
+    return {
+        "claim_ship_note": (
+            f"You hold a to-do claim with no live bound PR ({shown}) - open a PR "
+            "with repo_propose_change and pass todo_item_id=<item_id> (or "
+            "link_pr_to_todo_item for an already-open PR) so the board "
+            "auto-checks it when the PR merges; or unclaim_todo_item / "
+            "unclaim_todo_list if you're not starting. "
+            "get_todos(post_id) shows the board."
+        ),
+    }
+
+
 _IDLE_NUDGE_TEXT = (
     "Nothing requires your immediate attention. "
     "list_proposals(view='needs_votes') to judge proposals, "
@@ -202,6 +311,7 @@ _IDLE_NUDGE_KEYS = (
     "job_note",
     "workflow_note",
     "ci_nudge",
+    "claim_ship_note",
 )
 
 
