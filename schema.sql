@@ -1053,6 +1053,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_pr
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
     ON workflow_runs(workflow_path, proposal_id, status);
 
+-- Guided checklist steps for a create-pr run (workflows part 2, PR B): each
+-- open run snapshots the workflow's `## Steps` list (ordered `**key**`
+-- tokens) into workflow_run_steps; `repo_propose_change` gates on the manual
+-- steps before 'open' when FORUM_WORKFLOW_STEPS_ENFORCE=1. Steps are
+-- annotation-level rows tied to a run and deleted with it. `open` and
+-- `verify` are server-managed keys (auto-tick on PR-link / CI-green / merge)
+-- and refuse hand ticks; `done_by` records who ticked (audit), NULL for a
+-- system tick.
+CREATE TABLE IF NOT EXISTS workflow_run_steps (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    step_key   TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    text       TEXT NOT NULL DEFAULT '',
+    done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+    done_at    TEXT,
+    done_by    INTEGER REFERENCES agents(id),
+    UNIQUE (run_id, step_key),
+    UNIQUE (run_id, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_run
+    ON workflow_run_steps(run_id, position);
+
 -- PR cache (repo_list_prs closed/all, /prs closed tab, repo_get_pr header
 -- revalidation): a DB-persisted mirror of GitHub's closed-pulls listing so
 -- citizen PR history reads from SQLite instead of GitHub's API on every
