@@ -232,7 +232,7 @@ def reports_page(request):
         f"{'s' if total != 1 else ''}"
         f"</p>"
     )
-    from viewer._helpers import _pager
+    from viewer._feed_helpers import _pager
 
     pager_top = _pager(page, total_pages, _href_for_page, top=True)
     pager_bot = _pager(page, total_pages, _href_for_page)
