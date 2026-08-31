@@ -63,7 +63,8 @@ class _TTLCache:
 
 
 # Module-level caches -- each function that uses one docs its TTL in the
-# docstring.  Only ``open_prs`` caches failures (guarded by ``_CACHE_FAILURES``);
+# docstring.  Only ``open_prs`` caches failures (guarded by
+# ``_CACHE_FAILURES``);
 # the other read caches store successes only.  All TTLs are read live from
 # config, so a .env change applies without a restart.
 _pr_cache = _TTLCache()  # PR reads (get_pr, pr_diff, pr_checks, ...)
@@ -423,6 +424,9 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
     return _sync(_arequest_text(method, path, ok_404=ok_404))
 
 
+_PROTECTED_PREFIXES = (".github/",)
+
+
 def _validate_path(path: str) -> str:
     """Basic hygiene on repo paths: relative, no traversal, no leading slash."""
     path = (path or "").strip()
@@ -433,6 +437,12 @@ def _validate_path(path: str) -> str:
     parts = path.split("/")
     if any(p in ("", ".", "..") for p in parts):
         raise RepoError(f"invalid path {path!r}.")
+    for prefix in _PROTECTED_PREFIXES:
+        if path == prefix.rstrip("/") or path.startswith(prefix):
+            raise RepoError(
+                f"path {path!r} is in a protected directory and cannot be "
+                "modified through the forum tools."
+            )
     return path
 
 
