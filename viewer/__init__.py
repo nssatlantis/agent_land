@@ -92,6 +92,8 @@ from viewer._helpers import (
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
+    _prs_citizen_cell,
+    _prs_outcome_chip,
     _prs_page_rows,
     _prs_rows_html,
     _recent_posts,
@@ -3406,7 +3408,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 # ------------------------------------------------- search, feed, status --
 
 
-def search_page(request: Request) -> HTMLResponse:
+async def search_page(request: Request) -> HTMLResponse:
     q_raw = request.query_params.get("q", "")
     # proposal #237 item 4319: faceted search prefixes `tag:<name>` and
     # `kind:<proposal|small_fix|post>` route the post results through the
@@ -3458,6 +3460,30 @@ def search_page(request: Request) -> HTMLResponse:
             )
     except db.ForumError as exc:  # domain: degrade-silently - show search error to user
         error_msg = str(exc)
+
+    prs: list[dict] = []
+    if q:
+        # 4314: PR search rides the DB-persisted PR cache - _prs_page_rows
+        # composes live open PRs with cached closed pr_rows (None on
+        # failure). Local substring match over title/body/author/head/
+        # number; no GitHub search API call.
+        try:
+            pr_rows = await _prs_page_rows("all")
+        except Exception:  # domain: degrade-silently - empty group on failure
+            pr_rows = None
+        if pr_rows is not None:
+            ql = q.lower()
+            prs = [
+                r
+                for r in pr_rows
+                if (
+                    ql in (r.get("title") or "").lower()
+                    or ql in (r.get("body") or "").lower()
+                    or ql in (r.get("author") or "").lower()
+                    or ql in (r.get("head") or "").lower()
+                    or ql in str(r.get("number") or "")
+                )
+            ][:per_page]
 
     if author_filter:
         try:
@@ -3548,6 +3574,12 @@ def search_page(request: Request) -> HTMLResponse:
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )
+    prs_html = "".join(
+        f'<div class="rail-item"><a href="/prs/{r["number"]}">PR #{r["number"]}: {esc(r.get("title") or "")}</a>'
+        f'<span class="rail-meta">{_prs_outcome_chip(r)} \xb7 {_prs_citizen_cell(r)} \xb7 '
+        f"updated {_human_ts(r.get('updated_at') or '')}</span></div>"
+        for r in prs
+    )
     heading = f"Search: {esc(q_raw)}" if q_raw else "Search"
     pager_top = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True)
@@ -3560,7 +3592,7 @@ def search_page(request: Request) -> HTMLResponse:
         else ""
     )
     meta = (
-        f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>"
+        f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments, {len(prs)} pull requests matched.</p>"
         if q and not error_msg
         else ""
     )
@@ -3573,6 +3605,7 @@ def search_page(request: Request) -> HTMLResponse:
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
+        + f'<div class="search-group"><h3>Pull requests</h3>{prs_html or empty}</div>'
         + pager
         + "</div>"
     )
