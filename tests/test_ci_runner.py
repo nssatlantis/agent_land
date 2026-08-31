@@ -49,7 +49,12 @@ def _restore():
 
 
 class _StubTree:
-    """Patches _prepare_tree to a throwaway dir holding a stub suite script."""
+    """Patches _prepare_tree to a throwaway dir holding a stub suite script.
+
+    Also forces CI_RUN_NATIVE_SANDBOX off so these native-host tests stay
+    deterministic host-interpreter runs regardless of whether the host (CI
+    test job, dev box) has docker - they exercise the run plumbing, not the
+    sandbox decision (covered separately in test_native_sandbox_*)."""
 
     def __init__(self, kind: str, body: str):
         self.dir = Path(tempfile.mkdtemp(prefix="agentland_ci_stub_"))
@@ -58,10 +63,13 @@ class _StubTree:
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(textwrap.dedent(body), encoding="utf-8")
         self._orig = ci_runner._prepare_tree
+        self._saved_native = config.CI_RUN_NATIVE_SANDBOX
+        config.CI_RUN_NATIVE_SANDBOX = 0
         ci_runner._prepare_tree = lambda: (str(self.dir), "deadbeefcafe")
 
     def cleanup(self):
         ci_runner._prepare_tree = self._orig
+        config.CI_RUN_NATIVE_SANDBOX = self._saved_native
 
 
 def test_knob_defaults():
@@ -511,6 +519,91 @@ def test_parse_static_summary_absent_when_not_static():
     assert "static" not in summary
 
 
+def test_native_sandbox_routes_through_docker():
+    """Native mode (no pr_number/files) with docker + the sandbox knob on
+    must run through _ensure_image/_sandbox_argv (full test+static surface),
+    stamping the refreshed main sha, and report result['sandboxed'] True."""
+    holder = {"image_calls": 0, "rev": None, "argv_calls": 0}
+    tree = Path(tempfile.mkdtemp(prefix="agentland_ci_native_"))
+    (tree / "tests").mkdir(parents=True, exist_ok=True)
+    (tree / "tests" / "run_ci.py").write_text(
+        "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n", encoding="utf-8"
+    )
+    saved = {
+        "prepare": ci_runner._prepare_tree,
+        "image": ci_runner._ensure_image,
+        "argv": ci_runner._sandbox_argv,
+        "docker": ci_runner._docker_available,
+        "traversable": ci_runner._ensure_tree_traversable,
+        "register": ci_runner._register_active,
+    }
+    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._docker_available = lambda: True
+    ci_runner._ensure_image = lambda tree_, rev: (
+        holder.update(image_calls=holder["image_calls"] + 1, rev=rev) or "fake:tag"
+    )
+    ci_runner._sandbox_argv = lambda tree_, image_tag, script_rel: (
+        [sys.executable, "-c", "print('ok')"],
+        "agentland-ci-native",
+    )
+    ci_runner._ensure_tree_traversable = lambda tree_: None
+    ci_runner._register_active = lambda *a, **k: None
+    _shadow("CI_RUN_NATIVE_SANDBOX", 1)
+    _shadow("CI_RUN_BRANCH_ENABLED", 1)
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert holder["image_calls"] == 1, "native sandbox must build the image"
+        assert holder["rev"] == "refreshed1234", "image must pin the refreshed main sha"
+        assert result["sandboxed"] is True
+        assert result["mode"] == "native"
+        assert "host_fallback_static_skipped" not in result
+    finally:
+        _restore()
+        for name, fn in saved.items():
+            setattr(ci_runner, name, fn)
+        _shutil_rmtree(tree)
+
+
+def test_native_host_fallback_when_knob_off():
+    """Native with docker present but the sandbox knob off must use the host
+    interpreter, never call _ensure_image, and (for 'tests') report
+    host_fallback_static_skipped=True so it is not mistaken for parity."""
+    holder = {"image_calls": 0}
+    tree = Path(tempfile.mkdtemp(prefix="agentland_ci_native_"))
+    (tree / "tests").mkdir(parents=True, exist_ok=True)
+    (tree / "tests" / "run_ci.py").write_text(
+        "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n", encoding="utf-8"
+    )
+    saved = {
+        "prepare": ci_runner._prepare_tree,
+        "image": ci_runner._ensure_image,
+        "docker": ci_runner._docker_available,
+    }
+    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._docker_available = lambda: True
+    ci_runner._ensure_image = lambda tree_, rev: (
+        holder.__setitem__("image_calls", holder["image_calls"] + 1) or "fake:tag"
+    )
+    _shadow("CI_RUN_NATIVE_SANDBOX", 0)
+    _shadow("CI_RUN_BRANCH_ENABLED", 1)
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert holder["image_calls"] == 0, "host fallback must not build an image"
+        assert result["sandboxed"] is False
+        assert result["host_fallback_static_skipped"] is True
+    finally:
+        _restore()
+        for name, fn in saved.items():
+            setattr(ci_runner, name, fn)
+        _shutil_rmtree(tree)
+
+
+def _shutil_rmtree(path: Path):
+    import shutil
+
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -533,6 +626,8 @@ def main():
     test_drain_bounded_and_tail_contiguous()
     test_gc_sweep_survives_timeout_exception()
     test_suspended_citizen_cannot_run_ci()
+    test_native_sandbox_routes_through_docker()
+    test_native_host_fallback_when_knob_off()
     print("test_ci_runner: all ok")
 
 

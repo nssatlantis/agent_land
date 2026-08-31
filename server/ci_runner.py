@@ -1195,6 +1195,7 @@ def run_checks(
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
+    sandboxed = False  # native host-fallback default; branch/local set True
     # Acquire a sharded runner slot — 3×1.5c on 4c host. User path waits
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _RUN_LOCK is kept for the existing single-slot test: if it is
@@ -1218,6 +1219,7 @@ def run_checks(
             except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
                 tree, head_sha, merge_info = _prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main — same sandbox as branch, never native.
+            sandboxed = True
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
@@ -1276,6 +1278,7 @@ def run_checks(
                     # success path: the audit row is best-effort.
                     pass
                 return payload
+            sandboxed = True
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
@@ -1298,8 +1301,35 @@ def run_checks(
                 tree, head_sha = _prepare_tree(slot=slot)
             except TypeError:
                 tree, head_sha = _prepare_tree()
-            argv = [sys.executable, script_rel]
-            container_name = None
+            # Native is a reference run on origin/main. When the host has
+            # docker (and sandboxing is on) it routes through the same image
+            # as branch/local, so it gets the full GitHub-CI-equivalent
+            # test+static surface (mypy/ruff baked from requirements-dev.txt).
+            # Without docker - or when the knob is off - it falls back to the
+            # host interpreter: tests only, static loudly skipped by
+            # tests/run_ci.py so a claim of parity is never silent.
+            sandboxed = bool(
+                config.CI_RUN_NATIVE_SANDBOX
+                and config.CI_RUN_BRANCH_ENABLED
+                and _docker_available()
+            )
+            if sandboxed:
+                image_tag = _ensure_image(tree, head_sha)
+                _ensure_tree_traversable(tree)
+                argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+                try:
+                    _cpus_idx = argv.index("--cpus")
+                    _cpus_val = float(argv[_cpus_idx + 1])
+                except Exception:
+                    # domain:degrade-silently - cpu cap not readable, default
+                    _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)
+                try:
+                    _register_active(slot, container_name, _cpus_val)
+                except Exception:
+                    pass  # domain:degrade-silently - registration best-effort
+            else:
+                argv = [sys.executable, script_rel]
+                container_name = None
             env = _child_env(tmp_root)
         pieces = _execute(
             argv,
@@ -1326,11 +1356,17 @@ def run_checks(
             result["pr_number"] = pr_number
             result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
+        result["sandboxed"] = sandboxed
+        if mode == "native" and checks == "tests" and not sandboxed:
+            # Host fallback ran tests only; static was loudly skipped. A
+            # machine-readable flag so callers never mistake it for parity.
+            result["host_fallback_static_skipped"] = True
         result.update(pieces)
         result["head_sha"] = head_sha
         detail = {
             "checks": checks,
             "mode": result["mode"],
+            "sandboxed": sandboxed,
             "ok": pieces["ok"],
             "timed_out": pieces["timed_out"],
             "exit_code": pieces["exit_code"],

@@ -549,6 +549,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Native mode (repo_ci_run with neither pr_number nor files - a reference
+    # run on origin/main). When on (and docker + branch mode are available),
+    # native runs through the same sandbox image as branch/local so it gets
+    # the full GitHub-CI-equivalent test+static surface (mypy/ruff baked
+    # from requirements-dev.txt). When off - or docker is absent - native
+    # falls back to the host interpreter (tests only; static SKIPPED loudly).
+    "CI_RUN_NATIVE_SANDBOX": ("FORUM_CI_RUN_NATIVE_SANDBOX", 1, int),
     # Hybrid CI: local fallback when GitHub Actions is down. Concurrency
     # controls how many sandboxed branch runs may overlap on the single
     # forum host (each slot has its own -ci tree), and the poller consults
