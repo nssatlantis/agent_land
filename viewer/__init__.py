@@ -2505,6 +2505,75 @@ def _economy_body(request: Request) -> str:
     except Exception:  # domain: degrade-silently - stake health panel is optional enrichment, never blocks /economy
         _stake_health_html = ""
 
+    # Job escrow projection timeline (4396) — display-only, degrade-silently
+    _job_escrow_html = ""
+    try:
+        _jobs_all = db.list_jobs(view="all", limit=100).get("jobs", [])
+        _active_jobs = [
+            j
+            for j in _jobs_all
+            if j.get("status") in ("open", "offered", "active")
+            and not j.get("official")
+        ]
+        if _active_jobs:
+            from db._credits import format_credits as _fmt_q
+
+            _total_held_q = 0
+            _job_rows = ""
+            for _j in sorted(
+                _active_jobs, key=lambda x: x.get("job_id") or 0, reverse=True
+            )[:20]:
+                try:
+                    _pay_q = int(_j.get("payment_quarters", 0) or 0)
+                    _total = int(_j.get("total_cycles", 1) or 1)
+                    _done = int(_j.get("cycles_done", 0) or 0)
+                    _rem = max(0, _total - _done)
+                    _held = _pay_q * _rem
+                    _total_held_q += _held
+                    _title_j = esc(_j.get("title") or f"job #{_j.get('job_id') or 0}")
+                    _j_id = int(_j.get("job_id") or 0)
+                    _pay_txt = esc(_fmt_q(_pay_q))
+                    _held_txt = esc(_fmt_q(_held))
+                    # timeline: sequential per-cycle releases, each _pay_q
+                    _timeline = ""
+                    if _rem > 0 and _rem <= 6:
+                        _segs = "".join(
+                            f'<span style="display:inline-block;width:12px;height:8px;background:var(--accent);margin-right:2px;border-radius:2px" title="cycle {i + 1}: {_pay_txt}"></span>'
+                            for i in range(_rem)
+                        )
+                        _timeline = f'<div style="display:flex;align-items:center;gap:2px">{_segs}<span style="font-size:11px;color:var(--muted);margin-left:4px">{_rem}× {_pay_txt}</span></div>'
+                    elif _rem > 6:
+                        _timeline = f"<span style='font-size:12px;color:var(--muted)'>{_rem} cycles × {_pay_txt} → {_held_txt} total</span>"
+                    else:
+                        _timeline = (
+                            '<span style="color:var(--muted)">no remaining</span>'
+                        )
+                    _job_rows += (
+                        f"<tr><td><a href='/jobs'>{_title_j}</a> <span style='color:var(--muted)'>#{_j_id}</span></td>"
+                        f"<td style='text-align:right'>{_done}/{_total}</td>"
+                        f"<td style='text-align:right'>{_pay_txt}</td>"
+                        f"<td style='text-align:right'>{_held_txt}</td>"
+                        f"<td>{_timeline}</td></tr>"
+                    )
+                except (
+                    Exception
+                ):  # domain: degrade-silently - one bad job never blocks panel
+                    continue
+            _job_escrow_html = (
+                '<div class="panel"><h2>Job escrow — projection timeline</h2>'
+                f"<p style='color:var(--muted);font-size:13px'>Active escrow: {_fmt_q(_total_held_q)} held across {len(_active_jobs)} jobs (open/offered/active, non-official). Each remaining cycle releases payment_quarters on acceptance.</p>"
+                "<table><thead><tr><th>job</th><th style='text-align:right'>done/total</th><th style='text-align:right'>per cycle</th><th style='text-align:right'>held</th><th>projection</th></tr></thead><tbody>"
+                + _job_rows
+                + "</tbody></table>"
+                "<p style='color:var(--muted);font-size:13px'>Held = payment × (total − done); timeline shows per-cycle releases sequentially (≤6 bars) or aggregate. Degrades to no panel when DB unavailable.</p></div>"
+            )
+        else:
+            _job_escrow_html = '<div class="panel"><h2>Job escrow — projection timeline</h2><p style="color:var(--muted)">No active job escrow — no open/offered/active non-official jobs.</p></div>'
+    except (
+        Exception
+    ):  # domain: degrade-silently - job escrow panel is optional enrichment
+        _job_escrow_html = ""
+
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
@@ -2537,6 +2606,7 @@ def _economy_body(request: Request) -> str:
         + inspector_html
         + _genesis_html
         + _stake_health_html
+        + _job_escrow_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
