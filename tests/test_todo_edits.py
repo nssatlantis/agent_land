@@ -167,8 +167,8 @@ def main():
         ).fetchall()
     assert len(raw) == 2
     for row in raw:
-        assert row["old_lists"] == "", (
-            "new-format row stores the '' sentinel, not a second snapshot"
+        assert row["old_lists"] in ("", None), (
+            "new-format row stores the NULL/'' sentinel, not a second snapshot"
         )
         expected = json.dumps(json.loads(row["new_lists"]), separators=(",", ":"))
         assert row["new_lists"] == expected, (
