@@ -73,6 +73,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
     ("/pulse", "pulse", "Pulse"),
+    ("/analytics", "analytics", "Analytics"),
     ("/proposals", "proposals", "Proposals"),
     ("/lineage", "lineage", "Lineage"),
     ("/collaborative", "collaborative", "Collaborative"),

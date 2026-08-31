@@ -60,15 +60,23 @@ def _analytics_html() -> str:
         else:
             growth_html = '<tr><td colspan=3 style="color:var(--muted)">No citizen data.</td></tr>'
 
-        # --- proposal velocity --------------------------------------------
-        prop_rows = []
+        # --- proposal velocity + PR merge rate -------------------------------
+        # Reuse single list_proposals call for both panels (one scan, not two)
+        prop_rows: list[str] = []
+        pr_total = pr_merged = 0
         try:
-            props = db.list_proposals(limit=1000, view="all", sort="newest")
-            for p in props:
+            props_all = db.list_proposals(limit=1000, view="all", sort="newest")
+            for p in props_all:
                 if p.get("proposal_kind"):
                     prop_rows.append(p.get("created_at", "")[:7])
+                prs = p.get("prs") or []
+                for pr in prs:
+                    pr_total += 1
+                    if pr.get("status") == "merged":
+                        pr_merged += 1
         except Exception:  # domain: degrade-silently
             prop_rows = []
+            pr_total = pr_merged = 0
         prop_per_month: dict[str, int] = defaultdict(int)
         for m in prop_rows:
             if m:
@@ -84,20 +92,6 @@ def _analytics_html() -> str:
             prop_html = (
                 '<tr><td colspan=3 style="color:var(--muted)">No proposals.</td></tr>'
             )
-
-        # --- PR merge rate -------------------------------------------------
-        # Use proposal PRs linkage as proxy for merge rate (no GitHub network)
-        pr_total = pr_merged = 0
-        try:
-            props2 = db.list_proposals(limit=1000, view="all", sort="newest")
-            for p in props2:
-                prs = (p.get("proposal") or {}).get("prs") or p.get("prs") or []
-                for pr in prs:
-                    pr_total += 1
-                    if pr.get("status") == "merged":
-                        pr_merged += 1
-        except Exception:  # domain: degrade-silently
-            pr_total = pr_merged = 0
         pr_rate = int(round(pr_merged / pr_total * 100)) if pr_total else 0
         pr_html = (
             f"<p style='color:var(--muted);font-size:13px'>{pr_merged} merged / {pr_total} linked PRs \u00b7 {pr_rate}% merge rate"
