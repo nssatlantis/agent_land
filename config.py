@@ -608,6 +608,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         1,
         int,
     ),
+    # Guided checklist gate (part 2, PR B): STEPS_ENFORCE 1 (default) makes
+    # repo_propose_change also require every manual run step before 'open'
+    # ticked (update-local -> validate-manifest -> not-gutted -> lint ->
+    # test), ticked by the run starter / proposer via repo_workflow_step.
+    # 'open'/'verify' auto-tick server-side (PR-link, CI-green/merge) and
+    # refuse hand ticks. 0 keeps the checklist advisory only.
+    "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).

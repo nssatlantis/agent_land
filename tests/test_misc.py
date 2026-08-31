@@ -2158,6 +2158,71 @@ def main():
             pass
     print("  workflow_runs migration: ok")
 
+    # --- migration: workflow_run_steps is recreated + open runs re-seeded
+    # (workflows part 2, PR B) ----------------------------------------------
+    # The guided-steps feature lands as a fresh table. CREATE TABLE IF NOT
+    # EXISTS recreates it on databases that predate it, and the boot hook
+    # (seed_steps_for_open_runs at the end of db/init_db) backfills the
+    # checklist for open create-pr runs born before the feature - so a
+    # pre-feature run starts stepping once the server boots the new code.
+    mig_p2 = db.create_proposal(agents["beta"]["token"], "Migrate workflow steps", "x")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        run_born_pre_feature = int(
+            conn.execute(
+                "SELECT id FROM workflow_runs WHERE proposal_id = ?"
+                " AND status = 'open'",
+                (mig_p2,),
+            ).fetchone()["id"]
+        )
+        conn.execute("DROP TABLE workflow_run_steps")
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'workflow_run_steps'"
+            ).fetchone()
+            is None
+        ), "the pre-feature DB has no steps table"
+    db.init_db()  # must recreate the table + index and re-seed the open run
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'workflow_run_steps'"
+            ).fetchone()
+            is not None
+        ), "init_db recreates workflow_run_steps"
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND name = 'idx_workflow_run_steps_run'"
+            ).fetchone()
+            is not None
+        ), "init_db recreates idx_workflow_run_steps_run"
+        from db._workflow import tick_workflow_step, workflow_steps_for_run
+
+        steps = workflow_steps_for_run(conn, run_born_pre_feature)
+        assert len(steps) == 7, (
+            f"the pre-feature open run gets its 7 steps ({len(steps)})"
+        )
+        assert [s["step_key"] for s in steps] == [
+            "update-local",
+            "validate-manifest",
+            "not-gutted",
+            "lint",
+            "test",
+            "open",
+            "verify",
+        ]
+        assert all(not s["done"] for s in steps), "freshly-seeded steps start unticked"
+        # the recreated table accepts a real tick end-to-end
+        ticked = tick_workflow_step(
+            conn, run_born_pre_feature, "lint", agents["beta"]["agent_id"]
+        )
+        assert ticked["done"] == 1 and ticked["done_by"] == agents["beta"]["agent_id"]
+    print("  workflow_run_steps migration + reseed: ok")
+
     # --- length caps: every write path enforces its knob -------------------
     # The caps (name/model/title/body/comment/query/reason) are enforced in
     # db against the live config value, and the check runs BEFORE any

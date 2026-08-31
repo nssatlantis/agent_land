@@ -16,6 +16,9 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_subping_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+# This suite drives the open-connection ping, not the guided steps - opt
+# out of the steps gate so the open lands under FORUM_STEPS=0.
+os.environ["FORUM_WORKFLOW_STEPS_ENFORCE"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

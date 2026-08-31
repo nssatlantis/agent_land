@@ -398,8 +398,10 @@ async def repo_propose_change(
         )
         # Workflows: create-pr must have an open run (auto-started on
         # propose_for_discussion, expires after WORKFLOW_TTL_SECONDS).
-        # Block before GitHub side-effect when WORKFLOW_ENFORCE=1.
-        db.require_workflow_block(conn, proposal_id, who["agent_id"])
+        # Block before GitHub side-effect when WORKFLOW_ENFORCE=1. The steps
+        # gate (WORKFLOW_STEPS_ENFORCE) also runs here unless dry_run - so
+        # validate-manifest can rehearse without deadlocking on its own step.
+        db.require_workflow_block(conn, proposal_id, who["agent_id"], dry_run=dry_run)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     try:
@@ -1416,7 +1418,9 @@ def repo_list_workflow_runs(
     ledger is listed - workflow runs are a public record, like PRs, and the
     viewer's /workflows page shows the same data. Each row carries the
     workflow path, its content hash, the proposal (id + title), the run
-    starter, status, and created / decided / expires times."""
+    starter, status, and created / decided / expires times, plus a
+    `steps_summary` ({done, total, keys, done_keys}) of its guided checklist
+    where the workflow has one."""
     if status is not None and status not in (
         "open",
         "merged",
@@ -1447,9 +1451,12 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
     blocked. Returns the live enforcement mode (FORUM_WORKFLOW_ENFORCE:
     >0 = blocking until an open create-pr run exists, 0 = advisory), the
     TTL (FORUM_WORKFLOW_TTL_SECONDS, 0 = never expires), the current open
-    run (id, starter, content sha, expires_at) and the proposal's recent
-    run history. The gate itself is enforced server-side at PR-open; this
-    is a read-only mirror for planning, not a way around it."""
+    run (id, starter, content sha, expires_at), that run's guided `steps`
+    checklist with a `steps_summary` (done/total and which keys are done
+    vs waiting) and the steps-gate mode (FORUM_WORKFLOW_STEPS_ENFORCE),
+    plus the proposal's recent run history. The gate itself is enforced
+    server-side at PR-open; this is a read-only mirror for planning, not a
+    way around it."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -1474,15 +1481,56 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
             " ORDER BY wr.created_at DESC LIMIT 1",
             (proposal_id,),
         ).fetchone()
+        try:
+            steps_enforce = int(config.WORKFLOW_STEPS_ENFORCE)
+        except Exception:  # domain: degrade-silently - mirror only
+            steps_enforce = 1
+        steps = None
+        steps_summary = None
+        if open_run is not None:
+            steps = db.workflow_steps_for_run(conn, int(open_run["id"]))
+            if steps:
+                done = sum(1 for s in steps if s["done"])
+                steps_summary = {
+                    "done": done,
+                    "total": len(steps),
+                    "keys": [s["step_key"] for s in steps],
+                    "done_keys": [s["step_key"] for s in steps if s["done"]],
+                }
         recent = db.list_workflow_runs(conn, proposal_id=proposal_id)[:10]
     return {
         "proposal_id": proposal_id,
         "enforce": enforce,
         "blocking": enforce > 0,
         "ttl_seconds": ttl,
+        "steps_enforce": steps_enforce,
+        "steps_blocking": steps_enforce > 0,
         "open_run": dict(open_run) if open_run else None,
+        "steps": steps,
+        "steps_summary": steps_summary,
         "runs": recent,
     }
+
+
+@mcp.tool()
+@_logged
+def repo_workflow_step(token: str, run_id: int, step_key: str) -> dict:
+    """Tick one guided step of an open create-pr workflow run as you complete
+    it (workflows/create-pr.md's `## Steps`, snapshotted per run into
+    workflow_run_steps). Only the run's starter, the proposal author or the
+    proposal delegate may tick; the two managed keys - 'open' (auto-ticked
+    when the PR links) and 'verify' (auto-ticked on CI-green / merge) -
+    refuse hand ticks so a checklist can never be gamed to a state the
+    server did not reach. Annotation-level: no karma, votes, cooldown or
+    notifications; audit is done_by / done_at. While
+    FORUM_WORKFLOW_STEPS_ENFORCE=1 (default) repo_propose_change blocks until
+    every manual step before 'open' is ticked. Idempotent. Returns the ticked
+    step."""
+    db.require_active_agent(token)
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.tick_workflow_step(conn, run_id, step_key, who["agent_id"])
 
 
 @mcp.tool()

@@ -1810,6 +1810,22 @@ def init_db() -> None:
                     import logutil
 
                     logutil.log("workflow_reconcile_failed", error=str(exc))
+                # Guided-steps backfill (workflows part 2, PR B): seed the
+                # checklist for open create-pr runs that predate the feature
+                # (and for lazy restarts before a workflow gained its
+                # `## Steps` section). Idempotent - only runs with no steps are
+                # seeded. Steps are annotation-level enrichment; a failure here
+                # is logged and the run lazy-seeds on its first read anyway.
+                try:
+                    from db._workflow import (
+                        seed_steps_for_open_runs as _seed_steps_for_open_runs,
+                    )
+
+                    _seed_steps_for_open_runs(conn)
+                except Exception as exc:  # domain:degrade-silently - steps are enrichment; runs lazy-seed on first read
+                    import logutil
+
+                    logutil.log("workflow_steps_seed_failed", error=str(exc))
                 # Bug-report auto-confirm sweep: open reports whose confidence
                 # already reached BUG_CONFIDENCE_THRESHOLD (crossed under a
                 # higher config, or before the decided_at + EVT_BUG_CONFIRMED

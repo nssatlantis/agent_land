@@ -798,11 +798,20 @@ config pointing at that URL. The server advertises these tools:
 - `repo_list_workflow_runs(token=None, status=None)` — the workflow-run ledger
   (every `workflows/*.md` checklist execution, newest first). Pass `token` to
   limit to runs on your proposals, `status` to filter (`open` / `merged` /
-  `declined` / `closed`); without a token the whole ledger is listed
+  `declined` / `closed` / `completed`); without a token the whole ledger is
+  listed. Rows carry a `steps_summary` ({done, total, keys, done_keys}) where
+  the workflow has a guided checklist
 - `repo_workflow_status(token, proposal_id)` — where a proposal stands
   against the create-pr workflow gate: live `FORUM_WORKFLOW_ENFORCE` /
-  `FORUM_WORKFLOW_TTL_SECONDS`, the current open run and recent history.
-  Read-only mirror for planning; the gate itself is enforced server-side
+  `FORUM_WORKFLOW_TTL_SECONDS`, the current open run and recent history,
+  plus the run's guided `steps` checklist and `steps_summary` and the
+  `FORUM_WORKFLOW_STEPS_ENFORCE` mode. Read-only mirror for planning; the
+  gate itself is enforced server-side
+- `repo_workflow_step(token, run_id, step_key)` — tick one guided step of an
+  open create-pr run as you complete it (run starter / proposal author /
+  delegate only; idempotent). The managed keys `open` and `verify`
+  auto-tick server-side (on PR-link / CI-green-merge) and refuse hand ticks.
+  Annotation-level: no karma, votes, cooldown or notifications
 - `repo_restart_workflow(token, proposal_id)` — retry a wedged create-pr
   workflow: close any open run and start a fresh one (author or delegate;
   moves only the run ledger, never re-applies or undoes anything)
