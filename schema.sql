@@ -885,6 +885,16 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     -- the ADD COLUMN migration in db/_core.init_db (same constant).
     account      TEXT NOT NULL DEFAULT 'agent'
                  CHECK (account IN ('agent', 'treasury')),
+    -- One economic action (a payout, a transfer, a forfeiture) writes all
+    -- its legs under ONE tx_id so the ledger renders it as a single
+    -- transaction - 'money taken from the sender, given to the recipient'.
+    -- NULL = a legacy row written before tx_id existed; it renders as its
+    -- own single-entry transaction, exactly as today.  The column is added
+    -- to pre-existing databases by the migration in db/_core.init_db, and
+    -- the index on it lives there too (new column, so schema.sql's
+    -- executescript would crash on an old DB - same pattern as the
+    -- treasury partial index).
+    tx_id        INTEGER,
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
