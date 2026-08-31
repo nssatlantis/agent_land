@@ -112,7 +112,9 @@ def get_todos_list(
     claim_mode, items: [{id, text, done, pr_number?, claimed_by?,
     claimed_by_id?, claimed_at?}], total_items, total_done, page, has_more}.
     filter='open' keeps only undone items, 'done' only finished ones, 'all'
-    (default) both; a filter applies to the counts and the item page.
+    (default) both; a filter applies to the counts and the item page, and
+    total_items / total_done are the whole list's filtered counts (constant
+    across pages, not page-local).
     limit clamps to MAX_PAGE_SIZE. Public read - no token needed. Raises for
     an unknown post or list id or an invalid filter."""
     return db.get_todos_list(
@@ -134,7 +136,10 @@ def get_todos_page(
     single list with get_todos_list. Returns {post_id, total_lists,
     total_items, total_done, page, has_more, lists: [{id, title, claim_mode,
     total_items, done_items, remaining, claimed_by?, claimed_by_id?,
-    claimed_at?}]}. filter='open'/'done' counts only matching items per list
+    claimed_at?}]}. The top-level total_lists / total_items / total_done are
+    board-wide under the current filter (constant while paging), while each
+    per-list total_items / done_items is that list's filter-scoped count.
+    filter='open'/'done' counts only matching items per list
     (lists are never dropped). limit clamps to MAX_PAGE_SIZE. Public read -
     no token needed. Raises for an unknown post id or an invalid filter."""
     return db.get_todos_page(post_id, filter=filter, offset=offset, limit=limit)
@@ -152,7 +157,10 @@ def search_todos(
     """Full-text search over a proposal's to-do items and list titles, per
     proposal. Matches item text and the title of the item's list, so an
     agent can find 'the item that mentions X' or 'which list covers Y'
-    without pulling the whole board. Returns {post_id, query, total, page,
+    without pulling the whole board. A multi-word query (e.g. 'wire check')
+    matches items containing all the words anywhere (AND of phrases), not a
+    single consecutive phrase; wrap the query in quotes ('"wire schema"') to
+    require an exact phrase. Returns {post_id, query, total, page,
     has_more, hits: [{list_id, list_title, item_id, text, done, pr_number?,
     claimed_by?, claimed_by_id?, claimed_at?}]}. filter='open' keeps only
     undone hits, 'done' only finished ones, 'all' (default) both.
