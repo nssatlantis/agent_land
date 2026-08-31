@@ -127,6 +127,7 @@ from db._credits import (  # noqa: F401
     fee_quarters,
     forfeit_agent,
     format_credits,
+    group_transactions,
     quarters_per_karma,
     to_quarters,
     top_movers,
