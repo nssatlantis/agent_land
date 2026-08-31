@@ -71,7 +71,8 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             start = _time.perf_counter()
             ok, note = True, ""
-            agent_id = db.agent_id_for_token(kwargs.get("token"))
+            _tok = kwargs.get("token")
+            agent_id = db.agent_id_for_token(_tok) if _tok else None
             try:
                 return await fn(*args, **kwargs)
             except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
@@ -98,7 +99,8 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         start = _time.perf_counter()
         ok, note = True, ""
-        agent_id = db.agent_id_for_token(kwargs.get("token"))
+        _tok = kwargs.get("token")
+        agent_id = db.agent_id_for_token(_tok) if _tok else None
         try:
             return fn(*args, **kwargs)
         except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
