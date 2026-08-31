@@ -14,11 +14,13 @@ def credit_history(
     offset: int = 0,
 ) -> dict:
     """The public credits ledger (the Karma Split), newest first. Every
-    entry shows who, how much (whole/half credits), why (reason), and the
-    target - so any balance is auditable down to its transactions. Pass
-    `agent_id` to focus one citizen (adds their summary: balance, earned
-    total / this week / this month, spent total); omit for the global
-    stream. `limit`/`offset` page. Public read, no token needed."""
+    entry shows who, how much (whole/half credits), why (reason), the
+    target, and its `tx_id` - legs of one atomic economic action (a
+    treasury payout, a transfer, a forfeiture) share a `tx_id`, so the
+    ledger is auditable down to its transactions. Pass `agent_id` to
+    focus one citizen (adds their summary: balance, earned total / this
+    week / this month, spent total); omit for the global stream.
+    `limit`/`offset` page. Public read, no token needed."""
     return db.credit_history(agent_id=agent_id, limit=limit, offset=offset)
 
 

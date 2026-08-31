@@ -1291,6 +1291,57 @@ def main():
     )
     print("  events category migration: ok")
 
+    # --- credit_entries tx_id column migration ---------------------------
+    # A pre-tx_id database carries credit_entries without the `tx_id`
+    # column.  init_db() must ADD the column (NULL for legacy rows) and
+    # create the index - the new column cannot live in schema.sql's
+    # executescript because it would crash on an old DB missing it.
+    _OLD_CREDIT_DDL = """CREATE TABLE credit_entries (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id       INTEGER REFERENCES agents(id),
+        delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+        reason         TEXT NOT NULL,
+        target_type    TEXT,
+        target_id      INTEGER,
+        account        TEXT NOT NULL DEFAULT 'agent'
+                       CHECK (account IN ('agent', 'treasury')),
+        created_at     TEXT NOT NULL
+                       DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )"""
+
+    def _seed_credit(conn):
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            " account) VALUES (NULL, 1000, 'genesis', 'treasury')"
+        )
+
+    def _verify_credit(conn):
+        legacy = conn.execute(
+            "SELECT tx_id FROM credit_entries WHERE reason = 'genesis'"
+        ).fetchone()
+        assert legacy is not None and legacy[0] is None, (
+            "legacy rows keep tx_id NULL after the migration"
+        )
+        idx = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND name = 'idx_credit_entries_tx'"
+            ).fetchall()
+        }
+        assert "idx_credit_entries_tx" in idx, (
+            "idx_credit_entries_tx must exist after the migration"
+        )
+
+    assert_upgrade_column(
+        "credit_entries",
+        _OLD_CREDIT_DDL,
+        "tx_id",
+        seed=_seed_credit,
+        verify=_verify_credit,
+    )
+    print("  credit_entries tx_id migration: ok")
+
     # --- pr_comment_seen table migration --------------------------------
     # A pre-sweep database carries no pr_comment_seen table.  init_db()
     # must create it on boot (CREATE TABLE IF NOT EXISTS in the schema

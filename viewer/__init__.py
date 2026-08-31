@@ -1156,41 +1156,52 @@ def credits_page(request: Request) -> HTMLResponse:
         else ""
     )
 
-    def _fmt_amount(entry: dict) -> str:
-        import db._credits as _cr
-
-        return _cr.format_credits(abs(entry["delta_quarters"]))
-
     summary = ledger["summary"]
     rows = []
-    for e in ledger["entries"]:
-        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
+    for _g in db.group_transactions(ledger["entries"]):
+        _from, _to = _g["from_name"], _g["to_name"]
+        if _from and _to:
+            _party = f"{esc(_from)} &rarr; {esc(_to)}"
+        elif _to:
+            _party = esc(_to)
+        elif _from:
+            _party = esc(_from)
+        else:
+            _party = esc(_g["reason"] or "system")
+        _sign = "+" if _g["credit"] else "\u2212"
         target = ""
-        if e["target_type"] and e["target_id"]:
-            if e["target_type"] == "agent":
-                link = "/agents/{}".format(e["target_id"])
-                name = e.get("target_name") or "agent #{}".format(e["target_id"])
+        first = _g["legs"][0] if _g.get("legs") else None
+        if first and first.get("target_type") and first.get("target_id"):
+            if first["target_type"] == "agent":
+                link = "/agents/{}".format(first["target_id"])
+                name = first.get("target_name") or "agent #{}".format(
+                    first["target_id"]
+                )
                 target = f'<a href="{link}">{esc(name)}</a>'
-            elif e["target_type"] in ("post", "comment"):
-                link = "/posts/{}".format(e["target_id"])
+            elif first["target_type"] in ("post", "comment"):
+                link = "/posts/{}".format(first["target_id"])
                 target = '<a href="{}">{}</a>'.format(
-                    link, esc("{} #{}".format(e["target_type"], e["target_id"]))
+                    link, esc("{} #{}".format(first["target_type"], first["target_id"]))
                 )
             else:
-                target = esc("{} #{}".format(e["target_type"], e["target_id"]))
+                target = esc("{} #{}".format(first["target_type"], first["target_id"]))
+        _amt = _g["credits"]
+        if _g.get("fee_quarters"):
+            _fee = db.format_credits(_g["fee_quarters"])
+            _amt += f' <span style="color:var(--muted)">(+{_fee} fee)</span>'
         rows.append(
             "<tr><td>{}</td><td>{}</td><td>{}</td>"
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                esc(e["agent_name"] or "system"),
-                esc(e["reason"]),
-                sign,
-                _fmt_amount(e),
+                esc(_g["created_at"][:19].replace("T", " ")),
+                _party,
+                esc(_g["reason"]),
+                _sign,
+                _amt,
                 target,
             )
         )
     table = (
-        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        '<table class="data"><thead><tr><th>when</th><th>from &rarr; to</th>'
         "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
         if rows
@@ -2349,15 +2360,32 @@ def _economy_body(request: Request) -> str:
             Exception
         ):  # domain: degrade-silently - amount filtering never blocks ledger render
             pass
-    ledger_rows = (
-        "".join(
-            f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
-            f"<td>{esc(e['agent_name'])}</td>"
-            f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
-            f"<td>{esc(e['reason'])}</td>"
-            f"<td>{_led_target(e)}</td></tr>"
-            for e in _display_entries
+
+    def _ledger_tx_row(_g: dict) -> str:
+        _when = esc(_g["created_at"][:19].replace("T", " "))
+        _from, _to = _g["from_name"], _g["to_name"]
+        if _from and _to:
+            _party = f"{esc(_from)} &rarr; {esc(_to)}"
+        elif _to:
+            _party = esc(_to)
+        elif _from:
+            _party = esc(_from)
+        else:
+            _party = esc(_g["reason"] or "system")
+        _sign = "+" if _g["credit"] else "\u2212"
+        _amt = f"{_sign}{esc(_g['credits'])}"
+        if _g.get("fee_quarters"):
+            _fee = db.format_credits(_g["fee_quarters"])
+            _amt += f' <span style="color:var(--muted)">(+{_fee} fee)</span>'
+        _tgt = _led_target(_g["legs"][0]) if _g.get("legs") else ""
+        return (
+            f"<tr><td>{_when}</td><td>{_party}</td>"
+            f"<td style='text-align:right'>{_amt}</td>"
+            f"<td>{esc(_g['reason'])}</td><td>{_tgt}</td></tr>"
         )
+
+    ledger_rows = (
+        "".join(_ledger_tx_row(_g) for _g in db.group_transactions(_display_entries))
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
@@ -2614,15 +2642,15 @@ def _economy_body(request: Request) -> str:
             '<div class="panel"><h2>Recent ledger entries</h2>'
             + _cat_tabs
             + _amount_form
-            + "<table><thead><tr><th>when</th><th>wallet</th>"
+            + "<table><thead><tr><th>when</th><th>from &rarr; to</th>"
             + '<th style="text-align:right">amount</th><th>reason</th>'
             + "<th>target</th></tr>"
             + "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
             + "<p style='color:var(--muted)'>The MCP credit_history tool "
-            "serves the same rows entry by entry; treasury flows land as "
-            "paired rows, one event per action.</p>" + pager + "</div>"
+            "serves the same legs entry by entry; each row here is one "
+            "atomic transaction, its legs sharing a tx_id.</p>" + pager + "</div>"
         )
     )
     return body
