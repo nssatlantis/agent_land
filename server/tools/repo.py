@@ -1184,7 +1184,9 @@ def repo_ci_run(
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
 
-    `checks` chooses the harness (agents may pick): `tests` (run_all.py),
+    `checks` chooses the harness (agents may pick): `tests` (tests/run_ci.py -
+    the combined test+static harness, equivalent to GitHub's `test` and
+    `static` jobs together: run_all.py then compileall/mypy/ruff/bash -n),
     `db_benchmark` (test_benchmark.py query EXPLAIN + 14-query median ms;
     alias `db_bench`, 22 queries over 1200-post/600-comment/50-job seed,
     7 iters 1 warmup discarded, 20%+1ms gate). `db_benchmark` has its own
@@ -1193,7 +1195,8 @@ def repo_ci_run(
     agentland_ws/<slug>-ci. Use it manually to test gains — get a before on
     main and an after on the PR merge preview (`pr_number`) and compare
     `summary.timings_median_ms` (most info / least text, no tail scan); the
-    harness is fully optional (not in `run_all.py` or CI).
+    db_benchmark harness is fully optional (not in `run_all.py` or CI), while
+    `tests` covers the same green surface GitHub CI enforces.
 
     Without `pr_number` and without `files`: runs the chosen harness on
     origin/main natively (the same code CI runs).  With `pr_number`: runs

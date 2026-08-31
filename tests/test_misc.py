@@ -1141,6 +1141,91 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: pr_rows (DB-persisted closed-PR cache) -----------------
+    # The cache is brand-new, so the honest "old schema" is a pre-feature
+    # database with NO pr_rows tables at all. init_db() must create both
+    # tables on upgrade - pr_rows WITH head_sha (the revalidation seam can
+    # only build a 304 synthetic from a stored sha), pr_cache_meta - and the
+    # state/updated_at index via the guarded migration tail (schema.sql is a
+    # no-op on an existing DB, so the index cannot live there).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "pr_rows_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            # Simulate a pre-feature database: drop the cache tables entirely.
+            conn.execute("DROP TABLE IF EXISTS pr_rows")
+            conn.execute("DROP TABLE IF EXISTS pr_cache_meta")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+                )
+            }
+            assert "pr_rows" not in pre and "pr_cache_meta" not in pre
+        # Boot must recreate the tables with head_sha and the index.
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(pr_rows)")}
+            assert "head_sha" in cols, (
+                f"pr_rows must carry head_sha after migration, got {cols}"
+            )
+            idx = conn.execute(
+                "SELECT name FROM sqlite_master"
+                " WHERE type='index' AND name='idx_pr_rows_state_updated'"
+            ).fetchone()
+            assert idx is not None, "guarded pr_rows index must exist after boot"
+            meta = conn.execute("PRAGMA table_info(pr_cache_meta)").fetchall()
+            assert any(r["name"] == "key" for r in meta)
+        # The feature works on the migrated database: feed + raw upserts,
+        # ETag revalidation shape, watermark, reader.
+        with db._conn() as conn:
+            db.pr_rows_upsert(
+                conn,
+                {
+                    "number": 55555,
+                    "title": "Migrated cache PR",
+                    "head": "feature/x",
+                    "head_sha": "cafebabe",
+                    "base": "main",
+                    "author": "someone",
+                    "state": "closed",
+                    "updated_at": "2026-01-01T00:00:00.000Z",
+                    "labels": [],
+                    "citizen": None,
+                },
+            )
+            db.pr_rows_upsert_from_raw(
+                conn,
+                {
+                    "number": 55556,
+                    "title": "Raw migrated",
+                    "state": "closed",
+                    "head": {"ref": "feature/y", "sha": "deadbeef"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "another"},
+                    "labels": [],
+                },
+                etag='"mig"',
+            )
+            db.pr_rows_set_watermark(conn, "2026-01-02T00:00:00.000Z")
+        rows = db.list_pr_rows()
+        assert rows is not None and {r["number"] for r in rows} == {55555, 55556}
+        by_number = {r["number"]: r for r in rows}
+        assert by_number[55555]["head_sha"] == "cafebabe"
+        assert by_number[55556]["head_sha"] == "deadbeef"
+        assert by_number[55556]["etag"] == '"mig"'
+        # Idempotent second boot: tables survive, index not doubled.
+        db.init_db()
+        with db._conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type='index' AND name='idx_pr_rows_state_updated'"
+            ).fetchone()[0]
+        assert n == 1, "the pr_rows index migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and

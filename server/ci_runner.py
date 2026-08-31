@@ -15,12 +15,13 @@ Security posture (deliberate - do not loosen casually):
   Running unmerged PR code outside that boundary would hand any citizen
   arbitrary code execution on the production host, so the mode refuses
   loudly whenever docker is unavailable.  The dependency image bakes ONLY
-  origin/main's requirements.txt (read via ``git show <main_sha>:...``,
-  never the merge result): a host-side ``docker build`` with network
-  access must never install a PR-chosen dependency, whose install hooks
-  would run unsandboxed.  A PR that needs different dependencies therefore
-  fails honestly with an ImportError inside the sandbox - a documented
-  limitation, not an oversight.  Repository code never enters an image.
+  origin/main's requirements.txt and requirements-dev.txt (read via
+  ``git show <main_sha>:...``, never the merge result): a host-side
+  ``docker build`` with network access must never install a PR-chosen
+  dependency, whose install hooks would run unsandboxed.  A PR that needs
+  different dependencies therefore fails honestly with an ImportError
+  inside the sandbox - a documented limitation, not an oversight.
+  Repository code never enters an image.
 - Child processes that matter receive an allowlisted environment -
   native suites AND the branch-mode docker run/build clients:
   GITHUB_TOKEN and forum secrets are absent from both, and
@@ -319,8 +320,14 @@ def _ci_release_slot(idx: int) -> None:
 # agents may choose which harness to run; each kind has its own daily bucket
 # when split (ci_benchmark_run vs ci_db_bench_run) so benchmarks don't
 # compete for quota. All three still share the 2-slot workspace pool.
+# The "tests" harness is the combined test + static runner (tests/run_ci.py):
+# it executes run_all.py then the GitHub `static` job's checks (compileall,
+# mypy, ruff check, ruff format, bash -n), so a green repo_ci_run covers the
+# same surface GitHub CI's test + static jobs do. The static half needs
+# mypy/ruff, which the sandbox image bakes from requirements-dev.txt; native
+# (host-interpreter) runs skip it gracefully when the tools are absent.
 _CHECKS: dict[str, tuple[str, str]] = {
-    "tests": ("ci_run", os.path.join("tests", "run_all.py")),
+    "tests": ("ci_run", os.path.join("tests", "run_ci.py")),
     "benchmarks": ("ci_benchmark_run", os.path.join("tests", "benchmark_github.py")),
     "db_benchmark": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
     "db_bench": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
@@ -671,6 +678,38 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+_STATIC_SUMMARY_RE = re.compile(
+    r"^STATIC SUMMARY: compileall=(\w+) mypy=(\d+) ruff_check=(\d+) "
+    r"ruff_format=(\d+) bash_n=(\w+)$",
+    re.M,
+)
+
+
+def _parse_static_summary(output: str) -> dict | None:
+    """Parse the combined harness's static-checks marker (tests/run_ci.py).
+    Returns None when the marker is absent (not a combined run).  Best-effort
+    enrichment - the harness's exit code is the authoritative pass/fail."""
+    m = _STATIC_SUMMARY_RE.search(output)
+    if m is None:
+        return None
+    if "STATIC RESULT: PASS" in output:
+        result = "pass"
+    elif "STATIC RESULT: FAIL" in output:
+        result = "fail"
+    elif "STATIC RESULT: SKIPPED" in output:
+        result = "skipped"
+    else:
+        result = "unknown"
+    return {
+        "result": result,
+        "compileall": m.group(1),
+        "mypy_errors": int(m.group(2)),
+        "ruff_check_errors": int(m.group(3)),
+        "ruff_format_files": int(m.group(4)),
+        "bash_n": m.group(5),
+    }
+
+
 def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     # run_all.py prints bare basenames ("FAILED: test_x.py"); prefix them
     # so failed_files entries are copy-pasteable paths from the repo root.
@@ -726,6 +765,11 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         except Exception:
             # domain:degrade-silently - bench summary parse is advisory; tail still carries raw
             pass
+    static_summary = _parse_static_summary(output)
+    if static_summary is not None:
+        if summary is None:
+            summary = {}
+        summary["static"] = static_summary
     return summary, sorted(set(failed_files))
 
 
@@ -741,6 +785,18 @@ def _requirements_at(tree: str, rev: str) -> bytes:
             f"could not read requirements.txt at {rev[:12]}: "
             f"{(res.stderr or res.stdout).strip()[-200:]}"
         )
+    return res.stdout.encode("utf-8", errors="replace")
+
+
+def _requirements_dev_at(tree: str, rev: str) -> bytes:
+    """Read requirements-dev.txt AS OF a specific commit.  Same trust rule as
+    _requirements_at: the static tooling (mypy/ruff/...) pinned by main's dev
+    requirements is what gets baked into the sandbox image, never the merge
+    result - a PR must not choose what a host-side build installs.  Absent at
+    a commit too old to carry it => empty bytes (no static tooling baked)."""
+    res = _git(tree, "show", f"{rev}:requirements-dev.txt")
+    if res.returncode != 0:
+        return b""
     return res.stdout.encode("utf-8", errors="replace")
 
 
@@ -847,11 +903,14 @@ def _ensure_image(tree: str, rev: str) -> str:
     """Return a tag whose image contains exactly the pinned dependencies of
     *rev* - branch mode always passes origin/main's sha, never the merge
     result, so an untrusted PR cannot choose what this host-side build
-    installs.  Builds from a minimal context (that one requirements.txt +
+    installs.  Builds from a minimal context (the two requirements files +
     the deployment's own Dockerfile) so repository code is never sent to
-    the daemon."""
+    the daemon.  The tag hashes BOTH requirements.txt and requirements-dev.txt,
+    so a change to either invalidates the image (a dev-tools bump must not
+    hide behind an unchanged runtime tag)."""
     data = _requirements_at(tree, rev)
-    tag = _image_tag(_digest(data))
+    dev = _requirements_dev_at(tree, rev)
+    tag = _image_tag(_digest(data + b"\x00" + dev))
     probe = subprocess.run(
         ["docker", "image", "inspect", tag],
         capture_output=True,
@@ -863,6 +922,8 @@ def _ensure_image(tree: str, rev: str) -> str:
     try:
         with open(os.path.join(context, "requirements.txt"), "wb") as fh:
             fh.write(data)
+        with open(os.path.join(context, "requirements-dev.txt"), "wb") as fh:
+            fh.write(dev)
         dockerfile = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), os.pardir, "Dockerfile"
         )
