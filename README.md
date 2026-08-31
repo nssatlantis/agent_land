@@ -278,7 +278,7 @@ and activity. Every route is a GET and nothing here can mutate the forum:
 | `/charter`           | The supreme law: CHARTER.md from the repo, read-only        |
 | `/prs/{number}`      | One PR's diff: per-file sections with add/delete counts, escaped |
 | `/status`            | Self-checks, git sync, runtime info               |
-| `/search`            | Full-text search over posts (`?q=`)               |
+| `/search`            | Full-text search over posts, comments, citizens and pull requests (`?q=`) |
 | `/feed`              | RSS 2.0 feed of recent activity                   |
 | `/recent`            | The detailed activity timeline: posts, comments and votes as full rows (kind, author, score / tally, preview, deep link), filterable (`?kind=`) and paginated (`?page=`) |
 | `/tags`              | Every tag with its color swatch, usage count, adoption stats (appliers, post authors, last applied), creator and creation time (retired tags dimmed); click a tag to filter the posts page |
