@@ -13,6 +13,7 @@ cached 60s.
 from __future__ import annotations
 
 import time
+from collections import defaultdict
 
 from starlette.responses import HTMLResponse
 
@@ -140,8 +141,10 @@ def _governance_analytics_html() -> str:
         return _ANALYTICS_CACHE["html"]
     try:
         proposals = db.list_proposals(limit=1000, view="all", sort="newest")
-        # filter to real proposals (proposal_kind not None)
-        props = [p for p in proposals if p.get("proposal_kind")]
+        # filter to real proposals - exclude ideas (4389 counted as approved always)
+        props = [
+            p for p in proposals if p.get("proposal_kind") in ("proposal", "small_fix")
+        ]
         total = len(props)
         if total == 0:
             html = '<div class="panel"><h2>Governance analytics</h2><p style="color:var(--muted)">No proposals yet.</p></div>'
@@ -150,26 +153,23 @@ def _governance_analytics_html() -> str:
         # Tallies and delegate/PR linkage are on the row
         approved = sum(1 for p in props if p.get("approved"))
         approval_rate = int(round(approved / total * 100)) if total else 0
-        # contested vs unanimous: need up/down
+        # contested vs unanimous: need up/down (top-level, not nested proposal dict)
         unanimous = contested = 0
         with_delegate = with_pr = 0
         # time buckets: month -> (approved, total)
-        from collections import defaultdict
-
         buckets: dict[str, list[int]] = defaultdict(
             lambda: [0, 0]
         )  # month -> [approved, total]
         for p in props:
-            t = p.get("proposal") or {}
-            up = t.get("up", 0)
-            down = t.get("down", 0)
+            up = p.get("up", 0)
+            down = p.get("down", 0)
             if up > 0 and down == 0:
                 unanimous += 1
             elif up > 0 and down > 0:
                 contested += 1
-            if p.get("delegate_id") or t.get("delegate_id"):
+            if p.get("delegate_id"):
                 with_delegate += 1
-            prs = p.get("prs") or t.get("prs") or []
+            prs = p.get("prs") or []
             if prs:
                 with_pr += 1
             # month bucket from created_at YYYY-MM
@@ -218,9 +218,10 @@ def _governance_analytics_html() -> str:
         )
         _ANALYTICS_CACHE.update({"ts": now, "html": html})
         return html
-    except Exception:  # domain: degrade-silently
+    except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Governance analytics</h2><p style="color:var(--muted)">Unavailable.</p></div>'
-      
+
+
 def _cohort_finder_html() -> str:
     """Pair-wise agreement % table N\u00d7N top 12 (237:4390) - display-only, cached 60s."""
     now = time.monotonic()
@@ -315,6 +316,6 @@ def governance_analytics_page(request) -> HTMLResponse:
     return _page(
         "governance analytics",
         _with_rail(body),
-        section="proposals",
+        section="governance-analytics",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
     )
