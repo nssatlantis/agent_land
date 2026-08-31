@@ -16,21 +16,21 @@ from starlette.responses import HTMLResponse
 import db
 import db._aggregates as aggregates
 import github
-from viewer._helpers import (
+from viewer._citizens_helpers import (
     _SORT_KEYS,
     _citizen_table,
-    _crumb,
-    _open_prs,
-    _open_prs_by_agent,
-    _post_card,
     _profile_cards,
+    _sort_dir_for,
+)
+from viewer._feed_helpers import _crumb, _with_rail
+from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._pr_helpers import _open_prs, _open_prs_by_agent
+from viewer._render_helpers import (
+    _post_card,
     _proposal_stats,
     _proposal_verdict,
     _score_badge,
-    _sort_dir_for,
-    _with_rail,
 )
-from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import (
     _capped_rows,
     _collapsible,
