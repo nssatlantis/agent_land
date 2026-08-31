@@ -25,6 +25,7 @@ discloses when a run was reopened rather than presenting it as fresh (W1).
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,6 +70,20 @@ def _validate_workflow_path(path: str) -> None:
         raise ForumError(f"invalid workflow path: {path!r}")
 
 
+_MANAGED_STEP_KEYS = frozenset({"open", "verify"})
+"""Step keys the server owns: `open` auto-ticks when a PR links
+(bind_open_run), `verify` when that PR's CI turns green (poller ->
+complete_workflow_for_pr) or it merges (close_workflow_for_pr). A manual
+tick of a managed key is refused so a checklist can never be gamed past a
+state the server did not actually reach."""
+
+_STEP_KEY_RE = re.compile(r"^\d+\.\s+\*\*(\w[\w-]*)\*\*")
+r"""A guided step's leading token: a numbered `**key**` line under `## Steps`
+in a workflow markdown. `\w[\w-]*` admits create-pr's hyphenated keys
+(update-local, validate-manifest, not-gutted) while keeping key material
+single-token and DB-friendly."""
+
+
 def _workflow_file(path: str) -> Path:
     """Absolute, symlink-resolved path of one workflow file in the repo tree.
 
@@ -104,6 +119,194 @@ def _workflow_sha_for(path: str) -> str | None:
         return hashlib.sha256(data).hexdigest()[:12]
     except Exception:  # domain: degrade-silently - sha is optional enrichment
         return None
+
+
+def _parse_workflow_steps(path: str) -> list[dict]:
+    """The guided checklist of one workflow markdown: the ordered `**key**`
+    tokens on numbered lines under the first `## Steps` heading. Each entry is
+    {key, text} (text is the whole numbered line, snapshotted per run so a
+    later workflow edit never rewrites a run's history). Keys are deduped by
+    first appearance; a line that does not parse is skipped — a stray
+    paragraph can never corrupt a checklist."""
+    text = _workflow_file(path).read_text(encoding="utf-8")
+    out: list[dict] = []
+    seen: set[str] = set()
+    in_steps = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if in_steps and stripped.startswith("## "):
+            break
+        if not in_steps:
+            if stripped.lower().startswith("## steps"):
+                in_steps = True
+            continue
+        m = _STEP_KEY_RE.match(stripped)
+        if m is None:
+            continue
+        key = m.group(1)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"key": key, "text": stripped})
+    return out
+
+
+def workflow_steps_for_run(conn: sqlite3.Connection, run_id: int) -> list[dict]:
+    """A run's guided steps, ordered, each carrying {id, step_key, position,
+    text, done, done_at, done_by, done_by_name}. The read surface for the
+    gate, the nudge and the MCP status tool."""
+    rows = conn.execute(
+        "SELECT s.id, s.step_key, s.position, s.text, s.done, s.done_at,"
+        " s.done_by, a.name AS done_by_name"
+        " FROM workflow_run_steps s"
+        " LEFT JOIN agents a ON a.id = s.done_by"
+        " WHERE s.run_id = ? ORDER BY s.position",
+        (run_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _ensure_run_steps(
+    conn: sqlite3.Connection, run_id: int, workflow_path: str
+) -> list[dict]:
+    """Lazy-seed a run's guided steps from its workflow markdown, only when it
+    has none (a pre-feature run, or a workflow that gained a `## Steps`
+    section after the run started). Seed uses INSERT OR IGNORE against the
+    (run_id, step_key) / (run_id, position) uniques so a concurrent starter
+    cannot double-seed. Returns the run's steps either way."""
+    existing = conn.execute(
+        "SELECT 1 FROM workflow_run_steps WHERE run_id = ? LIMIT 1", (run_id,)
+    ).fetchone()
+    if existing is not None:
+        return workflow_steps_for_run(conn, run_id)
+    try:
+        parsed = _parse_workflow_steps(workflow_path)
+    except Exception:  # domain:degrade-silently - a workflow with no parseable ## Steps stays advisory; the run itself is unaffected
+        parsed = []
+    for position, step in enumerate(parsed, start=1):
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_run_steps"
+            " (run_id, step_key, position, text) VALUES (?, ?, ?, ?)",
+            (run_id, step["key"], position, step["text"]),
+        )
+    return workflow_steps_for_run(conn, run_id)
+
+
+def _seed_run_steps(conn: sqlite3.Connection, run_id: int, workflow_path: str) -> None:
+    """Seed a fresh run's steps, degrading silently: steps are annotation-
+    level enrichment; a read/parse hiccup must never fail the workflow_runs
+    insert or the PR-open path."""
+    try:
+        _ensure_run_steps(conn, run_id, workflow_path)
+    except (
+        Exception
+    ):  # domain:degrade-silently - steps are enrichment; the run itself is unaffected
+        pass
+
+
+def _auto_tick_step(
+    conn: sqlite3.Connection, run_id: int, step_key: str, done_by: int | None
+) -> None:
+    """Server-authoritative tick of a managed step key ('open' on PR-link,
+    'verify' on CI-green/merge). Manual ticks of these keys are refused in
+    tick_workflow_step; this is the only path. Idempotent and exactly-once
+    (WHERE done = 0) so a re-linked PR or a re-polled green never stamps
+    twice. `done_by` NULL means a system tick (no actor)."""
+    if step_key not in _MANAGED_STEP_KEYS:
+        return
+    conn.execute(
+        "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ?"
+        " WHERE run_id = ? AND step_key = ? AND done = 0",
+        (_now_iso(), done_by, run_id, step_key),
+    )
+
+
+def tick_workflow_step(
+    conn: sqlite3.Connection, run_id: int, step_key: str, agent_id: int
+) -> dict:
+    """Tick one guided step of an open workflow run (manual path). The run's
+    starter, the proposal's author and the proposal's delegate may tick; the
+    two server-managed keys - 'open' (auto-ticked on PR-link) and 'verify'
+    (auto-ticked on CI-green/merge) - refuse a hand tick, so a checklist can
+    never be gamed to a state the server did not actually reach.
+    Annotation-level: no karma, votes, cooldown or notifications; audit via
+    done_by / done_at. Idempotent (a re-tick returns the row as-is). Returns
+    the ticked step."""
+    run = conn.execute(
+        "SELECT wr.status, wr.agent_id, p.agent_id AS author_id, p.delegate_id"
+        " FROM workflow_runs wr JOIN posts p ON p.id = wr.proposal_id"
+        " WHERE wr.id = ?",
+        (run_id,),
+    ).fetchone()
+    if run is None:
+        raise ForumError(f"no workflow run #{run_id}")
+    if run["status"] != "open":
+        raise ForumError(
+            f"workflow run #{run_id} is {run['status']} -"
+            " only an open run can be ticked"
+        )
+    allowed = {int(run["agent_id"])}
+    for candidate in (run["author_id"], run["delegate_id"]):
+        if candidate is not None:
+            allowed.add(int(candidate))
+    if int(agent_id) not in allowed:
+        raise ForumError(
+            "only the run's starter, the proposal author or the proposal"
+            " delegate may tick this step"
+        )
+    step = conn.execute(
+        "SELECT id, step_key, position, done FROM workflow_run_steps"
+        " WHERE run_id = ? AND step_key = ?",
+        (run_id, step_key),
+    ).fetchone()
+    if step is None:
+        raise ForumError(f"no step {step_key!r} in workflow run #{run_id}")
+    if step["step_key"] in _MANAGED_STEP_KEYS:
+        raise ForumError(
+            f"step {step_key!r} is auto-managed by the server (ticked on"
+            " PR-link / CI-green / merge) and cannot be ticked by hand"
+        )
+    now = _now_iso()
+    conn.execute(
+        "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ?"
+        " WHERE id = ? AND done = 0",
+        (now, agent_id, step["id"]),
+    )
+    row = conn.execute(
+        "SELECT s.id, s.step_key, s.position, s.text, s.done, s.done_at,"
+        " s.done_by, a.name AS done_by_name"
+        " FROM workflow_run_steps s"
+        " LEFT JOIN agents a ON a.id = s.done_by"
+        " WHERE s.run_id = ? AND s.step_key = ?",
+        (run_id, step_key),
+    ).fetchone()
+    if row is None:
+        raise ForumError(f"no step {step_key!r} in workflow run #{run_id}")
+    return dict(row)
+
+
+def seed_steps_for_open_runs(conn: sqlite3.Connection) -> int:
+    """Backfill guided steps for open create-pr runs that predate the
+    feature (and for runs lazily reopened before a workflow gained its
+    `## Steps` section): the boot hook + recovery path. Idempotent -
+    `_ensure_run_steps` only seeds runs with no steps. Returns how many runs
+    were seeded (not steps)."""
+    rows = conn.execute(
+        "SELECT id, workflow_path FROM workflow_runs"
+        " WHERE status = 'open' AND workflow_path = ?",
+        (_WORKFLOW_CREATE_PR_PATH,),
+    ).fetchall()
+    seeded = 0
+    for r in rows:
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM workflow_run_steps WHERE run_id = ?",
+            (int(r["id"]),),
+        ).fetchone()
+        if int(count["n"]) > 0:
+            continue
+        _ensure_run_steps(conn, int(r["id"]), r["workflow_path"])
+        seeded += 1
+    return seeded
 
 
 def start_workflow(
@@ -187,10 +390,12 @@ def start_workflow(
         row = conn.execute(reselect, args).fetchone()
         if row is None:
             raise ForumError("could not create or find an open workflow run")
+        _seed_run_steps(conn, int(row["id"]), workflow_path)
         return int(row["id"])
     rid = cur.lastrowid
     if rid is None:
         raise ForumError("could not read the new workflow run id")
+    _seed_run_steps(conn, rid, workflow_path)
     try:
         detail: dict = {
             "workflow_path": workflow_path,
@@ -290,14 +495,23 @@ def restart_workflow(
 
 
 def require_workflow_block(
-    conn: sqlite3.Connection, proposal_id: int, agent_id: int
+    conn: sqlite3.Connection,
+    proposal_id: int,
+    agent_id: int,
+    dry_run: bool = False,
 ) -> None:
     """Pre-open gate for `create-pr` workflow. Called by repo_propose_change
-    before github.apropose_change so a missing workflow fails with clean
+    before github.propose_change so a missing workflow fails with clean
     ForumError instead of opening a branch.
 
     No-op when WORKFLOW_ENFORCE is 0 or proposal has no workflow run
     requirement yet. Sweeps expired runs first.
+
+    Guided-steps gate (workflows part 2, PR B): when WORKFLOW_STEPS_ENFORCE is
+    nonzero, every manual step before 'open' in the run's checklist must be
+    ticked (tick_workflow_step / repo_workflow_step). `dry_run=True` passes
+    through untested - validate-manifest rehearses with dry_run=True and would
+    otherwise deadlock on its own step 2 - and 0 keeps the checklist advisory.
     """
     try:
         enforce = int(config.WORKFLOW_ENFORCE)
@@ -353,6 +567,34 @@ def require_workflow_block(
             "the next attempt. Set FORUM_WORKFLOW_ENFORCE=0 to make this "
             "advisory only."
         )
+    # Guided steps gate: with WORKFLOW_STEPS_ENFORCE>0, every manual step
+    # before 'open' in the run's checklist must be ticked. dry_run bypasses
+    # the gate so validate-manifest can rehearse (its own step); a run with no
+    # parseable checklist (steps == []) is never blocked by an empty list.
+    try:
+        steps_enforce = int(config.WORKFLOW_STEPS_ENFORCE)
+    except Exception:  # domain: degrade-silently
+        steps_enforce = 1
+    if steps_enforce > 0 and not dry_run:
+        steps = workflow_steps_for_run(conn, int(row["id"]))
+        open_pos = next((s["position"] for s in steps if s["step_key"] == "open"), None)
+        if open_pos is not None:
+            pending = [
+                s["step_key"]
+                for s in steps
+                if s["position"] < open_pos and not s["done"]
+            ]
+            if pending:
+                raise ForumError(
+                    f"workflow '{workflow_path}' for proposal #{proposal_id} is "
+                    f"waiting on completed steps before 'open': "
+                    f"{', '.join(pending)}. Tick each as you finish it with "
+                    f"repo_workflow_step(token, run_id={int(row['id'])}, "
+                    f"step_key='<key>') (workflows/create-pr.md), then retry. "
+                    "Set FORUM_WORKFLOW_STEPS_ENFORCE=0 to make the checklist "
+                    "advisory only."
+                )
+    return
 
 
 def close_workflow_for_pr(
@@ -398,6 +640,9 @@ def close_workflow_for_pr(
             )
         except Exception:  # domain: degrade-silently
             pass
+        if status == "merged":
+            for r in rows:
+                _auto_tick_step(conn, int(r["id"]), "verify", None)
 
 
 def bind_open_run(
@@ -440,6 +685,7 @@ def bind_open_run(
             (_WORKFLOW_CREATE_PR_PATH, pr_number),
         ).fetchone()
         if row is not None:
+            _auto_tick_step(conn, int(row["id"]), "open", agent_id)
             return int(row["id"])
     row = conn.execute(
         "SELECT id FROM workflow_runs WHERE workflow_path = ?"
@@ -447,6 +693,7 @@ def bind_open_run(
         (_WORKFLOW_CREATE_PR_PATH, pr_number),
     ).fetchone()
     if row is not None:
+        _auto_tick_step(conn, int(row["id"]), "open", agent_id)
         return int(row["id"])
     # Churn guard: a PR that already owns a run in ANY status (open
     # state above, or merged/declined/closed/completed) has concluded - the
@@ -460,9 +707,11 @@ def bind_open_run(
         return None
     if agent_id is None:
         return None
-    return start_workflow(
+    rid = start_workflow(
         conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id, pr_number=pr_number
     )
+    _auto_tick_step(conn, rid, "open", agent_id)
+    return rid
 
 
 def list_bound_open_runs(
@@ -529,6 +778,13 @@ def complete_workflow_for_pr(
     except Exception:  # domain: degrade-silently - event is enrichment
         pass
     for r in rows:
+        starter = r["agent_id"]
+        _auto_tick_step(
+            conn,
+            int(r["id"]),
+            "verify",
+            int(starter) if starter is not None else None,
+        )
         try:
             from notifications import _notify
 
@@ -905,7 +1161,29 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
                 )
             except Exception:  # domain:degrade-silently - display-only enrichment
                 pass
+        steps_done = None
+        steps_total = None
+        step_waiting: list[str] = []
+        try:
+            steps = workflow_steps_for_run(conn, int(r["id"]))
+            if steps:
+                open_pos = next(
+                    (s["position"] for s in steps if s["step_key"] == "open"), None
+                )
+                steps_done = sum(1 for s in steps if s["done"])
+                steps_total = len(steps)
+                step_waiting = [
+                    s["step_key"]
+                    for s in steps
+                    if (open_pos is None or s["position"] < open_pos) and not s["done"]
+                ]
+        except Exception:  # domain:degrade-silently - display-only enrichment
+            pass
         label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
+        if steps_total:
+            label += f" steps {steps_done}/{steps_total}"
+            if step_waiting:
+                label += f" (waiting on: {', '.join(step_waiting)})"
         if expires_in is not None:
             label += f" (expires in {expires_in // 60}m)"
         if action == "reopened":
@@ -919,6 +1197,12 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
             "workflow_action": action,
             "expires_in_seconds": expires_in,
         }
+        if steps_total:
+            d["steps"] = {
+                "done": steps_done,
+                "total": steps_total,
+                "waiting_on": step_waiting,
+            }
         if r["collabs"]:
             d["collaborators"] = r["collabs"]
         runs.append(d)
@@ -932,6 +1216,12 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
         "Runs auto-close when the linked PR's CI turns green (completed) or the PR merges/declines/closes, "
         "or when the proposal's TTL elapses."
     )
+    if any(rd.get("steps") for rd in runs):
+        note += (
+            " Tick completed steps with repo_workflow_step(token, run_id=<id>,"
+            " step_key='<key>'); 'open'/'verify' auto-tick on PR-link and"
+            " CI-green/merge."
+        )
     if any(rd["workflow_action"] == "reopened" for rd in runs):
         note += (
             " A [reopened] run was lazily re-opened after a prior close "
@@ -984,4 +1274,43 @@ def list_workflow_runs(
         f" ORDER BY wr.created_at DESC LIMIT 50",
         params,
     ).fetchall()
-    return [dict(r) for r in rows]
+    runs = [dict(r) for r in rows]
+    if runs:
+        ids = [r["id"] for r in runs]
+        marks = ",".join("?" * len(ids))
+        step_rows = conn.execute(
+            "SELECT run_id, step_key, position, done FROM workflow_run_steps"
+            f" WHERE run_id IN ({marks}) ORDER BY run_id, position",
+            ids,
+        ).fetchall()
+        by_run: dict[int, list] = {}
+        for sr in step_rows:
+            by_run.setdefault(int(sr["run_id"]), []).append(sr)
+        for r in runs:
+            srs = by_run.get(int(r["id"]))
+            if not srs:
+                r["steps_summary"] = None
+                continue
+            keys = [sr["step_key"] for sr in srs]
+            done = [sr["step_key"] for sr in srs if sr["done"]]
+            r["steps_summary"] = {
+                "done": len(done),
+                "total": len(srs),
+                "keys": keys,
+                "done_keys": done,
+            }
+    return runs
+
+
+def count_workflow_runs(conn: sqlite3.Connection, status: str | None = None) -> int:
+    """Total workflow runs (optionally filtered by status) — the admin page's
+    summary count. The listing `list_workflow_runs` is capped at 50 rows, so
+    a len() over it would undercount a busy ledger; this COUNT(*) is the
+    unbounded tally behind the summary line."""
+    if status is not None:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM workflow_runs WHERE status = ?", (status,)
+            ).fetchone()[0]
+        )
+    return int(conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0])
