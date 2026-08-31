@@ -11,8 +11,9 @@ from starlette.responses import HTMLResponse
 
 import db
 import github
-from viewer._helpers import _crumb, _proposal_lineage_badge, _with_rail
+from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._render_helpers import _proposal_lineage_badge
 from viewer._utils import _human_ts, esc
 
 
