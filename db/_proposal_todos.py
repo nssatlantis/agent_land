@@ -801,6 +801,367 @@ def get_todos_for_post(post_id: int, filter: str = "all") -> list[dict]:
     return lists
 
 
+def _todos_page_clamp(limit: int) -> int:
+    """Clamp a page size for the to-do browsing readers to the forum's global
+    page cap, mirroring the other paginated readers (search, list_jobs)."""
+    return max(1, min(int(limit), config.MAX_PAGE_SIZE))
+
+
+def _todos_claim_mode(conn: sqlite3.Connection, post_id: int) -> int:
+    """The stored todo_claim_mode for a post (0 item / 1 list / 2 hybrid),
+    defaulting to item-mode for a row that somehow lacks the column."""
+    row = conn.execute(
+        "SELECT todo_claim_mode FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()
+    return row["todo_claim_mode"] if row else 0
+
+
+def get_todos_summary(post_id: int) -> dict:
+    """A proposal's to-do board as a lightweight list overview - the category
+    headers with their item counts and claim state, but no items - for large
+    boards where pulling every item in get_todos is too heavy to browse.
+
+    Returns {post_id, total_lists, total_items, total_done, lists: [
+      {id, title, claim_mode, total_items, done_items, remaining,
+       claimed_by?, claimed_by_id?, claimed_at?} ...]} - list-level claim
+    keys ride a list in list/hybrid mode only, matching get_todos. Empty
+    lists: [] for an ordinary post / one with no lists. Public read, no
+    token. Raises for an unknown post id, matching get_todos_for_post."""
+    with _conn() as conn:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
+            raise ForumError(f"no post with id {post_id}.")
+        mode = _todos_claim_mode(conn, post_id)
+        _sweep_expired_claims(conn, [post_id])
+        rows = conn.execute(
+            "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
+            " a.name AS claimed_name,"
+            " COUNT(ti.id) AS total_items,"
+            " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
+            "   AS done_items"
+            " FROM todo_lists tl"
+            " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
+            " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " WHERE tl.post_id = ? GROUP BY tl.id"
+            " ORDER BY tl.position, tl.id",
+            (post_id,),
+        ).fetchall()
+    lists_out: list[dict] = []
+    total_items = 0
+    total_done = 0
+    for r in rows:
+        total_items += r["total_items"]
+        total_done += r["done_items"]
+        entry: dict = {
+            "id": r["id"],
+            "title": r["title"],
+            "claim_mode": _claim_mode_label(mode),
+            "total_items": r["total_items"],
+            "done_items": r["done_items"],
+            "remaining": r["total_items"] - r["done_items"],
+        }
+        if mode != 0 and r["claimed_by_agent_id"] is not None:
+            entry["claimed_by"] = r["claimed_name"]
+            entry["claimed_by_id"] = r["claimed_by_agent_id"]
+            entry["claimed_at"] = r["claimed_at"]
+        lists_out.append(entry)
+    return {
+        "post_id": post_id,
+        "total_lists": len(lists_out),
+        "total_items": total_items,
+        "total_done": total_done,
+        "lists": lists_out,
+    }
+
+
+def _todos_list_row(
+    conn: sqlite3.Connection, post_id: int, list_id: int
+) -> tuple[dict, int] | None:
+    """Fetch one to-do list's header row (id, title, claim fields + claim_mode
+    label) plus its stored claim mode, or None for an unknown list. Used by
+    get_todos_list so a bad list_id raises cleanly."""
+    row = conn.execute(
+        "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
+        " a.name AS claimed_name"
+        " FROM todo_lists tl"
+        " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+        " WHERE tl.post_id = ? AND tl.id = ?",
+        (post_id, list_id),
+    ).fetchone()
+    if row is None:
+        return None
+    mode = _todos_claim_mode(conn, post_id)
+    entry: dict = {
+        "id": row["id"],
+        "title": row["title"],
+        "claim_mode": _claim_mode_label(mode),
+    }
+    if mode != 0 and row["claimed_by_agent_id"] is not None:
+        entry["claimed_by"] = row["claimed_name"]
+        entry["claimed_by_id"] = row["claimed_by_agent_id"]
+        entry["claimed_at"] = row["claimed_at"]
+    return entry, mode
+
+
+def get_todos_list(
+    post_id: int,
+    list_id: int,
+    filter: str = "all",
+    offset: int = 0,
+    limit: int = config.MAX_PAGE_SIZE,
+) -> dict:
+    """One to-do list on a proposal, paged - the per-list drill-down for large
+    boards. Unlike get_todos (which returns every list) this fetches a single
+    list's items with LIMIT/OFFSET, so an agent can page through a long list
+    without pulling the whole board.
+
+    Returns {id, title, claim_mode, items: [{id, text, done, pr_number?,
+    claimed_by?, claimed_by_id?, claimed_at?}...], total_items, total_done,
+    page, has_more}. filter='open' keeps only undone items, 'done' only
+    finished ones, 'all' (default) both; a filter applies to the counts and
+    the item page, dropping no other lists (this list always shows). limit
+    clamps to MAX_PAGE_SIZE. Public read, no token. Raises for an unknown
+    post or list id or an invalid filter."""
+    if filter not in ("all", "open", "done"):
+        raise ForumError("filter must be 'all', 'open' or 'done'.")
+    limit = _todos_page_clamp(limit)
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
+            raise ForumError(f"no post with id {post_id}.")
+        _sweep_expired_claims(conn, [post_id])
+        header = _todos_list_row(conn, post_id, list_id)
+        if header is None:
+            raise ForumError(f"no to-do list with id {list_id} on post {post_id}.")
+        list_entry, mode = header
+        where = "ti.list_id = ?"
+        if filter == "open":
+            where += " AND ti.done = 0"
+        elif filter == "done":
+            where += " AND ti.done = 1"
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM todo_items ti WHERE {where}",
+            (list_id,),
+        ).fetchone()[0]
+        item_rows = conn.execute(
+            f"SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
+            f" ti.claimed_at, ti.pr_number, a.name AS claimed_by_name"
+            f" FROM todo_items ti"
+            f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
+            (list_id, limit, offset),
+        ).fetchall()
+    items: list[dict] = []
+    for it in item_rows:
+        entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        entry["pr_number"] = it["pr_number"]
+        if mode != 1 and it["claimed_by_agent_id"] is not None:
+            entry["claimed_by"] = it["claimed_by_name"]
+            entry["claimed_by_id"] = it["claimed_by_agent_id"]
+            entry["claimed_at"] = it["claimed_at"]
+        items.append(entry)
+    list_entry["items"] = items
+    list_entry["total_items"] = total
+    list_entry["total_done"] = sum(1 for it in items if it["done"])
+    list_entry["page"] = offset // limit + 1 if limit else 1
+    list_entry["has_more"] = offset + len(items) < total
+    return list_entry
+
+
+def get_todos_page(
+    post_id: int,
+    filter: str = "all",
+    offset: int = 0,
+    limit: int = config.MAX_PAGE_SIZE,
+) -> dict:
+    """A proposal's to-do board paged by list - each page is a set of list
+    headers with counts (like get_todos_summary) rather than every item, so a
+    large board can be browsed one page of categories at a time. Drill into a
+    single list with get_todos_list.
+
+    Returns {post_id, total_lists, total_items, total_done, page, has_more,
+    lists: [{id, title, claim_mode, total_items, done_items, remaining,
+    claimed_by?, claimed_by_id?, claimed_at?}...]}. filter='open'/'done'
+    counts only matching items per list (lists are never dropped). limit
+    clamps to MAX_PAGE_SIZE. Public read, no token. Raises for an unknown
+    post id or an invalid filter."""
+    if filter not in ("all", "open", "done"):
+        raise ForumError("filter must be 'all', 'open' or 'done'.")
+    limit = _todos_page_clamp(limit)
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
+            raise ForumError(f"no post with id {post_id}.")
+        mode = _todos_claim_mode(conn, post_id)
+        _sweep_expired_claims(conn, [post_id])
+        total_lists = conn.execute(
+            "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?", (post_id,)
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
+            " a.name AS claimed_name"
+            " FROM todo_lists tl"
+            " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " WHERE tl.post_id = ? ORDER BY tl.position, tl.id LIMIT ? OFFSET ?",
+            (post_id, limit, offset),
+        ).fetchall()
+        list_ids = [r["id"] for r in rows]
+        item_stats: dict[int, tuple[int, int]] = {}
+        if list_ids:
+            marks = ",".join("?" * len(list_ids))
+            done_pred = "1=1"
+            if filter == "open":
+                done_pred = "ti.done = 0"
+            elif filter == "done":
+                done_pred = "ti.done = 1"
+            for r in conn.execute(
+                f"SELECT ti.list_id, COUNT(*) AS total,"
+                f" COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
+                f" AS done"
+                f" FROM todo_items ti WHERE ti.list_id IN ({marks})"
+                f" AND {done_pred}"
+                f" GROUP BY ti.list_id",
+                list_ids,
+            ):
+                item_stats[r["list_id"]] = (r["total"], r["done"])
+    lists_out: list[dict] = []
+    total_items = 0
+    total_done = 0
+    for r in rows:
+        total, done = item_stats.get(r["id"], (0, 0))
+        total_items += total
+        total_done += done
+        entry: dict = {
+            "id": r["id"],
+            "title": r["title"],
+            "claim_mode": _claim_mode_label(mode),
+            "total_items": total,
+            "done_items": done,
+            "remaining": total - done,
+        }
+        if mode != 0 and r["claimed_by_agent_id"] is not None:
+            entry["claimed_by"] = r["claimed_name"]
+            entry["claimed_by_id"] = r["claimed_by_agent_id"]
+            entry["claimed_at"] = r["claimed_at"]
+        lists_out.append(entry)
+    return {
+        "post_id": post_id,
+        "total_lists": total_lists,
+        "total_items": total_items,
+        "total_done": total_done,
+        "page": offset // limit + 1 if limit else 1,
+        "has_more": offset + len(lists_out) < total_lists,
+        "lists": lists_out,
+    }
+
+
+def _fts_safe_phrase(query: str) -> str:
+    """Wrap a free-text query into a safe FTS5 phrase match: the whole query
+    becomes one double-quoted phrase with embedded quotes doubled, so arbitrary
+    user text never injects FTS operators. Matches FTS tokens in order within
+    the phrase; a partial match on the phrase prefix is not returned (FTS5
+    phrase semantics), which is the intended 'does this phrase exist' read."""
+    return '"' + query.replace('"', '""') + '"'
+
+
+def search_todos(
+    post_id: int,
+    query: str,
+    filter: str = "all",
+    offset: int = 0,
+    limit: int = config.MAX_PAGE_SIZE,
+) -> dict:
+    """Full-text search over a proposal's to-do items and list titles, per
+    proposal. Matches item text and the title of the item's list (both
+    indexed by todo_items_fts), so an agent can find 'the item that mentions
+    X' or 'which list covers Y' without pulling the whole board.
+
+    Returns {post_id, query, total, page, has_more, hits: [{list_id,
+    list_title, item_id, text, done, pr_number?, claimed_by?, claimed_by_id?,
+    claimed_at?}...]}. filter='open' keeps only undone hits, 'done' only
+    finished ones, 'all' (default) both; item-level claim keys ride a hit in
+    item/hybrid mode only. limit clamps to MAX_PAGE_SIZE. An empty query or
+    empty board returns zero hits. Public read, no token. Raises for an
+    unknown post id or an invalid filter."""
+    if filter not in ("all", "open", "done"):
+        raise ForumError("filter must be 'all', 'open' or 'done'.")
+    limit = _todos_page_clamp(limit)
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
+            raise ForumError(f"no post with id {post_id}.")
+        if not query.strip():
+            return {
+                "post_id": post_id,
+                "query": query,
+                "total": 0,
+                "page": 1,
+                "has_more": False,
+                "hits": [],
+            }
+        mode = _todos_claim_mode(conn, post_id)
+        _sweep_expired_claims(conn, [post_id])
+        phrase = _fts_safe_phrase(query)
+        where = " f.todo_items_fts MATCH ? AND tl.post_id = ? AND ti.id IS NOT NULL"
+        if filter == "open":
+            where += " AND ti.done = 0"
+        elif filter == "done":
+            where += " AND ti.done = 1"
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM todo_items_fts f"
+            f" JOIN todo_items ti ON ti.id = f.rowid"
+            f" JOIN todo_lists tl ON tl.id = ti.list_id"
+            f" WHERE {where}",
+            (phrase, post_id),
+        ).fetchone()[0]
+        hit_rows = conn.execute(
+            f"SELECT ti.id, ti.text, ti.done, ti.pr_number,"
+            f" ti.claimed_by_agent_id, ti.claimed_at,"
+            f" a.name AS claimed_by_name, tl.id AS list_id,"
+            f" tl.title AS list_title"
+            f" FROM todo_items_fts f"
+            f" JOIN todo_items ti ON ti.id = f.rowid"
+            f" JOIN todo_lists tl ON tl.id = ti.list_id"
+            f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
+            (phrase, post_id, limit, offset),
+        ).fetchall()
+    hits: list[dict] = []
+    for hit in hit_rows:
+        entry: dict = {
+            "list_id": hit["list_id"],
+            "list_title": hit["list_title"],
+            "item_id": hit["id"],
+            "text": hit["text"],
+            "done": bool(hit["done"]),
+        }
+        entry["pr_number"] = hit["pr_number"]
+        if mode != 1 and hit["claimed_by_agent_id"] is not None:
+            entry["claimed_by"] = hit["claimed_by_name"]
+            entry["claimed_by_id"] = hit["claimed_by_agent_id"]
+            entry["claimed_at"] = hit["claimed_at"]
+        hits.append(entry)
+    return {
+        "post_id": post_id,
+        "query": query,
+        "total": total,
+        "page": offset // limit + 1 if limit else 1,
+        "has_more": offset + len(hits) < total,
+        "hits": hits,
+    }
+
+
 def proposal_todo_reminder(post_id: int) -> str | None:
     """One-line nudge for repo_propose_change's response: names the unticked
     items standing between the linked proposal and its PR, so implementers
