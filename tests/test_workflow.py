@@ -7,7 +7,11 @@ completion to 'completed'), collab-run preservation on PR close, sweep
 run_ids + chunking (D7/D8/W9), restart (B2) and the run-ledger filters
 (W2/W3), plus the A1 boot-backfill guard (a proposal that ever ran is
 never re-seeded) and the A2 ghost-run reconcile (a folded run with no
-linked PR closes to 'closed' with reason no_pr_linked).
+linked PR closes to 'closed' with reason no_pr_linked). PR B: the guided
+steps surface - parser (7 keys in order), snapshot/seed/backfill,
+permissioned + audited manual ticks, managed-key refusals, the steps gate
+with its dry-run bypass, open/verify auto-ticks, and COUNT(*) vs the
+LIMIT-50 listing.
 """
 
 import json
@@ -23,24 +27,30 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_WORKFLOW_ENFORCE"] = "1"
 os.environ["FORUM_WORKFLOW_TTL_SECONDS"] = "3600"
+os.environ["FORUM_WORKFLOW_STEPS_ENFORCE"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db._workflow import (  # noqa: E402
+    _parse_workflow_steps,
     _workflow_file,
     _workflow_nudge,
     bind_open_run,
     close_workflow_for_pr,
     close_workflow_for_proposal,
     complete_workflow_for_pr,
+    count_workflow_runs,
     list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
     require_workflow_block,
     restart_workflow,
+    seed_steps_for_open_runs,
     stale_open_run_count,
     start_workflow,
     sweep_expired_workflows,
+    tick_workflow_step,
+    workflow_steps_for_run,
 )
 from tests._setup import db, setup  # noqa: E402
 
@@ -68,6 +78,22 @@ def _last_close_event(conn) -> dict:
         " ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return json.loads(row["detail"])
+
+
+def _tick_manual_steps(conn, pid: int, agent_id: int) -> None:
+    """Tick every unticked manual (non-managed) step of a proposal's open
+    create-pr run - the gate (FORUM_WORKFLOW_STEPS_ENFORCE=1) blocks on them,
+    so legacy blocks that just want 'open run exists' must clear them first."""
+    run = conn.execute(
+        "SELECT id FROM workflow_runs WHERE proposal_id = ? AND status = 'open'",
+        (pid,),
+    ).fetchone()
+    if run is None:
+        return
+    for step in workflow_steps_for_run(conn, int(run["id"])):
+        if step["done"] or step["step_key"] in ("open", "verify"):
+            continue
+        tick_workflow_step(conn, int(run["id"]), step["step_key"], agent_id)
 
 
 def main():
@@ -323,6 +349,7 @@ def main():
     p6 = db.create_proposal(alpha["token"], "T6 gate lazy reopen", "t6 body")["post_id"]
     with db._conn() as conn:
         r6 = int(_open_run(conn, p6)["id"])
+        _tick_manual_steps(conn, p6, alpha["agent_id"])
         require_workflow_block(conn, p6, alpha["agent_id"])  # open run: passes silently
         conn.execute("UPDATE workflow_runs SET status = 'closed' WHERE id = ?", (r6,))
         require_workflow_block(conn, p6, alpha["agent_id"])  # retryable: reopens
@@ -332,6 +359,7 @@ def main():
     # terminal proposal (superseded) blocks even when run-less
     p7 = db.create_proposal(alpha["token"], "T7 gate terminal", "t7 body")["post_id"]
     with db._conn() as conn:
+        _tick_manual_steps(conn, p7, alpha["agent_id"])
         require_workflow_block(conn, p7, alpha["agent_id"])
         conn.execute(
             "UPDATE workflow_runs SET status = 'closed' WHERE id = ?",
@@ -661,6 +689,176 @@ def main():
             "the freshly-seeded live run survives reconciliation"
         )
     print("  ghost-run residue: A1 guard + A2 reconcile ok")
+
+    # --- guided steps (workflows part 2, PR B) ------------------------------
+    # Every open create-pr run snapshots the workflow's `## Steps` checklist
+    # (ordered `**key**` tokens) into workflow_run_steps. The parser yields
+    # create-pr's 7 keys in order; a fresh proposal's run carries them; manual
+    # ticks are starter/author/delegate-only, idempotent and audited
+    # (done_by); the managed 'open'/'verify' keys refuse hand ticks; the
+    # steps gate (WORKFLOW_STEPS_ENFORCE=1) blocks until every step before
+    # 'open' is ticked but dry_run bypasses it; bind auto-ticks 'open',
+    # CI-green/merge auto-tick 'verify'; count_workflow_runs counts what the
+    # LIMIT-50 listing truncates; seed_steps_for_open_runs backfills
+    # pre-feature open runs.
+    parsed = _parse_workflow_steps(_PATH)
+    expected_keys = [
+        "update-local",
+        "validate-manifest",
+        "not-gutted",
+        "lint",
+        "test",
+        "open",
+        "verify",
+    ]
+    assert [p["key"] for p in parsed] == expected_keys, [p["key"] for p in parsed]
+    assert all(p["text"].startswith(f"{i}. ") for i, p in enumerate(parsed, start=1)), (
+        "steps snapshot the whole numbered line"
+    )
+    print("  steps: create-pr parser (7 keys in order) ok")
+
+    ps = db.create_proposal(beta["token"], "T18 steps gate", "t18 body")["post_id"]
+    with db._conn() as conn:
+        r18 = int(_open_run(conn, ps)["id"])
+        steps = workflow_steps_for_run(conn, r18)
+        assert [s["step_key"] for s in steps] == expected_keys, (
+            "a fresh run carries the full checklist in order"
+        )
+        assert [s["position"] for s in steps] == list(range(1, 8))
+        assert all(s["text"] for s in steps), "steps carry snapshotted text"
+        assert all(not s["done"] for s in steps), "fresh steps start unticked"
+        assert any(s["done_by_name"] is None for s in steps), (
+            "unticked steps have no owner yet"
+        )
+        # manual tick by the proposal author is audited and idempotent
+        ticked = tick_workflow_step(conn, r18, "update-local", beta["agent_id"])
+        assert ticked["done"] == 1 and ticked["done_by_name"] == beta["name"], ticked
+        again = tick_workflow_step(conn, r18, "update-local", beta["agent_id"])
+        assert again["done"] == 1 and again["done_at"] == ticked["done_at"], (
+            "re-ticking a done step is a no-op (same stamp)"
+        )
+    print("  steps: author tick audited + idempotent ok")
+
+    ps2 = db.create_proposal(beta["token"], "T19 steps permission", "t19 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        # swap the starter to gamma (restart-equivalent) so starter != author
+        r2_ = int(_open_run(conn, ps2)["id"])
+        conn.execute("UPDATE workflow_runs SET status = 'closed' WHERE id = ?", (r2_,))
+        r19 = start_workflow(conn, _PATH, ps2, gamma["agent_id"])
+        tick_workflow_step(conn, r19, "lint", gamma["agent_id"])  # starter may tick
+        tick_workflow_step(conn, r19, "lint", beta["agent_id"])  # author may tick
+        try:
+            tick_workflow_step(conn, r19, "lint", agents["delta"]["agent_id"])
+            raise AssertionError("an outsider must not tick a run's steps")
+        except db.ForumError:
+            pass
+        for managed in ("open", "verify"):
+            try:
+                tick_workflow_step(conn, r19, managed, beta["agent_id"])
+                raise AssertionError(
+                    f"hand tick of managed {managed!r} must be refused"
+                )
+            except db.ForumError as exc:
+                assert "auto-managed" in str(exc), exc
+    print("  steps: starter/author/delegate-only + managed refusal ok")
+
+    ps3 = db.create_proposal(beta["token"], "T20 steps gate", "t20 body")["post_id"]
+    with db._conn() as conn:
+        r3_ = int(_open_run(conn, ps3)["id"])
+        # gate: unticked manual steps before 'open' block with a remedy list
+        try:
+            require_workflow_block(conn, ps3, beta["agent_id"])
+            raise AssertionError("the steps gate must block while 2-5 are unticked")
+        except db.ForumError as exc:
+            msg = str(exc)
+            assert "waiting on completed steps before 'open'" in msg, msg
+            assert "validate-manifest" in msg and "not-gutted" in msg, msg
+            assert "repo_workflow_step" in msg, msg
+        # dry_run passes through untested - validate-manifest rehearses dry-run
+        require_workflow_block(conn, ps3, beta["agent_id"], dry_run=True)
+        # tick 1-5 and the gate clears
+        for key in ("update-local", "validate-manifest", "not-gutted", "lint", "test"):
+            tick_workflow_step(conn, r3_, key, beta["agent_id"])
+        require_workflow_block(conn, ps3, beta["agent_id"])
+        # binding a PR auto-ticks managed 'open'
+        r18b = bind_open_run(conn, ps3, 84002, beta["agent_id"])
+        assert r18b == r3_, "binding stamps the unbound open run"
+        open_step = next(
+            s for s in workflow_steps_for_run(conn, r3_) if s["step_key"] == "open"
+        )
+        assert open_step["done"] == 1, "PR-link auto-ticks the managed 'open' step"
+        # merge auto-ticks managed 'verify' (system tick, no actor)
+        close_workflow_for_pr(conn, 84002, "merged")
+        verify_step = next(
+            s for s in workflow_steps_for_run(conn, r3_) if s["step_key"] == "verify"
+        )
+        assert verify_step["done"] == 1 and verify_step["done_by"] is None, (
+            "merge auto-ticks 'verify' as a system tick"
+        )
+        # CI-green completion credit goes to the RUN'S STARTER
+        r19b = bind_open_run(conn, ps2, 84001, beta["agent_id"])
+        assert r19b == r19
+        r19_step = next(
+            s for s in workflow_steps_for_run(conn, r19) if s["step_key"] == "open"
+        )
+        assert r19_step["done"] == 1
+        complete_workflow_for_pr(conn, 84001, "ci_green")
+        r19_verify = next(
+            s for s in workflow_steps_for_run(conn, r19) if s["step_key"] == "verify"
+        )
+        assert r19_verify["done"] == 1, "CI-green auto-ticks 'verify'"
+        assert r19_verify["done_by_name"] == gamma["name"], (
+            "verify credit goes to the run's starter (gamma), not the opener"
+        )
+    print("  steps: gate blocks/dry-run bypass + open/verify auto-ticks ok")
+
+    # the ledger's summary count is the unbounded COUNT(*), never len(list):
+    # list_workflow_runs caps at 50 rows, so a busy ledger must not
+    # undercount the admin summary line.
+    with db._conn() as conn:
+        # the ledger carries a steps_summary on steps-bearing runs
+        assert any(r["steps_summary"] is not None for r in list_workflow_runs(conn)), (
+            "ledger rows carry a steps_summary where the run has steps"
+        )
+        total_before = count_workflow_runs(conn)
+        closed_before = count_workflow_runs(conn, status="closed")
+        for i in range(72001, 72056):
+            conn.execute(
+                "INSERT INTO workflow_runs"
+                " (workflow_path, workflow_sha, status, proposal_id, pr_number,"
+                "  agent_id, created_at, decided_at)"
+                " VALUES (?, ?, 'closed', ?, ?, ?, ?, ?)",
+                (
+                    _PATH,
+                    "bulk-hash",
+                    ps3,
+                    i,
+                    beta["agent_id"],
+                    db._now_iso(),
+                    db._now_iso(),
+                ),
+            )
+        assert count_workflow_runs(conn) == total_before + 55, count_workflow_runs(conn)
+        assert count_workflow_runs(conn, status="closed") == closed_before + 55
+        closed_rows = list_workflow_runs(conn, status="closed")
+        assert len(closed_rows) == 50, "the ledger listing stays capped at 50 rows"
+    print("  steps: count_workflow_runs (COUNT(*)) beats the LIMIT-50 listing ok")
+
+    # pre-feature backfill: an open run with no steps is seeded by the boot
+    # hook (seed_steps_for_open_runs) and stays idempotent on the next pass.
+    ps4 = db.create_proposal(beta["token"], "T21 steps backfill", "t21 body")["post_id"]
+    with db._conn() as conn:
+        r4_ = int(_open_run(conn, ps4)["id"])
+        conn.execute("DELETE FROM workflow_run_steps WHERE run_id = ?", (r4_,))
+        assert workflow_steps_for_run(conn, r4_) == [], "the run is pre-feature"
+        assert seed_steps_for_open_runs(conn) >= 1
+        assert [s["step_key"] for s in workflow_steps_for_run(conn, r4_)] == (
+            expected_keys
+        ), "the lazily-ignored backfill seeds the full checklist"
+        assert seed_steps_for_open_runs(conn) == 0, "a second pass seeds nothing new"
+    print("  steps: seed_steps_for_open_runs backfill + idempotence ok")
 
     # --- _workflow_file guard (D9) ---------------------------------------------
     p = _workflow_file(_PATH)
