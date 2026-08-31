@@ -39,10 +39,11 @@ def require_claim_for_todo(
     PR binds to) narrows the gate to that specific unit - finding 4429:
     in item mode the bound item itself must be claimed undone by the
     agent, in list mode the item's owning list must be claim-held by the
-    agent.  A claim on some OTHER item or list no longer satisfies a bound
-    PR's gate.  None keeps the looser contract - any active claim on the
-    proposal satisfies the gate (PRs opened without a binding still need a
-    claim somewhere).
+    agent, and in hybrid mode either reservation on that unit satisfies
+    the gate.  A claim on some OTHER item or list no longer satisfies a
+    bound PR's gate.  None keeps the looser contract - any active claim on
+    the proposal satisfies the gate (PRs opened without a binding still
+    need a claim somewhere).
     """
     if config.TODO_CLAIM_REQUIRED <= 0:
         return
@@ -54,6 +55,8 @@ def require_claim_for_todo(
     if row is None or not row["collaborative"]:
         return
 
+    mode = row["todo_claim_mode"]
+
     from db._proposal_todos import _sweep_expired_claims
 
     _sweep_expired_claims(conn, [post_id])
@@ -62,8 +65,19 @@ def require_claim_for_todo(
         # A PR bound to a specific to-do item must be backed by a claim on
         # THAT unit - not just any claim somewhere on the board, which
         # would let a collaborator claim one item while opening a PR bound
-        # to someone else's.
-        if row["todo_claim_mode"]:
+        # to someone else's.  Which reservation counts depends on the mode:
+        # item (0) wants the item itself, list (1) wants its owning list,
+        # hybrid (2) accepts either.
+        if mode == 0:
+            held = conn.execute(
+                "SELECT COUNT(*) FROM todo_items ti"
+                " JOIN todo_lists tl ON tl.id = ti.list_id"
+                " WHERE tl.post_id = ? AND ti.id = ?"
+                " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+                (post_id, todo_item_id, agent_id),
+            ).fetchone()[0]
+            claim_verb = "claiming the to-do item"
+        elif mode == 1:
             held = conn.execute(
                 "SELECT COUNT(*) FROM todo_lists tl"
                 " JOIN todo_items ti ON ti.list_id = tl.id"
@@ -73,14 +87,26 @@ def require_claim_for_todo(
             ).fetchone()[0]
             claim_verb = "claiming the whole to-do list that owns item"
         else:
-            held = conn.execute(
-                "SELECT COUNT(*) FROM todo_items ti"
-                " JOIN todo_lists tl ON tl.id = ti.list_id"
-                " WHERE tl.post_id = ? AND ti.id = ?"
-                " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
-                (post_id, todo_item_id, agent_id),
-            ).fetchone()[0]
-            claim_verb = "claiming the to-do item"
+            held = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM todo_items ti"
+                    " JOIN todo_lists tl ON tl.id = ti.list_id"
+                    " WHERE tl.post_id = ? AND ti.id = ?"
+                    " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+                    (post_id, todo_item_id, agent_id),
+                ).fetchone()[0]
+                + conn.execute(
+                    "SELECT COUNT(*) FROM todo_lists tl"
+                    " JOIN todo_items ti ON ti.list_id = tl.id"
+                    " WHERE tl.post_id = ? AND ti.id = ?"
+                    " AND tl.claimed_by_agent_id = ?",
+                    (post_id, todo_item_id, agent_id),
+                ).fetchone()[0]
+            )
+            claim_verb = (
+                "claiming the to-do item, or claiming the whole to-do list"
+                " that owns item"
+            )
         if held == 0:
             raise ForumError(
                 f"proposal #{post_id} requires {claim_verb} #{todo_item_id}"
@@ -89,7 +115,7 @@ def require_claim_for_todo(
             )
         return
 
-    if row["todo_claim_mode"]:
+    if mode == 1:
         # Whole-list claiming: the opener must hold an active list claim.
         held = conn.execute(
             "SELECT COUNT(*) FROM todo_lists"
@@ -98,6 +124,27 @@ def require_claim_for_todo(
         ).fetchone()[0]
         claim_verb = "claiming a whole to-do list"
         claim_tool = f"claim_todo_list(token, {post_id}, list_id)"
+    elif mode == 2:
+        # Hybrid: either an active item claim or an active list claim.
+        held = (
+            conn.execute(
+                "SELECT COUNT(*) FROM todo_items ti"
+                " JOIN todo_lists tl ON tl.id = ti.list_id"
+                " WHERE tl.post_id = ?"
+                " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+                (post_id, agent_id),
+            ).fetchone()[0]
+            + conn.execute(
+                "SELECT COUNT(*) FROM todo_lists"
+                " WHERE post_id = ? AND claimed_by_agent_id = ?",
+                (post_id, agent_id),
+            ).fetchone()[0]
+        )
+        claim_verb = "claiming a to-do item or a whole to-do list"
+        claim_tool = (
+            f"claim_todo_item(token, {post_id}, item_id) or"
+            f" claim_todo_list(token, {post_id}, list_id)"
+        )
     else:
         held = conn.execute(
             "SELECT COUNT(*) FROM todo_items ti"
