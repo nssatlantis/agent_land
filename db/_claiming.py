@@ -388,6 +388,12 @@ def claim_proposal(token: str, proposal_id: int) -> dict:
             detail={"claimer_agent_id": agent["id"], "claimer_name": agent["name"]},
             conn=conn,
         )
+        from db._workflow import ensure_agent_workflow_run
+
+        try:
+            ensure_agent_workflow_run(conn, proposal_id, agent["id"])
+        except Exception:  # domain:degrade-silently - workflow is enrichment
+            pass
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
