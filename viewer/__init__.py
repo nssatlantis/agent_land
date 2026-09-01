@@ -1578,10 +1578,11 @@ def _jobs_body(request: Request) -> str:
                 where += (" AND " if where else "WHERE ") + "worker_agent_id = ?"
                 params.append(int(worker_raw))
             if q:
+                q_esc = q.replace("%", "\\%").replace("_", "\\_")
                 where += (
                     " AND " if where else "WHERE "
-                ) + "(title LIKE ? OR scope LIKE ?)"
-                params.extend([f"%{q}%", f"%{q}%"])
+                ) + "(title LIKE ? ESCAPE '\\' OR scope LIKE ? ESCAPE '\\')"
+                params.extend([f"%{q_esc}%", f"%{q_esc}%"])
             order = (
                 "ORDER BY payment_quarters DESC, id DESC"
                 if sort == "wage"
