@@ -1978,8 +1978,7 @@ def init_db() -> None:
         try:
             conn.execute("DROP INDEX IF EXISTS idx_job_cycles_status")
             conn.execute(
-                "CREATE INDEX idx_job_cycles_job_status"
-                " ON job_cycles(job_id, status)"
+                "CREATE INDEX idx_job_cycles_job_status ON job_cycles(job_id, status)"
             )
         except Exception:  # domain: degrade-silently - index rebuild is best-effort
             pass
