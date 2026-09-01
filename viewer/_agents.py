@@ -44,6 +44,9 @@ from viewer._utils import (
 _OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
 _OFFICIAL_TTL = 60.0
 
+_OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
+_OFFICIAL_TTL = 60.0
+
 
 def _official_holder_ids() -> set[int] | None:
     """Return agent IDs of citizens who hold an active official position.
