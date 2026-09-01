@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from urllib.parse import quote as _urlquote
 
+import time
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -28,6 +30,9 @@ _ACTIVITY_TABS: tuple[tuple[str, str, dict], ...] = (
     ("prs", "PRs", {"category": "pr"}),
     ("economy", "Economy", {"category": "economy"}),
 )
+
+_ACTIVITY_CACHE: dict[tuple[int, str, int], tuple[float, str]] = {}
+_ACTIVITY_TTL = 60
 
 
 def _activity_summary_bar(a: dict) -> str:
@@ -92,17 +97,26 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
     total = event_total(agent_id=agent_id, **filters)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
+    key = (agent_id, tab, page)
+    now = time.monotonic()
+    cached = _ACTIVITY_CACHE.get(key)
+    if cached is not None:
+        ts, html = cached
+        if (now - ts) < _ACTIVITY_TTL:
+            return html
     evts = query_events(
         agent_id=agent_id, **filters, limit=per_page, offset=(page - 1) * per_page
     )
     empty = "<p style='color:var(--muted)'>No events in this tab yet.</p>"
     rows = "".join(_event_row(e) for e in evts) or empty
-    return (
+    html = (
         _activity_summary_bar(a)
         + f'<div class="panel"><h2>Activity \u00b7 {total}</h2>'
         + f'<div class="search-group">{_activity_tabs(agent_id, tab)}</div>'
         + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>"
     )
+    _ACTIVITY_CACHE[key] = (now, html)
+    return html
 
 
 def agent_activity_page(request: Request) -> HTMLResponse:
