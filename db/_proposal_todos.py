@@ -1857,6 +1857,12 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             "SELECT claimed_at FROM todo_items WHERE id = ?",
             (item_id,),
         ).fetchone()
+        from db._workflow import ensure_agent_workflow_run
+
+        try:
+            ensure_agent_workflow_run(conn, post_id, agent["id"])
+        except Exception:  # domain:degrade-silently - workflow is enrichment
+            pass
         return {
             "post_id": post_id,
             "item_id": item_id,
@@ -2132,6 +2138,12 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
             "SELECT claimed_at FROM todo_lists WHERE id = ?",
             (list_id,),
         ).fetchone()
+        from db._workflow import ensure_agent_workflow_run
+
+        try:
+            ensure_agent_workflow_run(conn, post_id, agent["id"])
+        except Exception:  # domain:degrade-silently - workflow is enrichment
+            pass
         return {
             "post_id": post_id,
             "list_id": list_id,

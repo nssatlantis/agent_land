@@ -11,7 +11,9 @@ linked PR closes to 'closed' with reason no_pr_linked). PR B: the guided
 steps surface - parser (7 keys in order), snapshot/seed/backfill,
 permissioned + audited manual ticks, managed-key refusals, the steps gate
 with its dry-run bypass, open/verify auto-ticks, and COUNT(*) vs the
-LIMIT-50 listing.
+LIMIT-50 listing. Per-agent run ownership (the fork set ON here): the gate
+and repo_workflow_status scope to the caller, claim/delegate/claim-time
+create the caller's own run, and bind never crosses agents.
 """
 
 import json
@@ -28,10 +30,12 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_WORKFLOW_ENFORCE"] = "1"
 os.environ["FORUM_WORKFLOW_TTL_SECONDS"] = "3600"
 os.environ["FORUM_WORKFLOW_STEPS_ENFORCE"] = "1"
+os.environ["FORUM_WORKFLOW_PER_AGENT"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db._workflow import (  # noqa: E402
+    _open_agent_run,
     _parse_workflow_steps,
     _workflow_file,
     _workflow_nudge,
@@ -84,16 +88,122 @@ def _tick_manual_steps(conn, pid: int, agent_id: int) -> None:
     """Tick every unticked manual (non-managed) step of a proposal's open
     create-pr run - the gate (FORUM_WORKFLOW_STEPS_ENFORCE=1) blocks on them,
     so legacy blocks that just want 'open run exists' must clear them first."""
-    run = conn.execute(
-        "SELECT id FROM workflow_runs WHERE proposal_id = ? AND status = 'open'",
+    rows = conn.execute(
+        "SELECT id, agent_id FROM workflow_runs"
+        " WHERE proposal_id = ? AND status = 'open'",
         (pid,),
-    ).fetchone()
-    if run is None:
+    ).fetchall()
+    if not rows:
         return
-    for step in workflow_steps_for_run(conn, int(run["id"])):
+    own = [r for r in rows if r["agent_id"] == agent_id]
+    pick = own[0] if own else rows[0]
+    for step in workflow_steps_for_run(conn, int(pick["id"])):
         if step["done"] or step["step_key"] in ("open", "verify"):
             continue
-        tick_workflow_step(conn, int(run["id"]), step["step_key"], agent_id)
+        tick_workflow_step(conn, int(pick["id"]), step["step_key"], agent_id)
+
+
+def _open_runs_for(conn, pid: int):
+    return conn.execute(
+        "SELECT id, agent_id FROM workflow_runs"
+        " WHERE proposal_id = ? AND status = 'open' ORDER BY id",
+        (pid,),
+    ).fetchall()
+
+
+def test_per_agent_ownership(agents):
+    """Per-agent run ownership (the fork): claiming a to-do item/list, taking a
+    delegation, or claiming a proposal each create the CALLER's OWN open
+    create-pr run; the gate resolves the caller's own run; binding a PR never
+    crosses agents."""
+    db.init_db()  # the previous block drops workflow_runs to test degradation
+    a, b, g, d = (
+        agents["alpha"],
+        agents["beta"],
+        agents["gamma"],
+        agents["delta"],
+    )
+    # --- claim_todo_item wires a caller-owned run --------------------------
+    p1 = db.create_proposal(
+        a["token"], "T-per item claim", "t-per body", collaborative=True
+    )["post_id"]
+    lst = db.create_todo_list(a["token"], p1, "L1", [{"text": "i1"}])
+    db.join_proposal(b["token"], p1)
+    with db._conn() as conn:
+        assert len(_open_runs_for(conn, p1)) == 1, "only the author's run initially"
+    db.claim_todo_item(b["token"], p1, lst["items"][0]["id"])
+    with db._conn() as conn:
+        b_run = _open_agent_run(conn, p1, b["agent_id"])
+        a_run = _open_agent_run(conn, p1, a["agent_id"])
+        assert b_run is not None, "claiming an item started the caller's run"
+        assert a_run is not None
+        assert b_run != a_run, "the item claim owns a run distinct from the author's"
+        # gate scopes to the caller: block beta until BETA's steps tick
+        try:
+            require_workflow_block(conn, p1, b["agent_id"])
+            raise AssertionError("beta's unticked own run must block the gate")
+        except db.ForumError as exc:
+            assert "waiting on completed steps" in str(exc), exc
+        _tick_manual_steps(conn, p1, b["agent_id"])
+        require_workflow_block(conn, p1, b["agent_id"])  # clears on beta's run
+        a_open_step = next(
+            s for s in workflow_steps_for_run(conn, a_run) if s["step_key"] == "open"
+        )
+        assert a_open_step["done"] == 0, (
+            "beta clearing the gate never ticked the author's run"
+        )
+    # --- claim_todo_list (whole-list claim mode) wires a caller-owned run ---
+    p2 = db.create_proposal(
+        a["token"], "T-per list claim", "t-per body2", collaborative=True
+    )["post_id"]
+    lst2 = db.create_todo_list(a["token"], p2, "L1", [{"text": "i1"}, {"text": "i2"}])
+    db.set_todo_claim_mode(a["token"], p2, "list")
+    db.join_proposal(g["token"], p2)
+    with db._conn() as conn:
+        assert _open_agent_run(conn, p2, g["agent_id"]) is None
+    db.claim_todo_list(g["token"], p2, lst2["id"])
+    with db._conn() as conn:
+        g_run = _open_agent_run(conn, p2, g["agent_id"])
+        assert g_run is not None and g_run != _open_agent_run(
+            conn, p2, a["agent_id"]
+        ), "list claim owns its own run"
+    # --- delegate_proposal wires a caller-owned run ------------------------
+    p3 = db.create_proposal(a["token"], "T-per deleg", "t-per body3")["post_id"]
+    with db._conn() as conn:
+        a3 = _open_agent_run(conn, p3, a["agent_id"])
+        assert a3 is not None
+    db.delegate_proposal(a["token"], p3, g["name"])
+    with db._conn() as conn:
+        g3 = _open_agent_run(conn, p3, g["agent_id"])
+        assert g3 is not None, "taking a delegation started the delegate's run"
+        assert g3 != a3, "delegate's run is distinct from the author's"
+    # --- claim_proposal wires a caller-owned run ---------------------------
+    p4 = db.create_proposal(
+        a["token"], "T-per claim prop", "t-per body4", claimable=True
+    )["post_id"]
+    with db._conn() as conn:
+        a4 = _open_agent_run(conn, p4, a["agent_id"])
+        assert a4 is not None
+    db.claim_proposal(d["token"], p4)
+    with db._conn() as conn:
+        d4 = _open_agent_run(conn, p4, d["agent_id"])
+        assert d4 is not None, "claiming the proposal started the claimer's run"
+        assert d4 != a4, "claimer's run is distinct from the author's"
+    # --- bind never crosses agents -----------------------------------------
+    p5b = db.create_proposal(
+        a["token"], "T-per bind", "t-per body5", collaborative=True
+    )["post_id"]
+    lst5 = db.create_todo_list(a["token"], p5b, "L1", [{"text": "i1"}])
+    db.join_proposal(b["token"], p5b)
+    db.claim_todo_item(b["token"], p5b, lst5["items"][0]["id"])
+    with db._conn() as conn:
+        a5 = _open_agent_run(conn, p5b, a["agent_id"])
+        b5 = _open_agent_run(conn, p5b, b["agent_id"])
+        assert a5 is not None and b5 is not None
+        bound = bind_open_run(conn, p5b, 50001, b["agent_id"])
+        assert bound == b5, "a PR opened by beta stamps beta's own run"
+        assert bound != a5, "beta's PR never stamps the author's run"
+    print("  per-agent ownership: claim/list/deleg/claim-prop runs + gate scope ok")
 
 
 def main():
@@ -239,12 +349,26 @@ def main():
         assert [int(r["id"]) for r in list_bound_open_runs(conn, {9001})] == [run4a], (
             "pr-number narrowing keeps only that PR's open run"
         )
-        # a blanket restart is refused while several PRs own runs
+        # per-agent restart is scoped to the CALLER's own open runs: alpha
+        # holds run4a and beta holds run4b, so a blanket restart of alpha's
+        # runs refuses only once alpha itself holds several. Give alpha a
+        # second own run (a fresh bound run for a second alpha PR), then
+        # retire it so the two-PR merge/complete lifecycle below sees 9001+9002.
+        run_alpha2 = bind_open_run(conn, pc, 9005, alpha["agent_id"])
+        assert run_alpha2 not in (run4a, run4b), "9005 owns a fresh alpha run"
         try:
             restart_workflow(conn, pc, alpha["agent_id"])
-            raise AssertionError("restart with multiple open runs must be refused")
+            raise AssertionError("restart with multiple OWN runs must be refused")
         except db.ForumError:
             pass
+        conn.execute(
+            "UPDATE workflow_runs SET status = 'closed', decided_at = ? WHERE id = ?",
+            (_iso(_now()), run_alpha2),
+        )
+        row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id = ?", (run4b,)
+        ).fetchone()
+        assert row["status"] == "open", "alpha's restart never touched beta's run"
         # each PR's merge closes exactly ITS run, leaving the sibling open
         close_workflow_for_pr(conn, 9001, "merged")
         row = conn.execute(
@@ -797,20 +921,27 @@ def main():
         assert verify_step["done"] == 1 and verify_step["done_by"] is None, (
             "merge auto-ticks 'verify' as a system tick"
         )
-        # CI-green completion credit goes to the RUN'S STARTER
+        # per-agent ownership: a PR opened by beta binds BETA's own run, never
+        # gamma's differently-owned run (gamma is ps2's starter). So binding
+        # 84001 by beta creates a fresh beta run; gamma's untouched r19 is not
+        # stamped, and CI-green on 84001 credits beta's own run.
         r19b = bind_open_run(conn, ps2, 84001, beta["agent_id"])
-        assert r19b == r19
-        r19_step = next(
+        assert r19b != r19, "per-agent: beta's PR binds beta's own run, not gamma's"
+        r19b_open = next(
+            s for s in workflow_steps_for_run(conn, r19b) if s["step_key"] == "open"
+        )
+        assert r19b_open["done"] == 1, "PR-link auto-ticks the opener's BETA run"
+        r19_open = next(
             s for s in workflow_steps_for_run(conn, r19) if s["step_key"] == "open"
         )
-        assert r19_step["done"] == 1
+        assert r19_open["done"] == 0, "beta's PR never stamps gamma's run"
         complete_workflow_for_pr(conn, 84001, "ci_green")
-        r19_verify = next(
-            s for s in workflow_steps_for_run(conn, r19) if s["step_key"] == "verify"
+        r19b_verify = next(
+            s for s in workflow_steps_for_run(conn, r19b) if s["step_key"] == "verify"
         )
-        assert r19_verify["done"] == 1, "CI-green auto-ticks 'verify'"
-        assert r19_verify["done_by_name"] == gamma["name"], (
-            "verify credit goes to the run's starter (gamma), not the opener"
+        assert r19b_verify["done"] == 1, "CI-green auto-ticks 'verify'"
+        assert r19b_verify["done_by_name"] == beta["name"], (
+            "verify credit goes to the run's starter (the opener's OWN run)"
         )
     print("  steps: gate blocks/dry-run bypass + open/verify auto-ticks ok")
 
@@ -890,6 +1021,9 @@ def main():
         assert row is not None, "the PR link records even when workflow_runs is absent"
     print("  link_pr_to_proposal degrades silently without workflow_runs ok")
 
+    # run last: it leaves own runs behind, which would perturb the earlier
+    # global run-ledger/sweep assertions if it ran up front.
+    test_per_agent_ownership(agents)
     print("ALL WORKFLOW TESTS PASSED")
 
 

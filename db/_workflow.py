@@ -12,6 +12,15 @@ collaborative proposal holds one run PER PR rather than one shared run. A
 bound run auto-completes (status 'completed') when its PR goes CI-green
 (FORUM_WORKFLOW_CLOSE_ON_CI_GREEN), ahead of the merge outcome.
 
+Per-agent ownership (FORUM_WORKFLOW_PER_AGENT, default 1): with it on, an
+open run belongs to the citizen who began the work, so a proposal holds one
+run PER (agent, PR) instead of one shared run. The gate
+(`require_workflow_block`) and status resolve the CALLER's own run â€” a
+collaborator never inherits another agent's open run or its ticked checklist,
+and `ensure_agent_workflow_run` starts an agent's own run the moment they
+claim a to-do item/list, take a delegation, or claim a proposal. `0`
+restores the old per-proposal sharing (any open run satisfies the gate).
+
 Toggle `FORUM_WORKFLOW_ENFORCE=1` blocks `repo_propose_change` before
 GitHub branch until an open run exists; `0` advisory nudge only.
 TTL `FORUM_WORKFLOW_TTL_SECONDS=3600` (0 = never expire).
@@ -369,6 +378,69 @@ def seed_steps_for_open_runs(conn: sqlite3.Connection) -> int:
     return seeded
 
 
+def _per_agent_enabled() -> bool:
+    """Whether create-pr workflow ownership is per-agent (FORUM_WORKFLOW_PER_AGENT,
+    default 1). When on, each citizen who begins work on a proposal owns their own
+    open run - the gate and status resolve the caller's own run, never another
+    agent's - so an idle agent's run can never let a second agent pass its
+    checklist. 0 restores the old per-proposal sharing."""
+    try:
+        return int(config.WORKFLOW_PER_AGENT) != 0
+    except Exception:  # domain:degrade-silently - default to per-agent ownership
+        return True
+
+
+def _open_agent_run(
+    conn: sqlite3.Connection, proposal_id: int, agent_id: int
+) -> int | None:
+    """The caller's own open create-pr run on `proposal_id`, if one exists -
+    the per-agent gate/status lookup. Owned runs (agent_id = caller) cover both
+    the unbound checklist and a run already bound to one of the caller's PRs."""
+    row = conn.execute(
+        "SELECT id FROM workflow_runs"
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
+        " AND agent_id = ?",
+        (_WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id),
+    ).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def ensure_agent_workflow_run(
+    conn: sqlite3.Connection, proposal_id: int, agent_id: int
+) -> int | None:
+    """Ensure `agent_id` owns an open create-pr run on `proposal_id` (per-agent
+    ownership): start one for the agent when they have none and the proposal can
+    still open a PR. Called the moment a citizen begins work - claiming a to-do
+    item/list, taking a delegation, or claiming a proposal - so they tick their
+    own checklist as they go instead of inheriting another agent's run. Returns
+    the agent's open run id (existing or newly started), or None when per-agent
+    ownership is off, the proposal is terminal/superseded (no PR can open), or
+    the start fails (best-effort enrichment - never blocks the underlying action)."""
+    if not _per_agent_enabled():
+        return None
+    existing = _open_agent_run(conn, proposal_id, agent_id)
+    if existing is not None:
+        return existing
+    terminal = False
+    try:
+        from db._proposal_status import (
+            _proposal_status_for,
+            _proposal_superseded_by,
+        )
+
+        terminal = _proposal_status_for(conn, proposal_id) == "merged"
+        if not terminal:
+            terminal = _proposal_superseded_by(conn, proposal_id) is not None
+    except Exception:  # domain:degrade-silently - treat as PR-openable
+        terminal = False
+    if terminal:
+        return None
+    try:
+        return start_workflow(conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id)
+    except Exception:  # domain:degrade-silently - workflow is optional enrichment
+        return None
+
+
 def start_workflow(
     conn: sqlite3.Connection,
     workflow_path: str,
@@ -377,10 +449,13 @@ def start_workflow(
     pr_number: int | None = None,
 ) -> int:
     """Create one open run for `workflow_path` + `proposal_id`. Idempotent
-    while open against the matching partial UNIQUE index â€” a bare start
+    while open against the matching partial UNIQUE index â€" a bare start
     (pr_number None) re-returns the open UNBOUND run, a bound start the open
-    run for that exact PR â€” so the same (path, proposal) can hold one run per
-    bound PR plus at most one unbound run (per-PR lifecycle, part 2)."""
+    run for that exact PR â€" so the same (path, proposal) can hold one run per
+    bound PR plus at most one unbound run (per-PR lifecycle, part 2). With
+    per-agent ownership (FORUM_WORKFLOW_PER_AGENT, default 1) the unbound
+    reselect is scoped to `agent_id`, so each citizen holds at most one open
+    unbound run of their own per proposal."""
     _validate_workflow_path(workflow_path)
     sha = _workflow_sha_for(workflow_path)
     ttl = 0
@@ -437,7 +512,14 @@ def start_workflow(
                 "SELECT id FROM workflow_runs"
                 " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'"
             )
-            args = (workflow_path, pr_number)
+            args: tuple = (workflow_path, pr_number)
+        elif _per_agent_enabled():
+            reselect = (
+                "SELECT id FROM workflow_runs"
+                " WHERE workflow_path = ? AND proposal_id = ?"
+                " AND status = 'open' AND pr_number IS NULL AND agent_id = ?"
+            )
+            args = (workflow_path, proposal_id, agent_id)
         else:
             reselect = (
                 "SELECT id FROM workflow_runs"
@@ -504,15 +586,24 @@ def restart_workflow(
     starter = agent_id or row["delegate_id"] or row["agent_id"]
     if starter is None:
         raise ForumError(f"proposal #{proposal_id} has no agent to start the run")
-    closed = conn.execute(
-        "SELECT id FROM workflow_runs"
-        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-        (_WORKFLOW_CREATE_PR_PATH, proposal_id),
-    ).fetchall()
-    if len(closed) > 1:
-        # Per-PR lifecycle (part 2): multiple simultaneous open runs means
-        # other in-flight PRs own their runs; a blanket restart would kill
-        # them all. Refuse loudly instead â€” individual runs close on their PR
+    if _per_agent_enabled() and agent_id is not None:
+        closed = conn.execute(
+            "SELECT id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
+            " AND agent_id = ?",
+            (_WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id),
+        ).fetchall()
+    else:
+        closed = conn.execute(
+            "SELECT id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+            (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+        ).fetchall()
+    if len(closed) > 1 and agent_id is not None:
+        # Per-PR lifecycle (part 2): multiple simultaneous open runs (this
+        # agent's, when per-agent ownership is on - each bound PR carries one)
+        # means other in-flight PRs own their runs; a blanket restart would
+        # kill them all. Refuse loudly instead â€” individual runs close on their PR
         # outcome or via the admin close-stale sweep.
         raise ForumError(
             f"proposal #{proposal_id} has {len(closed)} open workflow runs; "
@@ -585,17 +676,20 @@ def require_workflow_block(
         pass
     row = conn.execute(
         "SELECT id FROM workflow_runs"
-        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-        (workflow_path, proposal_id),
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
+        + (" AND agent_id = ?" if _per_agent_enabled() else ""),
+        (workflow_path, proposal_id) + ((agent_id,) if _per_agent_enabled() else ()),
     ).fetchone()
     if row is None:
-        # No open run. Before refusing, check whether the proposal is still
-        # retryable (P0-A): a decline/close/TTL closes the run, but a
-        # declined/closed proposal may legitimately be retried with a fresh
-        # PR (CHARTER VI.5, repo_propose_change docstring). Only a terminal
-        # proposal - merged, or locked by a newer superseding version - must
-        # not open a PR. When it is still retryable, lazily re-open a fresh
-        # create-pr run so the retry is not hard-blocked forever.
+        # No open run for this agent. Before refusing, check whether the
+        # proposal is still retryable (P0-A): a decline/close/TTL closes the
+        # run, but a declined/closed proposal may legitimately be retried with
+        # a fresh PR (CHARTER VI.5, repo_propose_change docstring). Only a
+        # terminal proposal - merged, or locked by a newer superseding version
+        # - must not open a PR. When it is still retryable, lazily open a fresh
+        # create-pr run owned by THIS agent so the retry (or a collaborator's
+        # first attempt) is not hard-blocked forever - the run always belongs
+        # to the caller, never reused from another citizen.
         from db._proposal_status import (
             _proposal_status_for,
             _proposal_superseded_by,
@@ -785,7 +879,8 @@ def bind_open_run(
     part 2) â€” called from link_pr_to_proposal on every PR link so each PR has
     exactly one open run to carry its checklist.
 
-    Prefers stamping the open UNBOUND run â€” the one that auto-started at
+    Prefers stamping the open UNBOUND run (scoped to the LINKER's own run,
+    agent_id = linker, when per-agent ownership is on) â€” the one that auto-started at
     proposal creation and waits for the first PR link (at most one under
     idx_workflow_runs_open_unbound). The stamp is a scoped UPDATE whose WHERE
     (`pr_number IS NULL`) makes it race-safe: a concurrent link can only lose
@@ -802,12 +897,20 @@ def bind_open_run(
     is NOT NULL) is also refused.
     """
     _validate_workflow_path(_WORKFLOW_CREATE_PR_PATH)
-    cur = conn.execute(
-        "UPDATE workflow_runs SET pr_number = ?"
-        " WHERE workflow_path = ? AND proposal_id = ?"
-        " AND status = 'open' AND pr_number IS NULL",
-        (pr_number, _WORKFLOW_CREATE_PR_PATH, proposal_id),
-    )
+    if _per_agent_enabled() and agent_id is not None:
+        cur = conn.execute(
+            "UPDATE workflow_runs SET pr_number = ?"
+            " WHERE workflow_path = ? AND proposal_id = ?"
+            " AND status = 'open' AND pr_number IS NULL AND agent_id = ?",
+            (pr_number, _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE workflow_runs SET pr_number = ?"
+            " WHERE workflow_path = ? AND proposal_id = ?"
+            " AND status = 'open' AND pr_number IS NULL",
+            (pr_number, _WORKFLOW_CREATE_PR_PATH, proposal_id),
+        )
     if cur.rowcount:
         row = conn.execute(
             "SELECT id FROM workflow_runs WHERE workflow_path = ?"

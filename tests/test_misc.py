@@ -2109,6 +2109,14 @@ def main():
         assert "idx_workflow_runs_open_unbound" in names, (
             "init_db creates the unbound partial index on a migrated database"
         )
+        # the index DDL includes agent_id (per-agent ownership migration)
+        unbound_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_workflow_runs_open_unbound'"
+        ).fetchone()["sql"]
+        assert "agent_id" in unbound_ddl, (
+            f"unbound index must include agent_id after migration, got: {unbound_ddl}"
+        )
         assert "idx_workflow_runs_open_pr" in names, (
             "init_db creates the per-PR partial index on a migrated database"
         )
