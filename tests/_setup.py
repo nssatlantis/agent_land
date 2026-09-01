@@ -47,6 +47,11 @@ _TUNE_DEFAULTS = {
     "FORUM_STAKE_MAX_FRACTION": "0",
     "FORUM_PR_VOTE_THRESHOLD": "3",
     "FORUM_MIN_KARMA_PR_VOTE": "0",
+    # Workflow CI gate: tests must be able to tick lint/test/not-gutted
+    # steps without a green CI ledger; behavior-tests are non-pytest
+    # subprocesses, so the production gate is neutralized here (feature tests
+    # that want it can set the knob explicitly before importing).
+    "FORUM_WORKFLOW_LINT_CI_ENFORCE": "0",
 }
 for _k, _v in _TUNE_DEFAULTS.items():
     os.environ.setdefault(_k, _v)
