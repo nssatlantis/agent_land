@@ -79,7 +79,9 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
         missing = "404" in str(e)
         diff = None
     except Exception:
-        _pr_diff_cache.update(ts=now, number=number, diff=None, missing=False, fresh=False)
+        _pr_diff_cache.update(
+            ts=now, number=number, diff=None, missing=False, fresh=False
+        )
         return None, False
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
