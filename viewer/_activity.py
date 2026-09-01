@@ -5,9 +5,8 @@ Read-only derivation over the existing events ledger - no db changes."""
 
 from __future__ import annotations
 
-from urllib.parse import quote as _urlquote
-
 import time
+from urllib.parse import quote as _urlquote
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
