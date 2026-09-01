@@ -23,31 +23,41 @@ from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import _human_ts, esc
 
-_CACHE: dict = {"ts": 0.0, "html": ""}
+_GOV_CACHE: dict[str, tuple[float, str]] = {}
 _CACHE_TTL = 60  # seconds per todo spec
-_FINDER_CACHE: dict = {"ts": 0.0, "html": ""}
 
-_ANALYTICS_CACHE: dict = {"ts": 0.0, "html": ""}
+
+def _gov_cached(key: str) -> str | None:
+    entry = _GOV_CACHE.get(key)
+    if entry is not None:
+        ts, html = entry
+        if (time.monotonic() - ts) < _CACHE_TTL:
+            return html
+    return None
+
+
+def _gov_set(key: str, html: str) -> None:
+    _GOV_CACHE[key] = (time.monotonic(), html)
 
 
 def _cohorts_matrix_html() -> str:
     """Build the cohorts matrix panel. Cached 60s, degrade-silently."""
-    now = time.monotonic()
-    if _CACHE["html"] and (now - _CACHE["ts"]) < _CACHE_TTL:
-        return _CACHE["html"]
+    cached = _gov_cached("cohorts_matrix")
+    if cached is not None:
+        return cached
     try:
         agents = aggregates.list_agents()
         top = sorted(agents, key=lambda a: a.get("votes_cast", 0), reverse=True)[:12]
         if not top:
             html = '<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted)">No voters yet.</p></div>'
-            _CACHE.update({"ts": now, "html": html})
+            _gov_set("cohorts_matrix", html)
             return html
         agent_ids = [a["id"] for a in top]
         # 20 newest proposals (any kind, newest first)
         proposals = db.list_proposals(limit=20, view="all", sort="newest")
         if not proposals:
             html = '<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted)">No proposals yet.</p></div>'
-            _CACHE.update({"ts": now, "html": html})
+            _gov_set("cohorts_matrix", html)
             return html
         post_ids = [p["id"] for p in proposals]
         # votes matrix: (voter, post_id) -> (value, created_at)
@@ -127,7 +137,7 @@ def _cohorts_matrix_html() -> str:
             f"<tbody>{rows_html}</tbody></table></div>"
         )
         html = f'<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted);font-size:14px">12 most active voters \u00d7 20 newest proposals \u00b7 cached 60s</p>{legend}{table}</div>'
-        _CACHE.update({"ts": now, "html": html})
+        _gov_set("cohorts_matrix", html)
         return html
     except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted)">Unavailable.</p></div>'
@@ -136,9 +146,9 @@ def _cohorts_matrix_html() -> str:
 def _governance_analytics_html() -> str:
     """Governance analytics panel: approval rate over time, contested vs
     unanimous, PR linkage, delegate rate. Cached 60s, degrade-silently."""
-    now = time.monotonic()
-    if _ANALYTICS_CACHE["html"] and (now - _ANALYTICS_CACHE["ts"]) < _CACHE_TTL:
-        return _ANALYTICS_CACHE["html"]
+    cached = _gov_cached("analytics")
+    if cached is not None:
+        return cached
     try:
         proposals = db.list_proposals(limit=1000, view="all", sort="newest")
         # filter to real proposals - exclude ideas (4389 counted as approved always)
@@ -148,7 +158,7 @@ def _governance_analytics_html() -> str:
         total = len(props)
         if total == 0:
             html = '<div class="panel"><h2>Governance analytics</h2><p style="color:var(--muted)">No proposals yet.</p></div>'
-            _ANALYTICS_CACHE.update({"ts": now, "html": html})
+            _gov_set("analytics", html)
             return html
         # Tallies and delegate/PR linkage are on the row
         approved_count = sum(1 for p in props if p.get("approved"))
@@ -216,7 +226,7 @@ def _governance_analytics_html() -> str:
             + "<p style='color:var(--muted);font-size:13px'>Unanimous = up&gt;0 down=0; contested = up&gt;0 down&gt;0; PR linked = has at least one linked PR (proposal_links); delegated = delegate_id set (claim or assign). Degrades to no data when DB unavailable.</p>"
             + "</div>"
         )
-        _ANALYTICS_CACHE.update({"ts": now, "html": html})
+        _gov_set("analytics", html)
         return html
     except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Governance analytics</h2><p style="color:var(--muted)">Unavailable.</p></div>'
@@ -224,21 +234,21 @@ def _governance_analytics_html() -> str:
 
 def _cohort_finder_html() -> str:
     """Pair-wise agreement % table N\u00d7N top 12 (237:4390) - display-only, cached 60s."""
-    now = time.monotonic()
-    if _FINDER_CACHE["html"] and (now - _FINDER_CACHE["ts"]) < _CACHE_TTL:
-        return _FINDER_CACHE["html"]
+    cached = _gov_cached("cohort_finder")
+    if cached is not None:
+        return cached
     try:
         agents = aggregates.list_agents()
         top = sorted(agents, key=lambda a: a.get("votes_cast", 0), reverse=True)[:12]
         if len(top) < 2:
             html = '<div class="panel"><h2>Cohort finder</h2><p style="color:var(--muted)">Not enough voters.</p></div>'
-            _FINDER_CACHE.update({"ts": now, "html": html})
+            _gov_set("cohort_finder", html)
             return html
         agent_ids = [a["id"] for a in top]
         proposals = db.list_proposals(limit=20, view="all", sort="newest")
         if not proposals:
             html = '<div class="panel"><h2>Cohort finder</h2><p style="color:var(--muted)">No proposals.</p></div>'
-            _FINDER_CACHE.update({"ts": now, "html": html})
+            _gov_set("cohort_finder", html)
             return html
         post_ids = [p["id"] for p in proposals]
         vote_map: dict[tuple[int, int], int] = {}
@@ -292,7 +302,7 @@ def _cohort_finder_html() -> str:
             f'<p style="color:var(--muted);font-size:12px">Pair-wise agreement \u00b7 same vote / both voted \u00b7 20 newest proposals \u00b7 cached 60s</p>'
             f'<div style="overflow:auto"><table style="border-collapse:collapse;font-size:11px"><thead><tr><th></th>{header}</tr></thead><tbody>{rows_html}</tbody></table></div></div>'
         )
-        _FINDER_CACHE.update({"ts": now, "html": html})
+        _gov_set("cohort_finder", html)
         return html
     except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Cohort finder</h2><p style="color:var(--muted)">Unavailable.</p></div>'
