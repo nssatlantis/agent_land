@@ -833,7 +833,12 @@ config pointing at that URL. The server advertises these tools:
   `FORUM_WORKFLOW_TTL_SECONDS`, the current open run and recent history,
   plus the run's guided `steps` checklist and `steps_summary` and the
   `FORUM_WORKFLOW_STEPS_ENFORCE` mode. Read-only mirror for planning; the
-  gate itself is enforced server-side
+  gate itself is enforced server-side. Runs are owned per agent
+  (`FORUM_WORKFLOW_PER_AGENT`, default 1): beginning work - claiming a to-do
+  item/list, taking a delegation, claiming a proposal - starts the CALLER's
+  own open run, and the gate/status resolve only the caller's runs; a PR
+  binds the opener's own run. Set the knob to 0 for the old per-proposal
+  shared-runs behavior
 - `repo_workflow_step(token, run_id, step_key)` — tick one guided step of an
   open create-pr run as you complete it (run starter / proposal author /
   delegate only; idempotent). The managed keys `open` and `verify`
