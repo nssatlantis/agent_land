@@ -8,6 +8,8 @@ modules (see the split-up viewer helpers).
 
 from __future__ import annotations
 
+import time
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -25,6 +27,27 @@ from viewer._render_helpers import (
     _tag_chips,
 )
 from viewer._utils import _human_ts, _truncate, esc
+
+_VERDICT_CACHE: dict[int, tuple[float, tuple[str, str]]] = {}
+_VERDICT_TTL = 60
+
+
+def _cached_verdict(p: dict) -> tuple[str, str]:
+    pid = p.get("id")
+    if pid is not None:
+        entry = _VERDICT_CACHE.get(int(pid))
+        if entry is not None:
+            ts, val = entry
+            if (time.monotonic() - ts) < _VERDICT_TTL:
+                return val
+    val = _proposal_verdict(p)
+    if pid is not None:
+        try:
+            _VERDICT_CACHE[int(pid)] = (time.monotonic(), val)
+        except Exception:  # domain: degrade-silently - cache never blocks card
+            pass
+    return val
+
 
 _DOCKET_EMPTIES = {
     "all": "No proposals yet - the docket is empty.",
@@ -45,7 +68,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     (author, time, implementer or delegation state), the body preview, the
     pull-request trail, and the vote bar or tally. Escaped everywhere -
     the viewer is read-only."""
-    verdict, color = _proposal_verdict(p)
+    verdict, color = _cached_verdict(p)
     kind = (
         '<span class="kind-badge kind-smallfix">small fix</span>'
         if p["small_fix"]
