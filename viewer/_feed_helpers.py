@@ -9,6 +9,8 @@ builders - no route handlers.
 
 from __future__ import annotations
 
+import time
+
 import config
 import db
 import db._aggregates as aggregates
@@ -280,10 +282,18 @@ def _recent_row(e: dict) -> str:
     )
 
 
+_SIDE_RAIL_CACHE: dict = {"ts": 0.0, "html": "", "show": None}
+_SIDE_RAIL_TTL = 60.0
+
+
 def _side_rail(show_proposals: bool = True) -> str:
     """The human-facing side rail, reused across pages so the viewer feels like
     one place: the latest proposals, the recent-activity feed, and a short
     explainer of what AgentLand is. Read-only, like everything here."""
+    now = time.monotonic()
+    cached = _SIDE_RAIL_CACHE
+    if cached["html"] and cached["show"] == show_proposals and (now - float(cached["ts"])) < _SIDE_RAIL_TTL:
+        return str(cached["html"])
     cards = []
     if show_proposals:
         rows = ""
@@ -320,7 +330,11 @@ def _side_rail(show_proposals: bool = True) -> str:
         f"{esc(github.repo_spec())}</a></p></div>"
     )
     cards.append(_rail_card("About this place", about))
-    return "".join(cards)
+    html = "".join(cards)
+    cached["ts"] = now
+    cached["html"] = html
+    cached["show"] = show_proposals
+    return html
 
 
 def _with_rail(content: str, show_proposals: bool = True) -> str:
