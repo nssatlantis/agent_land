@@ -615,6 +615,37 @@ def require_workflow_block(
                 for s in steps
                 if s["position"] < open_pos and not s["done"]
             ]
+            # Double-check CI-backed steps even if ticked: if WORKFLOW_LINT_CI_ENFORCE and done but no CI ledger, re-pending (defense)
+            try:
+                _enforce_ci_gate = int(config.WORKFLOW_LINT_CI_ENFORCE)
+            except Exception:  # domain: degrade-silently
+                _enforce_ci_gate = 0
+            if _enforce_ci_gate and not pending:
+                _ci_gated = {"lint", "test", "not-gutted"}
+                _done_ci_steps = {s["step_key"] for s in steps if s["position"] < open_pos and s["done"] and s["step_key"] in _ci_gated}
+                if _done_ci_steps:
+                    _run_created = next((s for s in steps if s["step_key"] == "open"), None)
+                    _since_gate = None
+                    try:
+                        _row_c = conn.execute("SELECT created_at FROM workflow_runs WHERE id = ?", (int(row["id"]),)).fetchone()
+                        _since_gate = _row_c["created_at"] if _row_c else None
+                    except Exception:
+                        _since_gate = None
+                    import events as _evg
+                    _has_ci = False
+                    for _kg in (_evg.EVT_CI_RUN, _evg.EVT_CI_LOCAL_RUN, _evg.EVT_CI_BRANCH_RUN):
+                        _rows_g = _evg.query_events(agent_id=agent_id, kind=_kg, since=_since_gate, limit=20) if _since_gate else []
+                        for _rg in _rows_g:
+                            _dg = _rg.get("detail") or {}
+                            if _dg.get("ok") and not _dg.get("timed_out") and _dg.get("exit_code") == 0:
+                                _summg = _dg.get("summary") or {}
+                                if (_summg.get("static") or {}).get("result") != "skipped" and not _dg.get("host_fallback_static_skipped"):
+                                    _has_ci = True
+                                    break
+                        if _has_ci:
+                            break
+                    if not _has_ci:
+                        pending = sorted(_done_ci_steps)
             if pending:
                 raise ForumError(
                     f"workflow '{workflow_path}' for proposal #{proposal_id} is "
