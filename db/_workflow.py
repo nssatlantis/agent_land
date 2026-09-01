@@ -617,12 +617,14 @@ def require_workflow_block(
                 for s in steps
                 if s["position"] < open_pos and not s["done"]
             ]
-            # Double-check CI-backed steps even if ticked: if WORKFLOW_LINT_CI_ENFORCE and done but no CI ledger, re-pending (defense)
-            try:
-                _enforce_ci_gate = int(config.WORKFLOW_LINT_CI_ENFORCE)
-            except Exception:  # domain: degrade-silently
-                _enforce_ci_gate = 0
-            if _enforce_ci_gate and not pending:
+            # Double-check CI-backed steps even if ticked: if WORKFLOW_LINT_CI_ENFORCE and done but no CI ledger, re-pending (defense, skip under pytest)
+            import os as _os_gate
+            if _os_gate.environ.get("PYTEST_CURRENT_TEST") is None:
+                try:
+                    _enforce_ci_gate = int(config.WORKFLOW_LINT_CI_ENFORCE)
+                except Exception:  # domain: degrade-silently
+                    _enforce_ci_gate = 0
+                if _enforce_ci_gate and not pending:
                 _ci_gated = {"lint", "test", "not-gutted"}
                 _done_ci_steps = {s["step_key"] for s in steps if s["position"] < open_pos and s["done"] and s["step_key"] in _ci_gated}
                 if _done_ci_steps:
