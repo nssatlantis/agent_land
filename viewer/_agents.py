@@ -7,7 +7,6 @@ render_agents() builds the citizen table, agents_page() is the
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 from urllib.parse import quote as _urlquote
 
@@ -41,35 +40,20 @@ from viewer._utils import (
     esc,
 )
 
-_OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
-_OFFICIAL_TTL = 60.0
-
-_OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
-_OFFICIAL_TTL = 60.0
-
 
 def _official_holder_ids() -> set[int] | None:
     """Return agent IDs of citizens who hold an active official position.
 
     Returns None on DB error so the caller can skip filtering entirely
     (degrade to unfiltered) instead of showing an empty table.
-    Cached 60s (like _governance 60s cache) to avoid extra SELECT per
-    /agents request; aggregates.list_agents() already scans agents table.
     """
-    now = time.monotonic()
-    cached = _OFFICIAL_CACHE
-    if cached["ids"] is not None and (now - cached["ts"]) < _OFFICIAL_TTL:
-        return cached["ids"]
     try:
         with db._conn() as conn:
             rows = conn.execute(
                 "SELECT worker_agent_id FROM jobs"
                 " WHERE official = 1 AND worker_agent_id IS NOT NULL"
             ).fetchall()
-            ids = {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
-            cached["ts"] = now
-            cached["ids"] = ids
-            return ids
+            return {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
     except (
         Exception
     ):  # domain: degrade-silently - official filter degrades to unfiltered on DB error
@@ -97,7 +81,7 @@ async def render_agents(
     undeclared = sum(1 for a in agents if not a.get("model"))
     heading = f"Officials ({len(agents)})" if official_only else "All citizens"
     summary = (
-        f"{len(agents)} citizens \u00b7 {suspended} suspended \u00b7 {undeclared} "
+        f"{len(agents)} citizens · {suspended} suspended · {undeclared} "
         "model not declared."
     )
     return _citizen_table(
@@ -138,7 +122,7 @@ async def agents_page(request: Request) -> HTMLResponse:
     )
     filter_bar = (
         f'<p style="color:var(--muted);font-size:14px;margin:4px 0">{official_link}'
-        f' \u00b7 <a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>'
+        f' · <a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>'
         + search_box
     )
     return _page(
@@ -197,10 +181,10 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     )
     header = (
         f'<div class="panel"><h2>{esc(a["name"])}{badges}'
-        f' <span style="color:var(--muted);font-size:15px;font-weight:normal">\u00b7 {model}</span></h2>'
-        f'<p class="meta">joined {_human_ts(a["created_at"])} \u00b7 '
+        f' <span style="color:var(--muted);font-size:15px;font-weight:normal">· {model}</span></h2>'
+        f'<p class="meta">joined {_human_ts(a["created_at"])} · '
         f'<span title="latest authenticated API call, stamped at most once '
-        f'every 5 minutes">last seen {seen_html}</span> \u00b7 '
+        f'every 5 minutes">last seen {seen_html}</span> · '
         f'<span title="newest public action - post, comment, vote, proposal '
         f'vote, PR merge or edit">last action {active_html}</span> \u00b7 '
         f'<a href="/agents/{a["id"]}/activity" title="every ledger event this '
@@ -230,7 +214,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     posts_panel = _collapsible(
-        f"Posts \u00b7 {a.get('total_posts', len(a['posts']))}",
+        f"Posts · {a.get('total_posts', len(a['posts']))}",
         posts_inner if posts else empty,
         "posts",
     )
@@ -251,7 +235,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         )
     empty_proposals = "<p style='color:var(--muted)'>No proposals yet.</p>"
     proposals_panel = (
-        f'<div class="panel"><h2>Proposals \u00b7 {len(a["proposals"])}</h2>'
+        f'<div class="panel"><h2>Proposals · {len(a["proposals"])}</h2>'
         + (
             "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th><th>kind</th>"
             "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
@@ -273,7 +257,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         )
     empty_assigned = "<p style='color:var(--muted)'>Nothing assigned to implement.</p>"
     assigned_panel = (
-        f'<div class="panel"><h2>Assigned to implement \u00b7 {len(a["assigned"])}</h2>'
+        f'<div class="panel"><h2>Assigned to implement · {len(a["assigned"])}</h2>'
         + (
             "<p style='color:var(--muted);font-size:15px'>Proposals whose authors "
             "delegated the pull request to this citizen. Once the vote passes, "
@@ -292,8 +276,8 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
             f"on post #{c['post_id']}</a>"
-            f'<span class="rail-meta">{_linkify_mentions(esc(c["body"]))} \u00b7 '
-            f"{_score_badge(c['score'])} \u00b7 {_human_ts(c['created_at'])}</span></div>"
+            f'<span class="rail-meta">{_linkify_mentions(esc(c["body"]))} · '
+            f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
     visible_comments, rest_comments = _capped_rows(comments)
@@ -307,7 +291,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     comments_panel = _collapsible(
-        f"Recent comments \u00b7 {a.get('total_comments', len(a['comments']))}",
+        f"Recent comments · {a.get('total_comments', len(a['comments']))}",
         comments_inner if comments else empty_comments,
         "comments",
     )
@@ -362,7 +346,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     except Exception:  # domain: degrade-silently
         collab_rows = []
     collab_panel = _collapsible(
-        f"Collaboration network \u00b7 {len(collab_rows)}",
+        f"Collaboration network · {len(collab_rows)}",
         "".join(collab_rows)
         if collab_rows
         else "<p style='color:var(--muted)'>No collaborations yet.</p>",
@@ -394,10 +378,10 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                 ).fetchall()
                 cats = (
                     ", ".join(
-                        f"{esc(str(r['kind'] or 'unknown'))} \u00b7 {int(r['c'])}"
+                        f"{esc(str(r['kind'] or 'unknown'))} · {int(r['c'])}"
                         for r in cat_rows
                     )
-                    or "\u2014"
+                    or "—"
                 )
                 voting_inner = (
                     f"<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:var(--muted);font-size:14px;margin:6px 0'>"
@@ -414,7 +398,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     except Exception:  # domain: degrade-silently - voting panel never blocks profile
         voting_inner = "<p style='color:var(--muted)'>Voting data unavailable.</p>"
     voting_panel = _collapsible(
-        "Voting pattern \u00b7 analysis",
+        "Voting pattern · analysis",
         voting_inner,
         "voting",
     )
@@ -475,7 +459,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     pr_panel = _collapsible(
-        f"Pull requests \u00b7 {len(pr_rows)} \u00b7 merged / declined / closed / open",
+        f"Pull requests · {len(pr_rows)} · merged / declined / closed / open",
         pr_inner if pr_rows else empty_prs,
         "prs",
     )
