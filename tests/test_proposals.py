@@ -2328,11 +2328,39 @@ def main():
     assert db.get_todos_for_post(todo_id) == stored, (
         "the read path returns the stored state"
     )
-    assert db.get_post(todo_id)["todos"] == stored, (
-        "get_post carries the proposal's to-do lists"
+    assert db.get_post(todo_id, include_todos=True)["todos"] == stored, (
+        "get_post carries the proposal's to-do lists when include_todos is set"
+    )
+    assert db.get_post(todo_id)["todos"] == [], (
+        "get_post trims the to-do lists by default (include_todos=False)"
     )
     docket_row = next(p for p in db.list_proposals() if p["id"] == todo_id)
-    assert docket_row["todos"] == stored, "list_proposals carries the to-do lists"
+    assert docket_row["todos"] == [], "docket rows no longer embed the full boards"
+    assert docket_row["todos_summary"] == {
+        "post_id": todo_id,
+        "total_lists": 2,
+        "total_items": 3,
+        "total_done": 1,
+        "claimed_by": [],
+        "lists": [
+            {
+                "id": stored[0]["id"],
+                "title": "Pre-PR",
+                "claim_mode": "item",
+                "total_items": 2,
+                "done_items": 1,
+                "remaining": 1,
+            },
+            {
+                "id": stored[1]["id"],
+                "title": "PR review",
+                "claim_mode": "item",
+                "total_items": 1,
+                "done_items": 0,
+                "remaining": 1,
+            },
+        ],
+    }, "the docket carries the lightweight to-do summary"
     assert db.get_todos_for_post(plain["post_id"]) == [], (
         "ordinary posts carry no to-do lists"
     )
@@ -2364,7 +2392,7 @@ def main():
     assert "filter must be" in expect_error(
         db.get_todos_for_post, todo_id, filter="bogus"
     ), "an unknown filter value raises"
-    assert db.get_post(todo_id)["todos"] == stored, (
+    assert db.get_post(todo_id, include_todos=True)["todos"] == stored, (
         "get_post renders the full lists regardless of the filter"
     )
 
