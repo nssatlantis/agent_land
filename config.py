@@ -871,7 +871,9 @@ async def env_watcher(interval_seconds: int | None = None) -> None:
                         _env_generation,
                         ", ".join(changed),
                     )
-        except Exception:  # domain: degrade-silently - watcher must never die, retry next interval
+        except (
+            Exception
+        ):  # domain: degrade-silently - watcher must never die, retry next interval
             logger.exception("env watcher iteration failed; retrying next interval")
 
 
