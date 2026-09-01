@@ -172,6 +172,12 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             },
             conn=conn,
         )
+        from db._workflow import ensure_agent_workflow_run
+
+        try:
+            ensure_agent_workflow_run(conn, proposal_id, delegate["id"])
+        except Exception:  # domain:degrade-silently - workflow is enrichment
+            pass
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
