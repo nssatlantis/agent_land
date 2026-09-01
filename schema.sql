@@ -1090,7 +1090,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_agent_status ON workflow_runs(agent
 -- (merged/declined/closed/completed) don't collide - the partial predicates
 -- only constrain 'open'.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_unbound
-    ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open' AND pr_number IS NULL;
+    ON workflow_runs(workflow_path, proposal_id, agent_id) WHERE status = 'open' AND pr_number IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_pr
     ON workflow_runs(workflow_path, pr_number) WHERE status = 'open' AND pr_number IS NOT NULL;
 -- Gate/lazy-restart hot path (review #4): the require_workflow_block lookups

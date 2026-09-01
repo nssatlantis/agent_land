@@ -1277,6 +1277,35 @@ def init_db() -> None:
                 "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
+        # Per-agent workflow ownership widens the open-unbound UNIQUE index
+        # from (workflow_path, proposal_id) to (workflow_path, proposal_id,
+        # agent_id) so each citizen owns at most one open run of their own per
+        # proposal (FORUM_WORKFLOW_PER_AGENT). The schema.sql executescript
+        # runs BEFORE this migration with CREATE UNIQUE INDEX IF NOT EXISTS,
+        # which is a no-op on an existing database that already has the index
+        # in the old two-column shape - so an existing DB keeps the old index
+        # here unless we drop and recreate it. Guarded on the stored index DDL:
+        # a fresh DB (already the new shape) or one still on the old shape both
+        # drop + recreate to the new columns, idempotently.
+        try:
+            _stored_unbound = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index'"
+                " AND name = 'idx_workflow_runs_open_unbound'"
+            ).fetchone()
+            _old_unbound = _stored_unbound is not None and "agent_id" not in (
+                _stored_unbound[0] or ""
+            )
+            if _old_unbound:
+                conn.execute("DROP INDEX idx_workflow_runs_open_unbound")
+            if _old_unbound or _stored_unbound is None:
+                conn.executescript(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS"
+                    " idx_workflow_runs_open_unbound"
+                    " ON workflow_runs(workflow_path, proposal_id, agent_id)"
+                    " WHERE status = 'open' AND pr_number IS NULL;"
+                )
+        except Exception:  # domain:degrade-silently - index enrichment only
+            pass
         # proposal_links.opened_by_agent_id becomes anonymizable: a NOT
         # NULL owner would force deleting the link row itself when its
         # opener is deleted - taking the PR-to-proposal history with it.

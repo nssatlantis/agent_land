@@ -616,6 +616,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # refuse hand ticks. 0 keeps the checklist advisory only.
     "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),
     "WORKFLOW_LINT_CI_ENFORCE": ("FORUM_WORKFLOW_LINT_CI_ENFORCE", 1, int),
+    # Per-agent workflow ownership: 1 (default) makes every open create-pr
+    # run belong to the citizen who began the work - the PR-open gate and
+    # repo_workflow_status resolve the CALLER's own run (per (proposal,
+    # agent)), a collaborator never inherits another agent's open run or its
+    # ticked checklist, and claiming a to-do item/list, taking a delegation,
+    # or claiming a proposal starts the agent's own run. 0 restores the old
+    # per-proposal sharing (any open run satisfies the gate).
+    "WORKFLOW_PER_AGENT": ("FORUM_WORKFLOW_PER_AGENT", 1, int),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).

@@ -401,6 +401,7 @@ from db._workflow import (  # noqa: F401
     close_workflow_for_proposal,
     complete_workflow_for_pr,
     count_workflow_runs,
+    ensure_agent_workflow_run,
     list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
