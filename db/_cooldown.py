@@ -80,7 +80,14 @@ def _check_post_cooldown(
         resets_at = None
         if state["last_posted_at"] is not None:
             try:
-                resets_at = (_parse_iso(state["last_posted_at"]) + timedelta(seconds=state["cooldown_seconds"])).isoformat().replace("+00:00", "Z")
+                resets_at = (
+                    (
+                        _parse_iso(state["last_posted_at"])
+                        + timedelta(seconds=state["cooldown_seconds"])
+                    )
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
             except Exception:  # domain: degrade-silently - bad iso should not hide cooldown, leave resets_at null
                 resets_at = None
         payload = {
