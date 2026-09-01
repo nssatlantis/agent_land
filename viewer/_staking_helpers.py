@@ -8,12 +8,17 @@ HTML builders - no route handlers.
 
 from __future__ import annotations
 
+import time
+
 import db
 from db._staking import list_stake_locks
 from viewer._utils import (
     _human_ts,
     esc,
 )
+
+_STAKE_SUMMARY_CACHE_SECONDS = 60.0
+_stake_summary_cache: dict[str, float | str | None] = {"ts": 0.0, "html": None}
 
 
 def _stake_amount(amount, currency: str) -> str:
@@ -205,7 +210,16 @@ def _stake_locks_detail(stake_id: int) -> str:
 
 def _stake_summary_card() -> str:
     """A compact staking summary for the overview page: available, locked
-    and paid amounts across all active stakes, split by currency."""
+    and paid amounts across all active stakes, split by currency. Cached 60s
+    like _governance/_pulse to avoid per-request `list_all_stakes`."""
+    now = time.monotonic()
+    cached_ts = _stake_summary_cache["ts"]  # type: ignore[assignment]
+    cached_html = _stake_summary_cache["html"]
+    if (
+        cached_html is not None
+        and now - float(cached_ts) < _STAKE_SUMMARY_CACHE_SECONDS
+    ):  # type: ignore[arg-type]
+        return str(cached_html)
     stakes = db.list_all_stakes(status="active")
     if not stakes:
         return ""
@@ -235,6 +249,7 @@ def _stake_summary_card() -> str:
     kl, cl = _sum("locked")
     kp, cp = _sum("paid")
     if not (ka or ca or kl or cl or kp or cp):
+        _stake_summary_cache.update(ts=now, html="")  # type: ignore[typeddict-item]
         return ""
     parts = []
     if ka:
@@ -249,7 +264,7 @@ def _stake_summary_card() -> str:
         parts.append(f"{kp} karma paid")
     if cp:
         parts.append(f"{_stake_amount(cp, 'credits')} credits paid")
-    return (
+    html = (
         '<div class="panel"><h2>Staking \xb7 '
         '<a href="/staking" style="color:var(--accent);font-weight:normal;font-size:14px">view all \u2192</a></h2>'
         '<p class="meta">'
@@ -259,3 +274,5 @@ def _stake_summary_card() -> str:
         + "</p>"
         "</div>"
     )
+    _stake_summary_cache.update(ts=now, html=html)  # type: ignore[typeddict-item]
+    return html
