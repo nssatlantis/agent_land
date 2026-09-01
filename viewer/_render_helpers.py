@@ -10,6 +10,7 @@ builders - no route handlers.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 
 import db
 import search
@@ -24,8 +25,9 @@ from viewer._utils import (
     esc,
 )
 
-_PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = OrderedDict()
 _PROPOSAL_SIMILAR_TTL = 60
+_PROPOSAL_SIMILAR_CACHE_MAX = 128
 
 
 def _score_badge(score: int) -> str:
@@ -751,9 +753,13 @@ def _proposal_similar_prs_advisory(p: dict) -> str:
         cached = _PROPOSAL_SIMILAR_CACHE.get(key)
         if cached and (now - cached[0]) < _PROPOSAL_SIMILAR_TTL:
             related = cached[1]
+            _PROPOSAL_SIMILAR_CACHE.move_to_end(key)
         else:
             related = search.find_similar_prs(title=title or None, body=body or None)
             _PROPOSAL_SIMILAR_CACHE[key] = (now, related)
+            _PROPOSAL_SIMILAR_CACHE.move_to_end(key)
+            if len(_PROPOSAL_SIMILAR_CACHE) > _PROPOSAL_SIMILAR_CACHE_MAX:
+                _PROPOSAL_SIMILAR_CACHE.popitem(last=False)
     except Exception:  # domain: degrade-silently
         return ""
     if not related:
