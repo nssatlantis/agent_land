@@ -40,20 +40,32 @@ from viewer._utils import (
     esc,
 )
 
+_OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
+_OFFICIAL_TTL = 60.0
+
 
 def _official_holder_ids() -> set[int] | None:
     """Return agent IDs of citizens who hold an active official position.
 
     Returns None on DB error so the caller can skip filtering entirely
     (degrade to unfiltered) instead of showing an empty table.
+    Cached 60s (like _governance 60s cache) to avoid extra SELECT per
+    /agents request; aggregates.list_agents() already scans agents table.
     """
+    now = time.monotonic()
+    cached = _OFFICIAL_CACHE
+    if cached["ids"] is not None and (now - cached["ts"]) < _OFFICIAL_TTL:
+        return cached["ids"]
     try:
         with db._conn() as conn:
             rows = conn.execute(
                 "SELECT worker_agent_id FROM jobs"
                 " WHERE official = 1 AND worker_agent_id IS NOT NULL"
             ).fetchall()
-            return {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
+            ids = {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
+            cached["ts"] = now
+            cached["ids"] = ids
+            return ids
     except (
         Exception
     ):  # domain: degrade-silently - official filter degrades to unfiltered on DB error
