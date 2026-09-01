@@ -10,8 +10,8 @@ builders - no route handlers.
 from __future__ import annotations
 
 import time
-from collections import OrderedDict
 import urllib.parse
+from collections import OrderedDict
 
 import db
 import search
