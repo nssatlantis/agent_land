@@ -620,6 +620,11 @@ def _child_env(tmp_root: str) -> dict:
     tmp_sub = os.path.join(tmp_data, "tmp")
     for key in ("TMPDIR", "TEMP", "TMP"):
         env[key] = tmp_sub
+    # git >=2.35 refuses a repo owned by a different uid; trust the runner
+    # tree so git-derived record enrichment works on the native path too.
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "safe.directory"
+    env["GIT_CONFIG_VALUE_0"] = str(config.REPO_DIR)
     return env
 
 
@@ -986,6 +991,15 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "PYTHONDONTWRITEBYTECODE=1",
         "--env",
         "HOME=/tmp",
+        # git >=2.35 guards repos owned by a different uid; the mounted tree
+        # is host-owned while the container runs as 1000:1000, so trust /repo
+        # explicitly or git-derived record enrichment degrades to nothing.
+        "--env",
+        "GIT_CONFIG_COUNT=1",
+        "--env",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        "--env",
+        "GIT_CONFIG_VALUE_0=/repo",
         "--volume",
         f"{tree}:/repo:ro",
         "--workdir",
