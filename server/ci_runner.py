@@ -146,7 +146,7 @@ def _ci_queue_depth() -> tuple[int, int, int]:
     desired = max(1, int(config.CI_RUN_CONCURRENCY))
     try:
         avail = q.qsize()
-    except Exception:
+    except Exception:  # domain: degrade-silently - pool snapshot is best-effort
         avail = 0
     busy = max(0, desired - avail)
     return desired, avail, busy
@@ -246,7 +246,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
         if reserve:
             try:
                 avail = q.qsize()
-            except Exception:
+            except Exception:  # domain: degrade-silently - reserve probe is best-effort
                 avail = 0
             if avail <= 1:
                 # Report Retry-After hint
