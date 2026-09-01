@@ -539,7 +539,6 @@ CREATE TABLE IF NOT EXISTS todo_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, id);
-CREATE INDEX IF NOT EXISTS idx_todo_items_pr ON todo_items(pr_number) WHERE pr_number IS NOT NULL;
 -- Claim lookups are always 'which items does agent X hold here' - the
 -- partial index covers exactly the claimed rows.
 -- idx_todo_items_claim: created by migration in _core.py (can't go here
