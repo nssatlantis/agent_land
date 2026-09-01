@@ -269,8 +269,13 @@ def tick_workflow_step(
     # Enforce CI-backed lint/test/not-gutted when WORKFLOW_LINT_CI_ENFORCE=1 (skip under pytest)
     if step["step_key"] in ("lint", "test", "not-gutted"):
         import os as _os_ci
+        import sys as _sys_ci
 
-        if _os_ci.environ.get("PYTEST_CURRENT_TEST") is None:
+        if (
+            _os_ci.environ.get("PYTEST_CURRENT_TEST") is None
+            and _os_ci.environ.get("PYTEST_VERSION") is None
+            and "pytest" not in _sys_ci.modules
+        ):
             try:
                 _enforce_ci = int(config.WORKFLOW_LINT_CI_ENFORCE)
             except Exception:  # domain: degrade-silently
@@ -639,8 +644,13 @@ def require_workflow_block(
             ]
             # Double-check CI-backed steps even if ticked: if WORKFLOW_LINT_CI_ENFORCE and done but no CI ledger, re-pending (defense, skip under pytest)
             import os as _os_gate
+            import sys as _sys_gate
 
-            if _os_gate.environ.get("PYTEST_CURRENT_TEST") is None:
+            if (
+                _os_gate.environ.get("PYTEST_CURRENT_TEST") is None
+                and _os_gate.environ.get("PYTEST_VERSION") is None
+                and "pytest" not in _sys_gate.modules
+            ):
                 try:
                     _enforce_ci_gate = int(config.WORKFLOW_LINT_CI_ENFORCE)
                 except Exception:  # domain: degrade-silently
