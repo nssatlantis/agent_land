@@ -560,6 +560,27 @@ def test_history_target_name_only_for_agent_targets():
     )
 
 
+def test_history_limit_clamped_to_max_page_size():
+    """credit_history clamps limit to MAX_PAGE_SIZE so an unbounded
+    `limit=100000` cannot trigger a full-ledger scan."""
+    import db._credits as cr
+
+    with db._conn() as conn:
+        for _ in range(config.MAX_PAGE_SIZE + 10):
+            cr.mint(1, "admin_mint", admin="test", conn=conn)
+    rows = db.credit_history(limit=10**6)
+    assert len(rows["entries"]) == config.MAX_PAGE_SIZE, (
+        "limit must clamp to MAX_PAGE_SIZE"
+    )
+    assert rows["has_more"] is True, (
+        "more than MAX_PAGE_SIZE entries exist, has_more must be True"
+    )
+    small = db.credit_history(limit=5)
+    assert len(small["entries"]) <= 5 and small["has_more"] is True
+    # limit is floored at 1 (the shared clamp), never a free pass to 0
+    assert len(db.credit_history(limit=0)["entries"]) == 1
+
+
 def test_top_movers_shape():
     """The 7-day aggregate returns per-citizen earned/spent quarter sums,
     most active first, with names resolved (deleted-citizen marker when
@@ -745,6 +766,7 @@ def main():
     test_history_and_balances_shapes()
     test_history_category_filters()
     test_history_target_name_only_for_agent_targets()
+    test_history_limit_clamped_to_max_page_size()
     test_top_movers_shape()
     test_events_under_own_categories()
     test_concurrent_spends_cannot_overspend()
