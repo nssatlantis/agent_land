@@ -221,11 +221,12 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     # and by whom, so the docket mirrors the badge on the proposal page -
     # item dots aren't shown in pure list mode, the list is the unit of
     # ownership. Hybrid mode renders both, so list claims still surface.
-    todos = p.get("todos") or []
-    if p.get("collaborative") and not p.get("locked") and todos:
+    summary = p.get("todos_summary") or {}
+    todos_lists = summary.get("lists") or []
+    if p.get("collaborative") and not p.get("locked") and todos_lists:
         list_claims = [
             lst
-            for lst in todos
+            for lst in todos_lists
             if lst.get("claim_mode") in ("list", "hybrid") and lst.get("claimed_by")
         ]
         if list_claims:
@@ -242,19 +243,18 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'
                 f'<span class="pr-label">Claims:</span> '
-                f"{len(list_claims)} of {len(todos)} lists claimed by "
+                f"{len(list_claims)} of {len(todos_lists)} lists claimed by "
                 f"{', '.join(claimers.values())}</div>"
             )
     # Per-checklist burn-down: one mini progress bar per to-do list, so the
     # docket shows shipping momentum inside each claimed area too.
-    if p.get("collaborative") and not p.get("locked") and todos:
+    if p.get("collaborative") and not p.get("locked") and todos_lists:
         burn_chips = []
-        for lst in todos:
-            items = lst.get("items") or []
-            total = len(items)
+        for lst in todos_lists:
+            total = lst.get("total_items") or 0
             if not total:
                 continue
-            done = sum(1 for it in items if it.get("done"))
+            done = lst.get("done_items") or 0
             bpct = min(100, int((done / max(total, 1)) * 100))
             tip = esc(f"{lst.get('title', 'list')}: {done}/{total} done")
             cname = lst.get("claimed_by")

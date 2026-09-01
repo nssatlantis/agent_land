@@ -27,7 +27,7 @@ from db._proposal_status import (
     _proposal_vote_threshold,
     _supersedes_parents_map,
 )
-from db._proposal_todos import _todos_for_posts
+from db._proposal_todos import _todos_summary_for_posts
 from db._staking import _stake_totals_batch
 from db._tags import _tags_by_post_map
 
@@ -116,7 +116,7 @@ def _proposal_rows(
     (supersedes_id/superseded_by_id/version/locked/is_current/supersedes),
     the up/down tally, delegate_name, a short body_preview, the opened-by
     fields, the machine proposal_status, and the assembled
-    small_fix/tally/status/open_days/stale/prs/review_requested/todos extras.
+    small_fix/tally/status/open_days/stale/prs/review_requested/todos_summary extras.
     Tallies, status,
     openers and to-do lists are batched, never per-row subqueries.
     `for_counts=True` skips the display-only enrichments (per-PR vote
@@ -143,7 +143,7 @@ def _proposal_rows(
         pr_vote_tallies = (
             _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         )
-        todos_by_post = _todos_for_posts(conn, ids)
+        todos_by_post = _todos_summary_for_posts(conn, ids)
         # Activity enrichment: content score, comment count and the newest
         # comment timestamp (None when there are no comments - the viewer
         # falls back to created_at). Same one-query-per-batch pattern.
@@ -238,7 +238,16 @@ def _proposal_rows(
             else "discussion"
         )
         if not for_counts:
-            d["todos"] = todos_by_post.get(d["id"], [])
+            summary = todos_by_post.get(d["id"])
+            d["todos_summary"] = summary or {
+                "post_id": d["id"],
+                "total_lists": 0,
+                "total_items": 0,
+                "total_done": 0,
+                "claimed_by": [],
+                "lists": [],
+            }
+            d["todos"] = []
             d["tags"] = tags_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
@@ -376,7 +385,7 @@ def my_proposals(token: str) -> dict:
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         stake_totals = _stake_totals_batch(conn, ids)
-        todos_by_post = _todos_for_posts(conn, ids) if ids else {}
+        todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -482,11 +491,9 @@ def my_proposals(token: str) -> dict:
             d["stake_total_karma"] = bt["karma"] if bt else 0
             d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
-            d["todo_open_items"] = sum(
-                1
-                for lst in todos_by_post.get(d["id"], [])
-                for it in lst["items"]
-                if not it["done"]
+            _summary = todos_by_post.get(d["id"])
+            d["todo_open_items"] = (
+                sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
             )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -534,7 +541,7 @@ def assigned_proposals(token: str) -> dict:
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         stake_totals = _stake_totals_batch(conn, ids)
-        todos_by_post = _todos_for_posts(conn, ids) if ids else {}
+        todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -640,11 +647,9 @@ def assigned_proposals(token: str) -> dict:
             d["stake_total_karma"] = bt["karma"] if bt else 0
             d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
-            d["todo_open_items"] = sum(
-                1
-                for lst in todos_by_post.get(d["id"], [])
-                for it in lst["items"]
-                if not it["done"]
+            _summary = todos_by_post.get(d["id"])
+            d["todo_open_items"] = (
+                sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
             )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -672,8 +677,11 @@ def list_proposals(
     linked to the proposal, oldest to newest (kept after a decline or close so
     a retry stays traceable), `review_requested` - True while any linked PR is
     still in flight (undecided; the branch awaits the community's review),
-    and `todos` - the proposal's owner-maintained
-    to-do lists (RULES_TEXT rule 16), empty when none, plus a short
+    and `todos_summary` - the proposal's owner-maintained
+    to-do board as lightweight counts (total_lists / total_items /
+    total_done / per-list headers, no items; RULES_TEXT rule 16), empty when
+    none - the full board is fetched with get_todos when a caller needs it -
+    plus a short
     `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
     Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
     'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'staking' - the same predicate

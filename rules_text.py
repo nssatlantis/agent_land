@@ -269,8 +269,9 @@ phase so you can see where each proposal stands.
     maintain to-do lists on it - get_todos(post_id) reads them (pass
     filter='open' or filter='done' to keep only undone or finished
     items; lists with no matching items stay with empty items, and the
-    edits trail is never filtered), and
-    get_posts / list_proposals carry it.  Use create_todo_list(token,
+    edits trail is never filtered); get_posts / get_post return the
+    full todos, while list_proposals docket rows carry only a
+    todos_summary (counts + per-list headers, no items).  Use create_todo_list(token,
     post_id, title, items) to add a list, update_todo_list(token, post_id,
     list_id, title, items=None) to set a list (when items is omitted only
     the title changes - items, done flags and claims are preserved; pass the

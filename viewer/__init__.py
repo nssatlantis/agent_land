@@ -98,6 +98,7 @@ from viewer._pr_helpers import (
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._render_helpers import (
+    _TODO_PAGE_SIZE,
     _author,
     _discussion_digest,
     _edits_panel,
@@ -291,13 +292,57 @@ async def render_overview() -> str:
     )
 
 
-def render_post(post_id: int) -> HTMLResponse:
+def render_post(
+    post_id: int,
+    tlist: int | None = None,
+    tpage: int = 1,
+    tq: str | None = None,
+) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
     except (  # domain: degrade-silently - missing post renders 404 page, never 500
         db.ForumError
     ):
         return _page(f"no post {post_id}", "<p>No such post.</p>")
+    # The whole-board `todos` is no longer embedded in get_post; the to-do
+    # panel + contribution header read this lightweight summary and page
+    # through get_todos_list / search_todos only when drilled in.
+    todos_summary: dict = {}
+    if p.get("proposal_kind"):
+        try:
+            todos_summary = db.get_todos_summary(post_id)
+        except (
+            db.ForumError
+        ):  # domain: degrade-silently - empty panel, page still renders
+            todos_summary = {}
+    p["todos_summary"] = todos_summary
+    # The to-do panel is a pure renderer; the page handler does the only
+    # DB reads - a paged drill-in (get_todos_list) for `tlist`, or a
+    # paged full-text search (search_todos) for `tq` - and hands the row
+    # snapshot to _todos_panel. Failures degrade silently to the summary.
+    list_data: dict | None = None
+    search_data: dict | None = None
+    if tq is not None and tq != "":
+        try:
+            search_data = db.search_todos(
+                post_id, tq, offset=(tpage - 1) * _TODO_PAGE_SIZE, limit=_TODO_PAGE_SIZE
+            )
+        except db.ForumError:  # domain: degrade-silently - empty search page
+            search_data = {"hits": [], "total": 0}
+    elif tlist is not None:
+        try:
+            list_data = db.get_todos_list(
+                post_id,
+                int(tlist),
+                offset=(tpage - 1) * _TODO_PAGE_SIZE,
+                limit=_TODO_PAGE_SIZE,
+            )
+        except (
+            db.ForumError,
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - unknown list shows summary
+            list_data = None
     comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
@@ -326,25 +371,23 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_votes_panel(p)
         + _collaborators_panel(p)
         + _edits_panel(p)
-        + _todos_panel(p)
+        + _todos_panel(
+            p,
+            tlist=tlist,
+            tpage=tpage,
+            tq=tq,
+            list_data=list_data,
+            search_data=search_data,
+        )
         + (
             f'<div class="panel"><h2>Contribution tracking \u00b7 '
-            f"{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('done'))}"
-            f"/{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []))} done"
-            f" \u00b7 {sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('claimed_by'))} claimed</h2>"
+            f"{todos_summary.get('total_done', 0)}"
+            f"/{todos_summary.get('total_items', 0)} done"
+            f" \u00b7 {len(todos_summary.get('claimed_by') or [])} claimed</h2>"
             f'<div style="color:var(--muted);font-size:14px">'
-            + ", ".join(
-                sorted(
-                    {
-                        esc(str(_i.get("claimed_by")))
-                        for _l in (p.get("todos") or [])
-                        for _i in (_l.get("items") or [])
-                        if _i.get("claimed_by")
-                    }
-                )
-            )
+            + ", ".join(esc(str(n)) for n in (todos_summary.get("claimed_by") or []))
             + "</div></div>"
-            if p.get("collaborative") and (p.get("todos") or [])
+            if p.get("collaborative") and (todos_summary.get("lists") or [])
             else ""
         )
         + _related_panel(p)
@@ -2799,7 +2842,26 @@ def recent_page(request: Request) -> HTMLResponse:
 
 
 def post_page(request: Request) -> HTMLResponse:
-    return render_post(request.path_params["id"])
+    q = request.query_params
+    try:
+        tpage = max(1, int(q.get("tpage", 1)))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - bad page falls back to 1
+        tpage = 1
+    tlist_q = q.get("tlist")
+    tlist = None
+    if tlist_q is not None and str(tlist_q) != "":
+        try:
+            tlist = int(tlist_q)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - bad list id shows summary
+            tlist = None
+    tq = q.get("tq") or None
+    return render_post(request.path_params["id"], tlist=tlist, tpage=tpage, tq=tq)
 
 
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS

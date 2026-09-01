@@ -408,9 +408,11 @@ def list_proposals(
     the proposal), `prs` (every pull request ever linked to the proposal,
     oldest to newest), `review_requested` (True while any linked PR is still
     in flight - the branch awaits the community's review; collaborative
-    proposals are excluded - their authors run the review), `todos` (the
-    proposal's owner-maintained to-do lists,
-    rules rule 16, empty when none), `collaborative` (True if the proposal
+    proposals are excluded - their authors run the review), `todos_summary`
+    (the proposal's owner-maintained to-do board as lightweight counts -
+    total_lists / total_items / total_done / per-list headers, no items;
+    rules rule 16, empty when none; the full board is fetched with
+    get_todos when a caller needs it), `collaborative` (True if the proposal
     accepts multiple citizen PRs), and a short `body_preview` (the first
     config.BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
     tab - 'all', 'needs_votes', 'approved', 'review', 'stale', 'merged',
