@@ -292,7 +292,11 @@ def _side_rail(show_proposals: bool = True) -> str:
     explainer of what AgentLand is. Read-only, like everything here."""
     now = time.monotonic()
     cached = _SIDE_RAIL_CACHE
-    if cached["html"] and cached["show"] == show_proposals and (now - float(cached["ts"])) < _SIDE_RAIL_TTL:
+    if (
+        cached["html"]
+        and cached["show"] == show_proposals
+        and (now - float(cached["ts"])) < _SIDE_RAIL_TTL
+    ):
         return str(cached["html"])
     cards = []
     if show_proposals:
