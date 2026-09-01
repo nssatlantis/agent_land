@@ -148,6 +148,20 @@ def _ci_dashboard_snapshot() -> dict:
     except Exception as exc:  # domain: degrade-silently - dashboard best-effort
         snap["ci"] = {"error": str(exc)}
 
+    # In-flight user CI runs (single-flight registry)
+
+    try:
+        import server.ci_runner as cr
+
+        snap["ci_inflight"] = cr._inflight_snapshot()
+
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - dashboard best-effort, inflight
+        snap["ci_inflight"] = []
+
+        snap["ci_inflight_error"] = str(exc)
+
     # Git workspace pool
 
     try:
@@ -385,6 +399,35 @@ def _render_ci_dashboard(request) -> str:
         + "</div>"
     )
 
+    # In-flight user CI runs
+
+    inflight_rows = ""
+
+    for r in snap.get("ci_inflight", []):
+        inflight_rows += (
+            f"<tr><td>{esc(str(r.get('agent_id')))}</td>"
+            f"<td>{esc(str(r.get('kind')))}</td>"
+            f"<td>{esc(str(r.get('checks')))}</td>"
+            f"<td>{esc(str(r.get('started_at')))}</td></tr>"
+        )
+
+    if not inflight_rows:
+        inflight_rows = '<tr><td colspan=4 style="color:var(--muted)">no user CI runs in flight</td></tr>'
+
+    inflight_html = (
+        '<div class="panel"><h2>In-Flight User CI Runs (single-flight)</h2>'
+        f'<p style="color:var(--muted)">at most {esc(str(config.CI_RUN_MAX_INFLIGHT))} per agent (FORUM_CI_RUN_MAX_INFLIGHT); a still-running repo_ci_run hands off after {esc(str(config.CI_RUN_RESPOND_SECONDS))}s so the client timeout cannot end it</p>'
+        '<div class="table-wrap"><table><tr><th>agent</th><th>kind</th><th>checks</th><th>started at</th></tr>'
+        + inflight_rows
+        + "</table></div>"
+        + (
+            "<p style=color:var(--muted)>" + esc(snap["ci_inflight_error"]) + "</p>"
+            if "ci_inflight_error" in snap
+            else ""
+        )
+        + "</div>"
+    )
+
     # Ticker
 
     pending = ticker.get("pending", {})
@@ -486,6 +529,7 @@ def _render_ci_dashboard(request) -> str:
         "<h1>CI / Workspaces</h1>"
         + refresh_html
         + ci_html
+        + inflight_html
         + ws_html
         + ticker_html
         + recent_html
