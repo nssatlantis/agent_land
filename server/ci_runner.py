@@ -1395,6 +1395,29 @@ def run_checks(
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
+        # Auto-tick workflow lint/test/not-gutted on CI green (B)
+        try:
+            _ok_ci = detail.get("ok") and not detail.get("timed_out") and detail.get("exit_code") == 0 and not detail.get("host_fallback_static_skipped")
+            _summ_ci = detail.get("summary") or {}
+            _static_ci = (_summ_ci.get("static") or {}).get("result") if isinstance(_summ_ci.get("static"), dict) else None
+            if _ok_ci and _static_ci != "skipped":
+                import db as _dbw
+                with _dbw._conn() as _c:
+                    _rows_w = _c.execute("SELECT id, workflow_path FROM workflow_runs WHERE agent_id = ? AND status = 'open'", (agent_id,)).fetchall()
+                    for _rw in _rows_w:
+                        try:
+                            _steps_w = _dbw.workflow_steps_for_run(_c, int(_rw["id"]))
+                            for _sk in ("not-gutted", "lint", "test"):
+                                for _st in _steps_w:
+                                    if _st["step_key"] == _sk and not _st["done"]:
+                                        try:
+                                            _c.execute("UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ? WHERE run_id = ? AND step_key = ? AND done = 0", (_dbw._now_iso(), agent_id, int(_rw["id"]), _sk))
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
+        except Exception:  # domain: degrade-silently - auto-tick best-effort
+            pass
         if branch_mode:
             # Blob hygiene: fetched PR heads linger as unreachable objects
             # after the next reset; prune them so the shared tree does not
