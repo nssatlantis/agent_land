@@ -269,36 +269,58 @@ def tick_workflow_step(
     # Enforce CI-backed lint/test/not-gutted when WORKFLOW_LINT_CI_ENFORCE=1 (skip under pytest)
     if step["step_key"] in ("lint", "test", "not-gutted"):
         import os as _os_ci
+
         if _os_ci.environ.get("PYTEST_CURRENT_TEST") is None:
             try:
                 _enforce_ci = int(config.WORKFLOW_LINT_CI_ENFORCE)
             except Exception:  # domain: degrade-silently
                 _enforce_ci = 0
             if _enforce_ci:
-            try:
-                _run_created = conn.execute("SELECT created_at FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
-                _since = _run_created["created_at"] if _run_created else None
-                import events as _ev
-                _kinds = (_ev.EVT_CI_RUN, _ev.EVT_CI_LOCAL_RUN, _ev.EVT_CI_BRANCH_RUN)
-                _found = False
-                for _k in _kinds:
-                    _rows = _ev.query_events(agent_id=agent_id, kind=_k, since=_since, limit=20) if _since else []
-                    for _r in _rows:
-                        _d = _r.get("detail") or {}
-                        if _d.get("ok") and not _d.get("timed_out") and _d.get("exit_code") == 0:
-                            _summ = _d.get("summary") or {}
-                            _static = (_summ.get("static") or {}).get("result")
-                            if _static != "skipped" and not _d.get("host_fallback_static_skipped"):
-                                _found = True
-                                break
-                    if _found:
-                        break
-                if not _found:
-                    raise ForumError("CI not green — run repo_ci_run(files=[...]) rehearsal until ok before ticking lint/test/not-gutted (WORKFLOW_LINT_CI_ENFORCE=1)")
-            except ForumError:
-                raise
-            except Exception:  # domain: degrade-silently
-                pass
+                try:
+                    _run_created = conn.execute(
+                        "SELECT created_at FROM workflow_runs WHERE id = ?", (run_id,)
+                    ).fetchone()
+                    _since = _run_created["created_at"] if _run_created else None
+                    import events as _ev
+
+                    _kinds = (
+                        _ev.EVT_CI_RUN,
+                        _ev.EVT_CI_LOCAL_RUN,
+                        _ev.EVT_CI_BRANCH_RUN,
+                    )
+                    _found = False
+                    for _k in _kinds:
+                        _rows = (
+                            _ev.query_events(
+                                agent_id=agent_id, kind=_k, since=_since, limit=20
+                            )
+                            if _since
+                            else []
+                        )
+                        for _r in _rows:
+                            _d = _r.get("detail") or {}
+                            if (
+                                _d.get("ok")
+                                and not _d.get("timed_out")
+                                and _d.get("exit_code") == 0
+                            ):
+                                _summ = _d.get("summary") or {}
+                                _static = (_summ.get("static") or {}).get("result")
+                                if _static != "skipped" and not _d.get(
+                                    "host_fallback_static_skipped"
+                                ):
+                                    _found = True
+                                    break
+                        if _found:
+                            break
+                    if not _found:
+                        raise ForumError(
+                            "CI not green — run repo_ci_run(files=[...]) rehearsal until ok before ticking lint/test/not-gutted (WORKFLOW_LINT_CI_ENFORCE=1)"
+                        )
+                except ForumError:
+                    raise
+                except Exception:  # domain: degrade-silently
+                    pass
     now = _now_iso()
     conn.execute(
         "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ?"
@@ -383,13 +405,11 @@ def start_workflow(
             if created_row is not None and created_row["created_at"]:
                 created = _parse_iso(created_row["created_at"])
                 stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
-                if stale_floor > floor:
-                    floor = stale_floor
+                floor = max(floor, stale_floor)
         except Exception:  # domain:degrade-silently - fall back to plain now+TTL
             pass
         cap = now + timedelta(days=_TTL_CAP_DAYS)
-        if floor > cap:
-            floor = cap
+        floor = min(floor, cap)
         expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     # Start-race guard (review #5, now per-PR): the partial UNIQUE indexes
     # idx_workflow_runs_open_unbound / idx_workflow_runs_open_pr (schema.sql)
@@ -630,9 +650,14 @@ def require_workflow_block(
                     _done_ci_steps = {
                         s["step_key"]
                         for s in steps
-                        if s["position"] < open_pos and s["done"] and s["step_key"] in _ci_gated
+                        if s["position"] < open_pos
+                        and s["done"]
+                        and s["step_key"] in _ci_gated
                     }
                     if _done_ci_steps:
+                        _run_created = next(
+                            (s for s in steps if s["step_key"] == "open"), None
+                        )
                         _since_gate = None
                         try:
                             _row_c = conn.execute(
@@ -652,7 +677,10 @@ def require_workflow_block(
                         ):
                             _rows_g = (
                                 _evg.query_events(
-                                    agent_id=agent_id, kind=_kg, since=_since_gate, limit=20
+                                    agent_id=agent_id,
+                                    kind=_kg,
+                                    since=_since_gate,
+                                    limit=20,
                                 )
                                 if _since_gate
                                 else []
