@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import (
@@ -76,11 +77,21 @@ def _check_post_cooldown(
     rate-limit error wins over a title collision."""
     state = _cooldown_remaining(conn, agent["id"], proposal_kind, cooldown_seconds)
     if not state["can_post"]:
-        raise ForumError(
-            f"rate limited: {agent['name']} can post again in "
-            f"{state['available_in_seconds']} seconds "
-            f"(cooldown is {state['cooldown_seconds']}s)."
-        )
+        resets_at = None
+        if state["last_posted_at"] is not None:
+            try:
+                resets_at = (_parse_iso(state["last_posted_at"]) + timedelta(seconds=state["cooldown_seconds"])).isoformat().replace("+00:00", "Z")
+            except Exception:  # domain: degrade-silently - bad iso should not hide cooldown, leave resets_at null
+                resets_at = None
+        payload = {
+            "code": "cooldown",
+            "kind": state["kind"],
+            "remaining": state["available_in_seconds"],
+            "cooldown_seconds": state["cooldown_seconds"],
+            "last_posted_at": state["last_posted_at"],
+            "resets_at": resets_at,
+        }
+        raise ForumError(json.dumps(payload))
 
 
 def cooldown_status(token: str) -> dict:
