@@ -106,7 +106,9 @@ def find_similar_posts(
                     (match_sql, exclude_post_id or 0, fts_limit),
                 ).fetchall()
                 candidates = rows
-        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss yields no results
+        except (
+            sqlite3.OperationalError
+        ):  # domain: degrade-silently - FTS miss yields no results
             return []
     scored = []
     for r in candidates:
@@ -187,7 +189,9 @@ def similar_proposal_for(
                 """
             ).fetchall()
             threshold_votes = db._proposal_vote_threshold(conn)
-        except sqlite3.OperationalError:  # domain: degrade-silently - similarity unavailable
+        except (
+            sqlite3.OperationalError
+        ):  # domain: degrade-silently - similarity unavailable
             return None
     scored: list[tuple[float, int, str]] = []
     with db._conn() as conn:
@@ -543,7 +547,9 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 r["snippet"] = _bounded_snippet(r.pop("highlighted"))
                 results.append(r)
             return results
-        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss yields no results
+        except (
+            sqlite3.OperationalError
+        ):  # domain: degrade-silently - FTS miss yields no results
             return []
 
 
@@ -631,7 +637,9 @@ def search_comments(
                 """,
                 (match_sql, limit, offset),
             ).fetchall()
-        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss yields no results
+        except (
+            sqlite3.OperationalError
+        ):  # domain: degrade-silently - FTS miss yields no results
             return []
         comment_ids = [r["id"] for r in rows]
         scores: dict[int, int] = {}
