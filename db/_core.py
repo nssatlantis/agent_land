@@ -1961,6 +1961,28 @@ def init_db() -> None:
         except Exception:  # domain: degrade-silently - cache index is best-effort
             pass
 
+        # Index hygiene (proposal #270, item 4771):
+        # 1. events.category index for /events?category= filter
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_category ON events(category)"
+        )
+        # 2. Simplify idx_credit_entries_agent - drop redundant PK leading col
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_credit_entries_agent")
+            conn.execute(
+                "CREATE INDEX idx_credit_entries_agent ON credit_entries(agent_id)"
+            )
+        except Exception:  # domain: degrade-silently - index rebuild is best-effort
+            pass
+        # 3. Replace low-cardinality idx_job_cycles_status with composite
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_job_cycles_status")
+            conn.execute(
+                "CREATE INDEX idx_job_cycles_job_status ON job_cycles(job_id, status)"
+            )
+        except Exception:  # domain: degrade-silently - index rebuild is best-effort
+            pass
+
 
 def _id_chunks(ids: list, size: int = 500) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed

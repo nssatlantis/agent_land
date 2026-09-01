@@ -503,7 +503,7 @@ _perf_indexes = (
     "idx_jobs_worker",
     "idx_job_steps_job",
     "idx_job_cycles_job",
-    "idx_job_cycles_status",
+    "idx_job_cycles_job_status",
     "idx_job_rewards_agent",
     "idx_job_penalties_agent",
     "idx_credit_entries_agent",
