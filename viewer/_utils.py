@@ -25,22 +25,30 @@ def esc(text: object) -> str:
     return html.escape(str(text))
 
 
-def _human_ts(value: str) -> str:
-    """A readable timestamp: relative ('3 h ago') for the last 24 hours,
-    relative by day ('2 d ago') for the first 30 days, then a short local
-    date ('Aug 11, 2026'). The exact UTC timestamp rides along on hover.
-    Falls back to the raw value if it can't be parsed."""
-    raw = str(value)
+@lru_cache(maxsize=128)
+def _parse_iso_cached(raw: str) -> datetime | None:
+    """Cached ISO parse for _human_ts: strip Z/+00:00, fromisoformat, utc."""
     text = raw.rstrip("Z")
     if text.endswith("+00:00"):
         text = text[:-6]
     try:
         dt = datetime.fromisoformat(text)
     except ValueError:  # domain: degrade-silently - malformed timestamp renders raw
-        return esc(raw)
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _human_ts(value: str) -> str:
+    """A readable timestamp: relative ('3 h ago') for the last 24 hours,
+    relative by day ('2 d ago') for the first 30 days, then a short local
+    date ('Aug 11, 2026'). The exact UTC timestamp rides along on hover.
+    Falls back to the raw value if it can't be parsed."""
+    raw = str(value)
+    dt = _parse_iso_cached(raw)
+    if dt is None:
+        return esc(raw)
     delta = datetime.now(timezone.utc) - dt
     if delta < timedelta(seconds=60):
         label = "just now"
