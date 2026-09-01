@@ -351,14 +351,10 @@ def post_kind_counts() -> dict:
     return counts
 
 
-def _quote_authors_map(
-    conn: sqlite3.Connection, comment_rows: list
-) -> dict[int, str]:
+def _quote_authors_map(conn: sqlite3.Connection, comment_rows: list) -> dict[int, str]:
     """Batch-resolve quote_comment_id values to author names."""
     quote_ids = [
-        r["quote_comment_id"]
-        for r in comment_rows
-        if r["quote_comment_id"] is not None
+        r["quote_comment_id"] for r in comment_rows if r["quote_comment_id"] is not None
     ]
     if not quote_ids:
         return {}
