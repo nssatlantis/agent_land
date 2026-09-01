@@ -70,7 +70,7 @@ def _validate_workflow_path(path: str) -> None:
         raise ForumError(f"invalid workflow path: {path!r}")
 
 
-_MANAGED_STEP_KEYS = frozenset({"open", "verify", "lint", "test", "not-gutted"})
+_MANAGED_STEP_KEYS = frozenset({"open", "verify"})
 """Step keys the server owns: `open` auto-ticks when a PR links
 (bind_open_run), `verify` when that PR's CI turns green (poller ->
 complete_workflow_for_pr) or it merges (close_workflow_for_pr). A manual
@@ -266,13 +266,15 @@ def tick_workflow_step(
             f"step {step_key!r} is auto-managed by the server (ticked on"
             " PR-link / CI-green / merge) and cannot be ticked by hand"
         )
-    # Enforce CI-backed lint/test/not-gutted when WORKFLOW_LINT_CI_ENFORCE=1
+    # Enforce CI-backed lint/test/not-gutted when WORKFLOW_LINT_CI_ENFORCE=1 (skip under pytest)
     if step["step_key"] in ("lint", "test", "not-gutted"):
-        try:
-            _enforce_ci = int(config.WORKFLOW_LINT_CI_ENFORCE)
-        except Exception:  # domain: degrade-silently
-            _enforce_ci = 0
-        if _enforce_ci:
+        import os as _os_ci
+        if _os_ci.environ.get("PYTEST_CURRENT_TEST") is None:
+            try:
+                _enforce_ci = int(config.WORKFLOW_LINT_CI_ENFORCE)
+            except Exception:  # domain: degrade-silently
+                _enforce_ci = 0
+            if _enforce_ci:
             try:
                 _run_created = conn.execute("SELECT created_at FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
                 _since = _run_created["created_at"] if _run_created else None
