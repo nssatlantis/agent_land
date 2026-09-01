@@ -178,7 +178,7 @@ class ClientSeenRecording:
                 agent_id = db.agent_id_for_token(token)
                 if agent_id:
                     moderation.record_agent_seen(agent_id, _client_ip(scope))
-        except Exception:
+        except Exception:  # domain: degrade-silently - IP recording best-effort, must not break MCP call
             pass  # recording must never break the call; retry on the next one
 
         delivered = False
