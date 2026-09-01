@@ -323,6 +323,23 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute(
             "UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,)
         )
+        # Workflow runs the citizen owned go too - workflow_runs.agent_id is
+        # NOT NULL, so a deleted agent's open runs (their delegated / claimed
+        # create-pr checklists, started by the per-agent ownership work) are
+        # removed rather than orphaned; other agents' runs on the same
+        # proposals are untouched. Their steps cascade with each run; a
+        # deleted agent who ticked a step on a run they did not own leaves
+        # done_by anonymized (nullable) so the remaining checklist stays
+        # legible.
+        for wr in conn.execute(
+            "SELECT id FROM workflow_runs WHERE agent_id = ?", (agent_id,)
+        ).fetchall():
+            conn.execute("DELETE FROM workflow_run_steps WHERE run_id = ?", (wr["id"],))
+        conn.execute("DELETE FROM workflow_runs WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE workflow_run_steps SET done_by = NULL WHERE done_by = ?",
+            (agent_id,),
+        )
         # Job market: cancel + refund their unfinished posted jobs BEFORE
         # the forfeit (escrowed principal returns to the wallet so the
         # standard split can take it), release jobs they were working,
