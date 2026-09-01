@@ -73,7 +73,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import config
 import db
@@ -572,8 +571,14 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
                     f"no file at {path!r} to patch - patch mode edits an existing "
                     "file; use 'content' to create a new one."
                 )
+            # Read without universal-newline translation so a CRLF file stays
+            # CRLF in memory - byte-faithful with the open/PR path (which
+            # decodes the raw blob with no EOL conversion). Otherwise the
+            # file's CRLF becomes LF while \r\n payload replacements survive,
+            # leaving MIXED line endings that ruff format --check flags.
             try:
-                text = Path(full).read_text(encoding="utf-8")
+                with open(full, encoding="utf-8", newline="") as fh:
+                    text = fh.read()
             except UnicodeDecodeError:
                 raise db.ForumError(
                     f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
@@ -583,11 +588,28 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
 
             new_text, _log = _writes._apply_edits(path, text, c["edits"])
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, "w", encoding="utf-8", newline="\n") as fh:
+            # Write verbatim (newline="") so CRLF originals and \r\n
+            # replacements land byte-faithful, like the open/PR path.
+            with open(full, "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
             continue
         # Should not reach â€” validated earlier.
         raise db.ForumError(f"change for {path!r} has no content or edits.")
+
+
+def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
+    """Fold a finished run's output into its ci_* ledger detail so a red
+    run is diagnosable from the events ledger even when the caller's MCP
+    transport dropped the response. The tail is already capped upstream by
+    CI_RUN_TAIL_BYTES - the same bytes the tool response would carry."""
+    detail["output_tail"] = pieces.get("output_tail", "")
+    if pieces.get("output_truncated"):
+        detail["output_truncated"] = True
+    if pieces.get("summary"):
+        detail["summary"] = pieces["summary"]
+    if pieces.get("failed_files"):
+        detail["failed_files"] = pieces["failed_files"]
+    return detail
 
 
 def _prepare_local_tree(
@@ -1401,6 +1423,7 @@ def run_checks(
             detail["base_sha"] = result.get("base_sha")
         elif branch_mode:
             detail["pr_number"] = pr_number
+        detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
                 kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
@@ -1601,6 +1624,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             "pr_number": pr_number,
             "poller_triggered": True,
         }
+        detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
                 kind_event, actor_agent_id=None, actor_name="poller", detail=detail
