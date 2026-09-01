@@ -25,7 +25,9 @@ from viewer._utils import (
     esc,
 )
 
-_PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = OrderedDict()
+_PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = (
+    OrderedDict()
+)
 _PROPOSAL_SIMILAR_TTL = 60
 _PROPOSAL_SIMILAR_CACHE_MAX = 128
 
