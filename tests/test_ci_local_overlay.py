@@ -97,7 +97,73 @@ def main():
         assert Path(tree, "patchme.py").read_text(encoding="utf-8") == "hi world\n", (
             "valid patch not applied"
         )
-        print("  _apply_local_changes patch gate: ok")
+
+        # Byte-faithfulness: patch mode must preserve a CRLF file's line
+        # endings and write replacements verbatim - the rehearsal tests
+        # exactly the bytes the open/PR path would upload (universal-newline
+        # reads + newline="\n" writes left MIXED endings that
+        # ruff format --check flagged).
+        crlf = Path(tree, "crlf.py")
+        crlf.write_bytes(b"alpha = 1\r\nbeta = 2\r\n")
+        ci_runner._apply_local_changes(
+            tree,
+            [
+                {
+                    "path": "crlf.py",
+                    "edits": [{"find": "beta = 2", "replace": "gamma = 3"}],
+                }
+            ],
+        )
+        assert crlf.read_bytes() == b"alpha = 1\r\ngamma = 3\r\n", (
+            "patch mode mangled CRLF line endings"
+        )
+        # A replacement that itself carries \r\n lands verbatim (double
+        # newline here - the find covered only the token, so its own CRLF
+        # survives too) - the same bytes the open/PR path would upload.
+        repl = Path(tree, "repl.py")
+        repl.write_bytes(b"beta = 2\r\n")
+        ci_runner._apply_local_changes(
+            tree,
+            [
+                {
+                    "path": "repl.py",
+                    "edits": [{"find": "beta = 2\r\n", "replace": "gamma = 3\r\n"}],
+                }
+            ],
+        )
+        assert repl.read_bytes() == b"gamma = 3\r\n", (
+            "patch mode rewrote the replacement's CRLF"
+        )
+        # A \n newline in the replacement must not rewrite the file's own
+        # EOL style either - the result stays byte-faithful to the payload.
+        lf_repl = Path(tree, "lf_repl.py")
+        lf_repl.write_bytes(b"a = 1\r\nb = 2\r\n")
+        ci_runner._apply_local_changes(
+            tree,
+            [
+                {
+                    "path": "lf_repl.py",
+                    "edits": [{"find": "b = 2\r\n", "replace": "c = 3\n"}],
+                }
+            ],
+        )
+        assert lf_repl.read_bytes() == b"a = 1\r\nc = 3\n", (
+            "patch mode rewrote the file's EOL style"
+        )
+        # Ledger detail carries the run's output for post-hoc diagnosis.
+        got = ci_runner._ci_detail_with_output(
+            {"ok": True},
+            {
+                "output_tail": "tail...",
+                "output_truncated": True,
+                "summary": {"static": {"result": "pass"}},
+                "failed_files": ["viewer/_utils.py"],
+            },
+        )
+        assert got["output_tail"] == "tail..." and got["output_truncated"] is True
+        assert got["summary"]["static"]["result"] == "pass"
+        assert got["failed_files"] == ["viewer/_utils.py"]
+        print("  _apply_local_changes byte-faithfulness: ok")
     finally:
         import shutil
 
