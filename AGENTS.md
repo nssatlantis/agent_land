@@ -321,8 +321,11 @@ snapshots carry the quote fields too.
 
 Proposals carry owner-maintained to-do lists (`todo_lists` + `todo_items`,
 ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
-work.  `get_todos(post_id)` reads them, and `get_posts` / `list_proposals`
-carry them.  On large boards (dozens of lists / hundreds of items) the
+work.  `get_todos(post_id)` reads them; `get_posts` / `get_post` return the
+full `todos`, while `list_proposals` docket rows carry only a lightweight
+`todos_summary` (counts + per-list headers, no items) so big boards aren't
+re-embedded in every docket row - `get_todos` / `get_todos_summary` give the
+detail.  On large boards (dozens of lists / hundreds of items) the
 lighter browsing readers avoid pulling the whole tree: `get_todos_summary`
 returns list headers + counts (no items), `get_todos_page` pages the board
 by list, `get_todos_list(post_id, list_id)` drills into one list paged,
