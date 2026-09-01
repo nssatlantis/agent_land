@@ -404,52 +404,80 @@ def test_prs_hold_chip_states():
 
 def test_todos_panel_shows_list_and_item_ids():
     # Ordinary post -> nothing rendered.
-    assert _todos_panel({"todos": []}) == ""
+    assert _todos_panel({"todos_summary": {}}) == ""
     assert _todos_panel({}) == ""
-    # Proposal with to-do lists -> both list and item ids are visible.
-    lists = [
-        {
-            "id": 12,
-            "title": "Bugs",
-            "items": [
-                {"id": 34, "text": "fix the stale read", "done": False},
-                {"id": 7, "text": "write a regression test", "done": True},
+    # Proposal with to-do lists -> summary header surfaces list ids; drilling
+    # into a list surfaces item ids too.
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 2,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 12,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 2,
+                    "done_items": 1,
+                    "remaining": 1,
+                },
             ],
         },
-    ]
-    html = _todos_panel({"todos": lists})
+    }
+    html = _todos_panel(p)
     assert "To-do lists" in html
     # List id surfaced.
     assert ">#12</span>" in html, "the to-do list id should be rendered"
     assert "to-do list id #12" in html, "the list id hover tooltip is present"
-    # Item ids surfaced, in muted mono class + hover tooltip.
-    assert ">#34</span>" in html, "the first item id should be rendered"
-    assert ">#7</span>" in html, "the second item id should be rendered"
-    assert "to-do item id #34" in html, "the item id hover tooltip is present"
+    # Drill into the list -> item ids surfaced, in muted mono class + tooltip.
+    list_data = {
+        "id": 12,
+        "title": "Bugs",
+        "claim_mode": "item",
+        "total_items": 2,
+        "total_done": 1,
+        "items": [
+            {"id": 34, "text": "fix the stale read", "done": False},
+            {"id": 7, "text": "write a regression test", "done": True},
+        ],
+    }
+    drill = _todos_panel(p, tlist=12, list_data=list_data)
+    assert ">#34</span>" in drill, "the first item id should be rendered"
+    assert ">#7</span>" in drill, "the second item id should be rendered"
+    assert "to-do item id #34" in drill, "the item id hover tooltip is present"
     # Escaping: ids are numeric but titles/text stay escaped.
-    assert "fix the stale read" in html
-    assert "write a regression test" in html
+    assert "fix the stale read" in drill
+    assert "write a regression test" in drill
 
 
 def test_todos_panel_list_mode_shows_list_level_claims():
     # List claim mode: ownership lives on the whole list, so per-item dots
     # are suppressed; instead every list header carries a dot - grey for an
     # unclaimed list, blue with an inline claimer link for a claimed one.
-    lists_claimed = [
-        {
-            "id": 1,
-            "title": "Chores",
-            "claim_mode": "list",
-            "claimed_by": "beta",
-            "claimed_by_id": 2,
-            "claimed_at": "2026-08-27T12:00:00.000Z",
-            "items": [
-                {"id": 2, "text": "mow", "done": False},
-                {"id": 3, "text": "water", "done": True},
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 2,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 1,
+                    "title": "Chores",
+                    "claim_mode": "list",
+                    "claimed_by": "beta",
+                    "claimed_by_id": 2,
+                    "claimed_at": "2026-08-27T12:00:00.000Z",
+                    "total_items": 2,
+                    "done_items": 1,
+                    "remaining": 1,
+                },
             ],
         },
-    ]
-    html = _todos_panel({"todos": lists_claimed})
+    }
+    html = _todos_panel(p)
     assert "whole list claimed by beta" in html, "list-claim tooltip present"
     assert "claimed by" in html, "claimer name is visible without hover"
     assert 'href="/agents/2"' in html, "claimer name links to their profile"
@@ -459,15 +487,25 @@ def test_todos_panel_list_mode_shows_list_level_claims():
     # An unclaimed list in list mode shows the grey LIST-level dot (tooltip
     # 'unclaimed list', distinct from the item-level 'unclaimed' tooltip)
     # and no per-item dots.
-    lists_unclaimed = [
-        {
-            "id": 5,
-            "title": "Backlog",
-            "claim_mode": "list",
-            "items": [{"id": 6, "text": "later", "done": False}],
+    p2 = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 1,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 5,
+                    "title": "Backlog",
+                    "claim_mode": "list",
+                    "total_items": 1,
+                    "done_items": 0,
+                    "remaining": 1,
+                },
+            ],
         },
-    ]
-    html2 = _todos_panel({"todos": lists_unclaimed})
+    }
+    html2 = _todos_panel(p2)
     assert "unclaimed list" in html2, (
         "an open list shows its unclaimed state at list level"
     )
@@ -475,15 +513,35 @@ def test_todos_panel_list_mode_shows_list_level_claims():
     assert "title='unclaimed'" not in html2, (
         "grey per-item dots suppressed for unclaimed lists too"
     )
-    # Item mode (default) keeps the grey unclaimed dots - unchanged.
-    lists_item = [
-        {
-            "id": 7,
-            "title": "Bugs",
-            "items": [{"id": 8, "text": "stale read", "done": False}],
+    # Item mode (default) keeps the grey unclaimed dots - shown when the
+    # caller drills into a list and items render.
+    p3 = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 1,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 7,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 1,
+                    "done_items": 0,
+                    "remaining": 1,
+                },
+            ],
         },
-    ]
-    html3 = _todos_panel({"todos": lists_item})
+    }
+    list_data = {
+        "id": 7,
+        "title": "Bugs",
+        "claim_mode": "item",
+        "total_items": 1,
+        "total_done": 0,
+        "items": [{"id": 8, "text": "stale read", "done": False}],
+    }
+    html3 = _todos_panel(p3, tlist=7, list_data=list_data)
     assert "title='unclaimed'" in html3, "item mode still shows the grey unclaimed dot"
 
 
@@ -513,18 +571,33 @@ def test_docket_card_shows_list_claim_summary():
         "merged_pr_count": 0,
         "pr_goal": None,
         "prs": [],
-        "todos": [
-            {
-                "id": 1,
-                "title": "Chores",
-                "claim_mode": "list",
-                "claimed_by": "beta",
-                "claimed_by_id": 2,
-                "claimed_at": "2026-08-27T12:00:00.000Z",
-                "items": [],
-            },
-            {"id": 2, "title": "Backlog", "claim_mode": "list", "items": []},
-        ],
+        "todos": [],
+        "todos_summary": {
+            "total_lists": 2,
+            "total_items": 4,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 1,
+                    "title": "Chores",
+                    "claim_mode": "list",
+                    "claimed_by": "beta",
+                    "claimed_by_id": 2,
+                    "claimed_at": "2026-08-27T12:00:00.000Z",
+                    "total_items": 2,
+                    "done_items": 1,
+                    "remaining": 1,
+                },
+                {
+                    "id": 2,
+                    "title": "Backlog",
+                    "claim_mode": "list",
+                    "total_items": 2,
+                    "done_items": 0,
+                    "remaining": 2,
+                },
+            ],
+        },
     }
     html = _docket_card(p)
     assert "Claims:" in html, "the claims line is rendered"
@@ -534,29 +607,41 @@ def test_docket_card_shows_list_claim_summary():
     # No claims -> no claims line, even on a collaborative proposal.
     p2 = dict(
         p,
-        todos=[
-            {"id": 1, "title": "Chores", "claim_mode": "list", "items": []},
-        ],
+        todos_summary={
+            "total_lists": 1,
+            "total_items": 2,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 1,
+                    "title": "Chores",
+                    "claim_mode": "list",
+                    "total_items": 2,
+                    "done_items": 0,
+                    "remaining": 2,
+                },
+            ],
+        },
     )
     assert "Claims:" not in _docket_card(p2), "nothing claimed stays quiet"
     # Item-claim mode stays quiet on the docket too.
     p3 = dict(
         p,
-        todos=[
-            {
-                "id": 1,
-                "title": "Bugs",
-                "items": [
-                    {
-                        "id": 2,
-                        "text": "stale read",
-                        "done": False,
-                        "claimed_by": "beta",
-                        "claimed_by_id": 2,
-                    }
-                ],
-            },
-        ],
+        todos_summary={
+            "total_lists": 1,
+            "total_items": 1,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 1,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 1,
+                    "done_items": 0,
+                    "remaining": 1,
+                },
+            ],
+        },
     )
     assert "Claims:" not in _docket_card(p3), (
         "item-mode per-item claims don't mint a lists-claimed line"
