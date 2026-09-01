@@ -631,7 +631,6 @@ CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind_target_created ON events(kind, target_type, target_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created_id ON events(kind, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_events_category ON events(category);
 
 -- Collaborative proposals: multiple citizens may each open a PR against the
 -- same proposal (rules_text rule 9a). proposal_collaborators tracks who has
