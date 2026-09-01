@@ -351,6 +351,28 @@ def post_kind_counts() -> dict:
     return counts
 
 
+def _quote_authors_map(conn: sqlite3.Connection, comment_rows: list) -> dict[int, str]:
+    """Batch-resolve quote_comment_id values to author names."""
+    quote_ids = [
+        r["quote_comment_id"] for r in comment_rows if r["quote_comment_id"] is not None
+    ]
+    if not quote_ids:
+        return {}
+    result: dict[int, str] = {}
+    for qi in range(0, len(quote_ids), 500):
+        chunk = quote_ids[qi : qi + 500]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT c.id, a.name FROM comments c"
+            f" JOIN agents a ON a.id = c.agent_id"
+            f" WHERE c.id IN ({marks})",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            result[r["id"]] = r["name"]
+    return result
+
+
 def _stake_note(stakes: list[dict]) -> str:
     """A neutral, count-only nudge on the get_posts proposal detail: how
     many citizens currently back this proposal (active stakes only, the
@@ -411,24 +433,7 @@ def get_post(
 
             comment_ids = [r["id"] for r in comment_rows]
             scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
-            quote_ids = [
-                r["quote_comment_id"]
-                for r in comment_rows
-                if r["quote_comment_id"] is not None
-            ]
-            quote_authors: dict[int, str] = {}
-            if quote_ids:
-                for qi in range(0, len(quote_ids), 500):
-                    chunk = quote_ids[qi : qi + 500]
-                    marks = ",".join("?" * len(chunk))
-                    qa_rows = conn.execute(
-                        f"SELECT c.id, a.name FROM comments c"
-                        f" JOIN agents a ON a.id = c.agent_id"
-                        f" WHERE c.id IN ({marks})",
-                        chunk,
-                    ).fetchall()
-                    for r in qa_rows:
-                        quote_authors[r["id"]] = r["name"]
+            quote_authors = _quote_authors_map(conn, comment_rows)
 
             nodes = {}
             for row in comment_rows:
@@ -568,24 +573,7 @@ def get_comments(post_id: int) -> dict:
             return {"post_id": post_id, "comments": []}
         comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, comment_ids)
-        quote_ids = [
-            r["quote_comment_id"]
-            for r in comment_rows
-            if r["quote_comment_id"] is not None
-        ]
-        quote_authors: dict[int, str] = {}
-        if quote_ids:
-            for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi : qi + 500]
-                marks = ",".join("?" * len(chunk))
-                qa_rows = conn.execute(
-                    f"SELECT c.id, a.name FROM comments c"
-                    f" JOIN agents a ON a.id = c.agent_id"
-                    f" WHERE c.id IN ({marks})",
-                    chunk,
-                ).fetchall()
-                for r in qa_rows:
-                    quote_authors[r["id"]] = r["name"]
+        quote_authors = _quote_authors_map(conn, comment_rows)
         nodes = {}
         for row in comment_rows:
             d = dict(row)
@@ -783,24 +771,7 @@ def get_posts(
             ).fetchall()
         all_comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
-        quote_ids = [
-            r["quote_comment_id"]
-            for r in comment_rows
-            if r["quote_comment_id"] is not None
-        ]
-        quote_authors: dict[int, str] = {}
-        if quote_ids:
-            for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi : qi + 500]
-                qmarks = ",".join("?" * len(chunk))
-                qa_rows = conn.execute(
-                    f"SELECT c.id, a.name FROM comments c"
-                    f" JOIN agents a ON a.id = c.agent_id"
-                    f" WHERE c.id IN ({qmarks})",
-                    chunk,
-                ).fetchall()
-                for r in qa_rows:
-                    quote_authors[r["id"]] = r["name"]
+        quote_authors = _quote_authors_map(conn, comment_rows)
         # Batch-fetch proposal data
         proposal_ids = [
             pid for pid in found_ids if post_map[pid]["proposal_kind"] is not None
