@@ -192,6 +192,7 @@ def test_child_env_is_sanitized():
                  if "TOKEN" in k.upper() or "SECRET" in k.upper()
                  or "GITHUB" in k.upper() or k.upper().startswith("FORUM")]
         print(json.dumps({"leaky": sorted(leaky),
+                          "git_cfg": os.environ.get("GIT_CONFIG_VALUE_0"),
                           "data_dir": os.environ.get("AGENTLAND_DATA_DIR")}))
         sys.exit(0)
     """,
@@ -201,6 +202,10 @@ def test_child_env_is_sanitized():
         payload = json.loads(result["output_tail"].strip().splitlines()[-1])
         assert payload["leaky"] == [], f"secrets leaked: {payload['leaky']}"
         assert "supersecret" not in result["output_tail"]
+        assert payload["git_cfg"], (
+            "native child env must trust the runner tree for git "
+            "(safe.directory) so record enrichment works"
+        )
         assert payload["data_dir"] and "agentland_ci_run_" in payload["data_dir"]
     finally:
         for k, v in saved_env.items():
