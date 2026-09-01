@@ -17,45 +17,31 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
     merged pull requests, costs for declined ones, karma-stake rewards,
     bug-report fix rewards, accepted-job-cycle participation rewards, and
     job decline penalties. The single source of truth both _karma_for and
-    the public karma_breakdown read from."""
-    return {
-        "post_votes": conn.execute(
-            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
-            " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
-            " WHERE p.agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "comment_votes": conn.execute(
-            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
-            " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
-            " WHERE c.agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "pr_merges": conn.execute(
-            "SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "pr_record": conn.execute(
-            "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "bounty_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "bug_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "job_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-        "job_penalties": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM job_penalties WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()[0],
-    }
+    the public karma_breakdown read from. Single UNION ALL round-trip like
+    _karma_total (8→1) for hot whoami/check_in."""
+    rows = conn.execute(
+        "SELECT 'post_votes' AS k, COALESCE(SUM(v.value), 0) AS v FROM votes v"
+        " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+        " WHERE p.agent_id = ?"
+        " UNION ALL"
+        " SELECT 'comment_votes', COALESCE(SUM(v.value), 0) FROM votes v"
+        " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+        " WHERE c.agent_id = ?"
+        " UNION ALL"
+        " SELECT 'pr_merges', COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT 'pr_record', COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT 'bounty_rewards', COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT 'bug_rewards', COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT 'job_rewards', COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT 'job_penalties', COALESCE(SUM(amount), 0) FROM job_penalties WHERE agent_id = ?",
+        (agent_id,) * 8,
+    ).fetchall()
+    return {r["k"]: r["v"] for r in rows}
 
 
 def _karma_total(conn: sqlite3.Connection, agent_id: int) -> int:

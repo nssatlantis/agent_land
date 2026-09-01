@@ -8,6 +8,8 @@ modules (see the split-up viewer helpers).
 
 from __future__ import annotations
 
+import time
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -25,6 +27,27 @@ from viewer._render_helpers import (
     _tag_chips,
 )
 from viewer._utils import _human_ts, _truncate, esc
+
+_VERDICT_CACHE: dict[int, tuple[float, tuple[str, str]]] = {}
+_VERDICT_TTL = 60
+
+
+def _cached_verdict(p: dict) -> tuple[str, str]:
+    pid = p.get("id")
+    if pid is not None:
+        entry = _VERDICT_CACHE.get(int(pid))
+        if entry is not None:
+            ts, val = entry
+            if (time.monotonic() - ts) < _VERDICT_TTL:
+                return val
+    val = _proposal_verdict(p)
+    if pid is not None:
+        try:
+            _VERDICT_CACHE[int(pid)] = (time.monotonic(), val)
+        except Exception:  # domain: degrade-silently - cache never blocks card
+            pass
+    return val
+
 
 _DOCKET_EMPTIES = {
     "all": "No proposals yet - the docket is empty.",
@@ -45,7 +68,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     (author, time, implementer or delegation state), the body preview, the
     pull-request trail, and the vote bar or tally. Escaped everywhere -
     the viewer is read-only."""
-    verdict, color = _proposal_verdict(p)
+    verdict, color = _cached_verdict(p)
     kind = (
         '<span class="kind-badge kind-smallfix">small fix</span>'
         if p["small_fix"]
@@ -221,11 +244,12 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     # and by whom, so the docket mirrors the badge on the proposal page -
     # item dots aren't shown in pure list mode, the list is the unit of
     # ownership. Hybrid mode renders both, so list claims still surface.
-    todos = p.get("todos") or []
-    if p.get("collaborative") and not p.get("locked") and todos:
+    summary = p.get("todos_summary") or {}
+    todos_lists = summary.get("lists") or []
+    if p.get("collaborative") and not p.get("locked") and todos_lists:
         list_claims = [
             lst
-            for lst in todos
+            for lst in todos_lists
             if lst.get("claim_mode") in ("list", "hybrid") and lst.get("claimed_by")
         ]
         if list_claims:
@@ -242,19 +266,18 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'
                 f'<span class="pr-label">Claims:</span> '
-                f"{len(list_claims)} of {len(todos)} lists claimed by "
+                f"{len(list_claims)} of {len(todos_lists)} lists claimed by "
                 f"{', '.join(claimers.values())}</div>"
             )
     # Per-checklist burn-down: one mini progress bar per to-do list, so the
     # docket shows shipping momentum inside each claimed area too.
-    if p.get("collaborative") and not p.get("locked") and todos:
+    if p.get("collaborative") and not p.get("locked") and todos_lists:
         burn_chips = []
-        for lst in todos:
-            items = lst.get("items") or []
-            total = len(items)
+        for lst in todos_lists:
+            total = lst.get("total_items") or 0
             if not total:
                 continue
-            done = sum(1 for it in items if it.get("done"))
+            done = lst.get("done_items") or 0
             bpct = min(100, int((done / max(total, 1)) * 100))
             tip = esc(f"{lst.get('title', 'list')}: {done}/{total} done")
             cname = lst.get("claimed_by")

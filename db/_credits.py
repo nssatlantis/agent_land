@@ -1162,6 +1162,8 @@ def history(
     every row names its reason and target so any citizen can audit any
     balance down to its entries.  Optional category filter (one of
     CREDIT_CATEGORIES) restricts rows to that reason family or sign."""
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
     with _conn() as conn:
         clauses: list[str] = []
         params: list[object] = []

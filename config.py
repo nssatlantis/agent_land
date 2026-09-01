@@ -144,7 +144,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SIMILAR_PRS_THRESHOLD": ("FORUM_SIMILAR_PRS_THRESHOLD", 0.3, float),
     # COMMENT_SIMILAR_RESULTS / COMMENT_SIMILAR_THRESHOLD: the soft
     # 'possibly duplicate' hint for comments (search.find_similar_comments)
-    # — how many comments on the same post a new comment is compared
+    # â€” how many comments on the same post a new comment is compared
     # against and the minimum Jaccard token-overlap score (0-1) to surface
     # one.  Non-blocking either way; the author decides.
     "COMMENT_SIMILAR_RESULTS": ("FORUM_COMMENT_SIMILAR_RESULTS", 3, int),
@@ -519,9 +519,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When the -wal file grows past this many bytes the poller runs a
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
-    # Server-side CI runner (repo_ci_run): agents choose a harness —
+    # Server-side CI runner (repo_ci_run): agents choose a harness â€”
     # tests (tests/run_ci.py, the combined test+static harness),
-    # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) —
+    # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) â€”
     # against origin/main natively or a PR merge via the 2-slot
     # Docker workspace pool. Kill switch, hard timeout, per-agent cooldown
     # and daily cap per harness kind (db_benchmark is split so it doesn't
@@ -560,9 +560,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # controls how many sandboxed branch runs may overlap on the single
     # forum host (each slot has its own -ci tree), and the poller consults
     # the local result when GitHub's checks stay pending/unknown/failure
-    # or the API is unreachable — either CI passing is sufficient to merge
+    # or the API is unreachable â€” either CI passing is sufficient to merge
     # (user-directed OR gate). 0 disables the fallback entirely. 2.5c alone,
-    # 2×2.0 or 3×1.33 when contended — busy-aware `min(ceil, host/busy)`
+    # 2Ã—2.0 or 3Ã—1.33 when contended â€” busy-aware `min(ceil, host/busy)`
     # with live `docker update` so a single job bursts and shares fairly.
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
@@ -575,10 +575,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # fragments 76B (expand) but gzips every real HTML/JSON/CSS 5-27KB
     # (feed 756B just above). compresslevel 1-9 trades CPU for bytes:
     # 6 is zlib default, 38% faster than 9 on 27KB CSS (+34B), 7 is
-    # ~same as 6 (+9B) but slightly slower — 6 is the Pareto knee.
+    # ~same as 6 (+9B) but slightly slower â€” 6 is the Pareto knee.
     # wbits 9-15 is the zlib window (9=512B .. 15=32KB history); 15 is
     # max and best for 6-27KB HTML/CSS/JSON, lower saves ~4KB per
-    # stream's memory at cost of worse ratio on >window payloads — 16
+    # stream's memory at cost of worse ratio on >window payloads â€” 16
     # is not valid (max 15, 15=32KB; 16 would clamp to 15). memlevel
     # 1-9 controls compressor memory vs speed (8=256KB default, 9=512KB).
     # thread_minimum_size offloads large compressions (>=128KiB) to a
@@ -594,7 +594,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Workflows (official per-file checklists like create-pr): ENFORCE 1
     # blocks repo_propose_change before GitHub branch until workflow steps
-    # (update-local → manifest → not-gutted → lint → test) pass — 0 is
+    # (update-local â†’ manifest â†’ not-gutted â†’ lint â†’ test) pass â€” 0 is
     # advisory nudge only. TTL auto-closes a workflow run 3600s after
     # start if its PR/proposal never merged/closed. Per-PR lifecycle (part
     # 2): CLOSE_ON_CI_GREEN 1 auto-completes an open run bound to an
@@ -615,6 +615,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # 'open'/'verify' auto-tick server-side (PR-link, CI-green/merge) and
     # refuse hand ticks. 0 keeps the checklist advisory only.
     "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),
+    "WORKFLOW_LINT_CI_ENFORCE": ("FORUM_WORKFLOW_LINT_CI_ENFORCE", 1, int),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
@@ -870,7 +871,9 @@ async def env_watcher(interval_seconds: int | None = None) -> None:
                         _env_generation,
                         ", ".join(changed),
                     )
-        except Exception:
+        except (
+            Exception
+        ):  # domain: degrade-silently - watcher must never die, retry next interval
             logger.exception("env watcher iteration failed; retrying next interval")
 
 

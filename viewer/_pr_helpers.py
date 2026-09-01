@@ -39,7 +39,8 @@ async def _open_prs() -> list[dict] | None:
         except (
             Exception
         ):  # domain: degrade-silently - GitHub outage degrades to no PR list
-            prs = None
+            _pr_prs_cache.update(ts=time.monotonic(), prs=None, fresh=False)
+            return None
         _pr_prs_cache.update(ts=time.monotonic(), prs=prs, fresh=True)
         return prs
 
@@ -78,8 +79,10 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
         missing = "404" in str(e)
         diff = None
     except Exception:
-        missing = False
-        diff = None
+        _pr_diff_cache.update(
+            ts=now, number=number, diff=None, missing=False, fresh=False
+        )
+        return None, False
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
 

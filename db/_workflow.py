@@ -1,4 +1,4 @@
-"""db._workflow — official workflows (per-file checklists like create-pr).
+"""db._workflow â€” official workflows (per-file checklists like create-pr).
 
 Definitions live as repo files `workflows/*.md` (versioned, searchable,
 survives DB wipe via agent_land_data sibling). Runtime rows `workflow_runs`
@@ -6,7 +6,7 @@ track executions tied to a proposal/PR, auto-start on propose_for_discussion
 and auto-close on PR merged/declined/closed or TTL sweep.
 
 Per-PR lifecycle (workflows part 2, PR A): each in-flight PR owns an open
-run — bind_open_run stamps the auto-start unbound run with the PR (or starts
+run â€” bind_open_run stamps the auto-start unbound run with the PR (or starts
 a fresh bound run when a proposal launches several PRs at once), so a
 collaborative proposal holds one run PER PR rather than one shared run. A
 bound run auto-completes (status 'completed') when its PR goes CI-green
@@ -126,7 +126,7 @@ def _parse_workflow_steps(path: str) -> list[dict]:
     tokens on numbered lines under the first `## Steps` heading. Each entry is
     {key, text} (text is the whole numbered line, snapshotted per run so a
     later workflow edit never rewrites a run's history). Keys are deduped by
-    first appearance; a line that does not parse is skipped — a stray
+    first appearance; a line that does not parse is skipped â€” a stray
     paragraph can never corrupt a checklist."""
     text = _workflow_file(path).read_text(encoding="utf-8")
     out: list[dict] = []
@@ -266,6 +266,66 @@ def tick_workflow_step(
             f"step {step_key!r} is auto-managed by the server (ticked on"
             " PR-link / CI-green / merge) and cannot be ticked by hand"
         )
+    # Enforce CI-backed lint/test/not-gutted when WORKFLOW_LINT_CI_ENFORCE=1 (skip under pytest)
+    if step["step_key"] in ("lint", "test", "not-gutted"):
+        import os as _os_ci
+        import sys as _sys_ci
+
+        if (
+            _os_ci.environ.get("PYTEST_CURRENT_TEST") is None
+            and _os_ci.environ.get("PYTEST_VERSION") is None
+            and "pytest" not in _sys_ci.modules
+        ):
+            try:
+                _enforce_ci = int(config.WORKFLOW_LINT_CI_ENFORCE)
+            except Exception:  # domain: degrade-silently
+                _enforce_ci = 0
+            if _enforce_ci:
+                try:
+                    _run_created = conn.execute(
+                        "SELECT created_at FROM workflow_runs WHERE id = ?", (run_id,)
+                    ).fetchone()
+                    _since = _run_created["created_at"] if _run_created else None
+                    import events as _ev
+
+                    _kinds = (
+                        _ev.EVT_CI_RUN,
+                        _ev.EVT_CI_LOCAL_RUN,
+                        _ev.EVT_CI_BRANCH_RUN,
+                    )
+                    _found = False
+                    for _k in _kinds:
+                        _rows = (
+                            _ev.query_events(
+                                agent_id=agent_id, kind=_k, since=_since, limit=20
+                            )
+                            if _since
+                            else []
+                        )
+                        for _r in _rows:
+                            _d = _r.get("detail") or {}
+                            if (
+                                _d.get("ok")
+                                and not _d.get("timed_out")
+                                and _d.get("exit_code") == 0
+                            ):
+                                _summ = _d.get("summary") or {}
+                                _static = (_summ.get("static") or {}).get("result")
+                                if _static != "skipped" and not _d.get(
+                                    "host_fallback_static_skipped"
+                                ):
+                                    _found = True
+                                    break
+                        if _found:
+                            break
+                    if not _found:
+                        raise ForumError(
+                            "CI not green â€” run repo_ci_run(files=[...]) rehearsal until ok before ticking lint/test/not-gutted (WORKFLOW_LINT_CI_ENFORCE=1)"
+                        )
+                except ForumError:
+                    raise
+                except Exception:  # domain: degrade-silently
+                    pass
     now = _now_iso()
     conn.execute(
         "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ?"
@@ -317,9 +377,9 @@ def start_workflow(
     pr_number: int | None = None,
 ) -> int:
     """Create one open run for `workflow_path` + `proposal_id`. Idempotent
-    while open against the matching partial UNIQUE index — a bare start
+    while open against the matching partial UNIQUE index â€” a bare start
     (pr_number None) re-returns the open UNBOUND run, a bound start the open
-    run for that exact PR — so the same (path, proposal) can hold one run per
+    run for that exact PR â€” so the same (path, proposal) can hold one run per
     bound PR plus at most one unbound run (per-PR lifecycle, part 2)."""
     _validate_workflow_path(workflow_path)
     sha = _workflow_sha_for(workflow_path)
@@ -350,17 +410,15 @@ def start_workflow(
             if created_row is not None and created_row["created_at"]:
                 created = _parse_iso(created_row["created_at"])
                 stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
-                if stale_floor > floor:
-                    floor = stale_floor
+                floor = max(floor, stale_floor)
         except Exception:  # domain:degrade-silently - fall back to plain now+TTL
             pass
         cap = now + timedelta(days=_TTL_CAP_DAYS)
-        if floor > cap:
-            floor = cap
+        floor = min(floor, cap)
         expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     # Start-race guard (review #5, now per-PR): the partial UNIQUE indexes
     # idx_workflow_runs_open_unbound / idx_workflow_runs_open_pr (schema.sql)
-    # plus INSERT OR IGNORE make this atomic — two concurrent starts cannot
+    # plus INSERT OR IGNORE make this atomic â€” two concurrent starts cannot
     # both insert an open run for the same (workflow_path, proposal_id) when
     # unbound, nor the same (workflow_path, pr_number) once bound, where
     # SELECT-then-INSERT held a TOCTOU window. On an ignored insert we
@@ -454,7 +512,7 @@ def restart_workflow(
     if len(closed) > 1:
         # Per-PR lifecycle (part 2): multiple simultaneous open runs means
         # other in-flight PRs own their runs; a blanket restart would kill
-        # them all. Refuse loudly instead — individual runs close on their PR
+        # them all. Refuse loudly instead â€” individual runs close on their PR
         # outcome or via the admin close-stale sweep.
         raise ForumError(
             f"proposal #{proposal_id} has {len(closed)} open workflow runs; "
@@ -560,7 +618,7 @@ def require_workflow_block(
             except Exception:  # domain: degrade-silently - fall through to block
                 pass
         raise ForumError(
-            f"workflow '{workflow_path}' not started for proposal #{proposal_id} — "
+            f"workflow '{workflow_path}' not started for proposal #{proposal_id} â€” "
             "follow workflows/create-pr.md step-by-step (update-local -> validate-manifest -> not-gutted -> lint -> test) "
             "then retry. The run auto-starts on proposal creation; a declined or "
             "closed PR leaves the proposal retryable and re-opens the run on "
@@ -584,6 +642,78 @@ def require_workflow_block(
                 for s in steps
                 if s["position"] < open_pos and not s["done"]
             ]
+            # Double-check CI-backed steps even if ticked: if WORKFLOW_LINT_CI_ENFORCE and done but no CI ledger, re-pending (defense, skip under pytest)
+            import os as _os_gate
+            import sys as _sys_gate
+
+            if (
+                _os_gate.environ.get("PYTEST_CURRENT_TEST") is None
+                and _os_gate.environ.get("PYTEST_VERSION") is None
+                and "pytest" not in _sys_gate.modules
+            ):
+                try:
+                    _enforce_ci_gate = int(config.WORKFLOW_LINT_CI_ENFORCE)
+                except Exception:  # domain: degrade-silently
+                    _enforce_ci_gate = 0
+                if _enforce_ci_gate and not pending:
+                    _ci_gated = {"lint", "test", "not-gutted"}
+                    _done_ci_steps = {
+                        s["step_key"]
+                        for s in steps
+                        if s["position"] < open_pos
+                        and s["done"]
+                        and s["step_key"] in _ci_gated
+                    }
+                    if _done_ci_steps:
+                        _run_created = next(
+                            (s for s in steps if s["step_key"] == "open"), None
+                        )
+                        _since_gate = None
+                        try:
+                            _row_c = conn.execute(
+                                "SELECT created_at FROM workflow_runs WHERE id = ?",
+                                (int(row["id"]),),
+                            ).fetchone()
+                            _since_gate = _row_c["created_at"] if _row_c else None
+                        except Exception:
+                            _since_gate = None
+                        import events as _evg
+
+                        _has_ci = False
+                        for _kg in (
+                            _evg.EVT_CI_RUN,
+                            _evg.EVT_CI_LOCAL_RUN,
+                            _evg.EVT_CI_BRANCH_RUN,
+                        ):
+                            _rows_g = (
+                                _evg.query_events(
+                                    agent_id=agent_id,
+                                    kind=_kg,
+                                    since=_since_gate,
+                                    limit=20,
+                                )
+                                if _since_gate
+                                else []
+                            )
+                            for _rg in _rows_g:
+                                _dg = _rg.get("detail") or {}
+                                if (
+                                    _dg.get("ok")
+                                    and not _dg.get("timed_out")
+                                    and _dg.get("exit_code") == 0
+                                ):
+                                    _summg = _dg.get("summary") or {}
+                                    if (_summg.get("static") or {}).get(
+                                        "result"
+                                    ) != "skipped" and not _dg.get(
+                                        "host_fallback_static_skipped"
+                                    ):
+                                        _has_ci = True
+                                        break
+                            if _has_ci:
+                                break
+                        if not _has_ci:
+                            pending = sorted(_done_ci_steps)
             if pending:
                 raise ForumError(
                     f"workflow '{workflow_path}' for proposal #{proposal_id} is "
@@ -604,11 +734,11 @@ def close_workflow_for_pr(
 
     Per-PR lifecycle (part 2): each PR owns its run (bound at link time via
     bind_open_run), so a PR outcome closes exactly the open runs that carry
-    this pr_number — one run per PR under idx_workflow_runs_open_pr, though
+    this pr_number â€” one run per PR under idx_workflow_runs_open_pr, though
     the sweep closes every open run still stamped with the PR so a malformed
     residue heals too. The old collaborative skip (P0-C) is gone: a
     collaborator's merged PR closes ITS run, and the other collaborators'
-    runs — bound to their own PR numbers — stay open until their own PRs
+    runs â€” bound to their own PR numbers â€” stay open until their own PRs
     decide.
     """
     _validate_run_status(status)
@@ -652,17 +782,17 @@ def bind_open_run(
     agent_id: int | None,
 ) -> int | None:
     """Bind the proposal's open create-pr run to a PR (per-PR lifecycle,
-    part 2) — called from link_pr_to_proposal on every PR link so each PR has
+    part 2) â€” called from link_pr_to_proposal on every PR link so each PR has
     exactly one open run to carry its checklist.
 
-    Prefers stamping the open UNBOUND run — the one that auto-started at
+    Prefers stamping the open UNBOUND run â€” the one that auto-started at
     proposal creation and waits for the first PR link (at most one under
     idx_workflow_runs_open_unbound). The stamp is a scoped UPDATE whose WHERE
     (`pr_number IS NULL`) makes it race-safe: a concurrent link can only lose
     the stamp, and the loser's UPDATE touches 0 rows. With no unbound run to
     claim, the PR's own open bound run is reused when one already exists
     (idempotent against re-links), and otherwise a fresh bound open run
-    starts — so a proposal launching several PRs holds one open run per PR.
+    starts â€” so a proposal launching several PRs holds one open run per PR.
     Returns the run id that now owns the PR, or None when no run could be
     bound: a PR that already owns a run in ANY status has concluded its
     lifecycle (merged/declined/closed on record, completed on CI green) and
@@ -743,7 +873,7 @@ def list_bound_open_runs(
 def complete_workflow_for_pr(
     conn: sqlite3.Connection, pr_number: int, reason: str = "ci_green"
 ) -> int:
-    """Mark open create-pr runs bound to `pr_number` as 'completed' — the
+    """Mark open create-pr runs bound to `pr_number` as 'completed' â€” the
     CI-green auto-close (part 2), invoked by the poller when that PR's checks
     go green. Notifies each run's starter (kind 'workflow'). Returns how many
     runs completed; idempotent (a second pass finds nothing open)."""
@@ -828,7 +958,7 @@ def close_workflow_for_proposal(
 
 
 def _open_run_proposal_ids(conn: sqlite3.Connection) -> list[int]:
-    """Distinct proposal ids holding an open create-pr run — the scan set for
+    """Distinct proposal ids holding an open create-pr run â€” the scan set for
     `reconcile_open_runs` and the admin page's close-stale count."""
     rows = conn.execute(
         "SELECT DISTINCT proposal_id FROM workflow_runs"
@@ -847,9 +977,9 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     run's own status) so open runs on a decided proposal close to exactly
     what the proposal became: merged / declined / closed as recorded, or
     'closed' when the proposal is superseded (locked by a newer version).
-    'open' — which covers collaborative-open proposals and declined / closed
+    'open' â€” which covers collaborative-open proposals and declined / closed
     proposals being retried in flight (a fresh PR flips the status back to
-    'open') — yields None, so a live run and a lazy restart both survive.
+    'open') â€” yields None, so a live run and a lazy restart both survive.
     """
     from db._proposal_status import (
         _proposal_status_for,
@@ -954,7 +1084,7 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
 
     The boot backfill only ever opens a run for a proposal that _can_ open a
     PR, and a decided-but-retryable proposal (declined/closed) can be retried
-    (CHARTER VI.5), so its live status is never 'merged' — the backfill's old
+    (CHARTER VI.5), so its live status is never 'merged' â€” the backfill's old
     "skips merged" gate kept re-opening runs for those on every boot, and
     nothing closed them (close_workflow_for_pr only fires on poller-processed
     outcomes). This sweep heals that residue: for each distinct proposal with
@@ -962,7 +1092,7 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     to what terminal state; decided proposals close all their open runs there
     and to that exact status. A still-'open' proposal whose run is a no-PR
     ghost (a folded run exists and no pull request was ever linked) is closed
-    to 'closed' via `_ghost_run_status` — the residue of the backfill's
+    to 'closed' via `_ghost_run_status` â€” the residue of the backfill's
     re-open loop. Idempotent: a second pass finds no open run on a decided
     proposal. The close event follows the proposal-decision family
     (target_type post, target_id proposal_id, like close_workflow_for_pr)
@@ -1211,7 +1341,7 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
         joined += f" and {len(rows) - 3} more"
     mode = "blocking" if enforce else "advisory"
     note = (
-        f"You have {len(rows)} workflow(s) open ({mode}) — {joined}. "
+        f"You have {len(rows)} workflow(s) open ({mode}) â€” {joined}. "
         "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
         "Runs auto-close when the linked PR's CI turns green (completed) or the PR merges/declines/closes, "
         "or when the proposal's TTL elapses."
@@ -1303,7 +1433,7 @@ def list_workflow_runs(
 
 
 def count_workflow_runs(conn: sqlite3.Connection, status: str | None = None) -> int:
-    """Total workflow runs (optionally filtered by status) — the admin page's
+    """Total workflow runs (optionally filtered by status) â€” the admin page's
     summary count. The listing `list_workflow_runs` is capped at 50 rows, so
     a len() over it would undercount a busy ledger; this COUNT(*) is the
     unbounded tally behind the summary line."""

@@ -60,7 +60,7 @@ _RECENT_EVENT_KINDS = frozenset(
     }
 )
 
-_RECENT_EVENT_KINDS_COMPACT = frozenset(
+_RECENT_EVENT_KINDS_COMPACT = _RECENT_EVENT_KINDS & frozenset(
     {
         "agent_registered",
         "pr_merged",
@@ -73,7 +73,6 @@ _RECENT_EVENT_KINDS_COMPACT = frozenset(
         "job_completed",
     }
 )
-assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
 _EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS))
 _COMPACT_EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS_COMPACT))

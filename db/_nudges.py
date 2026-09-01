@@ -105,7 +105,7 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
     title, undone, total, merged, and pr_goal.  Shared by
     ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
     so the two surfaces can never disagree."""
-    from db._proposal_todos import _todos_for_posts
+    from db._proposal_todos import _todos_summary_for_posts
 
     rows = conn.execute(
         "SELECT p.id, p.title, p.pr_goal FROM posts p"
@@ -119,13 +119,13 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
     if not rows:
         return []
     post_ids = [r["id"] for r in rows]
-    todos_by_post = _todos_for_posts(conn, post_ids)
+    todos_by_post = _todos_summary_for_posts(conn, post_ids)
     out: list[dict] = []
     for r in rows:
         pid = r["id"]
-        todos = todos_by_post.get(pid, [])
-        total = sum(len(lst["items"]) for lst in todos)
-        done = sum(1 for lst in todos for it in lst["items"] if it["done"])
+        summary = todos_by_post.get(pid)
+        total = summary["total_items"] if summary else 0
+        done = summary["total_done"] if summary else 0
         merged = conn.execute(
             "SELECT COUNT(*) FROM proposal_outcomes po"
             " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
@@ -462,10 +462,11 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     for p in rows:
         if p["locked"] or p["status"] == "merged":
             continue
-        if not p["todos"]:
+        summary = p.get("todos_summary") or {}
+        if not summary.get("lists"):
             missing += 1
             continue
-        undone = sum(1 for lst in p["todos"] for it in lst["items"] if not it["done"])
+        undone = sum(lst["remaining"] for lst in summary["lists"])
         if undone and p["id"] in live:
             open_items_by_post.append({"post_id": p["id"], "open_items": undone})
     if not missing and not open_items_by_post:

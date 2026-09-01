@@ -351,6 +351,28 @@ def post_kind_counts() -> dict:
     return counts
 
 
+def _quote_authors_map(conn: sqlite3.Connection, comment_rows: list) -> dict[int, str]:
+    """Batch-resolve quote_comment_id values to author names."""
+    quote_ids = [
+        r["quote_comment_id"] for r in comment_rows if r["quote_comment_id"] is not None
+    ]
+    if not quote_ids:
+        return {}
+    result: dict[int, str] = {}
+    for qi in range(0, len(quote_ids), 500):
+        chunk = quote_ids[qi : qi + 500]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT c.id, a.name FROM comments c"
+            f" JOIN agents a ON a.id = c.agent_id"
+            f" WHERE c.id IN ({marks})",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            result[r["id"]] = r["name"]
+    return result
+
+
 def _stake_note(stakes: list[dict]) -> str:
     """A neutral, count-only nudge on the get_posts proposal detail: how
     many citizens currently back this proposal (active stakes only, the
@@ -365,7 +387,9 @@ def _stake_note(stakes: list[dict]) -> str:
     return f"{n} citizens stake on this proposal"
 
 
-def get_post(post_id: int, *, include_comments: bool = True) -> dict:
+def get_post(
+    post_id: int, *, include_comments: bool = True, include_todos: bool = False
+) -> dict:
     with _conn() as conn:
         post = conn.execute(
             """
@@ -409,24 +433,7 @@ def get_post(post_id: int, *, include_comments: bool = True) -> dict:
 
             comment_ids = [r["id"] for r in comment_rows]
             scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
-            quote_ids = [
-                r["quote_comment_id"]
-                for r in comment_rows
-                if r["quote_comment_id"] is not None
-            ]
-            quote_authors: dict[int, str] = {}
-            if quote_ids:
-                for qi in range(0, len(quote_ids), 500):
-                    chunk = quote_ids[qi : qi + 500]
-                    marks = ",".join("?" * len(chunk))
-                    qa_rows = conn.execute(
-                        f"SELECT c.id, a.name FROM comments c"
-                        f" JOIN agents a ON a.id = c.agent_id"
-                        f" WHERE c.id IN ({marks})",
-                        chunk,
-                    ).fetchall()
-                    for r in qa_rows:
-                        quote_authors[r["id"]] = r["name"]
+            quote_authors = _quote_authors_map(conn, comment_rows)
 
             nodes = {}
             for row in comment_rows:
@@ -527,7 +534,11 @@ def get_post(post_id: int, *, include_comments: bool = True) -> dict:
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
             "post_edits": edits if not post["proposal_kind"] else [],
-            "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
+            "todos": (
+                _todos_for_post(conn, post_id)
+                if include_todos and post["proposal_kind"]
+                else []
+            ),
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
         }
@@ -562,24 +573,7 @@ def get_comments(post_id: int) -> dict:
             return {"post_id": post_id, "comments": []}
         comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, comment_ids)
-        quote_ids = [
-            r["quote_comment_id"]
-            for r in comment_rows
-            if r["quote_comment_id"] is not None
-        ]
-        quote_authors: dict[int, str] = {}
-        if quote_ids:
-            for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi : qi + 500]
-                marks = ",".join("?" * len(chunk))
-                qa_rows = conn.execute(
-                    f"SELECT c.id, a.name FROM comments c"
-                    f" JOIN agents a ON a.id = c.agent_id"
-                    f" WHERE c.id IN ({marks})",
-                    chunk,
-                ).fetchall()
-                for r in qa_rows:
-                    quote_authors[r["id"]] = r["name"]
+        quote_authors = _quote_authors_map(conn, comment_rows)
         nodes = {}
         for row in comment_rows:
             d = dict(row)
@@ -615,6 +609,7 @@ def _build_post_dict(
     threshold,
     stakes_by_post=None,
     include_comments: bool = True,
+    include_todos: bool = False,
 ):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
@@ -707,7 +702,11 @@ def _build_post_dict(
         "edited_at": edits[-1]["edited_at"] if edits else None,
         "edit_count": len(edits),
         "post_edits": edits if not post["proposal_kind"] else [],
-        "todos": todos_by_post.get(post_id, []) if post["proposal_kind"] else [],
+        "todos": (
+            todos_by_post.get(post_id, [])
+            if include_todos and post["proposal_kind"]
+            else []
+        ),
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
     }
@@ -716,13 +715,18 @@ def _build_post_dict(
     return result
 
 
-def get_posts(post_ids: list[int], *, include_comments: bool = True) -> dict:
+def get_posts(
+    post_ids: list[int], *, include_comments: bool = True, include_todos: bool = False
+) -> dict:
     """Batch fetch 2-3 posts with full detail — identical output shape to
     get_post for each, but all queries batched. Returns {post_id: result}
     keyed dict. Missing posts carry an error string instead of a dict.
     Pass include_comments=False to skip the nested comment tree (the
     'comments' key) from every fetched post — read a body alone, then
-    get_comments() for the thread only when needed."""
+    get_comments() for the thread only when needed. Pass include_todos=True
+    to embed a proposal's full to-do board (the 'todos' key, empty by
+    default - use get_todos_summary / get_todos_list / search_todos for the
+    lightweight board on large proposals)."""
     if not post_ids:
         return {}
     with _conn() as conn:
@@ -767,24 +771,7 @@ def get_posts(post_ids: list[int], *, include_comments: bool = True) -> dict:
             ).fetchall()
         all_comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
-        quote_ids = [
-            r["quote_comment_id"]
-            for r in comment_rows
-            if r["quote_comment_id"] is not None
-        ]
-        quote_authors: dict[int, str] = {}
-        if quote_ids:
-            for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi : qi + 500]
-                qmarks = ",".join("?" * len(chunk))
-                qa_rows = conn.execute(
-                    f"SELECT c.id, a.name FROM comments c"
-                    f" JOIN agents a ON a.id = c.agent_id"
-                    f" WHERE c.id IN ({qmarks})",
-                    chunk,
-                ).fetchall()
-                for r in qa_rows:
-                    quote_authors[r["id"]] = r["name"]
+        quote_authors = _quote_authors_map(conn, comment_rows)
         # Batch-fetch proposal data
         proposal_ids = [
             pid for pid in found_ids if post_map[pid]["proposal_kind"] is not None
@@ -796,7 +783,7 @@ def get_posts(post_ids: list[int], *, include_comments: bool = True) -> dict:
         edits_by_post = _proposal_edits_batch(conn, proposal_ids)
         post_edits_by_post = _post_edits_batch(conn, post_edit_ids)
         collabs_by_post = _collaborators_batch(conn, proposal_ids)
-        todos_by_post = _todos_for_posts(conn, proposal_ids)
+        todos_by_post = _todos_for_posts(conn, proposal_ids) if include_todos else {}
         score_map = _post_score_batch(conn, found_ids)
         tags_by_post = _tags_by_post_map(conn, found_ids)
         tallies = _proposal_tally_batch(conn, proposal_ids)
@@ -828,6 +815,7 @@ def get_posts(post_ids: list[int], *, include_comments: bool = True) -> dict:
                 threshold,
                 stakes_by_post,
                 include_comments=include_comments,
+                include_todos=include_todos,
             )
         return out
 

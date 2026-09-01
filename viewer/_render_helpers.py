@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
+import urllib.parse
 
 import db
 import search
@@ -548,32 +549,172 @@ def _render_comment(node: dict, post_id: int = 0, depth: int = 0) -> str:
     return inner
 
 
-def _todos_panel(p: dict) -> str:
-    """A proposal's to-do lists, read-only and fully escaped - the viewer
-    stays read-only by law; editing happens through the forum's per-list
-    tools (create_todo_list / update_todo_list). Renders nothing for ordinary
-    posts and proposals without lists."""
-    lists = p.get("todos") or []
-    if not lists:
+def _todo_row_claim_badge(lst: dict, mode: str) -> str:
+    """The list-level claim badge for list/hybrid claim modes - 'claimed by
+    X' (or a grey unclaimed dot), mirroring the grey/blue dot grammar at list
+    level so what has been claimed is legible at a glance. Empty in item
+    mode, where ownership rides each item instead."""
+    if mode not in ("list", "hybrid"):
         return ""
+    if lst.get("claimed_by"):
+        tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
+        if lst.get("claimed_at"):
+            tip += " at " + esc(str(lst["claimed_at"]))
+        cid = lst.get("claimed_by_id")
+        claimer = (
+            f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
+            f"{esc(str(lst['claimed_by']))}</a>"
+            if cid is not None
+            else esc(str(lst["claimed_by"]))
+        )
+        return (
+            " <span title='"
+            + tip
+            + "' style='color:var(--accent);font-size:13px'>&#9679;</span>"
+            " <span style='color:var(--accent);font-size:13px'>claimed by "
+            + claimer
+            + "</span>"
+        )
+    return (
+        " <span title='unclaimed list'"
+        " style='color:var(--muted);font-size:13px'>&#9679;</span>"
+    )
+
+
+def _todo_item_row(it: dict, mode: str) -> str:
+    """One to-do item row: claim dot, done box, id, text and optional PR chip.
+
+    Item-level dots show in item/hybrid mode; pure list mode keeps ownership
+    on the whole list, so per-item dots would be noise."""
+    if mode != "list":
+        if it.get("claimed_by"):
+            tip = "claimed by " + esc(str(it["claimed_by"]))
+            if it.get("claimed_at"):
+                tip += " at " + esc(str(it["claimed_at"]))
+            if not it.get("done") and it.get("pr_number") is None:
+                tip += " - no bound PR yet"
+            dot = (
+                "<span title='"
+                + tip
+                + "' style='color:var(--accent);font-size:13px'>&#9679;</span> "
+            )
+        else:
+            dot = (
+                "<span title='unclaimed'"
+                " style='color:var(--muted);font-size:13px'>"
+                "&#9679;</span> "
+            )
+    else:
+        dot = ""
+    pr = it.get("pr_number")
+    if pr is not None:
+        try:
+            prid = int(pr)
+            if it.get("done"):
+                pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+            else:
+                pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{prid}</span>'
+        except (TypeError, ValueError):
+            pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+    else:
+        pr_chip = ""
+    box = "☑" if it.get("done") else "☐"
+    return (
+        f"<div style='margin:.15rem 0'>{dot}"
+        f"<span style='color:var(--muted)'>{box}</span> "
+        f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
+        f">#{esc(str(it['id']))}</span>"
+        f"{esc(it['text'])}"
+        f"{pr_chip}" + "</div>"
+    )
+
+
+_TODO_PAGE_SIZE = 25
+
+
+def _todo_pager(post_id: int, page: int, total: int, **qs: str) -> str:
+    """Compact Prev/Next pager for a drilled-in list or search page, building
+    links that keep the other query params (tlist / tq). Returns '' on a
+    single page. Kept local to avoid a dependency on viewer._feed_helpers."""
+    total_pages = max(1, (total + _TODO_PAGE_SIZE - 1) // _TODO_PAGE_SIZE)
+    if total_pages <= 1:
+        return ""
+    pairs = "".join(
+        f"&{k}={urllib.parse.quote_plus(str(v))}"
+        for k, v in qs.items()
+        if v not in (None, "")
+    )
+    nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+    if page > 1:
+        nav.insert(
+            0,
+            f'<a href="/posts/{post_id}?tpage={page - 1}{pairs}"'
+            f" style='color:var(--accent)'>\u2039 Prev</a>",
+        )
+    if page < total_pages:
+        nav.append(
+            f'<a href="/posts/{post_id}?tpage={page + 1}{pairs}"'
+            f" style='color:var(--accent)'>Next \u203a</a>"
+        )
+    return '<div style="margin:6px 0">' + " \u00b7 ".join(nav) + "</div>"
+
+
+def _todo_search_box(post_id: int, tq: str = "") -> str:
+    """A GET search form that full-text searches this proposal's to-do items
+    and list titles via search_todos."""
+    q = esc(tq)
+    return (
+        f'<form method="get" action="/posts/{post_id}" style="margin:8px 0">'
+        f'<input type="text" name="tq" value="{q}"'
+        f' placeholder="search to-do items / lists"'
+        f' style="padding:4px 8px;border:1px solid var(--border);'
+        f"border-radius:6px;background:var(--card);color:var(--text);"
+        f'width:220px"> <button type="submit"'
+        f' style="padding:4px 10px;border:1px solid var(--border);'
+        f"border-radius:6px;background:var(--card);color:var(--text);"
+        f'cursor:pointer">search</button></form>'
+    )
+
+
+def _todos_panel(
+    p: dict,
+    tlist: int | None = None,
+    tpage: int = 1,
+    tq: str | None = None,
+    list_data: dict | None = None,
+    search_data: dict | None = None,
+) -> str:
+    """A proposal's to-do board, read-only and fully escaped - the viewer
+    stays read-only by law; editing happens through the forum's per-list
+    tools (create_todo_list / update_todo_list). Renders a lightweight
+    summary (list/item/done counts plus per-list headers) from the caller's
+    `todos_summary`, and never embeds the whole board: drilling in (`tlist`)
+    or searching (`tq`) renders the caller-fetched `list_data` /
+    `search_data` (the get_todos_list / search_todos results) paged. Renders
+    nothing for ordinary posts and proposals without lists. A pure HTML
+    builder - no DB calls here; the page handler fetches the lightweight
+    summary and any drill-in page."""
+    summary = p.get("todos_summary") or {}
+    lists = summary.get("lists") or []
+    if not lists and list_data is None and search_data is None:
+        return ""
+    post_id = int(p["id"])
     header = (
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
         "checklists for this proposal - the author and the current delegate "
         "edit them through the forum (create_todo_list / update_todo_list).</p>"
     )
     out = [header]
-    # 4436: To-Do summary header - total lists / items / completed / remaining + progress bar
-    total_lists = len(lists)
-    total_items = sum(len(lst.get("items") or []) for lst in lists)
-    done_cnt = sum(
-        1 for lst in lists for it in (lst.get("items") or []) if it.get("done")
-    )
+    # Summary header - total lists / items / completed / remaining + progress
+    total_lists = summary.get("total_lists", len(lists))
+    total_items = summary.get("total_items", 0)
+    done_cnt = summary.get("total_done", 0)
     remaining = total_items - done_cnt
     pct = int(done_cnt * 100 / total_items) if total_items else 0
     out.append(
         f"<div style='display:flex;gap:12px;flex-wrap:wrap;"
         f"align-items:center;color:var(--muted);"
-        f"font-size:13px;margin:8px 0 10px'>"
+        f"font-size:13px;margin:8px 0 4px'>"
         f"<span><b style='color:var(--text)'>{total_lists}</b> lists</span>"
         f"<span><b style='color:var(--text)'>{total_items}</b> items</span>"
         f"<span><b style='color:var(--accent)'>{done_cnt}</b> completed</span>"
@@ -581,106 +722,105 @@ def _todos_panel(p: dict) -> str:
         f"<span><b>{pct}%</b> done</span>"
         f"</div>"
         f"<div style='background:var(--border);height:6px;"
-        f"border-radius:3px;overflow:hidden;margin-bottom:12px'"
+        f"border-radius:3px;overflow:hidden;margin-bottom:4px'"
         f" role='progressbar' aria-valuenow='{pct}'"
         f" aria-valuemin='0' aria-valuemax='100'>"
         f"<div style='width:{pct}%;background:var(--accent);"
         f"height:6px'></div>"
         f"</div>"
     )
-    for lst in lists:
-        mode = lst.get("claim_mode", "item")
-        claim_badge = ""
-        if mode in ("list", "hybrid"):
-            # List/hybrid mode mirrors the grey/blue dot grammar at list
-            # level, so what has been claimed is legible at a glance.
-            if lst.get("claimed_by"):
-                tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
-                if lst.get("claimed_at"):
-                    tip += " at " + esc(str(lst["claimed_at"]))
-                lst_items = lst.get("items") or []
-                if (
-                    lst_items
-                    and not any(i.get("done") for i in lst_items)
-                    and not any(i.get("pr_number") is not None for i in lst_items)
-                ):
-                    tip += " - no bound PR yet"
-                cid = lst.get("claimed_by_id")
-                claimer = (
-                    f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
-                    f"{esc(str(lst['claimed_by']))}</a>"
-                    if cid is not None
-                    else esc(str(lst["claimed_by"]))
-                )
-                claim_badge = (
-                    " <span title='"
-                    + tip
-                    + "' style='color:var(--accent);font-size:13px'>&#9679;</span>"
-                    " <span style='color:var(--accent);font-size:13px'>claimed by "
-                    + claimer
-                    + "</span>"
-                )
-            else:
-                claim_badge = (
-                    " <span title='unclaimed list'"
-                    " style='color:var(--muted);font-size:13px'>&#9679;</span>"
-                )
+    if search_data is not None:
+        total = search_data.get("total", 0)
+        hits = search_data.get("hits") or []
+        out.append(
+            f"<div style='margin:4px 0'><a href='/posts/{post_id}'"
+            f" style='color:var(--accent);text-decoration:none'>\u2190 all lists</a>"
+            f"<span style='color:var(--muted)'>&nbsp;\u00b7 {total} hit"
+            f"{'' if total == 1 else 's'} for \u201c{esc(tq or '')}\u201d</span></div>"
+        )
+        out.append(_todo_search_box(post_id, tq or ""))
+        if not hits:
+            out.append("<p style='color:var(--muted)'>No matching items.</p>")
+        for hit in hits:
+            entry = {
+                "id": hit.get("item_id"),
+                "text": hit.get("text", ""),
+                "done": hit.get("done", False),
+                "pr_number": hit.get("pr_number"),
+                "claimed_by": hit.get("claimed_by"),
+            }
+            lede = (
+                f"<span class='todo-id' style='color:var(--muted)'>"
+                f"[{esc(hit.get('list_title', ''))}]</span> "
+            )
+            out.append(
+                f"<div style='margin:.15rem 0'>{lede}" + _todo_item_row(entry, "hybrid")
+            )
+        out.append(_todo_pager(post_id, tpage, total, tq=tq or ""))
+    elif list_data is not None:
+        mode = list_data.get("claim_mode") or "item"
+        out.append(
+            f"<div style='margin:4px 0'><a href='/posts/{post_id}'"
+            f" style='color:var(--accent);text-decoration:none'>\u2190 all lists</a></div>"
+        )
+        out.append(_todo_search_box(post_id))
         out.append(
             f"<h3 style='margin:.6rem 0 .2rem'>"
-            f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
-            f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}"
-            f"{claim_badge}</h3>"
+            f"<span class='todo-id' title='to-do list id #{esc(str(list_data['id']))}'"
+            f">#{esc(str(list_data['id']))}</span>{esc(list_data['title'])}"
+            f"{_todo_row_claim_badge(list_data, mode)}</h3>"
         )
-        items = lst.get("items") or []
+        done = list_data.get("total_done", 0)
+        total = list_data.get("total_items", len(list_data.get("items") or []))
+        out.append(
+            f"<div style='color:var(--muted);font-size:13px;margin-bottom:6px'>"
+            f"{done}/{total} done \u00b7 {total - done} remaining</div>"
+        )
+        items = list_data.get("items") or []
         if not items:
             out.append("<p style='color:var(--muted)'>No items.</p>")
         for it in items:
-            box = "☑" if it.get("done") else "☐"
-            if mode != "list":
-                if it.get("claimed_by"):
-                    tip = "claimed by " + esc(str(it["claimed_by"]))
-                    if it.get("claimed_at"):
-                        tip += " at " + esc(str(it["claimed_at"]))
-                    if not it.get("done") and it.get("pr_number") is None:
-                        tip += " - no bound PR yet"
-                    dot = (
-                        "<span title='"
-                        + tip
-                        + "' style='color:var(--accent);font-size:13px'>&#9679;</span> "
-                    )
-                else:
-                    dot = (
-                        "<span title='unclaimed'"
-                        " style='color:var(--muted);font-size:13px'>"
-                        "&#9679;</span> "
-                    )
-            else:
-                # Pure list claim mode: ownership lives on the whole list -
-                # the header dot (grey open / blue claimed) carries it.
-                # Per-item dots would be noise. Hybrid mode shows both.
-                dot = ""
-            pr = it.get("pr_number")
-            if pr is not None:
-                try:
-                    prid = int(pr)
-                    if it.get("done"):
-                        pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
-                    else:
-                        pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{prid}</span>'
-                except (TypeError, ValueError):
-                    pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
-            else:
-                pr_chip = ""
+            out.append(_todo_item_row(it, mode))
+        out.append(
+            _todo_pager(
+                post_id,
+                tpage,
+                total,
+                tlist="" if tlist is None else str(tlist),
+            )
+        )
+    else:
+        out.append(_todo_search_box(post_id))
+        for lst in lists:
+            mode = lst.get("claim_mode", "item")
+            total = lst.get("total_items", 0)
+            done = lst.get("done_items", 0)
+            remaining = total - done
             out.append(
-                f"<div style='margin:.15rem 0'>{dot}"
-                f"<span style='color:var(--muted)'>{box}</span> "
-                f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
-                f">#{esc(str(it['id']))}</span>"
-                f"{esc(it['text'])}"
-                f"{pr_chip}" + "</div>"
+                f"<h3 style='margin:.6rem 0 .1rem'>"
+                f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
+                f">#{esc(str(lst['id']))}</span>"
+                f"<a href='/posts/{post_id}?tlist={lst['id']}'"
+                f" style='color:var(--text);text-decoration:none'"
+                f" title='expand this list'>{esc(lst['title'])}</a>"
+                f"{_todo_row_claim_badge(lst, mode)}</h3>"
+            )
+            out.append(
+                f"<div style='color:var(--muted);font-size:13px;margin:0 0 8px'>"
+                f"{done}/{total} done"
+                + (f" \u00b7 {remaining} remaining" if remaining else "")
+                + (
+                    f" \u00b7 <a href='/posts/{post_id}?tlist={lst['id']}'"
+                    f" style='color:var(--accent);text-decoration:none'>expand \u203a</a>"
+                    if total
+                    else ""
+                )
+                + "</div>"
             )
     inner = "".join(out)
-    return _collapsible("To-do lists", inner, "todos", open=False)
+    return _collapsible(
+        "To-do lists", inner, "todos", open=bool(tlist is not None or tq)
+    )
 
 
 def _related_panel(p: dict) -> str:

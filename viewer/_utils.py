@@ -17,9 +17,27 @@ import config
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
 
+_WS_RE = re.compile(r"\s+")
+_ORDERED_LIST_RE = re.compile(r"^\d+[.)] ")
+
 
 def esc(text: object) -> str:
     return html.escape(str(text))
+
+
+@lru_cache(maxsize=128)
+def _parse_iso_cached(raw: str) -> datetime | None:
+    """Cached ISO parse for _human_ts: strip Z/+00:00, fromisoformat, utc."""
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:  # domain: degrade-silently - malformed timestamp renders raw
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _human_ts(value: str) -> str:
@@ -28,16 +46,9 @@ def _human_ts(value: str) -> str:
     date ('Aug 11, 2026'). The exact UTC timestamp rides along on hover.
     Falls back to the raw value if it can't be parsed."""
     raw = str(value)
-    text = raw.rstrip("Z")
-    if text.endswith("+00:00"):
-        text = text[:-6]
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:  # domain: degrade-silently - malformed timestamp renders raw
+    dt = _parse_iso_cached(raw)
+    if dt is None:
         return esc(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
     delta = datetime.now(timezone.utc) - dt
     if delta < timedelta(seconds=60):
         label = "just now"
@@ -87,7 +98,7 @@ def _rows(pairs: list[tuple[str, str]]) -> str:
 def _truncate(text: str, n: int = 160) -> str:
     """First ~n characters of a body preview, cut at a word boundary with an
     ellipsis. Used so post cards read as summaries, not raw blobs."""
-    text = re.sub(r"\s+", " ", str(text)).strip()
+    text = _WS_RE.sub(" ", str(text)).strip()
     if len(text) <= n:
         return text
     cut = text[: n + 1]
@@ -339,7 +350,7 @@ def _inline_md(text: str) -> str:
     return "".join(out)
 
 
-@lru_cache(maxsize=2048)
+@lru_cache(maxsize=512)
 def _markdown(source: str, anchors: bool = False) -> str:
     """Render the safe subset: fenced code blocks, headings, blockquotes,
     bullet/numbered lists, and horizontal rules. Each block starts on its own
@@ -398,13 +409,13 @@ def _markdown(source: str, anchors: bool = False) -> str:
                 list_tag = "ul"
             out.append(f"<li>{_inline_md(line[2:])}</li>")
             continue
-        if re.match(r"^\d+[.)] ", line):
+        if _ORDERED_LIST_RE.match(line):
             if list_tag != "ol":
                 if list_tag:
                     out.append(f"</{list_tag}>")
                 out.append("<ol>")
                 list_tag = "ol"
-            _text = re.split(r"\d+[.)] ", line, maxsplit=1)[1]
+            _text = _ORDERED_LIST_RE.split(line, maxsplit=1)[1]
             out.append(f"<li>{_inline_md(_text)}</li>")
             continue
         if list_tag:

@@ -315,11 +315,11 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
         # viewer will show MISMATCH rather than 500.
         try:
             sealed_q = seal["total_supply_q"]
-        except Exception:
+        except Exception:  # domain: degrade-silently - seal extraction fallback
             sealed_q = 0
         try:
             sealed_cred = _fmt(sealed_q)
-        except Exception:
+        except Exception:  # domain: degrade-silently - seal extraction fallback
             sealed_cred = str(sealed_q)
         return {
             "ok": False,
@@ -369,7 +369,7 @@ def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
             if not page["has_more"]:
                 break
             offset += 200
-    except Exception:
+    except Exception:  # domain: degrade-silently - public ledger page failure fallback
         return {
             "present": False,
             "chain_ok": True,

@@ -81,13 +81,13 @@ import events
 import github
 from github._core import _validate_path
 
-# Concurrency for CI runner trees — up to CI_RUN_CONCURRENCY sandboxed
+# Concurrency for CI runner trees â€” up to CI_RUN_CONCURRENCY sandboxed
 # runs may overlap on the single forum host (each slot has its own -ci
 # tree under DATA_DIR/agentland_ws). The semaphore is a bounded queue of
-# slot tokens, so a long suite never starves a second caller — the third
+# slot tokens, so a long suite never starves a second caller â€” the third
 # caller gets the familiar "already in progress" error. Single-process
 # deployment invariant: the queue is in-memory, reset on restart.
-_RUN_LOCK = threading.Lock()  # legacy single-slot — kept for tests that patch it
+_RUN_LOCK = threading.Lock()  # legacy single-slot â€” kept for tests that patch it
 _CI_QUEUE: queue.Queue[int] | None = None
 _CI_SLOTS: list[str] = []
 _CI_LOCK = threading.Lock()
@@ -154,7 +154,7 @@ def _ci_queue_depth() -> tuple[int, int, int]:
 
 
 def _host_cpus() -> int:
-    """Host cpus for fair-share — os.cpu_count() when available, else 4."""
+    """Host cpus for fair-share â€” os.cpu_count() when available, else 4."""
     try:
         c = os.cpu_count()
         if c and c > 0:
@@ -179,7 +179,7 @@ def _deregister_active(slot: int) -> None:
 def _throttle_active() -> None:
     """Live-throttle every active sandbox to the new fair share.
 
-    Called after acquire (down) and after release (up) — `docker update
+    Called after acquire (down) and after release (up) â€” `docker update
     --cpus` patches the cgroup of the *other* still-running container(s).
     Best-effort: a finished container or missing docker is not a failure."""
     try:
@@ -239,7 +239,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
     timeout=None is non-blocking (poller/ticker); timeout=10 waits for user
     and surfaces Retry-After.
     """
-    # Check reserve before touching queue — stale q race handled below
+    # Check reserve before touching queue â€” stale q race handled below
     for attempt in range(2):  # at most one retry on stale queue
         q = _ci_ensure_pool()
         desired = max(1, int(config.CI_RUN_CONCURRENCY))
@@ -256,7 +256,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
                 raise db.ForumError(
                     f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy, reserved 1 for user)"
                 )
-        # Acquire — blocking wait for user, instant for poller
+        # Acquire â€” blocking wait for user, instant for poller
         try:
             if timeout is not None:
                 idx = q.get(block=True, timeout=timeout)
@@ -284,7 +284,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             except Exception:
                 pass  # domain: degrade-silently - live throttle best-effort
             return idx
-        # Retired idx — discard and retry if fresh queue still has tokens
+        # Retired idx â€” discard and retry if fresh queue still has tokens
         if q.empty():
             with _CI_LOCK:
                 live_q = _CI_QUEUE
@@ -295,9 +295,9 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             raise db.ForumError(
                 f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy)"
             ) from None
-        # Retired but queue still has items — loop to next token
+        # Retired but queue still has items â€” loop to next token
         continue
-    # Fallback — should not reach
+    # Fallback â€” should not reach
     _, _, busy = _ci_queue_depth()
     desired = max(1, int(config.CI_RUN_CONCURRENCY))
     raise db.ForumError(
@@ -362,7 +362,7 @@ def _iso(dt: datetime) -> str:
 
 
 def _runner_dir_impl(slot: int) -> str:
-    """Core path construction for runner trees — slot 0 is the historic
+    """Core path construction for runner trees â€” slot 0 is the historic
     base, slot N is sharded. Never patched directly; tests patch _runner_dir."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
     base = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci")
@@ -372,7 +372,7 @@ def _runner_dir_impl(slot: int) -> str:
 
 
 def _runner_dir() -> str:
-    """Legacy single runner checkout — kept for backwards compatibility in
+    """Legacy single runner checkout â€” kept for backwards compatibility in
     tests that import it directly. New code uses _runner_dir_for_slot()."""
     return _runner_dir_impl(0)
 
@@ -381,12 +381,12 @@ _ORIG_RUNNER_DIR = _runner_dir  # for mock detection
 
 
 def _runner_dir_for_slot(slot: int) -> str:
-    """Dedicated runner checkout for *slot* beside the rebase pool slots —
+    """Dedicated runner checkout for *slot* beside the rebase pool slots â€”
     same durable home (AGENTLAND_DATA_DIR/agentland_ws) but never a pool
     slot, so a long suite can never starve conflict/rebase flows. Two
     slots (CI_RUN_CONCURRENCY=2) give two independent -ci trees."""
     # If tests have monkeypatched _runner_dir to a stub, respect it for any
-    # slot — the fixture's tree is the same temp dir for all slots in that test.
+    # slot â€” the fixture's tree is the same temp dir for all slots in that test.
     if _runner_dir is not _ORIG_RUNNER_DIR:
         return _runner_dir()
     return _runner_dir_impl(slot)
@@ -424,7 +424,7 @@ def _try_clone_from_local(tree: str, base: str) -> bool:
     if not origin_url.startswith("https://github.com/"):
         return False
     local_path = str(config.REPO_DIR)
-    # Clone from local path (file://) — no network, always up-to-date
+    # Clone from local path (file://) â€” no network, always up-to-date
     try:
         res = subprocess.run(
             ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
@@ -451,7 +451,7 @@ def _ensure_clone(tree: str) -> None:
     base = github.base_branch()
     if os.path.isdir(os.path.join(tree, ".git")):
         return
-    # Prefer local seed (auto-update checkout) — always up-to-date, no network
+    # Prefer local seed (auto-update checkout) â€” always up-to-date, no network
     if _try_clone_from_local(tree, base):
         github._seed_identity(tree)
         return
@@ -548,24 +548,24 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
 
 
 def _apply_local_changes(tree: str, changes: list[dict]) -> None:
-    """Apply a `files` change list onto `tree` — content writes and
+    """Apply a `files` change list onto `tree` â€” content writes and
     find-replace edits resolved against the tree's current files. Mirrors
     github._writes._apply_edits but reads from the filesystem, not the API.
     Used by local rehearsal (repo_ci_run(files=...)) so an agent can test
     an unpushed diff without a PR."""
     for c in changes:
-        # Host-side write — must be gated like every other write path.
+        # Host-side write â€” must be gated like every other write path.
         # _changes_for_repo_propose is shape-only (see its docstring), so
         # validate here before any os.path.join / open.
         path = _validate_path(c["path"])
         full = os.path.join(tree, path)
-        # Content write — create/overwrite.
+        # Content write â€” create/overwrite.
         if "content" in c:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(c["content"])
             continue
-        # Patch write — find-replace against the file on disk.
+        # Patch write â€” find-replace against the file on disk.
         if "edits" in c:
             if not os.path.isfile(full):
                 raise db.ForumError(
@@ -578,7 +578,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
                 raise db.ForumError(
                     f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
                 ) from None
-            # Reuse the strict engine from github._writes — same errors.
+            # Reuse the strict engine from github._writes â€” same errors.
             import github._writes as _writes  # local import to avoid cycle
 
             new_text, _log = _writes._apply_edits(path, text, c["edits"])
@@ -586,7 +586,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
             with open(full, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(new_text)
             continue
-        # Should not reach — validated earlier.
+        # Should not reach â€” validated earlier.
         raise db.ForumError(f"change for {path!r} has no content or edits.")
 
 
@@ -594,13 +594,13 @@ def _prepare_local_tree(
     changes: list[dict], slot: int | None = None
 ) -> tuple[str, str, dict]:
     """Refresh onto origin/main in `slot`'s runner tree, overlay `changes`,
-    and return (tree, head_sha, info). No merge, no fetch of a PR head —
+    and return (tree, head_sha, info). No merge, no fetch of a PR head â€”
     this is the pre-push rehearsal path. The tree is left dirty with the
     overlay; the next _refresh_main heals it."""
     tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
     main_sha = _refresh_main(tree)
-    # Overlay the draft changes — each path is gated by
+    # Overlay the draft changes â€” each path is gated by
     # github._core._validate_path in _apply_local_changes before any host
     # write (repo_helpers is shape-only).
     _apply_local_changes(tree, changes)
@@ -728,7 +728,7 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
             "passed_files": int(failed.group(2)) - int(failed.group(1)),
             "failed_files": int(failed.group(1)),
         }
-    # db_benchmark (tests/test_benchmark.py) — compact high-signal summary
+    # db_benchmark (tests/test_benchmark.py) â€” compact high-signal summary
     # Most info / least text: parse the timing table medians + regression
     # marker, so callers get a one-object summary without scanning the tail.
     if summary is None and "[Timing -" in output:
@@ -950,7 +950,7 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
     Returns (argv, container_name) - the name lets the timeout path stop
     the container even though the killed client detaches from it."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
-    # Busy-aware: ceil (2.5) alone, host/busy when contended — live-throttled via docker update
+    # Busy-aware: ceil (2.5) alone, host/busy when contended â€” live-throttled via docker update
     try:
         cpus = _effective_cpus()
     except Exception:
@@ -975,7 +975,7 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "--memory",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
-        # instead of OOM-killing, while still bounding total host pressure (2 slots × 1G).
+        # instead of OOM-killing, while still bounding total host pressure (2 slots Ã— 1G).
         "--memory-swap",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
         "--pids-limit",
@@ -1196,11 +1196,11 @@ def run_checks(
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
     sandboxed = False  # native host-fallback default; branch/local set True
-    # Acquire a sharded runner slot — 3×1.5c on 4c host. User path waits
+    # Acquire a sharded runner slot â€” 3Ã—1.5c on 4c host. User path waits
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _RUN_LOCK is kept for the existing single-slot test: if it is
     # held, treat as saturated.
-    if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod — real gate is _ci_acquire_slot (same point MiMo #2)
+    if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod â€” real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(
             "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
@@ -1218,7 +1218,7 @@ def run_checks(
                 tree, head_sha, merge_info = _prepare_local_tree(files, slot=slot)
             except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
                 tree, head_sha, merge_info = _prepare_local_tree(files)
-            # Local rehearsal is the overlay on top of main — same sandbox as branch, never native.
+            # Local rehearsal is the overlay on top of main â€” same sandbox as branch, never native.
             sandboxed = True
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
@@ -1363,7 +1363,7 @@ def run_checks(
             # static tooling (mypy/ruff from requirements-dev.txt): tests/run_ci.py
             # then executes the whole surface and reports PASS/FAIL. Only when the
             # tools are genuinely absent does it loudly skip static, so the flag is
-            # keyed on the actual parsed static result — never on how the command
+            # keyed on the actual parsed static result â€” never on how the command
             # was dispatched (sandboxed vs host interpreter). A machine-readable
             # marker so that degraded run is never mistaken for the real thing.
             static_result = (
@@ -1395,6 +1395,50 @@ def run_checks(
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
+        # Auto-tick workflow lint/test/not-gutted on CI green (B)
+        try:
+            _ok_ci = (
+                detail.get("ok")
+                and not detail.get("timed_out")
+                and detail.get("exit_code") == 0
+                and not detail.get("host_fallback_static_skipped")
+            )
+            _summ_ci = detail.get("summary") or {}
+            _static_ci = (
+                (_summ_ci.get("static") or {}).get("result")
+                if isinstance(_summ_ci.get("static"), dict)
+                else None
+            )
+            if _ok_ci and _static_ci != "skipped":
+                import db as _dbw
+
+                with _dbw._conn() as _c:
+                    _rows_w = _c.execute(
+                        "SELECT id, workflow_path FROM workflow_runs WHERE agent_id = ? AND status = 'open'",
+                        (agent_id,),
+                    ).fetchall()
+                    for _rw in _rows_w:
+                        try:
+                            _steps_w = _dbw.workflow_steps_for_run(_c, int(_rw["id"]))
+                            for _sk in ("not-gutted", "lint", "test"):
+                                for _st in _steps_w:
+                                    if _st["step_key"] == _sk and not _st["done"]:
+                                        try:
+                                            _c.execute(
+                                                "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ? WHERE run_id = ? AND step_key = ? AND done = 0",
+                                                (
+                                                    _dbw._now_iso(),
+                                                    agent_id,
+                                                    int(_rw["id"]),
+                                                    _sk,
+                                                ),
+                                            )
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
+        except Exception:  # domain: degrade-silently - auto-tick best-effort
+            pass
         if branch_mode:
             # Blob hygiene: fetched PR heads linger as unreachable objects
             # after the next reset; prune them so the shared tree does not
@@ -1420,7 +1464,7 @@ def run_checks(
         except Exception:
             # domain: degrade-silently - releasing a retired slot is best-effort
             pass
-        # Legacy lock release for tests that still hold it — no-op normally
+        # Legacy lock release for tests that still hold it â€” no-op normally
         if (
             _RUN_LOCK.locked()
         ):  # legacy: release test-held lock if any; always False in prod
@@ -1431,9 +1475,9 @@ def run_checks(
 
 
 def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
-    """Poller-side branch CI — same Docker sandbox as repo_ci_run(branch)
+    """Poller-side branch CI â€” same Docker sandbox as repo_ci_run(branch)
     but without per-agent cooldown/cap. Used when GitHub Actions is
-    unreachable and CI_FALLBACK_ENABLED=1 — either CI passing is sufficient
+    unreachable and CI_FALLBACK_ENABLED=1 â€” either CI passing is sufficient
     per user direction. Respects CI_RUN_CONCURRENCY via the same slot pool."""
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -1451,7 +1495,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     kind_event = events.EVT_CI_BRANCH_RUN
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
     started = time.monotonic()
-    if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod — real gate is _ci_acquire_slot
+    if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod â€” real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(
             "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"

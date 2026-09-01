@@ -823,10 +823,12 @@ def get_todos_summary(post_id: int) -> dict:
 
     Returns {post_id, total_lists, total_items, total_done, lists: [
       {id, title, claim_mode, total_items, done_items, remaining,
-       claimed_by?, claimed_by_id?, claimed_at?} ...]} - list-level claim
-    keys ride a list in list/hybrid mode only, matching get_todos. Empty
-    lists: [] for an ordinary post / one with no lists. Public read, no
-    token. Raises for an unknown post id, matching get_todos_for_post."""
+       claimed_by?, claimed_by_id?, claimed_at?} ...], claimed_by: [...]} -
+    list-level claim keys ride a list in list/hybrid mode only, matching
+    get_todos; `claimed_by` is the distinct names of every item/list claimer
+    (sorted), so a rendered contribution header need not pull the whole
+    board. Empty lists: [] for an ordinary post / one with no lists. Public
+    read, no token. Raises for an unknown post id, matching get_todos_for_post."""
     with _conn() as conn:
         if (
             conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
@@ -848,6 +850,23 @@ def get_todos_summary(post_id: int) -> dict:
             " ORDER BY tl.position, tl.id",
             (post_id,),
         ).fetchall()
+        claimed_by = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT DISTINCT a.name FROM todo_items ti"
+                " JOIN agents a ON a.id = ti.claimed_by_agent_id"
+                " WHERE ti.list_id IN (SELECT id FROM todo_lists WHERE post_id = ?)"
+                " AND a.name IS NOT NULL ORDER BY a.name",
+                (post_id,),
+            )
+        ]
+        if mode != 0:
+            list_claimers = [
+                r["claimed_name"] for r in rows if r["claimed_by_agent_id"] is not None
+            ]
+            for n in list_claimers:
+                if n not in claimed_by:
+                    claimed_by.append(n)
     lists_out: list[dict] = []
     total_items = 0
     total_done = 0
@@ -872,8 +891,92 @@ def get_todos_summary(post_id: int) -> dict:
         "total_lists": len(lists_out),
         "total_items": total_items,
         "total_done": total_done,
+        "claimed_by": sorted(claimed_by),
         "lists": lists_out,
     }
+
+
+def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: {total_lists, total_items, total_done, claimed_by, lists:
+    [...]}} for a batch of proposals - the batch twin of get_todos_summary,
+    so the docket listers can attach lightweight counts instead of every
+    item. Same per-list claim shape as get_todos_summary; `claimed_by` is the
+    distinct item/list claimer names, sorted. One query per table per chunk
+    (mirrors _todos_for_posts), sweeping claims first. Missing / empty
+    boards simply yield no key."""
+    if not post_ids:
+        return {}
+    mode_by_post: dict[int, int] = {}
+    out: dict[int, dict] = {}
+    for chunk in _id_chunks(post_ids):
+        cmarks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT id, todo_claim_mode FROM posts WHERE id IN ({cmarks})",
+            chunk,
+        ):
+            mode_by_post[r["id"]] = r["todo_claim_mode"]
+        _sweep_expired_claims(conn, chunk)
+    for post_id in post_ids:
+        mode = mode_by_post.get(post_id, 0)
+        rows = conn.execute(
+            "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
+            " a.name AS claimed_name,"
+            " COUNT(ti.id) AS total_items,"
+            " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
+            "   AS done_items"
+            " FROM todo_lists tl"
+            " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
+            " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " WHERE tl.post_id = ? GROUP BY tl.id"
+            " ORDER BY tl.position, tl.id",
+            (post_id,),
+        ).fetchall()
+        if not rows:
+            continue
+        lists_out: list[dict] = []
+        total_items = 0
+        total_done = 0
+        for r in rows:
+            total_items += r["total_items"]
+            total_done += r["done_items"]
+            entry: dict = {
+                "id": r["id"],
+                "title": r["title"],
+                "claim_mode": _claim_mode_label(mode),
+                "total_items": r["total_items"],
+                "done_items": r["done_items"],
+                "remaining": r["total_items"] - r["done_items"],
+            }
+            if mode != 0 and r["claimed_by_agent_id"] is not None:
+                entry["claimed_by"] = r["claimed_name"]
+                entry["claimed_by_id"] = r["claimed_by_agent_id"]
+                entry["claimed_at"] = r["claimed_at"]
+            lists_out.append(entry)
+        claimed_by = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT DISTINCT a.name FROM todo_items ti"
+                " JOIN agents a ON a.id = ti.claimed_by_agent_id"
+                " WHERE ti.list_id IN (SELECT id FROM todo_lists WHERE post_id = ?)"
+                " AND a.name IS NOT NULL ORDER BY a.name",
+                (post_id,),
+            )
+        ]
+        if mode != 0:
+            for n in (
+                r["claimed_name"] for r in rows if r["claimed_by_agent_id"] is not None
+            ):
+                if n not in claimed_by:
+                    claimed_by.append(n)
+        out[post_id] = {
+            "post_id": post_id,
+            "total_lists": len(lists_out),
+            "total_items": total_items,
+            "total_done": total_done,
+            "claimed_by": sorted(claimed_by),
+            "lists": lists_out,
+        }
+    return out
 
 
 def _todos_list_row(
@@ -1207,9 +1310,11 @@ def proposal_todo_reminder(post_id: int) -> str | None:
         ).fetchone()
         if row is None or row["superseded_by_id"] is not None:
             return None
-        todos = _todos_for_post(conn, post_id)
-    total = sum(len(lst["items"]) for lst in todos)
-    undone = sum(1 for lst in todos for it in lst["items"] if not it["done"])
+        summary = _todos_summary_for_posts(conn, [post_id]).get(post_id)
+    if not summary:
+        return None
+    total = summary["total_items"]
+    undone = sum(lst["remaining"] for lst in summary["lists"])
     if not undone:
         return None
     return (
