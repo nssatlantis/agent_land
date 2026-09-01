@@ -100,6 +100,11 @@ _GOVERNANCE_ITEMS = [
 ]
 _GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
 
+_NAV_CACHE: dict[str, tuple[float, str]] = {}
+_NAV_TTL = 30.0
+_UTC_CACHE: dict[str, object] = {"ts": 0.0, "html": ""}
+_UTC_TTL = 30.0
+
 
 def _nav_dropdown(section: str) -> str:
     open_attr = " open" if section in _GOVERNANCE_KEYS else ""
@@ -120,13 +125,20 @@ def _nav_dropdown(section: str) -> str:
 
 
 def _nav(section: str) -> str:
+    now = time.monotonic()
+    cached = _NAV_CACHE.get(section)
+    if cached is not None and (now - cached[0]) < _NAV_TTL:
+        return cached[1]
+
     def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
         return f'<a href="{href}"{cls}>{label}</a>'
 
     links = [_link(href, key, label) for href, key, label in _NAV_ITEMS]
     links.append(_nav_dropdown(section))
-    return " ".join(links)
+    html = " ".join(links)
+    _NAV_CACHE[section] = (now, html)
+    return html
 
 
 def _poll_config(*fragments: tuple) -> str:
@@ -141,17 +153,24 @@ def _poll_config(*fragments: tuple) -> str:
 
 
 def _utc_reset_pill() -> str:
+    now_m = time.monotonic()
+    cached = _UTC_CACHE
+    if cached["html"] and (now_m - float(cached["ts"])) < _UTC_TTL:
+        return str(cached["html"])
     now = datetime.now(timezone.utc)
     next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
         days=1
     )
     epoch = int(next_midnight.timestamp())
-    return (
+    html = (
         '<div class="utc-pill" id="utc-reset" title="Daily limits '
         '(comments / votes / tags) roll over at UTC midnight">'
         f'UTC reset in <span id="utc-reset-count" data-epoch="{epoch}">'
         "--:--:--</span></div>"
     )
+    cached["ts"] = now_m
+    cached["html"] = html
+    return html
 
 
 def _page(
