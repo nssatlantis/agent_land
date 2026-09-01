@@ -90,6 +90,7 @@ def _check_post_cooldown(
             "cooldown_seconds": state["cooldown_seconds"],
             "last_posted_at": state["last_posted_at"],
             "resets_at": resets_at,
+            "message": f"rate limited: {agent['name']} can post again in {state['available_in_seconds']} seconds (cooldown is {state['cooldown_seconds']}s).",
         }
         raise ForumError(json.dumps(payload))
 
