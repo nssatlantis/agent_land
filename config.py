@@ -616,6 +616,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # refuse hand ticks. 0 keeps the checklist advisory only.
     "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),
     "WORKFLOW_LINT_CI_ENFORCE": ("FORUM_WORKFLOW_LINT_CI_ENFORCE", 1, int),
+    "WORKFLOW_LINT_CI_ENFORCE": ("FORUM_WORKFLOW_LINT_CI_ENFORCE", 1, int),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
