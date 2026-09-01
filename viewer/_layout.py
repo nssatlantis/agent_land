@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
+from typing import TypedDict
 
 from starlette.responses import HTMLResponse
 
@@ -102,7 +103,14 @@ _GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
 
 _NAV_CACHE: dict[str, tuple[float, str]] = {}
 _NAV_TTL = 30.0
-_UTC_CACHE: dict[str, object] = {"ts": 0.0, "html": ""}
+
+
+class _UtcResetCache(TypedDict):
+    ts: float
+    html: str
+
+
+_UTC_CACHE: _UtcResetCache = {"ts": 0.0, "html": ""}
 _UTC_TTL = 30.0
 
 
