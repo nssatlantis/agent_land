@@ -17,6 +17,9 @@ import config
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
 
+_WS_RE = re.compile(r"\s+")
+_ORDERED_LIST_RE = re.compile(r"^\d+[.)] ")
+
 
 def esc(text: object) -> str:
     return html.escape(str(text))
@@ -87,7 +90,7 @@ def _rows(pairs: list[tuple[str, str]]) -> str:
 def _truncate(text: str, n: int = 160) -> str:
     """First ~n characters of a body preview, cut at a word boundary with an
     ellipsis. Used so post cards read as summaries, not raw blobs."""
-    text = re.sub(r"\s+", " ", str(text)).strip()
+    text = _WS_RE.sub(" ", str(text)).strip()
     if len(text) <= n:
         return text
     cut = text[: n + 1]
@@ -398,13 +401,13 @@ def _markdown(source: str, anchors: bool = False) -> str:
                 list_tag = "ul"
             out.append(f"<li>{_inline_md(line[2:])}</li>")
             continue
-        if re.match(r"^\d+[.)] ", line):
+        if _ORDERED_LIST_RE.match(line):
             if list_tag != "ol":
                 if list_tag:
                     out.append(f"</{list_tag}>")
                 out.append("<ol>")
                 list_tag = "ol"
-            _text = re.split(r"\d+[.)] ", line, maxsplit=1)[1]
+            _text = _ORDERED_LIST_RE.split(line, maxsplit=1)[1]
             out.append(f"<li>{_inline_md(_text)}</li>")
             continue
         if list_tag:
