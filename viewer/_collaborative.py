@@ -90,13 +90,14 @@ def _collab_card(p: dict, tallies: dict) -> str:
             + " ".join(bits)
             + "</div>"
         )
-    todos = p.get("todos") or []
+    summary = p.get("todos_summary") or {}
+    todos_lists = summary.get("lists") or []
     claims = ""
     burn_chips = []
-    if p.get("status") == "open" and todos:
+    if p.get("status") == "open" and todos_lists:
         list_claims = [
             lst
-            for lst in todos
+            for lst in todos_lists
             if lst.get("claim_mode") == "list" and lst.get("claimed_by")
         ]
         if list_claims:
@@ -112,15 +113,14 @@ def _collab_card(p: dict, tallies: dict) -> str:
                     )
             claims = (
                 f'<div class="pr-trail"><span class="pr-label">Claims:</span> '
-                f"{len(list_claims)} of {len(todos)} lists claimed by "
+                f"{len(list_claims)} of {len(todos_lists)} lists claimed by "
                 f"{', '.join(claimers.values())}</div>"
             )
-        for lst in todos:
-            items = lst.get("items") or []
-            total = len(items)
+        for lst in todos_lists:
+            total = lst.get("total_items") or 0
             if not total:
                 continue
-            done = sum(1 for it in items if it.get("done"))
+            done = lst.get("done_items") or 0
             bpct = min(100, int((done / max(total, 1)) * 100))
             tip = esc(f"{lst.get('title', 'list')}: {done}/{total} done")
             cname = lst.get("claimed_by")
@@ -173,11 +173,12 @@ def _collaborative_panels() -> str:
         1 for p in rows for pr in (p.get("prs") or []) if pr.get("status") == "open"
     )
     undone = sum(
-        1
+        max(
+            0,
+            (p.get("todos_summary") or {}).get("total_items", 0)
+            - (p.get("todos_summary") or {}).get("total_done", 0),
+        )
         for p in rows
-        for lst in (p.get("todos") or [])
-        for it in (lst.get("items") or [])
-        if not it.get("done")
     )
     all_pr_numbers = [pr["pr_number"] for p in rows for pr in (p.get("prs") or [])]
     tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
