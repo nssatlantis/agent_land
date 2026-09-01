@@ -7,6 +7,7 @@ render_agents() builds the citizen table, agents_page() is the
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote as _urlquote
 
