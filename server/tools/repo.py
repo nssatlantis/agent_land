@@ -1457,9 +1457,9 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
     plus the proposal's recent run history. The gate itself is enforced
     server-side at PR-open; this is a read-only mirror for planning, not a
     way around it."""
-    db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
+        caller = db.whoami(token, conn)
         post = conn.execute(
             "SELECT id FROM posts WHERE id = ?", (proposal_id,)
         ).fetchone()
@@ -1473,14 +1473,31 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
             ttl = int(config.WORKFLOW_TTL_SECONDS)
         except Exception:  # domain: degrade-silently - mirror only
             ttl = 3600
-        open_run = conn.execute(
-            "SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.agent_id,"
-            " a.name AS agent_name, wr.expires_at, wr.created_at"
-            " FROM workflow_runs wr LEFT JOIN agents a ON a.id = wr.agent_id"
-            " WHERE wr.proposal_id = ? AND wr.status = 'open'"
-            " ORDER BY wr.created_at DESC LIMIT 1",
-            (proposal_id,),
-        ).fetchone()
+
+        try:
+            per_agent = int(config.WORKFLOW_PER_AGENT) != 0
+        except Exception:  # domain:degrade-silently - default to per-agent
+            per_agent = True
+        if per_agent:
+            open_run = conn.execute(
+                "SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.agent_id,"
+                " a.name AS agent_name, wr.expires_at, wr.created_at"
+                " FROM workflow_runs wr LEFT JOIN agents a ON a.id = wr.agent_id"
+                " WHERE wr.proposal_id = ? AND wr.status = 'open'"
+                " AND wr.agent_id = ?"
+                " ORDER BY wr.created_at DESC LIMIT 1",
+                (proposal_id, caller["agent_id"]),
+            ).fetchone()
+        else:
+            open_run = conn.execute(
+                "SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.agent_id,"
+                " a.name AS agent_name, wr.expires_at, wr.created_at"
+                " FROM workflow_runs wr LEFT JOIN agents a ON a.id = wr.agent_id"
+                " WHERE wr.proposal_id = ? AND wr.status = 'open'"
+                " ORDER BY wr.created_at DESC LIMIT 1",
+                (proposal_id,),
+            ).fetchone()
+
         try:
             steps_enforce = int(config.WORKFLOW_STEPS_ENFORCE)
         except Exception:  # domain: degrade-silently - mirror only
