@@ -189,6 +189,7 @@ def _page(
     poll: str = "[]",
     status_code: int = 200,
 ) -> HTMLResponse:
+    """Render the page frame — nav/utc pill are cached 30s via _NAV_CACHE/_UTC_CACHE (4711), so the shell reuses like _governance 60s batch. Body/title remain per-request."""
     return HTMLResponse(
         PAGE.format(
             title=esc(title),
