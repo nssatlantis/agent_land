@@ -174,11 +174,24 @@ def _rail_card(title: str, inner: str) -> str:
     return f'<div class="panel"><h2>{title}</h2>{inner}</div>'
 
 
+_POST_ID_CACHE: dict[int, tuple[float, int | None]] = {}
+_POST_ID_TTL = 60.0
+
+
 def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
         label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
     elif e["event_type"] == "comment":
-        post_id = e.get("post_id") or reports.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id")
+        if post_id is None:
+            cid = int(e["target_id"])
+            cached = _POST_ID_CACHE.get(cid)
+            now = time.monotonic()
+            if cached is not None and (now - cached[0]) < _POST_ID_TTL:
+                post_id = cached[1]
+            else:
+                post_id = reports.find_post_id_for_comment(cid)
+                _POST_ID_CACHE[cid] = (now, post_id)
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
