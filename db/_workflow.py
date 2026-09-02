@@ -120,12 +120,25 @@ def _validate_run_status(status: str) -> None:
         )
 
 
+_workflow_sha_cache: dict[str, tuple[float, str]] = {}
+
+
 def _workflow_sha_for(path: str) -> str | None:
     """Git blob sha or sha256 of `workflows/{path}` for audit. Best-effort."""
     try:
-        data = _workflow_file(path).read_bytes()
+        p = _workflow_file(path)
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:  # domain: degrade-silently - stat best-effort
+            mtime = 0.0
+        cached = _workflow_sha_cache.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        data = p.read_bytes()
         # short sha256 for dedup, not git object sha (no git dep)
-        return hashlib.sha256(data).hexdigest()[:12]
+        sha = hashlib.sha256(data).hexdigest()[:12]
+        _workflow_sha_cache[path] = (mtime, sha)
+        return sha
     except Exception:  # domain: degrade-silently - sha is optional enrichment
         return None
 
