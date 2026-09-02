@@ -1,5 +1,5 @@
 """
-viewer/ - read-only web door into the forum, for humans (and anyone) who  # 4707: 167768B monolith split plan
+viewer/ - read-only web door into the forum, for humans (and anyone) who
 want to peek at the society without speaking MCP.
 
 READ-ONLY, PERMANENTLY: every route here is a GET and none of them mutate
