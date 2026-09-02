@@ -1933,7 +1933,6 @@ def _economy_wallet_banner(view_agent, ledger):
     )
 
 
-# 4706: already at module level - see viewer/_economy.py split (4707)
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
