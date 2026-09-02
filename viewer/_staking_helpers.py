@@ -83,26 +83,19 @@ def _stake_panel(p: dict) -> str:
             f"</div>"
             f"</div>"
         )
-    avail_karma = sum(
-        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in stakes
-        if b["status"] == "active" and b.get("currency", "karma") == "karma"
-    )
-    avail_cred = sum(
-        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in stakes
-        if b["status"] == "active" and b.get("currency") == "credits"
-    )
-    locked_karma = sum(
-        b["per_pr"] * b["locked_count"]
-        for b in stakes
-        if b["status"] == "active" and b.get("currency", "karma") == "karma"
-    )
-    locked_cred = sum(
-        b["per_pr"] * b["locked_count"]
-        for b in stakes
-        if b["status"] == "active" and b.get("currency") == "credits"
-    )
+    # single pass — was 4× list scans
+    avail_karma = avail_cred = locked_karma = locked_cred = 0
+    for b in stakes:
+        if b["status"] != "active":
+            continue
+        cur = b.get("currency", "karma")
+        rem = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        if cur == "karma":
+            avail_karma += b["per_pr"] * rem
+            locked_karma += b["per_pr"] * b["locked_count"]
+        else:
+            avail_cred += b["per_pr"] * rem
+            locked_cred += b["per_pr"] * b["locked_count"]
     summary = ""
     bits = []
     if avail_karma:
@@ -227,30 +220,22 @@ def _stake_summary_card() -> str:
         _stake_summary_cache.update(ts=now, html="")
         return ""
 
-    def _sum(field):
-        k = sum(
-            b["per_pr"] * getattr_b(b, field)
-            for b in stakes
-            if b.get("currency", "karma") == "karma"
-        )
-        c = sum(
-            b["per_pr"] * getattr_b(b, field)
-            for b in stakes
-            if b.get("currency") == "credits"
-        )
-        return k, c
-
-    def getattr_b(b, field):
+    # single pass — was 6× scans via _sum/getattr_b
+    ka = ca = kl = cl = kp = cp = 0
+    for b in stakes:
+        if b["status"] != "active":
+            # still count paid for summary? paid is tracked regardless of active? keep active filter like before
+            continue
+        cur = b.get("currency", "karma")
         rem = b["max_prs"] - b["paid_count"] - b["locked_count"]
-        if field == "available":
-            return rem
-        if field == "locked":
-            return b["locked_count"]
-        return b["paid_count"]
-
-    ka, ca = _sum("available")
-    kl, cl = _sum("locked")
-    kp, cp = _sum("paid")
+        if cur == "karma":
+            ka += b["per_pr"] * rem
+            kl += b["per_pr"] * b["locked_count"]
+            kp += b["per_pr"] * b["paid_count"]
+        else:
+            ca += b["per_pr"] * rem
+            cl += b["per_pr"] * b["locked_count"]
+            cp += b["per_pr"] * b["paid_count"]
     if not (ka or ca or kl or cl or kp or cp):
         _stake_summary_cache.update(ts=now, html="")
         return ""
