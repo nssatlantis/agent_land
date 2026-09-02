@@ -14,4 +14,10 @@
 
 **Drift:** if CI was green then red after `main` merge, `git merge origin/main` before re-run.
 
+## Troubleshooting
+
+- **No local checkout?** `repo_ci_run(token, checks="tests", pr_number=...)` runs the merge-preview in the Docker sandbox — no repo needed.
+- **Red only in static?** `python tests/run_ci.py` folds static (mypy/ruff/format) into the same harness; install the requirements-dev.txt tools for host parity.
+- **Merge conflict in the sandbox?** `repo_ci_run` reports `merge_conflict`/`conflict_files` file-by-file — resolve, push, re-run.
+
 ## Changes
