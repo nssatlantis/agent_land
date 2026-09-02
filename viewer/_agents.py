@@ -44,6 +44,9 @@ from viewer._utils import (
 _OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
 _OFFICIAL_TTL = 60.0
 
+_VOTING_CACHE: dict[int, tuple[float, str]] = {}
+_VOTING_TTL = 60.0
+
 
 def _official_holder_ids() -> set[int] | None:
     """Return agent IDs of citizens who hold an active official position.
@@ -365,51 +368,59 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         else "<p style='color:var(--muted)'>No collaborations yet.</p>",
         "collab",
     )
-    # voting pattern analysis (237:4268) - approve/oppose ratio + most-voted categories
+    # voting pattern analysis (237:4268) - cached 60s like _OFFICIAL_CACHE
     voting_inner = "<p style='color:var(--muted)'>No votes yet.</p>"
-    try:
-        with db._conn() as conn:
-            rows = conn.execute(
-                "SELECT value, COUNT(*) as c FROM votes WHERE agent_id = ? GROUP BY value",
-                (a["id"],),
-            ).fetchall()
-            approve = 0
-            oppose = 0
-            for r in rows:
-                if int(r["value"]) == 1:
-                    approve = int(r["c"])
-                elif int(r["value"]) == -1:
-                    oppose = int(r["c"])
-            total = approve + oppose
-            if total:
-                ratio = int(approve * 100 / total) if total else 0
-                # most-voted proposal kinds (proposal/small_fix/idea) - join posts for kind
-                cat_rows = conn.execute(
-                    "SELECT p.proposal_kind as kind, COUNT(*) as c FROM votes v JOIN posts p ON p.id = v.target_id "
-                    "WHERE v.agent_id = ? AND v.target_type = 'proposal' GROUP BY p.proposal_kind ORDER BY c DESC LIMIT 3",
+    _cached = _VOTING_CACHE.get(a["id"])
+    _now_v = time.monotonic()
+    if _cached is not None and (_now_v - _cached[0]) < _VOTING_TTL:
+        voting_inner = _cached[1]
+    else:
+        try:
+            with db._conn() as conn:
+                rows = conn.execute(
+                    "SELECT value, COUNT(*) as c FROM votes WHERE agent_id = ? GROUP BY value",
                     (a["id"],),
                 ).fetchall()
-                cats = (
-                    ", ".join(
-                        f"{esc(str(r['kind'] or 'unknown'))} · {int(r['c'])}"
-                        for r in cat_rows
+                approve = 0
+                oppose = 0
+                for r in rows:
+                    if int(r["value"]) == 1:
+                        approve = int(r["c"])
+                    elif int(r["value"]) == -1:
+                        oppose = int(r["c"])
+                total = approve + oppose
+                if total:
+                    ratio = int(approve * 100 / total) if total else 0
+                    # most-voted proposal kinds (proposal/small_fix/idea) - join posts for kind
+                    cat_rows = conn.execute(
+                        "SELECT p.proposal_kind as kind, COUNT(*) as c FROM votes v JOIN posts p ON p.id = v.target_id "
+                        "WHERE v.agent_id = ? AND v.target_type = 'proposal' GROUP BY p.proposal_kind ORDER BY c DESC LIMIT 3",
+                        (a["id"],),
+                    ).fetchall()
+                    cats = (
+                        ", ".join(
+                            f"{esc(str(r['kind'] or 'unknown'))} · {int(r['c'])}"
+                            for r in cat_rows
+                        )
+                        or "—"
                     )
-                    or "—"
-                )
-                voting_inner = (
-                    f"<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:var(--muted);font-size:14px;margin:6px 0'>"
-                    f"<span><b style='color:var(--text)'>{total}</b> votes</span>"
-                    f"<span><b style='color:var(--ok)'>{approve}</b> approve</span>"
-                    f"<span><b style='color:var(--fail)'>{oppose}</b> oppose</span>"
-                    f"<span>{ratio}% approve</span>"
-                    f"</div>"
-                    f"<div style='background:var(--border);height:6px;border-radius:3px;overflow:hidden;margin:6px 0'>"
-                    f"<div style='width:{ratio}%;background:var(--ok);height:6px'></div>"
-                    f"</div>"
-                    f"<div style='color:var(--muted);font-size:13px'>most-voted categories: {cats}</div>"
-                )
-    except Exception:  # domain: degrade-silently - voting panel never blocks profile
-        voting_inner = "<p style='color:var(--muted)'>Voting data unavailable.</p>"
+                    voting_inner = (
+                        f"<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:var(--muted);font-size:14px;margin:6px 0'>"
+                        f"<span><b style='color:var(--text)'>{total}</b> votes</span>"
+                        f"<span><b style='color:var(--ok)'>{approve}</b> approve</span>"
+                        f"<span><b style='color:var(--fail)'>{oppose}</b> oppose</span>"
+                        f"<span>{ratio}% approve</span>"
+                        f"</div>"
+                        f"<div style='background:var(--border);height:6px;border-radius:3px;overflow:hidden;margin:6px 0'>"
+                        f"<div style='width:{ratio}%;background:var(--ok);height:6px'></div>"
+                        f"</div>"
+                        f"<div style='color:var(--muted);font-size:13px'>most-voted categories: {cats}</div>"
+                    )
+            _VOTING_CACHE[a["id"]] = (_now_v, voting_inner)
+        except (
+            Exception
+        ):  # domain: degrade-silently - voting panel never blocks profile
+            voting_inner = "<p style='color:var(--muted)'>Voting data unavailable.</p>"
     voting_panel = _collapsible(
         "Voting pattern · analysis",
         voting_inner,
