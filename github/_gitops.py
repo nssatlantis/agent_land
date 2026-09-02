@@ -26,6 +26,8 @@ import config
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError
+from ._eol import _normalize_eol as _normalize_eol  # noqa: F401
+from ._eol import _target_eol_for_text as _target_eol_for_text  # noqa: F401
 
 _CONTEXT_LINES = 3
 
@@ -95,6 +97,16 @@ def _repo_url(with_token: bool = False) -> str:
     return f"https://x-access-token:{encoded}@github.com/{GITHUB_REPO}.git"
 
 
+def _redact_token(text: str) -> str:
+    """Strip the GitHub PAT (raw and URL-encoded) from *text* so it never
+    leaks into error messages or logs."""
+    if not _core.GITHUB_TOKEN:
+        return text
+    text = text.replace(_core.GITHUB_TOKEN, "<redacted>")
+    encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
+    return text.replace(encoded, "<redacted>")
+
+
 def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command in *repo_dir*.  Raises RepoError on failure.
     Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
@@ -111,20 +123,13 @@ def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedP
             env=env,
         )
         if check and result.returncode != 0:
-            stderr = result.stderr
-            msg = f"git {' '.join(args)} failed:\n{stderr.strip()}"
-            if _core.GITHUB_TOKEN:
-                msg = msg.replace(_core.GITHUB_TOKEN, "<redacted>")
-                encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
-                msg = msg.replace(encoded, "<redacted>")
+            msg = _redact_token(
+                f"git {' '.join(args)} failed:\n{result.stderr.strip()}"
+            )
             raise RepoError(msg)
         return result
     except subprocess.TimeoutExpired as e:
-        msg = f"git {' '.join(args)} timed out"
-        if _core.GITHUB_TOKEN:
-            msg = msg.replace(_core.GITHUB_TOKEN, "<redacted>")
-            encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
-            msg = msg.replace(encoded, "<redacted>")
+        msg = _redact_token(f"git {' '.join(args)} timed out")
         raise RepoError(msg) from e
     except FileNotFoundError:
         raise RepoError("git is not installed or not in PATH") from None
@@ -552,10 +557,7 @@ def rebase_pr_onto_main(
             _git(repo_dir, "rebase", "--abort", check=False)
             if conflicted:
                 return {"status": "conflict", "files": conflicted}
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"rebase failed: {stderr.strip()}")
+            raise RepoError(_redact_token(f"rebase failed: {result.stderr.strip()}"))
         # Push rebased branch with authenticated remote.
         with _push_auth(repo_dir):
             _git(
@@ -611,10 +613,9 @@ def detect_merge_conflicts(number: int) -> dict:
                 "message": "No conflicts — the merge is clean.",
             }
         if result.returncode != 0 and not conflicted:
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
+            raise RepoError(
+                _redact_token(f"merge failed (not a conflict): {result.stderr.strip()}")
+            )
         # Conflicts — read each conflicted file for structured data
         conflicts: list[dict[str, Any]] = []
         for fpath in conflicted:
@@ -702,10 +703,9 @@ def apply_merge_resolutions(
                 "message": "No conflicts found — nothing to resolve.",
             }
         if result.returncode != 0 and not conflicted:
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
+            raise RepoError(
+                _redact_token(f"merge failed (not a conflict): {result.stderr.strip()}")
+            )
         # Validate coverage: provided files must exactly equal conflicted
         provided = {r["file"] for r in resolutions}
         if provided != set(conflicted):
@@ -725,7 +725,11 @@ def apply_merge_resolutions(
             fpath = _safe_path(repo_dir, r["file"])
             parent = os.path.dirname(fpath)
             os.makedirs(parent, exist_ok=True)
-            Path(fpath).write_text(r["content"], encoding="utf-8")
+            # Normalize to LF (canonical) before writing — resolutions are
+            # provided as fully-resolved file content (often LF) but the repo
+            # is now LF; keep byte-faithful with newline="".
+            _content = _normalize_eol(r["content"], "\n")
+            Path(fpath).write_text(_content, encoding="utf-8", newline="")
             _git(repo_dir, "add", r["file"])
         # Commit the merge under the resolving citizen's identity (the
         # trailer records the same attribution in the message).
