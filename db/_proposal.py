@@ -584,18 +584,36 @@ def supersede_proposal(
             "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
             (post_id,),
         ).fetchall()
-        for voter in voters:
-            _notify(
-                conn,
-                voter["agent_id"],
-                "proposal",
-                "post",
-                new_id,
+        if voters:
+            # batch like poller: single actor lookup + executemany vs N _notify calls
+            _actor_row = conn.execute(
+                "SELECT name FROM agents WHERE id = ?", (agent["id"],)
+            ).fetchone()
+            _actor_name = _actor_row["name"] if _actor_row else None
+            _body = (
                 f"proposal #{post_id} (v{parent['version']}) was superseded by "
                 f"proposal #{new_id} (v{new_version}) - your old vote is "
-                "frozen on the record and the new version is open for votes.",
-                actor_agent_id=agent["id"],
+                "frozen on the record and the new version is open for votes."
             )
+            _params = [
+                (
+                    v["agent_id"],
+                    "proposal",
+                    "post",
+                    new_id,
+                    agent["id"],
+                    _actor_name,
+                    _body,
+                )
+                for v in voters
+                if v["agent_id"] != agent["id"]
+            ]
+            if _params:
+                conn.executemany(
+                    "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    _params,
+                )
         if parent["delegate_id"] is not None:
             _notify(
                 conn,
