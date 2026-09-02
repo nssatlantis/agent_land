@@ -21,6 +21,7 @@ _WS_RE = re.compile(r"\s+")
 _ORDERED_LIST_RE = re.compile(r"^\d+[.)] ")
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$")
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def esc(text: object) -> str:
@@ -71,15 +72,9 @@ def _human_ts_absolute(value: str) -> str:
     label like 'just now' would be tautological. Falls back to the raw value
     if it can't be parsed."""
     raw = str(value)
-    text = raw.rstrip("Z")
-    if text.endswith("+00:00"):
-        text = text[:-6]
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
+    dt = _parse_iso_cached(raw)
+    if dt is None:
         return esc(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
@@ -110,13 +105,19 @@ def _truncate(text: str, n: int = 160) -> str:
 
 
 def _parse_iso(value: str) -> datetime:
-    value = str(value).rstrip("Z")
-    if value.endswith("+00:00"):
-        value = value[:-6]
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    raw = str(value)
+    dt = _parse_iso_cached(raw)
+    if dt is not None:
+        return dt
+    # Fallback for malformed that _parse_iso_cached returns None — replicate
+    # original raise path so callers expecting ValueError still get it.
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    dt2 = datetime.fromisoformat(text)
+    if dt2.tzinfo is None:
+        dt2 = dt2.replace(tzinfo=timezone.utc)
+    return dt2.astimezone(timezone.utc)
 
 
 def _abs(path: str) -> str:
@@ -202,7 +203,7 @@ def _slugify(text: str) -> str:
     """A URL-fragment slug for an HTML anchor id: lowercased, runs of
     non-alphanumerics collapsed to '-' and stripped. A text that collapses
     to nothing ('!!!', '') falls back to 'section' so ids always exist."""
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    slug = _SLUG_RE.sub("-", text.lower()).strip("-")
     return slug or "section"
 
 
