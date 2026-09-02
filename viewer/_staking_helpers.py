@@ -220,12 +220,9 @@ def _stake_summary_card() -> str:
         _stake_summary_cache.update(ts=now, html="")
         return ""
 
-    # single pass — was 6× scans via _sum/getattr_b
+    # single pass — was 6× scans via _sum/getattr_b (stakes already filtered to active)
     ka = ca = kl = cl = kp = cp = 0
     for b in stakes:
-        if b["status"] != "active":
-            # still count paid for summary? paid is tracked regardless of active? keep active filter like before
-            continue
         cur = b.get("currency", "karma")
         rem = b["max_prs"] - b["paid_count"] - b["locked_count"]
         if cur == "karma":
