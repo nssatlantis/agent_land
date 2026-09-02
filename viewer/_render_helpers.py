@@ -32,6 +32,9 @@ _PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = (
 _PROPOSAL_SIMILAR_TTL = 60
 _PROPOSAL_SIMILAR_CACHE_MAX = 128
 
+_STAKED_CACHE: dict[int, tuple[float, str]] = {}
+_STAKED_TTL = 60.0
+
 
 def _score_badge(score: int) -> str:
     cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
@@ -431,17 +434,26 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
     except Exception:  # domain: degrade-silently - chip never blocks card render
         pass
-    staked_parts: list[str] = []
-    if p.get("proposal_kind"):
-        for src in (p, p.get("proposal") or {}):
-            k = src.get("stake_total_karma", 0)
-            c = src.get("stake_total_credits_quarters", 0)
-            if k:
-                staked_parts.append(f"{k} karma")
-            if c:
-                staked_parts.append(f"{_stake_amount(c, 'credits')} credits")
-            if staked_parts:
-                break
+    # cached per proposal id 60s like _governance (4714)
+    pid = p.get("id")
+    now = time.monotonic() if isinstance(pid, int) else 0
+    cached = _STAKED_CACHE.get(pid) if isinstance(pid, int) else None
+    if cached is not None and (now - cached[0]) < _STAKED_TTL:
+        staked_parts = [cached[1]] if cached[1] else []
+    else:
+        staked_parts = []
+        if p.get("proposal_kind"):
+            for src in (p, p.get("proposal") or {}):
+                k = src.get("stake_total_karma", 0)
+                c = src.get("stake_total_credits_quarters", 0)
+                if k:
+                    staked_parts.append(f"{k} karma")
+                if c:
+                    staked_parts.append(f"{_stake_amount(c, 'credits')} credits")
+                if staked_parts:
+                    break
+        if isinstance(pid, int):
+            _STAKED_CACHE[pid] = (now, " + ".join(staked_parts) if staked_parts else "")
     if staked_parts:
         parts.append(
             f'<span class="verdict-chip vc-ok" title="staked">'
