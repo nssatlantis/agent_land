@@ -37,6 +37,9 @@ _START_TIME = time.monotonic()
 _RESTART_COUNT_FILE = Path(config.DATA_DIR) / ".restart_count"
 _LAST_RESTART_FILE = Path(config.DATA_DIR) / ".last_restart"
 
+_HEALTHZ_SHA_CACHE: dict[str, object] = {"sha": "", "ts": 0.0}
+_HEALTHZ_SHA_TTL = 60.0
+
 
 def _read_restart_count() -> int:
     try:
@@ -80,22 +83,34 @@ async def healthz(request: Request) -> JSONResponse:
             headers={"Retry-After": str(retry)},
         )
     uptime = time.monotonic() - _START_TIME
-    # Best-effort git sha (no throw)
-    sha = ""
+    # Cached SHA 60s via thread — saves fork per 5s LB probe, avoids blocking loop
+    now = time.monotonic()
     try:
-        import subprocess
+        _cached_ts = float(_HEALTHZ_SHA_CACHE.get("ts", 0.0) or 0.0)  # type: ignore[arg-type]
+    except Exception:  # domain: degrade-silently - cache ts parse best-effort
+        _cached_ts = 0.0
+    sha = str(_HEALTHZ_SHA_CACHE.get("sha", "") or "")
+    if not sha or (now - _cached_ts) >= _HEALTHZ_SHA_TTL:
+        try:
+            import subprocess
 
-        sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(config.REPO_DIR),
-            capture_output=True,
-            text=True,
-            timeout=2,
-        ).stdout.strip()
-    except (
-        Exception
-    ):  # domain: degrade-silently - git sha is best-effort, empty on failure
-        pass
+            def _get_sha() -> str:
+                try:
+                    return subprocess.run(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        cwd=str(config.REPO_DIR),
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    ).stdout.strip()
+                except Exception:  # domain: degrade-silently - git sha best-effort
+                    return ""
+
+            sha = await asyncio.to_thread(_get_sha)
+            _HEALTHZ_SHA_CACHE["sha"] = sha
+            _HEALTHZ_SHA_CACHE["ts"] = now
+        except Exception:  # domain: degrade-silently - sha cache must not fail healthz
+            pass
     return JSONResponse(
         {
             "status": "ok",
