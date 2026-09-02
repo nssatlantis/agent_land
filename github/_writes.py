@@ -27,6 +27,28 @@ from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
 _MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
 
 
+def _normalize_eol(text: str, target: str) -> str:
+    """Normalize *text* to *target* EOL (\"\\n\" or \"\\r\\n\"). Binary-safe."""
+    if "\0" in text:
+        return text
+    # Collapse CRLF and lone CR to LF, then re-expand to target if CRLF.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if target == "\r\n":
+        return normalized.replace("\n", "\r\n")
+    return normalized
+
+
+def _target_eol_for_text(base_text: str | None) -> str:
+    """Pick EOL for a file: CRLF if base contains CRLF, else LF (canonical)."""
+    if base_text is None or base_text == "":
+        return "\n"
+    if "\0" in base_text:
+        return "\n"
+    if "\r\n" in base_text:
+        return "\r\n"
+    return "\n"
+
+
 def propose_change(
     changes: list[dict],
     *,
@@ -105,25 +127,69 @@ def propose_change(
 
     # Resolve patch entries against the base branch before building the plan:
     # a patch cannot be previewed (or written) without the base, and the sha
-    # resolution rides along on the same GET. Content entries are left to the
-    # real path below - dry_run stays network-free for them.
+    # resolution rides along on the same GET. Content entries now also probe
+    # the base for EOL detection so the manifest reflects the normalized bytes
+    # (one GET per new file, like the later existing_sha probe — still cheap).
     resolved: list[dict] = []
     for p in planned:
         if "edits" in p:
             data = _core._request(
                 "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
             )
-            content, log = _resolve_edits(p["path"], data, p["edits"])
+            base_text: str | None = None
+            if data is not None:
+                try:
+                    base_text = _decode_content_text(p["path"], data)
+                except RepoError:  # domain:degrade-silently - base decode is best-effort, fallback to LF
+                    base_text = None
+            target = _target_eol_for_text(base_text)
+            normalized_edits: list[dict] = []
+            for op in p["edits"]:
+                neo: dict = {
+                    "find": _normalize_eol(op["find"], target),
+                    "replace": _normalize_eol(op["replace"], target),
+                }
+                if "occurrence" in op:
+                    neo["occurrence"] = op["occurrence"]
+                normalized_edits.append(neo)
+            content, log = _resolve_edits(p["path"], data, normalized_edits)
             resolved.append(
                 {
                     "path": p["path"],
                     "content": content,
-                    "sha": data.get("sha"),
+                    "sha": data.get("sha") if data else None,
                     "patch_log": log,
                 }
             )
         else:
-            resolved.append({"path": p["path"], "content": p["content"]})
+            # Whole-file: detect base EOL so we preserve CRLF bases until the
+            # one-time renormalize lands; new files default to LF (canonical).
+            # For dry_run we stay network-free (canonical LF) to keep the
+            # original contract and avoid requiring GITHUB_TOKEN in tests.
+            if dry_run:
+                content = _normalize_eol(p["content"], "\n")
+                resolved.append({"path": p["path"], "content": content})
+            else:
+                try:
+                    data = _core._request(
+                        "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
+                    )
+                except (
+                    RepoError
+                ):  # domain:degrade-silently - EOL probe is best-effort, fallback to LF
+                    data = None
+                base_text = None
+                if data is not None:
+                    try:
+                        base_text = _decode_content_text(p["path"], data)
+                    except RepoError:  # domain:degrade-silently - base decode fallback
+                        base_text = None
+                target = _target_eol_for_text(base_text) if data is not None else "\n"
+                content = _normalize_eol(p["content"], target)
+                entry: dict = {"path": p["path"], "content": content}
+                if data is not None and data.get("sha"):
+                    entry["sha"] = data.get("sha")
+                resolved.append(entry)
 
     plan = {
         "dry_run": dry_run,
@@ -310,17 +376,75 @@ def update_pr(
 
     # Resolve patch and reset entries before building the plan - patches
     # cannot be previewed (or written) without the base, and reset entries
-    # fetch the file from the base branch.
+    # fetch the file from the base branch. Whole-file writes also normalize
+    # EOL to the PR branch's existing EOL (or LF for new files) so the
+    # manifest reflects the bytes that will be stored.
     base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
     for p in planned:
         if "edits" in p:
             data = _core._request(
                 "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
             )
-            content, log = _resolve_edits(p["path"], data, p["edits"])
+            base_text: str | None = None
+            if data is not None:
+                try:
+                    base_text = _decode_content_text(p["path"], data)
+                except RepoError:  # domain:degrade-silently - base decode is best-effort, fallback to LF
+                    base_text = None
+            target = _target_eol_for_text(base_text)
+            normalized_edits: list[dict] = []
+            for op in p["edits"]:
+                neo: dict = {
+                    "find": _normalize_eol(op["find"], target),
+                    "replace": _normalize_eol(op["replace"], target),
+                }
+                if "occurrence" in op:
+                    neo["occurrence"] = op["occurrence"]
+                normalized_edits.append(neo)
+            content, log = _resolve_edits(p["path"], data, normalized_edits)
             p["content"] = content
-            p["sha"] = data.get("sha")
+            p["sha"] = data.get("sha") if data else None
             p["patch_log"] = log
+        elif "content" in p:
+            # Whole-file update: preserve PR branch EOL until renormalize.
+            # For dry_run keep network-free (canonical LF) like propose_change.
+            if dry_run:
+                p["content"] = _normalize_eol(p["content"], "\n")
+            else:
+                pr_data = _core._request(
+                    "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+                )
+                base_text = None
+                if pr_data is not None:
+                    try:
+                        base_text = _decode_content_text(p["path"], pr_data)
+                    except (
+                        RepoError
+                    ):  # domain:degrade-silently - PR branch decode fallback
+                        base_text = None
+                    # Also try base branch if PR file missing (new file in PR)
+                    if base_text is None:
+                        try:
+                            base_data = _core._request(
+                                "GET",
+                                f"contents/{p['path']}?ref={base_branch_name}",
+                                ok_404=True,
+                            )
+                        except (
+                            RepoError
+                        ):  # domain:degrade-silently - base probe fallback
+                            base_data = None
+                        if base_data is not None:
+                            try:
+                                base_text = _decode_content_text(p["path"], base_data)
+                            except (
+                                RepoError
+                            ):  # domain:degrade-silently - base branch decode fallback
+                                base_text = None
+                target = (
+                    _target_eol_for_text(base_text) if base_text is not None else "\n"
+                )
+                p["content"] = _normalize_eol(p["content"], target)
         elif p.get("reset"):
             data = _core._request(
                 "GET", f"contents/{p['path']}?ref={base_branch_name}", ok_404=True
