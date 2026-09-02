@@ -321,7 +321,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                 marks = ",".join("?" * len(p_ids))
                 # votes on same posts/proposals + comments on same posts (single conn, two aggregated queries)
                 for r in conn.execute(
-                    f"SELECT agent_id, COUNT(*) as c FROM votes WHERE target_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5",
+                    f"SELECT agent_id, COUNT(*) as c FROM votes WHERE target_type='post' AND target_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5",
                     (*p_ids, a["id"]),
                 ).fetchall():
                     peer_counts[r["agent_id"]] = peer_counts.get(
