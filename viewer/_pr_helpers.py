@@ -39,8 +39,7 @@ async def _open_prs() -> list[dict] | None:
         except (
             Exception
         ):  # domain: degrade-silently - GitHub outage degrades to no PR list
-            _pr_prs_cache.update(ts=time.monotonic(), prs=None, fresh=False)
-            return None
+            prs = None
         _pr_prs_cache.update(ts=time.monotonic(), prs=prs, fresh=True)
         return prs
 
@@ -79,10 +78,8 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
         missing = "404" in str(e)
         diff = None
     except Exception:
-        _pr_diff_cache.update(
-            ts=now, number=number, diff=None, missing=False, fresh=False
-        )
-        return None, False
+        missing = False
+        diff = None
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
 
@@ -392,23 +389,32 @@ def _prs_citizen_cell(row: dict) -> str:
     return '<span style="color:var(--muted)">\u2014</span>'
 
 
-def _prs_votes_cell(number: int) -> str:
+def _prs_votes_cell(
+    number: int, *, tally: dict | None = None, threshold: int | None = None
+) -> str:
     """Net community votes for one PR from the forum's own record - shown
     on every row, open or decided, since the tally is the historic
-    judgment."""
-    try:
-        tally = db.pr_vote_tally(int(number))
-    except db.ForumError:  # domain: degrade-silently - vote tally hiccup renders dash
-        return '<span style="color:var(--muted)">\u2014</span>'
+    judgment. When *tally*/*threshold* are supplied (batched /prs index)
+    no DB round-trip is made."""
+    if tally is None:
+        try:
+            tally = db.pr_vote_tally(int(number))
+        except (
+            db.ForumError
+        ):  # domain: degrade-silently - vote tally hiccup renders dash
+            return '<span style="color:var(--muted)">\u2014</span>'
     up = tally.get("up", 0)
     down = tally.get("down", 0)
     net = tally.get("net", 0)
-    try:
-        bar = db.pr_vote_threshold()
-    except (
-        Exception
-    ):  # domain:degrade-silently - votes still render if threshold fetch hiccups
-        bar = None
+    if threshold is not None:
+        bar: int | None = threshold
+    else:
+        try:
+            bar = db.pr_vote_threshold()
+        except (
+            Exception
+        ):  # domain:degrade-silently - votes still render if threshold fetch hiccups
+            bar = None
     base = (
         f'<span style="color:var(--ok)">+{up}</span>/'
         f'<span style="color:var(--fail)">&minus;{down}</span> '
@@ -500,6 +506,14 @@ def _prs_rows_html(
             f'<p style="color:var(--muted)">No {esc(state)} pull '
             "requests.</p></div>"
         )
+    # batch PR vote tallies once for the whole table — 1 query, not N+1
+    try:
+        _nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
+        _tallies: dict[int, dict] = (
+            db.pr_vote_tallies(_nums) if _nums else {}
+        )  # domain: degrade-silently handled per-row fallback
+    except Exception:  # domain: degrade-silently - fall back to per-row fetch
+        _tallies = {}
     trs = []
     ts_field = "updated_at" if state != "open" else "created_at"
     for r in rows:
@@ -542,12 +556,15 @@ def _prs_rows_html(
         # CI status per row - pre-fetched concurrently by the route, so
         # this stays pure; a missing/None entry just leaves the cell empty.
         ci_html = _ci_chip((ci or {}).get(num))
+        # batched votes: reuse header bar + per-PR tally map
+        _t = _tallies.get(int(num)) if isinstance(num, int) else None
+        votes_cell = _prs_votes_cell(num, tally=_t, threshold=bar)
         trs.append(
             "<tr>"
             f"<td>{link}</td>"
             f"<td>{title_cell}</td>"
             f"<td>{_prs_citizen_cell(r)}</td>"
-            f"<td>{_prs_votes_cell(num)}</td>"
+            f"<td>{votes_cell}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
             f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state)}</td>"
             f"<td>{ci_html}</td>"
