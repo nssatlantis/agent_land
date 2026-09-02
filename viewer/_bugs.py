@@ -20,7 +20,6 @@ from viewer._utils import (
     esc,
 )
 
-
 _STATUS_COLORS = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
 
 
