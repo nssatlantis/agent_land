@@ -8,6 +8,7 @@ Read-only pages for the bug report system: /bugs (list) and /bugs/{id}
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import config
 import db
@@ -19,13 +20,20 @@ from viewer._utils import (
     esc,
 )
 
+_STATUS_COLORS = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
 
-def _status_badge(status: str) -> str:
-    colors = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
+
+@lru_cache(maxsize=16)
+def _status_badge_cached(status: str) -> str:
     return (
-        f'<span class="kind-badge" style="background:{colors.get(status, "#64748b")}">'
+        f'<span class="kind-badge" style="background:{_STATUS_COLORS.get(status, "#64748b")}">'
         f"{esc(status)}</span>"
     )
+
+
+def _status_badge(status: str) -> str:
+    # cached badge dict like _governance 60s - display-only, no DB
+    return _status_badge_cached(status)
 
 
 def _bug_severity(report: dict, threshold: int) -> str:
@@ -56,16 +64,16 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
     )
 
 
-def _bug_timeline(report: dict, threshold: int) -> str:
-    """Lifecycle steps for a bug report: reported -> confirmed -> proposal
-    -> fixed, with each completed step highlighted. Display-only."""
+@lru_cache(maxsize=16)
+def _timeline_cached(status: str, has_proposal: bool) -> str:
+    """Cached timeline like _governance 60s - status+proposal determines 4 chips."""
     steps = [
         ("Reported", True),
-        ("Confirmed", report["status"] in ("confirmed", "fixed")),
-        ("Proposal", bool(report.get("linked_proposals"))),
-        ("Fixed", report["status"] == "fixed"),
+        ("Confirmed", status in ("confirmed", "fixed")),
+        ("Proposal", has_proposal),
+        ("Fixed", status == "fixed"),
     ]
-    bits = []
+    bits: list[str] = []
     for i, (label, done) in enumerate(steps):
         color = "#16a34a" if done else "var(--muted)"
         weight = "600" if done else "400"
@@ -73,6 +81,15 @@ def _bug_timeline(report: dict, threshold: int) -> str:
         if i < len(steps) - 1:
             bits.append('<span style="color:var(--muted)"> → </span>')
     return '<div style="margin:10px 0;font-size:14px">' + "".join(bits) + "</div>"
+
+
+def _bug_timeline(report: dict, threshold: int) -> str:
+    """Lifecycle steps for a bug report: reported -> confirmed -> proposal
+    -> fixed, with each completed step highlighted. Display-only. Cached per status."""
+    # threshold unused for timeline, kept for call-site compat
+    return _timeline_cached(
+        report.get("status") or "open", bool(report.get("linked_proposals"))
+    )
 
 
 def bugs_page(request):

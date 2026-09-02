@@ -286,13 +286,13 @@ def _parse_cycle_evidence(r: sqlite3.Row) -> tuple[list[int], list[str]]:
         )
         if not isinstance(pr_numbers, list):
             pr_numbers = []
-    except Exception:
+    except Exception:  # domain: degrade-silently
         pr_numbers = []
     try:
         pr_shas = json.loads(r["evidence_pr_shas"]) if r["evidence_pr_shas"] else []
         if not isinstance(pr_shas, list):
             pr_shas = []
-    except Exception:
+    except Exception:  # domain: degrade-silently
         pr_shas = []
     pr_numbers = [
         int(n)

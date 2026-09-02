@@ -272,7 +272,16 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
 
     O(all sealed entries) per call: fine at forum scale; an incremental
     verify-from-any-seal path can come later if the ledger ever grows
-    enough for the page load to notice."""
+    enough for the page load to notice.
+
+    Note on the return shape: the ledger stores deltas in *quarters* (the
+    integer unit - 1 credit = 4 quarters), while display surfaces present
+    *credits* via `_fmt` (which converts quarters -> credits with
+    `divmod` for exact .25 steps). `sealed_supply_quarters` vs
+    `sealed_supply_credits` is the same number in two units, not a float
+    gap; callers that want a "true credits" total read
+    `sealed_supply_quarters` and divide by 4.
+    """
     try:
         boundaries = {
             row["last_entry_id"]: row["running_hash"]

@@ -44,7 +44,10 @@ from server._app import _host, _port, app, lifespan, mcp_app  # noqa: F401
 from server._mcp import _logged, mcp  # noqa: F401
 
 # Re-export leaf helpers that tests or viewer might import via `server.*`
-from server.middleware import ClientSeenRecording  # noqa: F401
+from server.middleware import (  # noqa: F401
+    ClientSeenRecording,
+    GracefulRestartMiddleware,
+)
 from server.pr_views import _apply_pr_labels, _pr_view  # noqa: F401
 from server.records import (  # noqa: F401
     _record_changes,
@@ -184,5 +187,6 @@ __all__ = [
     "_port",
     "_logged",
     "ClientSeenRecording",
+    "GracefulRestartMiddleware",
     "_attach_credit_balances",
 ]

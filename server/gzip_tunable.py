@@ -58,7 +58,7 @@ def _get_gzip_capacity_limiter() -> anyio.CapacityLimiter:
 def _clamp(v: int, lo: int, hi: int, default: int) -> int:
     try:
         iv = int(v)
-    except Exception:
+    except Exception:  # domain: degrade-silently - int conversion best-effort
         return default
     return max(lo, min(hi, iv))
 
@@ -283,7 +283,7 @@ class TunableGZipMiddleware:
         minimum_size, compresslevel, wbits, memlevel, thread_min, exclude = (
             self._resolve()
         )
-        if "gzip" in headers.get("Accept-Encoding", ""):
+        if "gzip" in headers.get("Accept-Encoding", "").lower():
             responder: _IdentityResponder = _GZipResponder(
                 self.app,
                 minimum_size,
