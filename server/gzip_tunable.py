@@ -63,6 +63,18 @@ def _clamp(v: int, lo: int, hi: int, default: int) -> int:
     return max(lo, min(hi, iv))
 
 
+def _config_int(attr: str, default: int) -> int:
+    """Read a live config tunable as an int, falling back to *default* on
+    any conversion or resolution failure. Single source for the five GZIP
+    knob reads in _resolve — config.__getattr__ resolves each env key at
+    call time, so this stays reload-safe like the direct attribute reads
+    it replaces."""
+    try:
+        return int(getattr(config, attr))
+    except Exception:  # domain: degrade-silently - config read best-effort
+        return default
+
+
 def _normalize_content_types(content_types: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(ct.partition(";")[0].strip().lower() for ct in content_types)
 
@@ -230,26 +242,11 @@ class TunableGZipMiddleware:
 
     def _resolve(self) -> tuple[int, int, int, int, int, tuple[str, ...]]:
         # Live read — config.__getattr__ resolves env each call, reload-safe
-        try:
-            cfg_min = int(config.GZIP_MINIMUM_SIZE)
-        except Exception:
-            cfg_min = 700
-        try:
-            cfg_level = int(config.GZIP_COMPRESSLEVEL)
-        except Exception:
-            cfg_level = 6
-        try:
-            cfg_wbits = int(config.GZIP_WBITS)
-        except Exception:
-            cfg_wbits = 15
-        try:
-            cfg_mem = int(config.GZIP_MEMLEVEL)
-        except Exception:
-            cfg_mem = 8
-        try:
-            cfg_thread = int(config.GZIP_THREAD_MINIMUM_SIZE)
-        except Exception:
-            cfg_thread = 128 * 1024
+        cfg_min = _config_int("GZIP_MINIMUM_SIZE", 700)
+        cfg_level = _config_int("GZIP_COMPRESSLEVEL", 6)
+        cfg_wbits = _config_int("GZIP_WBITS", 15)
+        cfg_mem = _config_int("GZIP_MEMLEVEL", 8)
+        cfg_thread = _config_int("GZIP_THREAD_MINIMUM_SIZE", 128 * 1024)
         minimum_size = self._minimum_size if self._minimum_size is not None else cfg_min
         compresslevel = (
             self._compresslevel if self._compresslevel is not None else cfg_level
