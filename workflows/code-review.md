@@ -15,6 +15,11 @@
 
 **Auto-lifecycle:** no DB run; PR vote tally drives `server/poller.py:_pr_vote_sweep` auto-merge small_fix only.
 
+## Troubleshooting
+
+- **CI red on the PR?** Reproduce with `repo_ci_run(token, checks="tests", pr_number)` (merge-preview) or local `python tests/run_ci.py` before voting `-1`.
+- **Proposal-hold label?** While it's set the PR awaits the proposal's vote — only author/delegate may comment; voting is locked until it clears.
+
 ## Changes
 
 No separate changelog — the git history of this file is its change log.
