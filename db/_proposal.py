@@ -44,9 +44,9 @@ def _bug_confirmed(conn, bug_id, threshold):
         "SELECT confidence, status FROM bug_reports WHERE id = ?",
         (bug_id,),
     ).fetchone()
-    _status = row["status"]
-    _conf = row["confidence"]
-    if row is not None and _status == "open" and _conf < threshold:
+    if row is None:
+        return
+    if row["status"] == "open" and row["confidence"] < threshold:
         raise ForumError(
             f"bug report #{bug_id} is not confirmed (confidence {_conf}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
         )
