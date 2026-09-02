@@ -63,7 +63,7 @@ _SKIP_DIRS = frozenset(
     }
 )
 
-_BIG_FILES_CACHE_SECONDS = 60
+_BIG_FILES_CACHE_SECONDS = config.VIEWER_CACHE_TTL
 _big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
 
 
