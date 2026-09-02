@@ -9,7 +9,7 @@ the entire viewer.
 
 from __future__ import annotations
 
-import json
+import json as _json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
@@ -151,8 +151,6 @@ def _nav(section: str) -> str:
 
 
 def _poll_config(*fragments: tuple) -> str:
-    import json as _json
-
     return _json.dumps(
         [
             {"path": path, "target": target, "every": every}
