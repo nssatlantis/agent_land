@@ -1,4 +1,4 @@
-"""db._core — DB infrastructure, ForumError, timestamps, connection, init_db, auth helpers."""
+"""db._core — DB infrastructure, ForumError, timestamps, connection, init_db, auth helpers. 4749: 106020B split plan."""
 
 from __future__ import annotations
 
