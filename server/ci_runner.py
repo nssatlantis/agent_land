@@ -664,35 +664,63 @@ def _gate(kind_event: str, agent_id: int) -> None:
         raise db.ForumError("the server-side CI runner is disabled")
     now = datetime.now(timezone.utc)
     cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    if cooldown > 0:
-        recent = events.query_events(
-            agent_id=agent_id,
-            kind=kind_event,
-            since=_iso(now - timedelta(seconds=cooldown)),
-            limit=1,
-        )
-        if recent:
-            elapsed = now - datetime.strptime(
-                recent[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-            wait = int(
-                timedelta(seconds=cooldown).total_seconds() - elapsed.total_seconds()
-            )
-            raise db.ForumError(
-                f"CI run cooldown: try again in about {max(wait, 1)} seconds"
-            )
     cap = config.CI_RUN_DAILY_CAP
-    if cap > 0:
-        todays = events.query_events(
+    # single query for both gates — halves DB latency (was 2× query_events)
+    if cooldown > 0 or cap > 0:
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # cap+1 rows cover both windows; single round-trip vs 2
+        limit = (cap + 1) if cap > 0 else 1
+        # earliest since that covers both windows
+        if cap > 0 and cooldown > 0:
+            since_dt = min(midnight, now - timedelta(seconds=cooldown))
+            since = _iso(since_dt)
+        elif cooldown > 0:
+            since = _iso(now - timedelta(seconds=cooldown))
+        else:
+            since = _iso(midnight)
+        rows = events.query_events(
             agent_id=agent_id,
             kind=kind_event,
-            since=_iso(now.replace(hour=0, minute=0, second=0, microsecond=0)),
-            limit=cap + 1,
+            since=since,
+            limit=limit,
         )
-        if len(todays) >= cap:
-            raise db.ForumError(
-                f"daily CI run cap reached ({cap} per day); try again tomorrow"
-            )
+        # cooldown: most recent within window (rows are newest-first)
+        if cooldown > 0 and rows:
+            try:
+                ts = datetime.strptime(
+                    rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
+                ).replace(tzinfo=timezone.utc)
+            except Exception:
+                ts = None
+            if ts is not None and ts >= now - timedelta(seconds=cooldown):
+                elapsed = now - ts
+                wait = int(
+                    timedelta(seconds=cooldown).total_seconds()
+                    - elapsed.total_seconds()
+                )
+                raise db.ForumError(
+                    f"CI run cooldown: try again in about {max(wait, 1)} seconds"
+                )
+        # daily cap: count today's rows (filter to midnight)
+        if cap > 0:
+            midnight_iso = _iso(midnight)
+            todays = [r for r in rows if r["created_at"] >= midnight_iso]
+            if len(todays) >= cap:
+                raise db.ForumError(
+                    f"daily CI run cap reached ({cap} per day); try again tomorrow"
+                )
+            # undercount check: if we hit limit but some rows were before midnight, fetch precise
+            if len(rows) == limit and len(todays) < cap:
+                todays_precise = events.query_events(
+                    agent_id=agent_id,
+                    kind=kind_event,
+                    since=_iso(midnight),
+                    limit=cap + 1,
+                )
+                if len(todays_precise) >= cap:
+                    raise db.ForumError(
+                        f"daily CI run cap reached ({cap} per day); try again tomorrow"
+                    )
 
 
 def _inflight_occupied(agent_id: int) -> bool:
@@ -992,15 +1020,20 @@ def _prune_stale_images(keep_tag: str) -> None:
             # domain: degrade-silently - listing is housekeeping; stale
             # tags simply survive until a later build prunes them.
             return
-        for line in ls.stdout.splitlines():
-            tag = line.strip()
-            if tag and tag != keep_tag and tag.startswith(prefix):
-                subprocess.run(
-                    ["docker", "rmi", "-f", tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
+        tags = [
+            line.strip()
+            for line in ls.stdout.splitlines()
+            if line.strip()
+            and line.strip() != keep_tag
+            and line.strip().startswith(prefix)
+        ]
+        if tags:
+            subprocess.run(
+                ["docker", "rmi", "-f", *tags],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
     except Exception:
         # domain: degrade-silently - image GC must never fail a run.
         pass
