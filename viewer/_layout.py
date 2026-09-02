@@ -21,6 +21,8 @@ import github
 from viewer._static import _CSS_HASH
 from viewer._utils import esc
 
+_START_TIME = time.monotonic()
+
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
 REFRESH_SECONDS = config.VIEWER_REFRESH_SECONDS
