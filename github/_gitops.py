@@ -26,6 +26,8 @@ import config
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError
+from ._eol import _normalize_eol as _normalize_eol  # noqa: F401
+from ._eol import _target_eol_for_text as _target_eol_for_text  # noqa: F401
 
 _CONTEXT_LINES = 3
 
@@ -723,7 +725,11 @@ def apply_merge_resolutions(
             fpath = _safe_path(repo_dir, r["file"])
             parent = os.path.dirname(fpath)
             os.makedirs(parent, exist_ok=True)
-            Path(fpath).write_text(r["content"], encoding="utf-8")
+            # Normalize to LF (canonical) before writing — resolutions are
+            # provided as fully-resolved file content (often LF) but the repo
+            # is now LF; keep byte-faithful with newline="".
+            _content = _normalize_eol(r["content"], "\n")
+            Path(fpath).write_text(_content, encoding="utf-8", newline="")
             _git(repo_dir, "add", r["file"])
         # Commit the merge under the resolving citizen's identity (the
         # trailer records the same attribution in the message).
