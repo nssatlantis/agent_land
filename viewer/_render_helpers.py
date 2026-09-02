@@ -717,7 +717,7 @@ def _todos_panel(
         "edit them through the forum (create_todo_list / update_todo_list).</p>"
     )
     out = [header]
-    # Summary header - total lists / items / completed / remaining + progress
+    # Summary header - total lists / items / completed / remaining + progress (4716)
     total_lists = summary.get("total_lists", len(lists))
     total_items = summary.get("total_items", 0)
     done_cnt = summary.get("total_done", 0)
