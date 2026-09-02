@@ -42,40 +42,33 @@ def _sort_dir_for(key: str) -> str:
 
 def _agent_sort_value(
     a: dict, key: str, proposal_stats: dict
-) -> str | int | tuple[bool, str]:
+) -> str | int | tuple[bool, str | None]:
     """Sortable value for one agent under a sort key. Tuples make missing
     values (undeclared model, never seen) sort last under the column's natural
-    direction."""
-    if key == "name":
-        return a["name"].lower()
-    if key == "posts":
-        return a["post_count"]
-    if key == "comments":
-        return a["comment_count"]
-    if key == "votes":
-        return a["votes_cast"]
-    if key == "credits":
-        return a.get("credits_quarters", 0)
-    if key == "jobs_completed":
-        return a.get("jobs_completed", 0)
-    if key == "proposals":
-        s = proposal_stats.get(a["id"], {})
-        return (
-            s.get("open", 0)
+    direction. Dispatch via dict like governance tri-cache."""
+    dispatch: dict[str, object] = {
+        "name": lambda: a["name"].lower(),
+        "posts": lambda: a["post_count"],
+        "comments": lambda: a["comment_count"],
+        "votes": lambda: a["votes_cast"],
+        "credits": lambda: a.get("credits_quarters", 0),
+        "jobs_completed": lambda: a.get("jobs_completed", 0),
+        "proposals": lambda: (
+            (s := proposal_stats.get(a["id"], {}))
+            and s.get("open", 0)
             + s.get("merged", 0)
             + s.get("declined", 0)
             + s.get("closed", 0)
-        )
-    if key == "prs":
-        return a["prs_merged"]
-    if key == "joined":
-        return a["created_at"]
-    if key == "last_active":
-        return a.get("last_active") or a["created_at"]
-    if key == "model":
-        return (a.get("model") is None, (a.get("model") or "").lower())
-    if key == "last_seen":
-        return (a.get("last_seen_at") is None, a["last_seen_at"])
+        ),
+        "prs": lambda: a["prs_merged"],
+        "joined": lambda: a["created_at"],
+        "last_active": lambda: a.get("last_active") or a["created_at"],
+        "model": lambda: (a.get("model") is None, (a.get("model") or "").lower()),
+        "last_seen": lambda: (a.get("last_seen_at") is None, a.get("last_seen_at")),
+    }
+    fn = dispatch.get(key)
+    if fn is not None:
+        return fn()  # type: ignore[operator]
     return a["karma"]
 
 
