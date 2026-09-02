@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -75,6 +76,8 @@ class _StubTree:
 def test_knob_defaults():
     assert config.CI_RUN_ENABLED == 1
     assert config.CI_RUN_TIMEOUT_SECONDS == 600
+    assert config.CI_RUN_RESPOND_SECONDS == 50
+    assert config.CI_RUN_MAX_INFLIGHT == 1
     assert config.CI_RUN_COOLDOWN_SECONDS == 60
     assert config.CI_RUN_DAILY_CAP == 10
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
@@ -314,6 +317,162 @@ def test_multibyte_tail_is_byte_exact():
     finally:
         _restore()
         stub.cleanup()
+
+
+def test_ledger_kind_mapping():
+    """ledger_kind_for is the single source of the ci_* kind - run_checks
+    and repo_ci_run's handoff payload must agree on it."""
+    assert ci_runner.ledger_kind_for("tests") == "ci_run"
+    assert ci_runner.ledger_kind_for("tests", pr_number=123) == "ci_branch_run"
+    assert (
+        ci_runner.ledger_kind_for("tests", files=[{"path": "x.py", "content": "y"}])
+        == "ci_local_run"
+    )
+    assert ci_runner.ledger_kind_for("benchmarks") == "ci_benchmark_run"
+    assert ci_runner.ledger_kind_for("db_bench") == "ci_db_bench_run"
+    try:
+        ci_runner.ledger_kind_for("deploy")
+        raise AssertionError("expected ForumError")
+    except db.ForumError as exc:
+        assert "unknown checks kind" in str(exc)
+
+
+def test_handoff_fast_run_returns_full_result():
+    """Within the soft deadline the wrapper behaves exactly like run_checks:
+    full result, no handoff, and the single-flight claim already released."""
+    stub = _StubTree(
+        "tests",
+        """
+        import sys
+        print("all 1 test files passed")
+        sys.exit(0)
+    """,
+    )
+    uid = _uid()
+    try:
+        result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+            30, uid, "t", "tests"
+        )
+        assert handed_off is False
+        assert result["ok"] is True and result["head_sha"] == "deadbeefcafe"
+        assert isinstance(started_at, str) and "T" in started_at
+        assert ci_runner._inflight_occupied(uid) is False
+    finally:
+        stub.cleanup()
+
+
+def test_handoff_slow_run_returns_running_and_completes():
+    """Past the soft deadline the wrapper hands off with (None, True, ...)
+    while a daemon worker keeps running - the run still completes and its
+    claim is released even though the 'caller' already returned."""
+    import unittest.mock as _mock
+
+    started = threading.Event()
+    release = threading.Event()
+    done_mark: list = []
+
+    def _slow(agent_id, name, checks, pr_number=None, files=None):
+        started.set()
+        assert release.wait(15)
+        done_mark.append(checks)
+        return {"ok": True, "mode": "local"}
+
+    uid = _uid()
+    try:
+        with _mock.patch.object(ci_runner, "run_checks", side_effect=_slow):
+            result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+                0, uid, "t", "tests", files=[{"path": "x.py", "content": "y"}]
+            )
+            assert result is None
+            assert handed_off is True
+            assert started_at
+            assert ci_runner._inflight_occupied(uid) is True, (
+                "claim must be held until the worker finishes"
+            )
+            assert started.wait(5)
+            release.set()
+        deadline = time.monotonic() + 10
+        while ci_runner._inflight_occupied(uid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ci_runner._inflight_occupied(uid) is False, (
+            "claim released once the background run completed"
+        )
+        assert done_mark == ["tests"]
+    finally:
+        release.set()
+
+
+def test_handoff_error_propagates_within_deadline():
+    """An immediate run error within the deadline is re-raised to the caller
+    (run_checks audits its own early failures) and the claim is released."""
+    import unittest.mock as _mock
+
+    def _raise(agent_id, name, checks, pr_number=None, files=None):
+        raise db.ForumError("something went wrong while rehearsing")
+
+    uid = _uid()
+    try:
+        with _mock.patch.object(ci_runner, "run_checks", side_effect=_raise):
+            try:
+                ci_runner.run_checks_with_deadline(15, uid, "t", "tests")
+                raise AssertionError("expected ForumError")
+            except db.ForumError as exc:
+                assert "something went wrong" in str(exc)
+    finally:
+        assert ci_runner._inflight_occupied(uid) is False
+
+
+def test_single_flight_refuses_concurrent_second_run():
+    """FORUM_CI_RUN_MAX_INFLIGHT=1: a second wrapper call while one run is
+    in flight is refused; once that run completes the slot is freed and a
+    fresh claim succeeds."""
+    import unittest.mock as _mock
+
+    started = threading.Event()
+    release = threading.Event()
+    holder: dict = {}
+    done_mark: list = []
+
+    def _slow(agent_id, name, checks, pr_number=None, files=None):
+        started.set()
+        assert release.wait(15)
+        done_mark.append(checks)
+        return {"ok": True}
+
+    def _call():
+        holder["out"] = ci_runner.run_checks_with_deadline(0, uid, "t", "tests")
+
+    uid = _uid()
+    thread = threading.Thread(target=_call)
+    try:
+        with _mock.patch.object(ci_runner, "run_checks", side_effect=_slow):
+            thread.start()
+            assert started.wait(5)
+            assert ci_runner._inflight_occupied(uid) is True
+            try:
+                ci_runner.run_checks_with_deadline(0, uid, "t", "tests")
+                raise AssertionError("expected in-flight refusal")
+            except db.ForumError as exc:
+                assert "in flight" in str(exc)
+                assert "FORUM_CI_RUN_MAX_INFLIGHT" in str(exc)
+            release.set()
+            thread.join(timeout=10)
+        deadline = time.monotonic() + 10
+        while ci_runner._inflight_occupied(uid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ci_runner._inflight_occupied(uid) is False, (
+            "claim freed once the run completed"
+        )
+        assert "out" in holder, "the held run returned/raised cleanly"
+        assert done_mark == ["tests"], "the background run completed"
+        # Fresh claim after completion is allowed again
+        ci_runner._inflight_claim(uid, "ci_run", "tests", "2030-01-01T00:00:00Z", "x")
+        assert ci_runner._inflight_occupied(uid) is True
+        ci_runner._inflight_release(uid, "x")
+        assert ci_runner._inflight_occupied(uid) is False
+    finally:
+        release.set()
+        thread.join(timeout=10)
 
 
 def _root_server():
@@ -676,6 +835,11 @@ def main():
     test_child_env_is_sanitized()
     test_cooldown_gate()
     test_daily_cap_gate()
+    test_ledger_kind_mapping()
+    test_handoff_fast_run_returns_full_result()
+    test_handoff_slow_run_returns_running_and_completes()
+    test_handoff_error_propagates_within_deadline()
+    test_single_flight_refuses_concurrent_second_run()
     test_output_tail_truncation()
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()

@@ -1,9 +1,9 @@
 """
 viewer/_ci.py - CI build health timeline page.
 
-Read-only page for CI runs: /ci with tabs Native vs PR merges,
-top strip and timeline. Data comes from events.query_events for
-ci_run / ci_branch_run kinds; no db writes.
+Read-only page for CI runs: /ci with tabs Native vs PR merges vs Local
+rehearsals, top strip and timeline. Data comes from events.query_events for
+ci_run / ci_branch_run / ci_local_run kinds; no db writes.
 """
 
 from __future__ import annotations
@@ -126,14 +126,21 @@ def _ci_row(e: dict) -> str:
 
 
 def ci_page(request: Request) -> HTMLResponse:
-    """The /ci page: tabs Native vs PR merges ?mode= filter on ci_run kinds + top strip + timeline."""
+    """The /ci page: tabs Native vs PR merges vs Local rehearsals, ?mode=
+    filter on the three ci_run kinds + top strip + timeline."""
     mode = (request.query_params.get("mode") or "native").lower()
-    if mode not in ("native", "branch"):
+    if mode not in ("native", "branch", "local"):
         if mode in ("pr", "merges", "pr_merges", "branch_run"):
             mode = "branch"
+        elif mode in ("rehearsal", "overlay", "local_run"):
+            mode = "local"
         else:
             mode = "native"
-    kind = "ci_run" if mode == "native" else "ci_branch_run"
+    kind = {
+        "native": "ci_run",
+        "branch": "ci_branch_run",
+        "local": "ci_local_run",
+    }[mode]
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (ValueError, TypeError):
@@ -146,10 +153,12 @@ def ci_page(request: Request) -> HTMLResponse:
     evts = query_events(kind=kind, limit=per_page, offset=offset)
     native_cls = "active" if mode == "native" else ""
     branch_cls = "active" if mode == "branch" else ""
+    local_cls = "active" if mode == "local" else ""
     tabs = (
         '<div class="tabs">'
         f'<a href="/ci?mode=native" class="{native_cls}">Native</a>'
         f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>'
+        f'<a href="/ci?mode=local" class="{local_cls}">Local</a>'
         "</div>"
     )
     try:
@@ -173,13 +182,13 @@ def ci_page(request: Request) -> HTMLResponse:
     empty = "<p style='color:var(--muted)'>No CI runs yet — the runner is idle.</p>"
     rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
-    hint = (
-        "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>"
-        if mode == "branch"
-        else ""
-    )
+    hint = ""
+    if mode == "branch":
+        hint = "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>"
+    elif mode == "local":
+        hint = "<p style='color:var(--muted);font-size:13px'>Local mode: <code>repo_ci_run(files=[...])</code> rehearsals — the pre-push overlay of your diff on <code>origin/main</code>, tested in the same Docker sandbox as branch runs (ledger kind <code>ci_local_run</code>).</p>"
     body = (
-        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main) vs PR merges (branch). Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
+        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main), PR merges (branch) and local rehearsal (files=). Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
         + tabs
         + top_strip
         + summary

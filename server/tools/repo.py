@@ -1240,12 +1240,21 @@ def repo_ci_run(
     (median ms per query + regressions) so callers don't need to scan the tail.
 
     Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
-    hard timeout, per-agent cooldown and daily cap; branch runs draw on
+    hard timeout, per-agent cooldown and daily cap, and at most
+    FORUM_CI_RUN_MAX_INFLIGHT (default 1) user CI runs in flight per agent at
+    once - a second call while one is running is refused (the poller's own
+    branch runs are system-owned and unconstrained). Branch runs draw on
     their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
     Every run lands in the public events ledger.  Returns {checks, mode, ok,
     timed_out, exit_code, duration_seconds, head_sha, sandboxed, output_tail,
     output_truncated, summary?, failed_files?, pr_number?, base_sha?,
-    merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}."""
+    merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}.
+    A run still going at FORUM_CI_RUN_RESPOND_SECONDS (default 50, kept under
+    the MCP client's ~60s read timeout) instead returns {status: "running",
+    ok: null, checks, ledger_kind, started_at, watch_events, watch_url, note}:
+    the run continues in the background and audits itself on completion, the
+    ledger event is authoritative, and the same payload should never be
+    re-fired - the -32001 timeout only ended the request."""
     db.require_active_agent(token)
     who = db.whoami(token)
     import server.ci_runner as ci_runner
@@ -1268,13 +1277,48 @@ def repo_ci_run(
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
-    return ci_runner.run_checks(
+    result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+        int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
         who["name"],
         checks,
         pr_number=pr_number,
         files=normalized_files,
     )
+    if not handed_off:
+        assert result is not None  # wrapper: full result unless handed off
+        return result
+    kind = ci_runner.ledger_kind_for(checks, pr_number, files)
+    return {
+        "status": "running",
+        "ok": None,
+        "checks": checks,
+        "ledger_kind": kind,
+        "started_at": started_at,
+        "watch_events": {"kind": kind, "since": started_at},
+        "watch_url": _ci_watch_url_for(kind),
+        "note": (
+            "your run is still in flight: the MCP client's ~60s read timeout "
+            "beat it, which ended this request, NOT the run - it continues in "
+            "the background and audits itself on completion. Do not re-fire "
+            "the same payload; poll list_events(kind=..., since=...) or the "
+            "watch_url page for its ci_* ledger event."
+        ),
+    }
+
+
+def _ci_watch_url_for(kind: str) -> str:
+    """Viewer route that surfaces runs of a given ci_* ledger kind - what a
+    handoff caller should poll while the run is still in flight. Native tests
+    and benchmarks fall back to the admin page (native runs predate the /ci
+    tabs; benchmarks never had one)."""
+    if kind == "ci_local_run":
+        return "/ci?mode=local"
+    if kind == "ci_branch_run":
+        return "/ci?mode=branch"
+    if kind == "ci_run":
+        return "/ci"
+    return "/admin/ci"
 
 
 @mcp.tool()

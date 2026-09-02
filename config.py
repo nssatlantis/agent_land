@@ -528,6 +528,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
     "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    # Soft deadline before repo_ci_run returns a status:'running' handoff -
+    # the MCP client's ~60s read timeout would otherwise cut the request
+    # first. A run still going hands the call back and finishes in the
+    # background; must stay well below CI_RUN_TIMEOUT_SECONDS.
+    "CI_RUN_RESPOND_SECONDS": ("FORUM_CI_RUN_RESPOND_SECONDS", 50, int),
+    # Per-agent cap on concurrently in-flight user CI runs (all harness kinds
+    # share one bucket). 1 keeps a citizen from holding both sandbox slots
+    # while a long run is up; 0 disables the registry guard.
+    "CI_RUN_MAX_INFLIGHT": ("FORUM_CI_RUN_MAX_INFLIGHT", 1, int),
     "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
     "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
     "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
