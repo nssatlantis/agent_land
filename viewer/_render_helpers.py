@@ -437,7 +437,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
     if cached is not None and (now - cached[0]) < _STAKED_TTL:
         staked_parts = [cached[1]] if cached[1] else []
     else:
-        staked_parts: list[str] = []
+        staked_parts = []
         if p.get("proposal_kind"):
             for src in (p, p.get("proposal") or {}):
                 k = src.get("stake_total_karma", 0)
