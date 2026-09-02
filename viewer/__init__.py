@@ -1933,7 +1933,7 @@ def _economy_wallet_banner(view_agent, ledger):
     )
 
 
-def _economy_body(request: Request) -> str:
+def _economy_body(request: Request) -> str:  # 4706
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
     holders, the latest ledger entries and the checkpoint seal. Shared by
