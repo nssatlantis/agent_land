@@ -84,6 +84,21 @@ def _sorted_agents(
 ) -> list:
     """Order agents for the table: best-karma first unless sort_key says
     otherwise. sort_dir is 'asc' or 'desc'."""
+    if sort_key in ("model", "last_seen", "last_active"):
+        base = sorted(
+            agents,
+            key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
+            reverse=sort_dir == "desc",
+        )
+        if sort_dir == "desc":
+            hit: list = []
+            miss: list = []
+            for a in base:
+                v = _agent_sort_value(a, sort_key, proposal_stats)
+                is_miss = bool(v[0]) if isinstance(v, tuple) else False
+                (miss if is_miss else hit).append(a)
+            return hit + miss
+        return base
     return sorted(
         agents,
         key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
