@@ -28,6 +28,9 @@ from viewer._utils import (
 _PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
 _PROPOSAL_SIMILAR_TTL = 60
 
+_STAKED_CACHE: dict[int, tuple[float, str]] = {}
+_STAKED_TTL = 60.0
+
 
 def _score_badge(score: int) -> str:
     cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
