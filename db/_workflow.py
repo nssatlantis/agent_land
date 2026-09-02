@@ -120,12 +120,25 @@ def _validate_run_status(status: str) -> None:
         )
 
 
+_workflow_sha_cache: dict[str, tuple[float, str]] = {}
+
+
 def _workflow_sha_for(path: str) -> str | None:
     """Git blob sha or sha256 of `workflows/{path}` for audit. Best-effort."""
     try:
-        data = _workflow_file(path).read_bytes()
+        p = _workflow_file(path)
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:  # domain: degrade-silently - stat best-effort
+            mtime = 0.0
+        cached = _workflow_sha_cache.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        data = p.read_bytes()
         # short sha256 for dedup, not git object sha (no git dep)
-        return hashlib.sha256(data).hexdigest()[:12]
+        sha = hashlib.sha256(data).hexdigest()[:12]
+        _workflow_sha_cache[path] = (mtime, sha)
+        return sha
     except Exception:  # domain: degrade-silently - sha is optional enrichment
         return None
 
@@ -173,6 +186,25 @@ def workflow_steps_for_run(conn: sqlite3.Connection, run_id: int) -> list[dict]:
         (run_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def available_next_steps(steps: list[dict]) -> list[str]:
+    """The unticked manual step keys a caller can still tick on an open
+    create-pr run, in checklist (position) order, cut off at the `open`
+    boundary. `open`/`verify` are server-managed (hand ticks refused) and
+    never listed. Feed it `workflow_steps_for_run`'s output; mirrors what
+    `repo_workflow_status` surfaces and the steps gate enforces."""
+    open_pos = next(
+        (s.get("position") for s in steps if s.get("step_key") == "open"), None
+    )
+    managed = {"open", "verify"}
+    return [
+        s["step_key"]
+        for s in steps
+        if not s.get("done")
+        and s.get("step_key") not in managed
+        and (open_pos is None or s.get("position", 0) < open_pos)
+    ]
 
 
 def _ensure_run_steps(
@@ -1183,6 +1215,16 @@ def _open_run_ids_for(conn: sqlite3.Connection, proposal_id: int) -> list[int]:
     return [int(r["id"]) for r in rows]
 
 
+def _open_run_rows_for(conn: sqlite3.Connection, proposal_id: int) -> list[sqlite3.Row]:
+    """The open create-pr runs on `proposal_id` with the starter identity, so
+    a closer that decides them can notify the starters (reconcile sweep)."""
+    return conn.execute(
+        "SELECT id, agent_id FROM workflow_runs"
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+    ).fetchall()
+
+
 def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     """Close open create-pr runs whose proposal is already decided.
 
@@ -1212,9 +1254,10 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
             reason = "no_pr_linked"
         if run_status is None:
             continue
-        ids = _open_run_ids_for(conn, pid)
-        if not ids:
+        rows = _open_run_rows_for(conn, pid)
+        if not rows:
             continue
+        ids = [int(r["id"]) for r in rows]
         # Close exactly the rows observed as stale, never whatever happens to
         # be open for the proposal by the time the UPDATE runs (TOCTOU review):
         # under WAL the reads commit as they go, and the admin handler's path
@@ -1248,6 +1291,24 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
                 )
             except Exception:  # domain:degrade-silently - event is enrichment
                 pass
+            for r in rows:
+                try:
+                    from notifications import _notify
+
+                    _notify(
+                        conn,
+                        int(r["agent_id"]),
+                        "workflow",
+                        "post",
+                        pid,
+                        f"Your workflow run on proposal #{pid} was closed "
+                        f"({reason}: status '{run_status}'). It can be retried "
+                        "with repo_restart_workflow(token, proposal_id=<id>) if "
+                        "the proposal is still open.",
+                        actor_agent_id=None,
+                    )
+                except Exception:  # domain:degrade-silently - notify is best-effort
+                    pass
     return closed_total
 
 
@@ -1287,11 +1348,12 @@ def sweep_expired_workflows(
     def _close_visible(where_tail: str, params: list[object]) -> int:
         """Select ids first, then close exactly those, and log them."""
         rows = conn.execute(
-            "SELECT id FROM workflow_runs WHERE " + where_tail, params
+            "SELECT id, agent_id, proposal_id FROM workflow_runs WHERE " + where_tail,
+            params,
         ).fetchall()
-        ids = [r[0] for r in rows]
-        if not ids:
+        if not rows:
             return 0
+        ids = [int(r["id"]) for r in rows]
         cur = conn.execute(
             "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
             " WHERE id IN ({})".format(",".join("?" * len(ids))),
@@ -1311,6 +1373,26 @@ def sweep_expired_workflows(
                 )
             except Exception:  # domain:degrade-silently - event is enrichment
                 pass
+            for r in rows:
+                if r["proposal_id"] is None:
+                    continue
+                try:
+                    from notifications import _notify
+
+                    _notify(
+                        conn,
+                        int(r["agent_id"]),
+                        "workflow",
+                        "post",
+                        int(r["proposal_id"]),
+                        "Your workflow run expired (TTL elapsed) and was closed. "
+                        "If the proposal is still live, retry with "
+                        "repo_restart_workflow(token, proposal_id=<id>) to open a "
+                        "fresh run.",
+                        actor_agent_id=None,
+                    )
+                except Exception:  # domain:degrade-silently - notify is best-effort
+                    pass
         return closed
 
     if proposal_ids is None:
@@ -1542,6 +1624,7 @@ def count_workflow_runs(conn: sqlite3.Connection, status: str | None = None) -> 
     a len() over it would undercount a busy ledger; this COUNT(*) is the
     unbounded tally behind the summary line."""
     if status is not None:
+        _validate_run_status(status)
         return int(
             conn.execute(
                 "SELECT COUNT(*) FROM workflow_runs WHERE status = ?", (status,)

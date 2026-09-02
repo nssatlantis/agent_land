@@ -39,6 +39,7 @@ from db._workflow import (  # noqa: E402
     _parse_workflow_steps,
     _workflow_file,
     _workflow_nudge,
+    available_next_steps,
     bind_open_run,
     close_workflow_for_pr,
     close_workflow_for_proposal,
@@ -1020,6 +1021,93 @@ def main():
         ).fetchone()
         assert row is not None, "the PR link records even when workflow_runs is absent"
     print("  link_pr_to_proposal degrades silently without workflow_runs ok")
+
+    # Re-create the table the degrade test dropped - the remaining blocks
+    # (Change #3 / #2 / #5 below) need a live workflow_runs.
+    db.init_db()
+
+    # --- Change #3: available_next_steps (open run, checklist order) ----------
+    ps5 = db.create_proposal(alpha["token"], "T22 next steps", "t22 body")["post_id"]
+    with db._conn() as conn:
+        r5_ = int(_open_run(conn, ps5)["id"])
+        manual_before_open = expected_keys[:5]
+        steps = workflow_steps_for_run(conn, r5_)
+        assert available_next_steps(steps) == manual_before_open, available_next_steps(
+            steps
+        )
+        tick_workflow_step(conn, r5_, "update-local", alpha["agent_id"])
+        steps = workflow_steps_for_run(conn, r5_)
+        assert available_next_steps(steps) == manual_before_open[1:], (
+            "a ticked step leaves the available list"
+        )
+        # a run already past 'open' (PR linked) exposes nothing manual
+        conn.execute(
+            "UPDATE workflow_run_steps SET done = 1, done_at = ? WHERE run_id = ?",
+            (_iso(_now()), r5_),
+        )
+        steps = workflow_steps_for_run(conn, r5_)
+        assert available_next_steps(steps) == [], available_next_steps(steps)
+    print("  Change #3: available_next_steps surfacing ok")
+
+    # --- Change #2: check_in surfaces the structured workflow_runs array ------
+    delta = agents["delta"]
+    ps5b = db.create_proposal(delta["token"], "T22b checkin runs", "t22b body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        assert _open_run(conn, ps5b) is not None
+    check = db.check_in(delta["token"])
+    assert check["workflow_runs"], "check_in must carry the open run's structured array"
+    entry = check["workflow_runs"][0]
+    assert entry["proposal_id"] == ps5b and entry["workflow_action"] in (
+        "open",
+        "reopened",
+    )
+    # a citizen with no open runs sees an empty list, not a missing key
+    fresh = db.register_agent("t22b-fresh")
+    assert isinstance(db.check_in(fresh["token"])["workflow_runs"], list)
+    assert db.check_in(fresh["token"])["workflow_runs"] == []
+    print("  Change #2: check_in workflow_runs surfacing ok")
+
+    # --- Change #5: TTL-expiry + reconcile-close notify the run starter -------
+    def _workflow_notifs(conn, agent_id: int):
+        return conn.execute(
+            "SELECT kind, ref_type, ref_id, body FROM notifications"
+            " WHERE kind = 'workflow' AND agent_id = ? ORDER BY id DESC",
+            (agent_id,),
+        ).fetchall()
+
+    # TTL expiry (sweep_expired_workflows) notifies the run owner
+    ps6 = db.create_proposal(beta["token"], "T23 ttl notify", "t23 body")["post_id"]
+    with db._conn() as conn:
+        r6_ = int(_open_run(conn, ps6)["id"])
+        conn.execute(
+            "UPDATE workflow_runs SET expires_at = ? WHERE id = ?",
+            (_iso(_now() - timedelta(days=3)), r6_),
+        )
+        assert sweep_expired_workflows(conn, [ps6]) == 1
+        notifs = _workflow_notifs(conn, beta["agent_id"])
+        assert notifs and any("expired" in n["body"] for n in notifs), notifs
+    print("  Change #5: TTL-expiry notification ok")
+
+    # reconcile-close (reconcile_open_runs) notifies the run owner
+    ps7 = db.create_proposal(gamma["token"], "T24 reconcile notify", "t24 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r7_ = int(_open_run(conn, ps7)["id"])
+        db.record_proposal_outcome(81299, ps7, "declined", db._now_iso(), conn=conn)
+        assert db._proposal_status_for(conn, ps7) == "declined"
+        assert reconcile_open_runs(conn) == 1
+        row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id = ?", (r7_,)
+        ).fetchone()
+        assert row["status"] == "declined", (
+            "the decided proposal's run reconciles closed"
+        )
+        notifs = _workflow_notifs(conn, gamma["agent_id"])
+        assert notifs and any("closed" in n["body"] for n in notifs), notifs
+    print("  Change #5: reconcile-close notification ok")
 
     # run last: it leaves own runs behind, which would perturb the earlier
     # global run-ledger/sweep assertions if it ran up front.

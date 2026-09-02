@@ -14,6 +14,11 @@
 
 **Auto-lifecycle:** no DB run; single PR, single commit per file (`CHARTER VI.4`).
 
+## Troubleshooting
+
+- **Live reload not picking up?** The `.env` watcher polls `ENV_POLL_SECONDS 60`; a malformed value is skipped (not 500) via `_valid_reload_value`.
+- **`#590` thrash pattern?** Keep the `750↔700` whipsaw out: one `config.py` entry + one `.env.example` row + one behavior file per PR.
+
 ## Changes
 
 No separate changelog — the git history of this file is its change log.
