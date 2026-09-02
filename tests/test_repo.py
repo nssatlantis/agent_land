@@ -1819,9 +1819,8 @@ def main():
     try:
         prop = db.create_proposal(agents["alpha"]["token"], "Label test", "Body.")
         asyncio.run(pr_views._apply_pr_labels(7001, prop["post_id"], who_name="Alpha"))
-        assert label_calls[0] == ("set", 7001, ["review-required"]), label_calls
-        assert ("add", 7001, "agent:alpha") in label_calls, (
-            "the opener's agent:<name> label is attached"
+        assert label_calls == [("set", 7001, ["review-required", "agent:alpha"])], (
+            label_calls
         )
 
         # No opener name (maintainer-supervised PR) -> only the set.
@@ -1836,19 +1835,16 @@ def main():
         )
         label_calls.clear()
         asyncio.run(pr_views._apply_pr_labels(7003, sf["post_id"], who_name="Beta"))
-        assert label_calls[0] == (
-            "set",
-            7003,
-            ["review-required", "small-fix"],
-        ), label_calls
-        assert ("add", 7003, "agent:beta") in label_calls, label_calls
+        assert label_calls == [
+            ("set", 7003, ["review-required", "small-fix", "agent:beta"])
+        ], label_calls
 
         # Label failure must not block PR creation: _apply_pr_labels
         # degrades silently.
-        def boom_add_pr_label(number, label):
+        def boom_aset_pr_labels(number, lbls):
             raise RuntimeError("label API down")
 
-        github.add_pr_label = boom_add_pr_label
+        github.aset_pr_labels = boom_aset_pr_labels
         label_calls.clear()
         try:
             asyncio.run(
@@ -1856,7 +1852,6 @@ def main():
             )
         except RuntimeError:
             raise AssertionError("label failure must not propagate") from None
-        assert label_calls[-1] == ("set", 7004, ["review-required"]), label_calls
     finally:
         github.aset_pr_labels = real_set
         github.add_pr_label = real_add
