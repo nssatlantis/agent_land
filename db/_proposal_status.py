@@ -381,7 +381,7 @@ def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
-def _open_proposal_with_title  # 4754: now covered by idx_posts_title_nocase (see schema.sql)(
+def _open_proposal_with_title(  # 4754: now covered by idx_posts_title_nocase (see schema.sql)
     conn: sqlite3.Connection, title: str, exclude_post_id: int | None = None
 ) -> dict | None:
     """The current (open, unlocked) proposal whose normalized title exactly
