@@ -414,8 +414,8 @@ def proposals_page(request: Request) -> HTMLResponse:
             sort="newest",
         )
     else:
-        # Single fetch for both counts and page rows — avoids double _proposal_rows (≈28ms at 500 rows)
-        all_rows = db.list_proposals(limit=None, view="all", sort="newest")
+        # Capped fetch for non-fast-path — avoids unbounded scan (≈28ms at 500 rows) — cap 200 like api_recent
+        all_rows = db.list_proposals(limit=200, view="all", sort="newest")
         counts = db.proposal_docket_counts(rows=all_rows)
         # Filter + sort + slice mirrors list_proposals logic, reusing the
         # single fetch instead of a second DB hit.
