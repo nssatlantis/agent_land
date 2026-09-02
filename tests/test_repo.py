@@ -1717,6 +1717,47 @@ def main():
         {"path": "c.md", "content": "y"}
     ], "list input passes through in update"
 
+    # --- regression: the MCP arg model must ACCEPT files as a string so the
+    # --- body's JSON normalisation is reachable. mcp validates args via
+    # --- pydantic BEFORE the body runs, so a bare `files: list[dict]` type
+    # --- rejects a string that fails JSON parsing with an opaque list_type
+    # --- error before the tool body ever sees it (the reported
+    # --- repo_ci_run(files=...) failure). Widening the schema admits the
+    # --- string; the body (and the helpers above) parse it or raise the
+    # --- clean "files parameter is invalid JSON" ForumError.
+    from mcp.server.mcpserver.utilities.func_metadata import func_metadata
+
+    from server.tools import repo as repo_tools
+
+    for _name, _fn, _base_args in (
+        (
+            "repo_ci_run",
+            repo_tools.repo_ci_run,
+            {"token": "x", "checks": "tests"},
+        ),
+        (
+            "repo_propose_change",
+            repo_tools.repo_propose_change,
+            {"token": "x", "title": "t", "body": "b"},
+        ),
+        (
+            "repo_update_pr",
+            repo_tools.repo_update_pr,
+            {"token": "x", "number": 1},
+        ),
+    ):
+        _fm = func_metadata(_fn)
+        _parsed = _fm.validate_arguments({**_base_args, "files": valid_json})
+        assert _parsed["files"] == [{"path": "a.md", "content": "hello"}], (
+            f"{_name}: JSON-string files must validate to the parsed list"
+        )
+        _passed = _fm.validate_arguments({**_base_args, "files": invalid_json})
+        assert _passed["files"] == invalid_json, (
+            f"{_name}: a non-JSON string files must pass the arg model, "
+            "not be rejected as list_type"
+        )
+    print("  repo tool files-as-string arg models: ok")
+
     # Duplicate paths must be rejected in BOTH propose and update so an agent
     # cannot silently clobber one write with another on the same file; the
     # error should point at the fix (merge into one 'edits' list).
@@ -1778,9 +1819,8 @@ def main():
     try:
         prop = db.create_proposal(agents["alpha"]["token"], "Label test", "Body.")
         asyncio.run(pr_views._apply_pr_labels(7001, prop["post_id"], who_name="Alpha"))
-        assert label_calls[0] == ("set", 7001, ["review-required"]), label_calls
-        assert ("add", 7001, "agent:alpha") in label_calls, (
-            "the opener's agent:<name> label is attached"
+        assert label_calls == [("set", 7001, ["review-required", "agent:alpha"])], (
+            label_calls
         )
 
         # No opener name (maintainer-supervised PR) -> only the set.
@@ -1795,19 +1835,16 @@ def main():
         )
         label_calls.clear()
         asyncio.run(pr_views._apply_pr_labels(7003, sf["post_id"], who_name="Beta"))
-        assert label_calls[0] == (
-            "set",
-            7003,
-            ["review-required", "small-fix"],
-        ), label_calls
-        assert ("add", 7003, "agent:beta") in label_calls, label_calls
+        assert label_calls == [
+            ("set", 7003, ["review-required", "small-fix", "agent:beta"])
+        ], label_calls
 
         # Label failure must not block PR creation: _apply_pr_labels
         # degrades silently.
-        def boom_add_pr_label(number, label):
+        def boom_aset_pr_labels(number, lbls):
             raise RuntimeError("label API down")
 
-        github.add_pr_label = boom_add_pr_label
+        github.aset_pr_labels = boom_aset_pr_labels
         label_calls.clear()
         try:
             asyncio.run(
@@ -1815,7 +1852,6 @@ def main():
             )
         except RuntimeError:
             raise AssertionError("label failure must not propagate") from None
-        assert label_calls[-1] == ("set", 7004, ["review-required"]), label_calls
     finally:
         github.aset_pr_labels = real_set
         github.add_pr_label = real_add

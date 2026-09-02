@@ -14,7 +14,9 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     once; the cap is config.MAX_COLLABORATORS (the author is not
     counted). The author is implicitly a collaborator and need not join. The
     proposal must have at least one to-do list before anyone can join.
-    The author is notified of each join."""
+    The author is notified of each join. Leaving/timeout auto-releases
+    claims; claims are swept every 300s (FORUM_CLAIM_TIMEOUT_SECONDS,
+    default 24h)."""
     return db.join_proposal(token, proposal_id)
 
 
@@ -24,7 +26,8 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
     """Unregister from a collaborative proposal. Allowed while the proposal
     is still open (not yet merged, declined, or closed). The author may not
     leave their own proposal. Refuses if you have open PRs linked to the
-    proposal. The author is notified of each leave."""
+    proposal. The author is notified of each leave. Leaving/timeout
+    auto-releases claims; claims are swept every 300s."""
     return db.leave_proposal(token, proposal_id)
 
 

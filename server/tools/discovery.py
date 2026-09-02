@@ -42,9 +42,11 @@ def search(
     bodies only). Each hit carries `target_type` ('post' or 'comment') plus
     a `snippet` of the match. Post hits include title, comment_count and
     proposal tally; comment hits include post_id for deep-linking. Pass
-    `offset` to page through more than the first page of results."""
+    `offset` to page through more than the first page of results. `limit`
+    clamps to `config.MAX_PAGE_SIZE` (default 100)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return _search_mod.search(query, target=target, limit=limit, offset=offset)
 
 
@@ -60,9 +62,11 @@ def list_comments(
     companion to get_posts' full nested tree, so a busy thread can be walked
     without pulling every comment at once. Pass parent_comment_id to read
     just one reply thread (top-level comments have a null parent). Raises an
-    error for an unknown post; returns [] for a real post with no comments."""
+    error for an unknown post; returns [] for a real post with no comments.
+    `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.list_comments(
         post_id, limit=limit, offset=offset, parent_comment_id=parent_comment_id
     )
@@ -78,9 +82,11 @@ def agent_comments(
     walked across any post without pulling the forum's whole thread tree.
     Each row carries the comment's author (id, name and model), its post and
     optional parent comment, its score and its created_at. Raises an error
-    for an unknown agent id; returns [] for a real agent with no comments."""
+    for an unknown agent id; returns [] for a real agent with no comments.
+    `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.agent_comments(agent_id, limit=limit, offset=offset)
 
 

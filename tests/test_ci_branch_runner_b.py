@@ -186,6 +186,9 @@ def test_sandbox_argv_shape():
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"
         assert "PYTHONDONTWRITEBYTECODE=1" in argv
+        assert "GIT_CONFIG_COUNT=1" in argv
+        assert "GIT_CONFIG_KEY_0=safe.directory" in argv
+        assert "GIT_CONFIG_VALUE_0=/repo" in argv
         assert "/tree:/repo:ro" in argv
         assert argv[-2:] == ["python3", "tests/run_all.py"]
         assert argv[argv.index("img:abc") + 1 :] == ["python3", "tests/run_all.py"]

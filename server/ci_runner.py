@@ -73,7 +73,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import config
 import db
@@ -98,6 +97,14 @@ _CI_LOCK = threading.Lock()
 _ACTIVE: dict[int, str] = {}
 _ACTIVE_CPUS: dict[int, float] = {}
 _ACTIVE_LOCK = threading.Lock()
+# Per-agent in-flight user CI runs: guards the sharded slot pool so one
+# citizen cannot hold both sandbox slots while a long run is up
+# (FORUM_CI_RUN_MAX_INFLIGHT, default 1). repo_ci_run claims through this
+# registry; the poller fallback path (run_branch_ci_for_poller) is not gated
+# - it is system-owned, not a citizen's run. In-memory, reset on restart,
+# same invariant as the slot queue.
+_INFLIGHT: dict[int, list[dict]] = {}
+_INFLIGHT_LOCK = threading.Lock()
 
 
 def _ci_ensure_pool() -> queue.Queue[int]:
@@ -147,7 +154,7 @@ def _ci_queue_depth() -> tuple[int, int, int]:
     desired = max(1, int(config.CI_RUN_CONCURRENCY))
     try:
         avail = q.qsize()
-    except Exception:
+    except Exception:  # domain: degrade-silently - pool snapshot is best-effort
         avail = 0
     busy = max(0, desired - avail)
     return desired, avail, busy
@@ -229,6 +236,7 @@ def _effective_cpus() -> float:
     if busy <= 1:
         return round(min(ceil, max(1.0, ceil)), 2)
     fair = host / max(1, busy)
+    fair -= 0.125  # Keep small amount reserved.
     return round(min(ceil, max(1.0, fair)), 2)
 
 
@@ -247,7 +255,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
         if reserve:
             try:
                 avail = q.qsize()
-            except Exception:
+            except Exception:  # domain: degrade-silently - reserve probe is best-effort
                 avail = 0
             if avail <= 1:
                 # Report Retry-After hint
@@ -572,8 +580,14 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
                     f"no file at {path!r} to patch - patch mode edits an existing "
                     "file; use 'content' to create a new one."
                 )
+            # Read without universal-newline translation so a CRLF file stays
+            # CRLF in memory - byte-faithful with the open/PR path (which
+            # decodes the raw blob with no EOL conversion). Otherwise the
+            # file's CRLF becomes LF while \r\n payload replacements survive,
+            # leaving MIXED line endings that ruff format --check flags.
             try:
-                text = Path(full).read_text(encoding="utf-8")
+                with open(full, encoding="utf-8", newline="") as fh:
+                    text = fh.read()
             except UnicodeDecodeError:
                 raise db.ForumError(
                     f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
@@ -583,11 +597,28 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
 
             new_text, _log = _writes._apply_edits(path, text, c["edits"])
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, "w", encoding="utf-8", newline="\n") as fh:
+            # Write verbatim (newline="") so CRLF originals and \r\n
+            # replacements land byte-faithful, like the open/PR path.
+            with open(full, "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
             continue
         # Should not reach â€” validated earlier.
         raise db.ForumError(f"change for {path!r} has no content or edits.")
+
+
+def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
+    """Fold a finished run's output into its ci_* ledger detail so a red
+    run is diagnosable from the events ledger even when the caller's MCP
+    transport dropped the response. The tail is already capped upstream by
+    CI_RUN_TAIL_BYTES - the same bytes the tool response would carry."""
+    detail["output_tail"] = pieces.get("output_tail", "")
+    if pieces.get("output_truncated"):
+        detail["output_truncated"] = True
+    if pieces.get("summary"):
+        detail["summary"] = pieces["summary"]
+    if pieces.get("failed_files"):
+        detail["failed_files"] = pieces["failed_files"]
+    return detail
 
 
 def _prepare_local_tree(
@@ -620,6 +651,11 @@ def _child_env(tmp_root: str) -> dict:
     tmp_sub = os.path.join(tmp_data, "tmp")
     for key in ("TMPDIR", "TEMP", "TMP"):
         env[key] = tmp_sub
+    # git >=2.35 refuses a repo owned by a different uid; trust the runner
+    # tree so git-derived record enrichment works on the native path too.
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "safe.directory"
+    env["GIT_CONFIG_VALUE_0"] = str(config.REPO_DIR)
     return env
 
 
@@ -628,35 +664,134 @@ def _gate(kind_event: str, agent_id: int) -> None:
         raise db.ForumError("the server-side CI runner is disabled")
     now = datetime.now(timezone.utc)
     cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    if cooldown > 0:
-        recent = events.query_events(
-            agent_id=agent_id,
-            kind=kind_event,
-            since=_iso(now - timedelta(seconds=cooldown)),
-            limit=1,
-        )
-        if recent:
-            elapsed = now - datetime.strptime(
-                recent[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-            wait = int(
-                timedelta(seconds=cooldown).total_seconds() - elapsed.total_seconds()
-            )
-            raise db.ForumError(
-                f"CI run cooldown: try again in about {max(wait, 1)} seconds"
-            )
     cap = config.CI_RUN_DAILY_CAP
-    if cap > 0:
-        todays = events.query_events(
+    # single query for both gates — halves DB latency (was 2× query_events)
+    if cooldown > 0 or cap > 0:
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # cap+1 rows cover both windows; single round-trip vs 2
+        limit = (cap + 1) if cap > 0 else 1
+        # earliest since that covers both windows
+        if cap > 0 and cooldown > 0:
+            since_dt = min(midnight, now - timedelta(seconds=cooldown))
+            since = _iso(since_dt)
+        elif cooldown > 0:
+            since = _iso(now - timedelta(seconds=cooldown))
+        else:
+            since = _iso(midnight)
+        rows = events.query_events(
             agent_id=agent_id,
             kind=kind_event,
-            since=_iso(now.replace(hour=0, minute=0, second=0, microsecond=0)),
-            limit=cap + 1,
+            since=since,
+            limit=limit,
         )
-        if len(todays) >= cap:
+        # cooldown: most recent within window (rows are newest-first)
+        if cooldown > 0 and rows:
+            try:
+                ts = datetime.strptime(
+                    rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
+                ).replace(tzinfo=timezone.utc)
+            except Exception:
+                ts = None
+            if ts is not None and ts >= now - timedelta(seconds=cooldown):
+                elapsed = now - ts
+                wait = int(
+                    timedelta(seconds=cooldown).total_seconds()
+                    - elapsed.total_seconds()
+                )
+                raise db.ForumError(
+                    f"CI run cooldown: try again in about {max(wait, 1)} seconds"
+                )
+        # daily cap: count today's rows (filter to midnight)
+        if cap > 0:
+            midnight_iso = _iso(midnight)
+            todays = [r for r in rows if r["created_at"] >= midnight_iso]
+            if len(todays) >= cap:
+                raise db.ForumError(
+                    f"daily CI run cap reached ({cap} per day); try again tomorrow"
+                )
+            # undercount check: if we hit limit but some rows were before midnight, fetch precise
+            if len(rows) == limit and len(todays) < cap:
+                todays_precise = events.query_events(
+                    agent_id=agent_id,
+                    kind=kind_event,
+                    since=_iso(midnight),
+                    limit=cap + 1,
+                )
+                if len(todays_precise) >= cap:
+                    raise db.ForumError(
+                        f"daily CI run cap reached ({cap} per day); try again tomorrow"
+                    )
+
+
+def _inflight_occupied(agent_id: int) -> bool:
+    """Single-flight fast-path pre-check for repo_ci_run: True when this
+    agent already has a run in flight. The authoritative gate is
+    _inflight_claim (called in run_checks_with_deadline) - this is only a
+    cheap no-write refusal, so the two read the same registry."""
+    with _INFLIGHT_LOCK:
+        return bool(_INFLIGHT.get(agent_id))
+
+
+def _inflight_claim(
+    agent_id: int, kind: str, checks: str, started_at: str, token: str
+) -> None:
+    """Reserve one in-flight slot for this agent; refuse when the agent
+    already holds its cap (FORUM_CI_RUN_MAX_INFLIGHT, default 1). Only the
+    user-facing deadline wrapper claims - the poller path is system-owned."""
+    max_inflight = int(config.CI_RUN_MAX_INFLIGHT)
+    if max_inflight <= 0:
+        return
+    with _INFLIGHT_LOCK:
+        held = _INFLIGHT.get(agent_id, [])
+        if len(held) >= max_inflight:
+            first = held[0]
             raise db.ForumError(
-                f"daily CI run cap reached ({cap} per day); try again tomorrow"
+                f"you already have {len(held)} CI run(s) in flight "
+                f"(started {first['started_at']}, {first['kind']}) - at most "
+                f"{max_inflight} per agent (FORUM_CI_RUN_MAX_INFLIGHT="
+                f"{max_inflight}); wait for its ci_* ledger event "
+                "(list_events) or the /ci page - a -32001 timeout means "
+                "the request cut off, not the run."
             )
+        _INFLIGHT.setdefault(agent_id, []).append(
+            {
+                "agent_id": agent_id,
+                "kind": kind,
+                "checks": checks,
+                "started_at": started_at,
+                "token": token,
+            }
+        )
+
+
+def _inflight_release(agent_id: int, token: str) -> None:
+    """Release a claim by token once its run finished (success or error)."""
+    with _INFLIGHT_LOCK:
+        runs = _INFLIGHT.get(agent_id)
+        if not runs:
+            return
+        kept = [r for r in runs if r["token"] != token]
+        if kept:
+            _INFLIGHT[agent_id] = kept
+        else:
+            _INFLIGHT.pop(agent_id, None)
+
+
+def _inflight_snapshot() -> list[dict]:
+    """Live single-flight registry for the /admin/ci dashboard - agent_id,
+    kind, checks, started_at per in-flight user run, newest first. Read-only."""
+    with _INFLIGHT_LOCK:
+        rows = [
+            {
+                "agent_id": r["agent_id"],
+                "kind": r["kind"],
+                "checks": r["checks"],
+                "started_at": r["started_at"],
+            }
+            for runs in _INFLIGHT.values()
+            for r in runs
+        ]
+    return sorted(rows, key=lambda r: r["started_at"], reverse=True)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -885,15 +1020,20 @@ def _prune_stale_images(keep_tag: str) -> None:
             # domain: degrade-silently - listing is housekeeping; stale
             # tags simply survive until a later build prunes them.
             return
-        for line in ls.stdout.splitlines():
-            tag = line.strip()
-            if tag and tag != keep_tag and tag.startswith(prefix):
-                subprocess.run(
-                    ["docker", "rmi", "-f", tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
+        tags = [
+            line.strip()
+            for line in ls.stdout.splitlines()
+            if line.strip()
+            and line.strip() != keep_tag
+            and line.strip().startswith(prefix)
+        ]
+        if tags:
+            subprocess.run(
+                ["docker", "rmi", "-f", *tags],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
     except Exception:
         # domain: degrade-silently - image GC must never fail a run.
         pass
@@ -986,6 +1126,15 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "PYTHONDONTWRITEBYTECODE=1",
         "--env",
         "HOME=/tmp",
+        # git >=2.35 guards repos owned by a different uid; the mounted tree
+        # is host-owned while the container runs as 1000:1000, so trust /repo
+        # explicitly or git-derived record enrichment degrades to nothing.
+        "--env",
+        "GIT_CONFIG_COUNT=1",
+        "--env",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        "--env",
+        "GIT_CONFIG_VALUE_0=/repo",
         "--volume",
         f"{tree}:/repo:ro",
         "--workdir",
@@ -1145,6 +1294,76 @@ def _execute(
     return result
 
 
+def ledger_kind_for(
+    checks: str, pr_number: int | None = None, files: list[dict] | None = None
+) -> str:
+    """The events-ledger kind a run_checks(...) with these args would log -
+    the single source for run_checks itself and for the user-facing handoff
+    payload (repo_ci_run), which names the kind a caller should poll while
+    the run is still in flight."""
+    entry = _CHECKS.get(checks)
+    if entry is None:
+        valid = ", ".join(sorted(_CHECKS))
+        raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
+    if files is not None:
+        return events.EVT_CI_LOCAL_RUN
+    if pr_number is not None:
+        return events.EVT_CI_BRANCH_RUN
+    return entry[0]
+
+
+def run_checks_with_deadline(
+    soft_seconds: int,
+    agent_id: int,
+    name: str,
+    checks: str,
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+) -> tuple[dict | None, bool, str]:
+    """User-facing repo_ci_run path: run run_checks(...) but respond to the
+    caller after `soft_seconds` when the run is still going, so an MCP
+    client's ~60s read timeout (FORUM_CI_RUN_RESPOND_SECONDS, default 50)
+    cannot cut the call before any result arrives.
+
+    Returns (result, handed_off, started_at): handed_off False means `result`
+    is the full run outcome (or the call raised the run's immediate error);
+    True means the run continues in a daemon worker thread and its ledger
+    event + workflow auto-tick land on completion even if the client is gone -
+    correlate with (ledger_kind, agent, created_at >= started_at). The
+    single-flight registry (FORUM_CI_RUN_MAX_INFLIGHT) is claimed here for
+    the caller; the poller fallback path never reaches this wrapper."""
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    kind = ledger_kind_for(checks, pr_number, files)
+    token = uuid.uuid4().hex
+    _inflight_claim(agent_id, kind, checks, started_at, token)
+    result_holder: list[dict] = []
+    exc_holder: list[BaseException] = []
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            result_holder.append(
+                run_checks(agent_id, name, checks, pr_number=pr_number, files=files)
+            )
+        except Exception as exc:
+            # domain: fail-loudly - captured for the caller, not swallowed;
+            # re-raised within the deadline, logged by run_checks on the
+            # poller path (which audits before raising here or records
+            # ci_failure_poll on the ledger in branch mode).
+            exc_holder.append(exc)
+        finally:
+            _inflight_release(agent_id, token)
+            done.set()
+
+    thread = threading.Thread(target=_worker, name="ci-early-handoff", daemon=True)
+    thread.start()
+    if done.wait(timeout=max(0, int(soft_seconds))):
+        if exc_holder:
+            raise exc_holder[0]
+        return result_holder[0], False, started_at
+    return None, True, started_at
+
+
 def run_checks(
     agent_id: int,
     name: str,
@@ -1174,7 +1393,6 @@ def run_checks(
                 "the sandboxed CI runner needs docker on the server host; "
                 "it is not installed or not on PATH"
             )
-        kind_event = events.EVT_CI_LOCAL_RUN
     elif branch_mode:
         if (
             isinstance(pr_number, bool)
@@ -1189,9 +1407,7 @@ def run_checks(
                 "the sandboxed CI runner needs docker on the server host; "
                 "it is not installed or not on PATH"
             )
-        kind_event = events.EVT_CI_BRANCH_RUN
-    else:
-        kind_event = entry[0]
+    kind_event = ledger_kind_for(checks, pr_number, files)
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
@@ -1387,6 +1603,7 @@ def run_checks(
             detail["base_sha"] = result.get("base_sha")
         elif branch_mode:
             detail["pr_number"] = pr_number
+        detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
                 kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
@@ -1587,6 +1804,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             "pr_number": pr_number,
             "poller_triggered": True,
         }
+        detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
                 kind_event, actor_agent_id=None, actor_name="poller", detail=detail

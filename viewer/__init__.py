@@ -3289,6 +3289,9 @@ async def workflow_detail_page(request: Request) -> HTMLResponse:
     return _page(f"Workflow {safe}", _with_rail(panel), section="workflows")
 
 
+_AGENT_ID_RE = re.compile(r"agent_id=(\d+)")
+
+
 async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
     """CI checks for every /prs row, fanned out concurrently on the
     background loop so the list never blocks once per PR. Returns
@@ -3321,7 +3324,10 @@ async def prs_page(request: Request) -> HTMLResponse:
     author = (request.query_params.get("author") or "").strip()
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:  # domain:degrade-silently - garbage page param means page 1
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain:degrade-silently - garbage page param means page 1
         page = 1
     # merged/declined are client-side filtered views of closed
     fetch_state = "closed" if state in ("merged", "declined") else state
@@ -3360,7 +3366,7 @@ async def prs_page(request: Request) -> HTMLResponse:
         return _page(
             "Pull requests", _with_rail(_prs_rows_html(state, rows)), section="prs"
         )
-    per_page = 30
+    per_page = config.DEFAULT_PAGE_SIZE
     total = len(rows)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
@@ -3480,7 +3486,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     except Exception:
         related_panel = ""
     try:
-        m = re.search(r"agent_id=(\d+)", diff.get("body") or "")
+        m = _AGENT_ID_RE.search(diff.get("body") or "")
         _aid = int(m.group(1)) if m else None
     except Exception:
         _aid = None

@@ -204,14 +204,15 @@ def stake(
     token: str, proposal_id: int, per_pr: float, max_prs: int, currency: str = "credits"
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
-    PRs (total exposure = per_pr x max_prs), denominated in *currency* -
+    PRs (total exposure = per_pr x max_prs + fee, denominated in *currency* -
     "credits" (whole/half/quarter values; the spendable valuta) or
-    "karma".
+    "karma"). For credits a FORUM_TX_FEE (5% rounded up to quarter) is
+    charged on the locked amount, so total = per_pr*max_prs + fee_quarters.
     The chosen currency's balance is checked at creation time and against
     FORUM_STAKE_MAX_FRACTION of it; deduction happens when a PR is opened
     (locked), paid on merge in the staked denomination, refunded on
-    failure. Returns stake_id, currency, per_pr, max_prs, total and the
-    new balance."""
+    failure. Returns stake_id, currency, per_pr, max_prs, total, fee
+    preview and the new balance."""
     return db.stake(token, proposal_id, per_pr, max_prs, currency=currency)
 
 

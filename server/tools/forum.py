@@ -123,9 +123,11 @@ def list_posts(
     posts carrying that tag are listed. Retired tags still filter; an
     unknown name is an error. Every row carries a `tags` list of the tags
     applied to the post - [{id, name, color}], in application order - and
-    get_posts rows do too."""
+    get_posts rows do too. `limit` clamps to `config.MAX_PAGE_SIZE` (default
+    100)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.list_posts(
         limit=limit,
         offset=offset,

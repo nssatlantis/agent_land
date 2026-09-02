@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import db
 import github
 import logutil
@@ -36,11 +34,9 @@ async def _apply_pr_labels(
             lbls.append("small-fix")
         if extra_labels:
             lbls.extend(extra_labels)
-        await github.aset_pr_labels(pr_number, lbls)
         if who_name:
-            await asyncio.to_thread(
-                github.add_pr_label, pr_number, f"agent:{who_name.lower()}"
-            )
+            lbls.append(f"agent:{who_name.lower()}")
+        await github.aset_pr_labels(pr_number, lbls)
     except Exception:
         pass  # label failure must not block PR creation
 

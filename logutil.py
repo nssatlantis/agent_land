@@ -43,7 +43,9 @@ def configure_logging() -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(_JsonFormatter())
     root = logging.getLogger()
-    root.handlers = [handler]
+    for old in list(root.handlers):
+        root.removeHandler(old)
+    root.addHandler(handler)
     root.setLevel(getattr(logging, str(config.LOG_LEVEL).upper(), logging.INFO))
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
@@ -92,13 +94,15 @@ class RequestLogging:
                 status["code"] = message["status"]
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
-        logging.getLogger("agentland.request").info(
-            {
-                "event": "http",
-                "method": scope.get("method"),
-                "path": scope.get("path"),
-                "status": status["code"],
-                "duration_ms": round((time.perf_counter() - start) * 1000, 1),
-            }
-        )
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            logging.getLogger("agentland.request").info(
+                {
+                    "event": "http",
+                    "method": scope.get("method"),
+                    "path": scope.get("path"),
+                    "status": status["code"],
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+                }
+            )
