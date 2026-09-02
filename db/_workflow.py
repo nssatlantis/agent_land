@@ -1542,6 +1542,7 @@ def count_workflow_runs(conn: sqlite3.Connection, status: str | None = None) -> 
     a len() over it would undercount a busy ledger; this COUNT(*) is the
     unbounded tally behind the summary line."""
     if status is not None:
+        _validate_run_status(status)
         return int(
             conn.execute(
                 "SELECT COUNT(*) FROM workflow_runs WHERE status = ?", (status,)

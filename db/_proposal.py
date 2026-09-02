@@ -658,6 +658,7 @@ def supersede_proposal(
                             [l["id"] for l in parent_lists],
                         ).fetchall()
                     }
+                # 4753: row-by-row copy — see executemany batch plan
                 for lst in parent_lists:
                     cur = conn.execute(
                         "INSERT INTO todo_lists (post_id, title, position)"
