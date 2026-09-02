@@ -91,11 +91,11 @@ def _render_proposals(request) -> str:
     stakes_map: dict[int, list] = {}
 
     with db._conn() as conn:
-        for p in proposals:
-            b = db.list_proposal_stakes(conn, p["id"])
-
-            if b:
-                stakes_map[p["id"]] = b
+        # Batch fetch - one IN-clause query for all proposals' stakes,
+        # grouped by proposal_id, instead of N+1 (db.list_proposal_stakes
+        # per proposal). /admin/proposals can hold 30+ rows, so this is a
+        # real wall-time win on the admin page.
+        stakes_map = db.list_proposal_stakes_batch(conn, [p["id"] for p in proposals])
 
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
