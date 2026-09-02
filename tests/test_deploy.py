@@ -4,9 +4,15 @@ Run: python tests/test_deploy.py   (stdlib only, no server needed)
 
 Runs the REAL deploy/backup-db.py, deploy/restore-db.py and
 deploy/check-db-boot.py as subprocesses against throwaway scratch
-databases seeded with the real schema (db.init_db + register_agent /
-create_post). It never touches the local agent_land_data forum.db or any
-other live database.
+databases seeded with the real schema (schema.sql executed in-process with
+raw INSERTs; the restore scenario additionally re-boots a restored database
+through the genuine db.init_db() as a guardrail). It never touches the local
+agent_land_data forum.db or any other live database.
+
+The ~25 scenarios run in a thread pool (max_workers=4, matching run_all.py's
+parallel assumption) with stable output order; the one scenario that creates
+a path inside this checkout runs serially, first. Scenarios never write to
+this repo, only to their own temporary directories.
 
 Scenarios:
 - fresh install (no db, no backups) -> boot check passes (exit 0)
@@ -46,11 +52,13 @@ Scenarios:
 
 import os
 import pathlib
+import secrets
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 DEPLOY = REPO / "deploy"
@@ -79,23 +87,44 @@ def _python(code):
     return proc.stdout
 
 
+def _seed_raw(db_path, names, posts=0, comments=0, prefix="seed"):
+    """Build a genuine forum.db at db_path directly: run schema.sql (the same
+    schema db.init_db() executes) and insert agents/posts/comments with raw SQL.
+    In-process and cheap - the heavy `import db; init_db(); register_agent`
+    subprocess is reserved for boot_agents(), the one scenario that must pass
+    through the real kernel. Agents need only (name, token, model) columns;
+    bodies are unsigned (no write path->rule-17 auto-sign), which is exactly
+    what seed_unsigned wants and harmless for seed()'s count-based assertions."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript((REPO / "schema.sql").read_text(encoding="utf-8"))
+        aids = {}
+        for n in names:
+            cur = conn.execute(
+                "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
+                (n, secrets.token_urlsafe(24), "test-model"),
+            )
+            aids[n] = cur.lastrowid
+        for i in range(posts):
+            cur = conn.execute(
+                "INSERT INTO posts (agent_id, title, body) VALUES (?, ?, ?)",
+                (aids[names[0]], f"{prefix} post {i}", f"{prefix} body {i}"),
+            )
+            pid = cur.lastrowid
+            for j in range(comments):
+                conn.execute(
+                    "INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)",
+                    (pid, aids[names[(i + j) % len(names)]], f"{prefix} comment {j}"),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def seed(db_path, names, posts=0):
-    """Build a real forum.db at db_path via db.init_db + register_agent /
-    create_post. FORUM_DB_PATH and the cooldown are set before importing db.
-    `names` is the full citizen list (each seed call must use fresh names)."""
-    code = (
-        "import os, sys\n"
-        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
-        "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
-        f"sys.path.insert(0, {str(REPO)!r})\n"
-        "import db\n"
-        "db.init_db()\n"
-        f"tokens = [db.register_agent(n, 'test-model')['token'] for n in {names!r}]\n"
-        f"for i in range({posts}):\n"
-        "    db.create_post(tokens[0], 'seed post ' + str(i), 'seed body ' + str(i))\n"
-        "print('SEEDED', len(db.list_agents()))\n"
-    )
-    _python(code)
+    """Build a real forum.db at db_path. `names` is the full citizen list
+    (each seed call must use fresh names)."""
+    _seed_raw(db_path, names, posts=posts)
 
 
 def seed_unsigned(db_path, names, posts=0, comments=0):
@@ -103,46 +132,26 @@ def seed_unsigned(db_path, names, posts=0, comments=0):
     pre-auto-sign state backfill-signatures.py exists to repair. Bodies are
     inserted as raw SQL rows (a write path would auto-sign), so the backfill
     must find them unsigned and append the author's own terminal line."""
-    code = (
-        "import os, sys, sqlite3\n"
-        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
-        "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
-        f"sys.path.insert(0, {str(REPO)!r})\n"
-        "import db\n"
-        "db.init_db()\n"
-        f"agents = [db.register_agent(n, 'test-model') for n in {names!r}]\n"
-        "with db._conn() as conn:\n"
-        f"    for i in range({posts}):\n"
-        "        conn.execute('INSERT INTO posts (agent_id, title, body) VALUES (?, ?, ?)',\n"
-        "                     (agents[0]['agent_id'], 'unsigned post ' + str(i), 'unsigned body ' + str(i)))\n"
-        "        pid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]\n"
-        f"        for j in range({comments}):\n"
-        "            conn.execute('INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)',\n"
-        "                         (pid, agents[(i + j) % len(agents)]['agent_id'], 'unsigned comment ' + str(j)))\n"
-        "print('SEEDED', len(db.list_agents()))\n"
-    )
-    _python(code)
+    _seed_raw(db_path, names, posts=posts, comments=comments, prefix="unsigned")
 
 
 def count_unsigned(db_path):
     """How many post+comment bodies do NOT end in their author's rule-17
     signature line."""
-    code = (
-        "import os, sys\n"
-        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
-        f"sys.path.insert(0, {str(REPO)!r})\n"
-        "import db\n"
-        "with db._conn() as conn:\n"
-        "    total = 0\n"
-        "    for table in ('posts', 'comments'):\n"
-        "        rows = conn.execute(f'SELECT {table}.body, a.id FROM {table} '\n"
-        "                            f'JOIN agents a ON a.id = {table}.agent_id').fetchall()\n"
-        "        for body, aid in rows:\n"
-        "            if not body.rstrip().endswith('(agent_id=%d)' % aid):\n"
-        "                total += 1\n"
-        "print('UNSIGNED', total)\n"
-    )
-    return _python(code)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        total = 0
+        for table in ("posts", "comments"):
+            rows = conn.execute(
+                f"SELECT {table}.body, a.id FROM {table} "
+                f"JOIN agents a ON a.id = {table}.agent_id"
+            ).fetchall()
+            for body, aid in rows:
+                if not body.rstrip().endswith(f"(agent_id={aid})"):
+                    total += 1
+        return f"UNSIGNED {total}\n"
+    finally:
+        conn.close()
 
 
 def boot_agents(db_path):
@@ -195,15 +204,17 @@ def corrupt(db_path):
     db_path.write_bytes(b"this is not a sqlite database " * 64)
 
 
-def main():
+def scenario_fresh_install():
     # == fresh install: no db, no backups ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
         rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, (rc, err)
         assert "first run" in out, out
-    print("== fresh install -> check passes ==")
+    return "fresh install -> check passes"
 
+
+def scenario_healthy_db():
     # == healthy: live citizens + a backup ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -214,8 +225,10 @@ def main():
         rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, (rc, err)
         assert "ok" in out, out
-    print("== healthy db -> check passes ==")
+    return "healthy db -> check passes"
 
+
+def scenario_wiped_db():
     # == wiped: live db deleted, backup still has citizens ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -227,8 +240,10 @@ def main():
         rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 1, (rc, out, err)
         assert backup.name in err, err
-    print("== wiped db -> guard fires, names the backup ==")
+    return "wiped db -> guard fires, names the backup"
 
+
+def scenario_wiped_empty_file():
     # == wiped but the live file exists as an empty 0-byte file ==
     # The FULL update.sh sequence: the pre-start backup runs BEFORE the guard,
     # so a post-wipe empty snapshot becomes the newest backup. The guard must
@@ -258,8 +273,10 @@ def main():
         )
         assert "restore-db.py" in err, f"hint must reference restore-db.py, got: {err}"
         assert "--force" not in err, f"an empty live DB needs no --force: {err}"
-    print("== wiped with an empty file -> guard names the content backup ==")
+    return "wiped with an empty file -> guard names the content backup"
 
+
+def scenario_escape_hatch():
     # == escape hatch: a deliberate new age ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -273,16 +290,20 @@ def main():
         )
         assert rc == 0, (rc, err)
         assert "skipping" in out, out
-    print("== escape hatch -> check passes ==")
+    return "escape hatch -> check passes"
 
+
+def scenario_backup_missing_db():
     # == backup-db.py on a missing db is nonzero (update.sh's WARNING path) ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
         rc, out, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc != 0, "backup of a missing db must fail loudly"
         assert "no database" in (out + err), (out, err)
-    print("== backup-db on a missing db -> nonzero ==")
+    return "backup-db on a missing db -> nonzero"
 
+
+def scenario_restore_refuses_nonempty():
     # == restore refuses to overwrite a non-empty live db ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -295,8 +316,10 @@ def main():
         assert rc == 2, (rc, out, err)
         assert "REFUSING" in err, err
         assert count(db_path, "agents") == 4, "the live db must be untouched"
-    print("== restore refuses a non-empty live db ==")
+    return "restore refuses a non-empty live db"
 
+
+def scenario_restore_force():
     # == restore --force snapshots the live db, then restores ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -313,8 +336,10 @@ def main():
         pres = sorted((pathlib.Path(td) / "backups").glob("forum.*.pre-restore.db"))
         assert len(pres) == 1, pres
         assert count(pres[0], "agents") == 5, "the replaced live db is preserved"
-    print("== restore --force snapshots then restores ==")
+    return "restore --force snapshots then restores"
 
+
+def scenario_restore_missing_live():
     # == restore onto a missing live db; the result boots through init_db ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -328,8 +353,10 @@ def main():
         assert count(db_path, "agents") == 3
         out = boot_agents(db_path)
         assert "BOOT_AGENTS 3" in out, out
-    print("== restore onto a missing live db -> boots ==")
+    return "restore onto a missing live db -> boots"
 
+
+def scenario_file_restore():
     # == --file restores a named older backup ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -349,8 +376,10 @@ def main():
         )
         assert rc == 0, err
         assert count(db_path, "agents") == 2, "the named older backup is restored"
-    print("== --file restores a named older backup ==")
+    return "--file restores a named older backup"
 
+
+def scenario_reject_bad_filename():
     # == restore rejects a non-snapshot / path --file name ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -362,8 +391,10 @@ def main():
         )
         assert rc == 2, (rc, out, err)
         assert "not a backup snapshot name" in err, err
-    print("== restore rejects a non-snapshot --file name ==")
+    return "restore rejects a non-snapshot --file name"
 
+
+def scenario_list_backups():
     # == --list shows the backups with counts ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -380,9 +411,13 @@ def main():
         for b in backups_of(td):
             assert b.name in out, (b, out)
         assert "agents=2" in out and "agents=3" in out, out
-    print("== --list shows the backups with counts ==")
+    return "--list shows the backups with counts"
 
+
+def scenario_db_path_inside_repo():
     # == a db path inside the repo is refused; nothing is created ==
+    # SERIAL: creates and removes a path inside this checkout, so it runs
+    # before the parallel pool (whose workers read the same repo tree).
     forbidden = REPO / "_test_deploy_must_not_exist"
     db_path = forbidden / "forum.db"
     try:
@@ -400,8 +435,9 @@ def main():
         assert not db_path.exists(), "refused before touching the filesystem"
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
-    print("== db path inside the repo -> refused, nothing created ==")
 
+
+def scenario_backfill_signatures():
     # == backfill-signatures.py signs the pre-convention record ==
     # Posts/comments seeded WITHOUT signatures (the pre-auto-sign state) are
     # brought up to the rule-17 form: each body ends in its author's own
@@ -425,8 +461,10 @@ def main():
         )
         assert rc == 0, (rc, out, err)
         assert "0 signed" in out and "6 already signed" in out, out
-    print("== backfill signs the pre-convention record, idempotent ==")
+    return "backfill signs the pre-convention record, idempotent"
 
+
+def scenario_broken_config():
     # == a broken config.py makes every deploy script fail closed ==
     # config.py is now the deploy scripts' single source of path resolution,
     # so a config that cannot be imported must never let backup/guard/restore
@@ -474,8 +512,10 @@ def main():
             )
             assert "config.py" in proc.stderr, (script, proc.stderr)
             assert "refusing to run" in proc.stderr, (script, proc.stderr)
-    print("== broken config.py -> every deploy script refuses (exit 2) ==")
+    return "broken config.py -> every deploy script refuses (exit 2)"
 
+
+def scenario_config_paths():
     # == config.py resolves env + .env paths (the db package bootstrap, moved) ==
     # AGENTLAND_DATA_DIR picks the data dir; a scratch .env inside it still
     # overrides a tunable; FORUM_DB_PATH in the process env wins over both.
@@ -546,8 +586,10 @@ def main():
         )
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "CONFIG_OK" in proc.stdout, proc.stdout
-    print("== config.py resolves env + .env paths, warns on inside-repo DB ==")
+    return "config.py resolves env + .env paths, warns on inside-repo DB"
 
+
+def scenario_same_second_backups():
     # == two backups in the same second must not overwrite each other ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -564,8 +606,10 @@ def main():
         assert sorted(count(b, "agents") for b in backups) == [2, 3], (
             "both snapshots survive intact"
         )
-    print("== same-second backups don't overwrite each other ==")
+    return "same-second backups don't overwrite each other"
 
+
+def scenario_update_sh_wiring():
     # == update.sh installs the scripts before the guard runs and hints with --file ==
     # Regression: the guard must come AFTER the self-sync loop (the data dir's
     # old update.sh self-syncs only three scripts, so on the transition deploy
@@ -598,8 +642,10 @@ def main():
     assert "--force" not in cmd_line, (
         f"the guard's restore command must not use --force: {cmd_line!r}"
     )
-    print("== update.sh wiring ==")
+    return "update.sh wiring"
 
+
+def scenario_record_size_watch():
     # == record-size watch: a nudge, not a gate (exit 0 unless --strict) ==
     with tempfile.TemporaryDirectory(prefix="agld_rec_") as td:
         scratch = pathlib.Path(td) / "repo"
@@ -637,8 +683,10 @@ def main():
             "check-record-size.py", "--repo", str(pathlib.Path(td) / "missing")
         )
         assert rc == 2, (rc, out, err)
-    print("== record-size watch ==")
+    return "record-size watch"
 
+
+def scenario_backup_corrupt_source():
     # == backup-db.py fails loudly on a corrupt source and leaves no snapshot ==
     # A live DB that fails quick_check (or can't be read at all) must not
     # silently produce a worthless backup: backup-db.py removes the partial/
@@ -652,8 +700,10 @@ def main():
         assert backups_of(td) == [], (
             f"a corrupt snapshot must not be kept: {backups_of(td)}"
         )
-    print("== backup-db on a corrupt source -> nonzero, no snapshot kept ==")
+    return "backup-db on a corrupt source -> nonzero, no snapshot kept"
 
+
+def scenario_backup_quick_check():
     # == backup-db.py of a healthy db still succeeds and the snapshot verifies ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -669,8 +719,10 @@ def main():
         )
         out = _python(code)
         assert "QC True" in out, out
-    print("== backup-db on a healthy db -> snapshot passes quick_check ==")
+    return "backup-db on a healthy db -> snapshot passes quick_check"
 
+
+def scenario_corrupt_only_backups():
     # == check-db-boot: corrupt-only backup set is a wipe, not a first run ==
     # If the live DB is wiped and every snapshot that exists fails integrity
     # check, booting an empty forum silently would mask the wipe - the guard
@@ -688,8 +740,10 @@ def main():
         assert "first run" not in out, out
         assert "corrupt" in (out + err).lower(), (out, err)
         assert snap.name in err, f"the guard must name the corrupt backup: {err}"
-    print("== corrupt-only backup set -> guard fails closed (exit 1) ==")
+    return "corrupt-only backup set -> guard fails closed (exit 1)"
 
+
+def scenario_corrupt_and_good_backups():
     # == check-db-boot: corrupt backup + a good one -> names the good backup ==
     # When a content-bearing backup still exists, the guard must pick it (the
     # newest INTACT snapshot), never the corrupt newer one, and note the skip.
@@ -712,8 +766,10 @@ def main():
         assert f"--file {newest.name}" not in err, (
             f"must not hint the corrupt newest as the restore candidate: {err}"
         )
-    print("== corrupt + good backups -> guard names the intact backup ==")
+    return "corrupt + good backups -> guard names the intact backup"
 
+
+def scenario_healthy_with_corrupt_backup():
     # == check-db-boot: healthy live DB passes even with a corrupt backup ==
     # The guard's corrupt handling must not fire on a healthy forum - a corrupt
     # snapshot is only a problem when there is nothing else to restore.
@@ -726,8 +782,10 @@ def main():
         rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, (rc, out, err)
         assert "ok" in out, out
-    print("== healthy live DB + corrupt backup -> guard passes ==")
+    return "healthy live DB + corrupt backup -> guard passes"
 
+
+def scenario_list_flags_corrupt():
     # == restore-db.py --list flags corrupt snapshots ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
@@ -747,7 +805,53 @@ def main():
         assert good.name in out, out
         assert newest.name in out, out
         assert "(corrupt)" in out, f"the corrupt snapshot must be flagged: {out}"
-    print("== restore --list flags corrupt snapshots ==")
+    return "restore --list flags corrupt snapshots"
+
+
+# Scenario order is the original prose order; the printed lines stay stable
+# across runs even though the pool finishes them concurrently.
+SCENARIOS = [
+    scenario_fresh_install,
+    scenario_healthy_db,
+    scenario_wiped_db,
+    scenario_wiped_empty_file,
+    scenario_escape_hatch,
+    scenario_backup_missing_db,
+    scenario_restore_refuses_nonempty,
+    scenario_restore_force,
+    scenario_restore_missing_live,
+    scenario_file_restore,
+    scenario_reject_bad_filename,
+    scenario_list_backups,
+    scenario_backfill_signatures,
+    scenario_broken_config,
+    scenario_config_paths,
+    scenario_same_second_backups,
+    scenario_update_sh_wiring,
+    scenario_record_size_watch,
+    scenario_backup_corrupt_source,
+    scenario_backup_quick_check,
+    scenario_corrupt_only_backups,
+    scenario_corrupt_and_good_backups,
+    scenario_healthy_with_corrupt_backup,
+    scenario_list_flags_corrupt,
+]
+
+
+def main():
+    # The repo-touching scenario creates and removes a path inside this
+    # checkout, so it runs alone before the pool (no concurrent worker reads a
+    # half-created fixture).
+    scenario_db_path_inside_repo()
+    print("== db path inside the repo -> refused, nothing created ==")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(fn) for fn in SCENARIOS]
+        for _, fut in zip(SCENARIOS, futures, strict=True):
+            # result() in scenario order: a failure surfaces at its scenario's
+            # line while the remaining scenarios finish in the background, and
+            # the pool context joins every worker before we return.
+            print(f"== {fut.result()} ==")
 
     print("test_deploy: all assertions passed")
 
