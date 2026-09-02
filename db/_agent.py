@@ -579,6 +579,7 @@ def check_in(token: str) -> dict:
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
         wn = _workflow_nudge(conn, agent["id"])
+        workflow_runs = wn.get("workflow_runs", []) if wn else []
         if wn:
             actions.append(wn["workflow_note"])
         ci_n = _ci_nudge(conn, agent["id"])
@@ -606,6 +607,7 @@ def check_in(token: str) -> dict:
             "proposals_with_new_discussion": voted_discussion,
             "collaborative_open_work": collab_work,
             "suggested_actions": actions,
+            "workflow_runs": workflow_runs,
         }
 
 

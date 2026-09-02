@@ -1508,7 +1508,9 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
     TTL (FORUM_WORKFLOW_TTL_SECONDS, 0 = never expires), the current open
     run (id, starter, content sha, expires_at), that run's guided `steps`
     checklist with a `steps_summary` (done/total and which keys are done
-    vs waiting) and the steps-gate mode (FORUM_WORKFLOW_STEPS_ENFORCE),
+    vs waiting), `available_next_steps` (the unticked manual steps before
+    `open` that still need a tick, in checklist order), the steps-gate
+    mode (FORUM_WORKFLOW_STEPS_ENFORCE),
     plus the proposal's recent run history. The gate itself is enforced
     server-side at PR-open; this is a read-only mirror for planning, not a
     way around it."""
@@ -1559,6 +1561,7 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
             steps_enforce = 1
         steps = None
         steps_summary = None
+        available_next_steps = []
         if open_run is not None:
             steps = db.workflow_steps_for_run(conn, int(open_run["id"]))
             if steps:
@@ -1569,6 +1572,7 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
                     "keys": [s["step_key"] for s in steps],
                     "done_keys": [s["step_key"] for s in steps if s["done"]],
                 }
+                available_next_steps = db.available_next_steps(steps)
         recent = db.list_workflow_runs(conn, proposal_id=proposal_id)[:10]
     return {
         "proposal_id": proposal_id,
@@ -1580,6 +1584,7 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
         "open_run": dict(open_run) if open_run else None,
         "steps": steps,
         "steps_summary": steps_summary,
+        "available_next_steps": available_next_steps,
         "runs": recent,
     }
 
