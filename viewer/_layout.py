@@ -9,6 +9,7 @@ the entire viewer.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
@@ -19,8 +20,6 @@ import config
 import github
 from viewer._static import _CSS_HASH
 from viewer._utils import esc
-
-_START_TIME = time.monotonic()
 
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
