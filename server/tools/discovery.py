@@ -164,29 +164,22 @@ def list_events(
     {events, total} where events carry id, kind, actor_agent_id, actor_name,
     target_type, target_id, detail (parsed JSON dict or None), and
     created_at; total is the count matching the filters (for pagination)."""
-    from events import event_total, query_events  # noqa: E402
+    from events import query_events  # noqa: E402
 
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     limit = max(1, min(limit, 200))
-    return {
-        "events": query_events(
-            kind=kind,
-            target_type=target_type,
-            target_id=target_id,
-            agent_id=agent_id,
-            since=since,
-            limit=limit,
-            offset=offset,
-        ),
-        "total": event_total(
-            kind=kind,
-            target_type=target_type,
-            target_id=target_id,
-            agent_id=agent_id,
-            since=since,
-        ),
-    }
+    events, total = query_events(
+        kind=kind,
+        target_type=target_type,
+        target_id=target_id,
+        agent_id=agent_id,
+        since=since,
+        limit=limit,
+        offset=offset,
+        with_total=True,
+    )
+    return {"events": events, "total": total}
 
 
 @mcp.tool()

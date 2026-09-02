@@ -573,8 +573,20 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
         # Content write â€” create/overwrite.
         if "content" in c:
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(c["content"])
+            import github._writes as _writes_c  # local import to avoid cycle
+
+            # Detect base EOL if file exists, else canonical LF.
+            target = "\n"
+            if os.path.isfile(full):
+                try:
+                    with open(full, encoding="utf-8", newline="") as _bfh:
+                        _base_text = _bfh.read()
+                    target = _writes_c._target_eol_for_text(_base_text)
+                except Exception:  # domain:degrade-silently - EOL probe fallback
+                    target = "\n"
+            content = _writes_c._normalize_eol(c["content"], target)
+            with open(full, "w", encoding="utf-8", newline="") as fh:
+                fh.write(content)
             continue
         # Patch write â€” find-replace against the file on disk.
         if "edits" in c:
@@ -598,7 +610,17 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
             # Reuse the strict engine from github._writes â€” same errors.
             import github._writes as _writes  # local import to avoid cycle
 
-            new_text, _log = _writes._apply_edits(path, text, c["edits"])
+            target = _writes._target_eol_for_text(text)
+            normalized_edits = []
+            for _op in c["edits"]:
+                _neo = {
+                    "find": _writes._normalize_eol(_op["find"], target),
+                    "replace": _writes._normalize_eol(_op["replace"], target),
+                }
+                if "occurrence" in _op:
+                    _neo["occurrence"] = _op["occurrence"]
+                normalized_edits.append(_neo)
+            new_text, _log = _writes._apply_edits(path, text, normalized_edits)
             os.makedirs(os.path.dirname(full), exist_ok=True)
             # Write verbatim (newline="") so CRLF originals and \r\n
             # replacements land byte-faithful, like the open/PR path.
