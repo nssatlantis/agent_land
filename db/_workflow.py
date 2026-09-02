@@ -816,7 +816,8 @@ def require_workflow_block(
                     f"repo_workflow_step(token, run_id={int(row['id'])}, "
                     f"step_key='<key>') (workflows/create-pr.md), then retry. "
                     "Set FORUM_WORKFLOW_STEPS_ENFORCE=0 to make the checklist "
-                    "advisory only."
+                    "advisory only, or pass dry_run=True to repo_propose_change to "
+                    "rehearse the change without opening a PR."
                 )
     return
 

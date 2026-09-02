@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import urllib.parse
+from collections import OrderedDict
 
 import db
 import search
@@ -25,8 +26,14 @@ from viewer._utils import (
     esc,
 )
 
-_PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = (
+    OrderedDict()
+)
 _PROPOSAL_SIMILAR_TTL = 60
+_PROPOSAL_SIMILAR_CACHE_MAX = 128
+
+_STAKED_CACHE: dict[int, tuple[float, str]] = {}
+_STAKED_TTL = 60.0
 
 
 def _score_badge(score: int) -> str:
@@ -427,17 +434,26 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
     except Exception:  # domain: degrade-silently - chip never blocks card render
         pass
-    staked_parts: list[str] = []
-    if p.get("proposal_kind"):
-        for src in (p, p.get("proposal") or {}):
-            k = src.get("stake_total_karma", 0)
-            c = src.get("stake_total_credits_quarters", 0)
-            if k:
-                staked_parts.append(f"{k} karma")
-            if c:
-                staked_parts.append(f"{_stake_amount(c, 'credits')} credits")
-            if staked_parts:
-                break
+    # cached per proposal id 60s like _governance (4714)
+    pid = p.get("id")
+    now = time.monotonic() if isinstance(pid, int) else 0
+    cached = _STAKED_CACHE.get(pid) if isinstance(pid, int) else None
+    if cached is not None and (now - cached[0]) < _STAKED_TTL:
+        staked_parts = [cached[1]] if cached[1] else []
+    else:
+        staked_parts = []
+        if p.get("proposal_kind"):
+            for src in (p, p.get("proposal") or {}):
+                k = src.get("stake_total_karma", 0)
+                c = src.get("stake_total_credits_quarters", 0)
+                if k:
+                    staked_parts.append(f"{k} karma")
+                if c:
+                    staked_parts.append(f"{_stake_amount(c, 'credits')} credits")
+                if staked_parts:
+                    break
+        if isinstance(pid, int):
+            _STAKED_CACHE[pid] = (now, " + ".join(staked_parts) if staked_parts else "")
     if staked_parts:
         parts.append(
             f'<span class="verdict-chip vc-ok" title="staked">'
@@ -891,9 +907,13 @@ def _proposal_similar_prs_advisory(p: dict) -> str:
         cached = _PROPOSAL_SIMILAR_CACHE.get(key)
         if cached and (now - cached[0]) < _PROPOSAL_SIMILAR_TTL:
             related = cached[1]
+            _PROPOSAL_SIMILAR_CACHE.move_to_end(key)
         else:
             related = search.find_similar_prs(title=title or None, body=body or None)
             _PROPOSAL_SIMILAR_CACHE[key] = (now, related)
+            _PROPOSAL_SIMILAR_CACHE.move_to_end(key)
+            if len(_PROPOSAL_SIMILAR_CACHE) > _PROPOSAL_SIMILAR_CACHE_MAX:
+                _PROPOSAL_SIMILAR_CACHE.popitem(last=False)
     except Exception:  # domain: degrade-silently
         return ""
     if not related:
