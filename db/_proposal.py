@@ -39,6 +39,32 @@ from notifications import _notify
 from search import _normalized_title, find_matching_tags, find_similar_posts
 
 
+def _bug_confirmed(conn, bug_id, threshold):
+    row = conn.execute(
+        "SELECT confidence, status FROM bug_reports WHERE id = ?",
+        (bug_id,),
+    ).fetchone()
+    _status = row["status"]
+    _conf = row["confidence"]
+    if row is not None and _status == "open" and _conf < threshold:
+        raise ForumError(
+            f"bug report #{bug_id} is not confirmed (confidence {_conf}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
+        )
+
+
+def validate_title_body(title: str, body: str) -> None:
+    _mt = config.MAX_TITLE_LEN
+    _mb = config.MAX_BODY_LEN
+    if not title or not body:
+        raise ForumError("title and body are both required.")
+    if len(title) > _mt:
+        raise ForumError(f"title must be {_mt} characters or fewer.")
+    if not _normalized_title(title):
+        raise ForumError("title must contain at least one letter or digit.")
+    if len(body) > _mb:
+        raise ForumError(f"body must be {_mb} characters or fewer.")
+
+
 def create_proposal(
     token: str,
     title: str,
@@ -56,14 +82,7 @@ def create_proposal(
 
     title = (title or "").strip()
     body = (body or "").strip()
-    if not title or not body:
-        raise ForumError("title and body are both required.")
-    if len(title) > config.MAX_TITLE_LEN:
-        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
-    if not _normalized_title(title):
-        raise ForumError("title must contain at least one letter or digit.")
-    if len(body) > config.MAX_BODY_LEN:
-        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+    validate_title_body(title, body)
 
     if sum([small_fix, collaborative, idea]) > 1:
         raise ForumError("small_fix, collaborative, and idea are mutually exclusive.")
@@ -115,24 +134,12 @@ def create_proposal(
         body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-        # Rule 21: small_fix bug references must be confirmed (confidence >= threshold)
         if kind == "small_fix":
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute(
-                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
-                            (ref["id"],),
-                        ).fetchone()
-                        if (
-                            row is not None
-                            and row["status"] == "open"
-                            and row["confidence"] < threshold
-                        ):
-                            raise ForumError(
-                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
-                            )
+                        _bug_confirmed(conn, ref["id"], threshold)
         similar = find_similar_posts(title, body, kind)
         suggested_tags = find_matching_tags(title, body)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
@@ -309,24 +316,12 @@ def edit_proposal(
         final_body, referenced, unresolved_refs = _expand_references(conn, final_body)
         if len(final_body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-        # Rule 21: gate small_fix edits that add bug references
         if post["proposal_kind"] == "small_fix":
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute(
-                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
-                            (ref["id"],),
-                        ).fetchone()
-                        if (
-                            row is not None
-                            and row["status"] == "open"
-                            and row["confidence"] < threshold
-                        ):
-                            raise ForumError(
-                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
-                            )
+                        _bug_confirmed(conn, ref["id"], threshold)
         if renamed:
             similar = find_similar_posts(
                 final_title, final_body, post["proposal_kind"], exclude_post_id=post_id
@@ -529,24 +524,12 @@ def supersede_proposal(
         body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-        # Rule 21: gate small_fix supersede that adds bug references
         if parent["proposal_kind"] == "small_fix":
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute(
-                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
-                            (ref["id"],),
-                        ).fetchone()
-                        if (
-                            row is not None
-                            and row["status"] == "open"
-                            and row["confidence"] < threshold
-                        ):
-                            raise ForumError(
-                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before superseding to a small_fix; use a normal proposal if the bug is unconfirmed"
-                            )
+                        _bug_confirmed(conn, ref["id"], threshold)
         suggested_tags = find_matching_tags(title, body)
         new_version = parent["version"] + 1
         stored, signature_applied = _ensure_signature(
