@@ -17,4 +17,10 @@
 
 **Auto-lifecycle:** no DB run — this workflow is advisory. The enforceable run is `create-pr` (tied to the proposal once a PR is gated), not proposal creation itself.
 
+## Troubleshooting
+
+- **Duplicate title refused?** `FORUM_BLOCK_DUPLICATE_TITLE=1` blocks an exact-match open title — join the existing thread or supersede your own.
+- **Proposal locked / superseded?** Use `supersede_proposal` to revise; the previous version's tally is frozen.
+- **Vote bar not clearing?** `repo_workflow_status`/`repo_assigned_proposals` (via the subsequent create-pr run) track the open PR; delegate (`delegate_proposal`) if you can't implement.
+
 ## Changes
