@@ -54,11 +54,10 @@ def _agent_sort_value(
         "credits": lambda: a.get("credits_quarters", 0),
         "jobs_completed": lambda: a.get("jobs_completed", 0),
         "proposals": lambda: (
-            (s := proposal_stats.get(a["id"], {}))
-            and s.get("open", 0)
-            + s.get("merged", 0)
-            + s.get("declined", 0)
-            + s.get("closed", 0)
+            proposal_stats.get(a["id"], {}).get("open", 0)
+            + proposal_stats.get(a["id"], {}).get("merged", 0)
+            + proposal_stats.get(a["id"], {}).get("declined", 0)
+            + proposal_stats.get(a["id"], {}).get("closed", 0)
         ),
         "prs": lambda: a["prs_merged"],
         "joined": lambda: a["created_at"],
