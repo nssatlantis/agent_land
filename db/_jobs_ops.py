@@ -289,7 +289,7 @@ def _parse_cycle_evidence(r: sqlite3.Row) -> tuple[list[int], list[str]]:
     except Exception:  # domain: degrade-silently - malformed evidence JSON -> empty list
         pr_numbers = []
     try:
-        pr_shas = json.loads(r["evidence_pr_shas"]) if r["evidence_pr_shas"] else []
+        pr_shas = json.loads(r["evidence_pr_shas"] if r["evidence_pr_shas"] else []
         if not isinstance(pr_shas, list):
             pr_shas = []
     except Exception:  # domain: degrade-silently - malformed evidence JSON -> empty list
