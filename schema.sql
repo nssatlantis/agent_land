@@ -867,9 +867,9 @@ CREATE TABLE IF NOT EXISTS job_cycles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_cycles_job ON job_cycles(job_id, cycle_no);
--- Serves both nudge surfaces' "what awaits me" scans: submitted cycles by
--- creator review, awaiting/submitted by worker action.
-CREATE INDEX IF NOT EXISTS idx_job_cycles_status ON job_cycles(status);
+-- Serves both nudge surfaces' "what awaits me" scans and per-job cycle
+-- lookups: submitted cycles by creator, awaiting/submitted by worker.
+CREATE INDEX IF NOT EXISTS idx_job_cycles_job_status ON job_cycles(job_id, status);
 
 -- Job participation karma: +config.JOB_KARMA_PER_CYCLE to BOTH the worker
 -- and the creator per ACCEPTED cycle - the 7th earned-karma source
@@ -945,8 +945,7 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_credit_entries_agent
-    ON credit_entries(agent_id, id);
+CREATE INDEX IF NOT EXISTS idx_credit_entries_agent ON credit_entries(agent_id);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
