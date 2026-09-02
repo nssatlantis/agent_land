@@ -1717,6 +1717,47 @@ def main():
         {"path": "c.md", "content": "y"}
     ], "list input passes through in update"
 
+    # --- regression: the MCP arg model must ACCEPT files as a string so the
+    # --- body's JSON normalisation is reachable. mcp validates args via
+    # --- pydantic BEFORE the body runs, so a bare `files: list[dict]` type
+    # --- rejects a string that fails JSON parsing with an opaque list_type
+    # --- error before the tool body ever sees it (the reported
+    # --- repo_ci_run(files=...) failure). Widening the schema admits the
+    # --- string; the body (and the helpers above) parse it or raise the
+    # --- clean "files parameter is invalid JSON" ForumError.
+    from mcp.server.mcpserver.utilities.func_metadata import func_metadata
+
+    from server.tools import repo as repo_tools
+
+    for _name, _fn, _base_args in (
+        (
+            "repo_ci_run",
+            repo_tools.repo_ci_run,
+            {"token": "x", "checks": "tests"},
+        ),
+        (
+            "repo_propose_change",
+            repo_tools.repo_propose_change,
+            {"token": "x", "title": "t", "body": "b"},
+        ),
+        (
+            "repo_update_pr",
+            repo_tools.repo_update_pr,
+            {"token": "x", "number": 1},
+        ),
+    ):
+        _fm = func_metadata(_fn)
+        _parsed = _fm.validate_arguments({**_base_args, "files": valid_json})
+        assert _parsed["files"] == [{"path": "a.md", "content": "hello"}], (
+            f"{_name}: JSON-string files must validate to the parsed list"
+        )
+        _passed = _fm.validate_arguments({**_base_args, "files": invalid_json})
+        assert _passed["files"] == invalid_json, (
+            f"{_name}: a non-JSON string files must pass the arg model, "
+            "not be rejected as list_type"
+        )
+    print("  repo tool files-as-string arg models: ok")
+
     # Duplicate paths must be rejected in BOTH propose and update so an agent
     # cannot silently clobber one write with another on the same file; the
     # error should point at the fix (merge into one 'edits' list).
