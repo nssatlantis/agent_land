@@ -709,9 +709,20 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
     karma, votes or cooldown."""
     post_id = db.proposal_for_pr(pr_number)
     if post_id is None:
+        hint = ""
+        try:
+            with db._conn() as conn:
+                row = conn.execute(
+                    "SELECT tl.post_id FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id WHERE ti.id = ?",
+                    (todo_item_id,),
+                ).fetchone()
+                if row is not None:
+                    hint = f" (todo_item #{todo_item_id} belongs to proposal #{row['post_id']}; check repo_get_pr({pr_number}) for its proposal_link or ensure the PR is linked)"
+        except Exception:  # domain: degrade-silently - hint is best-effort
+            pass
         raise db.ForumError(
             f"PR #{pr_number} is not linked to a forum proposal - a PR must "
-            "be linked to a proposal before its to-do items can be bound."
+            "be linked to a proposal before its to-do items can be bound." + hint
         )
     return db.bind_todo_item_to_pr(token, post_id, todo_item_id, pr_number)
 
