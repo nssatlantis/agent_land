@@ -87,7 +87,9 @@ def _bug_timeline(report: dict, threshold: int) -> str:
     """Lifecycle steps for a bug report: reported -> confirmed -> proposal
     -> fixed, with each completed step highlighted. Display-only. Cached per status."""
     # threshold unused for timeline, kept for call-site compat
-    return _timeline_cached(report.get("status") or "open", bool(report.get("linked_proposals")))
+    return _timeline_cached(
+        report.get("status") or "open", bool(report.get("linked_proposals"))
+    )
 
 
 def bugs_page(request):
