@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from starlette.responses import Response
 
-STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
+STYLE_CSS = r"""  # 4715: served via _CSS_HASH, already cacheable  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
            --ok:#2f855a; --fail:#c53030; --warn:#b7791f; --dim:#a0aec0;
            --ok-tint:#e6fffa; --warn-tint:#fefcbf; --info-tint:#f7fafc;
            --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
