@@ -147,6 +147,7 @@ def _truncate_all():
             "admin_actions",
             "comments",
             "posts",
+            "votes",
             "agents",
         ):
             try:
