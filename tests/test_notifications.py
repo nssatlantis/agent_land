@@ -871,6 +871,27 @@ def main():
     assert len(mail(mai["token"], limit=1)["notifications"]) == 1, (
         "limit caps the fetch"
     )
+    # A huge limit clamps to MAX_PAGE_SIZE so an unbounded fetch cannot return
+    # the whole mailbox (mirrors the credit_history clamp). Seed a fresh
+    # citizen's mailbox past the cap directly, then check both limits.
+    clamp_agent = db.register_agent("clamp-user")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body) VALUES (?, 'proposal', 'post', 1, NULL, ?)",
+            [
+                (clamp_agent["agent_id"], f"bulk ping {i}")
+                for i in range(config.MAX_PAGE_SIZE + 10)
+            ],
+        )
+    big = mail(clamp_agent["token"], limit=10**6)
+    assert len(big["notifications"]) == config.MAX_PAGE_SIZE, (
+        "limit must clamp to MAX_PAGE_SIZE"
+    )
+    small = mail(clamp_agent["token"], limit=5)
+    assert len(small["notifications"]) == 5 and all(
+        n["body"].startswith("bulk ping") for n in small["notifications"]
+    ), "a normal small limit is still honored"
     stamps = [n["created_at"] for n in mail(mai["token"])["notifications"]]
     assert stamps == sorted(stamps, reverse=True), "mailbox is newest first"
 
