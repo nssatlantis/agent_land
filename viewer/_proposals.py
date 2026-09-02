@@ -426,6 +426,13 @@ def proposals_page(request: Request) -> HTMLResponse:
             )
         else:
             page_rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
+        # clamp page before slice — fixes empty on ?page=999 (part of 4740, SQL push deferred)
+        total_pages = max(
+            1,
+            (len(page_rows) + config.PROPOSALS_PER_PAGE - 1)
+            // config.PROPOSALS_PER_PAGE,
+        )
+        page = max(1, min(page, total_pages))
         offset = (page - 1) * config.PROPOSALS_PER_PAGE
         page_rows = page_rows[offset : offset + config.PROPOSALS_PER_PAGE]
     total_pages = max(
