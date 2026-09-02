@@ -85,7 +85,8 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
         if any(part in _SKIP_DIRS for part in path.parts):
             continue
         try:
-            count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+            with path.open(encoding="utf-8", errors="replace") as f:
+                count = sum(1 for _ in f)
         except (  # domain: degrade-silently - unreadable py file skipped, list still renders
             OSError
         ):
