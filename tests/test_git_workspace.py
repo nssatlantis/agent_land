@@ -52,6 +52,14 @@ def _mk_remote(tmp):
     return bare
 
 
+# The seed remote is pure prep - byte-identical for every sandbox and
+# never written once built (scenarios only clone from / read it). Build it
+# once at import instead of once per test: under the parallel harness this
+# deletes ~45 duplicated git prep spawns, roughly half the suite's
+# under-load wall (each spawn pays 16-worker contention).
+_SHARED_BARE = _mk_remote(tempfile.mkdtemp(prefix="agentland_ws_remote_"))
+
+
 def _rm_ro(func, path, _exc):
     os.chmod(path, 0o777)
     func(path)
@@ -63,7 +71,7 @@ class _PoolSandbox:
 
     def __init__(self, pool=1, ttl=3600, lock_timeout=5):
         self.tmp = tempfile.mkdtemp(prefix="agentland_ws_test_")
-        self.bare = _mk_remote(self.tmp)
+        self.bare = _SHARED_BARE
         self._orig = {
             "mode": config.GIT_WORKSPACE_MODE,
             "pool": config.GIT_WORKSPACE_POOL,
