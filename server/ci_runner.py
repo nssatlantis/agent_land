@@ -236,7 +236,7 @@ def _effective_cpus() -> float:
     if busy <= 1:
         return round(min(ceil, max(1.0, ceil)), 2)
     fair = host / max(1, busy)
-    fair -= 0.125 #Keep small amount reserved.
+    fair -= 0.125 # Keep small amount reserved.
     return round(min(ceil, max(1.0, fair)), 2)
 
 
