@@ -9,9 +9,24 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
+from collections import OrderedDict
 
 import config
 import db
+
+# LRU caches for proposal-creation hot path (find_similar_posts +
+# find_matching_tags).  Keyed on normalised inputs; TTL 60s, max 128
+# entries -- matches the viewer _PROPOSAL_SIMILAR_CACHE pattern.
+_SIMILAR_POSTS_CACHE: OrderedDict[tuple[str, str, str], tuple[float, list]] = (
+    OrderedDict()
+)
+_SIMILAR_POSTS_TTL = 60
+_SIMILAR_POSTS_CACHE_MAX = 128
+
+_MATCHING_TAGS_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = OrderedDict()
+_MATCHING_TAGS_TTL = 60
+_MATCHING_TAGS_CACHE_MAX = 128
 
 
 def _normalized_title(title: str) -> str:
@@ -51,6 +66,14 @@ def find_similar_posts(
     above config.SIMILAR_THRESHOLD, best first, each carrying `post_id`,
     `title`, `kind` and `score`. Read-only; callers show the author (and the
     viewer's readers) what already exists so discussion stays on one thread."""
+    # Check LRU cache first -- proposal creation hits this twice (create +
+    # supersede) with identical inputs; skip the FTS query when fresh.
+    cache_key = (title, body, kind)
+    now = time.monotonic()
+    cached = _SIMILAR_POSTS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _SIMILAR_POSTS_TTL:
+        _SIMILAR_POSTS_CACHE.move_to_end(cache_key)
+        return cached[1]
     limit = config.SIMILAR_RESULTS if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     threshold = config.SIMILAR_THRESHOLD
@@ -125,7 +148,13 @@ def find_similar_posts(
                 }
             )
     scored.sort(key=lambda s: (-s["score"], s["post_id"]))
-    return scored[:limit]
+    result = scored[:limit]
+    # Store in LRU cache for subsequent calls with same inputs.
+    _SIMILAR_POSTS_CACHE[cache_key] = (now, result)
+    _SIMILAR_POSTS_CACHE.move_to_end(cache_key)
+    if len(_SIMILAR_POSTS_CACHE) > _SIMILAR_POSTS_CACHE_MAX:
+        _SIMILAR_POSTS_CACHE.popitem(last=False)
+    return result
 
 
 def similar_proposal_for(
@@ -405,6 +434,14 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
     never suggested - they refuse new applications. Returns [] when nothing
     clears the bar. Read-only and non-blocking; applying a tag remains
     karma-priced (rule 18)."""
+    # Check LRU cache first -- proposal creation hits this alongside
+    # find_similar_posts with identical inputs; skip the scan when fresh.
+    cache_key = (title, body)
+    now = time.monotonic()
+    cached = _MATCHING_TAGS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _MATCHING_TAGS_TTL:
+        _MATCHING_TAGS_CACHE.move_to_end(cache_key)
+        return cached[1]
     threshold = config.TAG_SUGGEST_THRESHOLD
     if threshold <= 0:
         return []
@@ -451,7 +488,13 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
                 }
             )
     scored.sort(key=lambda s: (-s["score"], s["name"]))
-    return scored[:limit]
+    result = scored[:limit]
+    # Store in LRU cache for subsequent calls with same inputs.
+    _MATCHING_TAGS_CACHE[cache_key] = (now, result)
+    _MATCHING_TAGS_CACHE.move_to_end(cache_key)
+    if len(_MATCHING_TAGS_CACHE) > _MATCHING_TAGS_CACHE_MAX:
+        _MATCHING_TAGS_CACHE.popitem(last=False)
+    return result
 
 
 def _fts_query(query: str) -> list[str]:
