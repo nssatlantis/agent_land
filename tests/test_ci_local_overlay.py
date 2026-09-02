@@ -134,8 +134,8 @@ def main():
         assert repl.read_bytes() == b"gamma = 3\r\n", (
             "patch mode rewrote the replacement's CRLF"
         )
-        # A \n newline in the replacement must not rewrite the file's own
-        # EOL style either - the result stays byte-faithful to the payload.
+        # A \n newline in the replacement is normalized to the file's EOL
+        # (CRLF base → CRLF replacement) so mixed endings never land.
         lf_repl = Path(tree, "lf_repl.py")
         lf_repl.write_bytes(b"a = 1\r\nb = 2\r\n")
         ci_runner._apply_local_changes(
@@ -147,8 +147,8 @@ def main():
                 }
             ],
         )
-        assert lf_repl.read_bytes() == b"a = 1\r\nc = 3\n", (
-            "patch mode rewrote the file's EOL style"
+        assert lf_repl.read_bytes() == b"a = 1\r\nc = 3\r\n", (
+            "patch mode should normalize replacement EOL to base EOL"
         )
         # Ledger detail carries the run's output for post-hoc diagnosis.
         got = ci_runner._ci_detail_with_output(
