@@ -5,7 +5,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import github._writes as _writes  # noqa: E402
+import github._eol as _eol
+import github._gitops as _gitops
+import github._writes as _writes
+
+
+def test_single_source():
+    # One implementation: both modules re-export github._eol's helpers,
+    # so a future fix cannot desync them.
+    assert _writes._normalize_eol is _eol._normalize_eol
+    assert _writes._target_eol_for_text is _eol._target_eol_for_text
+    assert _gitops._normalize_eol is _eol._normalize_eol
+    assert _gitops._target_eol_for_text is _eol._target_eol_for_text
+    print("  single-source ok")  # noqa: E402
 
 
 def test_normalize_eol_helper():
@@ -31,8 +43,10 @@ def test_target_eol_detection():
     assert _writes._target_eol_for_text("") == "\n"
     assert _writes._target_eol_for_text("a\nb\n") == "\n"
     assert _writes._target_eol_for_text("a\r\nb\r\n") == "\r\n"
-    # mixed with any CRLF -> CRLF (preserve old CRLF bases until renormalize)
-    assert _writes._target_eol_for_text("a\r\nb\n") == "\r\n"
+    # mixed follows the majority ending; ties fall back to LF (canonical)
+    assert _writes._target_eol_for_text("a\r\nb\r\nc\n") == "\r\n"
+    assert _writes._target_eol_for_text("a\r\nb\nc\n") == "\n"
+    assert _writes._target_eol_for_text("a\r\nb\n") == "\n"
     assert _writes._target_eol_for_text("a\0b\n") == "\n"
     print("  target ok")
 
@@ -76,6 +90,7 @@ def test_patch_find_normalized():
 
 
 def main():
+    test_single_source()
     test_normalize_eol_helper()
     test_target_eol_detection()
     test_whole_file_normalize_preserves_base()

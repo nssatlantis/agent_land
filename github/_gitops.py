@@ -26,29 +26,10 @@ import config
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError
+from ._eol import _normalize_eol as _normalize_eol  # noqa: F401
+from ._eol import _target_eol_for_text as _target_eol_for_text  # noqa: F401
 
 _CONTEXT_LINES = 3
-
-
-def _normalize_eol(text: str, target: str) -> str:
-    """Normalize *text* to *target* EOL ("\\n" or "\\r\\n"). Binary-safe."""
-    if "\0" in text:
-        return text
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    if target == "\r\n":
-        return normalized.replace("\n", "\r\n")
-    return normalized
-
-
-def _target_eol_for_text(base_text: str | None) -> str:
-    """Pick EOL for a file: CRLF if base contains CRLF, else LF."""
-    if base_text is None or base_text == "":
-        return "\n"
-    if "\0" in base_text:
-        return "\n"
-    if "\r\n" in base_text:
-        return "\r\n"
-    return "\n"
 
 
 def _parse_conflict_markers(text: str) -> list[dict]:

@@ -20,33 +20,13 @@ import config
 
 from . import _core, _reads
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._eol import _normalize_eol as _normalize_eol  # noqa: F401
+from ._eol import _target_eol_for_text as _target_eol_for_text  # noqa: F401
 
 # Cap on find-replace ops per file (patch mode). Generous sanity bound only -
 # patch mode exists to keep tool calls small, so an edit list this long is
 # probably a whole rewrite that belongs in `content` instead.
 _MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
-
-
-def _normalize_eol(text: str, target: str) -> str:
-    """Normalize *text* to *target* EOL (\"\\n\" or \"\\r\\n\"). Binary-safe."""
-    if "\0" in text:
-        return text
-    # Collapse CRLF and lone CR to LF, then re-expand to target if CRLF.
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    if target == "\r\n":
-        return normalized.replace("\n", "\r\n")
-    return normalized
-
-
-def _target_eol_for_text(base_text: str | None) -> str:
-    """Pick EOL for a file: CRLF if base contains CRLF, else LF (canonical)."""
-    if base_text is None or base_text == "":
-        return "\n"
-    if "\0" in base_text:
-        return "\n"
-    if "\r\n" in base_text:
-        return "\r\n"
-    return "\n"
 
 
 def propose_change(
