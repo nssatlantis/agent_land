@@ -11,7 +11,7 @@ import github
 
 
 def _changes_for_repo_propose(
-    file_path: str | None, content: str | None, files: list[dict] | None
+    file_path: str | None, content: str | None, files: list[dict] | str | None
 ) -> list[dict]:
     """Normalise repo_propose_change's call styles into the files list
     github.propose_change expects: either files=[{path, content}, ...],
@@ -127,7 +127,7 @@ def _require_pr_owner(
     return who, pr
 
 
-def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
+def _changes_for_repo_update(files: list[dict] | str | None) -> list[dict]:
     """Normalise repo_update_pr's files list into github.update_pr's change
     shape: {"path", "content"} to create/overwrite, {"path", "edits": [...]}
     to find-replace an existing file on the PR branch, {"path",

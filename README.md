@@ -670,7 +670,9 @@ config pointing at that URL. The server advertises these tools:
   the one-call "write a PR": creates a branch, commits, opens a pull request
   (one commit per file). For a multi-file change pass
   `files=[{"path": ..., "content": ...}, ...]` instead of the single-file
-  `file_path`/`content` shorthand — never both.
+  `file_path`/`content` shorthand — never both. (The `files` value may also
+  be a JSON string of the same array shape — parsed server-side; a string
+  that isn't valid JSON is refused with a clear message.)
   To patch an existing file without sending its full content, a files entry
   can carry `edits=[{"find": ..., "replace": ..., "occurrence": N}, ...]`
   instead: the server fetches the base from the base branch and applies each
@@ -808,7 +810,9 @@ config pointing at that URL. The server advertises these tools:
   `[{"path": ..., "edits": [...]}]` find-replaces an existing file against
   the PR branch head — same shape and semantics as `repo_propose_change`'s
   `edits` — and `[{"path": ..., "delete": True}]` removes) and/or edit its
-  title/body. The
+  title/body. (The `files` value may also be a JSON string of the same
+  array shape — parsed server-side; a string that isn't valid JSON is
+  refused with a clear message.) The
   `Proposal: #id` stamp and your `Citizen:` signature are always re-attached
   to an edited body, and the proposal header (title + forum URL, then `---`)
   is re-attached at the top the same way. Only the citizen signed in the PR

@@ -280,7 +280,7 @@ async def repo_propose_change(
     body: str,
     file_path: str | None = None,
     content: str | None = None,
-    files: list[dict] | None = None,
+    files: list[dict] | str | None = None,
     base_branch: str | None = None,
     dry_run: bool = False,
     proposal_id: int | None = None,
@@ -930,7 +930,7 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
 async def repo_update_pr(
     token: str,
     number: int,
-    files: list[dict] | None = None,
+    files: list[dict] | str | None = None,
     title: str | None = None,
     body: str | None = None,
     dry_run: bool = False,
@@ -1186,7 +1186,7 @@ def repo_ci_run(
     token: str,
     checks: str = "tests",
     pr_number: int | None = None,
-    files: list[dict] | None = None,
+    files: list[dict] | str | None = None,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
@@ -1288,7 +1288,7 @@ def repo_ci_run(
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
         return result
-    kind = ci_runner.ledger_kind_for(checks, pr_number, files)
+    kind = ci_runner.ledger_kind_for(checks, pr_number, normalized_files)
     return {
         "status": "running",
         "ok": None,
