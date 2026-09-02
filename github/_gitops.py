@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+import logutil
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError
@@ -151,11 +152,20 @@ def _ws_root() -> str:
     """Durable workspace home - co-located with the forum's own data under
     AGENTLAND_DATA_DIR, so the pool survives reboots and tmp-sweeper
     policies. Moving DATA_DIR requires a restart (same contract as
-    FORUM_DB_PATH); orphaned slots in an old location are inert."""
+    FORUM_DB_PATH); orphaned slots in an old location are inert.
+    NOTE: these git-workspace trees (agentland_ws/<slug>/slotN) are a
+    DIFFERENT system from the CI runner trees (agentland_ws/<slug>-ci[-N],
+    server/ci_runner.py) - distinct lifecycles, never a shared pool slot."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
     root = os.path.join(config.DATA_DIR, "agentland_ws", slug)
     os.makedirs(root, exist_ok=True)
     return root
+
+
+def _ws_label(slot: dict) -> str:
+    """Stable on-disk label for a slot (its directory basename, e.g.
+    'slot0') - used in structured log tags; never the full host path."""
+    return os.path.basename(slot["dir"])
 
 
 def _ws_ensure_pool() -> queue.Queue[int]:
@@ -187,6 +197,7 @@ def _ws_ensure_pool() -> queue.Queue[int]:
             _workspace_queue = q
         elif desired != len(_ws_slots):
             base = _ws_root()
+            prev = len(_ws_slots)
             if desired > len(_ws_slots):
                 for i in range(len(_ws_slots), desired):
                     _ws_slots.append(
@@ -198,6 +209,7 @@ def _ws_ensure_pool() -> queue.Queue[int]:
                     )
             else:
                 del _ws_slots[desired:]
+                logutil.log("workspace_pool_shrink", prev=prev, desired=desired)
             rebuilt: queue.Queue[int] = queue.Queue()
             for i in range(len(_ws_slots)):
                 rebuilt.put(i)
@@ -276,7 +288,8 @@ def _try_clone_from_local(parent: str, dest_name: str) -> bool:
 
 def _ws_fresh_clone(slot: dict) -> None:
     """Rebuild a slot from scratch - the self-heal path; worst case equals
-    today's per-call clone cost."""
+    today's per-call clone cost. Tags both exit routes with the seed source
+    so operators can see the self-heal rate."""
     parent = os.path.dirname(slot["dir"])
     if os.path.isdir(slot["dir"]):
         shutil.rmtree(slot["dir"], onerror=_rm_readonly)
@@ -287,11 +300,13 @@ def _ws_fresh_clone(slot: dict) -> None:
         _seed_identity(slot["dir"])
         slot["last_fetch"] = time.monotonic()
         slot["dirty"] = False
+        logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="local")
         return
     _git(parent, "clone", _repo_url(with_token=False), os.path.basename(slot["dir"]))
     _seed_identity(slot["dir"])
     slot["last_fetch"] = time.monotonic()
     slot["dirty"] = False
+    logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="origin")
 
 
 def _ws_normalize(slot: dict) -> None:
@@ -305,6 +320,7 @@ def _ws_normalize(slot: dict) -> None:
     remote branches; fresh-but-clean ones skip the network because every
     flow fetches its own specific base/head refs at body start anyway."""
     if not os.path.isdir(os.path.join(slot["dir"], ".git")):
+        logutil.log("workspace_clone_heal", slot=_ws_label(slot), reason="missing_git")
         _ws_fresh_clone(slot)
         return
     stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
@@ -324,6 +340,7 @@ def _ws_normalize(slot: dict) -> None:
         _seed_identity(slot["dir"])
         slot["dirty"] = False
     except RepoError:
+        logutil.log("workspace_clone_heal", slot=_ws_label(slot), reason="repo_error")
         _ws_fresh_clone(slot)
 
 
@@ -386,6 +403,7 @@ def _workspace():
         idx = q.get(timeout=timeout)
     except queue.Empty:
         # Pool saturated: legacy temp clone instead of a new error class.
+        logutil.log("workspace_pool_saturated", timeout=timeout)
         yield from _temp_fallback()
         return
     try:
@@ -396,7 +414,13 @@ def _workspace():
         yield from _temp_fallback()
         return
     try:
+        _t0 = time.monotonic()
         _ws_normalize(slot)
+        logutil.log(
+            "workspace_normalize_duration_ms",
+            slot=_ws_label(slot),
+            duration_ms=round((time.monotonic() - _t0) * 1000.0, 1),
+        )
         yield slot["dir"]
     except BaseException:
         slot["dirty"] = True
