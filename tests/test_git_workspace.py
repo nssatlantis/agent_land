@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
 import github._core as gh_core  # noqa: E402
 import github._gitops as gh  # noqa: E402 - the workspace pool under test
+import logutil  # noqa: E402
 
 gh_core.GITHUB_TOKEN = "test-token"  # push auth is never exercised here
 
@@ -80,6 +81,7 @@ class _PoolSandbox:
             "repo_url": gh._repo_url,
             "ws_root": gh._ws_root,
             "git": gh._git,
+            "log": logutil.log,
         }
         config.GIT_WORKSPACE_MODE = "persistent"
         config.GIT_WORKSPACE_POOL = pool
@@ -88,13 +90,20 @@ class _PoolSandbox:
         gh._repo_url = lambda with_token=False: self.bare
         gh._ws_root = lambda: os.path.join(self.tmp, "slots")
         self.verbs: list[str] = []
+        self.tags: list[dict] = []
         real_git = gh._git
+        real_log = logutil.log
 
         def spy_git(dir_, *args, **kwargs):
             self.verbs.append(args[0])
             return real_git(dir_, *args, **kwargs)
 
+        def spy_log(event, **fields):
+            self.tags.append({"event": event, **fields})
+            real_log(event, **fields)
+
         gh._git = spy_git
+        logutil.log = spy_log
         self.reset()
 
     def reset(self):
@@ -109,9 +118,16 @@ class _PoolSandbox:
         gh._repo_url = self._orig["repo_url"]
         gh._ws_root = self._orig["ws_root"]
         gh._git = self._orig["git"]
+        logutil.log = self._orig["log"]
         gh._workspace_queue = None
         gh._ws_slots = []
         shutil.rmtree(self.tmp, onerror=_rm_ro)
+
+    def has_tag(self, *events):
+        """True if any recorded structured log tag matches every given event
+        name (a tag fires once per occurrance - pass the exact event names)."""
+        names = [e["event"] for e in self.tags]
+        return all(n in names for n in events)
 
 
 def test_temp_mode_keeps_legacy_contract():
@@ -204,6 +220,9 @@ def test_exhausted_pool_degrades_to_temp_clone():
             with gh._workspace() as c:
                 assert c != a and c != b, "fallback must be a fresh temp clone"
                 assert os.path.isdir(os.path.join(c, ".git"))
+            assert sb.has_tag("workspace_pool_saturated"), (
+                f"saturation must log a tag: {sb.tags}"
+            )
         finally:
             gh._cleanup = orig_cleanup
             cm_b.__exit__(None, None, None)
@@ -277,6 +296,9 @@ def test_corrupted_slot_self_heals():
             assert not os.path.exists(ro), (
                 "self-heal must clear leftovers from the dead operation"
             )
+        assert sb.has_tag("workspace_clone_heal", "workspace_clone_fresh"), (
+            f"self-heal must log heal + fresh tags: {sb.tags}"
+        )
     finally:
         sb.close()
     print("  corrupted slot self-heals via fresh clone: ok")
@@ -343,6 +365,9 @@ def test_pool_size_follows_config_changes():
         config.GIT_WORKSPACE_POOL = 1  # shrink retires the surplus slot
         gh._ws_ensure_pool()
         assert len(gh._ws_slots) == 1, gh._ws_slots
+        assert sb.has_tag("workspace_pool_shrink"), (
+            f"shrink must log a resize tag: {sb.tags}"
+        )
         with gh._workspace() as third:
             assert third == first, f"expected surviving slot0: {third}"
 
@@ -385,6 +410,28 @@ def test_slots_carry_commit_identity():
         sb.close()
 
 
+def test_cold_start_logs_fresh_clone_and_normalize_duration():
+    """The observability slice: a first acquire on a persistent pool cold-
+    clones (workspace_clone_fresh, seed source) and times the normalize
+    (workspace_normalize_duration_ms) so operators can see self-heal rate
+    and tree-prep latency."""
+    sb = _PoolSandbox(pool=1)
+    try:
+        with gh._workspace() as d:
+            assert os.path.isdir(os.path.join(d, ".git"))
+        fresh = [t for t in sb.tags if t["event"] == "workspace_clone_fresh"]
+        assert len(fresh) == 1, f"expected one fresh-clone tag: {sb.tags}"
+        assert fresh[0]["seed"] in ("local", "origin"), fresh[0]
+        duration = [
+            t for t in sb.tags if t["event"] == "workspace_normalize_duration_ms"
+        ]
+        assert len(duration) == 1, f"expected one normalize-duration tag: {sb.tags}"
+        assert duration[0]["duration_ms"] >= 0.0, duration[0]
+        print("  cold start logs fresh clone + normalize duration: ok")
+    finally:
+        sb.close()
+
+
 def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
@@ -395,6 +442,7 @@ def main():
     test_push_auth_restores_anonymous_remote()
     test_pool_size_follows_config_changes()
     test_slots_carry_commit_identity()
+    test_cold_start_logs_fresh_clone_and_normalize_duration()
     print("test_git_workspace: all ok")
     return 0
 
