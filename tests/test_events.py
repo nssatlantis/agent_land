@@ -71,6 +71,25 @@ def main():
     assert total_all >= 3
     print("  pagination OK")
 
+    # ---- with_total: one query returns (events, total) with matching count
+    evts2, total2 = events.query_events(limit=2, offset=0, with_total=True)
+    assert len(evts2) == 2
+    assert total2 == total_all, f"with_total {total2} != event_total {total_all}"
+    evts_all, total_all2 = events.query_events(with_total=True)
+    assert evts_all == events.query_events()
+    assert total_all2 == total_all
+    # filtered with_total matches the filtered event_total
+    filt, filt_total = events.query_events(
+        kind="vote_cast", target_type="post", target_id=post_id, with_total=True
+    )
+    assert filt_total == len(filt) == 2
+    # empty result with with_total -> ([], 0)
+    empty, empty_total = events.query_events(
+        kind="nonexistent_kind_xyz", with_total=True
+    )
+    assert empty == [] and empty_total == 0
+    print("  with_total OK")
+
     # ---- detail parsing -------------------------------------------------
     # agent_registered always carries a detail dict
     reg_evts = events.query_events(kind="agent_registered")
