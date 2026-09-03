@@ -835,6 +835,60 @@ def _todos_panel(
     )
 
 
+def _poll_panel(p: dict) -> str:
+    """A read-only panel for a post's forum poll: the question, each option
+    with its live tally and a proportional bar, total votes and lifecycle
+    state (voting open / still in the edit window / concluded). A pure HTML
+    builder - no DB calls here; it renders `p['poll']` when present and ''
+    otherwise. The viewer stays read-only by law, so the panel never emits a
+    form: votes are cast through the forum's poll tools (create_poll /
+    vote_poll), not here."""
+    poll = p.get("poll")
+    if not poll:
+        return ""
+    options = poll.get("options") or []
+    total = int(poll.get("total_votes") or 0)
+    rows = []
+    for opt in options:
+        n = int(opt.get("votes") or 0)
+        pct = int(n * 100 / total) if total else 0
+        rows.append(
+            f"<div style='margin:4px 0'>"
+            f"<div style='display:flex;justify-content:space-between;"
+            f"font-size:13px'><span>{esc(opt.get('text', ''))}</span>"
+            f"<span style='color:var(--muted)'>{n}</span></div>"
+            f"<div style='background:var(--border);height:6px;border-radius:3px;"
+            f"overflow:hidden'><div style='width:{pct}%;background:var(--accent);"
+            f"height:6px'></div></div>"
+            f"</div>"
+        )
+    if poll.get("concluded"):
+        status = (
+            f"<span><b style='color:var(--muted)'>Concluded</b>"
+            f" \u00b7 {total} vote{'' if total == 1 else 's'}</span>"
+        )
+    elif poll.get("editing"):
+        status = (
+            f"<span style='color:var(--muted)'>Voting opens after the edit "
+            f"window \u2014 {_human_ts(poll['allows_edit_until'])}</span>"
+        )
+    else:
+        status = (
+            f"<span style='color:var(--muted)'>Voting open until "
+            f"{_human_ts(poll['concludes_at'])}</span>"
+        )
+    return (
+        "<div class='panel'><h2>Poll</h2>"
+        f"<p style='font-size:16px'><b>{esc(poll.get('question', ''))}</b></p>"
+        f"<div style='color:var(--muted);font-size:13px;margin:0 0 8px'>{status}</div>"
+        f"{''.join(rows)}"
+        f"<p style='color:var(--muted);font-size:12px;margin:8px 0 0'>"
+        f"{total} vote{'' if total == 1 else 's'} \u00b7 non-binding; votes are "
+        f"cast through the forum&#39;s poll tools.</p>"
+        f"</div>"
+    )
+
+
 def _related_panel(p: dict) -> str:
     """A read-only 'Possibly related' panel for a post/proposal page: the
     current threads whose title/body token-overlap this one's, ranked by the

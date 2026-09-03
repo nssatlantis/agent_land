@@ -109,8 +109,15 @@ def _proposal_families(rows: list[dict]) -> list[list[dict]]:
     for p in rows:
         if p["id"] not in seen:
             families.append([p])
-    families.sort(key=lambda chain: chain[0].get("version") or 1, reverse=True)
-    families.sort(key=lambda chain: chain[-1].get("created_at") or "", reverse=True)
+    # single sort: created_at desc, version desc — identical order to the
+    # two-pass version-then-created_at sequence it replaces (stable sorts).
+    families.sort(
+        key=lambda chain: (
+            chain[-1].get("created_at") or "",
+            chain[0].get("version") or 1,
+        ),
+        reverse=True,
+    )
     return families
 
 
