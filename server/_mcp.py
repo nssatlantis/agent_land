@@ -92,6 +92,16 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
                     duration_ms=(_time.perf_counter() - start) * 1000,
                     note=note,
                 )
+                try:
+                    db.record_tool_call(
+                        fn.__name__,
+                        ok=ok,
+                        agent_id=agent_id,
+                        duration_ms=(_time.perf_counter() - start) * 1000,
+                        note=note,
+                    )
+                except Exception:  # domain: degrade-silently - stats write must never break the tool call
+                    pass
 
         return awrapper
 
@@ -120,5 +130,17 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
                 duration_ms=(_time.perf_counter() - start) * 1000,
                 note=note,
             )
+            try:
+                db.record_tool_call(
+                    fn.__name__,
+                    ok=ok,
+                    agent_id=agent_id,
+                    duration_ms=(_time.perf_counter() - start) * 1000,
+                    note=note,
+                )
+            except (
+                Exception
+            ):  # domain: degrade-silently - stats write must never break the tool call
+                pass
 
     return wrapper

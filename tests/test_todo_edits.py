@@ -1,8 +1,11 @@
 """Tests for the to-do edit trail (todo_edits table).
 
-Every set_todos_for_post call now snapshots the full before/after state
-into the todo_edits table, so a destructive wipe is recoverable and
-auditable.
+set_todos_for_post and other structural board changes snapshot the
+before/after state into the todo_edits table, so a destructive wipe is
+recoverable and auditable. Pure state-flip churn - a manual done-flip
+(tick) or a PR binding change - carries no structural information and
+records neither a row nor a todo_edited event; a PR-merge completion of a
+bound item does record, and so does every structural change.
 """
 
 import json
@@ -217,14 +220,16 @@ def main():
     assert batch[pid8] == edits, "batch reader reconstructs the same trail"
     print("  mixed legacy/compact chains reconstruct correctly: ok")
 
-    # -- 11. Small mutations store a compact delta row ---------------------
+    # -- 11. Structural mutations store a compact delta row; a tick does not --
     pid9 = db.create_proposal(alpha["token"], "Delta", "Body.")["post_id"]
     db.set_todos_for_post(
         alpha["token"], pid9, [{"title": "L", "items": [{"text": "A"}, {"text": "B"}]}]
     )
     lst = db.get_todos_for_post(pid9)[0]
     a_item, b_item = lst["items"][0], lst["items"][1]
-    # A tick and a rename are small diffable changes -> delta rows.
+    # A tick writes nothing to the trail (annotation churn); the rename that
+    # follows is a structural change -> one new delta row whose after-side
+    # reflects the already-applied tick.
     db.tick_todo_item(alpha["token"], pid9, b_item["id"])
     db.update_todo_item(alpha["token"], pid9, lst["id"], a_item["id"], "A-renamed")
     with db._conn() as conn:
@@ -232,21 +237,22 @@ def main():
             "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id", (pid9,)
         ).fetchall()
         edits = db._todo_edits_for(conn, pid9)
-    assert len(raw) == 3
+    assert len(raw) == 2, "tick skips the trail; only the rename records a row"
     assert raw[0]["new_lists"].lstrip().startswith("["), "first edit is a snapshot"
-    for r in raw[1:]:
-        assert '"type":"delta"' in r["new_lists"], (
-            "small mutation stored as a delta row"
-        )
-    assert len(edits) == 3
+    assert '"type":"delta"' in raw[1]["new_lists"], (
+        "small structural mutation stored as a delta row"
+    )
+    assert len(edits) == 2
     # Round-trip: each edit's old_lists equals the previous edit's new_lists.
-    for i in range(1, 3):
+    for i in range(1, len(edits)):
         assert edits[i]["old_lists"] == edits[i - 1]["new_lists"], (
             "delta chain derives the same before/after trail as snapshots"
         )
-    assert edits[2]["new_lists"][0]["items"][0]["text"] == "A-renamed"
-    assert edits[2]["new_lists"][0]["items"][1]["done"] is True
-    print("  small mutations store compact delta rows, trail reconstructs: ok")
+    assert edits[1]["new_lists"][0]["items"][0]["text"] == "A-renamed"
+    assert edits[1]["new_lists"][0]["items"][1]["done"] is True, (
+        "the tick's done state carries through the structural row"
+    )
+    print("  structural mutations store compact delta rows, ticks skipped: ok")
 
     # -- 12. Wholesale structural change falls back to a full snapshot -----
     pid10 = db.create_proposal(alpha["token"], "Snapshot", "Body.")["post_id"]
@@ -306,6 +312,60 @@ def main():
         "snapshot preserves the reordered state exactly"
     )
     print("  round-trip verify falls back to snapshot for underivable change: ok")
+
+    # -- 14. churn exclusion: ticks/binds stay off the trail, completions don't
+    pid14 = db.create_proposal(alpha["token"], "Churn", "Body.")["post_id"]
+    db.set_todos_for_post(
+        alpha["token"],
+        pid14,
+        [{"title": "L", "items": [{"text": "A"}, {"text": "B"}]}],
+    )
+    l14 = db.get_todos_for_post(pid14)[0]
+    a14, b14 = l14["items"][0], l14["items"][1]
+
+    def _edit_count(pid: int) -> tuple:
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM todo_edits WHERE post_id = ?", (pid,)
+            ).fetchone()[0]
+            evs = conn.execute(
+                "SELECT COUNT(*) FROM events"
+                " WHERE kind = 'todo_edited' AND target_id = ?",
+                (pid,),
+            ).fetchone()[0]
+            return rows, evs
+
+    base_rows, base_evs = _edit_count(pid14)
+    # Manual tick (and re-tick to the same value) writes no row and no event.
+    db.tick_todo_item(alpha["token"], pid14, a14["id"])
+    db.tick_todo_item(alpha["token"], pid14, a14["id"])
+    rows, evs = _edit_count(pid14)
+    assert (rows, evs) == (base_rows, base_evs), (
+        "manual tick + no-op re-tick record no row and no event"
+    )
+    # A structural change (rename) still records, carrying the ticked done.
+    db.update_todo_item(alpha["token"], pid14, l14["id"], a14["id"], "A2")
+    rows, evs = _edit_count(pid14)
+    assert rows == base_rows + 1 and evs == base_evs + 1, (
+        "a structural change records a row and event even after ticks"
+    )
+    # PR binding/unbinding writes no row (live todo_items has pr_number).
+    db.link_pr_to_proposal(500, pid14, alpha["agent_id"])
+    db.bind_todo_item_to_pr(alpha["token"], pid14, b14["id"], 500)
+    db.record_proposal_outcome(500, pid14, "closed", db._now_iso())  # clear
+    rows, evs = _edit_count(pid14)
+    assert (rows, evs) == (base_rows + 1, base_evs + 1), (
+        "pr bind/unbind record no row and no event"
+    )
+    # A merge completion of a bound item records its row + event (force=True).
+    db.link_pr_to_proposal(501, pid14, alpha["agent_id"])
+    db.bind_todo_item_to_pr(alpha["token"], pid14, b14["id"], 501)
+    db.record_proposal_outcome(501, pid14, "merged", db._now_iso())
+    rows, evs = _edit_count(pid14)
+    assert rows == base_rows + 2 and evs == base_evs + 2, (
+        "a merge completion records a row and event"
+    )
+    print("  tick/bind churn excluded; structural + merge completions record: ok")
 
     print("\ntest_todo_edits: all assertions passed")
 

@@ -477,6 +477,7 @@ _perf_indexes = (
     "idx_notifications_agent",
     "idx_notifications_agent_read_created",
     "idx_notifications_unread",
+    "idx_notifications_read_created",
     "idx_todo_lists_post",
     "idx_todo_items_list",
     "idx_todo_edits_post",

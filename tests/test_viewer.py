@@ -670,6 +670,31 @@ def test_process_rows_no_double_escape():
     assert "none since boot" in html, "slow db blocks falls back cleanly"
 
 
+def test_human_ts_until_future_expiry_not_just_now():
+    """Regression: the workflows admin 'expires' cell must render a FUTURE
+    deadline as 'in ...', never as the past-relative 'just now' that _human_ts
+    produces for a negative delta."""
+    from datetime import datetime, timedelta, timezone
+
+    from viewer._utils import _human_ts_until
+
+    now = datetime.now(timezone.utc)
+    future = (now + timedelta(hours=2, minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.%f")[
+        :-3
+    ] + "Z"
+    past = (now - timedelta(hours=2, minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.%f")[
+        :-3
+    ] + "Z"
+
+    f_html = _human_ts_until(future)
+    assert "just now" not in f_html, f_html
+    assert "in 2 h" in f_html, f_html
+    assert future in f_html, "exact UTC value rides along on hover"
+
+    p_html = _human_ts_until(past)
+    assert "2 h ago" in p_html, p_html
+
+
 def test_process_rows_slow_block_last_renders_span():
     """With a recorded slow block, the 'slow db blocks' cell renders the
     absolute-time span (not its escaped markup)."""
@@ -1056,6 +1081,7 @@ if __name__ == "__main__":
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()
     test_process_rows_no_double_escape()
+    test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
     test_pulse_panels_render_live_fragments()
     test_activity_tabs_expose_all_domains()

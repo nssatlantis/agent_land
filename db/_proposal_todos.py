@@ -683,15 +683,47 @@ def _has_ids(state: list[dict]) -> bool:
     return True
 
 
+_CHURN_ONLY_OPS = frozenset({"tick", "pr"})
+
+
 def _store_todo_edit(
-    conn: sqlite3.Connection, post_id: int, editor_agent_id: int, new_state: list[dict]
-) -> list[dict]:
-    """Insert one edit-trail row for a post-mutation state. Diffs the previous
-    resolved state against the new one; stores a compact delta when the diff
-    round-trips losslessly and is smaller than a full snapshot, else an exact
-    full snapshot. Returns the previous state (the caller's before-side)."""
+    conn: sqlite3.Connection,
+    post_id: int,
+    editor_agent_id: int,
+    new_state: list[dict],
+    *,
+    force: bool = False,
+) -> tuple[list[dict], bool]:
+    """Insert one edit-trail row for a post-mutation state, unless the change
+    is pure state-flip churn. Diffs the previous resolved state against the new
+    one; stores a compact delta when the diff round-trips losslessly and is
+    smaller than a full snapshot, else an exact full snapshot. A diff made only
+    of ``tick``/``pr`` ops - a manual done-flip, a PR-binding change, or a no-op
+    re-tick (``ops == []``) - carries no structural information and records no
+    row (the live ``todo_items`` row already holds ``pr_number`` and ``done``),
+    unless ``force=True`` so important events (e.g. a PR-merge completion)
+    always land. Returns ``(prev_state, recorded)`` - the caller's before-side
+    plus whether a row was written."""
     prev_state = _resolved_state_for_post(conn, post_id)
-    ops = _diff_states(prev_state, new_state) if _has_ids(prev_state) else []
+    had_ids = _has_ids(prev_state)
+    ops = _diff_states(prev_state, new_state) if had_ids else []
+    # Pure tick/pr churn records nothing, but only when the ops actually
+    # reproduce the new state. A change the diff cannot represent (e.g. a
+    # same-list reorder, which emits no ops) fails the round-trip and must
+    # still fall back to a snapshot. pr ops are normalized on replay (they pop
+    # pr_number, which the live serializer always sets to None), so compare
+    # the normalized shapes.
+    import copy
+
+    churn = (
+        had_ids
+        and not force
+        and all(op["t"] in _CHURN_ONLY_OPS for op in ops)
+        and _normalize_state(_apply_ops([dict(l) for l in prev_state], ops))
+        == _normalize_state(copy.deepcopy(new_state))
+    )
+    if churn:
+        return _normalize_state([dict(l) for l in prev_state]), False
     max_ops = getattr(config, "FORUM_TODO_DELTA_MAX_SNAPSHOT_OPS", 16)
     use_delta = len(ops) > 0
     if max_ops:
@@ -709,19 +741,28 @@ def _store_todo_edit(
         " VALUES (?, ?, ?, ?)",
         (post_id, editor_agent_id, _OLD_DERIVED, encoded),
     )
-    return _normalize_state([dict(l) for l in prev_state])
+    return _normalize_state([dict(l) for l in prev_state]), True
 
 
 def _record_todo_edit(
-    conn: sqlite3.Connection, post_id: int, editor_agent_id: int
+    conn: sqlite3.Connection,
+    post_id: int,
+    editor_agent_id: int,
+    *,
+    force: bool = False,
 ) -> None:
     """Snapshot the post-mutation to-do state into todo_edits and log the
-    event. Called after every mutation so the full edit trail is preserved.
-    Only the after side is stored (compact delta or full snapshot); the before
-    side equals the previous edit's after side - read here for the event flag,
-    never re-stored."""
+    event. Called after every mutation so the full edit trail is preserved;
+    a pure tick/pr-only change records nothing unless ``force=True`` (see
+    _store_todo_edit). Only the after side is stored (compact delta or full
+    snapshot); the before side equals the previous edit's after side - read
+    here for the event flag, never re-stored."""
     new_state = _todos_for_post(conn, post_id)
-    prev_state = _store_todo_edit(conn, post_id, editor_agent_id, new_state)
+    prev_state, recorded = _store_todo_edit(
+        conn, post_id, editor_agent_id, new_state, force=force
+    )
+    if not recorded:
+        return
     from events import EVT_TODO_EDITED, log_event
 
     log_event(
@@ -1476,7 +1517,9 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         _restore_claims(conn, post_id, claim_snapshot)
         _restore_list_claims(conn, post_id, list_claim_snapshot)
         new_state = _todos_for_post(conn, post_id)
-        prev_state = _store_todo_edit(conn, post_id, agent["id"], new_state)
+        prev_state, recorded = _store_todo_edit(conn, post_id, agent["id"], new_state)
+        if not recorded:
+            return new_state
         from events import EVT_TODO_EDITED, log_event
 
         log_event(

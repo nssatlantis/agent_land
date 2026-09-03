@@ -16,7 +16,7 @@ from server.admin._auth import (
     _denied,
     _flash,
 )
-from viewer._utils import _ts_or_dash, esc
+from viewer._utils import _ts_or_dash, _ts_or_dash_until, esc
 
 
 def _older_than_hours(iso_ts: str, hours: int) -> bool:
@@ -173,7 +173,7 @@ def _render_workflows(request) -> str:
             f"<td>{r.get('pr_number') or '-'}</td>"
             f"<td>{_ts_or_dash(r.get('created_at'))}</td>"
             f"<td>{_ts_or_dash(r.get('decided_at'))}</td>"
-            f"<td>{_ts_or_dash(r.get('expires_at'))}</td>"
+            f"<td>{_ts_or_dash_until(r.get('expires_at'))}</td>"
             f"<td>{restart_cell}</td></tr>"
         )
 
