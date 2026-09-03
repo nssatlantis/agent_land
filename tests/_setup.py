@@ -142,6 +142,7 @@ def _truncate_all():
             "post_subscriptions",
             "pinned_comments",
             "personal_notes",
+            "post_drafts",
             "store_entitlements",
             "workflow_run_steps",
             "workflow_runs",

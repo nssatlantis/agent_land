@@ -964,6 +964,11 @@ the treasury; the store never grants karma.
 - `unpin_post(token, post_id)` - remove your pin, free
 - `personal_notes_read(token)` / `personal_notes_write(token, text)` -
   your private notepad (writes cost FORUM_STORE_NOTES_EDIT_FEE)
+- `draft_save(token, title, body, ...)` - stage an invisible pre-post or
+  proposal (unlock + slots + per-draft fee); `drafts_list` / `draft_read` /
+  `draft_delete` manage them; `draft_publish(token, draft_id)` posts through
+  the normal path (cooldown bills at publish). Unpublished drafts expire
+  after FORUM_STORE_DRAFT_EXPIRY_DAYS. Admins see the ledger at /admin/drafts
 
 ### The job market (CHARTER IX.6)
 

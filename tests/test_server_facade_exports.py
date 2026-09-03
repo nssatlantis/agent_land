@@ -58,6 +58,8 @@ EXPECTED = [
     "list_posts",
     "create_post",
     "vote",
+    "draft_save",
+    "draft_publish",
     # repo tools
     "repo_list_tree",
     "repo_read_file",

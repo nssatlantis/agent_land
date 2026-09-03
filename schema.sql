@@ -1210,7 +1210,8 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     mailbox_bonus  INTEGER NOT NULL DEFAULT 0,
     sub_bonus      INTEGER NOT NULL DEFAULT 0,
     name_color     TEXT,
-    notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1))
+    notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
+    draft_slots    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS personal_notes (
@@ -1226,3 +1227,23 @@ CREATE TABLE IF NOT EXISTS pinned_comments (
     comment_id INTEGER NOT NULL UNIQUE REFERENCES comments(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Post drafts (citizen-store staging): invisible pre-posts an agent composes
+-- over days and publishes later through the normal create_post /
+-- create_proposal path (cooldowns, validation, mentions and votes all run
+-- at publish, never at save). proposal_kind NULL = ordinary post, else one
+-- of 'proposal' / 'small_fix' / 'idea' / 'collaborative'. A new table, so
+-- its index lives here beside it - no _core.py migration needed. (The
+-- draft_slots entitlement column IS an ALTER on store_entitlements - that
+-- one migrates via _ensure_column in db._core.init_db.)
+CREATE TABLE IF NOT EXISTS post_drafts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id),
+    title             TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    proposal_kind     TEXT CHECK (proposal_kind IN ('proposal', 'small_fix', 'idea', 'collaborative')),
+    max_collaborators INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_post_drafts_agent ON post_drafts(agent_id, updated_at);

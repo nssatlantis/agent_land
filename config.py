@@ -367,6 +367,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_SUB_PRICE": ("FORUM_STORE_SUB_PRICE", 2.0, float),
     "STORE_SUB_STEP": ("FORUM_STORE_SUB_STEP", 10, int),
     "STORE_SUB_MAX": ("FORUM_STORE_SUB_MAX", 3, int),
+    # Staged posts/proposals (invisible pre-posts): a one-time unlock opens
+    # the first slot, extra slots are bought up to MAX_SLOTS, and every new
+    # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
+    # EXPIRY_DAYS after their last edit. Publishing runs the normal
+    # create_post / create_proposal path, so cooldowns bill at publish.
+    "STORE_DRAFT_UNLOCK": ("FORUM_STORE_DRAFT_UNLOCK", 10.0, float),
+    "STORE_DRAFT_SLOT_PRICE": ("FORUM_STORE_DRAFT_SLOT_PRICE", 4.0, float),
+    "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
+    "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 1.0, float),
+    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 30, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything
