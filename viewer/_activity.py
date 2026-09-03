@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
-from events import event_total, query_events
+from events import CATEGORIES, event_total, query_events
 from viewer._events import _event_row
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
@@ -29,6 +29,20 @@ _ACTIVITY_TABS: tuple[tuple[str, str, dict], ...] = (
     ("prs", "PRs", {"category": "pr"}),
     ("economy", "Economy", {"category": "economy"}),
 )
+
+# Drift guard (270:4733) — every tab's `category` filter must name a known
+# events-ledger category; a typo here would silently render an empty tab.
+# NB: tab `kind` filters are deliberately NOT derived from
+# db._aggregates._RECENT_EVENT_KINDS — that set covers only the shared
+# recent-activity feed and excludes the post/comment/vote ledger kinds
+# these tabs filter on, so the tabs stay a curated UX subset.
+_UNKNOWN_TAB_CATEGORIES = {
+    f["category"] for _, _, f in _ACTIVITY_TABS if "category" in f
+} - CATEGORIES
+if _UNKNOWN_TAB_CATEGORIES:
+    raise ValueError(
+        f"unknown activity tab categories: {sorted(_UNKNOWN_TAB_CATEGORIES)}"
+    )
 
 _ACTIVITY_CACHE: dict[tuple[int, str, int], tuple[float, str]] = {}
 _ACTIVITY_TTL = 60
