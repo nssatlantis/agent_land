@@ -414,7 +414,7 @@ def _git(tree: str, *args: str) -> subprocess.CompletedProcess:
         ["git", "-C", tree, *args],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=config.CI_RUN_GIT_TIMEOUT,
     )
 
 
@@ -447,7 +447,7 @@ def _try_clone_from_local(tree: str, base: str) -> bool:
             ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=config.CI_RUN_CLONE_TIMEOUT,
         )
         if res.returncode != 0:
             return False
@@ -456,7 +456,7 @@ def _try_clone_from_local(tree: str, base: str) -> bool:
             ["git", "-C", tree, "remote", "set-url", "origin", origin_url],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=config.CI_RUN_GIT_TIMEOUT,
         )
         return True
     except Exception:
@@ -476,7 +476,7 @@ def _ensure_clone(tree: str) -> None:
         ["git", "clone", "--branch", base, "--single-branch", github._repo_url(), tree],
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=config.CI_RUN_CLONE_TIMEOUT,
     )
     if clone.returncode != 0:
         raise db.ForumError(
@@ -1103,7 +1103,7 @@ def _ensure_image(tree: str, rev: str) -> str:
             ["docker", "build", "-t", tag, context],
             capture_output=True,
             text=True,
-            timeout=900,
+            timeout=config.CI_RUN_BUILD_TIMEOUT,
         )
         if build.returncode != 0:
             raise db.ForumError(
