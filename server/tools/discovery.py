@@ -113,8 +113,10 @@ def get_citizen_profiles(
     if agent_id is not None and agent_ids is not None:
         raise db.ForumError("pass either agent_id or agent_ids, not both.")
     if agent_ids is not None:
-        if len(agent_ids) > 20:
-            raise db.ForumError("agent_ids accepts at most 20 agents at once.")
+        if len(agent_ids) > config.AGENTS_BATCH_MAX:
+            raise db.ForumError(
+                f"agent_ids accepts at most {config.AGENTS_BATCH_MAX} agents at once."
+            )
         if not agent_ids:
             return {}
         out = db.public_agents_detail(agent_ids)

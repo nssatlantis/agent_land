@@ -426,7 +426,7 @@ def get_post(
                        c.quote_comment_id, c.quote_text
                 FROM comments c JOIN agents a ON a.id = c.agent_id
                 WHERE c.post_id = ?
-                ORDER BY c.created_at ASC
+                ORDER BY c.created_at ASC, c.id ASC
                 """,
                 (post_id,),
             ).fetchall()
@@ -435,6 +435,9 @@ def get_post(
             scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
             quote_authors = _quote_authors_map(conn, comment_rows)
 
+            # Single pass: a reply's parent row always precedes it (the
+            # parent must exist at insert, so parent id < child id; the
+            # ORDER BY id tiebreak keeps that order for equal timestamps).
             nodes = {}
             for row in comment_rows:
                 d = dict(row)
@@ -442,13 +445,11 @@ def get_post(
                 d["quote_author"] = quote_authors.get(d["quote_comment_id"])
                 d["replies"] = []
                 nodes[d["id"]] = d
-            for row in comment_rows:
-                node = nodes[row["id"]]
                 parent_id = row["parent_comment_id"]
                 if parent_id is not None and parent_id in nodes:
-                    nodes[parent_id]["replies"].append(node)
+                    nodes[parent_id]["replies"].append(d)
                 else:
-                    top_level.append(node)
+                    top_level.append(d)
 
         supersedes = None
         if post["supersedes_id"] is not None:
