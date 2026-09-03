@@ -71,6 +71,7 @@ from db._comments import (  # noqa: F401
 # ── posts, comments, votes ─────────────────────────────────────────────
 from db._content import (  # noqa: F401
     _insert_post,
+    count_posts,
     create_post,
     edit_post,
     get_comments,
@@ -219,6 +220,15 @@ from db._nudges import (  # noqa: F401
     _report_nudge,
     _review_nudge,
     _unread_mail_nudge,
+)
+
+# ── polls ─────────────────────────────────────────────────────────────
+from db._polls import (  # noqa: F401
+    _sweep_concluded_polls,
+    create_poll,
+    edit_poll,
+    get_poll,
+    vote_poll,
 )
 
 # ── closed-PR cache (pr_rows) ──────────────────────────────────────────

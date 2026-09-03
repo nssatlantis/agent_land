@@ -7,6 +7,7 @@ hint at proposal creation time.
 
 from __future__ import annotations
 
+import functools
 import re
 import sqlite3
 import time
@@ -35,8 +36,16 @@ def _normalized_title(title: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", (title or "").lower()))
 
 
+@functools.lru_cache(maxsize=1024)
 def _tokens(text: str) -> set[str]:
-    """Distinct normalized tokens of a text for overlap scoring."""
+    """Distinct normalized tokens of a text for overlap scoring.
+
+    Memoized: tokenization is a pure function of its input, so identical
+    texts share one set across every similarity scan (find_similar_posts,
+    similar_proposal_for, find_similar_comments, similar_prs) with no
+    staleness risk - same text always yields same tokens. No caller mutates
+    the returned set (verified), so sharing it is safe. Bounded at 1024
+    entries; the hot set (recent candidates) is far smaller."""
     return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
 
