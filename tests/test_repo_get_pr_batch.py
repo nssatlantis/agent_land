@@ -129,7 +129,7 @@ def test_my_vote_passthrough_in_both_modes():
     real_aper = _install_aper({3: _payload(3), 4: _payload(4)})
     real_my_vote = root_server.db.my_pr_vote
 
-    def fake_my_vote(token, number):
+    def fake_my_vote(token, number, conn=None):
         calls.append(number)
         return +1
 
