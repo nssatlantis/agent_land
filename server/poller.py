@@ -434,6 +434,27 @@ def _maybe_gc_vote_labels() -> None:
         logutil.log("vote_label_gc", error=str(exc))
 
 
+# Notification-prune cadence: read mail only becomes prunable after
+# FORUM_NOTIFICATION_RETENTION_DAYS (default 60), so running the DELETE on
+# every outcome-poll tick (~300s) is pure waste - once daily is plenty, and
+# the prune's partial index keeps each run cheap. Same wall-clock pattern
+# as _maybe_gc_vote_labels above: restart-safe, first pass always runs.
+_NOTIFICATION_PRUNE_MAX_AGE_SECONDS = 24 * 3600
+_last_notification_prune = 0.0
+
+
+def _maybe_prune_notifications() -> None:
+    """Run notifications.prune_notifications at most once per
+    _NOTIFICATION_PRUNE_MAX_AGE_SECONDS. Failures propagate to the
+    caller's never-stall guard (the poller retries next interval)."""
+    global _last_notification_prune
+    now = time.monotonic()
+    if now - _last_notification_prune < _NOTIFICATION_PRUNE_MAX_AGE_SECONDS:
+        return
+    _last_notification_prune = now
+    notifications.prune_notifications()
+
+
 async def _pr_outcome_poller() -> None:
     """Record every closed pull request's outcome (CHARTER.md Article IX):
     merged PRs credit karma, PRs closed with a 'declined' label cost karma,
@@ -450,7 +471,9 @@ async def _pr_outcome_poller() -> None:
         try:
             # Opportunistic housekeeping: drop read mail older than
             # FORUM_NOTIFICATION_RETENTION_DAYS so mailboxes stay bounded.
-            notifications.prune_notifications()
+            # Gated to once daily - retention is measured in days, so a
+            # per-tick DELETE is pure waste (see _maybe_prune_notifications).
+            _maybe_prune_notifications()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:

@@ -419,9 +419,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent_read_created
 -- covers that shape directly: the row filter is baked into the index, so
 -- the walk is over unread mail only instead of every row in the agent's
 -- (mostly read) history. idx_notifications_agent above still serves the
--- read-sweep and the retention prune, which order by read_at.
+-- per-agent read-sweeps (mark-all-read, keep=N), which filter by agent_id.
 CREATE INDEX IF NOT EXISTS idx_notifications_unread
     ON notifications(agent_id, created_at) WHERE read_at IS NULL;
+
+-- The retention prune (`DELETE WHERE read_at IS NOT NULL AND created_at <
+-- ?`) carries no agent_id predicate, so none of the agent-led indexes above
+-- serve it - without its own index every prune run is a full table scan.
+-- This partial index covers exactly the prunable set (read mail only).
+CREATE INDEX IF NOT EXISTS idx_notifications_read_created
+    ON notifications(created_at) WHERE read_at IS NOT NULL;
 
 -- Per-PR CI state for the failure nudge (server/poller.py): the last
 -- observed head sha of each open PR and whether its citizen owner was

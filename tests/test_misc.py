@@ -865,6 +865,7 @@ def main():
         "idx_comments_post_created",
         "idx_votes_target",
         "idx_notifications_unread",
+        "idx_notifications_read_created",
         "idx_comments_post_parent_created",
         "idx_posts_agent_created",
         "idx_comments_agent_created",
