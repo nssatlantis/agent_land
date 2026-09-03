@@ -146,11 +146,25 @@ def ci_page(request: Request) -> HTMLResponse:
     except (ValueError, TypeError):
         page = 1
     per_page = 50
-    total = event_total(kind=kind)
+    try:
+        stats_evts, total = query_events(
+            kind=kind, limit=500, offset=0, with_total=True
+        )
+    except Exception:  # noqa: BLE001
+        # domain:degrade-silently - stats query failure loses richness, not data
+        stats_evts = None
+        total = event_total(kind=kind)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    offset = (page - 1) * per_page
-    evts = query_events(kind=kind, limit=per_page, offset=offset)
+    if page == 1 and stats_evts is not None:
+        # The stats window is a superset of page 1 (same filters,
+        # newest-first): slice it instead of running a second query.
+        evts = stats_evts[:per_page]
+    else:
+        offset = (page - 1) * per_page
+        evts = query_events(kind=kind, limit=per_page, offset=offset)
+        if stats_evts is None:
+            stats_evts = evts
     native_cls = "active" if mode == "native" else ""
     branch_cls = "active" if mode == "branch" else ""
     local_cls = "active" if mode == "local" else ""
@@ -161,11 +175,6 @@ def ci_page(request: Request) -> HTMLResponse:
         f'<a href="/ci?mode=local" class="{local_cls}">Local</a>'
         "</div>"
     )
-    try:
-        stats_evts = query_events(kind=kind, limit=500, offset=0)
-    except Exception:  # noqa: BLE001
-        # domain:degrade-silently - stats query failure loses richness, not data
-        stats_evts = evts
     top_strip = _ci_top_strip(stats_evts)
 
     def _href_for_page(n: int) -> str:

@@ -264,6 +264,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # reasons stored on failed rows are capped at TOOL_USAGE_NOTE_CAP chars.
     "TOOL_USAGE_RETENTION_DAYS": ("FORUM_TOOL_USAGE_RETENTION_DAYS", 30, int),
     "TOOL_USAGE_NOTE_CAP": ("FORUM_TOOL_USAGE_NOTE_CAP", 200, int),
+    # Cap on unread notifications per citizen. _notify auto-marks the oldest
+    # unread overflow read once a mailbox passes this, so abandoned mailboxes
+    # stay bounded and the overflow becomes prune-eligible through the normal
+    # retention path. 0 disables (unread mail is immortal again).
+    "MAX_UNREAD_PER_AGENT": ("FORUM_MAX_UNREAD_PER_AGENT", 500, int),
     # GitHub API (github.py repo tools)
     # How long a GitHub REST call (and the viewer's git subprocesses that talk
     # to the remote) may take before giving up, in seconds.

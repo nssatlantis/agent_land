@@ -22,17 +22,24 @@ from viewer._utils import (
 )
 
 _PR_CACHE_SECONDS = config.PR_CACHE_SECONDS
+
+
+def _is_fresh(cache: dict, now: float, ttl: float = _PR_CACHE_SECONDS) -> bool:
+    """Shared TTL gate for module-level caches keyed by {"ts": float, "fresh": bool}."""
+    return bool(cache.get("fresh") and now - cache["ts"] < ttl)
+
+
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 _pr_prs_lock = asyncio.Lock()
 
 
 async def _open_prs() -> list[dict] | None:
     now = time.monotonic()
-    if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_CACHE_SECONDS:
+    if _is_fresh(_pr_prs_cache, now):
         return _pr_prs_cache["prs"]
     async with _pr_prs_lock:
         now = time.monotonic()
-        if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_CACHE_SECONDS:
+        if _is_fresh(_pr_prs_cache, now):
             return _pr_prs_cache["prs"]
         try:
             prs = await asyncio.to_thread(github.open_prs)
@@ -67,7 +74,7 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     if (
         _pr_diff_cache["fresh"]
         and _pr_diff_cache["number"] == number
-        and now - _pr_diff_cache["ts"] < _PR_CACHE_SECONDS
+        and _is_fresh(_pr_diff_cache, now)
     ):
         return _pr_diff_cache["diff"], _pr_diff_cache["missing"]
     try:
@@ -347,7 +354,7 @@ async def _prs_page_rows(state: str) -> list[dict] | None:
         return await _open_prs()
     now = time.monotonic()
     ent = _prs_state_cache.get(state)
-    if ent and ent.get("fresh") and now - ent["ts"] < _PR_CACHE_SECONDS:
+    if ent and _is_fresh(ent, now):
         return ent["rows"]
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
