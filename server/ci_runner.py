@@ -392,7 +392,10 @@ def _runner_dir_for_slot(slot: int) -> str:
     """Dedicated runner checkout for *slot* beside the rebase pool slots â€”
     same durable home (AGENTLAND_DATA_DIR/agentland_ws) but never a pool
     slot, so a long suite can never starve conflict/rebase flows. Two
-    slots (CI_RUN_CONCURRENCY=2) give two independent -ci trees."""
+    slots (CI_RUN_CONCURRENCY=2) give two independent -ci trees. NOTE:
+    these CI trees (agentland_ws/<slug>-ci[-N]) are a SEPARATE system from
+    the git workspace pool (agentland_ws/<slug>/slotN, github/_gitops.py)
+    - independent lifecycles, never interchanged."""
     # If tests have monkeypatched _runner_dir to a stub, respect it for any
     # slot â€” the fixture's tree is the same temp dir for all slots in that test.
     if _runner_dir is not _ORIG_RUNNER_DIR:
