@@ -26,7 +26,7 @@ from viewer._render_helpers import (
     _proposal_verdict,
     _tag_chips,
 )
-from viewer._utils import _human_ts, _truncate, esc
+from viewer._utils import _human_ts, _show_more, _truncate, esc
 
 _VERDICT_CACHE: dict[int, tuple[float, tuple[str, str]]] = {}
 _VERDICT_TTL = 60
@@ -213,11 +213,30 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
                 f"{vote_badge}"
             )
-        pr_trail = (
-            '<div class="pr-trail"><span class="pr-label">PRs:</span> '
-            + " ".join(bits)
-            + "</div>"
-        )
+        if len(bits) > 5:
+            # collapse huge trails (e.g. 237:170) — 5 latest + counts
+            status_counts: dict[str, int] = {}
+            for pr in prs_raw:
+                status_counts[pr["status"]] = status_counts.get(pr["status"], 0) + 1
+            status_summary = " \u00b7 ".join(
+                f"{n} {st}" for st, n in sorted(status_counts.items())
+            )
+            visible = bits[-5:]
+            rest = bits[:-5]
+            pr_trail = (
+                '<div class="pr-trail"><span class="pr-label">PRs:</span> '
+                f'<span style="color:var(--muted);font-size:12px">'
+                f"{len(bits)} total ({status_summary}) \u2014 latest 5:</span> "
+                + " ".join(visible)
+                + _show_more(len(rest), " ".join(rest))
+                + "</div>"
+            )
+        else:
+            pr_trail = (
+                '<div class="pr-trail"><span class="pr-label">PRs:</span> '
+                + " ".join(bits)
+                + "</div>"
+            )
     # Collaborative progress display
     if p.get("collaborative") and p.get("collaborative_closed") is None:
         merged = p.get("merged_pr_count", 0)
