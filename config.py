@@ -547,6 +547,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
     "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    # Per-subprocess deadlines for the CI runner's git field ops and sandbox
+    # image build. Separate tunables so a slow mirror/image can be given more
+    # room than the wall-clock cap without a redeploy (the fetch/clone/build
+    # were previously hardcoded literals).
+    "CI_RUN_GIT_TIMEOUT": ("FORUM_CI_RUN_GIT_TIMEOUT", 180, int),
+    "CI_RUN_CLONE_TIMEOUT": ("FORUM_CI_RUN_CLONE_TIMEOUT", 600, int),
+    "CI_RUN_BUILD_TIMEOUT": ("FORUM_CI_RUN_BUILD_TIMEOUT", 900, int),
     # Soft deadline before repo_ci_run returns a status:'running' handoff -
     # the MCP client's ~60s read timeout would otherwise cut the request
     # first. A run still going hands the call back and finishes in the
