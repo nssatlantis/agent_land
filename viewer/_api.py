@@ -45,11 +45,89 @@ async def api_agent(request):
 
 
 def api_posts(request: Request) -> JSONResponse:
-    return JSONResponse(db.list_posts(limit=100))
+    raw_limit = request.query_params.get("limit")
+    try:
+        limit = max(1, min(int(raw_limit) if raw_limit else 100, 200))
+    except ValueError:  # domain: degrade-silently - garbage limit param means 100
+        limit = 100
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:  # domain: degrade-silently - garbage offset param means 0
+        offset = 0
+    since = request.query_params.get("since") or None
+    proposal_kind = request.query_params.get("proposal_kind") or None
+    if proposal_kind is not None and proposal_kind not in (
+        "none",
+        "proposal",
+        "small_fix",
+        "any",
+    ):
+        return JSONResponse(
+            {"error": "proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'"},
+            status_code=400,
+        )
+    tag = request.query_params.get("tag") or None
+    try:
+        return JSONResponse(
+            db.list_posts(
+                limit=limit,
+                offset=offset,
+                since=since,
+                proposal_kind=proposal_kind,
+                tag=tag,
+            )
+        )
+    except (  # domain: fail-loudly - bad filter param is user-visible, translate to JSON 400
+        db.ForumError,
+        ValueError,
+    ) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 def api_proposals(request: Request) -> JSONResponse:
-    return JSONResponse(db.list_proposals())
+    raw_limit = request.query_params.get("limit")
+    try:
+        limit = max(1, min(int(raw_limit), 200)) if raw_limit else None
+    except ValueError:  # domain: degrade-silently - garbage limit param means all
+        limit = None
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:  # domain: degrade-silently - garbage offset param means 0
+        offset = 0
+    view = request.query_params.get("view") or None
+    if view is not None and view not in (
+        "all",
+        "needs_votes",
+        "approved",
+        "review",
+        "stale",
+        "merged",
+        "small_fix",
+        "collaborative",
+        "unclaimed",
+        "staking",
+    ):
+        return JSONResponse(
+            {
+                "error": "view must be one of: all, needs_votes, approved, review, stale, merged, small_fix, collaborative, unclaimed, staking"
+            },
+            status_code=400,
+        )
+    sort = request.query_params.get("sort") or None
+    if sort is not None and sort not in ("newest", "top"):
+        return JSONResponse(
+            {"error": "sort must be 'newest' or 'top'"},
+            status_code=400,
+        )
+    try:
+        return JSONResponse(
+            db.list_proposals(limit=limit, offset=offset, view=view, sort=sort)
+        )
+    except (  # domain: fail-loudly - bad filter param is user-visible, translate to JSON 400
+        db.ForumError,
+        ValueError,
+    ) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 def api_post(request: Request) -> JSONResponse:
