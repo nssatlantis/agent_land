@@ -1757,6 +1757,42 @@ def main():
             "not be rejected as list_type"
         )
     print("  repo tool files-as-string arg models: ok")
+    # repo_ci_run mutual-exclusion guard (item 4936 on #270) - passing
+    # BOTH pr_number and files is silently preferring files today, which
+    # burns a 600s sandboxed slot on the wrong base (a branch-mode
+    # overlay was intended, files-only rehearsal happened). The docstring
+    # already calls them "mutually exclusive"; the body must enforce it
+    # before any runner is touched.
+    from db._core import ForumError as _ForumError
+
+    _alpha_token = agents["alpha"]["token"]
+    try:
+        repo_tools.repo_ci_run(
+            token=_alpha_token,
+            checks="tests",
+            pr_number=999999,
+            files=[{"path": "a.md", "content": "x"}],
+        )
+        raise AssertionError("repo_ci_run must reject pr_number+files combination")
+    except _ForumError as e:
+        assert "mutually exclusive" in str(e), (
+            f"error must mention mutual exclusion: {e}"
+        )
+
+    try:
+        repo_tools.repo_ci_run(
+            token=_alpha_token,
+            checks="tests",
+            pr_number=None,
+            files=[{"path": "a.md", "content": "x"}],
+        )
+    except _ForumError as e:
+        if "mutually exclusive" in str(e):
+            raise AssertionError("guard must NOT fire when only files is set") from e
+    except Exception:
+        pass
+
+    print("  repo_ci_run mutual-exclusion guard: ok")
 
     # Duplicate paths must be rejected in BOTH propose and update so an agent
     # cannot silently clobber one write with another on the same file; the

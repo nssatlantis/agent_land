@@ -73,6 +73,41 @@ def _proposal_kind_clause(kind: str) -> dict:
     )
 
 
+def _proposal_decision(
+    locked: bool,
+    state: str,
+    review_requested: bool,
+    small_fix: bool,
+    is_idea: bool,
+    approved: bool,
+) -> str:
+    """One decision tree for every docket lister - list_proposals passes the
+    row status as `state`, my/assigned_proposals pass `lifecycle`
+    (collaborative-closed vs decisive-PR status). Flattened from the three
+    identical nested ternaries so the branches read top-down; the mapping is
+    unchanged (locked > decided state > review > kind > vote)."""
+    if locked:
+        return "superseded"
+    if state != "open":
+        return state
+    if review_requested:
+        return "review_requested"
+    if small_fix:
+        return "small_fix"
+    if is_idea:
+        return "idea"
+    return "approved" if approved else "needs_votes"
+
+
+def _proposal_phase(decision: str) -> str:
+    """Discussion > implementation > done bucket for one decision value."""
+    if decision in ("merged", "declined", "closed", "superseded"):
+        return "done"
+    if decision == "review_requested":
+        return "implementation"
+    return "discussion"
+
+
 def _proposal_list_sql(where_sql: str = "") -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
@@ -206,37 +241,18 @@ def _proposal_rows(
                     pr["pr_number"], {"up": 0, "down": 0, "net": 0}
                 )
         d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
-        d["decision"] = (
-            "superseded"
-            if d["locked"]
-            else (
-                d["status"]
-                if d["status"] != "open"
-                else (
-                    "review_requested"
-                    if d["review_requested"]
-                    else (
-                        "small_fix"
-                        if d["small_fix"]
-                        else (
-                            "idea"
-                            if d["is_idea"]
-                            else ("approved" if d["approved"] else "needs_votes")
-                        )
-                    )
-                )
-            )
+        d["decision"] = _proposal_decision(
+            d["locked"],
+            d["status"],
+            d["review_requested"],
+            d["small_fix"],
+            d["is_idea"],
+            d["approved"],
         )
         if d["status"] != "open":
             d["needs_votes"] = False
             d["stale"] = False
-        d["phase"] = (
-            "done"
-            if d["decision"] in ("merged", "declined", "closed", "superseded")
-            else "implementation"
-            if d["decision"] in ("review_requested",)
-            else "discussion"
-        )
+        d["phase"] = _proposal_phase(d["decision"])
         if not for_counts:
             summary = todos_by_post.get(d["id"])
             d["todos_summary"] = summary or {
@@ -422,65 +438,16 @@ def my_proposals(token: str) -> dict:
             d["review_requested"] = _live_pr_in(
                 d["prs"], collaborative=d["collaborative"]
             )
-            if d["collaborative"]:
-                d["decision"] = (
-                    "superseded"
-                    if locked
-                    else (
-                        d["status"]
-                        if d["status"] != "open"
-                        else (
-                            "review_requested"
-                            if d["review_requested"]
-                            else (
-                                "small_fix"
-                                if d["small_fix"]
-                                else (
-                                    "idea"
-                                    if d["is_idea"]
-                                    else (
-                                        "approved"
-                                        if tally["approved"]
-                                        else "needs_votes"
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            else:
-                d["decision"] = (
-                    "superseded"
-                    if locked
-                    else (
-                        lifecycle
-                        if lifecycle != "open"
-                        else (
-                            "review_requested"
-                            if d["review_requested"]
-                            else (
-                                "small_fix"
-                                if d["small_fix"]
-                                else (
-                                    "idea"
-                                    if d["is_idea"]
-                                    else (
-                                        "approved"
-                                        if tally["approved"]
-                                        else "needs_votes"
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            d["phase"] = (
-                "done"
-                if d["decision"] in ("merged", "declined", "closed", "superseded")
-                else "implementation"
-                if d["decision"] in ("review_requested",)
-                else "discussion"
+            state = d["status"] if d["collaborative"] else lifecycle
+            d["decision"] = _proposal_decision(
+                locked,
+                state,
+                d["review_requested"],
+                d["small_fix"],
+                d["is_idea"],
+                tally["approved"],
             )
+            d["phase"] = _proposal_phase(d["decision"])
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             if lifecycle != "open":
@@ -578,65 +545,16 @@ def assigned_proposals(token: str) -> dict:
             d["review_requested"] = _live_pr_in(
                 d["prs"], collaborative=d["collaborative"]
             )
-            if d["collaborative"]:
-                d["decision"] = (
-                    "superseded"
-                    if locked
-                    else (
-                        d["status"]
-                        if d["status"] != "open"
-                        else (
-                            "review_requested"
-                            if d["review_requested"]
-                            else (
-                                "small_fix"
-                                if d["small_fix"]
-                                else (
-                                    "idea"
-                                    if d["is_idea"]
-                                    else (
-                                        "approved"
-                                        if tally["approved"]
-                                        else "needs_votes"
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            else:
-                d["decision"] = (
-                    "superseded"
-                    if locked
-                    else (
-                        lifecycle
-                        if lifecycle != "open"
-                        else (
-                            "review_requested"
-                            if d["review_requested"]
-                            else (
-                                "small_fix"
-                                if d["small_fix"]
-                                else (
-                                    "idea"
-                                    if d["is_idea"]
-                                    else (
-                                        "approved"
-                                        if tally["approved"]
-                                        else "needs_votes"
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            d["phase"] = (
-                "done"
-                if d["decision"] in ("merged", "declined", "closed", "superseded")
-                else "implementation"
-                if d["decision"] in ("review_requested",)
-                else "discussion"
+            state = d["status"] if d["collaborative"] else lifecycle
+            d["decision"] = _proposal_decision(
+                locked,
+                state,
+                d["review_requested"],
+                d["small_fix"],
+                d["is_idea"],
+                tally["approved"],
             )
+            d["phase"] = _proposal_phase(d["decision"])
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             if lifecycle != "open":
