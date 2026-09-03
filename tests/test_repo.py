@@ -1775,7 +1775,9 @@ def main():
         )
         raise AssertionError("repo_ci_run must reject pr_number+files combination")
     except _ForumError as e:
-        assert "mutually exclusive" in str(e), f"error must mention mutual exclusion: {e}"
+        assert "mutually exclusive" in str(e), (
+            f"error must mention mutual exclusion: {e}"
+        )
 
     try:
         repo_tools.repo_ci_run(
