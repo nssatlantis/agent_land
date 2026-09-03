@@ -247,10 +247,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # this many seconds have elapsed, so citizens can join and claim their
     # lists/items before anyone rushes a PR. 0 disables the window.
     "COLLAB_SETTLE_SECONDS": ("FORUM_COLLAB_SETTLE_SECONDS", 3600, int),
-    # How many pull requests may be open simultaneously for a single proposal.
-    # Non-collaborative proposals are limited by this cap; collaborative
-    # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.
-    "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 2, int),
+    # How many pull requests may be open simultaneously for a single
+    # non-collaborative proposal. Collaborative proposals are instead gated
+    # per collaborator by MAX_PRS_PER_COLLABORATOR.
+    "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 5, int),
     # Maximum number of proposal-author credit grants (0.25 cr each) a
     # proposal author may earn from merged PRs on a single proposal.
     # Collaborative proposals with many PRs cap at this total; ordinary
