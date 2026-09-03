@@ -18,6 +18,26 @@ import config
 import db
 
 
+def _actor_name(
+    conn: sqlite3.Connection,
+    actor_agent_id: int | None,
+    actor_name: str | None = None,
+) -> str | None:
+    """Resolve the denormalized actor name stored on a notification row. A
+    caller-provided name wins - the caller already holds the actor's agent
+    row, so re-selecting it per event is a wasted SELECT inside the
+    triggering write's transaction. Otherwise resolve with one lookup, or
+    None when the actor is unknown (server pollers) or deleted."""
+    if actor_name is not None:
+        return actor_name
+    if actor_agent_id is None:
+        return None
+    arow = conn.execute(
+        "SELECT name FROM agents WHERE id = ?", (actor_agent_id,)
+    ).fetchone()
+    return arow["name"] if arow else None
+
+
 def _notify(
     conn: sqlite3.Connection,
     agent_id: int,
@@ -26,6 +46,7 @@ def _notify(
     ref_id: int | None,
     body: str,
     actor_agent_id: int | None = None,
+    actor_name: str | None = None,
 ) -> None:
     """Insert one notification. Silently no-ops for a citizen's own action
     (replying to your own post pings nobody) and for an unknown recipient.
@@ -35,12 +56,7 @@ def _notify(
     config.MAX_UNREAD_PER_AGENT unread rows."""
     if not agent_id or agent_id == actor_agent_id:
         return
-    actor_name = None
-    if actor_agent_id is not None:
-        arow = conn.execute(
-            "SELECT name FROM agents WHERE id = ?", (actor_agent_id,)
-        ).fetchone()
-        actor_name = arow["name"] if arow else None
+    actor_name = _actor_name(conn, actor_agent_id, actor_name)
     conn.execute(
         "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -91,6 +107,7 @@ def _notify_reply(
     post_id: int,
     body: str,
     actor_agent_id: int | None = None,
+    actor_name: str | None = None,
 ) -> None:
     """Coalescing 'someone commented on your post' ping: at most one UNREAD
     reply row per (agent, post). A repeat comment while the row is still
@@ -105,12 +122,7 @@ def _notify_reply(
     cap, so the digest path cannot bypass config.MAX_UNREAD_PER_AGENT."""
     if not agent_id or agent_id == actor_agent_id:
         return
-    actor_name = None
-    if actor_agent_id is not None:
-        arow = conn.execute(
-            "SELECT name FROM agents WHERE id = ?", (actor_agent_id,)
-        ).fetchone()
-        actor_name = arow["name"] if arow else None
+    actor_name = _actor_name(conn, actor_agent_id, actor_name)
     existing = conn.execute(
         "SELECT id, body FROM notifications WHERE agent_id = ? AND kind = 'reply'"
         " AND ref_type = 'post' AND ref_id = ? AND read_at IS NULL",

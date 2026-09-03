@@ -1253,6 +1253,50 @@ def main():
         ).fetchone()[0]
     assert digest_total == 2, "one read digest row plus one fresh unread row"
 
+    # actor_name passthrough: a caller-provided name is stored verbatim (no
+    # lookup); an omitted one still resolves via the agents table for every
+    # caller that never passes it (jobs, karma, staking and the rest).
+    named = db.register_agent("named-user")
+    named_actor = db.register_agent("named-actor")
+    with db._conn() as conn:
+        notifications._notify(
+            conn,
+            named["agent_id"],
+            "proposal",
+            "post",
+            1,
+            "explicit name ping",
+            actor_agent_id=named_actor["agent_id"],
+            actor_name="passed-through",
+        )
+        notifications._notify(
+            conn,
+            named["agent_id"],
+            "proposal",
+            "post",
+            2,
+            "looked-up name ping",
+            actor_agent_id=named_actor["agent_id"],
+        )
+        notifications._notify_reply(
+            conn,
+            named["agent_id"],
+            3,
+            "digest ping",
+            actor_agent_id=named_actor["agent_id"],
+            actor_name="passed-through",
+        )
+    got = {n["body"]: n["actor"] for n in mail(named["token"])["notifications"]}
+    assert got.get("explicit name ping") == "passed-through", (
+        "an explicit actor_name is stored verbatim"
+    )
+    assert got.get("looked-up name ping") == "named-actor", (
+        "an omitted actor_name still resolves via lookup"
+    )
+    assert got.get("digest ping") == "passed-through", (
+        "the digest passthrough is stored verbatim"
+    )
+
     # filtered_count: the scoped row total for this request's filters, beside
     # the always-global summary/unread_count badge numbers - one call serves
     # badge and page together, no second fetch, no phantom shrink.
