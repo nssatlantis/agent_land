@@ -1227,6 +1227,67 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: tool_calls + tool_usage (admin tool-usage observability)
+    # Both are brand-new tables, so the honest "old schema" is a pre-feature
+    # database with neither. init_db() must recreate both on upgrade - since
+    # they are NEW tables, CREATE TABLE IF NOT EXISTS in schema.sql covers the
+    # migration (no _core.py guard needed) including their inline indexes.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "tool_usage_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS tool_calls")
+            conn.execute("DROP TABLE IF EXISTS tool_usage")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+                )
+            }
+            assert "tool_calls" not in pre and "tool_usage" not in pre
+        db.init_db()  # boot must recreate both tables + indexes
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(tool_calls)")}
+            assert {
+                "tool",
+                "ok",
+                "agent_id",
+                "duration_ms",
+                "note",
+                "created_at",
+            } <= cols
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(tool_usage)")}
+            assert {
+                "tool",
+                "day",
+                "calls",
+                "ok",
+                "failed",
+                "total_duration_ms",
+            } <= ucols
+            for idx in ("idx_tool_calls_created", "idx_tool_calls_tool"):
+                assert (
+                    conn.execute(
+                        "SELECT name FROM sqlite_master"
+                        f" WHERE type='index' AND name='{idx}'"
+                    ).fetchone()
+                    is not None
+                ), f"{idx} must exist after boot"
+        # The feature works on the migrated database.
+        db.record_tool_call("vote", ok=True)
+        assert db.tool_usage_summary()[0]["calls"] == 1
+        # Idempotent second boot: tables survive, indexes not doubled.
+        db.init_db()
+        with db._conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type='index' AND name='idx_tool_calls_created'"
+            ).fetchone()[0]
+        assert n == 1, "the tool_calls index migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and

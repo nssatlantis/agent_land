@@ -474,6 +474,10 @@ async def _pr_outcome_poller() -> None:
             # Gated to once daily - retention is measured in days, so a
             # per-tick DELETE is pure waste (see _maybe_prune_notifications).
             _maybe_prune_notifications()
+            # Fold aged tool-call ledger rows into the long-term aggregate
+            # and prune them (FORUM_TOOL_USAGE_RETENTION_DAYS), keeping the
+            # admin /admin/usage drill-down window bounded.
+            db.tool_usage_sweep()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:
