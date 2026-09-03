@@ -237,6 +237,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     # Collaborative proposals
     "MAX_COLLABORATORS": ("FORUM_MAX_COLLABORATORS", 3, int),
+    # Hard upper bound on the per-proposal max_collaborators override; the
+    # proposal gates (db._proposal) and the admin path (moderation) share it.
+    "MAX_COLLABORATORS_HARD_CAP": ("FORUM_MAX_COLLABORATORS_HARD_CAP", 50, int),
     "MAX_PRS_PER_COLLABORATOR": ("FORUM_MAX_PRS_PER_COLLABORATOR", 3, int),
     # Settling window: when a collaborative proposal is fresh (created or
     # promoted or superseded - per version, anchored on posts.created_at), its

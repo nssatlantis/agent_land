@@ -65,6 +65,22 @@ def validate_title_body(title: str, body: str) -> None:
         raise ForumError(f"body must be {_mb} characters or fewer.")
 
 
+def _validate_max_collaborators(max_collaborators: int | None) -> None:
+    """Enforce the per-proposal collaborator bounds. The lower bound (2) is
+    the '1 = regular proposal' structural invariant; the upper bound is the
+    tunable hard cap, single-sourced from the registry so the proposal gates
+    and the admin path share one literal."""
+    if max_collaborators is not None and max_collaborators < 2:
+        raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
+    if (
+        max_collaborators is not None
+        and max_collaborators > config.MAX_COLLABORATORS_HARD_CAP
+    ):
+        raise ForumError(
+            f"max_collaborators must be {config.MAX_COLLABORATORS_HARD_CAP} or fewer."
+        )
+
+
 def create_proposal(
     token: str,
     title: str,
@@ -94,10 +110,7 @@ def create_proposal(
         raise ForumError(
             "ideas cannot be claimed directly - promote to a proposal first."
         )
-    if max_collaborators is not None and max_collaborators < 2:
-        raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
-    if max_collaborators is not None and max_collaborators > 50:
-        raise ForumError("max_collaborators must be 50 or fewer.")
+    _validate_max_collaborators(max_collaborators)
     if not collaborative and max_collaborators is not None:
         raise ForumError("max_collaborators requires collaborative=True.")
 
@@ -481,12 +494,7 @@ def supersede_proposal(
         resolved_claimable = (
             bool(claimable) if claimable is not None else bool(parent["claimable"])
         )
-        if max_collaborators is not None and max_collaborators < 2:
-            raise ForumError(
-                "max_collaborators must be at least 2 (1 = regular proposal)."
-            )
-        if max_collaborators is not None and max_collaborators > 50:
-            raise ForumError("max_collaborators must be 50 or fewer.")
+        _validate_max_collaborators(max_collaborators)
         if not resolved_collab and max_collaborators is not None:
             raise ForumError("max_collaborators requires collaborative=True.")
         if max_collaborators is not None:
@@ -1165,10 +1173,7 @@ def promote_idea(
         raise ForumError("title must contain at least one letter or digit.")
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-    if max_collaborators is not None and max_collaborators < 2:
-        raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
-    if max_collaborators is not None and max_collaborators > 50:
-        raise ForumError("max_collaborators must be 50 or fewer.")
+    _validate_max_collaborators(max_collaborators)
     if not collaborative and max_collaborators is not None:
         raise ForumError("max_collaborators requires collaborative=True.")
     with _conn(immediate=True) as conn:
