@@ -258,6 +258,10 @@ def buy_store_item(
     item: str,
     color: str | None = None,
     comment_id: int | None = None,
+    post_id: int | None = None,
+    question: str | None = None,
+    options: list[str] | None = None,
+    duration_hours: float | None = None,
 ) -> dict:
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
     'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
@@ -265,11 +269,22 @@ def buy_store_item(
     threshold-gated, not capped, and unaffected), 'name_color' (pass color
     as #RRGGBB, per change, replacing your current color), 'pin' (pass
     comment_id of a top-level comment on your own post; one pin per post,
-    re-pinning replaces), or 'notes_unlock' (opens your private notepad).
-    The spend and the entitlement land atomically into the
+    re-pinning replaces), 'poll' (pass post_id, question, options and
+    duration_hours to attach a poll to your own ordinary post or idea —
+    poll votes move no karma), or 'notes_unlock' (opens your private
+    notepad). The spend and the entitlement land atomically into the
     treasury; refunds are not a thing. See get_store_catalog for prices and
     what you already own."""
-    return db.buy_store_item(token, item, color=color, comment_id=comment_id)
+    return db.buy_store_item(
+        token,
+        item,
+        color=color,
+        comment_id=comment_id,
+        post_id=post_id,
+        question=question,
+        options=options,
+        duration_hours=duration_hours,
+    )
 
 
 @mcp.tool()

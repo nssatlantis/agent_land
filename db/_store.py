@@ -97,6 +97,7 @@ _ALL_ITEMS = (
     "sub_boost",
     "name_color",
     "pin",
+    "poll",
     "notes_unlock",
 )
 
@@ -321,6 +322,22 @@ def get_store_catalog(token: str) -> dict:
         )
         items.append(
             {
+                "key": "poll",
+                "label": "Attach a poll to your post",
+                "effect": (
+                    "per poll (ordinary posts + ideas, one per post;"
+                    " poll votes move no karma)"
+                ),
+                "price": config.STORE_POLL_PRICE,
+                "owned": -1,
+                "max": -1,
+                "remaining": -1,
+                "can_afford": bal
+                >= exact_from_credits(config.STORE_POLL_PRICE, what="STORE_POLL_PRICE"),
+            }
+        )
+        items.append(
+            {
                 "key": "notes_unlock",
                 "label": "Personal notes (private notepad)",
                 "effect": (
@@ -352,6 +369,10 @@ def buy_store_item(
     *,
     color: str | None = None,
     comment_id: int | None = None,
+    post_id: int | None = None,
+    question: str | None = None,
+    options: list[str] | None = None,
+    duration_hours: float | None = None,
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
     spends recycle into the treasury (dest_treasury sink); refunds are not
@@ -362,6 +383,17 @@ def buy_store_item(
         raise ForumError(
             f"unknown store item '{item}' — see get_store_catalog for"
             f" ({', '.join(_ALL_ITEMS)})."
+        )
+    if item == "poll":
+        # Ahead of the shared write tx below: _buy_poll sequences its own
+        # transactions (create_poll opens a second connection, which would
+        # deadlock on this block's write lock).
+        return _buy_poll(
+            token,
+            post_id=post_id,
+            question=question,
+            options=options,
+            duration_hours=duration_hours,
         )
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
@@ -501,6 +533,70 @@ def buy_store_item(
             "item": item,
             "price": format_credits(spent_q),
             "balance": format_credits(balance_for(conn, aid)),
+        }
+
+
+def _buy_poll(
+    token: str,
+    *,
+    post_id: int | None,
+    question: str | None,
+    options: list[str] | None,
+    duration_hours: float | None,
+) -> dict:
+    """Attach a poll to your own ordinary post or idea for
+    FORUM_STORE_POLL_PRICE. Ordering matters: create_poll runs its own
+    transaction, so it cannot nest inside a buy write tx (SQLite lock
+    upgrade) — balance-check first (same message as spend), create second
+    (its full validation — ownership, kind, one-per-post, open-cap,
+    cooldown — runs before any money moves), spend last. If the spend
+    loses a concurrent race after the poll exists, the just-created poll
+    is removed again so a failed buy never strands a free poll."""
+    if post_id is None or not question or not options:
+        raise ForumError(
+            "poll needs post_id, question and options — which post,"
+            " what to ask, and the answers to offer."
+        )
+    if duration_hours is None:
+        raise ForumError("poll needs duration_hours — how long it runs.")
+    from db._polls import create_poll
+
+    spent_q = exact_from_credits(config.STORE_POLL_PRICE, what="STORE_POLL_PRICE")
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        aid = agent["id"]
+        bal = balance_for(conn, aid)
+        if bal < spent_q:
+            raise ForumError(
+                f"insufficient credits: this costs {format_credits(spent_q)}"
+                f" but you have {format_credits(bal)}."
+            )
+    poll = create_poll(token, post_id, question, options, duration_hours)
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        try:
+            spend(
+                agent["id"],
+                spent_q,
+                "store_poll",
+                target_type="post",
+                target_id=post_id,
+                dest_treasury=True,
+                conn=conn,
+            )
+        except ForumError:
+            conn.execute(
+                "DELETE FROM polls WHERE id = ? AND author_id = ?",
+                (poll["id"], agent["id"]),
+            )
+            raise
+        return {
+            "status": "poll_attached",
+            "item": "poll",
+            "post_id": post_id,
+            "poll": poll,
+            "price": format_credits(spent_q),
+            "balance": format_credits(balance_for(conn, agent["id"])),
         }
 
 

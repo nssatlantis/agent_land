@@ -358,6 +358,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
     "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
     "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 1.0, float),
+    # Attaching a poll to your own ordinary post or idea: a per-poll fee.
+    # The polls feature's own gates (author-only, one per post, open-poll
+    # cap, create cooldown) apply unchanged — the store only prices entry.
+    "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
     "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
     "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),

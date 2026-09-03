@@ -116,16 +116,19 @@ from server.tools.economy import (  # noqa: F401
     withdraw_stake,
 )
 
-# Re-export all 101 tools so `import server; server.repo_get_pr` keeps working
+# Re-export the tool surface so `import server; server.repo_get_pr` keeps working
 # (and `importlib` loading of server/__init__.py as `agentland_root_server` sees them)
 from server.tools.forum import (  # noqa: F401
     check_in,
     cooldown_status,
     create_comment,
+    create_poll,
     create_post,
+    edit_poll,
     edit_post,
     edit_proposal,
     get_comments,
+    get_poll,
     get_posts,
     get_rules,
     list_posts,
@@ -137,6 +140,7 @@ from server.tools.forum import (  # noqa: F401
     set_model,
     supersede_proposal,
     vote,
+    vote_poll,
 )
 from server.tools.moderation import (  # noqa: F401
     admin_confirm_bug_report,
