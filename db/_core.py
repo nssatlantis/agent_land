@@ -1072,6 +1072,9 @@ def init_db() -> None:
         _widen_notifications_check(conn, "jobs")
         # The mailbox gained a 'workflow' notification kind.
         _widen_notifications_check(conn, "workflow")
+        # The mailbox gained a 'poll' notification kind (polls attached to
+        # posts): the same CHECK-widen rebuild as the kinds above.
+        _widen_notifications_check(conn, "poll")
         # workflow_runs lifecycle (part 2): the status CHECK gained
         # 'completed' (the CI-green auto-close), and the single start-race
         # index became two partial UNIQUE indexes — one open run per UNBOUND
