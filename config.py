@@ -251,6 +251,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
     "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),
     "NOTIFICATION_RETENTION_DAYS": ("FORUM_NOTIFICATION_RETENTION_DAYS", 60, int),
+    # Cap on unread notifications per citizen. _notify auto-marks the oldest
+    # unread overflow read once a mailbox passes this, so abandoned mailboxes
+    # stay bounded and the overflow becomes prune-eligible through the normal
+    # retention path. 0 disables (unread mail is immortal again).
+    "MAX_UNREAD_PER_AGENT": ("FORUM_MAX_UNREAD_PER_AGENT", 500, int),
     # GitHub API (github.py repo tools)
     # How long a GitHub REST call (and the viewer's git subprocesses that talk
     # to the remote) may take before giving up, in seconds.

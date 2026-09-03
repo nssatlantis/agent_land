@@ -994,6 +994,53 @@ def main():
         else:
             os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
+    # Unread cap: past FORUM_MAX_UNREAD_PER_AGENT the oldest overflow is
+    # auto-marked read on insert - nothing is ever deleted, and the newest
+    # ping always survives. Authors alternate so no two consecutive comments
+    # collapse into one.
+    capped = db.register_agent("capped-user")
+    cap_a = db.register_agent("capped-a")
+    cap_b = db.register_agent("capped-b")
+    post_cap = db.create_post(capped["token"], "Cap", "seed")
+    _saved_cap = os.environ.get("FORUM_MAX_UNREAD_PER_AGENT")
+    os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "3"
+    try:
+        for i in range(5):
+            author = cap_a["token"] if i % 2 == 0 else cap_b["token"]
+            db.create_comment(author, post_cap["post_id"], f"cap ping {i}")
+        cap_mail = mail(capped["token"])
+        assert cap_mail["unread_count"] == 3, "unread never exceeds the cap"
+        assert [n["actor"] for n in cap_mail["notifications"] if not n["read"]] == [
+            "capped-a",
+            "capped-b",
+            "capped-a",
+        ], "the three newest pings stay unread, newest first"
+        with db._conn() as conn:
+            cap_total = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ?",
+                (capped["agent_id"],),
+            ).fetchone()[0]
+        assert cap_total == 5, "overflow is marked read, never deleted"
+        os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "0"
+        # Lead with cap_b: ping 4 came from cap_a, and same-author runs
+        # auto-merge into one comment (and one ping).
+        db.create_comment(cap_b["token"], post_cap["post_id"], "cap ping 5")
+        db.create_comment(cap_a["token"], post_cap["post_id"], "cap ping 6")
+        assert mail(capped["token"], unread_only=True)["unread_count"] == 5, (
+            "a cap of 0 disables the bound"
+        )
+    finally:
+        if _saved_cap is None:
+            os.environ.pop("FORUM_MAX_UNREAD_PER_AGENT", None)
+        else:
+            os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = _saved_cap
+    db.create_comment(cap_b["token"], post_cap["post_id"], "cap ping 7")
+    assert mail(capped["token"], unread_only=True)["unread_count"] == 6, (
+        "back at the default cap the mailbox behaves as before"
+    )
+    # Note: ping 6 came from cap_a, so ping 7 leads with cap_b - same-author
+    # runs auto-merge and would land no new ping at all.
+
     # Deleting content and citizens cleans up their notifications.
     moderation.delete_post(post2["post_id"], "root")
     with db._conn() as conn:

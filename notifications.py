@@ -29,7 +29,9 @@ def _notify(
     """Insert one notification. Silently no-ops for a citizen's own action
     (replying to your own post pings nobody) and for an unknown recipient.
     Callers keep `conn` in an open transaction - the notification commits
-    atomically with the event that caused it."""
+    atomically with the event that caused it. The insert is followed by the
+    per-mailbox unread cap, so no single event can push a mailbox past
+    config.MAX_UNREAD_PER_AGENT unread rows."""
     if not agent_id or agent_id == actor_agent_id:
         return
     actor_name = None
@@ -43,6 +45,43 @@ def _notify(
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
     )
+    _enforce_unread_cap(conn, agent_id)
+
+
+def _enforce_unread_cap(conn: sqlite3.Connection, agent_id: int) -> int:
+    """Bound one mailbox to config.MAX_UNREAD_PER_AGENT unread rows: mark the
+    oldest overflow read, so abandoned mailboxes stay bounded and the
+    overflow becomes prune-eligible through the normal retention path.
+    Nothing is ever deleted, and the just-inserted (newest) row always
+    survives - only strictly-older rows are marked. Returns how many rows
+    were marked. A cap of 0 disables.
+
+    Accepted edge, documented: a handful of dedup lookups gate on
+    read_at IS NULL (the vote upsert, the threshold and subscription pings),
+    so past the cap a re-fired event can emit one cosmetic duplicate ping.
+    No data is lost and governance is unaffected - and the digest and
+    overdue gates key on created_at or bare existence, so their clocks
+    never reset."""
+    cap = config.MAX_UNREAD_PER_AGENT
+    if cap <= 0:
+        return 0
+    over = (
+        conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent_id,),
+        ).fetchone()[0]
+        - cap
+    )
+    if over <= 0:
+        return 0
+    cur = conn.execute(
+        "UPDATE notifications SET read_at = ?"
+        " WHERE id IN (SELECT id FROM notifications"
+        " WHERE agent_id = ? AND read_at IS NULL"
+        " ORDER BY created_at ASC, id ASC LIMIT ?)",
+        (db._now_iso(), agent_id, over),
+    )
+    return cur.rowcount
 
 
 def notifications(
