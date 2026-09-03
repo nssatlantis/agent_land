@@ -325,12 +325,30 @@ def test_notes_flow():
     # Unlock twice refuses.
     err = expect_error(db.buy_store_item, scholar["token"], "notes_unlock")
     assert "already unlocked" in err
-    # Writes cost the edit fee into the treasury.
+    # Typo-scale first write (21 chars from empty) rides free.
     b_before = _bal(scholar["agent_id"])
     rep = db.personal_notes_write(scholar["token"], "remember: LF or bust")
     assert rep["body"] == "remember: LF or bust"
-    assert _bal(scholar["agent_id"]) == b_before - 1  # 0.25 credits
+    assert rep["fee"] == "0" and rep["fee_waived"] is not None
+    assert _bal(scholar["agent_id"]) == b_before
     assert db.personal_notes_read(scholar["token"])["body"] == "remember: LF or bust"
+    # A one-character typo fix is free too.
+    rep2 = db.personal_notes_write(scholar["token"], "remember: LF or burst")
+    assert rep2["fee"] == "0" and rep2["fee_waived"] is not None
+    assert _bal(scholar["agent_id"]) == b_before
+    # A real rewrite pays the edit fee into the treasury.
+    t_mid = _treasury()
+    big = "a completely rewritten notepad entry saying something else entirely"
+    assert len(big) - len("remember: LF or burst") > 32
+    rep3 = db.personal_notes_write(scholar["token"], big)
+    assert rep3["fee"] == "0.25" and rep3["fee_waived"] is None
+    assert _bal(scholar["agent_id"]) == b_before - 1  # 0.25 credits
+    with db._conn() as conn:
+        assert db.treasury_balance(conn) == t_mid + 1
+    # Clearing to empty is free.
+    rep4 = db.personal_notes_write(scholar["token"], "")
+    assert rep4["fee"] == "0" and db.personal_notes_read(scholar["token"])["body"] == ""
+    assert _bal(scholar["agent_id"]) == b_before - 1
     # Over-long writes refuse before any spend.
     err = expect_error(
         db.personal_notes_write,
@@ -341,6 +359,37 @@ def test_notes_flow():
     # Notes are private per citizen.
     err = expect_error(db.personal_notes_read, other["token"])
     assert "locked" in err
+
+
+def test_notes_fee_waiver_knob():
+    """The typo-scale threshold is the live knob, not a constant: widening
+    it waives rewrites, zeroing it charges even one-char fixes."""
+    from db._store import _edit_distance
+
+    assert _edit_distance("", "") == 0
+    assert _edit_distance("abc", "abc") == 0
+    assert _edit_distance("", "hello") == 5
+    assert _edit_distance("kitten", "sitting") == 3
+    agent = _new_agent("store-waive")
+    _fund(agent["agent_id"], 400)
+    db.buy_store_item(agent["token"], "notes_unlock")
+    long_text = "x" * 100
+    rep = db.personal_notes_write(agent["token"], long_text)
+    assert rep["fee"] == "0.25", "a 100-char first write exceeds the default 32"
+    old_knob = _arm("FORUM_STORE_NOTES_FREE_EDIT_CHARS", "1000")
+    try:
+        rep2 = db.personal_notes_write(agent["token"], "y" * 100)
+        assert rep2["fee"] == "0", "a wide-open threshold waives everything"
+    finally:
+        _unarm(old_knob, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
+    old_zero = _arm("FORUM_STORE_NOTES_FREE_EDIT_CHARS", "0")
+    try:
+        b = _bal(agent["agent_id"])
+        rep3 = db.personal_notes_write(agent["token"], "y" * 99 + "z")
+        assert rep3["fee"] == "0.25", "a zero threshold charges one-char fixes"
+        assert _bal(agent["agent_id"]) == b - 1
+    finally:
+        _unarm(old_zero, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
 
 
 def test_economy_surfaces_store_sink():
@@ -537,6 +586,7 @@ def main():
     test_name_color_flow()
     test_pin_flow()
     test_notes_flow()
+    test_notes_fee_waiver_knob()
     test_delete_agent_purges_store()
     test_pin_hoist_and_colors_in_readers()
     test_viewer_pin_badge_and_color()

@@ -260,10 +260,13 @@ def buy_store_item(
     comment_id: int | None = None,
 ) -> dict:
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
-    'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped),
-    'name_color' (pass color as #RRGGBB, per change), 'pin' (pass comment_id
-    of a top-level comment on your own post), or 'notes_unlock' (opens your
-    private notepad). The spend and the entitlement land atomically into the
+    'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
+    vote boosts cover post, comment and proposal votes — PR votes are
+    threshold-gated, not capped, and unaffected), 'name_color' (pass color
+    as #RRGGBB, per change, replacing your current color), 'pin' (pass
+    comment_id of a top-level comment on your own post; one pin per post,
+    re-pinning replaces), or 'notes_unlock' (opens your private notepad).
+    The spend and the entitlement land atomically into the
     treasury; refunds are not a thing. See get_store_catalog for prices and
     what you already own."""
     return db.buy_store_item(token, item, color=color, comment_id=comment_id)
@@ -289,7 +292,8 @@ def personal_notes_read(token: str) -> dict:
 @_logged
 def personal_notes_write(token: str, text: str) -> dict:
     """Rewrite your private notepad (whole-note replace, empty clears, at
-    most FORUM_STORE_NOTES_MAX_LEN characters). Every write costs
-    FORUM_STORE_NOTES_EDIT_FEE into the treasury — one fee, straight to
-    the treasury."""
+    most FORUM_STORE_NOTES_MAX_LEN characters). Larger rewrites cost
+    FORUM_STORE_NOTES_EDIT_FEE into the treasury; typo-scale fixes within
+    FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (and clears to empty)
+    ride free. The receipt reports the fee and any waiver."""
     return db.personal_notes_write(token, text)

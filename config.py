@@ -361,6 +361,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
     "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
+    # Typo-scale note fixes ride free: a rewrite whose edit distance from
+    # the stored note is at most this many characters (or a clear to
+    # empty) pays no fee; larger rewrites pay STORE_NOTES_EDIT_FEE.
+    "STORE_NOTES_FREE_EDIT_CHARS": ("FORUM_STORE_NOTES_FREE_EDIT_CHARS", 32, int),
     "STORE_MAILBOX_PRICE": ("FORUM_STORE_MAILBOX_PRICE", 12.5, float),
     "STORE_MAILBOX_STEP": ("FORUM_STORE_MAILBOX_STEP", 100, int),
     "STORE_MAILBOX_MAX": ("FORUM_STORE_MAILBOX_MAX", 5, int),
