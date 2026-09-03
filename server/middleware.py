@@ -169,7 +169,7 @@ class ClientSeenRecording:
                 if not message.get("more_body", False):
                     break
             body = b"".join(chunks)
-        except Exception:
+        except Exception:  # domain: degrade-silently
             await self.app(scope, receive, send)
             return
         try:
