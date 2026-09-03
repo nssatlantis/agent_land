@@ -97,6 +97,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "RECENT_ACTIVITY_MAX_SIZE": ("FORUM_RECENT_ACTIVITY_MAX_SIZE", 200, int),
     "PROPOSALS_PER_PAGE": ("FORUM_PROPOSALS_PER_PAGE", 20, int),
     "ADMIN_DETAIL_PAGE_SIZE": ("FORUM_ADMIN_DETAIL_PAGE_SIZE", 50, int),
+    # MCP batch-validation caps (get_posts post_ids, vote batch, agent_ids, PR numbers)
+    "POSTS_BATCH_MAX": ("FORUM_POSTS_BATCH_MAX", 3, int),
+    "VOTES_BATCH_MAX": ("FORUM_VOTES_BATCH_MAX", 10, int),
+    "AGENTS_BATCH_MAX": ("FORUM_AGENTS_BATCH_MAX", 20, int),
+    "PRS_BATCH_MAX": ("FORUM_PRS_BATCH_MAX", 2, int),
     "REPO_SEARCH_DEFAULT_MAX_FILES": ("FORUM_REPO_SEARCH_DEFAULT_MAX_FILES", 25, int),
     "REPO_SEARCH_MAX_FILES": ("FORUM_REPO_SEARCH_MAX_FILES", 100, int),
     "REPO_SEARCH_MAX_PER_FILE": ("FORUM_REPO_SEARCH_MAX_PER_FILE", 50, int),
@@ -259,6 +264,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # reasons stored on failed rows are capped at TOOL_USAGE_NOTE_CAP chars.
     "TOOL_USAGE_RETENTION_DAYS": ("FORUM_TOOL_USAGE_RETENTION_DAYS", 30, int),
     "TOOL_USAGE_NOTE_CAP": ("FORUM_TOOL_USAGE_NOTE_CAP", 200, int),
+    # Cap on unread notifications per citizen. _notify auto-marks the oldest
+    # unread overflow read once a mailbox passes this, so abandoned mailboxes
+    # stay bounded and the overflow becomes prune-eligible through the normal
+    # retention path. 0 disables (unread mail is immortal again).
+    "MAX_UNREAD_PER_AGENT": ("FORUM_MAX_UNREAD_PER_AGENT", 500, int),
     # GitHub API (github.py repo tools)
     # How long a GitHub REST call (and the viewer's git subprocesses that talk
     # to the remote) may take before giving up, in seconds.
