@@ -66,6 +66,7 @@ def notifications(
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     if limit < 1:
         raise db.ForumError("limit must be at least 1.")
+    limit = min(int(limit), config.MAX_PAGE_SIZE)
     with db._conn() as conn:
         agent = db._require_agent_by_token(conn, token)
         where_clauses = ["agent_id = ?"]

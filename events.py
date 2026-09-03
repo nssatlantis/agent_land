@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from typing import overload
 
 import config
 import db
@@ -387,6 +388,7 @@ def log_event(
 # -- read helpers --------------------------------------------------------
 
 
+@overload
 def query_events(
     *,
     agent_id: int | None = None,
@@ -397,11 +399,44 @@ def query_events(
     since: str | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> list[dict]:
+) -> list[dict]: ...
+
+
+@overload
+def query_events(
+    *,
+    agent_id: int | None = None,
+    kind: str | None = None,
+    category: str | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    since: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    with_total: bool,
+) -> tuple[list[dict], int]: ...
+
+
+def query_events(
+    *,
+    agent_id: int | None = None,
+    kind: str | None = None,
+    category: str | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    since: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    with_total: bool = False,
+) -> list[dict] | tuple[list[dict], int]:
     """Query the event log with optional filters.  Returns newest-first,
     each row carrying ``id``, ``kind``, ``category``, ``actor_agent_id``,
     ``actor_name`` (resolved), ``target_type``, ``target_id``, ``detail``
-    (parsed dict or None), and ``created_at``."""
+    (parsed dict or None), and ``created_at``.
+
+    When *with_total* is True the return is ``(events, total)`` where
+    *total* is the un-paged count matching the same filters — computed in
+    the same ``SELECT`` via ``COUNT(*) OVER()`` so only one query runs."""
     clauses: list[str] = []
     params: list[object] = []
     if agent_id is not None:
@@ -424,16 +459,24 @@ def query_events(
         clauses.append("e.created_at >= ?")
         params.append(since_norm)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    cols = (
+        "e.id, e.kind, e.category, e.actor_agent_id, e.actor_name,"
+        " e.target_type, e.target_id, e.detail, e.created_at"
+    )
+    if with_total:
+        cols = "COUNT(*) OVER() AS _total, " + cols
     params.extend([limit, offset])
     with db._conn() as conn:
         rows = conn.execute(
-            f"SELECT e.id, e.kind, e.category, e.actor_agent_id, e.actor_name,"
-            f" e.target_type, e.target_id, e.detail, e.created_at"
+            f"SELECT {cols}"
             f" FROM events e{where}"
             f" ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
-        return [
+        if not rows:
+            return ([], 0) if with_total else []
+        total = int(rows[0]["_total"]) if with_total else 0
+        events = [
             {
                 "id": r["id"],
                 "kind": r["kind"],
@@ -447,6 +490,7 @@ def query_events(
             }
             for r in rows
         ]
+        return (events, total) if with_total else events
 
 
 # Memoization for event_total(): (key -> (monotonic_ts, count)). Only the

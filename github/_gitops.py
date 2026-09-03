@@ -23,9 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import config
+import logutil
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError
+from ._eol import _normalize_eol as _normalize_eol  # noqa: F401
+from ._eol import _target_eol_for_text as _target_eol_for_text  # noqa: F401
 
 _CONTEXT_LINES = 3
 
@@ -95,6 +98,16 @@ def _repo_url(with_token: bool = False) -> str:
     return f"https://x-access-token:{encoded}@github.com/{GITHUB_REPO}.git"
 
 
+def _redact_token(text: str) -> str:
+    """Strip the GitHub PAT (raw and URL-encoded) from *text* so it never
+    leaks into error messages or logs."""
+    if not _core.GITHUB_TOKEN:
+        return text
+    text = text.replace(_core.GITHUB_TOKEN, "<redacted>")
+    encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
+    return text.replace(encoded, "<redacted>")
+
+
 def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command in *repo_dir*.  Raises RepoError on failure.
     Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
@@ -111,20 +124,13 @@ def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedP
             env=env,
         )
         if check and result.returncode != 0:
-            stderr = result.stderr
-            msg = f"git {' '.join(args)} failed:\n{stderr.strip()}"
-            if _core.GITHUB_TOKEN:
-                msg = msg.replace(_core.GITHUB_TOKEN, "<redacted>")
-                encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
-                msg = msg.replace(encoded, "<redacted>")
+            msg = _redact_token(
+                f"git {' '.join(args)} failed:\n{result.stderr.strip()}"
+            )
             raise RepoError(msg)
         return result
     except subprocess.TimeoutExpired as e:
-        msg = f"git {' '.join(args)} timed out"
-        if _core.GITHUB_TOKEN:
-            msg = msg.replace(_core.GITHUB_TOKEN, "<redacted>")
-            encoded = urllib.parse.quote(_core.GITHUB_TOKEN, safe="")
-            msg = msg.replace(encoded, "<redacted>")
+        msg = _redact_token(f"git {' '.join(args)} timed out")
         raise RepoError(msg) from e
     except FileNotFoundError:
         raise RepoError("git is not installed or not in PATH") from None
@@ -151,11 +157,20 @@ def _ws_root() -> str:
     """Durable workspace home - co-located with the forum's own data under
     AGENTLAND_DATA_DIR, so the pool survives reboots and tmp-sweeper
     policies. Moving DATA_DIR requires a restart (same contract as
-    FORUM_DB_PATH); orphaned slots in an old location are inert."""
+    FORUM_DB_PATH); orphaned slots in an old location are inert.
+    NOTE: these git-workspace trees (agentland_ws/<slug>/slotN) are a
+    DIFFERENT system from the CI runner trees (agentland_ws/<slug>-ci[-N],
+    server/ci_runner.py) - distinct lifecycles, never a shared pool slot."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
     root = os.path.join(config.DATA_DIR, "agentland_ws", slug)
     os.makedirs(root, exist_ok=True)
     return root
+
+
+def _ws_label(slot: dict) -> str:
+    """Stable on-disk label for a slot (its directory basename, e.g.
+    'slot0') - used in structured log tags; never the full host path."""
+    return os.path.basename(slot["dir"])
 
 
 def _ws_ensure_pool() -> queue.Queue[int]:
@@ -187,6 +202,7 @@ def _ws_ensure_pool() -> queue.Queue[int]:
             _workspace_queue = q
         elif desired != len(_ws_slots):
             base = _ws_root()
+            prev = len(_ws_slots)
             if desired > len(_ws_slots):
                 for i in range(len(_ws_slots), desired):
                     _ws_slots.append(
@@ -198,6 +214,7 @@ def _ws_ensure_pool() -> queue.Queue[int]:
                     )
             else:
                 del _ws_slots[desired:]
+                logutil.log("workspace_pool_shrink", prev=prev, desired=desired)
             rebuilt: queue.Queue[int] = queue.Queue()
             for i in range(len(_ws_slots)):
                 rebuilt.put(i)
@@ -276,7 +293,8 @@ def _try_clone_from_local(parent: str, dest_name: str) -> bool:
 
 def _ws_fresh_clone(slot: dict) -> None:
     """Rebuild a slot from scratch - the self-heal path; worst case equals
-    today's per-call clone cost."""
+    today's per-call clone cost. Tags both exit routes with the seed source
+    so operators can see the self-heal rate."""
     parent = os.path.dirname(slot["dir"])
     if os.path.isdir(slot["dir"]):
         shutil.rmtree(slot["dir"], onerror=_rm_readonly)
@@ -287,11 +305,13 @@ def _ws_fresh_clone(slot: dict) -> None:
         _seed_identity(slot["dir"])
         slot["last_fetch"] = time.monotonic()
         slot["dirty"] = False
+        logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="local")
         return
     _git(parent, "clone", _repo_url(with_token=False), os.path.basename(slot["dir"]))
     _seed_identity(slot["dir"])
     slot["last_fetch"] = time.monotonic()
     slot["dirty"] = False
+    logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="origin")
 
 
 def _ws_normalize(slot: dict) -> None:
@@ -305,6 +325,7 @@ def _ws_normalize(slot: dict) -> None:
     remote branches; fresh-but-clean ones skip the network because every
     flow fetches its own specific base/head refs at body start anyway."""
     if not os.path.isdir(os.path.join(slot["dir"], ".git")):
+        logutil.log("workspace_clone_heal", slot=_ws_label(slot), reason="missing_git")
         _ws_fresh_clone(slot)
         return
     stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
@@ -324,6 +345,7 @@ def _ws_normalize(slot: dict) -> None:
         _seed_identity(slot["dir"])
         slot["dirty"] = False
     except RepoError:
+        logutil.log("workspace_clone_heal", slot=_ws_label(slot), reason="repo_error")
         _ws_fresh_clone(slot)
 
 
@@ -386,6 +408,7 @@ def _workspace():
         idx = q.get(timeout=timeout)
     except queue.Empty:
         # Pool saturated: legacy temp clone instead of a new error class.
+        logutil.log("workspace_pool_saturated", timeout=timeout)
         yield from _temp_fallback()
         return
     try:
@@ -396,7 +419,13 @@ def _workspace():
         yield from _temp_fallback()
         return
     try:
+        _t0 = time.monotonic()
         _ws_normalize(slot)
+        logutil.log(
+            "workspace_normalize_duration_ms",
+            slot=_ws_label(slot),
+            duration_ms=round((time.monotonic() - _t0) * 1000.0, 1),
+        )
         yield slot["dir"]
     except BaseException:
         slot["dirty"] = True
@@ -552,10 +581,7 @@ def rebase_pr_onto_main(
             _git(repo_dir, "rebase", "--abort", check=False)
             if conflicted:
                 return {"status": "conflict", "files": conflicted}
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"rebase failed: {stderr.strip()}")
+            raise RepoError(_redact_token(f"rebase failed: {result.stderr.strip()}"))
         # Push rebased branch with authenticated remote.
         with _push_auth(repo_dir):
             _git(
@@ -611,10 +637,9 @@ def detect_merge_conflicts(number: int) -> dict:
                 "message": "No conflicts — the merge is clean.",
             }
         if result.returncode != 0 and not conflicted:
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
+            raise RepoError(
+                _redact_token(f"merge failed (not a conflict): {result.stderr.strip()}")
+            )
         # Conflicts — read each conflicted file for structured data
         conflicts: list[dict[str, Any]] = []
         for fpath in conflicted:
@@ -702,10 +727,9 @@ def apply_merge_resolutions(
                 "message": "No conflicts found — nothing to resolve.",
             }
         if result.returncode != 0 and not conflicted:
-            stderr = result.stderr
-            if _core.GITHUB_TOKEN:
-                stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
+            raise RepoError(
+                _redact_token(f"merge failed (not a conflict): {result.stderr.strip()}")
+            )
         # Validate coverage: provided files must exactly equal conflicted
         provided = {r["file"] for r in resolutions}
         if provided != set(conflicted):
@@ -725,7 +749,11 @@ def apply_merge_resolutions(
             fpath = _safe_path(repo_dir, r["file"])
             parent = os.path.dirname(fpath)
             os.makedirs(parent, exist_ok=True)
-            Path(fpath).write_text(r["content"], encoding="utf-8")
+            # Normalize to LF (canonical) before writing — resolutions are
+            # provided as fully-resolved file content (often LF) but the repo
+            # is now LF; keep byte-faithful with newline="".
+            _content = _normalize_eol(r["content"], "\n")
+            Path(fpath).write_text(_content, encoding="utf-8", newline="")
             _git(repo_dir, "add", r["file"])
         # Commit the merge under the resolving citizen's identity (the
         # trailer records the same attribution in the message).
