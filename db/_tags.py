@@ -363,11 +363,16 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
                 f"posts may carry at most {config.TAG_MAX_PER_POST} tags - remove one first."
             )
         now = _now_iso()
-        conn.execute(
-            "INSERT INTO post_tags (post_id, tag_id, applied_by, applied_at)"
-            " VALUES (?, ?, ?, ?)",
-            (post_id, tag["id"], agent["id"], now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO post_tags (post_id, tag_id, applied_by, applied_at)"
+                " VALUES (?, ?, ?, ?)",
+                (post_id, tag["id"], agent["id"], now),
+            )
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - double-apply race is user-visible, translate to the same ForumError as the pre-check
+            raise ForumError(
+                f"post #{post_id} already carries tag '{tag['name']}'."
+            ) from exc
         # Karma Split: the apply cost debits CREDITS (the insufficient-
         # balance refusal inside spend() replaces the old karma check).
         import db._credits as _credits
