@@ -203,11 +203,19 @@ def require_todo_binding_for_pr(
     ).fetchone()[0]
     if undone == 0:
         return
+    undone_rows = conn.execute(
+        "SELECT ti.id FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " WHERE tl.post_id = ? AND ti.done = 0"
+        " ORDER BY ti.id LIMIT 5",
+        (post_id,),
+    ).fetchall()
+    undone_ids = ", ".join(str(r[0]) for r in undone_rows)
     raise ForumError(
         f"proposal #{post_id} requires binding this PR to the undone to-do"
         " item it implements with todo_item_id=<item_id>:"
         f" {undone} undone item(s) remain and FORUM_TODO_CLAIM_REQUIRED is"
-        " on. get_todos("
+        f" on (first undone ids: {undone_ids}). get_todos("
         f"{post_id}) to see the board; claim the item first if it is not"
         " yours (claim_todo_item), then pass its id so the board auto-ticks"
         " it when the PR merges."

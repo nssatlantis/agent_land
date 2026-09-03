@@ -36,6 +36,11 @@ _REQUEUE_ATTEMPTS: dict[int, int] = {}
 _PENDING_LOCK = threading.Lock()
 _TICKER_TASK: asyncio.Task | None = None
 
+# Step keys the server auto-manages (hand ticks refused): 'open' auto-ticks
+# on PR-link, 'verify' on CI-green/merge. Mirror here so repo_workflow_status
+# can flag them for MCP consumers without reaching into db internals.
+_MANAGED_WORKFLOW_KEYS = frozenset({"open", "verify"})
+
 
 async def _debounce_ticker() -> None:
     while True:
@@ -1270,6 +1275,13 @@ def repo_ci_run(
     re-fired - the -32001 timeout only ended the request."""
     db.require_active_agent(token)
     who = db.whoami(token)
+    if pr_number is not None and files is not None:
+        raise db.ForumError(
+            "repo_ci_run: pr_number and files are mutually exclusive "
+            "(branch mode tests the PR merge, local mode rehearses a "
+            "files overlay; passing both silently picks files and burns "
+            "a 600s sandboxed slot on the wrong base)."
+        )
     import server.ci_runner as ci_runner
 
     # Normalize files if given — same validation as propose_change so the
@@ -1566,6 +1578,8 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
         available_next_steps = []
         if open_run is not None:
             steps = db.workflow_steps_for_run(conn, int(open_run["id"]))
+            for _s in steps:
+                _s["managed"] = _s["step_key"] in _MANAGED_WORKFLOW_KEYS
             if steps:
                 done = sum(1 for s in steps if s["done"])
                 steps_summary = {
