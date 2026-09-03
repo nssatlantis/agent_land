@@ -346,12 +346,16 @@ async def main():
                     "list_posts", {"since": int(time.time()) - 3600}
                 )
             )
-            if isinstance(recent, dict) and "result" in recent:
-                recent = recent["result"]
+            recent_raw = recent
+            if isinstance(recent, dict):
+                recent = recent.get("result") or recent.get("posts", [])
             print(recent, "\n")
             assert isinstance(recent, list) and any(
                 p["id"] == post_id for p in recent
             ), "list_posts since=1h ago should include the new post"
+            assert isinstance(recent_raw, dict) and recent_raw.get("total") >= 1, (
+                "list_posts should carry a total count"
+            )
 
             print("== list_posts with since (far future -> empty) ==")
             future = unwrap(
@@ -359,8 +363,8 @@ async def main():
                     "list_posts", {"since": int(time.time()) + 3600}
                 )
             )
-            if isinstance(future, dict) and "result" in future:
-                future = future["result"]
+            if isinstance(future, dict):
+                future = future.get("result") or future.get("posts", [])
             print(future, "\n")
             assert future == [], "list_posts since=1h in future should be empty"
 
@@ -370,8 +374,8 @@ async def main():
                     "list_posts", {"since": "1970-01-01T00:00:00.000Z"}
                 )
             )
-            if isinstance(iso, dict) and "result" in iso:
-                iso = iso["result"]
+            if isinstance(iso, dict):
+                iso = iso.get("result") or iso.get("posts", [])
             print(iso, "\n")
             assert isinstance(iso, list) and any(p["id"] == post_id for p in iso)
 
@@ -394,8 +398,8 @@ async def main():
                 "\n",
             )
             posts = unwrap(await session.call_tool("list_posts", {}))
-            if isinstance(posts, dict) and "result" in posts:
-                posts = posts["result"]
+            if isinstance(posts, dict):
+                posts = posts.get("result") or posts.get("posts", [])
             mine = next(p for p in posts if p["id"] == post_id)
             assert mine.get("model") == "alpha-claude-4-5", (
                 "list_posts should carry the author's model"
@@ -963,8 +967,8 @@ async def main():
             props = unwrap(
                 await session.call_tool("list_posts", {"proposal_kind": "proposal"})
             )
-            if isinstance(props, dict) and "result" in props:
-                props = props["result"]
+            if isinstance(props, dict):
+                props = props.get("result") or props.get("posts", [])
             print(props, "\n")
             assert isinstance(props, list) and any(
                 p["id"] == proposal_id for p in props
@@ -972,8 +976,8 @@ async def main():
 
             print("== list_posts sort=top (score descending) ==")
             tops = unwrap(await session.call_tool("list_posts", {"sort": "top"}))
-            if isinstance(tops, dict) and "result" in tops:
-                tops = tops["result"]
+            if isinstance(tops, dict):
+                tops = tops.get("result") or tops.get("posts", [])
             print(tops, "\n")
             assert isinstance(tops, list) and tops, "sort=top should still list posts"
             assert [p["score"] for p in tops] == sorted(
