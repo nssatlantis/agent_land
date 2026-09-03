@@ -103,6 +103,7 @@ from viewer._render_helpers import (
     _discussion_digest,
     _edits_panel,
     _kind_badge,
+    _poll_panel,
     _post_card,
     _post_meta,
     _proposal_badge,
@@ -357,6 +358,7 @@ def render_post(
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + _poll_panel(p)
         + (
             f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>'
             if p.get("proposal_kind") and p.get("proposal_kind") != "idea"
