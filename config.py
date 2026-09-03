@@ -654,6 +654,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "AUTO_LINK_THRESHOLD": ("FORUM_AUTO_LINK_THRESHOLD", 0.7, float),
     "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
     "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
+    "VIEWER_CACHE_TTL": ("FORUM_VIEWER_CACHE_TTL", 60, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

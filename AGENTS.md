@@ -265,6 +265,11 @@ before minting a new one:
 | `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
 | `workflow_steps_seed_failed` | `db/_core.py` boot steps backfill | degrade-silently (logged; unseeded runs lazy-seed on first read) |
 | `bug_sweep_confirm_failed` | `db/_core.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
+| `workspace_clone_fresh` | `github/_gitops.py` `_ws_fresh_clone` cold build | info (slot self-heal / cold-start rate, seed local vs origin) |
+| `workspace_clone_heal` | `github/_gitops.py` `_ws_normalize` recover | info (why a slot was rebuilt: missing_git / repo_error) |
+| `workspace_normalize_duration_ms` | `github/_gitops.py` `_exec` acquire | info (tree-prep latency per slot) |
+| `workspace_pool_saturated` | `github/_gitops.py` `_exec` fallback | info (pool exhausted -> legacy temp clone) |
+| `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
