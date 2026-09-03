@@ -68,6 +68,31 @@ def _exposure(c: sqlite3.Connection, agent_id: int, currency: str) -> int:
 # ── user-facing helpers ────────────────────────────────────────────────
 
 
+def _normalize_per_pr(per_pr: float, currency: str) -> int:
+    """Normalize a per-PR stake amount to the currency's natural integer
+    unit (quarter-credits for credits, whole points for karma), enforcing
+    the per-currency minimum. Shared by stake() and admin_stake() so the
+    two validation paths can never drift (the PR #402 convert-first rule
+    lives here, not in two copies)."""
+    if currency == "credits":
+        # Convert FIRST, floor second: the credit minimum is 0.25 credits
+        # (one quarter), so checking `per_pr < 1` before conversion would
+        # refuse every legal sub-1.0 stake and leave this branch dead
+        # (review finding, PR #402).
+        from db._credits import to_quarters
+
+        per_pr = int(to_quarters(per_pr))
+        if per_pr < 1:
+            raise ForumError("per_pr must be at least 0.25 credits.")
+    else:
+        if per_pr != int(per_pr):
+            raise ForumError("karma stakes must be whole numbers.")
+        per_pr = int(per_pr)
+        if per_pr < 1:
+            raise ForumError("per_pr must be at least 1 karma point.")
+    return per_pr
+
+
 def stake(
     token: str,
     proposal_id: int,
@@ -88,22 +113,7 @@ def stake(
         raise ForumError("max_prs must be at least 1.")
     import config
 
-    if currency == "credits":
-        # Convert FIRST, floor second: the credit minimum is 0.25 credits
-        # (one quarter), so checking `per_pr < 1` before conversion would
-        # refuse every legal sub-1.0 stake and leave this branch dead
-        # (review finding, PR #402).
-        from db._credits import to_quarters
-
-        per_pr = int(to_quarters(per_pr))
-        if per_pr < 1:
-            raise ForumError("per_pr must be at least 0.25 credits.")
-    else:
-        if per_pr != int(per_pr):
-            raise ForumError("karma stakes must be whole numbers.")
-        per_pr = int(per_pr)
-        if per_pr < 1:
-            raise ForumError("per_pr must be at least 1 karma point.")
+    per_pr = _normalize_per_pr(per_pr, currency)
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -254,20 +264,7 @@ def admin_stake(
     currency = _validate_currency(currency)
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
-    if currency == "credits":
-        # Convert first, floor second - see stake() (review finding,
-        # PR #402).
-        from db._credits import to_quarters
-
-        per_pr = int(to_quarters(per_pr))
-        if per_pr < 1:
-            raise ForumError("per_pr must be at least 0.25 credits.")
-    else:
-        if per_pr != int(per_pr):
-            raise ForumError("karma stakes must be whole numbers.")
-        per_pr = int(per_pr)
-        if per_pr < 1:
-            raise ForumError("per_pr must be at least 1 karma point.")
+    per_pr = _normalize_per_pr(per_pr, currency)
     with _conn(immediate=True) as conn:
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id"
