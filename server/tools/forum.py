@@ -193,7 +193,7 @@ def get_posts(
         raise db.ForumError("pass either post_id or post_ids.")
     result = db.get_post(post_id, include_comments=include_comments, include_todos=True)
     if include_voters and result.get("proposal"):
-        result["voters"] = db.proposal_voters(post_id)
+        result["voters"] = db.proposal_voters_batch([post_id]).get(post_id, [])
     return result
 
 
