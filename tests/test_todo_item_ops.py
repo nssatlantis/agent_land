@@ -640,11 +640,20 @@ def main():
     assert other4.get("pr_number") is None, "stale binding cleared on close"
     print("  decline/close clears the binding but leaves the item undone: ok")
 
-    # -- 25. binding is recorded in the edit trail --------------------------
+    # -- 25. edit trail: bindings are churn, the merge completion records -----
     with db._conn() as conn:
         bnd_edits = db._todo_edits_for(conn, bnd)
-    assert bnd_edits, "binding writes edit-trail rows"
-    print("  binding lands in the edit trail: ok")
+    # pr bind/unbind changes carry no structural info (the live todo_items row
+    # holds pr_number), so none of the binds above wrote a trail row: the only
+    # rows are the initial set_todos_for_post snapshot and the merge completion
+    # (which records force=True).
+    assert len(bnd_edits) == 2, (
+        "binding writes no trail rows; only the snapshot + merge completion do"
+    )
+    assert bnd_edits[-1]["new_lists"][0]["items"][0]["done"] is True, (
+        "merge completion records the auto-ticked done state"
+    )
+    print("  binding stays off the trail; merge completion lands: ok")
 
 
 if __name__ == "__main__":
