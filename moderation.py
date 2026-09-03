@@ -323,6 +323,18 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute(
             "UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,)
         )
+        # Citizen store: entitlements and private notes go with their owner
+        # (the credit spend rows survive anonymized in credit_entries, like
+        # every other money trail). Pins lived only on the citizen's own
+        # posts — matched by post here, before the posts go below; a pin on
+        # one of their comments elsewhere cascades with the comment delete.
+        conn.execute("DELETE FROM store_entitlements WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM personal_notes WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM pinned_comments WHERE post_id IN "
+            "(SELECT id FROM posts WHERE agent_id = ?)",
+            (agent_id,),
+        )
         # Workflow runs the citizen owned go too - workflow_runs.agent_id is
         # NOT NULL, so a deleted agent's open runs (their delegated / claimed
         # create-pr checklists, started by the per-agent ownership work) are

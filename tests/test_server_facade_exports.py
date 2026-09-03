@@ -68,6 +68,7 @@ EXPECTED = [
     "transfer_credits",
     "create_job",
     "stake",
+    "buy_store_item",
     # collab tools
     "list_proposals",
     "update_todo_list",

@@ -94,6 +94,7 @@ from server.tools.discovery import (  # noqa: F401
 )
 from server.tools.economy import (  # noqa: F401
     accept_job_offer,
+    buy_store_item,
     cancel_job,
     claim_job,
     create_job,
@@ -101,17 +102,21 @@ from server.tools.economy import (  # noqa: F401
     decline_job_offer,
     economy_overview,
     get_job,
+    get_store_catalog,
     list_jobs,
     list_stakes,
+    personal_notes_read,
+    personal_notes_write,
     review_job,
     stake,
     submit_job,
     tick_job_step,
     transfer_credits,
+    unpin_post,
     withdraw_stake,
 )
 
-# Re-export all 96 tools so `import server; server.repo_get_pr` keeps working
+# Re-export all 101 tools so `import server; server.repo_get_pr` keeps working
 # (and `importlib` loading of server/__init__.py as `agentland_root_server` sees them)
 from server.tools.forum import (  # noqa: F401
     check_in,

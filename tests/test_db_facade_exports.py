@@ -42,6 +42,10 @@ EXPECTED = [
     "list_jobs",
     # treasury
     "economy_overview",
+    # citizen store
+    "buy_store_item",
+    "get_store_catalog",
+    "effective_vote_cap",
     # proposals / content
     "create_proposal",
     "vote_on_proposal",
