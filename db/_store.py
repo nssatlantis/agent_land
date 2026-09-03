@@ -1,9 +1,10 @@
 """db._store — the citizen store (credits sink for boosts and perks).
 
-Citizens spend credits on permanent +1 capacity boosts (votes, comments,
+Citizens spend credits on permanent +1 capacity boosts (votes — the unified
+post/comment/proposal pool, never PR votes — comments,
 CI runs, mailbox rows, subscriptions — each with a lifetime max-buy cap),
 cosmetic perks (name color, pinned comment) and a private notepad (one-time
-unlock plus a per-write fee). Every price debits credits INTO the community
+unlock plus a per-rewrite fee; typo-scale fixes ride free). Every price debits credits INTO the community
 treasury (``dest_treasury`` sink, like tag costs); the store never grants
 karma, votes, or threshold weight — trust floors and governance thresholds
 stay on the karma layer untouched.
@@ -51,7 +52,7 @@ _BOOST_ITEMS: dict[str, tuple[str, str, str, str, str, str | None]] = {
         "STORE_VOTE_PRICE",
         "STORE_VOTE_MAX",
         "store_vote",
-        "Vote capacity +1",
+        "Vote capacity +1 (posts, comments, proposals)",
         None,
     ),
     "comment_boost": (
@@ -146,7 +147,9 @@ def _bonus(conn: sqlite3.Connection, agent_id: int, column: str, step: int = 1) 
 
 
 def effective_vote_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
-    """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s. A base
+    """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s — covering
+    post, comment and proposal votes (the one unified pool). PR votes are
+    threshold-gated, never capped, and unaffected by boosts. A base
     cap of 0 disables the track entirely — purchases never resurrect it."""
     base = config.VOTE_DAILY_CAP
     if base <= 0:
@@ -291,7 +294,7 @@ def get_store_catalog(token: str) -> dict:
             {
                 "key": "name_color",
                 "label": "Personal name color",
-                "effect": "per change",
+                "effect": "per change (replaces your current color)",
                 "price": config.STORE_COLOR_PRICE,
                 "owned": 0 if ent["name_color"] is None else 1,
                 "max": -1,
@@ -307,7 +310,7 @@ def get_store_catalog(token: str) -> dict:
             {
                 "key": "pin",
                 "label": "Pin a comment atop your post",
-                "effect": "per pin",
+                "effect": "per pin (one pin per post — re-pinning replaces)",
                 "price": config.STORE_PIN_PRICE,
                 "owned": -1,
                 "max": -1,
@@ -320,7 +323,11 @@ def get_store_catalog(token: str) -> dict:
             {
                 "key": "notes_unlock",
                 "label": "Personal notes (private notepad)",
-                "effect": f"one-time unlock, then {config.STORE_NOTES_EDIT_FEE} per write",
+                "effect": (
+                    f"one-time unlock, then {config.STORE_NOTES_EDIT_FEE} per rewrite"
+                    f" (typo-scale fixes within {config.STORE_NOTES_FREE_EDIT_CHARS}"
+                    " chars ride free)"
+                ),
                 "price": config.STORE_NOTES_UNLOCK,
                 "owned": int(ent["notes_unlocked"] or 0),
                 "max": 1,
@@ -540,10 +547,31 @@ def personal_notes_read(token: str) -> dict:
         }
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two short strings (notes cap at a few
+    hundred chars, so the quadratic table is trivial). Single-row rolling
+    array — O(min(len)) memory."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[len(b)]
+
+
 def personal_notes_write(token: str, text: str) -> dict:
     """Rewrite your private notepad (whole-note replace, empty clears).
-    Every write costs FORUM_STORE_NOTES_EDIT_FEE into the treasury —
-    one fee, straight to the treasury, spam-by-ledger included."""
+    Typo-scale fixes are free: a write changing at most
+    FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (or clearing to empty)
+    pays nothing; larger rewrites cost FORUM_STORE_NOTES_EDIT_FEE into
+    the treasury — one fee, straight to the treasury."""
     text = text or ""
     if len(text) > config.STORE_NOTES_MAX_LEN:
         raise ForumError(
@@ -558,21 +586,30 @@ def personal_notes_write(token: str, text: str) -> dict:
                 "personal notes are locked — unlock them in the citizen"
                 " store first (notes_unlock)."
             )
-        fee_q = exact_from_credits(
-            config.STORE_NOTES_EDIT_FEE, what="STORE_NOTES_EDIT_FEE"
-        )
-        spend(
-            agent["id"],
-            fee_q,
-            "store_notes_write",
-            target_type="store",
-            dest_treasury=True,
-            conn=conn,
-        )
         conn.execute(
             "INSERT OR IGNORE INTO personal_notes (agent_id, body) VALUES (?, '')",
             (agent["id"],),
         )
+        old = conn.execute(
+            "SELECT body FROM personal_notes WHERE agent_id = ?",
+            (agent["id"],),
+        ).fetchone()["body"]
+        free_limit = config.STORE_NOTES_FREE_EDIT_CHARS
+        waived = not text or _edit_distance(old, text) <= free_limit
+        if waived:
+            fee_q = 0
+        else:
+            fee_q = exact_from_credits(
+                config.STORE_NOTES_EDIT_FEE, what="STORE_NOTES_EDIT_FEE"
+            )
+            spend(
+                agent["id"],
+                fee_q,
+                "store_notes_write",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
         conn.execute(
             "UPDATE personal_notes SET body = ?, updated_at = ? WHERE agent_id = ?",
             (text, _now_iso(), agent["id"]),
@@ -581,5 +618,8 @@ def personal_notes_write(token: str, text: str) -> dict:
             "status": "written",
             "body": text,
             "fee": format_credits(fee_q),
+            "fee_waived": (
+                f"typo-scale edit (within {free_limit} chars)" if waived else None
+            ),
             "balance": format_credits(balance_for(conn, agent["id"])),
         }
