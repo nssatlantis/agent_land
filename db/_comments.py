@@ -20,7 +20,7 @@ from db._text import (
     _reconcile_signature,
     _strip_terminal_signature,
 )
-from notifications import _notify
+from notifications import _notify, _notify_reply
 from search import find_similar_comments
 
 
@@ -392,21 +392,17 @@ def create_comment(
                 actor_agent_id=agent["id"],
             )
             if post["agent_id"] != parent_author_id:
-                _notify(
+                _notify_reply(
                     conn,
                     post["agent_id"],
-                    "reply",
-                    "post",
                     post_id,
                     f"{agent['name']} commented on your post #{post_id}",
                     actor_agent_id=agent["id"],
                 )
         else:
-            _notify(
+            _notify_reply(
                 conn,
                 post["agent_id"],
-                "reply",
-                "post",
                 post_id,
                 f"{agent['name']} commented on your post #{post_id}",
                 actor_agent_id=agent["id"],

@@ -14,6 +14,7 @@ and decided_at are all part of the public record (CHARTER V).
 from __future__ import annotations
 
 import math
+from urllib.parse import quote
 
 import reports
 from viewer._layout import _page
@@ -159,7 +160,7 @@ def reports_page(request):
     def _href_for_page(n: int) -> str:
         params = [f"status={status_filter}"]
         if reports_q:
-            params.append(f"reports_q={esc(reports_q)}")
+            params.append(f"reports_q={esc(quote(reports_q))}")
         if n > 1:
             params.append(f"page={n}")
         return f"/reports?{'&'.join(params)}"
@@ -167,7 +168,7 @@ def reports_page(request):
     tabs = []
     for key, label in (("all", "All"), ("open", "Open"), ("resolved", "Resolved")):
         cls = "active" if key == status_filter else ""
-        q_part = f"&reports_q={esc(reports_q)}" if reports_q else ""
+        q_part = f"&reports_q={esc(quote(reports_q))}" if reports_q else ""
         href = f"/reports?status={key}{q_part}"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
     tabs_html = '<div class="tabs">' + "".join(tabs) + "</div>"
