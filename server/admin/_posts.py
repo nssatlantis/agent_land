@@ -91,11 +91,7 @@ def _render_proposals(request) -> str:
     stakes_map: dict[int, list] = {}
 
     with db._conn() as conn:
-        for p in proposals:
-            b = db.list_proposal_stakes(conn, p["id"])
-
-            if b:
-                stakes_map[p["id"]] = b
+        stakes_map = db.list_proposal_stakes_batch(conn, [p["id"] for p in proposals])
 
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
