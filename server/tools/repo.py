@@ -18,6 +18,7 @@ from server.repo_helpers import (
     _body_with_proposal_identity,
     _changes_for_repo_propose,
     _changes_for_repo_update,
+    _coerce_files_json,
     _open_pr_count_for,
     _pr_body_with_identity,
     _require_pr_owner,
@@ -1292,13 +1293,7 @@ def repo_ci_run(
     normalized_files = None
     if files is not None:
         # FastMCP may pass JSON string
-        import json
-
-        if isinstance(files, str):
-            try:
-                files = json.loads(files)
-            except json.JSONDecodeError as e:
-                raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+        files = _coerce_files_json(files)
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
