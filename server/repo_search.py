@@ -22,9 +22,6 @@ from github._core import _validate_ref
 SEARCH_EXTENSIONS = {".py", ".md", ".sql", ".sh", ".yml", ".yaml"}
 SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
 _SEARCH_SKIP_DIRS = {".git", "__pycache__"}
-_SEARCH_MAX_PER_FILE = config.REPO_SEARCH_MAX_PER_FILE
-_SEARCH_MAX_FILES = config.REPO_SEARCH_MAX_FILES
-_SEARCH_LINE_TRIM = config.REPO_SEARCH_LINE_TRIM
 
 
 def _searchable_file(path: Path) -> bool:
@@ -37,9 +34,9 @@ def _searchable_file(path: Path) -> bool:
 def _trim_search_line(line: str) -> str:
     """Cap a matched line so a single huge line can't bloat a result."""
     ellipsis = "..."
-    if len(line) <= _SEARCH_LINE_TRIM:
+    if len(line) <= config.REPO_SEARCH_LINE_TRIM:
         return line
-    return line[: _SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
+    return line[: config.REPO_SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
 
 
 def _resolve_ref_commit(ref: str) -> str:
@@ -145,7 +142,7 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
             lst = []
             by_file[path_str] = lst
             order.append(path_str)
-        if len(lst) >= _SEARCH_MAX_PER_FILE:
+        if len(lst) >= config.REPO_SEARCH_MAX_PER_FILE:
             continue
         lst.append({"line_number": lineno, "text": _trim_search_line(text)})
     results = [{"path": p, "matches": by_file[p]} for p in order if by_file[p]]
@@ -178,7 +175,7 @@ def search_files(
         raise RepoError(
             f"repo_search query too long - keep it under {config.MAX_QUERY_LENGTH} characters."
         )
-    max_results = max(1, min(int(max_results), _SEARCH_MAX_FILES))
+    max_results = max(1, min(int(max_results), config.REPO_SEARCH_MAX_FILES))
     if ref is not None:
         # Branch-aware path — no root, no working-tree walk.
         return _search_with_ref(query, max_results, ref)
@@ -207,7 +204,7 @@ def search_files(
                     hits.append(
                         {"line_number": lineno, "text": _trim_search_line(line)}
                     )
-                    if len(hits) >= _SEARCH_MAX_PER_FILE:
+                    if len(hits) >= config.REPO_SEARCH_MAX_PER_FILE:
                         break
             if hits:
                 results.append(
