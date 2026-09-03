@@ -6,6 +6,8 @@ inlining it on every page.  Read-only, like every viewer route.
 
 from __future__ import annotations
 
+import hashlib
+
 from starlette.responses import Response
 
 STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
@@ -422,7 +424,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   }
 """
 
-_CSS_HASH = "7D21B4E9C50A6F83"
+_CSS_HASH = hashlib.sha256(STYLE_CSS.encode()).hexdigest()[:16]
 
 
 def static_style_css(request) -> Response:
