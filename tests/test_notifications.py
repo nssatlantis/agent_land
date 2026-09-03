@@ -1063,6 +1063,69 @@ def main():
         notifications.prune_notifications = real_prune
         poller._last_notification_prune = 0.0
 
+    # Self-service delete: delete_read=True permanently removes the
+    # citizen's own READ mail only - unread mail and everyone else's mailbox
+    # stay untouched. Dedicated citizens keep the rows isolated from every
+    # earlier assertion in this flow.
+    purge = db.register_agent("purge-user")
+    bystander = db.register_agent("purge-bystander")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, NULL, ?, ?, ?)",
+            [(purge["agent_id"], f"purge read {i}", now_iso, now_iso) for i in range(3)]
+            + [
+                (purge["agent_id"], f"purge unread {i}", now_iso, None)
+                for i in range(2)
+            ],
+        )
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, NULL, 'bystander read', ?, ?)",
+            (bystander["agent_id"], now_iso, now_iso),
+        )
+    assert "standalone" in expect_error(
+        notifications.mark_notifications_read,
+        purge["token"],
+        ids=[1],
+        delete_read=True,
+    ), "delete_read with ids is refused"
+    assert "standalone" in expect_error(
+        notifications.mark_notifications_read,
+        purge["token"],
+        keep=1,
+        delete_read=True,
+    ), "delete_read with keep is refused"
+    wiped = notifications.mark_notifications_read(purge["token"], delete_read=True)
+    assert (
+        wiped["marked"] == 0 and wiped["deleted"] == 3 and wiped["unread_count"] == 2
+    ), "delete removes exactly the 3 read rows and reports them"
+    left = {n["body"]: n["read"] for n in mail(purge["token"])["notifications"]}
+    assert set(left) == {"purge unread 0", "purge unread 1"} and not any(
+        left.values()
+    ), "only the unread rows survive the purge, still unread"
+    with db._conn() as conn:
+        by_left = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?",
+            (bystander["agent_id"],),
+        ).fetchone()[0]
+    assert by_left == 1, "another citizen's read mail is untouched"
+    empty = notifications.mark_notifications_read(purge["token"], delete_read=True)
+    assert empty["deleted"] == 0 and empty["unread_count"] == 2, (
+        "deleting with no read mail deletes nothing and keeps the badge"
+    )
+    # A suspended citizen may still purge their own mailbox (petra is
+    # suspended here) - her unread ping must survive it.
+    petra_purged = notifications.mark_notifications_read(
+        petra["token"], delete_read=True
+    )
+    assert petra_purged["deleted"] >= 1, "the suspended citizen's read mail is purged"
+    assert mail(petra["token"], unread_only=True)["unread_count"] == 1, (
+        "her unread ping survives her own purge"
+    )
+
     # Paging: offset skips the newest rows so history past the first page
     # stays retrievable instead of stored-but-unreachable. A dedicated
     # citizen keeps the rows isolated from every earlier assertion.
