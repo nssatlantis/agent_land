@@ -240,6 +240,23 @@ def _effective_cpus() -> float:
     return round(min(ceil, max(1.0, fair)), 2)
 
 
+_BUSY_LEGACY_MSG = (
+    "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
+)
+
+
+def _busy_msg(busy: int, desired: int, reserved: bool = False) -> str:
+    """Saturated-pool ForumError text: identical Retry-After wording at every
+    saturation site (reserve, stale-queue, retired-index, fallback), so the
+    six duplicated literals stay in one place. busy=0 still yields ~30s."""
+    retry_after = 30 * max(1, busy)
+    suffix = ", reserved 1 for user" if reserved else ""
+    return (
+        f"a CI run is already in progress; try again in ~{retry_after}s "
+        f"(pool {busy}/{desired} busy{suffix})"
+    )
+
+
 def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int:
     """Acquire a CI slot token; raises ForumError if saturated.
 
@@ -260,10 +277,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             if avail <= 1:
                 # Report Retry-After hint
                 _, _, busy = _ci_queue_depth()
-                retry_after = 30 * max(1, busy)
-                raise db.ForumError(
-                    f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy, reserved 1 for user)"
-                )
+                raise db.ForumError(_busy_msg(busy, desired, reserved=True))
         # Acquire â€” blocking wait for user, instant for poller
         try:
             if timeout is not None:
@@ -278,10 +292,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             if live_q is not None and live_q is not q and attempt == 0:
                 continue
             _, _, busy = _ci_queue_depth()
-            retry_after = 30 * max(1, busy) if busy else 30
-            raise db.ForumError(
-                f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy)"
-            ) from exc
+            raise db.ForumError(_busy_msg(busy, desired)) from exc
         # Validate retired index (shrink race)
         with _CI_LOCK:
             live_len = len(_CI_SLOTS)
@@ -299,18 +310,13 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             if live_q is not None and live_q is not q and attempt == 0:
                 continue
             _, _, busy = _ci_queue_depth()
-            retry_after = 30 * max(1, busy) if busy else 30
-            raise db.ForumError(
-                f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy)"
-            ) from None
+            raise db.ForumError(_busy_msg(busy, desired)) from None
         # Retired but queue still has items â€” loop to next token
         continue
     # Fallback â€” should not reach
     _, _, busy = _ci_queue_depth()
     desired = max(1, int(config.CI_RUN_CONCURRENCY))
-    raise db.ForumError(
-        f"a CI run is already in progress; try again in ~{30 * max(1, busy)}s (pool {busy}/{desired} busy)"
-    )
+    raise db.ForumError(_busy_msg(busy, desired))
 
 
 def _ci_release_slot(idx: int) -> None:
@@ -1443,9 +1449,7 @@ def run_checks(
     # held, treat as saturated.
     if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod â€” real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
-        raise db.ForumError(
-            "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
-        )
+        raise db.ForumError(_BUSY_LEGACY_MSG)
     try:
         # User-initiated: wait up to 10s for a slot, then Retry-After
         slot = _ci_acquire_slot(reserve=False, timeout=10)
@@ -1739,9 +1743,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     started = time.monotonic()
     if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod â€” real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
-        raise db.ForumError(
-            "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
-        )
+        raise db.ForumError(_BUSY_LEGACY_MSG)
     try:
         # Poller/ticker: reserve 1 slot for user, non-blocking skip
         slot = _ci_acquire_slot(reserve=True, timeout=None)
