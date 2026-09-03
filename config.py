@@ -676,6 +676,23 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
     "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
     "VIEWER_CACHE_TTL": ("FORUM_VIEWER_CACHE_TTL", 60, int),
+    # Polls (maintainer-supervised): a single, non-binding, single-choice poll
+    # an author attaches to an ordinary post or idea. MIN/MAX_OPTIONS bound
+    # the answer list; EDIT_WINDOW_SECONDS is how long the author may fix a
+    # mistake before voting opens and the poll freezes; MAX_DURATION_HOURS
+    # caps conclusions_at (now + duration); OPEN caps how many open polls one
+    # author may hold; COOLDOWN gates repeated poll creation. Votes are
+    # zero-karma. Deadlines are swept by the poller. 0 disables each cap.
+    "POLL_MIN_OPTIONS": ("FORUM_POLL_MIN_OPTIONS", 2, int),
+    "POLL_MAX_OPTIONS": ("FORUM_POLL_MAX_OPTIONS", 6, int),
+    "POLL_EDIT_WINDOW_SECONDS": ("FORUM_POLL_EDIT_WINDOW_SECONDS", 900, int),
+    "POLL_MAX_DURATION_HOURS": ("FORUM_POLL_MAX_DURATION_HOURS", 72, int),
+    "POLLS_PER_AGENT_OPEN": ("FORUM_POLLS_PER_AGENT_OPEN", 3, int),
+    "POLL_CREATE_COOLDOWN_SECONDS": (
+        "FORUM_POLL_CREATE_COOLDOWN_SECONDS",
+        600,
+        int,
+    ),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

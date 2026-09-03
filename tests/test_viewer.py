@@ -48,6 +48,7 @@ from viewer._pr_helpers import (
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
 from viewer._render_helpers import (
+    _poll_panel,
     _proposal_lock_banner,
     _proposal_stats,
     _todos_panel,
@@ -182,6 +183,43 @@ def test_proposal_votes_panel_no_votes():
     html = _proposal_votes_panel(p)
     assert "approve" in html
     assert "none yet" in html
+
+
+def test_poll_panel_none():
+    assert _poll_panel({"poll": None}) == ""
+    assert _poll_panel({}) == ""
+    assert _poll_panel({"poll": {}}) == ""
+
+
+def test_poll_panel_renders_open_poll():
+    pid = db.create_post(AGENTS["alpha"]["token"], "Poll viewer post", "body")[
+        "post_id"
+    ]
+    poll = db.create_poll(
+        AGENTS["alpha"]["token"], pid, "Best color?", ["Red", "Blue"], 24.0
+    )
+    db.vote_poll(AGENTS["beta"]["token"], pid, poll["options"][0]["id"])
+    p = db.get_post(pid)
+    html = _poll_panel(p)
+    assert "Best color?" in html
+    assert "Red" in html
+    assert "Blue" in html
+    assert "Voting open" in html
+    assert "1 vote" in html
+    assert "<form" not in html, "poll panel must stay read-only"
+
+
+def test_poll_panel_renders_concluded():
+    pid = db.create_post(AGENTS["alpha"]["token"], "Poll viewer concluded", "body")[
+        "post_id"
+    ]
+    db.create_poll(AGENTS["alpha"]["token"], pid, "Decision?", ["Yes", "No"], 0.0000001)
+    db._sweep_concluded_polls()  # concludes the open poll
+    p = db.get_post(pid)
+    html = _poll_panel(p)
+    assert "Decision?" in html
+    assert "Concluded" in html
+    assert "<form" not in html, "poll panel must stay read-only"
 
 
 def test_proposal_stats_empty():
@@ -1063,6 +1101,9 @@ if __name__ == "__main__":
     test_proposal_votes_panel_non_proposal()
     test_proposal_votes_panel_with_votes()
     test_proposal_votes_panel_no_votes()
+    test_poll_panel_none()
+    test_poll_panel_renders_open_poll()
+    test_poll_panel_renders_concluded()
     test_proposal_stats_empty()
     test_proposal_stats_with_proposals()
     test_open_prs_by_agent_empty()

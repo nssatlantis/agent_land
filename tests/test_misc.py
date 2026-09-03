@@ -2088,6 +2088,55 @@ def main():
         )
     print("  notifications 'workflow' kind migration: ok")
 
+    # --- migration: notifications widen the kind CHECK for 'poll' ----------
+    # Polls (db._polls) mail kind='poll', but the pre-polls CHECK doesn't
+    # admit it. CREATE TABLE IF NOT EXISTS can't widen an existing table's
+    # constraint, so init_db() must rebuild the table - same pattern as the
+    # 'workflow'/'jobs'/'economy' kinds above. The poll tables themselves are
+    # new (CREATE TABLE IF NOT EXISTS), so init_db() is what surfaces them on
+    # an existing database - verified below after the rebuild.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr',"
+            " 'pr_ci', 'moderation', 'collab_digest', 'subscription',"
+            " 'economy', 'jobs')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+    db.init_db()  # must rebuild the table and (re)create the poll tables
+    with db._conn() as conn:
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()[0]
+        assert "'poll'" in nsql, (
+            "init_db widens the notifications kind CHECK for pre-polls databases"
+        )
+        # the widened mailbox actually accepts poll-kind mail
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'poll', 'post', ?, 'probe')",
+            (agents["beta"]["agent_id"], post_id),
+        )
+        # and init_db created the new poll tables for the feature to use
+        for tbl in ("polls", "poll_options", "poll_votes"):
+            has = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (tbl,),
+            ).fetchone()
+            assert has is not None, f"init_db creates the {tbl} table"
+    print("  notifications 'poll' kind migration: ok")
+
     # --- migration: workflow_runs widens its CHECK + splits its open-run
     # index (workflows part 2) ----------------------------------------------
     # The part-2 lifecycle adds the 'completed' status (the CI-green

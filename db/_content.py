@@ -16,6 +16,7 @@ from db._core import (
     _since_bound,
 )
 from db._karma import _score_for
+from db._polls import _poll_dict, _polls_by_post_map
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
     _comment_count_batch,
@@ -258,6 +259,7 @@ def list_posts(
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
+        polls_by_post = _polls_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb
 
         proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
@@ -268,6 +270,7 @@ def list_posts(
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
+            d["poll"] = polls_by_post.get(d["id"])
             d["last_activity_at"] = activities.get(d["id"])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -575,6 +578,7 @@ def get_post(
             ),
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
+            "poll": _poll_dict(conn, post_id),
         }
         if include_comments:
             result["comments"] = top_level
@@ -642,6 +646,7 @@ def _build_post_dict(
     score_map,
     threshold,
     stakes_by_post=None,
+    polls_by_post=None,
     include_comments: bool = True,
     include_todos: bool = False,
 ):
@@ -743,6 +748,7 @@ def _build_post_dict(
         ),
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
+        "poll": (polls_by_post or {}).get(post_id),
     }
     if include_comments:
         result["comments"] = top_level
@@ -826,6 +832,7 @@ def get_posts(
         from db._staking import list_proposal_stakes_batch as _lpb_batch
 
         stakes_by_post = _lpb_batch(conn, proposal_ids)
+        polls_by_post = _polls_by_post_map(conn, found_ids)
         # Build results
         out = {}
         for pid in post_ids:
@@ -848,6 +855,7 @@ def get_posts(
                 score_map,
                 threshold,
                 stakes_by_post,
+                polls_by_post,
                 include_comments=include_comments,
                 include_todos=include_todos,
             )
