@@ -222,6 +222,15 @@ from db._nudges import (  # noqa: F401
     _unread_mail_nudge,
 )
 
+# ── polls ─────────────────────────────────────────────────────────────
+from db._polls import (  # noqa: F401
+    _sweep_concluded_polls,
+    create_poll,
+    edit_poll,
+    get_poll,
+    vote_poll,
+)
+
 # ── closed-PR cache (pr_rows) ──────────────────────────────────────────
 from db._pr_rows import (  # noqa: F401,E402
     list_pr_rows,

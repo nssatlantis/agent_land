@@ -164,7 +164,7 @@ def notifications(
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'pr_ci' | 'moderation' | 'subscription' | 'economy' | 'jobs' |
-    'workflow'),
+    'workflow' | 'poll'),
     `ref_type` / `ref_id` for the thing the notification is
     about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which
