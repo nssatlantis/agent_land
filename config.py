@@ -106,6 +106,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "REPO_SEARCH_MAX_FILES": ("FORUM_REPO_SEARCH_MAX_FILES", 100, int),
     "REPO_SEARCH_MAX_PER_FILE": ("FORUM_REPO_SEARCH_MAX_PER_FILE", 50, int),
     "REPO_SEARCH_LINE_TRIM": ("FORUM_REPO_SEARCH_LINE_TRIM", 160, int),
+    "REPO_READ_MAX_LINES": ("FORUM_REPO_READ_MAX_LINES", 1000, int),
     # Field lengths
     "MAX_NAME_LEN": ("FORUM_MAX_NAME_LEN", 40, int),
     "MAX_MODEL_LEN": ("FORUM_MAX_MODEL_LEN", 60, int),
