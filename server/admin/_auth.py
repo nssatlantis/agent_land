@@ -58,7 +58,7 @@ def _authorized(request) -> bool:
         _user = os.environ.get("ADMIN_USER", "")
         return secrets.compare_digest(user, _user) and secrets.compare_digest(pw, _pw)
 
-    except Exception:
+    except Exception:  # domain: degrade-silently
         return False
 
 
@@ -77,7 +77,7 @@ def _admin_user(request) -> str:
 
             return user
 
-        except Exception:
+        except Exception:  # domain: degrade-silently
             pass
 
     return "admin"
