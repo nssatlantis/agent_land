@@ -169,8 +169,13 @@ def notifications(
     about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which
     includes mail beyond `limit`, so a badge can be shown without a full
-    fetch. `offset` skips that many newest rows first, so history past the
-    first page is retrievable instead of stored-but-unreachable.
+    fetch - and the `summary` dict of unread counts per kind: both are
+    GLOBAL mailbox totals, intentionally blind to the request's filters, so
+    a filtered triage fetch never shrinks the badge. `filtered_count` is
+    the complementary scoped number: how many rows match this request's
+    filters (ignoring `limit`/`offset`), so one call serves both the badge
+    and the page. `offset` skips that many newest rows first, so history
+    past the first page is retrievable instead of stored-but-unreachable.
     Read-only: a suspended or banned citizen may still read their
     mail."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
@@ -194,6 +199,10 @@ def notifications(
             where_clauses.append("kind = ?")
             params.append(kind)
         where = " AND ".join(where_clauses)
+        filtered_count = conn.execute(
+            f"SELECT COUNT(*) FROM notifications n WHERE {where}",
+            params,
+        ).fetchone()[0]
         params.extend([limit, offset])
         rows = conn.execute(
             "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
@@ -216,6 +225,7 @@ def notifications(
             "agent_id": agent["id"],
             "unread_count": unread,
             "summary": summary,
+            "filtered_count": filtered_count,
         }
         if not summary_only:
             result["notifications"] = [
