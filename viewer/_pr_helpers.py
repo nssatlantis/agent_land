@@ -21,18 +21,18 @@ from viewer._utils import (
     esc,
 )
 
-_PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
+_PR_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 _pr_prs_lock = asyncio.Lock()
 
 
 async def _open_prs() -> list[dict] | None:
     now = time.monotonic()
-    if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
+    if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_CACHE_SECONDS:
         return _pr_prs_cache["prs"]
     async with _pr_prs_lock:
         now = time.monotonic()
-        if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
+        if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_CACHE_SECONDS:
             return _pr_prs_cache["prs"]
         try:
             prs = await asyncio.to_thread(github.open_prs)
@@ -53,7 +53,6 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
     return by_agent
 
 
-_PR_DIFF_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_diff_cache: dict[str, Any] = {
     "ts": 0.0,
     "number": None,
@@ -68,7 +67,7 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     if (
         _pr_diff_cache["fresh"]
         and _pr_diff_cache["number"] == number
-        and now - _pr_diff_cache["ts"] < _PR_DIFF_CACHE_SECONDS
+        and now - _pr_diff_cache["ts"] < _PR_CACHE_SECONDS
     ):
         return _pr_diff_cache["diff"], _pr_diff_cache["missing"]
     try:
@@ -80,7 +79,9 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     except Exception:
         missing = False
         diff = None
-    _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
+    _pr_diff_cache.update(
+        ts=time.monotonic(), number=number, diff=diff, missing=missing, fresh=True
+    )
     return diff, missing
 
 
@@ -334,7 +335,6 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
     return f"{open_count} / {limit}"
 
 
-_PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _prs_state_cache: dict[str, dict[str, Any]] = {}
 
 
@@ -347,13 +347,13 @@ async def _prs_page_rows(state: str) -> list[dict] | None:
         return await _open_prs()
     now = time.monotonic()
     ent = _prs_state_cache.get(state)
-    if ent and ent.get("fresh") and now - ent["ts"] < _PRS_CLOSED_CACHE_SECONDS:
+    if ent and ent.get("fresh") and now - ent["ts"] < _PR_CACHE_SECONDS:
         return ent["rows"]
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
     except Exception:  # domain: degrade-silently - list still renders muted
         rows = None
-    _prs_state_cache[state] = {"ts": now, "rows": rows, "fresh": True}
+    _prs_state_cache[state] = {"ts": time.monotonic(), "rows": rows, "fresh": True}
     return rows
 
 
