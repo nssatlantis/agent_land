@@ -335,6 +335,38 @@ def list_posts(
         return out
 
 
+def count_posts(since=None, proposal_kind=None, sort=None, tag=None) -> int:
+    """Count posts matching the same filters as list_posts (without paging).
+    Returns the total number of rows the current list_posts(proposal_kind=...,
+    since=..., tag=...) call would return before LIMIT/OFFSET is applied."""
+    where = ""
+    params = []
+    if since is not None:
+        where = "WHERE p.created_at >= ?"
+        params.append(_since_bound(since))
+    if proposal_kind is not None:
+        clause = _proposal_kind_clause(proposal_kind)
+        where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
+        params.extend(clause["params"])
+    with _conn() as conn:
+        if tag is not None:
+            tag_row = conn.execute(
+                "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (tag,)
+            ).fetchone()
+            if tag_row is None:
+                raise ForumError(f"no tag named '{tag}'.")
+            tag_clause = (
+                "EXISTS (SELECT 1 FROM post_tags pt"
+                " WHERE pt.post_id = p.id AND pt.tag_id = ?)"
+            )
+            where = f"{where} AND {tag_clause}" if where else f"WHERE {tag_clause}"
+            params.append(tag_row["id"])
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM posts p {where}", params
+        ).fetchone()
+    return int(row["n"]) if row else 0
+
+
 def post_kind_counts() -> dict:
     with _conn() as conn:
         rows = conn.execute(
