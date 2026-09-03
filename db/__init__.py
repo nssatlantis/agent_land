@@ -394,6 +394,15 @@ from db._text import (  # noqa: F401
     _strip_terminal_signature,
 )
 
+# ── tool-usage observability (admin /admin/usage) ──────────────────────
+from db._tool_usage import (  # noqa: F401
+    record_tool_call,
+    tool_usage_by_agent,
+    tool_usage_recent_failures,
+    tool_usage_summary,
+    tool_usage_sweep,
+)
+
 # ── official workflows (per-file checklists) ───────────────────────────
 from db._workflow import (  # noqa: F401
     available_next_steps,

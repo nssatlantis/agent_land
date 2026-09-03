@@ -981,6 +981,27 @@ def main():
         "a reconcile DB fault flashes instead of erroring out"
     )
 
+    # --- /admin/usage (tool-usage observability) ---------------------------
+    # The page is auth-gated like every other admin surface: 401 anonymous,
+    # 200 with credentials, and renders recorded tool stats.
+    use_no_auth = _call(admin.usage_admin_page, _req("GET", "/admin/usage"))
+    assert use_no_auth.status_code == 401, "usage page refuses anonymous GETs"
+    use_ok = _call(
+        admin.usage_admin_page,
+        _req("GET", "/admin/usage", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert use_ok.status_code == 200, "usage page renders for an authenticated admin"
+    assert b"Tool usage" in use_ok.body, "the usage page carries its heading"
+
+    # A recorded call surfaces in the page (tool name + a success percentage).
+    db.record_tool_call("some_tool", ok=True)
+    use_data = _call(
+        admin.usage_admin_page,
+        _req("GET", "/admin/usage", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert b"some_tool" in use_data.body, "the usage page renders recorded tool calls"
+    assert b"100.0%" in use_data.body, "the usage page renders the success rate"
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}

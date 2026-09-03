@@ -451,6 +451,10 @@ async def _pr_outcome_poller() -> None:
             # Opportunistic housekeeping: drop read mail older than
             # FORUM_NOTIFICATION_RETENTION_DAYS so mailboxes stay bounded.
             notifications.prune_notifications()
+            # Fold aged tool-call ledger rows into the long-term aggregate
+            # and prune them (FORUM_TOOL_USAGE_RETENTION_DAYS), keeping the
+            # admin /admin/usage drill-down window bounded.
+            db.tool_usage_sweep()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:
