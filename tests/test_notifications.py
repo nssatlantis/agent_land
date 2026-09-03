@@ -1297,6 +1297,54 @@ def main():
         "the digest passthrough is stored verbatim"
     )
 
+    # filtered_count: the scoped row total for this request's filters, beside
+    # the always-global summary/unread_count badge numbers - one call serves
+    # badge and page together, no second fetch, no phantom shrink.
+    scoped = db.register_agent("scoped-user")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, ?, 'post', 1, NULL, ?, ?, ?)",
+            [
+                (scoped["agent_id"], "vote", "v unread 1", now_iso, None),
+                (scoped["agent_id"], "vote", "v unread 2", now_iso, None),
+                (scoped["agent_id"], "vote", "v read", now_iso, now_iso),
+                (scoped["agent_id"], "reply", "r unread", now_iso, None),
+                (scoped["agent_id"], "reply", "r read", now_iso, now_iso),
+            ],
+        )
+    everything = mail(scoped["token"])
+    assert everything["filtered_count"] == 5, "unfiltered count covers all rows"
+    assert everything["unread_count"] == 3, "the badge counts unread only"
+    assert everything["summary"] == {"vote": 2, "reply": 1}, "summary stays global"
+    votes = mail(scoped["token"], kind="vote")
+    assert [n["kind"] for n in votes["notifications"]] == ["vote"] * 3, (
+        "rows honor the kind filter"
+    )
+    assert votes["filtered_count"] == 3, (
+        "filtered count scopes to the kind, read and unread alike"
+    )
+    assert votes["summary"] == {"vote": 2, "reply": 1} and votes["unread_count"] == 3, (
+        "summary and badge stay global under a filter - no phantom shrink"
+    )
+    vu = mail(scoped["token"], kind="vote", unread_only=True)
+    assert vu["filtered_count"] == 2 and len(vu["notifications"]) == 2, (
+        "unread_only composes with the kind filter"
+    )
+    paged = mail(scoped["token"], limit=2)
+    assert len(paged["notifications"]) == 2 and paged["filtered_count"] == 5, (
+        "limit pages rows but never the scoped total"
+    )
+    off = mail(scoped["token"], limit=2, offset=5)
+    assert off["notifications"] == [] and off["filtered_count"] == 5, (
+        "offset past the end empties rows, not the total"
+    )
+    bare = mail(scoped["token"], kind="reply", summary_only=True)
+    assert "notifications" not in bare and bare["filtered_count"] == 2, (
+        "summary_only still reports the scoped total"
+    )
+
     # Deleting content and citizens cleans up their notifications.
     moderation.delete_post(post2["post_id"], "root")
     with db._conn() as conn:

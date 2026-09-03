@@ -397,18 +397,25 @@ def _open_proposal_with_title(
     key = _normalized_title(title)
     if not key:
         return None
+    # Pre-filter to live rows in SQL: decided proposals can never match
+    # (the Python loop only ever returned status-open rows), so a NOCASE
+    # index could not help — the match is normalize-then-compare in Python.
+    # Bounding the scan to open rows is the actual win, and it grows with
+    # live business, not total history.
     rows = conn.execute(
         f"""
-        SELECT p.id, p.title, {_proposal_status_sql("p")} AS status
-        FROM posts p
-        WHERE p.proposal_kind IS NOT NULL
-          AND p.superseded_by_id IS NULL
-          AND p.id != ?
+        SELECT x.id, x.title, x.status FROM (
+          SELECT p.id, p.title, {_proposal_status_sql("p")} AS status
+          FROM posts p
+          WHERE p.proposal_kind IS NOT NULL
+            AND p.superseded_by_id IS NULL
+            AND p.id != ?
+        ) x WHERE x.status IS NULL OR x.status = 'open'
         """,
         (exclude_post_id or 0,),
     ).fetchall()
     for r in rows:
-        if (r["status"] or "open") == "open" and _normalized_title(r["title"]) == key:
+        if _normalized_title(r["title"]) == key:
             return dict(r)
     return None
 
