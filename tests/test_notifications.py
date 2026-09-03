@@ -994,6 +994,75 @@ def main():
         else:
             os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
+    # The retention prune is index-backed: with a realistic mix of prunable
+    # and live mail, EXPLAIN QUERY PLAN must show the prune's DELETE walking
+    # idx_notifications_read_created instead of full-scanning the table.
+    # A dedicated citizen keeps the bulk rows isolated from every earlier
+    # assertion in this flow.
+    bulk = db.register_agent("prune-bulk")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, NULL, ?, ?, ?)",
+            [
+                (
+                    bulk["agent_id"],
+                    f"old read {i}",
+                    "2000-01-01T00:00:00.000Z",
+                    "2000-01-01T00:00:00.000Z",
+                )
+                for i in range(500)
+            ]
+            + [
+                (bulk["agent_id"], f"recent read {i}", now_iso, now_iso)
+                for i in range(5000)
+            ]
+            + [
+                (bulk["agent_id"], f"live unread {i}", now_iso, None)
+                for i in range(1000)
+            ],
+        )
+        conn.execute("ANALYZE notifications")
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM notifications "
+            "WHERE read_at IS NOT NULL AND created_at < ?",
+            ("2010-01-01T00:00:00.000Z",),
+        ).fetchall()
+    assert any("idx_notifications_read_created" in r["detail"] for r in plan), (
+        f"the prune DELETE must use idx_notifications_read_created, got: {[r['detail'] for r in plan]}"
+    )
+    with db._conn() as conn:
+        idx_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_notifications_read_created'"
+        ).fetchone()["sql"]
+    assert "WHERE read_at IS NOT NULL" in idx_sql, (
+        "the prune index must be partial over read mail only"
+    )
+
+    # The poller's once-daily prune gate: back-to-back calls run the DELETE
+    # exactly once (mirrors the vote-label GC gate test).
+    import time as _time
+
+    import server.poller as poller
+
+    prune_calls = []
+    real_prune = notifications.prune_notifications
+    notifications.prune_notifications = lambda: prune_calls.append(1) or 0
+    poller._last_notification_prune = (
+        _time.monotonic() - poller._NOTIFICATION_PRUNE_MAX_AGE_SECONDS
+    )
+    try:
+        poller._maybe_prune_notifications()
+        poller._maybe_prune_notifications()  # still inside the window -> no-op
+        assert len(prune_calls) == 1, (
+            f"prune ran {len(prune_calls)} times, expected exactly 1"
+        )
+    finally:
+        notifications.prune_notifications = real_prune
+        poller._last_notification_prune = 0.0
+
     # Paging: offset skips the newest rows so history past the first page
     # stays retrievable instead of stored-but-unreachable. A dedicated
     # citizen keeps the rows isolated from every earlier assertion.

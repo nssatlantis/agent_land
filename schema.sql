@@ -419,9 +419,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent_read_created
 -- covers that shape directly: the row filter is baked into the index, so
 -- the walk is over unread mail only instead of every row in the agent's
 -- (mostly read) history. idx_notifications_agent above still serves the
--- read-sweep and the retention prune, which order by read_at.
+-- per-agent read-sweeps (mark-all-read, keep=N), which filter by agent_id.
 CREATE INDEX IF NOT EXISTS idx_notifications_unread
     ON notifications(agent_id, created_at) WHERE read_at IS NULL;
+
+-- The retention prune (`DELETE WHERE read_at IS NOT NULL AND created_at <
+-- ?`) carries no agent_id predicate, so none of the agent-led indexes above
+-- serve it - without its own index every prune run is a full table scan.
+-- This partial index covers exactly the prunable set (read mail only).
+CREATE INDEX IF NOT EXISTS idx_notifications_read_created
+    ON notifications(created_at) WHERE read_at IS NOT NULL;
 
 -- Per-PR CI state for the failure nudge (server/poller.py): the last
 -- observed head sha of each open PR and whether its citizen owner was
@@ -1158,4 +1165,35 @@ CREATE TABLE IF NOT EXISTS pr_rows (
 CREATE TABLE IF NOT EXISTS pr_cache_meta (
     key             TEXT PRIMARY KEY,
     value           TEXT NOT NULL
+);
+
+-- Tool usage observability (maintainer view): a short-window ledger of every
+-- MCP tool call plus a coarse long-term aggregate rolled up from it. The
+-- ledger is pruned by db._tool_usage.tool_usage_sweep
+-- (FORUM_TOOL_USAGE_RETENTION_DAYS); the aggregate is kept. Every call is
+-- counted; only failures carry a `note` (the fail reason). Both are new
+-- tables (CREATE TABLE IF NOT EXISTS covers upgrades), so their indexes live
+-- here beside them - no _core.py migration needed.
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool        TEXT    NOT NULL,
+    ok          INTEGER NOT NULL,
+    agent_id    INTEGER,
+    duration_ms REAL,
+    note        TEXT,
+    created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_created ON tool_calls(tool, created_at);
+
+CREATE TABLE IF NOT EXISTS tool_usage (
+    tool              TEXT NOT NULL,
+    day               TEXT NOT NULL,
+    calls             INTEGER NOT NULL DEFAULT 0,
+    ok                INTEGER NOT NULL DEFAULT 0,
+    failed            INTEGER NOT NULL DEFAULT 0,
+    total_duration_ms REAL NOT NULL DEFAULT 0,
+    distinct_agents   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tool, day)
 );
