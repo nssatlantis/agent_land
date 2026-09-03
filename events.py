@@ -548,3 +548,94 @@ def event_total(
         _total_cache.clear()
         _total_cache[key] = (time.monotonic(), result)
     return result
+
+
+# -- benchmark visibility helpers (shared by viewer/_ci and db/_nudges) ---
+#
+# The /ci Benchmarks tab and the check_in / my_profile bench nudge must
+# compute the SAME window-relative median comparison, or the page and the
+# check-in could disagree. Both call into these two helpers so the math
+# lives in exactly one place.
+
+# The machine-readable median (ms) returned by the db_benchmark harness.
+_BENCH_MEDIAN_KEY = ("summary", "timings_median_ms")
+_BENCH_REGRESSIONS_KEY = ("summary", "regressions")
+
+
+def _bench_nested(detail: dict | None, key_path: tuple[str, ...]) -> object:
+    """Walk a detail dict down a tuple of keys, returning None on any
+    missing/None/malformed level. Guarded - a truncated or partially-serialised
+    event detail never raises here (domain: degrade-silently)."""
+    cur: object = detail
+    for key in key_path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def bench_medians_for(events_rows: list[dict], query: str) -> list[float]:
+    """Median (ms) for one benchmark query across a window of ci_db_bench_run
+    events, newest-first as returned by query_events(). Empty list when no
+    event in the window carries that query's median. Single source of the
+    window-relative median extraction for the viewer tab and the nudge."""
+    out: list[float] = []
+    for ev in events_rows:
+        med = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY + (query,))
+        if isinstance(med, (int, float)) and not isinstance(med, bool):
+            out.append(float(med))
+    return out
+
+
+def bench_query_delta(
+    events_rows: list[dict], query: str
+) -> tuple[float, float, int] | None:
+    """The window-relative comparison for one query: (best_median_ms,
+    latest_median_ms, delta_pct) where delta_pct is how the most recent run
+    in the window compares to the best (lowest) median in that window —
+    a self-contained before/after with no coupling to benchmark_baseline.json.
+    None when the query has no median in the window."""
+    medians = bench_medians_for(events_rows, query)
+    if not medians:
+        return None
+    best = min(medians)
+    latest = medians[0]  # newest-first: first row is the most recent run
+    pct = round((latest - best) / best * 100) if best else 0
+    return best, latest, pct
+
+
+def bench_window_bests(events_rows: list[dict]) -> dict[str, float]:
+    """Best (lowest) median per benchmark query across a window of
+    ci_db_bench_run events, for the window-relative delta the Benchmarks tab
+    renders. Delegates to bench_medians_for so the extraction is single-source
+    with the nudge."""
+    names: set[str] = set()
+    for ev in events_rows:
+        detail = ev.get("detail") or {}
+        meds = _bench_nested(detail, _BENCH_MEDIAN_KEY)
+        if isinstance(meds, dict):
+            names.update(str(q) for q in meds)
+    bests: dict[str, float] = {}
+    for q in names:
+        medians = bench_medians_for(events_rows, q)
+        if medians:
+            bests[q] = min(medians)
+    return bests
+
+
+def bench_regressions_for(events_rows: list[dict]) -> int:
+    """Regressions found by the most recent ci_db_bench_run in the window.
+    The newest event's own `summary.regressions` count wins (0 when the
+    newest run carried none, or its detail is missing the field) so an older
+    run's number never shadows the latest. Mirrors the harness gate: a run
+    is 'clean' when this is 0."""
+    for ev in events_rows:
+        d = ev.get("detail")
+        regr = _bench_nested(d, _BENCH_REGRESSIONS_KEY)
+        if isinstance(regr, (int, float)) and not isinstance(regr, bool):
+            return int(regr)
+        if isinstance(d, dict) and d:
+            # Newest run that has any detail decides; a summary-less detail
+            # counts as 0 regressions rather than falling through to older.
+            return 0
+    return 0
