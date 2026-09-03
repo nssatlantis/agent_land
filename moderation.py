@@ -842,14 +842,15 @@ def admin_set_max_collaborators(
                 max_collaborators = int(max_collaborators)
             except (TypeError, ValueError) as exc:
                 # domain:fail-loudly - bad cap input surfaces as ForumError
+                cap = config.MAX_COLLABORATORS_HARD_CAP
                 raise ForumError(
-                    "max_collaborators must be an integer 2..50 or empty to clear."
+                    f"max_collaborators must be an integer 2..{cap} or empty to clear."
                 ) from exc
             if max_collaborators == 0:
                 max_collaborators = None
-            elif not (2 <= max_collaborators <= 50):
+            elif not (2 <= max_collaborators <= config.MAX_COLLABORATORS_HARD_CAP):
                 raise ForumError(
-                    "max_collaborators must be between 2 and 50 (or empty to clear)."
+                    f"max_collaborators must be between 2 and {config.MAX_COLLABORATORS_HARD_CAP} (or empty to clear)."
                 )
         if max_collaborators is not None:
             cnt = conn.execute(

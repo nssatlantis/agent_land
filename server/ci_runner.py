@@ -171,6 +171,17 @@ def _host_cpus() -> int:
     return 4
 
 
+def _cpus_from_argv(argv: list[str]) -> float:
+    """CPU cap for the active-run registry: parse --cpus from a sandbox
+    argv, falling back to config.CI_RUN_SANDBOX_CPUS when the flag is
+    absent or unreadable. Single fix point for the four run paths that
+    each parsed it inline."""
+    try:
+        return float(argv[argv.index("--cpus") + 1])
+    except Exception:  # domain: degrade-silently - cpu cap not readable, default
+        return float(config.CI_RUN_SANDBOX_CPUS)
+
+
 def _register_active(slot: int, name: str, cpus: float) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE[slot] = name
@@ -1468,13 +1479,7 @@ def run_checks(
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
-            try:
-                _cpus_idx = argv.index("--cpus")
-                _cpus_val = float(argv[_cpus_idx + 1])
-            except Exception:
-                _cpus_val = float(
-                    config.CI_RUN_SANDBOX_CPUS
-                )  # domain: degrade-silently
+            _cpus_val = _cpus_from_argv(argv)
             try:
                 _register_active(slot, container_name, _cpus_val)
             except Exception:
@@ -1527,13 +1532,7 @@ def run_checks(
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
-            try:
-                _cpus_idx = argv.index("--cpus")
-                _cpus_val = float(argv[_cpus_idx + 1])
-            except Exception:
-                _cpus_val = float(
-                    config.CI_RUN_SANDBOX_CPUS
-                )  # domain: degrade-silently
+            _cpus_val = _cpus_from_argv(argv)
             try:
                 _register_active(slot, container_name, _cpus_val)
             except Exception:
@@ -1562,12 +1561,7 @@ def run_checks(
                 image_tag = _ensure_image(tree, head_sha)
                 _ensure_tree_traversable(tree)
                 argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
-                try:
-                    _cpus_idx = argv.index("--cpus")
-                    _cpus_val = float(argv[_cpus_idx + 1])
-                except Exception:
-                    # domain:degrade-silently - cpu cap not readable, default
-                    _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)
+                _cpus_val = _cpus_from_argv(argv)
                 try:
                     _register_active(slot, container_name, _cpus_val)
                 except Exception:
@@ -1792,11 +1786,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         image_tag = _ensure_image(tree, merge_info["base"])
         _ensure_tree_traversable(tree)
         argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
-        try:
-            _cpus_idx = argv.index("--cpus")
-            _cpus_val = float(argv[_cpus_idx + 1])
-        except Exception:
-            _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+        _cpus_val = _cpus_from_argv(argv)
         try:
             _register_active(slot, container_name, _cpus_val)
         except Exception:
