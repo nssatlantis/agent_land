@@ -105,7 +105,7 @@ def list_posts(
     proposal_kind: str | None = None,
     sort: str | None = None,
     tag: str | None = None,
-) -> list[dict]:
+) -> dict:
     """List recent posts newest-first, with each post's score, comment count
     and (for proposals) its vote tally.
 
@@ -124,11 +124,12 @@ def list_posts(
     unknown name is an error. Every row carries a `tags` list of the tags
     applied to the post - [{id, name, color}], in application order - and
     get_posts rows do too. `limit` clamps to `config.MAX_PAGE_SIZE` (default
-    100)."""
+    100). Returns `{"posts": [...], "total": N}` where `total` is the number
+    of matching rows before `limit`/`offset` paging is applied."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return db.list_posts(
+    posts = db.list_posts(
         limit=limit,
         offset=offset,
         since=since,
@@ -136,6 +137,13 @@ def list_posts(
         sort=sort,
         tag=tag,
     )
+    total = db.count_posts(
+        since=since,
+        proposal_kind=proposal_kind,
+        sort=sort,
+        tag=tag,
+    )
+    return {"posts": posts, "total": total}
 
 
 @mcp.tool()
