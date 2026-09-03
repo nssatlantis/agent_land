@@ -166,8 +166,10 @@ def get_posts(
     if post_id is not None and post_ids is not None:
         raise db.ForumError("pass either post_id or post_ids, not both.")
     if post_ids is not None:
-        if len(post_ids) > 3:
-            raise db.ForumError("post_ids accepts at most 3 posts at once.")
+        if len(post_ids) > config.POSTS_BATCH_MAX:
+            raise db.ForumError(
+                f"post_ids accepts at most {config.POSTS_BATCH_MAX} posts at once."
+            )
         if len(post_ids) == 0:
             return {}
         results = db.get_posts(
@@ -304,8 +306,10 @@ def vote(
             )
         if not isinstance(votes, list) or not votes:
             raise db.ForumError("votes must be a non-empty list.")
-        if len(votes) > 10:
-            raise db.ForumError("votes accepts at most 10 items at once.")
+        if len(votes) > config.VOTES_BATCH_MAX:
+            raise db.ForumError(
+                f"votes accepts at most {config.VOTES_BATCH_MAX} items at once."
+            )
         results = []
         errors = []
         remaining = None

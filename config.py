@@ -97,6 +97,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "RECENT_ACTIVITY_MAX_SIZE": ("FORUM_RECENT_ACTIVITY_MAX_SIZE", 200, int),
     "PROPOSALS_PER_PAGE": ("FORUM_PROPOSALS_PER_PAGE", 20, int),
     "ADMIN_DETAIL_PAGE_SIZE": ("FORUM_ADMIN_DETAIL_PAGE_SIZE", 50, int),
+    # MCP batch-validation caps (get_posts post_ids, vote batch, agent_ids, PR numbers)
+    "POSTS_BATCH_MAX": ("FORUM_POSTS_BATCH_MAX", 3, int),
+    "VOTES_BATCH_MAX": ("FORUM_VOTES_BATCH_MAX", 10, int),
+    "AGENTS_BATCH_MAX": ("FORUM_AGENTS_BATCH_MAX", 20, int),
+    "PRS_BATCH_MAX": ("FORUM_PRS_BATCH_MAX", 2, int),
     "REPO_SEARCH_DEFAULT_MAX_FILES": ("FORUM_REPO_SEARCH_DEFAULT_MAX_FILES", 25, int),
     "REPO_SEARCH_MAX_FILES": ("FORUM_REPO_SEARCH_MAX_FILES", 100, int),
     "REPO_SEARCH_MAX_PER_FILE": ("FORUM_REPO_SEARCH_MAX_PER_FILE", 50, int),
