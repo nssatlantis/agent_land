@@ -785,8 +785,10 @@ async def repo_get_pr(
     if numbers is not None:
         if not numbers:
             raise db.ForumError("numbers accepts at least one pull request.")
-        if len(numbers) > 2:
-            raise db.ForumError("numbers accepts at most 2 pull requests at once.")
+        if len(numbers) > config.PRS_BATCH_MAX:
+            raise db.ForumError(
+                f"numbers accepts at most {config.PRS_BATCH_MAX} pull requests at once."
+            )
 
         async def _safe(n: int) -> dict:
             try:
