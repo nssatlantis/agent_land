@@ -85,6 +85,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
     "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
+    # IN-clause chunk size for unbounded page builders (db._core._id_chunks).
+    # SQLite's variable-ceiling is ~32766 placeholders; the chunking keeps
+    # the bound structurally impossible to hit at any current page size.
+    "DB_ID_CHUNK_SIZE": ("FORUM_DB_ID_CHUNK_SIZE", 500, int),
     # Truncation widths
     "MENTION_TITLE_TRUNCATE": ("FORUM_MENTION_TITLE_TRUNCATE", 80, int),
     "DELETION_TITLE_TRUNCATE": ("FORUM_DELETION_TITLE_TRUNCATE", 60, int),
