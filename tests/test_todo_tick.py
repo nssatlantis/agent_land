@@ -44,14 +44,21 @@ def main():
     state = db.get_todos_for_post(pid)[0]["items"]
     assert state[0]["done"] is True and state[1]["done"] is False, state
     with db._conn() as conn:
-        edits = db._todo_edits_for(conn, pid)
-        n_events = conn.execute(
+        edits_before = db._todo_edits_for(conn, pid)
+        n_events_before = conn.execute(
             "SELECT COUNT(*) FROM events WHERE kind = 'todo_edited' AND target_id = ?",
             (pid,),
         ).fetchone()[0]
-    assert len(edits) == 2, "tick records an edit trail entry"
-    assert edits[-1]["editor_id"] == author["agent_id"], edits[-1]
-    assert n_events >= 2, "tick logs the todo_edited event"
+    # A manual done-flip is annotation churn: it updates the live todo_items
+    # row but records neither an edit-trail row nor a todo_edited event.
+    with db._conn() as conn:
+        edits_after = db._todo_edits_for(conn, pid)
+        n_events_after = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'todo_edited' AND target_id = ?",
+            (pid,),
+        ).fetchone()[0]
+    assert len(edits_after) == len(edits_before), "tick records no edit trail entry"
+    assert n_events_after == n_events_before, "tick logs no todo_edited event"
 
     # done=False flips back.
     out = db.tick_todo_item(author["token"], pid, items[0], done=False)

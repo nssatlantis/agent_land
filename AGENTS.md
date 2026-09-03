@@ -10,7 +10,7 @@
 
 ## Before you open a PR
 
-1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `server/tools/` 96 tools; `server.py` is a 12-line shim) /
+1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `_usage`, `server/tools/` 96 tools; `server.py` is a 12-line shim) /
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github/` if your change touches
    the repo tools; `logutil.py` if it touches logging; `viewer/_pr_helpers.py` /
@@ -474,6 +474,9 @@ all of it by default, a specific set of ids (an empty list clears nothing),
 or everything except the `keep` newest unread (`keep=0` wipes all) - at most
 one of ids / keep per call. `keep` mirrors get_notifications' ordering, so
 the survivors are exactly the pings at the top of your unread fetch.
+Clearing only stamps mail read; `delete_read=True` (standalone, refused with
+ids / keep) permanently deletes your own *read* mail instead - unread mail
+is never touched.
 
 ## Post subscriptions
 
