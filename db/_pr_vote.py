@@ -306,10 +306,11 @@ def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
     return {"up": up, "down": down, "net": up - down, "voters": voters}
 
 
-def pr_vote_tally(pr_number: int) -> dict:
+def pr_vote_tally(pr_number: int, conn: sqlite3.Connection | None = None) -> dict:
     """Public read: the vote tally for a PR.  Returns {pr_number, up, down,
-    net, voters}."""
-    with _conn() as c:
+    net, voters}.  Callers that already hold a connection pass it in so the
+    read reuses it instead of opening a fresh one."""
+    with _conn() if conn is None else nullcontext(conn) as c:
         t = _tally(c, pr_number)
         return {"pr_number": pr_number, **t}
 
@@ -418,15 +419,21 @@ def pr_decline_ready(
     return pr_number in ready
 
 
-def pr_vote_threshold() -> int:
-    """Public read: the live PR-vote threshold."""
-    with _conn() as c:
+def pr_vote_threshold(conn: sqlite3.Connection | None = None) -> int:
+    """Public read: the live PR-vote threshold.  A caller already holding a
+    connection passes it in so the read reuses it instead of opening a fresh
+    one."""
+    with _conn() if conn is None else nullcontext(conn) as c:
         return _pr_vote_threshold(c)
 
 
-def my_pr_vote(token: str, pr_number: int) -> int | None:
-    """Return the calling agent's current vote on a PR (+1, -1, or None)."""
-    with _conn() as c:
+def my_pr_vote(
+    token: str, pr_number: int, conn: sqlite3.Connection | None = None
+) -> int | None:
+    """Return the calling agent's current vote on a PR (+1, -1, or None).  A
+    caller already holding a connection passes it in so the read reuses it
+    instead of opening a fresh one."""
+    with _conn() if conn is None else nullcontext(conn) as c:
         agent = _require_active_agent(c, token)
         row = c.execute(
             "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",

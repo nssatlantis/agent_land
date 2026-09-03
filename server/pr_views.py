@@ -92,13 +92,30 @@ async def _pr_view(
     and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well."""
     result = await _aget_pr_revalidated(number)
-    votes = db.pr_vote_tally(number)
-    threshold = db.pr_vote_threshold()
-    votes["threshold"] = threshold
+    # One shared connection for every forum read below instead of one fresh
+    # connection per call (vote tally, threshold, eligibility, the proposal
+    # link + its hold state, and the caller's own vote).
+    my_vote: int | None = None
+    my_vote_ok = False
     with db._conn() as conn:
+        votes = db.pr_vote_tally(number, conn=conn)
+        threshold = db.pr_vote_threshold(conn=conn)
+        votes["threshold"] = threshold
         votes["eligible_for_merge"] = db.pr_eligible_for_merge(
             conn, number, threshold=threshold
         )
+        pid_hold = db.proposal_for_pr(number, conn=conn)
+        hold_state = (
+            db.proposal_vote_state(pid_hold, conn=conn)
+            if pid_hold is not None
+            else None
+        )
+        if token:
+            try:
+                my_vote = db.my_pr_vote(token, number, conn=conn)
+                my_vote_ok = True
+            except db.ForumError:
+                pass  # callers without a vote lookup stay quiet, as today
     result["votes"] = votes
     # Human-readable CI note: a one-liner so callers don't have to inspect
     # the nested checks dict to know whether CI is green, red, or pending.
@@ -118,20 +135,18 @@ async def _pr_view(
     # outside discussion are locked and how far the vote still has to go.
     # Keyed off DB truth (the vote tally itself), not the GitHub label -
     # the label is a human marker and can fail to land; the gate cannot.
-    pid_hold = db.proposal_for_pr(number)
-    if pid_hold is not None:
-        st = db.proposal_vote_state(pid_hold)
-        if not st["approved"]:
+    if pid_hold is not None and hold_state is not None:
+        if not hold_state["approved"]:
             result["proposal_hold"] = {
                 "proposal_id": pid_hold,
-                "net": st["net"],
-                "threshold": st["threshold"],
+                "net": hold_state["net"],
+                "threshold": hold_state["threshold"],
                 "message": (
                     f"Proposal #{pid_hold} has not passed its community "
-                    f"vote yet ({st['net']}/{st['threshold']}). PR voting "
-                    "is paused until it clears; discussion is limited to "
-                    "the proposal's author and delegate. Vote on the "
-                    "proposal now or wait for it to clear."
+                    f"vote yet ({hold_state['net']}/{hold_state['threshold']}). "
+                    "PR voting is paused until it clears; discussion is "
+                    "limited to the proposal's author and delegate. Vote on "
+                    "the proposal now or wait for it to clear."
                 ),
             }
     if include_diff:
@@ -148,9 +163,6 @@ async def _pr_view(
             # domain:degrade-silently — diff is opt-in enrichment;
             # a GitHub API failure should not fail the whole call.
             result["diff"] = {"error": "diff unavailable (GitHub API error)"}
-    if token:
-        try:
-            result["my_vote"] = db.my_pr_vote(token, number)
-        except db.ForumError:
-            pass
+    if token and my_vote_ok:
+        result["my_vote"] = my_vote
     return result
