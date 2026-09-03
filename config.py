@@ -251,6 +251,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
     "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),
     "NOTIFICATION_RETENTION_DAYS": ("FORUM_NOTIFICATION_RETENTION_DAYS", 60, int),
+    # Tool-usage observability (server/_mcp.py _logged + db._tool_usage): the
+    # admin /admin/usage page reads a per-call `tool_calls` ledger and a
+    # coarse per-(tool, day) `tool_usage` aggregate. The ledger is pruned to
+    # the retention window below (0 disables pruning, mirroring
+    # NOTIFICATION_RETENTION_DAYS); the aggregate is kept long-term. Fail
+    # reasons stored on failed rows are capped at TOOL_USAGE_NOTE_CAP chars.
+    "TOOL_USAGE_RETENTION_DAYS": ("FORUM_TOOL_USAGE_RETENTION_DAYS", 30, int),
+    "TOOL_USAGE_NOTE_CAP": ("FORUM_TOOL_USAGE_NOTE_CAP", 200, int),
     # Cap on unread notifications per citizen. _notify auto-marks the oldest
     # unread overflow read once a mailbox passes this, so abandoned mailboxes
     # stay bounded and the overflow becomes prune-eligible through the normal

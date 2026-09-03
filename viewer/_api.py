@@ -144,19 +144,17 @@ def api_events(request: Request) -> JSONResponse:
     except ValueError:
         offset = 0
     from db import ForumError
-    from events import event_total, query_events
+    from events import query_events
 
     try:
-        evts = query_events(
+        evts, total = query_events(
             agent_id=agent_id,
             kind=kind,
             category=category,
             since=since,
             limit=limit,
             offset=offset,
-        )
-        total = event_total(
-            agent_id=agent_id, kind=kind, category=category, since=since
+            with_total=True,
         )
     except (ForumError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
