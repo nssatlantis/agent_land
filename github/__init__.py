@@ -109,7 +109,6 @@ from ._gitops import (  # noqa: F401
 # ── reads: listings, composites, stamps ─────────────────────────────────
 from ._reads import (  # noqa: F401
     _CITIZEN_RE,
-    _MAX_READ_FILE_LINES,
     _MD_ESCAPES,
     _PR_PAGE_SIZE,
     _PROPOSAL_HEADER_RE,
