@@ -1824,6 +1824,51 @@ def main():
         "exclude_post_id keeps the post itself out of its own related list"
     )
 
+    # _tokens memoization (270:4856): tokenization is pure, so repeat scans
+    # share sets instead of re-tokenizing the same candidate texts.
+    search._tokens.cache_clear()
+    assert search._tokens("Dark Mode Toggle") == {"dark", "mode", "toggle"}, (
+        "tokenization itself is unchanged"
+    )
+    assert search._tokens.cache_info().misses == 1, "first text is a miss"
+    assert search._tokens("Dark Mode Toggle") == {"dark", "mode", "toggle"}, (
+        "same text, same tokens"
+    )
+    assert search._tokens.cache_info().hits == 1, "repeat text hits the cache"
+    # End to end at threshold 0 so the FTS pool always passes the score
+    # floor: two queries over the same seeded dark-mode pool must share
+    # candidate token sets. (Stored bodies carry auto-signatures, which is
+    # why raw-text queries can't rely on the default 0.4 floor here; and
+    # each query text differs from the `listed` call above so the
+    # result-level cache can't serve a stale answer.)
+    _saved_sim2 = os.environ.get("FORUM_SIMILAR_THRESHOLD")
+    os.environ["FORUM_SIMILAR_THRESHOLD"] = "0"
+    try:
+        _scan_one = search.find_similar_posts(
+            "Bring a dark mode toggle",
+            "Theme the viewer with a dark mode panel",
+            "proposal",
+            exclude_post_id=h1,
+        )
+        assert len(_scan_one) >= 1, "the seeded dark-mode posts match"
+        _hits_one = search._tokens.cache_info().hits
+        _scan_two = search.find_similar_posts(
+            "Add a dark mode switch",
+            "Theme the viewer with a dark mode",
+            "proposal",
+            exclude_post_id=post1["post_id"],
+        )
+        assert isinstance(_scan_two, list), "the second scan runs normally"
+        assert search._tokens.cache_info().hits > _hits_one, (
+            "shared candidates hit the token cache across queries"
+        )
+    finally:
+        if _saved_sim2 is None:
+            os.environ.pop("FORUM_SIMILAR_THRESHOLD", None)
+        else:
+            os.environ["FORUM_SIMILAR_THRESHOLD"] = _saved_sim2
+    assert search._tokens.cache_info().currsize <= 1024, "the cache stays bounded"
+
     # --- proposal draft-window editing (edit_proposal, Article VI.5) ----------
     # While a proposal is still a draft - open, with NO votes cast and NO pull
     # request ever linked - its author may edit the title and/or body in place.
