@@ -994,6 +994,35 @@ def main():
         else:
             os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
+    # Paging: offset skips the newest rows so history past the first page
+    # stays retrievable instead of stored-but-unreachable. A dedicated
+    # citizen keeps the rows isolated from every earlier assertion.
+    pager = db.register_agent("pager-user")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, NULL, ?, ?, NULL)",
+            [(pager["agent_id"], f"page ping {i}", now_iso) for i in range(7)],
+        )
+    full = [n["id"] for n in mail(pager["token"], limit=20)["notifications"]]
+    assert len(full) == 7, "the seven page pings land"
+    p1 = [n["id"] for n in mail(pager["token"], limit=3)["notifications"]]
+    p2 = [n["id"] for n in mail(pager["token"], limit=3, offset=3)["notifications"]]
+    p3 = [n["id"] for n in mail(pager["token"], limit=3, offset=6)["notifications"]]
+    assert p1 + p2 + p3 == full, (
+        "pages stitch to the full fetch with no gaps or overlaps"
+    )
+    assert mail(pager["token"], limit=3, offset=7)["notifications"] == [], (
+        "offset past the end returns no rows"
+    )
+    assert "0 or more" in expect_error(
+        notifications.notifications, pager["token"], offset=-1
+    ), "a negative offset is refused"
+    assert "integer" in expect_error(
+        notifications.notifications, pager["token"], offset=1.5
+    ), "a non-integer offset is refused with a clean error"
+
     # Deleting content and citizens cleans up their notifications.
     moderation.delete_post(post2["post_id"], "root")
     with db._conn() as conn:

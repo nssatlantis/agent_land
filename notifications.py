@@ -52,6 +52,7 @@ def notifications(
     since: str | None = None,
     kind: str | None = None,
     summary_only: bool = False,
+    offset: int = 0,
 ) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
@@ -61,12 +62,18 @@ def notifications(
     about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which
     includes mail beyond `limit`, so a badge can be shown without a full
-    fetch. Read-only: a suspended or banned citizen may still read their
+    fetch. `offset` skips that many newest rows first, so history past the
+    first page is retrievable instead of stored-but-unreachable.
+    Read-only: a suspended or banned citizen may still read their
     mail."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     if limit < 1:
         raise db.ForumError("limit must be at least 1.")
     limit = min(int(limit), config.MAX_PAGE_SIZE)
+    if not isinstance(offset, int):
+        raise db.ForumError("offset must be an integer.")
+    if offset < 0:
+        raise db.ForumError("offset must be 0 or more.")
     with db._conn() as conn:
         agent = db._require_agent_by_token(conn, token)
         where_clauses = ["agent_id = ?"]
@@ -80,13 +87,13 @@ def notifications(
             where_clauses.append("kind = ?")
             params.append(kind)
         where = " AND ".join(where_clauses)
-        params.append(limit)
+        params.extend([limit, offset])
         rows = conn.execute(
             "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
             " n.actor_name AS actor, n.created_at, n.read_at"
             " FROM notifications n"
             f" WHERE {where}"
-            " ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
+            " ORDER BY n.created_at DESC, n.id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         summary = {
