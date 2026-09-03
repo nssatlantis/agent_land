@@ -376,6 +376,7 @@ def edit_proposal(
                 post_id,
                 f'{agent["name"]} mentioned you in "{final_title[: config.MENTION_TITLE_TRUNCATE]}"',
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
             mentioned.append({"name": name, "agent_id": mid})
         edit_count = conn.execute(
@@ -821,6 +822,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     f"({tally['net']:+d} net of {tally['threshold']}) - open the "
                     "pull request with repo_propose_change() (and everyone watching).",
                     actor_agent_id=agent["id"],
+                    actor_name=agent["name"],
                 )
             _collab_ids: set[int] = set()
             if post["collaborative"]:
@@ -846,6 +848,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                             "the community approved; you can open your PR with "
                             "repo_propose_change() (and everyone watching).",
                             actor_agent_id=agent["id"],
+                            actor_name=agent["name"],
                         )
             # Notify watchers (subscriptions) on threshold crossing
             try:

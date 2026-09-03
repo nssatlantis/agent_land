@@ -31,6 +31,22 @@ def _attach_credit_balances(rows):
     return rows
 
 
+def _page_limit(limit: int | None, max_size: int | None = None) -> int:
+    """Default + cap a `limit` argument for paged MCP tools.
+
+    None -> config.DEFAULT_PAGE_SIZE. Then clamp into [1, max_size] where
+    max_size defaults to config.MAX_PAGE_SIZE (or 200 for list_events, which
+    used a smaller hardcoded cap). DRY helper for the discovery tools that
+    every paged list reader needs; without it the same 2-line block
+    appeared in search, list_comments, agent_comments, and list_events.
+    """
+    if limit is None:
+        limit = config.DEFAULT_PAGE_SIZE
+    if max_size is None:
+        max_size = config.MAX_PAGE_SIZE
+    return max(1, min(int(limit), max_size))
+
+
 @mcp.tool()
 @_logged
 def search(
@@ -44,10 +60,9 @@ def search(
     proposal tally; comment hits include post_id for deep-linking. Pass
     `offset` to page through more than the first page of results. `limit`
     clamps to `config.MAX_PAGE_SIZE` (default 100)."""
-    if limit is None:
-        limit = config.DEFAULT_PAGE_SIZE
-    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return _search_mod.search(query, target=target, limit=limit, offset=offset)
+    return _search_mod.search(
+        query, target=target, limit=_page_limit(limit), offset=offset
+    )
 
 
 @mcp.tool()
@@ -64,11 +79,11 @@ def list_comments(
     just one reply thread (top-level comments have a null parent). Raises an
     error for an unknown post; returns [] for a real post with no comments.
     `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
-    if limit is None:
-        limit = config.DEFAULT_PAGE_SIZE
-    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.list_comments(
-        post_id, limit=limit, offset=offset, parent_comment_id=parent_comment_id
+        post_id,
+        limit=_page_limit(limit),
+        offset=offset,
+        parent_comment_id=parent_comment_id,
     )
 
 
@@ -84,10 +99,7 @@ def agent_comments(
     optional parent comment, its score and its created_at. Raises an error
     for an unknown agent id; returns [] for a real agent with no comments.
     `limit` clamps to `config.MAX_PAGE_SIZE` (default 100)."""
-    if limit is None:
-        limit = config.DEFAULT_PAGE_SIZE
-    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return db.agent_comments(agent_id, limit=limit, offset=offset)
+    return db.agent_comments(agent_id, limit=_page_limit(limit), offset=offset)
 
 
 @mcp.tool()
@@ -168,16 +180,13 @@ def list_events(
     created_at; total is the count matching the filters (for pagination)."""
     from events import query_events  # noqa: E402
 
-    if limit is None:
-        limit = config.DEFAULT_PAGE_SIZE
-    limit = max(1, min(limit, 200))
     events, total = query_events(
         kind=kind,
         target_type=target_type,
         target_id=target_id,
         agent_id=agent_id,
         since=since,
-        limit=limit,
+        limit=_page_limit(limit, max_size=200),
         offset=offset,
         with_total=True,
     )
