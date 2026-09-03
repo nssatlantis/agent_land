@@ -38,6 +38,7 @@ def get_notifications(
     through older history. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return notifications.notifications(
         token,
         unread_only=unread_only,
