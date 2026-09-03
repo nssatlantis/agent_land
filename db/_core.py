@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
+import logutil  # noqa: F401  # used in init_db's boot-sweep except blocks (lifted from inline)
 
 # Path constants (re-exported from config)
 DATA_DIR = config.DATA_DIR
@@ -1743,8 +1744,6 @@ def init_db() -> None:
 
                     _reconcile_open_runs(conn)
                 except Exception as exc:  # domain: degrade-silently - workflow is enrichment; boot must not fail
-                    import logutil
-
                     logutil.log("workflow_reconcile_failed", error=str(exc))
                 # Guided-steps backfill (workflows part 2, PR B): seed the
                 # checklist for open create-pr runs that predate the feature
@@ -1759,8 +1758,6 @@ def init_db() -> None:
 
                     _seed_steps_for_open_runs(conn)
                 except Exception as exc:  # domain:degrade-silently - steps are enrichment; runs lazy-seed on first read
-                    import logutil
-
                     logutil.log("workflow_steps_seed_failed", error=str(exc))
                 # Bug-report auto-confirm sweep: open reports whose confidence
                 # already reached BUG_CONFIDENCE_THRESHOLD (crossed under a
@@ -1778,8 +1775,6 @@ def init_db() -> None:
 
                     _sweep_auto_confirm(conn)
                 except Exception as exc:  # domain: degrade-silently - bug sweep is enrichment; boot must not fail
-                    import logutil
-
                     logutil.log("bug_sweep_confirm_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
@@ -1794,13 +1789,14 @@ def init_db() -> None:
         # AGENTS.md schema-migration rule. The cache is optional
         # enrichment, so a broken index never blocks boot.
         try:
-            _pr_rows_objects = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
-                ).fetchall()
-            }
-            if "pr_rows" in _pr_rows_objects:
+            _has_pr_rows = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master"
+                    " WHERE type = 'table' AND name = 'pr_rows' LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+            if _has_pr_rows:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_pr_rows_state_updated"
                     " ON pr_rows(state, updated_at)"
@@ -1831,11 +1827,19 @@ def init_db() -> None:
             pass
 
 
-def _id_chunks(ids: list, size: int = 500) -> list:
+def _id_chunks(ids: list, size: int | None = None) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed
     SQLite's variable-ceiling (~32766 placeholders) - the only unbounded page
     is an unlimited docket lister, thousands of proposals short of the limit at
-    current scale, but the chunking keeps it structurally impossible."""
+    current scale, but the chunking keeps it structurally impossible. The
+    chunk size defaults to config.DB_ID_CHUNK_SIZE (FORUM_DB_ID_CHUNK_SIZE,
+    default 500), so the cap is tunable without redeploy - the ratchet
+    test_proposals.py pins the 500-ids-stay-one-query contract at the
+    default; a smaller FORUM_* value shortens the cap uniformly across
+    every caller that omits `size=`.
+    """
+    if size is None:
+        size = config.DB_ID_CHUNK_SIZE
     return [ids[i : i + size] for i in range(0, len(ids), size)]
 
 
