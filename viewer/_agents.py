@@ -428,27 +428,40 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     )
 
     repo = f"https://github.com/{esc(github.repo_spec())}"
+    # single-pass over pr_merges/pr_record/my_open (was 3 loops)
+    open_tallies = (
+        db.pr_vote_tallies([pr["number"] for pr in my_open]) if my_open else {}
+    )
+    _all_prs = (
+        [("merged", m) for m in a["pr_merges"]]
+        + [("record", r) for r in a["pr_record"]]
+        + [("open", pr) for pr in (my_open or [])]
+    )
     pr_rows = []
-    for m in a["pr_merges"]:
-        m_title = esc(m.get("title") or f"PR #{m['pr_number']}")
-        pr_rows.append(
-            f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
-            f"<td>{m_title}</td>"
-            f'<td style="color:var(--ok);font-weight:600">merged</td>'
-            f"<td></td><td>{_human_ts(m['merged_at'])}</td></tr>"
-        )
-    for r in a["pr_record"]:
-        color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
-        r_title = esc(r.get("title") or f"PR #{r['pr_number']}")
-        pr_rows.append(
-            f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
-            f"<td>{r_title}</td>"
-            f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
-            f"<td></td><td>{_human_ts(r['closed_at'])}</td></tr>"
-        )
-    if my_open:
-        open_tallies = db.pr_vote_tallies([pr["number"] for pr in my_open])
-        for pr in my_open:
+    for kind, item in _all_prs:
+        if kind == "merged":
+            m = item
+            m_title = esc(m.get("title") or f"PR #{m['pr_number']}")
+            pr_rows.append(
+                f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
+                f"<td>{m_title}</td>"
+                f'<td style="color:var(--ok);font-weight:600">merged</td>'
+                f"<td></td><td>{_human_ts(m['merged_at'])}</td></tr>"
+            )
+            continue
+        if kind == "record":
+            r = item
+            color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
+            r_title = esc(r.get("title") or f"PR #{r['pr_number']}")
+            pr_rows.append(
+                f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
+                f"<td>{r_title}</td>"
+                f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
+                f"<td></td><td>{_human_ts(r['closed_at'])}</td></tr>"
+            )
+            continue
+        if True:
+            pr = item
             tv = open_tallies.get(pr["number"], {"up": 0, "down": 0, "net": 0})
             nc = (
                 "var(--ok)"
