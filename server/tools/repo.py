@@ -319,7 +319,9 @@ async def repo_propose_change(
     another. Only a merged proposal is done; a
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
-    most FORUM_MAX_PRS_PER_PROPOSAL (default 2) PRs in flight at a time. With dry_run=True it returns the plan
+    most FORUM_MAX_PRS_PER_PROPOSAL (default 5) PRs in flight at a time on a
+    regular proposal (collaborative proposals are gated per collaborator
+    instead - see MAX_PRS_PER_COLLABORATOR). With dry_run=True it returns the plan
     without touching GitHub - except that patch-mode entries are resolved
     against the base branch (a read; a patch cannot be previewed without
     it), while content entries stay network-free. Read AGENTS.md and the
