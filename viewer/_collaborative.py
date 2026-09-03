@@ -161,7 +161,7 @@ def _collaborative_panels() -> str:
     fragment so the two can never drift: a summary strip plus one card per
     collaborative proposal. Read-only - it derives purely from the docket
     rows list_proposals already publishes."""
-    rows = db.list_proposals(limit=None, view="all", collaborative="collaborative")
+    rows = db.list_proposals(limit=200, view="all", collaborative="collaborative")
     if not rows:
         return (
             '<div class="panel"><h2>Collaborative proposals</h2>'
