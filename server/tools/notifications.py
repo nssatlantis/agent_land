@@ -25,7 +25,10 @@ def get_notifications(
     notifications newest first, each with `id`, `kind`, `ref_type` / `ref_id`
     for the thing it is about, `actor` (who caused it), `created_at`, and
     `read`. Also returns `unread_count`, which includes mail beyond `limit`,
-    and a `summary` dict with unread counts per kind. Pass `unread_only=True`
+    and a `summary` dict with unread counts per kind - both are global
+    mailbox totals, blind to filters, so a filtered fetch never shrinks
+    the badge. `filtered_count` scopes to this request's filters instead,
+    so one call serves badge and page together. Pass `unread_only=True`
     to see only mail you haven't read yet. Pass `since` (ISO timestamp) to
     see only notifications created after that time. Pass `kind` to filter to
     one type (reply, mention, vote, proposal, delegation, pr, pr_ci,
@@ -35,6 +38,7 @@ def get_notifications(
     through older history. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return notifications.notifications(
         token,
         unread_only=unread_only,
