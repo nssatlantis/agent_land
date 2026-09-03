@@ -18,6 +18,7 @@ from server.repo_helpers import (
     _body_with_proposal_identity,
     _changes_for_repo_propose,
     _changes_for_repo_update,
+    _coerce_files_json,
     _open_pr_count_for,
     _pr_body_with_identity,
     _require_pr_owner,
@@ -35,6 +36,11 @@ _REQUEUE_ATTEMPTS: dict[int, int] = {}
 # asyncio.Lock would not be safe across to_thread.
 _PENDING_LOCK = threading.Lock()
 _TICKER_TASK: asyncio.Task | None = None
+
+# Step keys the server auto-manages (hand ticks refused): 'open' auto-ticks
+# on PR-link, 'verify' on CI-green/merge. Mirror here so repo_workflow_status
+# can flag them for MCP consumers without reaching into db internals.
+_MANAGED_WORKFLOW_KEYS = frozenset({"open", "verify"})
 
 
 async def _debounce_ticker() -> None:
@@ -1287,13 +1293,7 @@ def repo_ci_run(
     normalized_files = None
     if files is not None:
         # FastMCP may pass JSON string
-        import json
-
-        if isinstance(files, str):
-            try:
-                files = json.loads(files)
-            except json.JSONDecodeError as e:
-                raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+        files = _coerce_files_json(files)
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
@@ -1573,6 +1573,8 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
         available_next_steps = []
         if open_run is not None:
             steps = db.workflow_steps_for_run(conn, int(open_run["id"]))
+            for _s in steps:
+                _s["managed"] = _s["step_key"] in _MANAGED_WORKFLOW_KEYS
             if steps:
                 done = sum(1 for s in steps if s["done"])
                 steps_summary = {
