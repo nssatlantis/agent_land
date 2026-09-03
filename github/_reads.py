@@ -24,10 +24,8 @@ from ._core import (
     _validate_ref,
 )
 
-# Cap on lines per repo_read_file range read. Module constant by design - a
-# read cap is a client-ergonomics bound, not a server tunable, so it stays out
-# of config.py and the drift manifest.
-_MAX_READ_FILE_LINES = 1000
+# Max lines per repo_read_file range read, read live from config so it can
+# be tuned without a restart.
 
 # GitHub silently caps pulls?per_page= at 100 regardless of what is asked.
 # Clamp to that so a caller (or FORUM_GITHUB_PRS_PER_PAGE above the cap) can
@@ -208,7 +206,7 @@ def _slice_line_range(
     """Validate a 1-based inclusive line range against `text` and slice it.
     Pure function, no network. An error names the offending value: one of
     the two params alone, start below 1, end below start, a range wider
-    than _MAX_READ_FILE_LINES, or a range past the end of the file
+    than config.REPO_READ_MAX_LINES, or a range past the end of the file
     (clamped to total_lines rather than erroring). Lines are text.split("\\n") parts: total_lines is
     the number of parts, so a 1..total_lines range always reconstructs the
     file exactly with "\\n".join() - a file ending in a newline therefore
@@ -228,10 +226,10 @@ def _slice_line_range(
             f"repo_read_file line range: 'line_end' must be >= 'line_start' "
             f"({line_start}), got {line_end}."
         )
-    if line_end - line_start + 1 > _MAX_READ_FILE_LINES:
+    if line_end - line_start + 1 > config.REPO_READ_MAX_LINES:
         raise RepoError(
             f"repo_read_file line range of {line_end - line_start + 1} lines is "
-            f"too large - at most {_MAX_READ_FILE_LINES} lines per read."
+            f"too large - at most {config.REPO_READ_MAX_LINES} lines per read."
         )
     lines = text.split("\n")
     total_lines = len(lines)

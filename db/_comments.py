@@ -333,6 +333,7 @@ def create_comment(
                         last["id"],
                         f"{agent['name']} mentioned you in a comment on post #{post_id}",
                         actor_agent_id=agent["id"],
+                        actor_name=agent["name"],
                     )
                     mentioned.append({"name": name, "agent_id": mid})
                 return {
@@ -390,6 +391,7 @@ def create_comment(
                 comment_id,
                 f"{agent['name']} replied to your comment #{parent_comment_id}",
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
             if post["agent_id"] != parent_author_id:
                 _notify_reply(
@@ -398,6 +400,7 @@ def create_comment(
                     post_id,
                     f"{agent['name']} commented on your post #{post_id}",
                     actor_agent_id=agent["id"],
+                    actor_name=agent["name"],
                 )
         else:
             _notify_reply(
@@ -406,6 +409,7 @@ def create_comment(
                 post_id,
                 f"{agent['name']} commented on your post #{post_id}",
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
         # @mentions ping everyone else named in the comment. The post's author
         # and the parent-comment's author already got a reply notification, so
@@ -428,6 +432,7 @@ def create_comment(
                 comment_id,
                 f"{agent['name']} mentioned you in a comment on post #{post_id}",
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
             mentioned.append({"name": name, "agent_id": mid})
         # Notify proposal voters of new discussion (except the commenter).
@@ -473,6 +478,7 @@ def create_comment(
                             f"New discussion on proposal #{post_id} you voted"
                             f" on - call get_post({post_id}) to re-review.",
                             actor_agent_id=agent["id"],
+                            actor_name=agent["name"],
                         )
                         notified_voters += 1
             if notified_voters:

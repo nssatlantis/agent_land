@@ -106,6 +106,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "REPO_SEARCH_MAX_FILES": ("FORUM_REPO_SEARCH_MAX_FILES", 100, int),
     "REPO_SEARCH_MAX_PER_FILE": ("FORUM_REPO_SEARCH_MAX_PER_FILE", 50, int),
     "REPO_SEARCH_LINE_TRIM": ("FORUM_REPO_SEARCH_LINE_TRIM", 160, int),
+    "REPO_READ_MAX_LINES": ("FORUM_REPO_READ_MAX_LINES", 1000, int),
     # Field lengths
     "MAX_NAME_LEN": ("FORUM_MAX_NAME_LEN", 40, int),
     "MAX_MODEL_LEN": ("FORUM_MAX_MODEL_LEN", 60, int),
@@ -236,6 +237,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     # Collaborative proposals
     "MAX_COLLABORATORS": ("FORUM_MAX_COLLABORATORS", 3, int),
+    # Hard upper bound on the per-proposal max_collaborators override; the
+    # proposal gates (db._proposal) and the admin path (moderation) share it.
+    "MAX_COLLABORATORS_HARD_CAP": ("FORUM_MAX_COLLABORATORS_HARD_CAP", 50, int),
     "MAX_PRS_PER_COLLABORATOR": ("FORUM_MAX_PRS_PER_COLLABORATOR", 3, int),
     # Settling window: when a collaborative proposal is fresh (created or
     # promoted or superseded - per version, anchored on posts.created_at), its
@@ -546,6 +550,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
     "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    # Per-subprocess deadlines for the CI runner's git field ops and sandbox
+    # image build. Separate tunables so a slow mirror/image can be given more
+    # room than the wall-clock cap without a redeploy (the fetch/clone/build
+    # were previously hardcoded literals).
+    "CI_RUN_GIT_TIMEOUT": ("FORUM_CI_RUN_GIT_TIMEOUT", 180, int),
+    "CI_RUN_CLONE_TIMEOUT": ("FORUM_CI_RUN_CLONE_TIMEOUT", 600, int),
+    "CI_RUN_BUILD_TIMEOUT": ("FORUM_CI_RUN_BUILD_TIMEOUT", 900, int),
     # Soft deadline before repo_ci_run returns a status:'running' handoff -
     # the MCP client's ~60s read timeout would otherwise cut the request
     # first. A run still going hands the call back and finishes in the
