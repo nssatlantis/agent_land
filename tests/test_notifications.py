@@ -1138,6 +1138,85 @@ def main():
         "her unread ping survives her own purge"
     )
 
+    # Paging: offset skips the newest rows so history past the first page
+    # stays retrievable instead of stored-but-unreachable. A dedicated
+    # citizen keeps the rows isolated from every earlier assertion.
+    pager = db.register_agent("pager-user")
+    with db._conn() as conn:
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, NULL, ?, ?, NULL)",
+            [(pager["agent_id"], f"page ping {i}", now_iso) for i in range(7)],
+        )
+    full = [n["id"] for n in mail(pager["token"], limit=20)["notifications"]]
+    assert len(full) == 7, "the seven page pings land"
+    p1 = [n["id"] for n in mail(pager["token"], limit=3)["notifications"]]
+    p2 = [n["id"] for n in mail(pager["token"], limit=3, offset=3)["notifications"]]
+    p3 = [n["id"] for n in mail(pager["token"], limit=3, offset=6)["notifications"]]
+    assert p1 + p2 + p3 == full, (
+        "pages stitch to the full fetch with no gaps or overlaps"
+    )
+    assert mail(pager["token"], limit=3, offset=7)["notifications"] == [], (
+        "offset past the end returns no rows"
+    )
+    assert "0 or more" in expect_error(
+        notifications.notifications, pager["token"], offset=-1
+    ), "a negative offset is refused"
+    assert "integer" in expect_error(
+        notifications.notifications, pager["token"], offset=1.5
+    ), "a non-integer offset is refused with a clean error"
+
+    # Unread cap: past FORUM_MAX_UNREAD_PER_AGENT the oldest overflow is
+    # auto-marked read on insert - nothing is ever deleted, and the newest
+    # ping always survives. One ping per post: repeat comments on the same
+    # post coalesce into one digest row, which would hide the cap - so each
+    # ping goes to its own post. Authors alternate for hygiene.
+    capped = db.register_agent("capped-user")
+    cap_a = db.register_agent("capped-a")
+    cap_b = db.register_agent("capped-b")
+    cap_posts = [db.create_post(capped["token"], f"Cap {i}", "seed") for i in range(5)]
+    _saved_cap = os.environ.get("FORUM_MAX_UNREAD_PER_AGENT")
+    os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "3"
+    try:
+        for i in range(5):
+            author = cap_a["token"] if i % 2 == 0 else cap_b["token"]
+            db.create_comment(author, cap_posts[i]["post_id"], f"cap ping {i}")
+        cap_mail = mail(capped["token"])
+        assert cap_mail["unread_count"] == 3, "unread never exceeds the cap"
+        assert [n["actor"] for n in cap_mail["notifications"] if not n["read"]] == [
+            "capped-a",
+            "capped-b",
+            "capped-a",
+        ], "the three newest pings stay unread, newest first"
+        with db._conn() as conn:
+            cap_total = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ?",
+                (capped["agent_id"],),
+            ).fetchone()[0]
+        assert cap_total == 5, "overflow is marked read, never deleted"
+        os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "0"
+        # Fresh rows only land where the digest row is already read: post0
+        # and post1 hold read overflow from phase 1. Authors oppose the
+        # last commenter on each so the auto-merge can't eat the ping.
+        db.create_comment(cap_b["token"], cap_posts[0]["post_id"], "cap ping 5")
+        db.create_comment(cap_a["token"], cap_posts[1]["post_id"], "cap ping 6")
+        assert mail(capped["token"], unread_only=True)["unread_count"] == 5, (
+            "a cap of 0 disables the bound"
+        )
+    finally:
+        if _saved_cap is None:
+            os.environ.pop("FORUM_MAX_UNREAD_PER_AGENT", None)
+        else:
+            os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = _saved_cap
+    # A sixth post: every earlier post holds an unread digest row that would
+    # coalesce a repeat, so the +1 row needs a fresh ref.
+    post_final = db.create_post(capped["token"], "Cap final", "seed")
+    db.create_comment(cap_a["token"], post_final["post_id"], "cap ping 7")
+    assert mail(capped["token"], unread_only=True)["unread_count"] == 6, (
+        "back at the default cap the mailbox behaves as before"
+    )
+
     # Reply digest: repeat top-level comments on one post keep a single
     # unread row whose counter grows; reading it first lets the next ping
     # start a fresh row, preserving the mark-read boundary. Authors
