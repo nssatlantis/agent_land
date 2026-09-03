@@ -67,8 +67,14 @@ def main():
     assert len([n for n in opal_mail["notifications"] if n["kind"] == "reply"]) == 1, (
         "the author of a replied-to comment is notified"
     )
-    assert mail(mai["token"])["unread_count"] == 3, (
-        "the post author heard about both new comments"
+    mai_mail = mail(mai["token"])
+    assert mai_mail["unread_count"] == 1, (
+        "repeat comments on your post coalesce into one unread digest row"
+    )
+    assert mai_mail["notifications"][0]["actor"] == "nola" and mai_mail[
+        "notifications"
+    ][0]["body"].endswith("(3 new)"), (
+        "the digest names the latest commenter and counts all three pings"
     )
 
     # Someone replying to YOUR comment on YOUR OWN post gets you one ping,
@@ -898,13 +904,17 @@ def main():
     # marked truth: the ids and wipe-all paths count only genuinely-unread
     # rows - an already-read id in the list (or an already-read row in the
     # mailbox) must not inflate `marked` - and keep never rewrites an
-    # already-read row's read_at stamp. Fresh pings, alternating authors so
-    # the auto-merge can't collapse them.
+    # already-read row's read_at stamp. One ping per post: repeat comments
+    # on the same post coalesce into one digest row, so three distinct
+    # unread rows need three posts. Alternating authors so the auto-merge
+    # can't collapse them.
     notifications.mark_notifications_read(mai["token"])
-    truth = db.create_post(mai["token"], "Marked truth", "seed")
-    db.create_comment(nola["token"], truth["post_id"], "ping 1")
-    db.create_comment(opal["token"], truth["post_id"], "ping 2")
-    db.create_comment(nola["token"], truth["post_id"], "ping 3")
+    truth_a = db.create_post(mai["token"], "Marked truth A", "seed")
+    truth_b = db.create_post(mai["token"], "Marked truth B", "seed")
+    truth_c = db.create_post(mai["token"], "Marked truth C", "seed")
+    db.create_comment(nola["token"], truth_a["post_id"], "ping 1")
+    db.create_comment(opal["token"], truth_b["post_id"], "ping 2")
+    db.create_comment(nola["token"], truth_c["post_id"], "ping 3")
     truth_ids = [n["id"] for n in mail(mai["token"], unread_only=True)["notifications"]]
     assert len(truth_ids) == 3, "the three truth pings land unread"
     notifications.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
@@ -915,7 +925,7 @@ def main():
     assert mail(mai["token"], unread_only=True)["unread_count"] == 0, (
         "the mixed ids mark cleared the remaining unread pings"
     )
-    db.create_comment(opal["token"], truth["post_id"], "ping 4")
+    db.create_comment(opal["token"], truth_a["post_id"], "ping 4")
     wiped = notifications.mark_notifications_read(mai["token"])
     assert wiped["marked"] == 1, (
         "wipe-all counts only the genuinely-unread rows, not the whole mailbox"
@@ -928,8 +938,10 @@ def main():
             "SELECT read_at FROM notifications WHERE id = ?", (truth_ids[0],)
         ).fetchone()["read_at"]
     assert read_stamp is not None, "the pre-marked row is read"
-    db.create_comment(nola["token"], truth["post_id"], "ping 5")
-    db.create_comment(opal["token"], truth["post_id"], "ping 6")
+    db.create_comment(nola["token"], truth_a["post_id"], "ping 5")
+    # nola again (not opal): ping 2 on truth_b was opal's, and a same-author
+    # run would auto-merge into it and land no new ping.
+    db.create_comment(nola["token"], truth_b["post_id"], "ping 6")
     kept2 = notifications.mark_notifications_read(mai["token"], keep=1)
     assert (
         kept2["marked"] == 1
@@ -1157,18 +1169,19 @@ def main():
 
     # Unread cap: past FORUM_MAX_UNREAD_PER_AGENT the oldest overflow is
     # auto-marked read on insert - nothing is ever deleted, and the newest
-    # ping always survives. Authors alternate so no two consecutive comments
-    # collapse into one.
+    # ping always survives. One ping per post: repeat comments on the same
+    # post coalesce into one digest row, which would hide the cap - so each
+    # ping goes to its own post. Authors alternate for hygiene.
     capped = db.register_agent("capped-user")
     cap_a = db.register_agent("capped-a")
     cap_b = db.register_agent("capped-b")
-    post_cap = db.create_post(capped["token"], "Cap", "seed")
+    cap_posts = [db.create_post(capped["token"], f"Cap {i}", "seed") for i in range(5)]
     _saved_cap = os.environ.get("FORUM_MAX_UNREAD_PER_AGENT")
     os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "3"
     try:
         for i in range(5):
             author = cap_a["token"] if i % 2 == 0 else cap_b["token"]
-            db.create_comment(author, post_cap["post_id"], f"cap ping {i}")
+            db.create_comment(author, cap_posts[i]["post_id"], f"cap ping {i}")
         cap_mail = mail(capped["token"])
         assert cap_mail["unread_count"] == 3, "unread never exceeds the cap"
         assert [n["actor"] for n in cap_mail["notifications"] if not n["read"]] == [
@@ -1183,10 +1196,11 @@ def main():
             ).fetchone()[0]
         assert cap_total == 5, "overflow is marked read, never deleted"
         os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = "0"
-        # Lead with cap_b: ping 4 came from cap_a, and same-author runs
-        # auto-merge into one comment (and one ping).
-        db.create_comment(cap_b["token"], post_cap["post_id"], "cap ping 5")
-        db.create_comment(cap_a["token"], post_cap["post_id"], "cap ping 6")
+        # Fresh rows only land where the digest row is already read: post0
+        # and post1 hold read overflow from phase 1. Authors oppose the
+        # last commenter on each so the auto-merge can't eat the ping.
+        db.create_comment(cap_b["token"], cap_posts[0]["post_id"], "cap ping 5")
+        db.create_comment(cap_a["token"], cap_posts[1]["post_id"], "cap ping 6")
         assert mail(capped["token"], unread_only=True)["unread_count"] == 5, (
             "a cap of 0 disables the bound"
         )
@@ -1195,12 +1209,49 @@ def main():
             os.environ.pop("FORUM_MAX_UNREAD_PER_AGENT", None)
         else:
             os.environ["FORUM_MAX_UNREAD_PER_AGENT"] = _saved_cap
-    db.create_comment(cap_b["token"], post_cap["post_id"], "cap ping 7")
+    # A sixth post: every earlier post holds an unread digest row that would
+    # coalesce a repeat, so the +1 row needs a fresh ref.
+    post_final = db.create_post(capped["token"], "Cap final", "seed")
+    db.create_comment(cap_a["token"], post_final["post_id"], "cap ping 7")
     assert mail(capped["token"], unread_only=True)["unread_count"] == 6, (
         "back at the default cap the mailbox behaves as before"
     )
-    # Note: ping 6 came from cap_a, so ping 7 leads with cap_b - same-author
-    # runs auto-merge and would land no new ping at all.
+
+    # Reply digest: repeat top-level comments on one post keep a single
+    # unread row whose counter grows; reading it first lets the next ping
+    # start a fresh row, preserving the mark-read boundary. Authors
+    # alternate so the auto-merge can't collapse them.
+    digest = db.register_agent("digest-user")
+    digest_a = db.register_agent("digest-a")
+    digest_b = db.register_agent("digest-b")
+    digest_post = db.create_post(digest["token"], "Digest", "seed")
+    db.create_comment(digest_a["token"], digest_post["post_id"], "d1")
+    first = mail(digest["token"], unread_only=True)["notifications"]
+    assert len(first) == 1 and not first[0]["body"].endswith(" new)"), (
+        "the first ping is a plain row with no counter"
+    )
+    db.create_comment(digest_b["token"], digest_post["post_id"], "d2")
+    db.create_comment(digest_a["token"], digest_post["post_id"], "d3")
+    second = mail(digest["token"], unread_only=True)["notifications"]
+    assert len(second) == 1, "three comments coalesce into one unread row"
+    assert (
+        second[0]["actor"] == "digest-a"
+        and second[0]["ref_type"] == "post"
+        and second[0]["ref_id"] == digest_post["post_id"]
+        and second[0]["body"].endswith("(3 new)")
+    ), "the digest names the latest commenter, keeps the post ref, counts all three"
+    notifications.mark_notifications_read(digest["token"])
+    db.create_comment(digest_b["token"], digest_post["post_id"], "d4")
+    third = mail(digest["token"], unread_only=True)["notifications"]
+    assert len(third) == 1 and not third[0]["body"].endswith(" new)"), (
+        "after reading, the next ping starts a fresh plain row"
+    )
+    with db._conn() as conn:
+        digest_total = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?",
+            (digest["agent_id"],),
+        ).fetchone()[0]
+    assert digest_total == 2, "one read digest row plus one fresh unread row"
 
     # Deleting content and citizens cleans up their notifications.
     moderation.delete_post(post2["post_id"], "root")
