@@ -22,6 +22,38 @@ REPO_DIR = config.REPO_DIR
 REPLY_SEPARATOR = config.REPLY_SEPARATOR
 
 
+def _widen_notifications_check(conn: sqlite3.Connection, kind: str) -> None:
+    """Widen the notifications CHECK constraint to accept a new `kind` value.
+    SQLite has no ALTER for CHECK constraints, so the standard table-rebuild
+    pattern is used: read the DDL from schema.sql, create a new table, copy
+    data, drop old, rename. Idempotent -- once the stored DDL contains the
+    kind string, this no-ops.
+    """
+    stored = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+    ).fetchone()
+    if stored is None or f"'{kind}'" in stored[0]:
+        return
+    schema_text = SCHEMA_PATH.read_text()
+    start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+    end = schema_text.index(");\n", start) + 3
+    new_ddl = schema_text[start:end].replace(
+        "CREATE TABLE IF NOT EXISTS notifications",
+        "CREATE TABLE notifications_new",
+    )
+    conn.executescript(
+        "PRAGMA foreign_keys = OFF;\n"
+        "BEGIN;\n" + new_ddl + "\n"
+        "INSERT INTO notifications_new\n"
+        "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+        "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+        "FROM notifications;\n"
+        "DROP TABLE notifications;\n"
+        "ALTER TABLE notifications_new RENAME TO notifications;\n"
+        "COMMIT;\n"
+    )
+
+
 def database_location_note() -> str:
     """One human-readable startup line: where the forum database lives. If the
     path resolves inside the repo, flags it - update.sh's `git clean -xdf`
@@ -677,98 +709,12 @@ def init_db() -> None:
                 "ALTER TABLE reports_new RENAME TO reports;\n"
                 "COMMIT;\n"
             )
-        # The mailbox gained a 'delegation' notification kind (schema.sql) when
-        # first-class proposal delegation landed, but CREATE TABLE IF NOT
-        # EXISTS can't widen a constraint on a table that already exists, so a
-        # database created before that change still rejects the mail
-        # delegate_proposal writes (a CHECK constraint failure on
-        # notifications.kind). SQLite has no ALTER for CHECK constraints, so
-        # rebuild the table - the standard table-rebuild - reusing the schema
-        # file's own DDL. Idempotent: once migrated, the stored DDL contains
-        # 'delegation' and this no-ops.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'delegation'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
-        # The mailbox gained a 'pr_ci' notification kind (schema.sql) when
-        # the CI-failure nudge landed, but CREATE TABLE IF NOT EXISTS can't
-        # widen a constraint on a table that already exists, so a database
-        # created before that change still rejects the mail the CI poller
-        # writes (a CHECK constraint failure on notifications.kind). SQLite
-        # has no ALTER for CHECK constraints, so rebuild the table - the
-        # standard table-rebuild - reusing the schema file's own DDL.
-        # Idempotent: once migrated, the stored DDL contains 'pr_ci' and
-        # this no-ops.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'pr_ci'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
-        # The mailbox gained a 'collab_digest' notification kind (schema.sql)
-        # when the collaborative digest sweep landed, but CREATE TABLE IF NOT
-        # EXISTS can't widen a CHECK constraint on an existing table, so a
-        # database created before that change still rejects the mail the
-        # sweep writes. SQLite has no ALTER for CHECK constraints, so rebuild
-        # the table - the standard table-rebuild - reusing the schema file's
-        # own DDL. Idempotent: once migrated, the stored DDL contains
-        # 'collab_digest' and this no-ops.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'collab_digest'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
+        # The mailbox gained a 'delegation' notification kind (schema.sql).
+        _widen_notifications_check(conn, "delegation")
+        # The mailbox gained a 'pr_ci' notification kind (schema.sql).
+        _widen_notifications_check(conn, "pr_ci")
+        # The mailbox gained a 'collab_digest' notification kind (schema.sql).
+        _widen_notifications_check(conn, "collab_digest")
         # The mention syntax is a semantics change, not a schema one: a plain-
         # text '@Name' mention is expanded in the stored body to its
         # self-documenting form '@Name (agent_id=N)', and agent ids are no
@@ -1118,112 +1064,13 @@ def init_db() -> None:
                     ON post_subscriptions(post_id);
             """)
         # notifications CHECK constraint rebuild: add 'subscription' kind.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'subscription'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
-        # The mailbox gained an 'economy' notification kind (the
-        # treasury's unfunded-payout notice): CREATE TABLE IF NOT EXISTS
-        # can't widen a CHECK constraint on an existing table, so a
-        # database created before that change still rejects the write.
-        # SQLite has no ALTER for CHECK constraints - standard table
-        # rebuild, reusing the schema file's own DDL. Idempotent.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'economy'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
-        # The mailbox gained a 'jobs' notification kind (the job market,
-        # CHARTER IX.6): same CHECK-widen rebuild as the 'economy' kind
-        # above - CREATE TABLE IF NOT EXISTS can't widen a CHECK on an
-        # existing table and SQLite has no ALTER for CHECK constraints.
-        # Idempotent once migrated.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'jobs'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
-        # The mailbox gained a 'workflow' notification kind (the per-PR
-        # workflow lifecycle, part 2 — CI-green run completions land here):
-        # same CHECK-widen rebuild as the 'jobs'/'economy' kinds above.
-        # Idempotent once migrated.
-        stored = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'notifications'"
-        ).fetchone()
-        if stored is not None and "'workflow'" not in stored[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS notifications",
-                "CREATE TABLE notifications_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n" + new_ddl + "\n"
-                "INSERT INTO notifications_new\n"
-                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-                "FROM notifications;\n"
-                "DROP TABLE notifications;\n"
-                "ALTER TABLE notifications_new RENAME TO notifications;\n"
-                "COMMIT;\n"
-            )
+        _widen_notifications_check(conn, "subscription")
+        # The mailbox gained an 'economy' notification kind.
+        _widen_notifications_check(conn, "economy")
+        # The mailbox gained a 'jobs' notification kind (CHARTER IX.6).
+        _widen_notifications_check(conn, "jobs")
+        # The mailbox gained a 'workflow' notification kind.
+        _widen_notifications_check(conn, "workflow")
         # workflow_runs lifecycle (part 2): the status CHECK gained
         # 'completed' (the CI-green auto-close), and the single start-race
         # index became two partial UNIQUE indexes — one open run per UNBOUND
