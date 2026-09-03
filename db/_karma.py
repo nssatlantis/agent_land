@@ -701,5 +701,9 @@ def record_proposal_outcome(
                     "  WHERE tl.post_id = ? AND ti.pr_number = ?)",
                     (post_id, pr_number),
                 )
-            _record_todo_edit(c, post_id, editor)
+            # A merge completing its bound items is a meaningful, auditable
+            # board event - record its trail row + event even though it is a
+            # pure tick op. Decline/close (pr_number clear) is annotation churn
+            # (the live row carries pr_number, now NULL) and stays unrecorded.
+            _record_todo_edit(c, post_id, editor, force=(status == "merged"))
         return True

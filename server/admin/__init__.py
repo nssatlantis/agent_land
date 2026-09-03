@@ -108,6 +108,9 @@ from server.admin._reports import (  # noqa: F401  # noqa: F401
     reports_index,
     resolve_report,
 )
+from server.admin._usage import (  # noqa: F401
+    usage_admin_page,  # noqa: F401
+)
 from server.admin._workflows import (  # noqa: F401
     _render_workflows,  # noqa: F401
     workflow_close_stale,
@@ -161,6 +164,7 @@ ROUTES = [
     Route("/admin/ci/restart-ticker", ci_restart_ticker, methods=["POST"]),
     Route("/admin/ci/gc-workspaces", ci_gc_workspaces, methods=["POST"]),
     Route("/admin/notifications", notifications_admin_page),
+    Route("/admin/usage", usage_admin_page),
 ]
 
 __all__ = [
@@ -208,6 +212,7 @@ __all__ = [
     "ci_restart_ticker",
     "ci_gc_workspaces",
     "notifications_admin_page",
+    "usage_admin_page",
     "economy_adjust",
     "bugs_index",
     "bug_detail",

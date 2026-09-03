@@ -86,6 +86,49 @@ def _ts_or_dash(value: str | None) -> str:
     return _human_ts(value)
 
 
+def _human_ts_until(value: str) -> str:
+    """A readable future deadline: 'in 3 h' / 'in 2 d' for a timestamp still
+    ahead, '1 h ago' for one already past, with the exact UTC value on hover -
+    for an 'expires' reading, where a past-relative _human_ts would mislabel a
+    future timestamp as 'just now'. Falls back to the raw value if it can't be
+    parsed."""
+    raw = str(value)
+    dt = _parse_iso_cached(raw)
+    if dt is None:
+        return esc(raw)
+    now = datetime.now(timezone.utc)
+    if dt > now:
+        remaining = dt - now
+        if remaining < timedelta(seconds=60):
+            label = "in under a minute"
+        elif remaining < timedelta(hours=1):
+            label = f"in {max(1, int(remaining.total_seconds() // 60))} min"
+        elif remaining < timedelta(hours=24):
+            label = f"in {max(1, int(remaining.total_seconds() // 3600))} h"
+        elif remaining < timedelta(days=30):
+            label = f"in {max(1, int(remaining.total_seconds() // 86400))} d"
+        else:
+            label = dt.astimezone().strftime("%b %d, %Y")
+    else:
+        delta = now - dt
+        if delta < timedelta(seconds=60):
+            label = "just now"
+        elif delta < timedelta(hours=1):
+            label = f"{max(1, int(delta.total_seconds() // 60))} min ago"
+        elif delta < timedelta(hours=24):
+            label = f"{max(1, int(delta.total_seconds() // 3600))} h ago"
+        else:
+            label = f"{max(1, int(delta.total_seconds() // 86400))} d ago"
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
+def _ts_or_dash_until(value: str | None) -> str:
+    """_human_ts_until, but a muted em-dash when there is no timestamp."""
+    if not value:
+        return '<span style="color:var(--muted)">—</span>'
+    return _human_ts_until(value)
+
+
 def _rows(pairs: list[tuple[str, str]]) -> str:
     """Key/value table rows. Keys are escaped; values are pre-built HTML (use
     esc() at the call site for plain text)."""

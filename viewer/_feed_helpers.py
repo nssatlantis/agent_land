@@ -16,6 +16,7 @@ import db
 import db._aggregates as aggregates
 import github
 import reports
+from db._credits import format_credits as _fmt_credits
 from viewer._pr_helpers import _open_pr_cell
 from viewer._render_helpers import (
     _author,
@@ -103,13 +104,12 @@ def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
         treasury_pct = max(0, min(100, treasury / supply * 100))
         burned_end = burned_pct
         treasury_end = min(100, burned_pct + treasury_pct)
-        from db._credits import format_credits as _fmt
 
         return (
             f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
             f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
-            f'<div><div style="font-size:13px">Burned {_fmt(burned_q)} ({burned_pct:.1f}%)</div>'
-            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
+            f'<div><div style="font-size:13px">Burned {_fmt_credits(burned_q)} ({burned_pct:.1f}%)</div>'
+            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt_credits(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
             "</div>"
         )
     except Exception:  # domain: degrade-silently - malformed overview values degrade to an empty gauge, never crash the page
@@ -380,37 +380,30 @@ def _overview_cards(
 ) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
-    from db._credits import format_credits as _fmt_cr
 
     # Treasury card with Δ24h (237:4373) — degrade-silently if delta unavailable
-    try:
-        if treasury_delta_quarters is not None and supply_quarters:
-            delta_str = _fmt_cr(treasury_delta_quarters)
-            sign = "+" if treasury_delta_quarters > 0 else ""
-            delta_formatted = (
-                f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
-            )
-            pct = (
-                (treasury_delta_quarters / supply_quarters * 100)
-                if supply_quarters
-                else 0
-            )
-            delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
-            tooltip = "Change since 24h ago"
-            treasury_card = (
-                f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px" title="{esc(tooltip)}">'
-                f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_cr(treasury_quarters))}</a></div>'
-                f'<div style="color:var(--muted);font-size:13px">treasury</div>'
-                f'<div style="color:var(--muted);font-size:11px;margin-top:2px">{esc(delta_label)}</div>'
-                "</div>"
-            )
-        else:
-            raise ValueError("no delta")
-    except (
-        Exception
-    ):  # domain: degrade-silently - delta is optional enrichment, card still renders
+    if treasury_delta_quarters is not None and supply_quarters:
+        delta_str = _fmt_credits(treasury_delta_quarters)
+        sign = "+" if treasury_delta_quarters > 0 else ""
+        delta_formatted = (
+            f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
+        )
+        pct = (
+            (treasury_delta_quarters / supply_quarters * 100) if supply_quarters else 0
+        )
+        delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
+        tooltip = "Change since 24h ago"
+        treasury_card = (
+            f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px" title="{esc(tooltip)}">'
+            f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_credits(treasury_quarters))}</a></div>'
+            f'<div style="color:var(--muted);font-size:13px">treasury</div>'
+            f'<div style="color:var(--muted);font-size:11px;margin-top:2px">{esc(delta_label)}</div>'
+            "</div>"
+        )
+    else:
+        # domain: degrade-silently - delta is optional enrichment, card still renders
         treasury_card = _stat_card(
-            _fmt_cr(treasury_quarters),
+            _fmt_credits(treasury_quarters),
             "treasury",
             href="/economy",
             accent=True,
@@ -423,7 +416,7 @@ def _overview_cards(
         _stat_card(c["agents"], "citizens", href="/agents"),
         treasury_card,
         _stat_card(
-            _fmt_cr(circulating_quarters), "circulating credits", href="/economy"
+            _fmt_credits(circulating_quarters), "circulating credits", href="/economy"
         ),
         _stat_card(c["posts"], "posts", href="/posts"),
         _stat_card(c["comments"], "comments", href="/recent?kind=comments"),

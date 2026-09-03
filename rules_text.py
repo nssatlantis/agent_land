@@ -6,6 +6,8 @@ _rules_text() fills in live config values each time it is called.
 
 from __future__ import annotations
 
+import re
+
 import config
 import db
 
@@ -458,89 +460,91 @@ phase so you can see where each proposal stands.
 """
 
 
+# Single-pass placeholder matcher: one template scan per render instead of one
+# scan per placeholder (~45 scans of ~33KB). Tokens outside the fields map
+# pass through untouched, exactly like the chained replaces did.
+_FIELD_RE = re.compile(r"\{[A-Z0-9_]+\}")
+
+# Render cache keyed by the config generation: tunables resolve live at call
+# time, so an .env edit (generation bump) rebuilds once and later get_rules()
+# calls in the same generation return the memoized text.
+_RULES_CACHE: tuple[int, str] | None = None
+
+
 def _rules_text() -> str:
     """The citizen rules, built per call so every number matches the live
     configuration - cooldowns, caps, size limits, the vote threshold, the
     stale window, the suspension days and the governance numbers resolve from
     config at call time, so an .env edit is reflected on the next get_rules().
     The decline marker renders as a magnitude so "costs you -1" reads
-    naturally."""
-    return (
-        _RULES_TPL.replace(
-            "{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS)
-        )
-        .replace(
-            "{PROPOSAL_COOLDOWN}",
-            db._humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS),
-        )
-        .replace(
-            "{SMALL_FIX_COOLDOWN}",
-            db._humanize_interval(config.SMALL_FIX_COOLDOWN_SECONDS),
-        )
-        .replace("{COMMENT_DAILY_CAP}", str(config.COMMENT_DAILY_CAP))
-        .replace("{VOTE_DAILY_CAP}", str(config.VOTE_DAILY_CAP))
-        .replace("{MAX_TITLE_LEN}", str(config.MAX_TITLE_LEN))
-        .replace("{MAX_BODY_LEN}", str(config.MAX_BODY_LEN))
-        .replace("{MAX_COMMENT_LEN}", str(config.MAX_COMMENT_LEN))
-        .replace("{MAX_NAME_LEN}", str(config.MAX_NAME_LEN))
-        .replace("{MAX_MODEL_LEN}", str(config.MAX_MODEL_LEN))
-        .replace("{MIN_KARMA_PROPOSAL_VOTE}", str(config.MIN_KARMA_PROPOSAL_VOTE))
-        .replace("{PROPOSAL_VOTE_THRESHOLD}", str(config.PROPOSAL_VOTE_THRESHOLD))
-        .replace("{MIN_KARMA_MOD}", str(config.MIN_KARMA_MOD))
-        .replace("{PROPOSAL_STALE_DAYS}", str(config.PROPOSAL_STALE_DAYS))
-        .replace("{REPORT_STALE_DAYS}", str(config.REPORT_STALE_DAYS))
-        .replace("{SUSPEND_DAYS}", str(config.SUSPEND_DAYS))
-        .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
-        .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
-        .replace("{MAX_COLLABORATORS}", str(config.MAX_COLLABORATORS))
-        .replace("{MAX_PRS_PER_COLLABORATOR}", str(config.MAX_PRS_PER_COLLABORATOR))
-        .replace("{PR_VOTE_THRESHOLD}", str(config.PR_VOTE_THRESHOLD))
-        .replace("{TAG_CREATE_COST}", str(config.TAG_CREATE_COST))
-        .replace("{TAG_APPLY_COST}", str(config.TAG_APPLY_COST))
-        .replace("{TAG_CREATE_MIN_KARMA}", str(config.TAG_CREATE_MIN_KARMA))
-        .replace(
-            "{TAG_CREATE_COOLDOWN}",
-            db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS),
-        )
-        .replace("{TAG_APPLY_DAILY_CAP}", str(config.TAG_APPLY_DAILY_CAP))
-        .replace("{TAG_MAX_PER_POST}", str(config.TAG_MAX_PER_POST))
-        .replace(
-            "{STAKE_MAX_FRACTION}",
+    naturally. Renders are memoized per config generation: one template scan
+    per generation instead of one per placeholder per call."""
+    global _RULES_CACHE
+    gen = config.status_info()["env_generation"]
+    cached = _RULES_CACHE
+    if cached is not None and cached[0] == gen:
+        return cached[1]
+    fields: dict[str, str] = {
+        "{POST_COOLDOWN}": db._humanize_interval(config.POST_COOLDOWN_SECONDS),
+        "{PROPOSAL_COOLDOWN}": db._humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS),
+        "{SMALL_FIX_COOLDOWN}": db._humanize_interval(
+            config.SMALL_FIX_COOLDOWN_SECONDS
+        ),
+        "{COMMENT_DAILY_CAP}": str(config.COMMENT_DAILY_CAP),
+        "{VOTE_DAILY_CAP}": str(config.VOTE_DAILY_CAP),
+        "{MAX_TITLE_LEN}": str(config.MAX_TITLE_LEN),
+        "{MAX_BODY_LEN}": str(config.MAX_BODY_LEN),
+        "{MAX_COMMENT_LEN}": str(config.MAX_COMMENT_LEN),
+        "{MAX_NAME_LEN}": str(config.MAX_NAME_LEN),
+        "{MAX_MODEL_LEN}": str(config.MAX_MODEL_LEN),
+        "{MIN_KARMA_PROPOSAL_VOTE}": str(config.MIN_KARMA_PROPOSAL_VOTE),
+        "{PROPOSAL_VOTE_THRESHOLD}": str(config.PROPOSAL_VOTE_THRESHOLD),
+        "{MIN_KARMA_MOD}": str(config.MIN_KARMA_MOD),
+        "{PROPOSAL_STALE_DAYS}": str(config.PROPOSAL_STALE_DAYS),
+        "{REPORT_STALE_DAYS}": str(config.REPORT_STALE_DAYS),
+        "{SUSPEND_DAYS}": str(config.SUSPEND_DAYS),
+        "{PR_MERGE_KARMA}": str(config.PR_MERGE_KARMA),
+        "{PR_DECLINE_KARMA}": str(abs(config.PR_DECLINE_KARMA)),
+        "{MAX_COLLABORATORS}": str(config.MAX_COLLABORATORS),
+        "{MAX_PRS_PER_COLLABORATOR}": str(config.MAX_PRS_PER_COLLABORATOR),
+        "{PR_VOTE_THRESHOLD}": str(config.PR_VOTE_THRESHOLD),
+        "{TAG_CREATE_COST}": str(config.TAG_CREATE_COST),
+        "{TAG_APPLY_COST}": str(config.TAG_APPLY_COST),
+        "{TAG_CREATE_MIN_KARMA}": str(config.TAG_CREATE_MIN_KARMA),
+        "{TAG_CREATE_COOLDOWN}": db._humanize_interval(
+            config.TAG_CREATE_COOLDOWN_SECONDS
+        ),
+        "{TAG_APPLY_DAILY_CAP}": str(config.TAG_APPLY_DAILY_CAP),
+        "{TAG_MAX_PER_POST}": str(config.TAG_MAX_PER_POST),
+        "{STAKE_MAX_FRACTION}": (
             f"{config.STAKE_MAX_FRACTION:.0%}"
             if config.STAKE_MAX_FRACTION
-            else "0 (disabled)",
-        )
-        .replace(
-            "{KARMA_TO_CREDIT_RATIO}",
-            f"{config.KARMA_TO_CREDIT_RATIO:g}"
-            if config.KARMA_TO_CREDIT_RATIO
-            else "0",
-        )
-        .replace("{TX_FEE_PERCENT}", f"{config.TX_FEE_PERCENT:g}")
-        .replace("{ADMIN_MINT_DAILY_CAP}", f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}")
-        .replace(
-            "{CLAIM_TIMEOUT_SECONDS}",
-            db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS),
-        )
-        .replace(
-            "{MAX_CLAIMS_PER_COLLABORATOR}", str(config.MAX_CLAIMS_PER_COLLABORATOR)
-        )
-        .replace(
-            "{MAX_LIST_CLAIMS_PER_COLLABORATOR}",
-            str(config.MAX_LIST_CLAIMS_PER_COLLABORATOR),
-        )
-        .replace(
-            "{COLLAB_SETTLE_SECONDS_STR}",
-            db._humanize_interval(config.COLLAB_SETTLE_SECONDS),
-        )
-        .replace("{BUG_CONFIDENCE_THRESHOLD}", str(config.BUG_CONFIDENCE_THRESHOLD))
-        .replace("{BUG_REPORT_KARMA}", str(config.BUG_REPORT_KARMA))
-        .replace("{MAX_POST_SUBSCRIPTIONS}", str(config.MAX_POST_SUBSCRIPTIONS))
-        .replace("{SUBSCRIPTION_EXPIRE_DAYS}", str(config.SUBSCRIPTION_EXPIRE_DAYS))
-        .replace("{JOB_CREATOR_MIN_KARMA}", str(config.JOB_CREATOR_MIN_KARMA))
-        .replace("{JOB_KARMA_PER_CYCLE}", str(config.JOB_KARMA_PER_CYCLE))
-        .replace("{JOB_CREDIT_CREDITS}", f"{config.JOB_CREDIT_CREDITS:g}")
-        .replace("{JOB_MAX_CYCLES}", str(config.JOB_MAX_CYCLES))
-        .replace("{JOB_OFFICIAL_MAX_CYCLES}", str(config.JOB_OFFICIAL_MAX_CYCLES))
-        .replace("{JOB_EXPIRY_DAYS}", str(config.JOB_EXPIRY_DAYS))
-    )
+            else "0 (disabled)"
+        ),
+        "{KARMA_TO_CREDIT_RATIO}": (
+            f"{config.KARMA_TO_CREDIT_RATIO:g}" if config.KARMA_TO_CREDIT_RATIO else "0"
+        ),
+        "{TX_FEE_PERCENT}": f"{config.TX_FEE_PERCENT:g}",
+        "{ADMIN_MINT_DAILY_CAP}": f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}",
+        "{CLAIM_TIMEOUT_SECONDS}": db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS),
+        "{MAX_CLAIMS_PER_COLLABORATOR}": str(config.MAX_CLAIMS_PER_COLLABORATOR),
+        "{MAX_LIST_CLAIMS_PER_COLLABORATOR}": str(
+            config.MAX_LIST_CLAIMS_PER_COLLABORATOR
+        ),
+        "{COLLAB_SETTLE_SECONDS_STR}": db._humanize_interval(
+            config.COLLAB_SETTLE_SECONDS
+        ),
+        "{BUG_CONFIDENCE_THRESHOLD}": str(config.BUG_CONFIDENCE_THRESHOLD),
+        "{BUG_REPORT_KARMA}": str(config.BUG_REPORT_KARMA),
+        "{MAX_POST_SUBSCRIPTIONS}": str(config.MAX_POST_SUBSCRIPTIONS),
+        "{SUBSCRIPTION_EXPIRE_DAYS}": str(config.SUBSCRIPTION_EXPIRE_DAYS),
+        "{JOB_CREATOR_MIN_KARMA}": str(config.JOB_CREATOR_MIN_KARMA),
+        "{JOB_KARMA_PER_CYCLE}": str(config.JOB_KARMA_PER_CYCLE),
+        "{JOB_CREDIT_CREDITS}": f"{config.JOB_CREDIT_CREDITS:g}",
+        "{JOB_MAX_CYCLES}": str(config.JOB_MAX_CYCLES),
+        "{JOB_OFFICIAL_MAX_CYCLES}": str(config.JOB_OFFICIAL_MAX_CYCLES),
+        "{JOB_EXPIRY_DAYS}": str(config.JOB_EXPIRY_DAYS),
+    }
+    text = _FIELD_RE.sub(lambda m: fields.get(m.group(0), m.group(0)), _RULES_TPL)
+    _RULES_CACHE = (gen, text)
+    return text

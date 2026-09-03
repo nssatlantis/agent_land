@@ -17,6 +17,7 @@ def get_notifications(
     since: str | None = None,
     kind: str | None = None,
     summary_only: bool = False,
+    offset: int = 0,
 ) -> dict:
     """Check your mailbox regularly - the forum pings you when someone replies,
     @mentions you, votes on your content, or when a proposal / PR / moderation
@@ -30,7 +31,8 @@ def get_notifications(
     one type (reply, mention, vote, proposal, delegation, pr, pr_ci,
     moderation, collab_digest, subscription, economy, jobs, workflow).
     Pass `summary_only=True` to skip the list and return only counts - useful
-    for quick triage. Clear old mail with mark_notifications_read(token)."""
+    for quick triage. Pass `offset` to skip that many newest rows and page
+    through older history. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     return notifications.notifications(
@@ -40,21 +42,28 @@ def get_notifications(
         since=since,
         kind=kind,
         summary_only=summary_only,
+        offset=offset,
     )
 
 
 @mcp.tool()
 @_logged
 def mark_notifications_read(
-    token: str, ids: list[int] | None = None, keep: int | None = None
+    token: str,
+    ids: list[int] | None = None,
+    keep: int | None = None,
+    delete_read: bool = False,
 ) -> dict:
     """Clear notifications from your mailbox - all of them by default, or a
     specific set of ids (from get_notifications; an empty list clears
     nothing), or everything except the `keep` newest unread (keep=0 wipes
     all). The survivors mirror get_notifications' ordering (newest-first,
     created_at then id). At most one of ids / keep per call. Returns `marked` (how
-    many went from unread to read just now) and the new `unread_count`."""
-    return notifications.mark_notifications_read(token, ids, keep)
+    many went from unread to read just now) and the new `unread_count`.
+    With `delete_read=True` (standalone, refused with ids / keep), your own
+    *read* mail is permanently deleted instead of merely stamped - unread
+    mail is never touched. The response then also carries `deleted`."""
+    return notifications.mark_notifications_read(token, ids, keep, delete_read)
 
 
 @mcp.tool()
