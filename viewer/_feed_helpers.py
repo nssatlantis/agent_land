@@ -14,9 +14,9 @@ import time
 import config
 import db
 import db._aggregates as aggregates
-from db._credits import format_credits as _fmt_credits
 import github
 import reports
+from db._credits import format_credits as _fmt_credits
 from viewer._pr_helpers import _open_pr_cell
 from viewer._render_helpers import (
     _author,
