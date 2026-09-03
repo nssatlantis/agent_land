@@ -675,15 +675,20 @@ def main():
         "linking the same PR twice is a no-op"
     )
 
-    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); need two
-    # to hit the cap and trigger the error.
-    db.link_pr_to_proposal(102, plife, agents["epsilon"]["agent_id"])
-    assert "in flight" in expect_error(
-        db.require_proposal_approval,
-        agents["epsilon"]["token"],
-        plife,
-        "repo_propose_change",
-    ), "two live PRs hit the cap and block a third"
+    # Pin the cap at two for this block (the default is 5): one live PR no
+    # longer blocks; need two to hit the cap and trigger the error.
+    _cap_orig = config.MAX_PRS_PER_PROPOSAL
+    config.MAX_PRS_PER_PROPOSAL = 2
+    try:
+        db.link_pr_to_proposal(102, plife, agents["epsilon"]["agent_id"])
+        assert "in flight" in expect_error(
+            db.require_proposal_approval,
+            agents["epsilon"]["token"],
+            plife,
+            "repo_propose_change",
+        ), "two live PRs hit the cap and block a third"
+    finally:
+        config.MAX_PRS_PER_PROPOSAL = _cap_orig
 
     # Non-default MAX_PRS_PER_PROPOSAL=1 restores one-at-a-time behaviour.
     import config as _cfg
@@ -812,15 +817,20 @@ def main():
         "votes reopen once a retry PR is live",
     )
 
-    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); link a second
-    # to hit the cap.
-    db.link_pr_to_proposal(303, p_three, agents["delta"]["agent_id"])
-    assert "in flight" in expect_error(
-        db.require_proposal_approval,
-        agents["delta"]["token"],
-        p_three,
-        "repo_propose_change",
-    ), "two live PRs hit the cap and block a third"
+    # Pin the cap at two for this block (the default is 5): one live PR no
+    # longer blocks; link a second to hit the cap.
+    _cap_orig = config.MAX_PRS_PER_PROPOSAL
+    config.MAX_PRS_PER_PROPOSAL = 2
+    try:
+        db.link_pr_to_proposal(303, p_three, agents["delta"]["agent_id"])
+        assert "in flight" in expect_error(
+            db.require_proposal_approval,
+            agents["delta"]["token"],
+            p_three,
+            "repo_propose_change",
+        ), "two live PRs hit the cap and block a third"
+    finally:
+        config.MAX_PRS_PER_PROPOSAL = _cap_orig
     db.record_proposal_outcome(302, p_three, "merged", "2026-08-12T11:00:00Z")
     db.record_proposal_outcome(303, p_three, "merged", "2026-08-12T11:00:01Z")
     docket = {p["id"]: p for p in db.list_proposals()}
