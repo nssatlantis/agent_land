@@ -7,6 +7,8 @@ from pathlib import Path
 import db
 from server._mcp import mcp
 
+_record_text_cache: dict[str, tuple[float, str]] = {}
+
 
 def _record_resource_text(filename: str) -> str:
     """Read one checked-in record file (CHARTER.md / HISTORY.md /
@@ -16,12 +18,28 @@ def _record_resource_text(filename: str) -> str:
     unreadable file raises ValueError, which the MCP layer turns into a
     clean resource error - record files are deployed with the checkout, so
     an unreadable one is a deployment fault worth surfacing loudly rather
-    than silently returning empty content."""
+    than silently returning empty content.
+
+    Reads are memoized per file keyed on mtime (the same clock-free
+    invalidation `db._workflow._workflow_sha_for` uses), so repeated
+    agentland://* resource fetches hit the filesystem once until the record
+    is edited, then re-read at most once per mtime. Staleness is impossible:
+    a changed file has a new mtime, so the cache never serves the previous
+    bytes."""
     path = Path(db.REPO_DIR) / filename
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        mtime = path.stat().st_mtime
+    except OSError:  # domain: degrade-silently - stat best-effort for the cache key
+        mtime = 0.0
+    cached = _record_text_cache.get(filename)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise ValueError(f"record file {filename!r} is not readable: {exc}") from exc
+    _record_text_cache[filename] = (mtime, text)
+    return text
 
 
 _CHANGES_SECTION = "\n## Changes\n"
@@ -161,8 +179,17 @@ def rules_resource() -> str:
     return _record_resource_text("AGENTS.md")
 
 
+_workflows_index_cache: dict[str, object] = {"key": None, "text": ""}
+
+
 def _workflows_index() -> str:
-    """Index of all workflows/*.md files (name + first line + short sha)."""
+    """Index of all workflows/*.md files (name + first line + short sha).
+
+    The rendered index is memoized keyed on the (name, mtime) fingerprint of
+    every workflow file, so repeated agentland://workflows fetches re-glob +
+    re-stat once instead of re-reading and re-hashing every file (the old
+    177 shas per fetch). A changed, added or removed workflow file has a new
+    fingerprint, so the cache can never go stale."""
     import hashlib
 
     from db._workflow import _workflow_file
@@ -170,13 +197,27 @@ def _workflows_index() -> str:
     base = Path(db.REPO_DIR) / "workflows"
     if not base.is_dir():
         return "# Workflows\n\nNo workflows found."
+    names = sorted(p.name for p in base.glob("*.md"))
+    fingerprint: list[tuple[str, int]] = []
+    for name in names:
+        try:
+            mtime_ns = _workflow_file(f"workflows/{name}").stat().st_mtime_ns
+        except OSError:  # domain: degrade-silently - stat best-effort for the key
+            # a stable sentinel keeps the file in the fingerprint so a
+            # transient stat failure never turns into a stale index; the
+            # render below re-resolves and re-reads it
+            mtime_ns = -1
+        fingerprint.append((name, mtime_ns))
+    key = tuple(fingerprint)
+    if _workflows_index_cache.get("key") == key:
+        return str(_workflows_index_cache.get("text") or "")
     lines = [
         "# Workflows — official per-file checklists\n",
         "Global checklists shown when you do these tasks. One file per workflow, versioned in git.",
     ]
-    for p in sorted(base.glob("*.md")):
+    for name in names:
         try:
-            resolved = _workflow_file(f"workflows/{p.name}")
+            resolved = _workflow_file(f"workflows/{name}")
             data = resolved.read_bytes()
             sha = hashlib.sha256(data).hexdigest()[:12]
             first = (
@@ -192,11 +233,14 @@ def _workflows_index() -> str:
             sha = ""
             first = ""
         suffix = f" (`{sha}`)" if sha else ""
-        lines.append(f"- `workflows/{p.name}` — {first}{suffix}")
+        lines.append(f"- `workflows/{name}` — {first}{suffix}")
     lines.append(
         "\nUse `agentland://workflows/{name}` to read one (e.g., `agentland://workflows/create-pr`)."
     )
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    _workflows_index_cache["key"] = key
+    _workflows_index_cache["text"] = text
+    return text
 
 
 @mcp.resource(
