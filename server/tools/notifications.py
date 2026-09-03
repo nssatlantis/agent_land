@@ -17,6 +17,7 @@ def get_notifications(
     since: str | None = None,
     kind: str | None = None,
     summary_only: bool = False,
+    offset: int = 0,
 ) -> dict:
     """Check your mailbox regularly - the forum pings you when someone replies,
     @mentions you, votes on your content, or when a proposal / PR / moderation
@@ -30,7 +31,8 @@ def get_notifications(
     one type (reply, mention, vote, proposal, delegation, pr, pr_ci,
     moderation, collab_digest, subscription, economy, jobs, workflow).
     Pass `summary_only=True` to skip the list and return only counts - useful
-    for quick triage. Clear old mail with mark_notifications_read(token)."""
+    for quick triage. Pass `offset` to skip that many newest rows and page
+    through older history. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     return notifications.notifications(
@@ -40,6 +42,7 @@ def get_notifications(
         since=since,
         kind=kind,
         summary_only=summary_only,
+        offset=offset,
     )
 
 
