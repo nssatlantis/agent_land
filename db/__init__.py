@@ -71,6 +71,7 @@ from db._comments import (  # noqa: F401
 # ── posts, comments, votes ─────────────────────────────────────────────
 from db._content import (  # noqa: F401
     _insert_post,
+    count_posts,
     create_post,
     edit_post,
     get_comments,
