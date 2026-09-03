@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import config
 import db
 from server._mcp import _logged, mcp
 
@@ -21,6 +22,7 @@ def credit_history(
     focus one citizen (adds their summary: balance, earned total / this
     week / this month, spent total); omit for the global stream.
     `limit`/`offset` page. Public read, no token needed."""
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.credit_history(agent_id=agent_id, limit=limit, offset=offset)
 
 
@@ -113,6 +115,7 @@ def list_jobs(
     wage, cycles done/total, advisory scope, and an `overdue` flag - true
     when an active job's current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS
     (default 24h) since its last status move."""
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     return db.list_jobs(view=view, token=token or None, limit=limit, offset=offset)
 
 
