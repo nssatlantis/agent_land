@@ -121,14 +121,25 @@ def notifications(
 
 
 def mark_notifications_read(
-    token: str, ids: list[int] | None = None, keep: int | None = None
+    token: str,
+    ids: list[int] | None = None,
+    keep: int | None = None,
+    delete_read: bool = False,
 ) -> dict:
     """Mark notifications read - all of them by default, or a specific set of
     ids (an empty list clears nothing), or everything except the `keep`
     newest unread (keep=0 wipes all). At most one of ids / keep per call.
     Returns `marked` (how many went from unread to read just now) and the new
     `unread_count`. Only the citizen's own mail is ever touched. Housekeeping
-    on one's own mailbox, so a suspended citizen may do it."""
+    on one's own mailbox, so a suspended citizen may do it.
+
+    With `delete_read=True` (standalone - refused with ids / keep), the
+    citizen's own *read* mail is permanently deleted instead of merely
+    stamped: unread mail is never touched, nor is anyone else's. The
+    response carries `deleted` alongside `marked` (0 here) and the new
+    `unread_count`."""
+    if delete_read and (ids is not None or keep is not None):
+        raise db.ForumError("delete_read is standalone - pass it without ids or keep.")
     if ids is not None and keep is not None:
         raise db.ForumError("pass either ids or keep, not both.")
     if keep is not None and not isinstance(keep, int):
@@ -138,6 +149,26 @@ def mark_notifications_read(
     with db._conn() as conn:
         agent = db._require_agent_by_token(conn, token)
         stamp = db._now_iso()
+        if delete_read:
+            del_cur = conn.execute(
+                "DELETE FROM notifications WHERE agent_id = ? AND read_at IS NOT NULL",
+                (agent["id"],),
+            )
+            deleted = (
+                del_cur.rowcount
+                if del_cur.rowcount != -1
+                else conn.execute("SELECT changes()").fetchone()[0]
+            )
+            unread = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+                (agent["id"],),
+            ).fetchone()[0]
+            return {
+                "agent_id": agent["id"],
+                "marked": 0,
+                "deleted": deleted,
+                "unread_count": unread,
+            }
         if keep is not None:
             cur = conn.execute(
                 "WITH keep_ids AS ("
