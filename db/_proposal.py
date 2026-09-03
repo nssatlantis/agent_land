@@ -780,10 +780,11 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                 "get upvotes first."
             )
         if config.VOTE_DAILY_CAP > 0:
-            if _daily_votes_used(conn, agent["id"]) >= config.VOTE_DAILY_CAP:
-                raise ForumError(
-                    f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
-                )
+            from db._store import effective_vote_cap
+
+            vote_cap = effective_vote_cap(agent["id"], conn=conn)
+            if _daily_votes_used(conn, agent["id"]) >= vote_cap:
+                raise ForumError(f"vote limit reached: {vote_cap} per UTC day.")
         conn.execute(
             """
             INSERT INTO proposal_votes (post_id, voter_agent_id, value)

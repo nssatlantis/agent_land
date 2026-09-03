@@ -66,6 +66,12 @@ def list_comments(
             return []
         comment_ids = [r["id"] for r in rows]
         scores = _comment_score_batch(conn, comment_ids)
+        # Pinned flag only — the flat pager keeps DB order (hoisting would
+        # shift every page boundary); the nested readers hoist instead.
+        from db._store import name_colors_for, pinned_comment_for
+
+        pinned_id = pinned_comment_for(conn, post_id)
+        colors = name_colors_for(conn, [r["author_id"] for r in rows])
         quote_ids = [
             r["quote_comment_id"] for r in rows if r["quote_comment_id"] is not None
         ]
@@ -87,6 +93,8 @@ def list_comments(
                 **dict(r),
                 "score": scores.get(r["id"], 0),
                 "quote_author": quote_authors.get(r["quote_comment_id"]),
+                "pinned": pinned_id is not None and r["id"] == pinned_id,
+                "author_color": colors.get(r["author_id"]),
             }
             for r in rows
         ]
@@ -353,15 +361,16 @@ def create_comment(
                 }
 
         if config.COMMENT_DAILY_CAP > 0:
+            from db._store import effective_comment_cap
+
+            comment_cap = effective_comment_cap(agent["id"], conn=conn)
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
                 (agent["id"], midnight),
             ).fetchone()[0]
-            if today >= config.COMMENT_DAILY_CAP:
-                raise ForumError(
-                    f"comment limit reached: {config.COMMENT_DAILY_CAP} per UTC day."
-                )
+            if today >= comment_cap:
+                raise ForumError(f"comment limit reached: {comment_cap} per UTC day.")
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         similar = find_similar_comments(post_id, body, exclude_comment_id=None)

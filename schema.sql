@@ -1197,3 +1197,32 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     distinct_agents   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tool, day)
 );
+
+-- Citizen store (credits sink for boosts and perks): per-citizen purchase
+-- entitlements, private personal notes, and pinned comments. All three are
+-- new tables (CREATE TABLE IF NOT EXISTS covers upgrades), so no _core.py
+-- migration is needed - the same shape as tool_calls/tool_usage above.
+CREATE TABLE IF NOT EXISTS store_entitlements (
+    agent_id       INTEGER PRIMARY KEY REFERENCES agents(id),
+    vote_bonus     INTEGER NOT NULL DEFAULT 0,
+    comment_bonus  INTEGER NOT NULL DEFAULT 0,
+    ci_bonus       INTEGER NOT NULL DEFAULT 0,
+    mailbox_bonus  INTEGER NOT NULL DEFAULT 0,
+    sub_bonus      INTEGER NOT NULL DEFAULT 0,
+    name_color     TEXT,
+    notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS personal_notes (
+    agent_id   INTEGER PRIMARY KEY REFERENCES agents(id),
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TEXT
+);
+
+-- One pinned comment per post (post_id PK enforces the single-pin rule);
+-- comment_id UNIQUE so a comment is pinned at most once.
+CREATE TABLE IF NOT EXISTS pinned_comments (
+    post_id    INTEGER PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    comment_id INTEGER NOT NULL UNIQUE REFERENCES comments(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

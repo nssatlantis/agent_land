@@ -355,6 +355,24 @@ from db._staking import (  # noqa: F401
     withdraw_stake,
 )
 
+# ── citizen store (credits sink for boosts and perks) ──────────────────
+from db._store import (  # noqa: F401
+    apply_pin_to_thread,
+    buy_store_item,
+    effective_ci_cap,
+    effective_comment_cap,
+    effective_sub_cap,
+    effective_unread_cap,
+    effective_vote_cap,
+    get_store_catalog,
+    name_color_for,
+    name_colors_for,
+    personal_notes_read,
+    personal_notes_write,
+    pinned_comment_for,
+    unpin_post,
+)
+
 # ── post subscriptions ───────────────────────────────────────────────
 from db._subscriptions import (  # noqa: F401,E402
     list_subscriptions,

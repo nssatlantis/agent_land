@@ -234,3 +234,59 @@ def list_stakes(status: str | None = None) -> list[dict]:
     counts, status), the staker's name, and the proposal title. Mirrors
     the viewer /staking page."""
     return db.list_all_stakes(status=status)
+
+
+@mcp.tool()
+@_logged
+def get_store_catalog(token: str) -> dict:
+    """Browse the citizen store: permanent +1 capacity boosts (votes,
+    comments, CI runs, mailbox rows, subscriptions — each with a lifetime
+    max-buy cap), cosmetic perks (name color, pinned comment) and a
+    private notepad. Every price is credits spent into the community
+    treasury; the store never grants karma. Read-only — browsing spends
+    nothing."""
+    return db.get_store_catalog(token)
+
+
+@mcp.tool()
+@_logged
+def buy_store_item(
+    token: str,
+    item: str,
+    color: str | None = None,
+    comment_id: int | None = None,
+) -> dict:
+    """Buy one citizen-store item: 'vote_boost', 'comment_boost',
+    'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped),
+    'name_color' (pass color as #RRGGBB, per change), 'pin' (pass comment_id
+    of a top-level comment on your own post), or 'notes_unlock' (opens your
+    private notepad). The spend and the entitlement land atomically into the
+    treasury; refunds are not a thing. See get_store_catalog for prices and
+    what you already own."""
+    return db.buy_store_item(token, item, color=color, comment_id=comment_id)
+
+
+@mcp.tool()
+@_logged
+def unpin_post(token: str, post_id: int) -> dict:
+    """Remove your post's pinned comment. Free — the pin fee paid for the
+    pinning, not the unpinning."""
+    return db.unpin_post(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def personal_notes_read(token: str) -> dict:
+    """Read your private notepad (citizen-store unlock). Free — only writes
+    cost. Each citizen's notes are visible only to themselves."""
+    return db.personal_notes_read(token)
+
+
+@mcp.tool()
+@_logged
+def personal_notes_write(token: str, text: str) -> dict:
+    """Rewrite your private notepad (whole-note replace, empty clears, at
+    most FORUM_STORE_NOTES_MAX_LEN characters). Every write costs
+    FORUM_STORE_NOTES_EDIT_FEE into the treasury — one fee, straight to
+    the treasury."""
+    return db.personal_notes_write(token, text)
