@@ -106,6 +106,7 @@ def _insert_post(
             post_id,
             f'{agent["name"]} mentioned you in "{title[: config.MENTION_TITLE_TRUNCATE]}"',
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
         )
         mentioned.append({"name": name, "agent_id": mid})
     # Centralized create-pr workflow auto-start (P0-B): every PR-openable
@@ -987,6 +988,7 @@ def edit_post(
                 f"{agent['name']} mentioned you in "
                 f'"{final_title[: config.MENTION_TITLE_TRUNCATE]}"',
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
             mentioned.append({"name": name, "agent_id": mid})
 
@@ -1097,6 +1099,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                 target_id,
                 vote_text,
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
             )
         from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
 

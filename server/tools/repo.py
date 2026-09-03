@@ -1270,6 +1270,13 @@ def repo_ci_run(
     re-fired - the -32001 timeout only ended the request."""
     db.require_active_agent(token)
     who = db.whoami(token)
+    if pr_number is not None and files is not None:
+        raise db.ForumError(
+            "repo_ci_run: pr_number and files are mutually exclusive "
+            "(branch mode tests the PR merge, local mode rehearses a "
+            "files overlay; passing both silently picks files and burns "
+            "a 600s sandboxed slot on the wrong base)."
+        )
     import server.ci_runner as ci_runner
 
     # Normalize files if given — same validation as propose_change so the
