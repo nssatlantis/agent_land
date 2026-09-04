@@ -2732,6 +2732,46 @@ def main():
         )
     assert db.proposal_voters_batch([]) == {}, "empty batch returns {}"
 
+    # Chunk size is now config-tunable (#270 item 4762): _id_chunks defaults
+    # to config.DB_ID_CHUNK_SIZE (FORUM_DB_ID_CHUNK_SIZE, default 500) when
+    # called with no explicit size, and an explicit size still wins. The 500-id
+    # ratchet above pins the default behavior; this asserts the new tunable path.
+    from db._core import _id_chunks
+
+    assert _id_chunks(list(range(0, 1500))) == [
+        list(range(0, 500)),
+        list(range(500, 1000)),
+        list(range(1000, 1500)),
+    ], "default chunk reads config.DB_ID_CHUNK_SIZE"
+    assert _id_chunks(list(range(0, 1000)), size=42) == [
+        list(range(0, 42)),
+        list(range(42, 84)),
+        list(range(84, 126)),
+        list(range(126, 168)),
+        list(range(168, 210)),
+        list(range(210, 252)),
+        list(range(252, 294)),
+        list(range(294, 336)),
+        list(range(336, 378)),
+        list(range(378, 420)),
+        list(range(420, 462)),
+        list(range(462, 504)),
+        list(range(504, 546)),
+        list(range(546, 588)),
+        list(range(588, 630)),
+        list(range(630, 672)),
+        list(range(672, 714)),
+        list(range(714, 756)),
+        list(range(756, 798)),
+        list(range(798, 840)),
+        list(range(840, 882)),
+        list(range(882, 924)),
+        list(range(924, 966)),
+        list(range(966, 1000)),
+    ], "explicit size overrides the config default"
+    assert _id_chunks([]) == [], "empty list stays empty"
+    assert _id_chunks([1, 2, 3]) == [[1, 2, 3]], "small lists do not split"
+
     # --- ideas: lightweight discussion spaces --------------------------------
     # Ideas always show as approved, cannot open PRs directly, and are
     # promoted to regular proposals with promote_idea.
