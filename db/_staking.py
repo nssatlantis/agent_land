@@ -21,6 +21,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import nullcontext
 
+import config
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 from db._proposal_status import _proposal_status_for
 from notifications import _notify
@@ -111,7 +112,6 @@ def stake(
     currency = _validate_currency(currency)
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
-    import config
 
     per_pr = _normalize_per_pr(per_pr, currency)
     with _conn(immediate=True) as conn:
@@ -697,6 +697,18 @@ def lock_stakes_for_pr(
             cur: dict(bal) for cur, bal in balances.items()
         }
 
+        # Batch the treasury check for admin-funded credit stakes: a single
+        # snapshot (BEGIN IMMEDIATE means no other writer interleaves) plus a
+        # local running counter is exact, instead of a ledger-wide SUM on
+        # every stake (item 4774).
+        from db._credits import treasury_balance
+
+        treasury_remaining = (
+            treasury_balance(c)
+            if any(b["admin_funded"] and b["currency"] == "credits" for b in stakes)
+            else None
+        )
+
         for b in stakes:
             currency = b["currency"]
             staker = b["staker_agent_id"]
@@ -744,9 +756,9 @@ def lock_stakes_for_pr(
                 # a normal stake but from the community account. Karma
                 # admin stakes have no wallet to debit.
                 if currency == "credits":
-                    from db._credits import _insert_entry, treasury_balance
+                    from db._credits import _insert_entry
 
-                    if treasury_balance(c) < b["per_pr"]:
+                    if treasury_remaining is None or treasury_remaining < b["per_pr"]:
                         # Finding 4428: the treasury is the community
                         # float (fees, mints and job payouts refill it on
                         # every transfer), so a dip below per_pr at lock
@@ -765,6 +777,8 @@ def lock_stakes_for_pr(
                         "proposal_stake",
                         b["id"],
                     )
+                    if treasury_remaining is not None:
+                        treasury_remaining -= b["per_pr"]
                     treasury_debited = True
             try:
                 c.execute(
@@ -795,6 +809,8 @@ def lock_stakes_for_pr(
                         "proposal_stake",
                         b["id"],
                     )
+                    if treasury_remaining is not None:
+                        treasury_remaining += b["per_pr"]
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -840,6 +856,8 @@ def lock_stakes_for_pr(
                         "proposal_stake",
                         b["id"],
                     )
+                    if treasury_remaining is not None:
+                        treasury_remaining += b["per_pr"]
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
