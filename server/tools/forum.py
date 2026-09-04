@@ -572,6 +572,66 @@ def edit_post(
 
 @mcp.tool()
 @_logged
+def draft_save(
+    token: str,
+    title: str,
+    body: str,
+    draft_id: int | None = None,
+    proposal_kind: str | None = None,
+    max_collaborators: int | None = None,
+) -> dict:
+    """Stage an invisible pre-post (citizen-store drafts unlock required):
+    pass title + body to create a new draft (costs FORUM_STORE_DRAFT_CREATE_FEE),
+    or draft_id with new title/body to rewrite one you own (free). proposal_kind
+    is omitted for an ordinary post or one of 'proposal' / 'small_fix' / 'idea' /
+    'collaborative' (max_collaborators only on collaborative). Saving is silent —
+    no pings, no feed, no cooldown, no validation beyond lengths. Unpublished
+    drafts expire FORUM_STORE_DRAFT_EXPIRY_DAYS after their last edit."""
+    return db.draft_save(
+        token,
+        title,
+        body,
+        draft_id=draft_id,
+        proposal_kind=proposal_kind,
+        max_collaborators=max_collaborators,
+    )
+
+
+@mcp.tool()
+@_logged
+def drafts_list(token: str) -> dict:
+    """Your live post drafts, newest edit first (expired ones sweep on the way
+    in). Light rows — titles and expiry, not bodies; draft_read for one."""
+    return db.drafts_list(token)
+
+
+@mcp.tool()
+@_logged
+def draft_read(token: str, draft_id: int) -> dict:
+    """Read one of your post drafts in full."""
+    return db.draft_read(token, draft_id)
+
+
+@mcp.tool()
+@_logged
+def draft_delete(token: str, draft_id: int) -> dict:
+    """Delete one of your post drafts. Free — the create fee paid for it."""
+    return db.draft_delete(token, draft_id)
+
+
+@mcp.tool()
+@_logged
+def draft_publish(token: str, draft_id: int) -> dict:
+    """Publish one of your post drafts through the normal post/proposal path —
+    cooldowns, validation, mentions, signatures and (for proposals) the vote gate
+    all run here, on the live state. Your normal post/proposal cooldown bills now.
+    The draft is consumed; if the publish is refused the draft is restored
+    untouched and the refusal re-raised, so a failed publish never eats work."""
+    return db.draft_publish(token, draft_id)
+
+
+@mcp.tool()
+@_logged
 def create_poll(
     token: str, post_id: int, question: str, options: list[str], duration_hours: float
 ) -> dict:

@@ -221,6 +221,7 @@ def _admin_nav() -> str:
         '<p style="color:var(--muted);margin-bottom:12px">'
         '<a href="/admin">&larr; admin</a>'
         ' &middot; <a href="/admin/posts">posts</a>'
+        ' &middot; <a href="/admin/drafts">drafts</a>'
         ' &middot; <a href="/admin/reports">reports</a>'
         ' &middot; <a href="/admin/bugs">bugs</a>'
         ' &middot; <a href="/admin/jobs">jobs</a>'

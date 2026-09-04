@@ -1422,6 +1422,13 @@ def init_db() -> None:
         # Existing rows stay NULL (no evidence yet); fresh DBs already have them.
         _ensure_column(conn, "job_cycles", "evidence_pr_numbers", "TEXT")
         _ensure_column(conn, "job_cycles", "evidence_pr_shas", "TEXT")
+        # Citizen-store draft slots: how many staging slots the citizen owns
+        # (unlock opens the first). Fresh DBs carry the column (schema.sql);
+        # existing ones (including store-era DBs) gain it here, defaulting
+        # to 0 = feature locked until bought.
+        _ensure_column(
+            conn, "store_entitlements", "draft_slots", "INTEGER NOT NULL DEFAULT 0"
+        )
 
         # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
         # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
