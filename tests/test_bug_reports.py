@@ -353,6 +353,31 @@ def test_mcp_admin_auth(helpers):
     print("  mcp admin auth: ok")
 
 
+def test_sweep_confirms_all_qualifying_in_one_statement(helpers):
+    """Boot sweep flips every qualifying report with one conditional UPDATE
+    (RETURNING ids for the confirm events), not one UPDATE per row."""
+    r1 = bug_mod.file_bug_report(
+        helpers["alpha"]["token"], "Sweep one", "body one", "https://example.com/s1"
+    )
+    r2 = bug_mod.file_bug_report(
+        helpers["beta"]["token"], "Sweep two", "body two", "https://example.com/s2"
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET confidence = 5 WHERE id IN (?, ?)",
+            (r1["id"], r2["id"]),
+        )
+        n = bug_mod.sweep_auto_confirm(conn)
+    assert n == 2, "both qualifying reports confirm in one sweep"
+    for rid in (r1["id"], r2["id"]):
+        full = bug_mod.get_bug_report(rid)
+        assert full["status"] == "confirmed" and full["decided_at"] is not None
+    # Idempotent: a second pass confirms nothing more.
+    with db._conn() as conn:
+        assert bug_mod.sweep_auto_confirm(conn) == 0
+    print("  sweep confirms all qualifying in one statement: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -370,4 +395,5 @@ if __name__ == "__main__":
     test_small_fix_gates_bug_confidence(helpers)
     test_confirm_and_fix_audit(helpers)
     test_mcp_admin_auth(helpers)
+    test_sweep_confirms_all_qualifying_in_one_statement(helpers)
     print("All bug report tests passed.")

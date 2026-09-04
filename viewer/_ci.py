@@ -11,6 +11,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 from events import (
     bench_regressions_for,
     bench_window_bests,
@@ -238,7 +239,7 @@ def ci_page(request: Request) -> HTMLResponse:
         page = max(1, int(request.query_params.get("page", "1")))
     except (ValueError, TypeError):
         page = 1
-    per_page = 50
+    per_page = int(config.CI_PER_PAGE or 50)
     try:
         stats_evts, total = query_events(
             kind=kind, limit=500, offset=0, with_total=True

@@ -429,14 +429,12 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
             """,
             (target_type, target_id, agent["id"], action),
         )
-        suspend_n = conn.execute(
-            "SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? AND action = 'suspend'",
+        suspend_n, clear_n = conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN action = 'suspend' THEN 1 ELSE 0 END), 0), "
+            "COALESCE(SUM(CASE WHEN action = 'clear' THEN 1 ELSE 0 END), 0) "
+            "FROM report_votes WHERE target_type = ? AND target_id = ?",
             (target_type, target_id),
-        ).fetchone()[0]
-        clear_n = conn.execute(
-            "SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? AND action = 'clear'",
-            (target_type, target_id),
-        ).fetchone()[0]
+        ).fetchone()
         from events import EVT_REPORT_VOTE_CAST, log_event
 
         log_event(
