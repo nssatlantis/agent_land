@@ -1243,15 +1243,28 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
         )
 
 
-def _local_branch_cached_ok(pr_number: int, head_sha: str) -> bool | None:
+def _local_branch_cached_ok(
+    pr_number: int, head_sha: str, memo: dict | None = None
+) -> bool | None:
     """Check ledger cache for a recent branch-mode CI run for this head.
 
     Returns True if the most recent ci_branch_run for this (pr, head) was
     ok/success, False if it was a failure/conflict/timeout, None if no
     record yet. Only 'tests' checks are considered; caller checks
-    CI_FALLBACK_ENABLED before consulting."""
+    CI_FALLBACK_ENABLED before consulting.
+
+    ``memo`` is an optional per-sweep cache (a plain dict keyed by
+    ``(pr_number, head_sha)``) so one poller sweep's repeated lookups for
+    the same head scan the events ledger once instead of five times. It is
+    caller-scoped - never shared across sweeps, so a fresh sweep always
+    re-reads the ledger (a just-landed run for the same head can change the
+    answer)."""
     if not head_sha:
         return None
+    if memo is not None:
+        key = (pr_number, head_sha)
+        if key in memo:
+            return memo[key]
     try:
         # Scan recent branch runs — newest first, limit 100 to bound
         # work; filter in Python because detail is JSON.
@@ -1269,21 +1282,31 @@ def _local_branch_cached_ok(pr_number: int, head_sha: str) -> bool | None:
             continue
         # merge_conflict counts as failure for merge gate
         if d.get("merge_conflict"):
-            return False
-        if "ok" in d:
-            return bool(d["ok"])
+            result: bool | None = False
+        elif "ok" in d:
+            result = bool(d["ok"])
+        else:
+            continue
+        if memo is not None:
+            memo[key] = result
+        return result
+    if memo is not None:
+        memo[key] = None
     return None
 
 
-def _ensure_local_branch_ok(pr_number: int, head_sha: str) -> bool:
+def _ensure_local_branch_ok(
+    pr_number: int, head_sha: str, memo: dict | None = None
+) -> bool:
     """Run local branch CI on demand for fallback, caching via ledger.
 
     If a recent ledger entry for this head already exists, reuse it.
     Otherwise run the sandboxed branch suite headlessly (no cooldown) and
-    return its ok. Any error is a soft failure (local not ok)."""
+    return its ok. Any error is a soft failure (local not ok). ``memo`` is
+    the per-sweep branch-cache dict forwarded to _local_branch_cached_ok."""
     if not config.CI_FALLBACK_ENABLED or not config.CI_RUN_BRANCH_ENABLED:
         return False
-    cached = _local_branch_cached_ok(pr_number, head_sha)
+    cached = _local_branch_cached_ok(pr_number, head_sha, memo)
     if cached is not None:
         return cached
     # No cache — run the suite now (respects CI_RUN_CONCURRENCY via slot pool).
@@ -1553,13 +1576,17 @@ def _pr_vote_sweep(
         # Prepare local cache checks upfront — head_sha from PR, not GH,
         # so local can start without waiting for GH.
         pending_locals: list[tuple[int, str]] = []
+        # Per-sweep memo of _local_branch_cached_ok: the sweep's repeated
+        # lookups (initial scan, GH-head refresh, final merge-gate reads)
+        # share one ledger scan per (pr, head) instead of five.
+        local_ok_memo: dict[tuple[int, str], bool | None] = {}
         if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
             for pr, _, _ in candidates:
                 num = pr["number"]
                 head_sha = pr.get("head_sha") or ""
                 if num in pending_prs:
                     continue  # already debounced, poller skips duplicate host run
-                cached = _local_branch_cached_ok(num, head_sha)
+                cached = _local_branch_cached_ok(num, head_sha, local_ok_memo)
                 if cached is not None:
                     local_results[(num, head_sha)] = cached
                     if not head_sha:
@@ -1603,7 +1630,9 @@ def _pr_vote_sweep(
             local_pool_size = min(_poller_local_cap, len(needs_local))
             with ThreadPoolExecutor(max_workers=local_pool_size) as local_pool:
                 local_futures = {
-                    local_pool.submit(_ensure_local_branch_ok, num, sha): num
+                    local_pool.submit(
+                        _ensure_local_branch_ok, num, sha, local_ok_memo
+                    ): num
                     for num, sha in needs_local
                 }
                 for local_fut in as_completed(local_futures):
@@ -1631,7 +1660,7 @@ def _pr_vote_sweep(
                 if gh is not None:
                     gh_sha = gh.get("head_sha") or ""
                     if gh_sha and gh_sha != pr_sha:
-                        cached = _local_branch_cached_ok(num, gh_sha)
+                        cached = _local_branch_cached_ok(num, gh_sha, local_ok_memo)
                         if cached is not None:
                             local_results[(num, gh_sha)] = cached
 
@@ -1677,12 +1706,12 @@ def _pr_vote_sweep(
         # Refresh from cache if we didn't run local for this head — check
         # pr_head_sha first, then gh_head_sha if different.
         if not local_ok and config.CI_FALLBACK_ENABLED:
-            cached = _local_branch_cached_ok(number, pr_head_sha)
+            cached = _local_branch_cached_ok(number, pr_head_sha, local_ok_memo)
             if cached:
                 local_ok = True
                 local_results[(number, pr_head_sha)] = True
             elif gh_head_sha != pr_head_sha:
-                cached2 = _local_branch_cached_ok(number, gh_head_sha)
+                cached2 = _local_branch_cached_ok(number, gh_head_sha, local_ok_memo)
                 if cached2:
                     local_ok = True
                     local_results[(number, gh_head_sha)] = True
