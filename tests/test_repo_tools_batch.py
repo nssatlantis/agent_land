@@ -1,9 +1,11 @@
 """Tests for the batch repo tools vote_on_prs and proposals_ready_to_merge.
 
-vote_on_prs is vote_on_pr's batch twin: several PR votes in one call, each
-with its own result/error kept so one bad or proposal-held PR never blocks
-its siblings. proposals_ready_to_merge lists approved proposals with no PR
-in flight, so an author (or delegate) knows which branches to open next.
+vote_on_prs is the consolidated PR-voting tool: its single form
+(pr_number + value) is vote_on_pr's drop-in successor, and its batch form
+(votes=[...]) votes several PRs in one call, each with its own result/error
+kept so one bad or proposal-held PR never blocks its siblings.
+proposals_ready_to_merge lists approved proposals with no PR in flight, so
+an author (or delegate) knows which branches to open next.
 """
 
 import importlib.util
@@ -75,7 +77,55 @@ def _held_regular(opener="alpha"):
     return pid, pr
 
 
-def test_vote_on_prs_validation():
+# ---- single mode (the vote_on_pr successor) --------------------------------
+
+
+def test_vote_on_prs_single_happy():
+    _pid, pr = _small_fix()
+    token = AGENTS["beta"]["token"]
+    out = root_server.vote_on_prs(token, pr_number=pr, value=1)
+    assert out["pr_number"] == pr, out
+    assert out["value"] == 1, out
+    assert "results" not in out and "errors" not in out, out
+    print("  vote_on_prs single happy: ok")
+
+
+def test_vote_on_prs_single_hold_raises():
+    _pid, held_pr = _held_regular()
+    token = AGENTS["beta"]["token"]
+    err = expect_error(
+        root_server.vote_on_prs, token, pr_number=held_pr, value=1
+    )
+    assert "community vote" in err, err
+    print("  vote_on_prs single proposal-hold raises: ok")
+
+
+def test_vote_on_prs_single_missing_params():
+    _pid, pr = _small_fix()
+    token = AGENTS["beta"]["token"]
+    err = expect_error(root_server.vote_on_prs, token, pr_number=pr)
+    assert "pr_number and value" in err, err
+    print("  vote_on_prs single missing value: ok")
+
+
+def test_vote_on_prs_single_mixed_params():
+    _pid, pr = _small_fix()
+    token = AGENTS["beta"]["token"]
+    err = expect_error(
+        root_server.vote_on_prs,
+        token,
+        pr_number=pr,
+        value=1,
+        votes=[{"pr_number": pr, "value": 1}],
+    )
+    assert "not both" in err, err
+    print("  vote_on_prs single+batch mixed rejected: ok")
+
+
+# ---- batch mode ------------------------------------------------------------
+
+
+def test_vote_on_prs_batch_validation():
     token = AGENTS["beta"]["token"]
     err = expect_error(root_server.vote_on_prs, token, votes="nope")
     assert "non-empty list" in err, err
@@ -84,10 +134,10 @@ def test_vote_on_prs_validation():
     too_many = [{"pr_number": i, "value": 1} for i in range(1, 7)]
     err = expect_error(root_server.vote_on_prs, token, votes=too_many)
     assert "at most" in err and str(config.PRS_BATCH_MAX) in err, err
-    print("  vote_on_prs validation: ok")
+    print("  vote_on_prs batch validation: ok")
 
 
-def test_vote_on_prs_happy():
+def test_vote_on_prs_batch_happy():
     _pid1, pr1 = _small_fix()
     _pid2, pr2 = _small_fix()
     token = AGENTS["beta"]["token"]
@@ -100,10 +150,10 @@ def test_vote_on_prs_happy():
     by_pr = {r["pr_number"]: r for r in out["results"]}
     assert by_pr[pr1]["value"] == 1, by_pr
     assert by_pr[pr2]["value"] == -1, by_pr
-    print("  vote_on_prs two-vote happy path: ok")
+    print("  vote_on_prs batch two-vote happy path: ok")
 
 
-def test_vote_on_prs_proposal_hold_isolation():
+def test_vote_on_prs_batch_proposal_hold_isolation():
     _held_pid, held_pr = _held_regular()
     _ok_pid, ok_pr = _small_fix()
     token = AGENTS["beta"]["token"]
@@ -117,7 +167,7 @@ def test_vote_on_prs_proposal_hold_isolation():
     err = out["errors"][0]
     assert err["index"] == 0, err
     assert "community vote" in err["error"], err
-    print("  vote_on_prs proposal-hold isolation: ok")
+    print("  vote_on_prs batch proposal-hold isolation: ok")
 
 
 def test_proposals_ready_to_merge():
@@ -137,8 +187,12 @@ def test_proposals_ready_to_merge():
 
 
 if __name__ == "__main__":
-    test_vote_on_prs_validation()
-    test_vote_on_prs_happy()
-    test_vote_on_prs_proposal_hold_isolation()
+    test_vote_on_prs_single_happy()
+    test_vote_on_prs_single_hold_raises()
+    test_vote_on_prs_single_missing_params()
+    test_vote_on_prs_single_mixed_params()
+    test_vote_on_prs_batch_validation()
+    test_vote_on_prs_batch_happy()
+    test_vote_on_prs_batch_proposal_hold_isolation()
     test_proposals_ready_to_merge()
     print("\n== test_repo_tools_batch: all passed ==")
