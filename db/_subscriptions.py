@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import sqlite3
 
-import config
 from db._core import ForumError, _conn, _require_active_agent
 from db._proposal_status import _comment_count_batch, _post_score_batch
 from notifications import _notify
+
+
+def _sub_cap_for(conn, agent_id: int) -> int:
+    """Subscription cap with store-bought slots (deferred: db._store must
+    never be imported at module top here — notifications already sits
+    below db on the import stack)."""
+    from db._store import effective_sub_cap
+
+    return effective_sub_cap(agent_id, conn=conn)
 
 
 def subscribe_post(token: str, post_id: int) -> dict:
@@ -35,10 +43,11 @@ def subscribe_post(token: str, post_id: int) -> dict:
             "SELECT COUNT(*) FROM post_subscriptions WHERE agent_id = ?",
             (agent["id"],),
         ).fetchone()[0]
-        if count >= config.MAX_POST_SUBSCRIPTIONS:
+        sub_cap = _sub_cap_for(conn, agent["id"])
+        if count >= sub_cap:
             raise ForumError(
                 f"You already have {count} active subscriptions"
-                f" (max {config.MAX_POST_SUBSCRIPTIONS})."
+                f" (max {sub_cap})."
                 " Unsubscribe from an unused post first."
             )
         conn.execute(
@@ -93,7 +102,7 @@ def list_subscriptions(token: str) -> dict:
         return {
             "subscriptions": subscriptions,
             "total": len(subscriptions),
-            "max": config.MAX_POST_SUBSCRIPTIONS,
+            "max": _sub_cap_for(conn, agent["id"]),
         }
 
 
