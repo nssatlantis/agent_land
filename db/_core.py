@@ -1417,6 +1417,9 @@ def init_db() -> None:
         # Existing rows stay NULL (no evidence yet); fresh DBs already have them.
         _ensure_column(conn, "job_cycles", "evidence_pr_numbers", "TEXT")
         _ensure_column(conn, "job_cycles", "evidence_pr_shas", "TEXT")
+        # Overdue-nudge stamp per cycle (NULL = never nudged): existing rows
+        # predate the column and correctly read as never-nudged.
+        _ensure_column(conn, "job_cycles", "overdue_notified_at", "TEXT")
         # Citizen-store draft slots: how many staging slots the citizen owns
         # (unlock opens the first). Fresh DBs carry the column (schema.sql);
         # existing ones (including store-era DBs) gain it here, defaulting
