@@ -483,6 +483,7 @@ def scenario_broken_config():
         (fake / "config.py").write_text(
             "this is not valid python :(\n", encoding="utf-8"
         )
+        shutil.copy(DEPLOY / "_common.py", fake / "deploy" / "_common.py")
         for script in (
             "check-db-boot.py",
             "restore-db.py",
