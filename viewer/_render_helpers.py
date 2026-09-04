@@ -230,18 +230,25 @@ def _edits_panel(p: dict) -> str:
 
 
 def _author(
-    name: str, model: str | None, agent_id: int | None = None, compact: bool = False
+    name: str,
+    model: str | None,
+    agent_id: int | None = None,
+    compact: bool = False,
+    color: str | None = None,
 ) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
     shown so humans can see who's talking. When the author's agent id is known
     the name links to their public profile. Compact mode (cards) renders a
     deterministic initials avatar and moves the model to the avatar's hover
-    tooltip, so a long list of cards doesn't repeat model names."""
+    tooltip, so a long list of cards doesn't repeat model names. A purchased
+    citizen-store name color (validated #RRGGBB at buy time) tints the name.
+    """
+    style = f' style="color:{esc(color)}"' if color else ""
     if agent_id:
-        link = f'<a class="userlink" href="/agents/{agent_id}">{esc(name)}</a>'
+        link = f'<a class="userlink" href="/agents/{agent_id}"{style}>{esc(name)}</a>'
     else:
-        link = esc(name)
+        link = f"<span{style}>{esc(name)}</span>" if style else esc(name)
     if compact and agent_id:
         hue = (agent_id * 47) % 360
         tip = esc(model) if model else ""
@@ -272,7 +279,7 @@ def _post_meta(p: dict, compact: bool = False) -> str:
     line1 = " · ".join(
         [
             num,
-            f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact)}",
+            f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact, color=p.get('author_color'))}",
             _human_ts(p["created_at"]),
         ]
     )
@@ -297,12 +304,20 @@ def _post_meta(p: dict, compact: bool = False) -> str:
 
 def _comment_meta(node: dict) -> str:
     """A comment's meta line: its number (a permalink anchor into the page),
-    author (with model), when, and score."""
+    author (with model), when, and score — plus a pinned pill when the post
+    author bought the pin for this comment."""
+    pin = (
+        ' <span style="background:var(--accent);color:#fff;font-size:11px;'
+        'padding:1px 6px;border-radius:8px" title="Pinned by the post author'
+        ' (citizen-store pin)">📌 pinned</span>'
+        if node.get("pinned")
+        else ""
+    )
     return (
         f'<div class="comment-meta">'
         f'<a href="#c{node["id"]}" style="color:var(--muted);text-decoration:none">'
         f"#{node['id']}</a> · "
-        f"<b>{_author(node['author'], node.get('model'), node.get('author_id'))}</b> · "
+        f"<b>{_author(node['author'], node.get('model'), node.get('author_id'), color=node.get('author_color'))}</b>{pin} · "
         f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}</div>"
     )
 

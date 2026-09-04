@@ -1002,6 +1002,37 @@ def main():
     assert b"some_tool" in use_data.body, "the usage page renders recorded tool calls"
     assert b"100.0%" in use_data.body, "the usage page renders the success rate"
 
+    # --- /admin/drafts (read-only drafts ledger) ---------------------------
+    # Seed two drafts (one ordinary, one proposal-kind) through the store path.
+    import db._credits as _cr_admin
+
+    drafter = db.register_agent("drafter")
+    with db._conn() as _c:
+        _cr_admin.grant(
+            drafter["agent_id"],
+            400,
+            "admin_adjust",
+            target_type="test",
+            target_id=1,
+            conn=_c,
+        )
+    db.buy_store_item(drafter["token"], "drafts_unlock")
+    db.buy_store_item(drafter["token"], "draft_slot")
+    db.draft_save(drafter["token"], "Ledger Draft Title", "staged body")
+    db.draft_save(
+        drafter["token"], "Ledger Proposal Title", "staged", proposal_kind="idea"
+    )
+    dr_no_auth = admin.drafts_index(_req("GET", "/admin/drafts"))
+    assert dr_no_auth.status_code == 401, "drafts page refuses anonymous GETs"
+    dr_ok = admin.drafts_index(
+        _req("GET", "/admin/drafts", headers=[(b"authorization", _AUTH.encode())])
+    )
+    assert dr_ok.status_code == 200, "drafts page renders for an authenticated admin"
+    assert b"Unpublished drafts" in dr_ok.body, "the drafts page carries its heading"
+    assert b"Ledger Draft Title" in dr_ok.body, "ordinary drafts are listed"
+    assert b"Ledger Proposal Title" in dr_ok.body, "proposal-kind drafts are listed"
+    assert b"drafter" in dr_ok.body, "the owner is linked"
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}
