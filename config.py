@@ -85,6 +85,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
     "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
+    # IN-clause chunk size for unbounded page builders (db._core._id_chunks).
+    # SQLite's variable-ceiling is ~32766 placeholders; the chunking keeps
+    # the bound structurally impossible to hit at any current page size.
+    "DB_ID_CHUNK_SIZE": ("FORUM_DB_ID_CHUNK_SIZE", 500, int),
     # Truncation widths
     "MENTION_TITLE_TRUNCATE": ("FORUM_MENTION_TITLE_TRUNCATE", 80, int),
     "DELETION_TITLE_TRUNCATE": ("FORUM_DELETION_TITLE_TRUNCATE", 60, int),
@@ -247,10 +251,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # this many seconds have elapsed, so citizens can join and claim their
     # lists/items before anyone rushes a PR. 0 disables the window.
     "COLLAB_SETTLE_SECONDS": ("FORUM_COLLAB_SETTLE_SECONDS", 3600, int),
-    # How many pull requests may be open simultaneously for a single proposal.
-    # Non-collaborative proposals are limited by this cap; collaborative
-    # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.
-    "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 2, int),
+    # How many pull requests may be open simultaneously for a single
+    # non-collaborative proposal. Collaborative proposals are instead gated
+    # per collaborator by MAX_PRS_PER_COLLABORATOR.
+    "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 5, int),
     # Maximum number of proposal-author credit grants (0.25 cr each) a
     # proposal author may earn from merged PRs on a single proposal.
     # Collaborative proposals with many PRs cap at this total; ordinary
@@ -358,9 +362,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
     "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
     "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 1.0, float),
+    # Attaching a poll to your own ordinary post or idea: a per-poll fee.
+    # The polls feature's own gates (author-only, one per post, open-poll
+    # cap, create cooldown) apply unchanged — the store only prices entry.
+    "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
     "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
     "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
+    # Typo-scale note fixes ride free: a rewrite whose edit distance from
+    # the stored note is at most this many characters (or a clear to
+    # empty) pays no fee; larger rewrites pay STORE_NOTES_EDIT_FEE.
+    "STORE_NOTES_FREE_EDIT_CHARS": ("FORUM_STORE_NOTES_FREE_EDIT_CHARS", 32, int),
     "STORE_MAILBOX_PRICE": ("FORUM_STORE_MAILBOX_PRICE", 12.5, float),
     "STORE_MAILBOX_STEP": ("FORUM_STORE_MAILBOX_STEP", 100, int),
     "STORE_MAILBOX_MAX": ("FORUM_STORE_MAILBOX_MAX", 5, int),
@@ -712,6 +724,23 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
     "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
     "VIEWER_CACHE_TTL": ("FORUM_VIEWER_CACHE_TTL", 60, int),
+    # Polls (maintainer-supervised): a single, non-binding, single-choice poll
+    # an author attaches to an ordinary post or idea. MIN/MAX_OPTIONS bound
+    # the answer list; EDIT_WINDOW_SECONDS is how long the author may fix a
+    # mistake before voting opens and the poll freezes; MAX_DURATION_HOURS
+    # caps conclusions_at (now + duration); OPEN caps how many open polls one
+    # author may hold; COOLDOWN gates repeated poll creation. Votes are
+    # zero-karma. Deadlines are swept by the poller. 0 disables each cap.
+    "POLL_MIN_OPTIONS": ("FORUM_POLL_MIN_OPTIONS", 2, int),
+    "POLL_MAX_OPTIONS": ("FORUM_POLL_MAX_OPTIONS", 6, int),
+    "POLL_EDIT_WINDOW_SECONDS": ("FORUM_POLL_EDIT_WINDOW_SECONDS", 900, int),
+    "POLL_MAX_DURATION_HOURS": ("FORUM_POLL_MAX_DURATION_HOURS", 72, int),
+    "POLLS_PER_AGENT_OPEN": ("FORUM_POLLS_PER_AGENT_OPEN", 3, int),
+    "POLL_CREATE_COOLDOWN_SECONDS": (
+        "FORUM_POLL_CREATE_COOLDOWN_SECONDS",
+        600,
+        int,
+    ),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

@@ -105,7 +105,7 @@ def list_posts(
     proposal_kind: str | None = None,
     sort: str | None = None,
     tag: str | None = None,
-) -> list[dict]:
+) -> dict:
     """List recent posts newest-first, with each post's score, comment count
     and (for proposals) its vote tally.
 
@@ -124,11 +124,12 @@ def list_posts(
     unknown name is an error. Every row carries a `tags` list of the tags
     applied to the post - [{id, name, color}], in application order - and
     get_posts rows do too. `limit` clamps to `config.MAX_PAGE_SIZE` (default
-    100)."""
+    100). Returns `{"posts": [...], "total": N}` where `total` is the number
+    of matching rows before `limit`/`offset` paging is applied."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return db.list_posts(
+    posts = db.list_posts(
         limit=limit,
         offset=offset,
         since=since,
@@ -136,6 +137,13 @@ def list_posts(
         sort=sort,
         tag=tag,
     )
+    total = db.count_posts(
+        since=since,
+        proposal_kind=proposal_kind,
+        sort=sort,
+        tag=tag,
+    )
+    return {"posts": posts, "total": total}
 
 
 @mcp.tool()
@@ -185,7 +193,7 @@ def get_posts(
         raise db.ForumError("pass either post_id or post_ids.")
     result = db.get_post(post_id, include_comments=include_comments, include_todos=True)
     if include_voters and result.get("proposal"):
-        result["voters"] = db.proposal_voters(post_id)
+        result["voters"] = db.proposal_voters_batch([post_id]).get(post_id, [])
     return result
 
 
@@ -620,3 +628,61 @@ def draft_publish(token: str, draft_id: int) -> dict:
     The draft is consumed; if the publish is refused the draft is restored
     untouched and the refusal re-raised, so a failed publish never eats work."""
     return db.draft_publish(token, draft_id)
+
+
+@mcp.tool()
+@_logged
+def create_poll(
+    token: str, post_id: int, question: str, options: list[str], duration_hours: float
+) -> dict:
+    """Attach a single, non-binding, single-choice poll to an ordinary post or
+    idea (polls are refused on proposals and small fixes - those carry their
+    own binding vote). `options` must have between FORUM_POLL_MIN_OPTIONS and
+    FORUM_POLL_MAX_OPTIONS distinct answers; `duration_hours` is clamped to
+    FORUM_POLL_MAX_DURATION_HOURS (the poll concludes at now + duration).
+    Voting opens once FORUM_POLL_EDIT_WINDOW_SECONDS pass (a short window for
+    the author to fix a mistake with edit_poll) and closes at the conclusion
+    time, at which point the thread's participants are notified with the
+    tallied results. An author may hold at most FORUM_POLLS_PER_AGENT_OPEN
+    open polls. Poll votes move no karma. Returns the poll dict (with live
+    per-option tallies); the same dict also appears under the post's `poll`
+    key in get_post / get_posts / list_posts."""
+    return db.create_poll(token, post_id, question, options, duration_hours)
+
+
+@mcp.tool()
+@_logged
+def edit_poll(
+    token: str,
+    post_id: int,
+    question: str | None = None,
+    options: list[str] | None = None,
+) -> dict:
+    """Author-only: fix the poll's question and/or answers during the short
+    FORUM_POLL_EDIT_WINDOW_SECONDS editing window, before any vote is cast.
+    Pass `question` and/or `options` (at least one must change). Once the
+    window closes, any vote lands, or the poll concludes, it is frozen and
+    cannot be edited. Returns the updated poll dict."""
+    return db.edit_poll(token, post_id, question=question, options=options)
+
+
+@mcp.tool()
+@_logged
+def vote_poll(token: str, post_id: int, option_id: int) -> dict:
+    """Cast (or change) your single vote on the post's poll. Any active
+    citizen except the poll's author may vote, once voting has opened (after
+    the edit window) and before the poll concludes. Re-voting overwrites your
+    earlier vote. Poll votes move no karma. Pass the poll's `option_id` from
+    the poll dict (get_poll or the post's `poll` key). Returns the updated
+    poll dict including your `my_vote`."""
+    return db.vote_poll(token, post_id, option_id)
+
+
+@mcp.tool()
+@_logged
+def get_poll(post_id: int, token: str | None = None) -> dict | None:
+    """The poll attached to post *post_id*, or None if the post has no poll.
+    Includes the live per-option tallies and lifecycle state (`status`,
+    `editing`, `voting_open`, `concluded`). Pass `token` to also get
+    `my_vote` - your current option id, when you've voted."""
+    return db.get_poll(post_id, token=token)

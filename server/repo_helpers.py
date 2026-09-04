@@ -10,6 +10,20 @@ import db
 import github
 
 
+def _coerce_files_json(files: list[dict] | str | None) -> list[dict] | str | None:
+    """FastMCP sometimes passes list[dict] as raw JSON string; parse it.
+
+    Shared by repo_propose_change, repo_update_pr and repo_ci_run - each
+    normalises its files argument through here so the JSON-string handling
+    lives in one place with one error message."""
+    if isinstance(files, str):
+        try:
+            return json.loads(files)
+        except json.JSONDecodeError as e:
+            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+    return files
+
+
 def _changes_for_repo_propose(
     file_path: str | None, content: str | None, files: list[dict] | str | None
 ) -> list[dict]:
@@ -19,12 +33,7 @@ def _changes_for_repo_propose(
     without sending its full content, or the single-file file_path/content
     shorthand; never more than one. Path hygiene itself is enforced per-file
     in github._validate_path."""
-    # FastMCP sometimes passes list[dict] as raw JSON string; parse it
-    if isinstance(files, str):
-        try:
-            files = json.loads(files)
-        except json.JSONDecodeError as e:
-            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+    files = _coerce_files_json(files)
     if files is not None:
         if file_path is not None or content is not None:
             raise db.ForumError(
@@ -134,12 +143,7 @@ def _changes_for_repo_update(files: list[dict] | str | None) -> list[dict]:
     "delete": True} to remove, or {"path", "reset": True} to restore a
     file to the base branch state. Path hygiene is enforced per-file in
     github._validate_path."""
-    # FastMCP sometimes passes list[dict] as raw JSON string; parse it
-    if isinstance(files, str):
-        try:
-            files = json.loads(files)
-        except json.JSONDecodeError as e:
-            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+    files = _coerce_files_json(files)
     if files is None:
         return []
     if not isinstance(files, list) or not files:

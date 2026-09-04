@@ -43,6 +43,7 @@ import github
 import logutil
 import reports
 import search
+from db._credits import format_credits as _format_credits
 from server.gzip_tunable import TunableGZipMiddleware
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
@@ -103,6 +104,7 @@ from viewer._render_helpers import (
     _discussion_digest,
     _edits_panel,
     _kind_badge,
+    _poll_panel,
     _post_card,
     _post_meta,
     _proposal_badge,
@@ -357,6 +359,7 @@ def render_post(
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + _poll_panel(p)
         + (
             f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>'
             if p.get("proposal_kind") and p.get("proposal_kind") != "idea"
@@ -1281,9 +1284,7 @@ def credits_page(request: Request) -> HTMLResponse:
 
 
 def _quarters_to_str(quarters: int) -> str:
-    import db._credits as _cr
-
-    return _cr.format_credits(quarters)
+    return _format_credits(quarters)
 
 
 _JOBS_TABS = (
@@ -3767,10 +3768,8 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
-    import hashlib
-
     body_bytes = rss.encode("utf-8")
-    etag = '"' + hashlib.sha1(body_bytes).hexdigest() + '"'
+    etag = '"' + hashlib.sha256(body_bytes).hexdigest()[:16] + '"'
     if request.headers.get("if-none-match") == etag:
         return HTMLResponse(
             "",

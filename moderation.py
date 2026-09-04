@@ -430,6 +430,11 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
+        # Poll ballots on other citizens' posts survive content deletion (the
+        # voter's own posts go above with their polls via cascade), so purge
+        # them explicitly — poll_votes.voter_id is a bare FK that would
+        # otherwise reject the agent delete.
+        conn.execute("DELETE FROM poll_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.
         conn.execute(
             "DELETE FROM proposal_collaborators WHERE agent_id = ?", (agent_id,)

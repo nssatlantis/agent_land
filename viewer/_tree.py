@@ -109,8 +109,15 @@ def _proposal_families(rows: list[dict]) -> list[list[dict]]:
     for p in rows:
         if p["id"] not in seen:
             families.append([p])
-    families.sort(key=lambda chain: chain[0].get("version") or 1, reverse=True)
-    families.sort(key=lambda chain: chain[-1].get("created_at") or "", reverse=True)
+    # single sort: created_at desc, version desc — identical order to the
+    # two-pass version-then-created_at sequence it replaces (stable sorts).
+    families.sort(
+        key=lambda chain: (
+            chain[-1].get("created_at") or "",
+            chain[0].get("version") or 1,
+        ),
+        reverse=True,
+    )
     return families
 
 
@@ -151,7 +158,7 @@ def lineage_page(request: Request) -> HTMLResponse:
     """The /lineage proposal dependency tree: every proposal version chain,
     linked forward to the version that replaced it and back to the proposal
     it revises, beside the side rail. Read-only, like every route here."""
-    rows = db.list_proposals(limit=None, view="all")
+    rows = db.list_proposals(limit=500, view="all")
     body = (
         _crumb("/", "overview")
         + '<div class="panel" style="border:none;background:none">'

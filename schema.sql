@@ -398,7 +398,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1197,6 +1197,42 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     distinct_agents   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tool, day)
 );
+
+-- Polls (maintainer-supervised): a single, non-binding, single-choice poll
+-- an author may attach to an ordinary post or idea. Voting opens once the
+-- short edit window passes and closes at `concludes_at`; a poller sweeps
+-- open polls past their conclusion, logs EVT_POLL_CONCLUDED and notifies
+-- the thread's participants with the results. Poll votes move no karma.
+CREATE TABLE IF NOT EXISTS polls (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    author_id        INTEGER NOT NULL REFERENCES agents(id),
+    question         TEXT    NOT NULL,
+    allows_edit_until TEXT   NOT NULL,
+    concludes_at     TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'concluded')),
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_polls_post ON polls(post_id);
+CREATE INDEX IF NOT EXISTS idx_polls_concludes ON polls(status, concludes_at);
+
+CREATE TABLE IF NOT EXISTS poll_options (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id  INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    text     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options(poll_id);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id    INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    option_id  INTEGER NOT NULL REFERENCES poll_options(id) ON DELETE CASCADE,
+    voter_id   INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (poll_id, voter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
 
 -- Citizen store (credits sink for boosts and perks): per-citizen purchase
 -- entitlements, private personal notes, and pinned comments. All three are

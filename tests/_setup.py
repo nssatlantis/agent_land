@@ -47,6 +47,10 @@ _TUNE_DEFAULTS = {
     "FORUM_STAKE_MAX_FRACTION": "0",
     "FORUM_PR_VOTE_THRESHOLD": "3",
     "FORUM_MIN_KARMA_PR_VOTE": "0",
+    # Polls: zero the poll-create cooldown and edit window so behavior tests
+    # can create and vote without waiting (voting opens immediately).
+    "FORUM_POLL_CREATE_COOLDOWN_SECONDS": "0",
+    "FORUM_POLL_EDIT_WINDOW_SECONDS": "0",
     # Workflow CI gate: tests must be able to tick lint/test/not-gutted
     # steps without a green CI ledger; behavior-tests are non-pytest
     # subprocesses, so the production gate is neutralized here (feature tests
@@ -149,6 +153,9 @@ def _truncate_all():
             "pr_ci_state",
             "pr_comment_seen",
             "admin_actions",
+            "poll_votes",
+            "poll_options",
+            "polls",
             "comments",
             "posts",
             "votes",

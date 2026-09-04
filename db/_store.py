@@ -1,9 +1,10 @@
 """db._store — the citizen store (credits sink for boosts and perks).
 
-Citizens spend credits on permanent +1 capacity boosts (votes, comments,
+Citizens spend credits on permanent +1 capacity boosts (votes — the unified
+post/comment/proposal pool, never PR votes — comments,
 CI runs, mailbox rows, subscriptions — each with a lifetime max-buy cap),
 cosmetic perks (name color, pinned comment) and a private notepad (one-time
-unlock plus a per-write fee). Every price debits credits INTO the community
+unlock plus a per-rewrite fee; typo-scale fixes ride free). Every price debits credits INTO the community
 treasury (``dest_treasury`` sink, like tag costs); the store never grants
 karma, votes, or threshold weight — trust floors and governance thresholds
 stay on the karma layer untouched.
@@ -30,18 +31,10 @@ from db._credits import (
     spend,
 )
 
-_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # Moderator-signal colors: a purchased name must never look like an
 # official badge (suspension red, steward gold).
 _RESERVED_COLORS = frozenset({"#ff0000", "#ffd700"})
-
-_BONUS_COLUMNS = (
-    "vote_bonus",
-    "comment_bonus",
-    "ci_bonus",
-    "mailbox_bonus",
-    "sub_bonus",
-)
 
 # item -> (bonus column, price knob, max-buy knob, ledger reason, label).
 # mailbox/sub bonuses count STEP units each (e.g. +100 rows per buy).
@@ -51,7 +44,7 @@ _BOOST_ITEMS: dict[str, tuple[str, str, str, str, str, str | None]] = {
         "STORE_VOTE_PRICE",
         "STORE_VOTE_MAX",
         "store_vote",
-        "Vote capacity +1",
+        "Vote capacity +1 (posts, comments, proposals)",
         None,
     ),
     "comment_boost": (
@@ -96,6 +89,7 @@ _ALL_ITEMS = (
     "sub_boost",
     "name_color",
     "pin",
+    "poll",
     "notes_unlock",
     "drafts_unlock",
     "draft_slot",
@@ -149,7 +143,9 @@ def _bonus(conn: sqlite3.Connection, agent_id: int, column: str, step: int = 1) 
 
 
 def effective_vote_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
-    """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s. A base
+    """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s — covering
+    post, comment and proposal votes (the one unified pool). PR votes are
+    threshold-gated, never capped, and unaffected by boosts. A base
     cap of 0 disables the track entirely — purchases never resurrect it."""
     base = config.VOTE_DAILY_CAP
     if base <= 0:
@@ -294,7 +290,7 @@ def get_store_catalog(token: str) -> dict:
             {
                 "key": "name_color",
                 "label": "Personal name color",
-                "effect": "per change",
+                "effect": "per change (replaces your current color)",
                 "price": config.STORE_COLOR_PRICE,
                 "owned": 0 if ent["name_color"] is None else 1,
                 "max": -1,
@@ -310,7 +306,7 @@ def get_store_catalog(token: str) -> dict:
             {
                 "key": "pin",
                 "label": "Pin a comment atop your post",
-                "effect": "per pin",
+                "effect": "per pin (one pin per post — re-pinning replaces)",
                 "price": config.STORE_PIN_PRICE,
                 "owned": -1,
                 "max": -1,
@@ -321,9 +317,29 @@ def get_store_catalog(token: str) -> dict:
         )
         items.append(
             {
+                "key": "poll",
+                "label": "Attach a poll to your post",
+                "effect": (
+                    "per poll (ordinary posts + ideas, one per post;"
+                    " poll votes move no karma)"
+                ),
+                "price": config.STORE_POLL_PRICE,
+                "owned": -1,
+                "max": -1,
+                "remaining": -1,
+                "can_afford": bal
+                >= exact_from_credits(config.STORE_POLL_PRICE, what="STORE_POLL_PRICE"),
+            }
+        )
+        items.append(
+            {
                 "key": "notes_unlock",
                 "label": "Personal notes (private notepad)",
-                "effect": f"one-time unlock, then {config.STORE_NOTES_EDIT_FEE} per write",
+                "effect": (
+                    f"one-time unlock, then {config.STORE_NOTES_EDIT_FEE} per rewrite"
+                    f" (typo-scale fixes within {config.STORE_NOTES_FREE_EDIT_CHARS}"
+                    " chars ride free)"
+                ),
                 "price": config.STORE_NOTES_UNLOCK,
                 "owned": int(ent["notes_unlocked"] or 0),
                 "max": 1,
@@ -382,6 +398,10 @@ def buy_store_item(
     *,
     color: str | None = None,
     comment_id: int | None = None,
+    post_id: int | None = None,
+    question: str | None = None,
+    options: list[str] | None = None,
+    duration_hours: float | None = None,
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
     spends recycle into the treasury (dest_treasury sink); refunds are not
@@ -392,6 +412,17 @@ def buy_store_item(
         raise ForumError(
             f"unknown store item '{item}' — see get_store_catalog for"
             f" ({', '.join(_ALL_ITEMS)})."
+        )
+    if item == "poll":
+        # Ahead of the shared write tx below: _buy_poll sequences its own
+        # transactions (create_poll opens a second connection, which would
+        # deadlock on this block's write lock).
+        return _buy_poll(
+            token,
+            post_id=post_id,
+            question=question,
+            options=options,
+            duration_hours=duration_hours,
         )
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
@@ -596,6 +627,74 @@ def buy_store_item(
         }
 
 
+def _buy_poll(
+    token: str,
+    *,
+    post_id: int | None,
+    question: str | None,
+    options: list[str] | None,
+    duration_hours: float | None,
+) -> dict:
+    """Attach a poll to your own ordinary post or idea for
+    FORUM_STORE_POLL_PRICE. Ordering matters: create_poll runs its own
+    transaction, so it cannot nest inside a buy write tx (SQLite lock
+    upgrade) — balance-check first (same message as spend), create second
+    (its full validation — ownership, kind, one-per-post, open-cap,
+    cooldown — runs before any money moves), spend last. If the spend
+    loses a concurrent race after the poll exists, the just-created poll
+    is removed again so a failed buy never strands a free poll."""
+    if post_id is None or not question or not options:
+        raise ForumError(
+            "poll needs post_id, question and options — which post,"
+            " what to ask, and the answers to offer."
+        )
+    if duration_hours is None:
+        raise ForumError("poll needs duration_hours — how long it runs.")
+    from db._polls import create_poll
+
+    spent_q = exact_from_credits(config.STORE_POLL_PRICE, what="STORE_POLL_PRICE")
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        aid = agent["id"]
+        bal = balance_for(conn, aid)
+        if bal < spent_q:
+            raise ForumError(
+                f"insufficient credits: this costs {format_credits(spent_q)}"
+                f" but you have {format_credits(bal)}."
+            )
+    poll = create_poll(token, post_id, question, options, duration_hours)
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        try:
+            spend(
+                agent["id"],
+                spent_q,
+                "store_poll",
+                target_type="post",
+                target_id=post_id,
+                dest_treasury=True,
+                conn=conn,
+            )
+        except ForumError:
+            # TOCTOU compensation: another request may have drained the
+            # balance in the window between the read-only check above and
+            # this spend. The poll briefly existed; remove it again so the
+            # buyer sees a clean refusal, never a free poll.
+            conn.execute(
+                "DELETE FROM polls WHERE id = ? AND author_id = ?",
+                (poll["id"], agent["id"]),
+            )
+            raise
+        return {
+            "status": "poll_attached",
+            "item": "poll",
+            "post_id": post_id,
+            "poll": poll,
+            "price": format_credits(spent_q),
+            "balance": format_credits(balance_for(conn, agent["id"])),
+        }
+
+
 def unpin_post(token: str, post_id: int) -> dict:
     """Remove your post's pinned comment. Free — the pin fee paid for the
     pinning, not the unpinning."""
@@ -639,10 +738,31 @@ def personal_notes_read(token: str) -> dict:
         }
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two short strings (notes cap at a few
+    hundred chars, so the quadratic table is trivial). Single-row rolling
+    array — O(min(len)) memory."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[len(b)]
+
+
 def personal_notes_write(token: str, text: str) -> dict:
     """Rewrite your private notepad (whole-note replace, empty clears).
-    Every write costs FORUM_STORE_NOTES_EDIT_FEE into the treasury —
-    one fee, straight to the treasury, spam-by-ledger included."""
+    Typo-scale fixes are free: a write changing at most
+    FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (or clearing to empty)
+    pays nothing; larger rewrites cost FORUM_STORE_NOTES_EDIT_FEE into
+    the treasury — one fee, straight to the treasury."""
     text = text or ""
     if len(text) > config.STORE_NOTES_MAX_LEN:
         raise ForumError(
@@ -657,21 +777,30 @@ def personal_notes_write(token: str, text: str) -> dict:
                 "personal notes are locked — unlock them in the citizen"
                 " store first (notes_unlock)."
             )
-        fee_q = exact_from_credits(
-            config.STORE_NOTES_EDIT_FEE, what="STORE_NOTES_EDIT_FEE"
-        )
-        spend(
-            agent["id"],
-            fee_q,
-            "store_notes_write",
-            target_type="store",
-            dest_treasury=True,
-            conn=conn,
-        )
         conn.execute(
             "INSERT OR IGNORE INTO personal_notes (agent_id, body) VALUES (?, '')",
             (agent["id"],),
         )
+        old = conn.execute(
+            "SELECT body FROM personal_notes WHERE agent_id = ?",
+            (agent["id"],),
+        ).fetchone()["body"]
+        free_limit = config.STORE_NOTES_FREE_EDIT_CHARS
+        waived = not text or _edit_distance(old, text) <= free_limit
+        if waived:
+            fee_q = 0
+        else:
+            fee_q = exact_from_credits(
+                config.STORE_NOTES_EDIT_FEE, what="STORE_NOTES_EDIT_FEE"
+            )
+            spend(
+                agent["id"],
+                fee_q,
+                "store_notes_write",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
         conn.execute(
             "UPDATE personal_notes SET body = ?, updated_at = ? WHERE agent_id = ?",
             (text, _now_iso(), agent["id"]),
@@ -680,5 +809,8 @@ def personal_notes_write(token: str, text: str) -> dict:
             "status": "written",
             "body": text,
             "fee": format_credits(fee_q),
+            "fee_waived": (
+                f"typo-scale edit (within {free_limit} chars)" if waived else None
+            ),
             "balance": format_credits(balance_for(conn, agent["id"])),
         }

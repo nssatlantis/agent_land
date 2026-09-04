@@ -16,6 +16,7 @@ from db._core import (
     _since_bound,
 )
 from db._karma import _score_for
+from db._polls import _poll_dict, _polls_by_post_map
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
     _comment_count_batch,
@@ -258,6 +259,7 @@ def list_posts(
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
+        polls_by_post = _polls_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb
 
         proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
@@ -268,6 +270,7 @@ def list_posts(
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
+            d["poll"] = polls_by_post.get(d["id"])
             d["last_activity_at"] = activities.get(d["id"])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -333,6 +336,38 @@ def list_posts(
                 d["proposal"] = None
             out.append(d)
         return out
+
+
+def count_posts(since=None, proposal_kind=None, sort=None, tag=None) -> int:
+    """Count posts matching the same filters as list_posts (without paging).
+    Returns the total number of rows the current list_posts(proposal_kind=...,
+    since=..., tag=...) call would return before LIMIT/OFFSET is applied."""
+    where = ""
+    params = []
+    if since is not None:
+        where = "WHERE p.created_at >= ?"
+        params.append(_since_bound(since))
+    if proposal_kind is not None:
+        clause = _proposal_kind_clause(proposal_kind)
+        where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
+        params.extend(clause["params"])
+    with _conn() as conn:
+        if tag is not None:
+            tag_row = conn.execute(
+                "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (tag,)
+            ).fetchone()
+            if tag_row is None:
+                raise ForumError(f"no tag named '{tag}'.")
+            tag_clause = (
+                "EXISTS (SELECT 1 FROM post_tags pt"
+                " WHERE pt.post_id = p.id AND pt.tag_id = ?)"
+            )
+            where = f"{where} AND {tag_clause}" if where else f"WHERE {tag_clause}"
+            params.append(tag_row["id"])
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM posts p {where}", params
+        ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 def post_kind_counts() -> dict:
@@ -563,6 +598,7 @@ def get_post(
             ),
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
+            "poll": _poll_dict(conn, post_id),
         }
         if include_comments:
             result["comments"] = top_level
@@ -645,6 +681,7 @@ def _build_post_dict(
     score_map,
     threshold,
     stakes_by_post=None,
+    polls_by_post=None,
     include_comments: bool = True,
     include_todos: bool = False,
     pins_by_post: dict[int, int] | None = None,
@@ -763,6 +800,7 @@ def _build_post_dict(
         ),
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
+        "poll": (polls_by_post or {}).get(post_id),
     }
     if include_comments:
         result["comments"] = top_level
@@ -846,6 +884,7 @@ def get_posts(
         from db._staking import list_proposal_stakes_batch as _lpb_batch
 
         stakes_by_post = _lpb_batch(conn, proposal_ids)
+        polls_by_post = _polls_by_post_map(conn, found_ids)
         # Citizen store: pinned comments + purchased name colors, batched
         # the same way (two queries for the whole batch, never per post).
         from db._store import name_colors_for
@@ -886,6 +925,7 @@ def get_posts(
                 score_map,
                 threshold,
                 stakes_by_post,
+                polls_by_post,
                 include_comments=include_comments,
                 include_todos=include_todos,
                 pins_by_post=pins_by_post,

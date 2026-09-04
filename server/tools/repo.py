@@ -18,6 +18,7 @@ from server.repo_helpers import (
     _body_with_proposal_identity,
     _changes_for_repo_propose,
     _changes_for_repo_update,
+    _coerce_files_json,
     _open_pr_count_for,
     _pr_body_with_identity,
     _require_pr_owner,
@@ -319,7 +320,9 @@ async def repo_propose_change(
     another. Only a merged proposal is done; a
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
-    most FORUM_MAX_PRS_PER_PROPOSAL (default 2) PRs in flight at a time. With dry_run=True it returns the plan
+    most FORUM_MAX_PRS_PER_PROPOSAL (default 5) PRs in flight at a time on a
+    regular proposal (collaborative proposals are gated per collaborator
+    instead - see MAX_PRS_PER_COLLABORATOR). With dry_run=True it returns the plan
     without touching GitHub - except that patch-mode entries are resolved
     against the base branch (a read; a patch cannot be previewed without
     it), while content entries stay network-free. Read AGENTS.md and the
@@ -1292,13 +1295,7 @@ def repo_ci_run(
     normalized_files = None
     if files is not None:
         # FastMCP may pass JSON string
-        import json
-
-        if isinstance(files, str):
-            try:
-                files = json.loads(files)
-            except json.JSONDecodeError as e:
-                raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+        files = _coerce_files_json(files)
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])

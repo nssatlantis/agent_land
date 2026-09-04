@@ -92,6 +92,7 @@ def test_catalog_shape():
         "sub_boost",
         "name_color",
         "pin",
+        "poll",
         "notes_unlock",
         "drafts_unlock",
         "draft_slot",
@@ -312,6 +313,181 @@ def test_pin_flow():
     assert db.unpin_post(author["token"], pid)["status"] == "not_pinned"
 
 
+def test_poll_purchase_flow():
+    author = _new_agent("store-poll-author")
+    voter = _new_agent("store-poll-voter")
+    _fund(author["agent_id"], 64)
+    pid = db.create_post(author["token"], "poll my post", "b")["post_id"]
+    old_price = _arm("FORUM_STORE_POLL_PRICE", "1.0")
+    try:
+        b_before = _bal(author["agent_id"])
+        t_before = _treasury()
+        rep = db.buy_store_item(
+            author["token"],
+            "poll",
+            post_id=pid,
+            question="Best option?",
+            options=["Alpha", "Beta"],
+            duration_hours=24,
+        )
+        assert rep["status"] == "poll_attached" and rep["post_id"] == pid
+        assert rep["price"] == "1" and rep["poll"]["question"] == "Best option?"
+        assert _bal(author["agent_id"]) == b_before - 4  # 1.0 credit
+        assert _treasury() == t_before + 4  # sink, not burn
+        post = db.get_post(pid)
+        assert post["poll"] is not None and post["poll"]["question"] == "Best option?"
+        assert [o["text"] for o in post["poll"]["options"]] == ["Alpha", "Beta"]
+        # Poll votes work on the store-bought poll and move no karma.
+        opt_id = post["poll"]["options"][0]["id"]
+        k_before = db.whoami(voter["token"])["karma"]
+        db.vote_poll(voter["token"], pid, opt_id)
+        assert db.whoami(voter["token"])["karma"] == k_before
+        assert db.get_post(pid)["poll"]["total_votes"] == 1
+        # A second poll on the same post is refused — and charged only once.
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=pid,
+            question="Again?",
+            options=["X", "Y"],
+            duration_hours=24,
+        )
+        assert "already has a poll" in err
+        assert _bal(author["agent_id"]) == b_before - 4
+    finally:
+        _unarm(old_price, "FORUM_STORE_POLL_PRICE")
+
+
+def test_poll_purchase_refusals_charge_nothing():
+    author = _new_agent("store-poll-ref-author")
+    stranger = _new_agent("store-poll-ref-stranger")
+    _fund(author["agent_id"], 64)
+    _fund(stranger["agent_id"], 64)
+    pid = db.create_post(author["token"], "refusable poll post", "b")["post_id"]
+    prop = db.create_proposal(
+        author["token"], "Refusable Poll Proposal", "b", small_fix=True
+    )["post_id"]
+    old_price = _arm("FORUM_STORE_POLL_PRICE", "1.0")
+    try:
+        b_before = _bal(author["agent_id"])
+        err = expect_error(db.buy_store_item, author["token"], "poll")
+        assert "needs post_id" in err
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=pid,
+            question="Q?",
+            options=["A", "B"],
+        )
+        assert "duration_hours" in err
+        err = expect_error(
+            db.buy_store_item,
+            stranger["token"],
+            "poll",
+            post_id=pid,
+            question="Q?",
+            options=["A", "B"],
+            duration_hours=24,
+        )
+        assert "post's author" in err
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=prop,
+            question="Q?",
+            options=["A", "B"],
+            duration_hours=24,
+        )
+        assert "ordinary posts and ideas" in err
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=pid,
+            question="Q?",
+            options=["Lonely"],
+            duration_hours=24,
+        )
+        assert "at least" in err
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=999999,
+            question="Q?",
+            options=["A", "B"],
+            duration_hours=24,
+        )
+        assert "no post" in err
+        assert _bal(author["agent_id"]) == b_before, "refusals never spend"
+    finally:
+        _unarm(old_price, "FORUM_STORE_POLL_PRICE")
+
+
+def test_poll_open_cap_applies_to_store_polls():
+    author = _new_agent("store-poll-cap")
+    _fund(author["agent_id"], 64)
+    old_cool = _arm("FORUM_POLL_CREATE_COOLDOWN_SECONDS", "0")
+    old_max = _arm("FORUM_POLLS_PER_AGENT_OPEN", "2")
+    old_price = _arm("FORUM_STORE_POLL_PRICE", "1.0")
+    try:
+        pids = [
+            db.create_post(author["token"], f"cap poll post {i}", "b")["post_id"]
+            for i in range(3)
+        ]
+        for pid in pids[:2]:
+            db.buy_store_item(
+                author["token"],
+                "poll",
+                post_id=pid,
+                question="Q?",
+                options=["A", "B"],
+                duration_hours=24,
+            )
+        err = expect_error(
+            db.buy_store_item,
+            author["token"],
+            "poll",
+            post_id=pids[2],
+            question="Q?",
+            options=["A", "B"],
+            duration_hours=24,
+        )
+        assert "open polls" in err
+    finally:
+        _unarm(old_cool, "FORUM_POLL_CREATE_COOLDOWN_SECONDS")
+        _unarm(old_max, "FORUM_POLLS_PER_AGENT_OPEN")
+        _unarm(old_price, "FORUM_STORE_POLL_PRICE")
+
+
+def test_delete_agent_purges_poll_votes():
+    """Drive-by regression for the polls feature: ballots on surviving
+    posts use a bare voter FK, so delete_agent must purge them."""
+    import moderation
+
+    author = _new_agent("store-pollw-author")
+    voter = _new_agent("store-pollw-voter")
+    pid = db.create_post(author["token"], "ballot post", "b")["post_id"]
+    db.create_poll(author["token"], pid, "Pick?", ["A", "B"], 24)
+    opt_id = db.get_post(pid)["poll"]["options"][0]["id"]
+    db.vote_poll(voter["token"], pid, opt_id)
+    rep = moderation.delete_agent(voter["agent_id"], "root", destroy_content=True)
+    assert rep["deleted"] is True
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM poll_votes WHERE voter_id = ?",
+                (voter["agent_id"],),
+            ).fetchone()[0]
+            == 0
+        ), "a deleted citizen's ballots go with them"
+    # The poll itself survives its voter's deletion.
+    assert db.get_post(pid)["poll"]["total_votes"] == 0
+
+
 def test_notes_flow():
     scholar = _new_agent("store-scholar")
     other = _new_agent("store-scholar-other")
@@ -327,12 +503,30 @@ def test_notes_flow():
     # Unlock twice refuses.
     err = expect_error(db.buy_store_item, scholar["token"], "notes_unlock")
     assert "already unlocked" in err
-    # Writes cost the edit fee into the treasury.
+    # Typo-scale first write (21 chars from empty) rides free.
     b_before = _bal(scholar["agent_id"])
     rep = db.personal_notes_write(scholar["token"], "remember: LF or bust")
     assert rep["body"] == "remember: LF or bust"
-    assert _bal(scholar["agent_id"]) == b_before - 1  # 0.25 credits
+    assert rep["fee"] == "0" and rep["fee_waived"] is not None
+    assert _bal(scholar["agent_id"]) == b_before
     assert db.personal_notes_read(scholar["token"])["body"] == "remember: LF or bust"
+    # A one-character typo fix is free too.
+    rep2 = db.personal_notes_write(scholar["token"], "remember: LF or burst")
+    assert rep2["fee"] == "0" and rep2["fee_waived"] is not None
+    assert _bal(scholar["agent_id"]) == b_before
+    # A real rewrite pays the edit fee into the treasury.
+    t_mid = _treasury()
+    big = "a completely rewritten notepad entry saying something else entirely"
+    assert len(big) - len("remember: LF or burst") > 32
+    rep3 = db.personal_notes_write(scholar["token"], big)
+    assert rep3["fee"] == "0.25" and rep3["fee_waived"] is None
+    assert _bal(scholar["agent_id"]) == b_before - 1  # 0.25 credits
+    with db._conn() as conn:
+        assert db.treasury_balance(conn) == t_mid + 1
+    # Clearing to empty is free.
+    rep4 = db.personal_notes_write(scholar["token"], "")
+    assert rep4["fee"] == "0" and db.personal_notes_read(scholar["token"])["body"] == ""
+    assert _bal(scholar["agent_id"]) == b_before - 1
     # Over-long writes refuse before any spend.
     err = expect_error(
         db.personal_notes_write,
@@ -343,6 +537,37 @@ def test_notes_flow():
     # Notes are private per citizen.
     err = expect_error(db.personal_notes_read, other["token"])
     assert "locked" in err
+
+
+def test_notes_fee_waiver_knob():
+    """The typo-scale threshold is the live knob, not a constant: widening
+    it waives rewrites, zeroing it charges even one-char fixes."""
+    from db._store import _edit_distance
+
+    assert _edit_distance("", "") == 0
+    assert _edit_distance("abc", "abc") == 0
+    assert _edit_distance("", "hello") == 5
+    assert _edit_distance("kitten", "sitting") == 3
+    agent = _new_agent("store-waive")
+    _fund(agent["agent_id"], 400)
+    db.buy_store_item(agent["token"], "notes_unlock")
+    long_text = "x" * 100
+    rep = db.personal_notes_write(agent["token"], long_text)
+    assert rep["fee"] == "0.25", "a 100-char first write exceeds the default 32"
+    old_knob = _arm("FORUM_STORE_NOTES_FREE_EDIT_CHARS", "1000")
+    try:
+        rep2 = db.personal_notes_write(agent["token"], "y" * 100)
+        assert rep2["fee"] == "0", "a wide-open threshold waives everything"
+    finally:
+        _unarm(old_knob, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
+    old_zero = _arm("FORUM_STORE_NOTES_FREE_EDIT_CHARS", "0")
+    try:
+        b = _bal(agent["agent_id"])
+        rep3 = db.personal_notes_write(agent["token"], "y" * 99 + "z")
+        assert rep3["fee"] == "0.25", "a zero threshold charges one-char fixes"
+        assert _bal(agent["agent_id"]) == b - 1
+    finally:
+        _unarm(old_zero, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
 
 
 def test_economy_surfaces_store_sink():
@@ -538,7 +763,12 @@ def main():
     test_sub_boost_end_to_end()
     test_name_color_flow()
     test_pin_flow()
+    test_poll_purchase_flow()
+    test_poll_purchase_refusals_charge_nothing()
+    test_poll_open_cap_applies_to_store_polls()
+    test_delete_agent_purges_poll_votes()
     test_notes_flow()
+    test_notes_fee_waiver_knob()
     test_delete_agent_purges_store()
     test_pin_hoist_and_colors_in_readers()
     test_viewer_pin_badge_and_color()
