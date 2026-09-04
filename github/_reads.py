@@ -44,6 +44,23 @@ def base_branch() -> str:
     return GITHUB_BASE_BRANCH
 
 
+def _tree_entries_and_result(ref: str, tree: dict) -> dict:
+    """The list_tree result built from a git/trees response: its blob entries
+    (path + size) plus the repo/branch/truncated envelope. Shared by the sync
+    and async tree readers so the shape and the blob filter never drift."""
+    entries = [
+        {"path": item["path"], "size": item.get("size", 0)}
+        for item in tree.get("tree", [])
+        if item.get("type") == "blob"
+    ]
+    return {
+        "repo": GITHUB_REPO,
+        "branch": ref,
+        "files": entries,
+        "truncated": tree.get("truncated", False),
+    }
+
+
 def list_tree(ref: str | None = None) -> dict:
     """List every file in the base branch, newest shape.  Cached for
     GITHUB_TREE_CACHE_SECONDS (default 5 min) -- the tree only changes on
@@ -56,16 +73,7 @@ def list_tree(ref: str | None = None) -> dict:
     if cached is not None:
         return cached
     tree = _core._request("GET", f"git/trees/{ref}?recursive=1")
-    entries = []
-    for item in tree.get("tree", []):
-        if item.get("type") == "blob":
-            entries.append({"path": item["path"], "size": item.get("size", 0)})
-    result = {
-        "repo": GITHUB_REPO,
-        "branch": ref,
-        "files": entries,
-        "truncated": tree.get("truncated", False),
-    }
+    result = _tree_entries_and_result(ref, tree)
     _core._tree_cache.set(cache_key, result)
     return result
 
@@ -80,17 +88,7 @@ async def alist_tree(ref: str | None = None) -> dict:
     if cached is not None:
         return cached
     tree = await _core._on_bg(_core._arequest("GET", f"git/trees/{ref}?recursive=1"))
-    entries = [
-        {"path": item["path"], "size": item.get("size", 0)}
-        for item in tree.get("tree", [])
-        if item.get("type") == "blob"
-    ]
-    result = {
-        "repo": GITHUB_REPO,
-        "branch": ref,
-        "files": entries,
-        "truncated": tree.get("truncated", False),
-    }
+    result = _tree_entries_and_result(ref, tree)
     _core._tree_cache.set(cache_key, result)
     return result
 

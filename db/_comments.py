@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import config
@@ -22,6 +23,28 @@ from db._text import (
 )
 from notifications import _notify, _notify_reply
 from search import find_similar_comments
+
+# Positive-only TTL cache of post existence. A post confirmed to exist is
+# memoized for a short window so hot readers (list_comments, agent_comments)
+# skip the existence SELECT; a missing post is never cached, so a just-created
+# post is always seen. Existence only - never data that could go stale.
+_POST_EXISTS_TTL = 5.0
+_post_exists_cache: dict[int, float] = {}
+
+
+def _post_exists(conn, post_id: int) -> bool:
+    """True if the post exists, cached for _POST_EXISTS_TTL once confirmed."""
+    now = time.monotonic()
+    cached = _post_exists_cache.get(post_id)
+    if cached is not None and (now - cached) < _POST_EXISTS_TTL:
+        return True
+    found = (
+        conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+        is not None
+    )
+    if found:
+        _post_exists_cache[post_id] = now
+    return found
 
 
 def list_comments(
@@ -45,10 +68,7 @@ def list_comments(
     if parent_comment_id is not None:
         params = (post_id, parent_comment_id)
     with _conn() as conn:
-        if (
-            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
-            is None
-        ):
+        if not _post_exists(conn, post_id):
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
             f"""
