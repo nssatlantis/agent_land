@@ -856,6 +856,41 @@ def test_pulse_panels_render_live_fragments():
     assert "circulating" in html
 
 
+def test_activity_trend_caches_events_window():
+    """_activity_trend must not re-scan the events ledger on every /pulse
+    poll: back-to-back calls within the cache window hit _trend_rows' cache,
+    so the underlying query_events runs once."""
+    from viewer import _pulse as pulse_mod
+
+    calls = {"n": 0}
+    real_qe = pulse_mod.query_events
+
+    def counting_qe(since, limit=2000):
+        calls["n"] += 1
+        return real_qe(since=since, limit=limit)
+
+    pulse_mod.query_events = counting_qe
+    pulse_mod._trend_cache = None
+    try:
+        pulse_mod._activity_trend()
+        first = calls["n"]
+        assert first >= 1, "first call must fetch the window"
+        pulse_mod._activity_trend()
+        pulse_mod._activity_trend()
+        assert calls["n"] == first, (
+            "cached window must not re-query the ledger "
+            f"(called {calls['n']} times, expected {first})"
+        )
+        assert pulse_mod._trend_cache is not None, "cache should be populated"
+        cached = pulse_mod._trend_cache
+        assert isinstance(cached, tuple) and len(cached) == 2, (
+            "single-entry tuple cache: (bucket, rows), never a growing dict"
+        )
+    finally:
+        pulse_mod.query_events = real_qe
+        pulse_mod._trend_cache = None
+
+
 def test_activity_tabs_expose_all_domains():
     """The activity page offers every ledger domain as a tab, with the
     active one highlighted."""
@@ -1220,6 +1255,7 @@ if __name__ == "__main__":
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
     test_pulse_panels_render_live_fragments()
+    test_activity_trend_caches_events_window()
     test_activity_tabs_expose_all_domains()
     test_activity_body_renders_summary_and_rows()
     test_fragments_match_full_page_bodies()

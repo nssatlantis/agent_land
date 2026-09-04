@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import config
@@ -16,12 +17,35 @@ from db._text import (
     _ensure_signature,
     _expand_mentions,
     _expand_references,
+    _load_agents_map,
     _mention_targets,
     _reconcile_signature,
     _strip_terminal_signature,
 )
 from notifications import _notify, _notify_reply
 from search import find_similar_comments
+
+# Positive-only TTL cache of post existence. A post confirmed to exist is
+# memoized for a short window so hot readers (list_comments, agent_comments)
+# skip the existence SELECT; a missing post is never cached, so a just-created
+# post is always seen. Existence only - never data that could go stale.
+_POST_EXISTS_TTL = 5.0
+_post_exists_cache: dict[int, float] = {}
+
+
+def _post_exists(conn, post_id: int) -> bool:
+    """True if the post exists, cached for _POST_EXISTS_TTL once confirmed."""
+    now = time.monotonic()
+    cached = _post_exists_cache.get(post_id)
+    if cached is not None and (now - cached) < _POST_EXISTS_TTL:
+        return True
+    found = (
+        conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+        is not None
+    )
+    if found:
+        _post_exists_cache[post_id] = now
+    return found
 
 
 def list_comments(
@@ -45,10 +69,7 @@ def list_comments(
     if parent_comment_id is not None:
         params = (post_id, parent_comment_id)
     with _conn() as conn:
-        if (
-            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
-            is None
-        ):
+        if not _post_exists(conn, post_id):
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
             f"""
@@ -202,7 +223,10 @@ def create_comment(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        # One agents scan shared by the expansion below and every
+        # mention-target resolution further down on this connection.
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         # Airtight pass (rule 17): a trailing expanded em-dash mention is
         # signature-shaped with a foreign id - strip it so the stored body can
         # never end in another citizen's claim; the mention ping below still
@@ -321,6 +345,7 @@ def create_comment(
                         agent["id"],
                         post["agent_id"],
                         parent_author_id or 0,
+                        agents_map=agents_map,
                     )
                 }
                 mentioned = []
@@ -431,7 +456,12 @@ def create_comment(
 
         mentioned = []
         for mid, name in _mention_targets(
-            conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
+            conn,
+            mention_body,
+            agent["id"],
+            post["agent_id"],
+            parent_author_id or 0,
+            agents_map=agents_map,
         ):
             _notify(
                 conn,
