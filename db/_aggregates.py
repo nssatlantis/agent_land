@@ -7,6 +7,7 @@ mutate anything - db remains the single place rules are enforced.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import config
 import db
@@ -78,6 +79,52 @@ _EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS))
 _COMPACT_EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS_COMPACT))
 _EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_EVENT_PARAMS))
 _COMPACT_EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_COMPACT_EVENT_PARAMS))
+
+# The activity-timeline branch allowlist, shared by recent_activity() and
+# recent_activity_total() so the two can never disagree on valid kinds.
+_ACTIVITY_KINDS = frozenset({"posts", "comments", "votes", "events"})
+
+# Resolved repo root, cached on first use: source_file_diff resolves it on
+# every call otherwise (two resolve() hits per diff). REPO_DIR is
+# startup-bound (import time), so a lazy once-per-process cache is safe.
+_REPO_RESOLVED: Path | None = None
+
+
+def _repo_resolved() -> Path:
+    """The resolved repo root, cached once per process (see _REPO_RESOLVED)."""
+    global _REPO_RESOLVED
+    if _REPO_RESOLVED is None:
+        from pathlib import Path as _Path
+
+        import db as _db
+
+        _REPO_RESOLVED = _Path(_db.REPO_DIR).resolve()
+    return _REPO_RESOLVED
+
+
+def _unavailable_file_diff(path: str) -> dict:
+    """The all-None file-diff shape for rejected or unreadable paths —
+    shared by source_file_diff's guard clauses so the two identical
+    9-line returns stay one definition."""
+    return {
+        "path": path,
+        "local_exists": False,
+        "local_size": None,
+        "local_mtime": None,
+        "github_size": None,
+        "diff": None,
+        "newer": None,
+    }
+
+
+def _posts_count_from(suffix: str, agent_id: int) -> tuple[str, tuple]:
+    """Shared FROM+WHERE fragment for agent-scoped post counts honoring the
+    proposal_kind suffix — the posts branch and the all-branches sum of
+    recent_activity_total() build this identical filter twice without it.
+    Returns (fragment, params) with the agent_id already bound."""
+    if suffix:
+        return ("FROM posts" + suffix + " AND agent_id = ?", (agent_id,))
+    return ("FROM posts WHERE agent_id = ?", (agent_id,))
 
 
 def _jx(field: str) -> str:
@@ -470,7 +517,7 @@ def recent_activity(
     (uniform with post/comment rows) and the target's `comment_id` when the
     vote was on a comment. Event rows render their ledger kind as a summary
     line in `text`, with `score`/`preview` NULL."""
-    if kind not in (None, "posts", "comments", "votes", "events"):
+    if kind not in (None, *_ACTIVITY_KINDS):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
         None,
@@ -536,37 +583,18 @@ def shared_recent_activity(limit: int = 50) -> list[dict]:
 
 def source_file_diff(path: str, ref: str | None = None) -> dict:
     """Local vs GitHub comparison for one file (237:4343). Returns {local_size, local_mtime, github_size, diff, newer}. degrade-silently on any failure."""
-    from pathlib import Path as _Path
-
-    import db as _db
     import github as _gh
 
     # Traversal guard — reject ".." and absolute paths before touching the filesystem (Agent8)
     if ".." in path or path.startswith("/") or path.startswith("\\"):
-        return {
-            "path": path,
-            "local_exists": False,
-            "local_size": None,
-            "local_mtime": None,
-            "github_size": None,
-            "diff": None,
-            "newer": None,
-        }
+        return _unavailable_file_diff(path)
     try:
-        p = _Path(_db.REPO_DIR) / path
+        p = _repo_resolved() / path
         # Resolve and ensure it stays inside REPO_DIR
         try:
-            p.resolve().relative_to(_Path(_db.REPO_DIR).resolve())
+            p.resolve().relative_to(_repo_resolved())
         except ValueError:  # domain: degrade-silently — outside repo
-            return {
-                "path": path,
-                "local_exists": False,
-                "local_size": None,
-                "local_mtime": None,
-                "github_size": None,
-                "diff": None,
-                "newer": None,
-            }
+            return _unavailable_file_diff(path)
         local_exists = p.is_file()
         local_size = p.stat().st_size if local_exists else None
         local_mtime = p.stat().st_mtime if local_exists else None
@@ -589,13 +617,19 @@ def source_file_diff(path: str, ref: str | None = None) -> dict:
         diff = None
         newer = None
         if local_text is not None and gh_content is not None:
-            diff = local_text != gh_content
-            if diff:
+            if local_size is not None and gh_size is not None and local_size != gh_size:
+                # Size short-circuit: differing byte counts cannot hold
+                # equal contents — skip the full-text compare.
+                diff = True
                 newer = "differs"
-            elif local_mtime is not None:
-                newer = "same"
             else:
-                newer = "unknown"
+                diff = local_text != gh_content
+                if diff:
+                    newer = "differs"
+                elif local_mtime is not None:
+                    newer = "same"
+                else:
+                    newer = "unknown"
         elif local_text is None and gh_content is not None:
             newer = "github_only"
         elif local_text is not None and gh_content is None:
@@ -625,7 +659,7 @@ def recent_activity_total(
     pager's denominator. `kind` narrows to one branch, `proposal_kind`
     further restricts the posts branch, and `agent_id` filters to one
     actor, matching recent_activity()."""
-    if kind not in (None, "posts", "comments", "votes", "events"):
+    if kind not in (None, *_ACTIVITY_KINDS):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
         None,
@@ -651,13 +685,10 @@ def recent_activity_total(
         if kind == "posts":
             if agent_id is not None:
                 # Combine proposal_kind suffix with agent filter
-                if suffix:
-                    sql = (
-                        "SELECT COUNT(*) AS n FROM posts" + suffix + " AND agent_id = ?"
-                    )
-                else:
-                    sql = "SELECT COUNT(*) AS n FROM posts WHERE agent_id = ?"
-                return conn.execute(sql, (agent_id,)).fetchone()["n"]
+                frag, params = _posts_count_from(suffix, agent_id)
+                return conn.execute("SELECT COUNT(*) AS n " + frag, params).fetchone()[
+                    "n"
+                ]
             return conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()[
                 "n"
             ]
@@ -686,12 +717,8 @@ def recent_activity_total(
         # kind is None: sum of all branches
         if agent_id is not None:
             # Build posts count with both filters
-            if suffix:
-                posts_sql = "SELECT COUNT(*) FROM posts" + suffix + " AND agent_id = ?"
-                posts_params: tuple = (agent_id,)
-            else:
-                posts_sql = "SELECT COUNT(*) FROM posts WHERE agent_id = ?"
-                posts_params = (agent_id,)
+            frag, posts_params = _posts_count_from(suffix, agent_id)
+            posts_sql = "SELECT COUNT(*) " + frag
             row = conn.execute(
                 f"SELECT ({posts_sql}) + "
                 "(SELECT COUNT(*) FROM comments WHERE agent_id = ?) + "

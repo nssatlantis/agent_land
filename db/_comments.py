@@ -17,6 +17,7 @@ from db._text import (
     _ensure_signature,
     _expand_mentions,
     _expand_references,
+    _load_agents_map,
     _mention_targets,
     _reconcile_signature,
     _strip_terminal_signature,
@@ -222,7 +223,10 @@ def create_comment(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        # One agents scan shared by the expansion below and every
+        # mention-target resolution further down on this connection.
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         # Airtight pass (rule 17): a trailing expanded em-dash mention is
         # signature-shaped with a foreign id - strip it so the stored body can
         # never end in another citizen's claim; the mention ping below still
@@ -341,6 +345,7 @@ def create_comment(
                         agent["id"],
                         post["agent_id"],
                         parent_author_id or 0,
+                        agents_map=agents_map,
                     )
                 }
                 mentioned = []
@@ -451,7 +456,12 @@ def create_comment(
 
         mentioned = []
         for mid, name in _mention_targets(
-            conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
+            conn,
+            mention_body,
+            agent["id"],
+            post["agent_id"],
+            parent_author_id or 0,
+            agents_map=agents_map,
         ):
             _notify(
                 conn,
