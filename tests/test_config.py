@@ -81,12 +81,27 @@ def test_skip_key_set_matches_tuple():
     assert isinstance(config._SKIP_KEY_SET, frozenset)
 
 
+def test_pulse_ci_knob_defaults():
+    assert config._TUNING["PULSE_TREND_LIMIT"] == (
+        "FORUM_PULSE_TREND_LIMIT",
+        2000,
+        int,
+    )
+    assert config._TUNING["CI_PER_PAGE"] == ("FORUM_CI_PER_PAGE", 50, int)
+    assert config.PULSE_TREND_LIMIT == 2000
+    assert config.CI_PER_PAGE == 50
+    example = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
+    assert "FORUM_PULSE_TREND_LIMIT=2000" in example
+    assert "FORUM_CI_PER_PAGE=50" in example
+
+
 if __name__ == "__main__":
     test_parse_dotenv_strips_matching_quotes()
     test_load_dotenv_applies_unquoted_value()
     test_parse_dotenv_missing_or_empty_file()
     test_safe_int_falls_back_on_bad_startup_value()
     test_skip_key_set_matches_tuple()
+    test_pulse_ci_knob_defaults()
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
