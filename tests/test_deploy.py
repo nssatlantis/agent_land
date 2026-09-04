@@ -628,6 +628,11 @@ def scenario_update_sh_wiring():
     assert sync < guard, (
         f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
     )
+    assert "_common.py" in lines[sync], (
+        "the sync loop must install _common.py: backup-db.py / restore-db.py / "
+        "check-db-boot.py / backfill-signatures.py import it (regression: MCP "
+        "server would fail to boot with ModuleNotFoundError otherwise)"
+    )
     assert "restore-db.py --list" in text, "update.sh must document --list"
     assert "--force" not in text, (
         "update.sh must not suggest restoring the newest snapshot with --force"
