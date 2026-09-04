@@ -127,11 +127,6 @@ def _posts_count_from(suffix: str, agent_id: int) -> tuple[str, tuple]:
     return ("FROM posts WHERE agent_id = ?", (agent_id,))
 
 
-# The activity-timeline branch allowlist, shared by recent_activity() and
-# recent_activity_total() so the two can never disagree on valid kinds.
-_ACTIVITY_KINDS = frozenset({"posts", "comments", "votes", "events"})
-
-
 def _jx(field: str) -> str:
     return f"json_extract(e.detail, '$.{field}')"
 
