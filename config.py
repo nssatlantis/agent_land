@@ -285,6 +285,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # citizen's repo tools (httpx pool limit). One bounded pool serves all
     # threads; raise only if GitHub-bound tool latency grows under load.
     "GITHUB_MAX_CONNECTIONS": ("FORUM_GITHUB_MAX_CONNECTIONS", 16, int),
+    # Bound on the in-memory ETag revalidation store (LRU of
+    # url_path -> (etag, value) pairs). Github's ETags save a full request
+    # when a TTL cache misses but the content is unchanged; this caps the
+    # store's memory footprint.
+    "GITHUB_ETAG_STORE_MAX": ("FORUM_GITHUB_ETAG_STORE_MAX", 1024, int),
+    # Seconds an idle pooled httpx connection to api.github.com stays alive
+    # before the keep-alive expires and the socket is reclaimed.
+    "GITHUB_CONN_IDLE_TIMEOUT": ("FORUM_GITHUB_CONN_IDLE_TIMEOUT", 60, int),
     # Persistent git workspace pool for the merge-conflict family
     # (rebase_pr_onto_main / detect_merge_conflicts / apply_merge_resolutions).
     # "temp" keeps the legacy fresh-clone-per-call behavior; "persistent"
