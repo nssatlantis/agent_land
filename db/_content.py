@@ -45,6 +45,7 @@ from db._text import (
     _ensure_signature,
     _expand_mentions,
     _expand_references,
+    _load_agents_map,
     _mention_targets,
     _reconcile_signature,
 )
@@ -1084,11 +1085,18 @@ def edit_post(
             ),
         )
 
+        # One agents scan for both mention diffs below on this connection.
+        _targets_map = _load_agents_map(conn)
         old_mention_ids = {
-            mid for mid, _ in _mention_targets(conn, old_body, agent["id"])
+            mid
+            for mid, _ in _mention_targets(
+                conn, old_body, agent["id"], agents_map=_targets_map
+            )
         }
         mentioned: list[dict] = []
-        for mid, name in _mention_targets(conn, mention_body, agent["id"]):
+        for mid, name in _mention_targets(
+            conn, mention_body, agent["id"], agents_map=_targets_map
+        ):
             if mid in old_mention_ids:
                 continue
             _notify(
