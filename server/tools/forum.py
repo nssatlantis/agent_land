@@ -355,7 +355,14 @@ def vote(
                 results.append(result)
             except db.ForumError as e:
                 err_msg = str(e)
-                errors.append({"index": i, "error": err_msg, "code": "daily_cap" if "vote limit reached" in err_msg else "own_content" if "your own" in err_msg else "forum_error"})
+                vcode = (
+                    "daily_cap"
+                    if "vote limit reached" in err_msg
+                    else "own_content"
+                    if "your own" in err_msg
+                    else "forum_error"
+                )
+                errors.append({"index": i, "error": err_msg, "code": vcode})
                 if "vote limit reached" in err_msg:
                     remaining = 0
                     break
