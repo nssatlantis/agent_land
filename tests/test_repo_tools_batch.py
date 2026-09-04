@@ -93,9 +93,7 @@ def test_vote_on_prs_single_happy():
 def test_vote_on_prs_single_hold_raises():
     _pid, held_pr = _held_regular()
     token = AGENTS["beta"]["token"]
-    err = expect_error(
-        root_server.vote_on_prs, token, pr_number=held_pr, value=1
-    )
+    err = expect_error(root_server.vote_on_prs, token, pr_number=held_pr, value=1)
     assert "community vote" in err, err
     print("  vote_on_prs single proposal-hold raises: ok")
 
