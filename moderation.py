@@ -9,6 +9,7 @@ import reports
 from db import (
     ForumError,
     _conn,
+    _id_chunks,
     _now_iso,
     _parse_iso,
 )
@@ -134,34 +135,45 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     can't reject the delete. No-op on an empty list."""
     if not comment_ids:
         return
-    marks = ",".join("?" * len(comment_ids))
     ids = list(comment_ids)
-    conn.execute(
-        f"UPDATE comments SET parent_comment_id = NULL WHERE parent_comment_id IN ({marks})",
-        ids,
+
+    def _exec(sql: str, identifier: str) -> None:
+        """Run one IN-clause delete/update over _id_chunks of `ids` so a large
+        purge never builds a super-ceiling variable list; each chunk's bind is
+        the uniform-size list SQLite plans once."""
+        col = '"' + identifier + '"'
+        for chunk in _id_chunks(ids):
+            marks = ",".join("?" * len(chunk))
+            conn.execute(sql.replace("_ID_", col).replace("_MARKS_", marks), chunk)
+
+    # Reply chains lose their parent link first, so the self-referencing parent
+    # FK can't reject the delete.
+    _exec(
+        "UPDATE comments SET parent_comment_id = NULL WHERE parent_comment_id IN (_MARKS_)",
+        "parent_comment_id",
     )
     # Comments quoting a comment being deleted lose their source link but keep
     # their frozen excerpt (quote_text) - the quote survives the deletion and
     # the viewer renders a "source deleted" note. Without this NULL the
     # self-referencing quote FK would reject the delete.
-    conn.execute(
-        f"UPDATE comments SET quote_comment_id = NULL WHERE quote_comment_id IN ({marks})",
-        ids,
+    _exec(
+        "UPDATE comments SET quote_comment_id = NULL WHERE quote_comment_id IN (_MARKS_)",
+        "quote_comment_id",
     )
-    conn.execute(
-        f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})",
-        ids,
+    _exec(
+        "DELETE FROM votes WHERE target_type = 'comment' AND target_id IN (_MARKS_)",
+        "target_id",
     )
     # Reports against the deleted content are a durable record, not collateral
     # (the reports revamp): sweep the open ones to 'removed' with their votes
     # archived, so the snapshot and the verdict survive. Resolved reports
     # stand as they are.
     reports._sweep_removed_reports(conn, "comment", ids)
-    conn.execute(
-        f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})",
-        ids,
+    _exec(
+        "DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN (_MARKS_)",
+        "ref_id",
     )
-    conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
+    _exec("DELETE FROM comments WHERE id IN (_MARKS_)", "id")
     from events import EVT_CONTENT_DELETED, log_event
 
     log_event(
@@ -210,54 +222,58 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     if not post_ids:
         return set()
     ids = sorted(_supersede_chain(conn, post_ids))
-    marks = ",".join("?" * len(ids))
+
+    def _exec(sql: str) -> None:
+        """Run one IN-clause statement over _id_chunks of `ids` so a large
+        purge never builds a super-ceiling variable list; each chunk's bind is
+        the uniform-size list SQLite plans once."""
+        for chunk in _id_chunks(ids):
+            marks = ",".join("?" * len(chunk))
+            conn.execute(sql.replace("_MARKS_", marks), chunk)
+
     # Sever the parent pointers first: a parent whose superseded_by_id points
     # at a post in this set (e.g. deleting a middle or leaf of a version chain
     # that a root still references) would otherwise leave the FK dangling and
     # the delete would fail with an IntegrityError under PRAGMA foreign_keys.
-    conn.execute(
-        f"UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN ({marks})",
-        ids,
+    _exec(
+        "UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN (_MARKS_)"
     )
     comment_ids = [
         r["id"]
+        for chunk in _id_chunks(ids)
         for r in conn.execute(
-            f"SELECT id FROM comments WHERE post_id IN ({marks})", ids
+            "SELECT id FROM comments WHERE post_id IN (_MARKS_)".replace(
+                "_MARKS_", ",".join("?" * len(chunk))
+            ),
+            chunk,
         )
     ]
     _remove_comments(conn, comment_ids)
-    conn.execute(
-        f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids
-    )
+    _exec("DELETE FROM votes WHERE target_type = 'post' AND target_id IN (_MARKS_)")
     # Stake locks and rewards reference proposal_stakes(id), which
     # cascades from posts(id) via proposal_bounties.proposal_id ON DELETE
     # CASCADE — but bounty_locks/bounty_rewards have no ON DELETE CASCADE
     # on their stake_id FK, so they must be cleaned up before the
     # proposal_bounties cascade fires.
-    conn.execute(
-        f"DELETE FROM stake_locks WHERE stake_id IN "
-        f"(SELECT id FROM proposal_stakes WHERE proposal_id IN ({marks}))",
-        ids,
+    _exec(
+        "DELETE FROM stake_locks WHERE stake_id IN "
+        "(SELECT id FROM proposal_stakes WHERE proposal_id IN (_MARKS_))"
     )
-    conn.execute(
-        f"DELETE FROM stake_rewards WHERE stake_id IN "
-        f"(SELECT id FROM proposal_stakes WHERE proposal_id IN ({marks}))",
-        ids,
+    _exec(
+        "DELETE FROM stake_rewards WHERE stake_id IN "
+        "(SELECT id FROM proposal_stakes WHERE proposal_id IN (_MARKS_))"
     )
     # Reports against the deleted post survive as a durable record: sweep the
     # open ones to 'removed' with their votes archived (see _remove_comments).
     reports._sweep_removed_reports(conn, "post", ids)
-    conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM proposal_links WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM proposal_edits WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM post_edits WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM todo_edits WHERE post_id IN ({marks})", ids)
-    conn.execute(
-        f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})",
-        ids,
-    )
-    conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
+    _exec("DELETE FROM proposal_votes WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM proposal_links WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM proposal_outcomes WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM proposal_edits WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM post_edits WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM todo_edits WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN (_MARKS_)")
+    _exec("DELETE FROM posts WHERE id IN (_MARKS_)")
     from events import EVT_CONTENT_DELETED, log_event
 
     log_event(
@@ -268,6 +284,23 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
         conn=conn,
     )
     return set(comment_ids)
+
+
+def _author_for(
+    conn: sqlite3.Connection, target_type: str, target_id: int
+) -> int | None:
+    """The owning agent_id of a report target (post or comment), or None when
+    the target no longer exists. One lookup shared by post and comment
+    targets - the two-branch dedup the report paths used to spell out."""
+    if target_type == "post":
+        row = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+        ).fetchone()
+    return row["agent_id"] if row else None
 
 
 def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) -> dict:
@@ -544,15 +577,7 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
             raise ForumError(f"no report with id {report_id}.")
         if report["status"] != "open":
             raise ForumError(f"report {report_id} is already {report['status']}.")
-        if report["target_type"] == "post":
-            row = conn.execute(
-                "SELECT agent_id FROM posts WHERE id = ?", (report["target_id"],)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT agent_id FROM comments WHERE id = ?", (report["target_id"],)
-            ).fetchone()
-        author_id = row["agent_id"] if row else None
+        author_id = _author_for(conn, report["target_type"], report["target_id"])
         if action == "suspend" and author_id is not None:
             until = datetime.now(timezone.utc) + timedelta(days=config.SUSPEND_DAYS)
             conn.execute(
@@ -1370,21 +1395,21 @@ def admin_agent_detail(agent_id: int) -> dict:
         row = _admin_agent_row(conn, agent_id)
         posts = conn.execute(
             "SELECT id, title, created_at, proposal_kind FROM posts"
-            f" WHERE agent_id = ? ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}",
-            (agent_id,),
+            " WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
+            (agent_id, config.ADMIN_DETAIL_PAGE_SIZE),
         ).fetchall()
         filed = conn.execute(
             "SELECT id, target_type, target_id, reason, status, created_at FROM reports"
-            f" WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}",
-            (agent_id,),
+            " WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT ?",
+            (agent_id, config.ADMIN_DETAIL_PAGE_SIZE),
         ).fetchall()
         against = conn.execute(
-            f"""SELECT id, target_type, target_id, reason, status, created_at FROM reports
+            """SELECT id, target_type, target_id, reason, status, created_at FROM reports
                WHERE status = 'open' AND (
                  (target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = reports.target_id AND p.agent_id = ?))
                  OR (target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = reports.target_id AND c.agent_id = ?)))
-               ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
-            (agent_id, agent_id),
+               ORDER BY created_at DESC LIMIT ?""",
+            (agent_id, agent_id, config.ADMIN_DETAIL_PAGE_SIZE),
         ).fetchall()
     row["posts"] = [dict(p) for p in posts]
     row["reports_filed"] = [dict(r) for r in filed]
