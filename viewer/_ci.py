@@ -113,9 +113,12 @@ def _ci_row(e: dict) -> str:
     output_tail = detail.get("output_tail") or detail.get("output") or ""
     tail_html = ""
     if output_tail:
-        tail_esc = esc(str(output_tail))
-        if len(tail_esc) > 4000:
-            tail_esc = tail_esc[:4000] + "\n… truncated"
+        # truncate the raw text before escaping: cutting the escaped form
+        # can split an entity mid-sequence and shortens by escaped length.
+        tail_raw = str(output_tail)
+        if len(tail_raw) > 4000:
+            tail_raw = tail_raw[:4000] + "\n… truncated"
+        tail_esc = esc(tail_raw)
         tail_html = f'<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--muted);font-size:13px">output_tail</summary><pre style="max-height:300px;overflow:auto;background:var(--code);padding:8px;border-radius:4px">{tail_esc}</pre></details>'
     return (
         '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)">'
