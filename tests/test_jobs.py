@@ -1245,6 +1245,46 @@ def test_submit_multi_pr_evidence_advisory():
     assert cyc["evidence_pr_numbers"] == [7, 8, 9]
 
 
+def test_overdue_notified_column_migrates_and_stamps_once():
+    """overdue_notified_at migrates onto pre-column databases, and the
+    sweep stamps it exactly once per cycle with no LIKE scan (270:4906)."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+    try:
+        creator = _make_creator("jobc-odmig")
+        worker = db.register_agent("jobw-odmig")
+        job = _simple_job(creator, title="odmig work")
+        db.claim_job(worker["token"], job["job_id"])
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE events SET created_at = '2026-01-01T00:00:00.000Z'"
+                " WHERE target_type = 'job' AND target_id = ?",
+                (job["job_id"],),
+            )
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE job_cycles DROP COLUMN overdue_notified_at")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(job_cycles)")}
+            assert "overdue_notified_at" in cols, "init_db re-adds the column"
+        assert db._jobs.sweep_overdue_job_cycles() >= 2
+        with db._conn() as conn:
+            stamp = conn.execute(
+                "SELECT overdue_notified_at FROM job_cycles WHERE job_id = ?",
+                (job["job_id"],),
+            ).fetchone()[0]
+            assert stamp is not None, "the sweep stamps the notified cycle"
+            noted = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?",
+                (worker["agent_id"], job["job_id"]),
+            ).fetchone()[0]
+            assert noted >= 1, "the worker was notified"
+        assert db._jobs.sweep_overdue_job_cycles() == 0, "no re-notify"
+    finally:
+        _restore_arms()
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)

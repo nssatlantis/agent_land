@@ -863,7 +863,7 @@ def sweep_overdue_job_cycles() -> int:
     with _conn() as conn:
         active = conn.execute(
             "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id,"
-            " jc.cycle_no, jc.status,"
+            " jc.cycle_no, jc.status, jc.overdue_notified_at,"
             f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
             " JOIN job_cycles jc ON jc.job_id = j.id"
             " AND jc.cycle_no = j.cycles_done + 1"
@@ -877,15 +877,15 @@ def sweep_overdue_job_cycles() -> int:
             if release_after > 0 and windows >= release_after:
                 sent += _release_overdue_job(conn, r, windows)
                 continue
-            marker = f"cycle {r['cycle_no']} of job #{r['id']}"
-            already = conn.execute(
-                "SELECT 1 FROM notifications WHERE agent_id = ?"
-                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
-                " AND body LIKE ? LIMIT 1",
-                (r["worker_agent_id"], r["id"], f"%{marker}%overdue%"),
-            ).fetchone()
-            if already is not None:
+            if r["overdue_notified_at"] is not None:
                 continue
+            marker = f"cycle {r['cycle_no']} of job #{r['id']}"
+            conn.execute(
+                "UPDATE job_cycles SET overdue_notified_at = ?"
+                " WHERE job_id = ? AND cycle_no = ?"
+                " AND overdue_notified_at IS NULL",
+                (_now_iso(), r["id"], r["cycle_no"]),
+            )
             for role_agent_id, body in (
                 (
                     r["worker_agent_id"],
