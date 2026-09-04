@@ -1002,6 +1002,15 @@ def main():
     assert b"some_tool" in use_data.body, "the usage page renders recorded tool calls"
     assert b"100.0%" in use_data.body, "the usage page renders the success rate"
 
+    # --- /admin/ci (snapshot renders off the event loop) ---------------------
+    ci_no_auth = _call(admin.ci_admin_page, _req("GET", "/admin/ci"))
+    assert ci_no_auth.status_code == 401, "ci page refuses anonymous GETs"
+    ci_ok = _call(
+        admin.ci_admin_page,
+        _req("GET", "/admin/ci", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert ci_ok.status_code == 200, "ci page renders for an authenticated admin"
+
     # --- /admin/drafts (read-only drafts ledger) ---------------------------
     # Seed two drafts (one ordinary, one proposal-kind) through the store path.
     import db._credits as _cr_admin

@@ -12,7 +12,7 @@ import sqlite3
 
 from db._core import ForumError, _conn, _require_active_agent
 from db._proposal_status import _comment_count_batch, _post_score_batch
-from notifications import _notify
+from notifications import _actor_name, _notify
 
 
 def _sub_cap_for(conn, agent_id: int) -> int:
@@ -114,6 +114,7 @@ def _notify_subscribers(
     ref_type: str = "post",
     ref_id: int | None = None,
     exclude_agent_ids: set[int] | None = None,
+    actor_name: str | None = None,
 ) -> int:
     """Notify subscribers of a post about a new event.  Returns the number of
     new notifications sent.
@@ -127,7 +128,9 @@ def _notify_subscribers(
 
     The caller is responsible for passing the right exclude set — e.g.
     create_comment passes {commenter, post author, parent author, mentioned
-    users, proposal voters}.
+    users, proposal voters}. Pass `actor_name` when the caller already holds
+    the actor's row — otherwise it is resolved once here instead of once
+    per subscriber inside _notify.
     """
     if exclude_agent_ids is None:
         exclude_agent_ids = set()
@@ -140,6 +143,8 @@ def _notify_subscribers(
     if not subscribers:
         return 0
 
+    if actor_name is None:
+        actor_name = _actor_name(conn, actor_agent_id)
     target_ref_id = ref_id if ref_id is not None else post_id
     notified = 0
     for row in subscribers:
@@ -166,6 +171,7 @@ def _notify_subscribers(
             target_ref_id,
             body,
             actor_agent_id=actor_agent_id,
+            actor_name=actor_name,
         )
         notified += 1
     return notified

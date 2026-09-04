@@ -205,7 +205,12 @@ def main():
     )
     # Every direct os.environ.get() in config.py must be a startup-bound key -
     # a literal read of a tunable env name is a knob the registry can't see.
-    direct_reads = set(re.findall(r'os\.environ\.get\("([A-Z][A-Z0-9_]*)"', cfg_text))
+    # Startup ints are read through the _safe_int(env_key, default) helper; its
+    # literal key argument is a direct startup read too, caught here as well.
+    direct_reads = set(
+        re.findall(r'os\.environ\.get\("([A-Z][A-Z0-9_]*)"', cfg_text)
+        + re.findall(r'_safe_int\("([A-Z][A-Z0-9_]*)"', cfg_text)
+    )
     assert direct_reads == startup_envs, (
         "config.py's direct os.environ reads must be exactly the startup-bound "
         f"keys; difference: {sorted(direct_reads ^ startup_envs)}"
