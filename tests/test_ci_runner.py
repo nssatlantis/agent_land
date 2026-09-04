@@ -699,12 +699,12 @@ def test_native_sandbox_routes_through_docker():
         encoding="utf-8",
     )
     saved = {
-        "prepare": ci_runner._prepare_tree,
-        "image": ci_runner._ensure_image,
-        "argv": ci_runner._sandbox_argv,
-        "docker": ci_runner._docker_available,
-        "traversable": ci_runner._ensure_tree_traversable,
-        "register": ci_runner._register_active,
+        "_prepare_tree": ci_runner._prepare_tree,
+        "_ensure_image": ci_runner._ensure_image,
+        "_sandbox_argv": ci_runner._sandbox_argv,
+        "_docker_available": ci_runner._docker_available,
+        "_ensure_tree_traversable": ci_runner._ensure_tree_traversable,
+        "_register_active": ci_runner._register_active,
     }
     ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
     ci_runner._docker_available = lambda: True
