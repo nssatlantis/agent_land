@@ -1520,8 +1520,7 @@ def vote_on_prs(
                     {
                         "index": i,
                         "error": (
-                            "pr_number must be an int and value must be 1 "
-                            "or -1."
+                            "pr_number must be an int and value must be 1 or -1."
                         ),
                     }
                 )
