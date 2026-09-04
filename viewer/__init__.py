@@ -3304,8 +3304,14 @@ async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
     nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
     if not nums:
         return {}
+    _sem = asyncio.Semaphore(5)
+
+    async def _one(n: int):
+        async with _sem:
+            return await asyncio.to_thread(github.pr_checks, n)
+
     results = await asyncio.gather(
-        *[asyncio.to_thread(github.pr_checks, n) for n in nums],
+        *[_one(n) for n in nums],
         return_exceptions=True,
     )
     return {
@@ -3418,6 +3424,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
         )
+    num = int(number)
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -3449,14 +3456,14 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         + (f"<p style='margin-top:8px'>{chip}</p>" if chip else "")
         + "</div>"
     )
-    vote_panel = _pr_vote_panel(int(number))
-    proposal_id = db.proposal_for_pr(int(number))
+    vote_panel = _pr_vote_panel(num)
+    proposal_id = db.proposal_for_pr(num)
     hold_banner = ""
     if proposal_id is not None:
         try:
             held = await asyncio.to_thread(
                 github.pr_has_label,
-                int(number),
+                num,
                 config.PROPOSAL_HOLD_LABEL,
             )
         except Exception:
@@ -3483,7 +3490,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         )
     # Related PR finder + reputation (237:4280) - display-only, degrade-silently
     try:
-        related_panel = _related_prs_panel(int(number))
+        related_panel = _related_prs_panel(num)
     except Exception:
         related_panel = ""
     try:

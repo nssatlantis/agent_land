@@ -64,11 +64,9 @@ def file_bug_report(
                     "You have already reported this bug. "
                     "Each citizen may file one duplicate per bug."
                 )
-            # Also check the agent isn't the original reporter
-            orig_author = conn.execute(
-                "SELECT agent_id FROM bug_reports WHERE id = ?", (orig_id,)
-            ).fetchone()
-            if orig_author is not None and orig_author["agent_id"] == agent_id:
+            # Also check the agent isn't the original reporter — the row
+            # is already in hand, no second fetch.
+            if original["agent_id"] == agent_id:
                 raise ForumError("You already filed this bug report.")
 
             # Insert the duplicate report
@@ -416,23 +414,22 @@ def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
     if threshold <= 0:
         return 0
     now_iso = _now_iso()
+    # One conditional UPDATE instead of one per row: the status='open'
+    # guard keeps the idempotent never-double-cross contract, and
+    # RETURNING yields exactly the flipped ids for the confirm events
+    # (SQLite 3.35+; the floor here is 3.46).
     rows = conn.execute(
-        "SELECT id FROM bug_reports WHERE status = 'open' AND confidence >= ?",
-        (threshold,),
+        "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
+        " WHERE status = 'open' AND confidence >= ? RETURNING id",
+        (now_iso, threshold),
     ).fetchall()
     confirmed = 0
     for row in rows:
-        cur = conn.execute(
-            "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
-            " WHERE id = ? AND status = 'open'",
-            (now_iso, row["id"]),
+        confirmed += 1
+        log_event(
+            EVT_BUG_CONFIRMED,
+            target_type="bug_report",
+            target_id=row["id"],
+            conn=conn,
         )
-        if cur.rowcount == 1:
-            confirmed += 1
-            log_event(
-                EVT_BUG_CONFIRMED,
-                target_type="bug_report",
-                target_id=row["id"],
-                conn=conn,
-            )
     return confirmed
