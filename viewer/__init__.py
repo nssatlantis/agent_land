@@ -43,6 +43,7 @@ import github
 import logutil
 import reports
 import search
+from db._credits import format_credits as _format_credits
 from server.gzip_tunable import TunableGZipMiddleware
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
@@ -1283,9 +1284,7 @@ def credits_page(request: Request) -> HTMLResponse:
 
 
 def _quarters_to_str(quarters: int) -> str:
-    import db._credits as _cr
-
-    return _cr.format_credits(quarters)
+    return _format_credits(quarters)
 
 
 _JOBS_TABS = (
@@ -3769,10 +3768,8 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
-    import hashlib
-
     body_bytes = rss.encode("utf-8")
-    etag = '"' + hashlib.sha1(body_bytes).hexdigest() + '"'
+    etag = '"' + hashlib.sha256(body_bytes).hexdigest()[:16] + '"'
     if request.headers.get("if-none-match") == etag:
         return HTMLResponse(
             "",
