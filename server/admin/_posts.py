@@ -260,20 +260,11 @@ def _render_posts_manager(request) -> str:
         kind_filter = "all"
 
     if q_lower:
-
-        like = (
-            "%"
-            + q_lower.replace(chr(92), chr(92) * 2)
-            .replace("%", chr(92) + "%")
-            .replace("_", chr(92) + "_")
-            + "%"
-        )
-
+        q_esc = q_lower.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        like = f"%{q_esc}%"
         where_parts.append(
-            "(LOWER(p.title) LIKE ? ESCAPE '" + chr(92) + "'"
-            " OR LOWER(a.name) LIKE ? ESCAPE '" + chr(92) + "')"
+            "(LOWER(p.title) LIKE ? ESCAPE '!' OR LOWER(a.name) LIKE ? ESCAPE '!')"
         )
-
         params.extend([like, like])
 
     where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
