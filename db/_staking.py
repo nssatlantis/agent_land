@@ -879,6 +879,20 @@ def lock_stakes_for_pr(
         return locked
 
 
+def _complete_orphaned_paid_stakes(c: sqlite3.Connection) -> None:
+    """Zero-lock completion sweep shared by the pay and refund paths: when
+    no locks are found for a PR, fully-paid stakes may never have been
+    marked completed. No JOIN: only the stake id is selected, and an
+    orphaned stake (post gone) must complete all the same."""
+    active_stakes = c.execute(
+        "SELECT s.id FROM proposal_stakes s"
+        " WHERE s.status = 'active'"
+        " AND s.paid_count = s.max_prs AND s.locked_count = 0",
+    ).fetchall()
+    for ab in active_stakes:
+        _check_stake_completion(c, ab["id"])
+
+
 def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
     """Pay out stake locks for a merged PR. For each locked stake_lock:
     update status to paid, decrement locked_count, increment paid_count.
@@ -904,18 +918,10 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
         paid = 0
         from events import EVT_STAKE_PAID, log_event
 
-        # Zero-lock completion check: if no locks were found for this PR,
-        # the stake may already be fully paid by prior calls but never
-        # marked completed. Check and complete any such stakes.
+        # Zero-lock completion check: shared sweep, see
+        # _complete_orphaned_paid_stakes.
         if not locks:
-            active_stakes = c.execute(
-                "SELECT s.id FROM proposal_stakes s"
-                " JOIN posts p ON p.id = s.proposal_id"
-                " WHERE s.status = 'active'"
-                " AND s.paid_count = s.max_prs AND s.locked_count = 0",
-            ).fetchall()
-            for ab in active_stakes:
-                _check_stake_completion(c, ab["id"])
+            _complete_orphaned_paid_stakes(c)
 
         for lk in locks:
             currency = lk["currency"]
@@ -1056,16 +1062,10 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
         refunded = 0
         from events import EVT_STAKE_REFUNDED, log_event
 
-        # Zero-lock completion check: if no locks were found for this PR,
-        # any active stake that is fully paid should be marked completed.
+        # Zero-lock completion check: shared sweep, see
+        # _complete_orphaned_paid_stakes.
         if not locks:
-            active_stakes = c.execute(
-                "SELECT s.id FROM proposal_stakes s"
-                " WHERE s.status = 'active'"
-                " AND s.paid_count = s.max_prs AND s.locked_count = 0",
-            ).fetchall()
-            for ab in active_stakes:
-                _check_stake_completion(c, ab["id"])
+            _complete_orphaned_paid_stakes(c)
 
         for lk in locks:
             currency = lk["currency"]

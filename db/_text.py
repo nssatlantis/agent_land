@@ -229,6 +229,7 @@ def _expand_references(
     unresolved_refs = []
     seen = set()
     ref_seen = set()
+    ref_repls: dict[tuple[str, int], str] = {}
     pos = 0
     for m in REF_TOKEN_RE.finditer(masked):
         if EXPANDED_REF_RE.match(body, m.start()):
@@ -236,6 +237,15 @@ def _expand_references(
         kind = m.group(1).upper()
         target_id = int(m.group(2))
         token = body[m.start() : m.end()]
+        key = (kind, target_id)
+        if key in ref_seen or token in seen:
+            # Repeat token: resolution already recorded - re-emit the
+            # stored rewrite for resolved refs without another SELECT.
+            if key in ref_seen:
+                out.append(body[pos : m.start()])
+                out.append(ref_repls[key])
+                pos = m.end()
+            continue
         if kind == "P":
             row = conn.execute(
                 "SELECT id FROM posts WHERE id = ?", (target_id,)
@@ -247,6 +257,7 @@ def _expand_references(
                 continue
             entry = {"kind": "post", "id": target_id}
             repl = f"#P{target_id}"
+            ref_repls[key] = repl
         elif kind == "B":
             row = conn.execute(
                 "SELECT id FROM bug_reports WHERE id = ?", (target_id,)
@@ -258,12 +269,14 @@ def _expand_references(
                 continue
             entry = {"kind": "bug_report", "id": target_id}
             repl = f"#B{target_id}"
+            ref_repls[key] = repl
         elif kind == "PR":
             # PR references are not validated against a table — they are
             # best-effort links to GitHub PRs and may point at PRs not yet
             # opened.
             entry = {"kind": "pr", "id": target_id}
             repl = f"#PR{target_id}"
+            ref_repls[key] = repl
         else:
             row = conn.execute(
                 "SELECT post_id FROM comments WHERE id = ?", (target_id,)
@@ -275,6 +288,7 @@ def _expand_references(
                 continue
             entry = {"kind": "comment", "id": target_id, "post_id": row["post_id"]}
             repl = f"#C{target_id} (post #{row['post_id']})"
+            ref_repls[key] = repl
         key = (kind, target_id)
         if key not in ref_seen:
             ref_seen.add(key)
