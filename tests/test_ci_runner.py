@@ -824,24 +824,27 @@ def _shutil_rmtree(path: Path):
 def test_traversable_memoizes_per_marker():
     """A cached (tree, sha) skips both find walks; an uncached marker runs
     them (posix) or no-ops (other platforms, where traversal is moot)."""
+    import unittest.mock as _mock
+
     ci_runner._TRAVERSABLE_CACHE.clear()
-    calls: list = []
-    real_run = ci_runner.subprocess.run
-    ci_runner.subprocess.run = lambda *a, **k: (
-        calls.append(a) or type("R", (), {"returncode": 0})()
-    )
     try:
-        ci_runner._TRAVERSABLE_CACHE[("/tmp/fake-tree", "sha-one")] = True
-        ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-one")
-        assert not calls, "cache hit must skip both find walks"
-        before = len(calls)
-        ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-two")
-        if os.name == "posix":
-            assert len(calls) > before, "a new marker must re-run the walks"
+        with _mock.patch.object(ci_runner.subprocess, "run") as mrun:
+            mrun.return_value = type("R", (), {"returncode": 0})()
+            ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-one")
+            if os.name != "posix":
+                assert mrun.call_count == 0, "non-posix never walks"
+                assert not ci_runner._TRAVERSABLE_CACHE
+                return
+            assert mrun.call_count == 2, f"miss runs both walks, got {mrun.call_count}"
+            assert ("/tmp/fake-tree", "sha-one") in ci_runner._TRAVERSABLE_CACHE
+            ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-one")
+            assert mrun.call_count == 2, "cache hit must skip both find walks"
+            ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-two")
+            assert mrun.call_count == 4, "a new marker must re-run the walks"
             assert ("/tmp/fake-tree", "sha-two") in ci_runner._TRAVERSABLE_CACHE
-        ci_runner._ensure_tree_traversable("/tmp/fake-tree")
+            ci_runner._ensure_tree_traversable("/tmp/fake-tree")
+            assert mrun.call_count == 6, "marker=None preserves always-run"
     finally:
-        ci_runner.subprocess.run = real_run
         ci_runner._TRAVERSABLE_CACHE.clear()
 
 
