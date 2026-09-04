@@ -158,7 +158,7 @@ def lineage_page(request: Request) -> HTMLResponse:
     """The /lineage proposal dependency tree: every proposal version chain,
     linked forward to the version that replaced it and back to the proposal
     it revises, beside the side rail. Read-only, like every route here."""
-    rows = db.list_proposals(limit=None, view="all")
+    rows = db.list_proposals(limit=500, view="all")
     body = (
         _crumb("/", "overview")
         + '<div class="panel" style="border:none;background:none">'
