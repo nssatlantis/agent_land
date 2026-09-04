@@ -1516,7 +1516,10 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
     this before repo_propose_change to see whether your PR would be
     blocked. Returns the live enforcement mode (FORUM_WORKFLOW_ENFORCE:
     >0 = blocking until an open create-pr run exists, 0 = advisory), the
-    TTL (FORUM_WORKFLOW_TTL_SECONDS, 0 = never expires), the current open
+    TTL (FORUM_WORKFLOW_TTL_SECONDS, 0 = never expires) plus the adaptive
+    effective TTL (never earlier than PROPOSAL_STALE_DAYS after the
+    proposal was created, capped at 365d) as effective_ttl_seconds /
+    effective_expires_at, the current open
     run (id, starter, content sha, expires_at), that run's guided `steps`
     checklist with a `steps_summary` (done/total and which keys are done
     vs waiting), `available_next_steps` (the unticked manual steps before
@@ -1587,11 +1590,14 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
                 }
                 available_next_steps = db.available_next_steps(steps)
         recent = db.list_workflow_runs(conn, proposal_id=proposal_id)[:10]
+        eff = db.effective_run_expiry(conn, proposal_id, ttl)
     return {
         "proposal_id": proposal_id,
         "enforce": enforce,
         "blocking": enforce > 0,
         "ttl_seconds": ttl,
+        "effective_ttl_seconds": eff["effective_ttl_seconds"],
+        "effective_expires_at": eff["effective_expires_at"],
         "steps_enforce": steps_enforce,
         "steps_blocking": steps_enforce > 0,
         "open_run": dict(open_run) if open_run else None,
