@@ -14,6 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
+import github
 import logutil
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 
@@ -62,6 +63,9 @@ _JOB_ANCHOR_KINDS = (
     "job_cycle_accepted",
     "job_cycle_declined",
 )
+# Pre-joined IN-list for the anchor expression below: rebuilt per query
+# otherwise, once per module load is enough (tuple is a literal).
+_JOB_ANCHOR_KINDS_SQL = ",".join(f"'{k}'" for k in _JOB_ANCHOR_KINDS)
 
 
 def _job_overdue_anchor_sql(job_alias: str) -> str:
@@ -71,7 +75,7 @@ def _job_overdue_anchor_sql(job_alias: str) -> str:
     expression referencing the given jobs alias.  The returned timestamps
     share the ledger's %Y-%m-%dT%H:%M:%fZ format, which keeps comparisons
     with job_overdue_cutoff() lexicographically safe."""
-    kinds = ",".join(f"'{k}'" for k in _JOB_ANCHOR_KINDS)
+    kinds = _JOB_ANCHOR_KINDS_SQL
     return (
         f"COALESCE((SELECT MAX(e.created_at) FROM events e"
         f" WHERE e.target_type = 'job' AND e.target_id = {job_alias}.id"
@@ -150,8 +154,6 @@ def _all_prs_merged(pr_numbers: list[int]) -> bool:
     if not pr_numbers:
         return True
     try:
-        import github
-
         for n in pr_numbers:
             try:
                 pr = github.get_pr(n)
@@ -430,6 +432,40 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
 # -- creation -------------------------------------------------------------
 
 
+def _validate_taker_deposit(taker_deposit_credits: float | None, kind: str) -> int:
+    """Validate the taker-deposit amount for create_job and
+    create_job_official (which carried identical 25-line blocks) and
+    return it in quarters. Raises ForumError on bad values or below-minimum
+    amounts. The credits import stays function-local, like every other
+    db._credits use in this file, so the mock.patch("db._credits.*") seams
+    keep working."""
+    from db._credits import format_credits as _fc
+    from db._credits import to_quarters as _tq
+
+    if taker_deposit_credits is None:
+        taker_deposit_credits = float(
+            config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME
+            if kind == "one_time"
+            else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
+        )
+    try:
+        taker_deposit_q = int(_tq(float(taker_deposit_credits)))
+    except Exception as exc:
+        raise ForumError(f"bad taker_deposit value: {exc}") from None
+    min_one = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
+    min_needed = min_one if kind == "one_time" else min_rec
+    if taker_deposit_q < min_needed:
+        raise ForumError(
+            "taker deposit "
+            f"{_fc(taker_deposit_q)}"
+            " below minimum "
+            f"{_fc(min_needed)}"
+            f" for {kind} jobs."
+        )
+    return taker_deposit_q
+
+
 def _validated_job_intake(
     title: str,
     description: str,
@@ -590,39 +626,7 @@ def create_job(
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post."""
-    if taker_deposit_credits is None:
-        taker_deposit_credits = float(
-            config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME
-            if kind == "one_time"
-            else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
-        )
-    try:
-        taker_deposit_q = int(
-            __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-                float(taker_deposit_credits)
-            )
-        )
-    except Exception as exc:
-        raise ForumError(f"bad taker_deposit value: {exc}") from None
-    min_one = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)
-        )
-    )
-    min_rec = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)
-        )
-    )
-    min_needed = min_one if kind == "one_time" else min_rec
-    if taker_deposit_q < min_needed:
-        raise ForumError(
-            f"taker deposit "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(taker_deposit_q)}"
-            f" below minimum "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)}"
-            f" for {kind} jobs."
-        )
+    taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
         title,
         description,
@@ -782,39 +786,7 @@ def create_job_official(
         max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
         knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
     )
-    if taker_deposit_credits is None:
-        taker_deposit_credits = float(
-            config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME
-            if kind == "one_time"
-            else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
-        )
-    try:
-        taker_deposit_q = int(
-            __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-                float(taker_deposit_credits)
-            )
-        )
-    except Exception as exc:
-        raise ForumError(f"bad taker_deposit value: {exc}") from None
-    min_one = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)
-        )
-    )
-    min_rec = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)
-        )
-    )
-    min_needed = min_one if kind == "one_time" else min_rec
-    if taker_deposit_q < min_needed:
-        raise ForumError(
-            f"taker deposit "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(taker_deposit_q)}"
-            f" below minimum "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)}"
-            f" for {kind} jobs."
-        )
+    taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     treasury_escrow_q = payment_q * cycles
     admin = (str(admin) or "unknown").strip() or "unknown"
 
@@ -1265,6 +1237,31 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
     from events import EVT_JOB_SUBMITTED, log_event
     from notifications import _notify
 
+    # PR SHAs resolve OUTSIDE the write transaction below: the HTTP fetch
+    # (up to ~10s across the pool) must never hold the forum-wide write
+    # lock. Pure function of `evidence`, no DB needed.
+    pr_numbers = _parse_pr_numbers(evidence)
+    pr_shas: list[str | None] = []
+    if pr_numbers:
+        try:
+
+            def _fetch_pr_sha(n: int) -> str | None:
+                try:
+                    pr = github.get_pr(n)
+                    return (
+                        pr.get("head", {}).get("sha")
+                        if isinstance(pr.get("head"), dict)
+                        else pr.get("head_sha")
+                    )
+                except Exception:  # domain: degrade-silently
+                    return None
+
+            with _cf.ThreadPoolExecutor(max_workers=min(len(pr_numbers), 5)) as _pool:
+                pr_shas = list(_pool.map(_fetch_pr_sha, pr_numbers))
+            pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
+        except Exception:
+            # domain: degrade-silently
+            pr_shas = [None] * len(pr_numbers)
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
@@ -1289,31 +1286,6 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                 f"cycle {cycle_no} is already submitted - waiting on the "
                 "creator's review_job() verdict."
             )
-        pr_numbers = _parse_pr_numbers(evidence)
-        pr_shas: list[str | None] = []
-        if pr_numbers:
-            try:
-                import github  # local import to avoid cycle
-
-                def _fetch_pr_sha(n: int) -> str | None:
-                    try:
-                        pr = github.get_pr(n)
-                        return (
-                            pr.get("head", {}).get("sha")
-                            if isinstance(pr.get("head"), dict)
-                            else pr.get("head_sha")
-                        )
-                    except Exception:  # domain: degrade-silently
-                        return None
-
-                with _cf.ThreadPoolExecutor(
-                    max_workers=min(len(pr_numbers), 5)
-                ) as _pool:
-                    pr_shas = list(_pool.map(_fetch_pr_sha, pr_numbers))
-                pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
-            except Exception:
-                # domain: degrade-silently
-                pr_shas = [None] * len(pr_numbers)
         pr_numbers_json = json.dumps(pr_numbers) if pr_numbers else None
         pr_shas_json = json.dumps(pr_shas) if pr_numbers else None
         conn.execute(
@@ -1344,19 +1316,6 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             },
             conn=conn,
         )
-        if pr_numbers:
-            try:
-                import github
-
-                for prn in pr_numbers:
-                    try:
-                        github.add_pr_label(prn, "hold")
-                    except Exception:
-                        # domain: degrade-silently
-                        pass
-            except Exception:
-                # domain: degrade-silently
-                pass
         if job["creator_agent_id"] is not None:
             strict_note = (
                 " Be strict and thorough: verify scope, checklist,"
@@ -1375,7 +1334,23 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                 f" action='accept'|'decline').{strict_note}",
                 actor_agent_id=agent["id"],
             )
-        return _detail_or_raise(conn, job["id"])
+        detail = _detail_or_raise(conn, job["id"])
+    # Hold-labels land AFTER the transaction commits: labeling is one HTTP
+    # call per evidence PR and must never hold the forum-wide write lock.
+    # (The SHAs above were already resolved pre-transaction for the same
+    # reason.) A labeling failure never fails the submission itself.
+    if pr_numbers:
+        try:
+            for prn in pr_numbers:
+                try:
+                    github.add_pr_label(prn, "hold")
+                except Exception:
+                    # domain: degrade-silently
+                    pass
+        except Exception:
+            # domain: degrade-silently
+            pass
+    return detail
 
 
 # -- review (the creator's acceptance gate) --------------------------------
