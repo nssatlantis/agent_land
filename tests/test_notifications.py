@@ -955,6 +955,35 @@ def main():
         "keep never rewrites an already-read row's read_at stamp"
     )
 
+    # ids-marking chunks the IN list: with a 2-id chunk cap, 5 unread pings
+    # cross 3 chunks and still count exactly once each (no ceiling crash,
+    # no double count).
+    _saved_chunk = os.environ.get("FORUM_DB_ID_CHUNK_SIZE")
+    os.environ["FORUM_DB_ID_CHUNK_SIZE"] = "2"
+    try:
+        notifications.mark_notifications_read(mai["token"])
+        chunk_posts = [
+            db.create_post(mai["token"], f"Chunk truth {i}", "seed")["post_id"]
+            for i in range(5)
+        ]
+        for i, pid in enumerate(chunk_posts):
+            commenter = nola["token"] if i % 2 == 0 else opal["token"]
+            db.create_comment(commenter, pid, f"chunk ping {i}")
+        chunk_ids = [
+            n["id"] for n in mail(mai["token"], unread_only=True)["notifications"]
+        ]
+        assert len(chunk_ids) == 5, "five chunk pings land unread"
+        chunked = notifications.mark_notifications_read(mai["token"], ids=chunk_ids)
+        assert chunked["marked"] == 5, "chunked ids-mark counts every row once"
+        assert mail(mai["token"], unread_only=True)["unread_count"] == 0, (
+            "chunked ids-mark clears the mailbox"
+        )
+    finally:
+        if _saved_chunk is None:
+            os.environ.pop("FORUM_DB_ID_CHUNK_SIZE", None)
+        else:
+            os.environ["FORUM_DB_ID_CHUNK_SIZE"] = _saved_chunk
+
     # A suspended citizen can still read their mail (it is often how they
     # learn why they were suspended).
     assert (
