@@ -45,6 +45,7 @@ from db._workflow import (  # noqa: E402
     close_workflow_for_proposal,
     complete_workflow_for_pr,
     count_workflow_runs,
+    effective_run_expiry,
     list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
@@ -315,6 +316,39 @@ def main():
         # restore a clean open run for later sections
         start_workflow(conn, _PATH, pid, alpha["agent_id"])
     print("  TTL adaptivity / cap / fallback ok")
+
+    # --- item 4873: effective_run_expiry mirrors the adaptive TTL ------------
+    with db._conn() as conn:
+        # TTL 0 => never expires
+        assert effective_run_expiry(conn, pid, 0) == {
+            "effective_expires_at": None,
+            "effective_ttl_seconds": None,
+        }
+        eff = effective_run_expiry(conn, pid, 3600)
+        assert eff["effective_ttl_seconds"] and eff["effective_expires_at"]
+        expires = datetime.strptime(
+            eff["effective_expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=timezone.utc)
+        # adaptive floor: never earlier than PROPOSAL_STALE_DAYS after creation
+        stale = _now() + timedelta(days=14)
+        assert expires >= stale - timedelta(seconds=5), (
+            "effective expiry respects the stale-day floor"
+        )
+        # bad created_at => plain now+TTL fallback (probe mirrors D2)
+        conn.execute(
+            "UPDATE posts SET created_at = 'not-a-timestamp' WHERE id = ?", (pid,)
+        )
+        eff2 = effective_run_expiry(conn, pid, 3600)
+        expires2 = datetime.strptime(
+            eff2["effective_expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=timezone.utc)
+        assert expires2 <= _now() + timedelta(seconds=3600 + 5), (
+            "bad-probe effective expiry falls back to plain now+TTL"
+        )
+        conn.execute(
+            "UPDATE posts SET created_at = ? WHERE id = ?", (_iso(_now()), pid)
+        )
+    print("  item 4873: effective_run_expiry surface ok")
 
     # --- sweep: run_ids + proposal_id in the close event (D7), chunking (D8) ---
     p2 = db.create_proposal(alpha["token"], "T2 sweep target", "t2 body")["post_id"]

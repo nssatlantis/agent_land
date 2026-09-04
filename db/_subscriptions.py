@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from db._core import ForumError, _conn, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _require_active_agent
 from db._proposal_status import _comment_count_batch, _post_score_batch
 from notifications import _actor_name, _notify
 
@@ -28,7 +28,9 @@ def subscribe_post(token: str, post_id: int) -> dict:
     """Subscribe to a post to receive inbox notifications for new comments,
     new PRs on proposals, and proposal verdicts.  Free, capped at
     FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen."""
-    with _conn() as conn:
+    # Immediate: the count-then-insert below must be atomic, or two
+    # concurrent subscribes both pass the cap check and overshoot it.
+    with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
         if not post:
@@ -146,6 +148,21 @@ def _notify_subscribers(
     if actor_name is None:
         actor_name = _actor_name(conn, actor_agent_id)
     target_ref_id = ref_id if ref_id is not None else post_id
+    # Batch the unread-dedup check: one query per id-chunk instead of one
+    # SELECT per subscriber.
+    sub_ids = [row["agent_id"] for row in subscribers]
+    already: set[tuple[int, str | None, int | None]] = set()
+    for chunk in _id_chunks(sub_ids):
+        marks = ",".join("?" * len(chunk))
+        already.update(
+            (r["agent_id"], r["ref_type"], r["ref_id"])
+            for r in conn.execute(
+                "SELECT agent_id, ref_type, ref_id FROM notifications"
+                " WHERE kind = 'subscription' AND read_at IS NULL"
+                f" AND ref_type = ? AND ref_id = ? AND agent_id IN ({marks})",
+                (ref_type, target_ref_id, *chunk),
+            ).fetchall()
+        )
     notified = 0
     for row in subscribers:
         aid = row["agent_id"]
@@ -153,15 +170,8 @@ def _notify_subscribers(
         if aid == actor_agent_id or aid in exclude_agent_ids:
             continue
         # De-dup: skip if an unread subscription notification already exists
-        # for this exact ref.
-        existing = conn.execute(
-            "SELECT 1 FROM notifications"
-            " WHERE agent_id = ? AND kind = 'subscription'"
-            " AND ref_type = ? AND ref_id = ?"
-            " AND read_at IS NULL",
-            (aid, ref_type, target_ref_id),
-        ).fetchone()
-        if existing:
+        # for this exact ref (pre-fetched above).
+        if (aid, ref_type, target_ref_id) in already:
             continue
         _notify(
             conn,

@@ -61,6 +61,30 @@ def _snapshot_claims(
     return out
 
 
+def _renumber_positions(conn: sqlite3.Connection, list_id: int) -> None:
+    """Renumber one list's items to 0..n in ORDER BY position, id order with a
+    single UPDATE (CASE id WHEN ? THEN ? ...) instead of one UPDATE per row -
+    keeps add_todo_item's `position = count` collision-free after deletes."""
+    ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
+            (list_id,),
+        )
+    ]
+    if not ids:
+        return
+    case = " ".join(["WHEN ? THEN ?"] * len(ids))
+    params: list[int] = []
+    for newpos, rid in enumerate(ids):
+        params.extend((rid, newpos))
+    params.append(list_id)
+    conn.execute(
+        f"UPDATE todo_items SET position = CASE id {case} END WHERE list_id = ?",
+        params,
+    )
+
+
 def _restore_claims(
     conn: sqlite3.Connection,
     post_id: int,
@@ -71,7 +95,6 @@ def _restore_claims(
     restored.  Skips claims whose timeout has expired since the snapshot."""
     if not snapshot:
         return 0
-    restored = 0
     lists = conn.execute(
         "SELECT tl.id AS list_id, tl.title, ti.id AS item_id, ti.text"
         " FROM todo_items ti"
@@ -79,6 +102,7 @@ def _restore_claims(
         " WHERE tl.post_id = ?",
         (post_id,),
     ).fetchall()
+    pending: list[tuple[int, int, str]] = []
     for row in lists:
         key = (row["title"], row["text"])
         claim = snapshot.get(key)
@@ -87,13 +111,25 @@ def _restore_claims(
         agent_id, claimed_at = claim
         if _claim_expired(claimed_at):
             continue
-        conn.execute(
-            "UPDATE todo_items SET claimed_by_agent_id = ?, claimed_at = ?"
-            " WHERE id = ?",
-            (agent_id, claimed_at, row["item_id"]),
-        )
-        restored += 1
-    return restored
+        pending.append((row["item_id"], agent_id, claimed_at))
+    if not pending:
+        return 0
+    agent_case = " ".join(["WHEN ? THEN ?"] * len(pending))
+    at_case = " ".join(["WHEN ? THEN ?"] * len(pending))
+    marks = ", ".join(["?"] * len(pending))
+    params: list = []
+    for iid, aid, _cat in pending:
+        params.extend((iid, aid))
+    for iid, _aid, cat in pending:
+        params.extend((iid, cat))
+    params.extend([p[0] for p in pending])
+    conn.execute(
+        "UPDATE todo_items SET claimed_by_agent_id = CASE id"
+        f" {agent_case} END, claimed_at = CASE id {at_case} END"
+        f" WHERE id IN ({marks})",
+        params,
+    )
+    return len(pending)
 
 
 def _snapshot_list_claims(
@@ -2570,16 +2606,7 @@ def delete_todo_item(token: str, post_id: int, list_id: int, item_id: int) -> di
         # middle delete otherwise leaves a gap and COUNT(*) reuses a
         # position already taken (positions stay 0-based, normalized on
         # every write, matching the bulk ops).
-        for newpos, (rid,) in enumerate(
-            conn.execute(
-                "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
-                (list_id,),
-            )
-        ):
-            conn.execute(
-                "UPDATE todo_items SET position = ? WHERE id = ?",
-                (newpos, rid),
-            )
+        _renumber_positions(conn, list_id)
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
@@ -2637,16 +2664,7 @@ def move_todo_item(
         )
         # Renormalize the source list's surviving items to 0..n so the next
         # add_todo_item's `position = count` stays collision-free.
-        for newpos, (rid,) in enumerate(
-            conn.execute(
-                "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
-                (list_id,),
-            )
-        ):
-            conn.execute(
-                "UPDATE todo_items SET position = ? WHERE id = ?",
-                (newpos, rid),
-            )
+        _renumber_positions(conn, list_id)
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
@@ -2748,16 +2766,7 @@ def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
             {lid for lid, _, _, _ in parsed} | {to for _, _, to, _ in parsed}
         )
         for abl in affected:
-            for newpos, (rid,) in enumerate(
-                conn.execute(
-                    "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
-                    (abl,),
-                )
-            ):
-                conn.execute(
-                    "UPDATE todo_items SET position = ? WHERE id = ?",
-                    (newpos, rid),
-                )
+            _renumber_positions(conn, abl)
         _record_todo_edit(conn, post_id, agent["id"])
         moved = [
             {"item_id": iid, "text": text, "from_list_id": lid, "to_list_id": to_lid}

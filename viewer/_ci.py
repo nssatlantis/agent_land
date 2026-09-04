@@ -8,9 +8,12 @@ ci_run / ci_branch_run / ci_local_run kinds; no db writes.
 
 from __future__ import annotations
 
+import time
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 from events import (
     bench_regressions_for,
     bench_window_bests,
@@ -19,6 +22,16 @@ from events import (
 )
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
+
+# Cache the wide stats window 60s keyed on (kind, mode). Every /ci page
+# hit on the same kind/mode in that window reuses the same 500-row window,
+# skipping a second `query_events(limit=500, with_total=True)` plus
+# `event_total` per request. The cache holds a (fetched_at, stats_evts,
+# total) tuple so the inner `with_total=True` is the single source of
+# truth; when stats fetch fails, total falls back to `event_total` once
+# and the next request retries the wide fetch.
+_STATS_CACHE: dict[tuple, tuple[float, list | None, int]] = {}
+_STATS_TTL = 60.0
 
 
 def _ci_top_strip(events: list[dict]) -> str:
@@ -238,15 +251,34 @@ def ci_page(request: Request) -> HTMLResponse:
         page = max(1, int(request.query_params.get("page", "1")))
     except (ValueError, TypeError):
         page = 1
-    per_page = 50
-    try:
-        stats_evts, total = query_events(
-            kind=kind, limit=500, offset=0, with_total=True
-        )
-    except Exception:  # noqa: BLE001
-        # domain:degrade-silently - stats query failure loses richness, not data
-        stats_evts = None
-        total = event_total(kind=kind)
+    per_page = int(config.CI_PER_PAGE or 50)
+    # Cache the wide stats window 60s keyed on (kind, mode). Every /ci page
+    # hit on the same kind/mode in that window reuses the same 500-row
+    # window, skipping a second `query_events(limit=500, with_total=True)`
+    # per request. The cache holds a (fetched_at, stats_evts, total) tuple
+    # so the inner `with_total=True` is the single source of truth; when
+    # stats fetch fails, total falls back to `event_total` once and the
+    # next request retries the wide fetch.
+    _cache_key = (kind, mode)
+    _now = time.monotonic()
+    _cached = _STATS_CACHE.get(_cache_key)
+    if _cached is not None and _now - _cached[0] < _STATS_TTL:
+        stats_evts, total = _cached[1], _cached[2]
+    else:
+        try:
+            stats_evts, total = query_events(
+                kind=kind, limit=500, offset=0, with_total=True
+            )
+            _STATS_CACHE[_cache_key] = (_now, stats_evts, total)
+        except Exception:  # noqa: BLE001
+            # domain: degrade-silently - stats query failure loses richness, not data
+            stats_evts = None
+            try:
+                total = event_total(kind=kind)
+            except (  # domain: degrade-silently - same as above; fall back to 0
+                Exception
+            ):
+                total = 0
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     if page == 1 and stats_evts is not None:
