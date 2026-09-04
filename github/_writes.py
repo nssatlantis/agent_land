@@ -80,24 +80,12 @@ def propose_change(
     planned: list[dict] = []
     for c in changes:
         path = _validate_path(c["path"])
-        has_content = "content" in c
-        has_edits = "edits" in c
-        if has_content and has_edits:
+        if "content" in c and "edits" in c:
             raise RepoError(
                 f"change for {path!r} has both 'content' and 'edits' - "
                 "use one or the other."
             )
-        if has_edits:
-            planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
-        else:
-            content = c.get("content", "")
-            if not isinstance(content, str) or content == "":
-                raise RepoError(
-                    f"content for {path!r} must be a non-empty string - an "
-                    "empty file is not a valid change; removal is the update "
-                    "path's delete operation."
-                )
-            planned.append({"path": path, "content": content})
+        planned.append(_validate_change(path, c))
     if not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
 
@@ -113,31 +101,12 @@ def propose_change(
     resolved: list[dict] = []
     for p in planned:
         if "edits" in p:
-            data = _core._request(
-                "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
-            )
-            base_text: str | None = None
-            if data is not None:
-                try:
-                    base_text = _decode_content_text(p["path"], data)
-                except RepoError:  # domain:degrade-silently - base decode is best-effort, fallback to LF
-                    base_text = None
-            target = _target_eol_for_text(base_text)
-            normalized_edits: list[dict] = []
-            for op in p["edits"]:
-                neo: dict = {
-                    "find": _normalize_eol(op["find"], target),
-                    "replace": _normalize_eol(op["replace"], target),
-                }
-                if "occurrence" in op:
-                    neo["occurrence"] = op["occurrence"]
-                normalized_edits.append(neo)
-            content, log = _resolve_edits(p["path"], data, normalized_edits)
+            content, sha, log = _resolve_patch(p["path"], base_branch, p["edits"])
             resolved.append(
                 {
                     "path": p["path"],
                     "content": content,
-                    "sha": data.get("sha") if data else None,
+                    "sha": sha,
                     "patch_log": log,
                 }
             )
@@ -210,17 +179,12 @@ def propose_change(
     # fresh name - data stays safe either way.
     try:
         for p in resolved:
-            put_body = {
-                "message": commit_message,
-                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
-                    "ascii"
-                ),
-                "branch": branch,
-            }
             sha = p.get("sha") if "sha" in p else existing_sha.get(p["path"])
-            if sha:
-                put_body["sha"] = sha
-            _core._request("PUT", f"contents/{p['path']}", put_body)
+            _core._request(
+                "PUT",
+                f"contents/{p['path']}",
+                _put_params(commit_message, p["content"], branch, sha),
+            )
 
         pr = _core._request(
             "POST",
@@ -310,11 +274,11 @@ def update_pr(
     planned: list[dict] = []
     for c in changes:
         path = _validate_path(c["path"])
-        has_content = "content" in c
-        has_edits = "edits" in c
         is_delete = c.get("delete") is True
         is_reset = c.get("reset") is True
-        modes = sum(1 for flag in (has_content, has_edits, is_delete, is_reset) if flag)
+        modes = sum(
+            1 for flag in ("content" in c, "edits" in c, is_delete, is_reset) if flag
+        )
         if modes == 0:
             raise RepoError(
                 f"change for {path!r} needs 'content', 'edits', "
@@ -329,17 +293,8 @@ def update_pr(
             planned.append({"path": path, "delete": True})
         elif is_reset:
             planned.append({"path": path, "reset": True})
-        elif has_edits:
-            planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
         else:
-            content = c.get("content", "")
-            if not isinstance(content, str) or content == "":
-                raise RepoError(
-                    f"content for {path!r} must be a non-empty string - an "
-                    "empty file is not a valid change; use delete: True to "
-                    "remove it."
-                )
-            planned.append({"path": path, "content": content})
+            planned.append(_validate_change(path, c))
     if planned and not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
 
@@ -362,29 +317,9 @@ def update_pr(
     base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
     for p in planned:
         if "edits" in p:
-            data = _core._request(
-                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            p["content"], p["sha"], p["patch_log"] = _resolve_patch(
+                p["path"], branch, p["edits"]
             )
-            base_text: str | None = None
-            if data is not None:
-                try:
-                    base_text = _decode_content_text(p["path"], data)
-                except RepoError:  # domain:degrade-silently - base decode is best-effort, fallback to LF
-                    base_text = None
-            target = _target_eol_for_text(base_text)
-            normalized_edits: list[dict] = []
-            for op in p["edits"]:
-                neo: dict = {
-                    "find": _normalize_eol(op["find"], target),
-                    "replace": _normalize_eol(op["replace"], target),
-                }
-                if "occurrence" in op:
-                    neo["occurrence"] = op["occurrence"]
-                normalized_edits.append(neo)
-            content, log = _resolve_edits(p["path"], data, normalized_edits)
-            p["content"] = content
-            p["sha"] = data.get("sha") if data else None
-            p["patch_log"] = log
         elif "content" in p:
             # Whole-file update: preserve PR branch EOL until renormalize.
             # For dry_run keep network-free (canonical LF) like propose_change.
@@ -484,29 +419,21 @@ def update_pr(
             )
         elif "edits" in p or p.get("reset"):
             # Resolved in the pre-pass: content and sha are already current.
-            put_body = {
-                **commit_body,
-                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
-                    "ascii"
-                ),
-            }
-            if p.get("sha"):
-                put_body["sha"] = p["sha"]
-            _core._request("PUT", f"contents/{p['path']}", put_body)
+            _core._request(
+                "PUT",
+                f"contents/{p['path']}",
+                _put_params(plan["commit_message"], p["content"], branch, p.get("sha")),
+            )
         else:
             data = _core._request(
                 "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
             )
             sha = data.get("sha") if data else None
-            put_body = {
-                **commit_body,
-                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
-                    "ascii"
-                ),
-            }
-            if sha:
-                put_body["sha"] = sha
-            _core._request("PUT", f"contents/{p['path']}", put_body)
+            _core._request(
+                "PUT",
+                f"contents/{p['path']}",
+                _put_params(plan["commit_message"], p["content"], branch, sha),
+            )
 
     patch = {}
     if title is not None:
@@ -698,6 +625,37 @@ def _patch_log(planned: list[dict]) -> list[dict]:
     ]
 
 
+def _validate_change(path: str, c: dict) -> dict:
+    """Validate one change entry's content-or-edits tail and return the planned
+    entry. Shared by propose_change (content/edits only) and update_pr (which
+    routes delete/reset before calling it), so the two write paths agree on
+    what a valid change is."""
+    if "edits" in c:
+        return {"path": path, "edits": _validate_edits(path, c["edits"])}
+    content = c.get("content", "")
+    if not isinstance(content, str) or content == "":
+        raise RepoError(
+            f"content for {path!r} must be a non-empty string - an empty file "
+            "is not a valid change; use delete: True to remove it."
+        )
+    return {"path": path, "content": content}
+
+
+def _check_occurrence(path: str, i: int, occurrence) -> None:
+    """Reject a non-positive or non-int `occurrence` value with the shared
+    message. Used by _validate_edits and _apply_edits so shape-validation and
+    application can never disagree on what a valid occurrence is."""
+    if (
+        not isinstance(occurrence, int)
+        or isinstance(occurrence, bool)
+        or occurrence < 1
+    ):
+        raise RepoError(
+            f"edit {i} for {path!r}: 'occurrence' must be a positive "
+            f"integer (1-based), got {occurrence!r}."
+        )
+
+
 def _validate_edits(path: str, edits) -> list[dict]:
     """Shape-validate a patch mode `edits` list. Mirrors server.py's normalizer
     so github.py can be used standalone: each op is {find: non-empty str,
@@ -727,15 +685,8 @@ def _validate_edits(path: str, edits) -> list[dict]:
                 "delete the matched block)."
             )
         occurrence = op.get("occurrence")
-        if "occurrence" in op and (
-            not isinstance(occurrence, int)
-            or isinstance(occurrence, bool)
-            or occurrence < 1
-        ):
-            raise RepoError(
-                f"edit {i} for {path!r}: 'occurrence' must be a positive "
-                f"integer (1-based), got {occurrence!r}."
-            )
+        if "occurrence" in op:
+            _check_occurrence(path, i, occurrence)
     return edits
 
 
@@ -780,15 +731,7 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
                 "delete the matched block)."
             )
         occurrence = op.get("occurrence", 1)
-        if (
-            not isinstance(occurrence, int)
-            or isinstance(occurrence, bool)
-            or occurrence < 1
-        ):
-            raise RepoError(
-                f"edit {i} for {path!r}: 'occurrence' must be a positive "
-                f"integer (1-based), got {occurrence!r}."
-            )
+        _check_occurrence(path, i, occurrence)
         hits: list[int] = []
         start = 0
         while True:
@@ -836,6 +779,55 @@ def _resolve_edits(
     ops, and return (content, log). The caller shares this one GET per file
     with its sha resolution, so patch mode costs no extra GitHub round-trips."""
     return _apply_edits(path, _decode_content_text(path, data), edits)
+
+
+def _resolve_patch(
+    path: str, ref: str, edits: list[dict]
+) -> tuple[str, str | None, list[dict]]:
+    """Resolve a patch-mode `edits` list against a ref, end to end: fetch the
+    base from that ref (404-safe), detect its EOL and normalize the ops onto
+    it, apply them, and return (content, sha, log). The GET doubles as the
+    sha resolution for the follow-up PUT. Shared by propose_change (base
+    branch) and update_pr (PR branch head), so the two patch paths resolve
+    identically."""
+    data = _core._request("GET", f"contents/{path}?ref={ref}", ok_404=True)
+    base_text: str | None = None
+    if data is not None:
+        try:
+            base_text = _decode_content_text(path, data)
+        except (
+            RepoError
+        ):  # domain:degrade-silently - base decode is best-effort, fallback to LF
+            base_text = None
+    target = _target_eol_for_text(base_text)
+    normalized_edits: list[dict] = []
+    for op in edits:
+        neo: dict = {
+            "find": _normalize_eol(op["find"], target),
+            "replace": _normalize_eol(op["replace"], target),
+        }
+        if "occurrence" in op:
+            neo["occurrence"] = op["occurrence"]
+        normalized_edits.append(neo)
+    content, log = _resolve_edits(path, data, normalized_edits)
+    return content, data.get("sha") if data else None, log
+
+
+def _put_params(
+    message: str, content: str, branch: str, sha: str | None = None
+) -> dict:
+    """The contents-API PUT body for a whole-file write: commit message,
+    ASCII base64 content, target branch, and the file's current sha when it
+    already exists. Shared by propose_change and update_pr's write loops so
+    the PUT assembly stays in one place."""
+    put_body = {
+        "message": message,
+        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    }
+    if sha:
+        put_body["sha"] = sha
+    return put_body
 
 
 def _branch_name(citizen: str) -> str:
