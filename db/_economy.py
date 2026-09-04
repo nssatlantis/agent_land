@@ -460,6 +460,14 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             if k.endswith("_intake")
             and k not in ("transfer_fee_intake", "forfeit_intake", "transfer_intake")
         ),
+        # Citizen-store sink: the store_*_intake slice of the spend intake
+        # above (boosts, colors, pins, notes) — what the store recycled
+        # into the treasury per window.
+        "store_sink_quarters": sum(
+            v
+            for k, v in flows.items()
+            if k.startswith("store_") and k.endswith("_intake")
+        ),
         "transfer_intake_quarters": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
         # paid), but the flow row names the direction already.

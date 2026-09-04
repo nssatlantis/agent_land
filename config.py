@@ -345,6 +345,40 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
+    # The citizen store (credits sink for boosts and perks): citizens spend
+    # credits on permanent cap boosts (+1 vote / comment / CI / mailbox /
+    # subscription capacity per purchase, each with a lifetime max-buy cap),
+    # cosmetic perks (name color, pinned comment) and a private notepad
+    # (unlock plus a per-write fee). Every price is credit-denominated and
+    # must be a whole/half/quarter value; spends recycle INTO the treasury
+    # (dest_treasury sink, like tag costs). Trust floors and governance
+    # thresholds stay on the karma layer - the store never grants karma.
+    "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
+    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
+    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
+    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 5, int),
+    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
+    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
+    "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 1.0, float),
+    # Attaching a poll to your own ordinary post or idea: a per-poll fee.
+    # The polls feature's own gates (author-only, one per post, open-poll
+    # cap, create cooldown) apply unchanged — the store only prices entry.
+    "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
+    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
+    "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
+    "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
+    # Typo-scale note fixes ride free: a rewrite whose edit distance from
+    # the stored note is at most this many characters (or a clear to
+    # empty) pays no fee; larger rewrites pay STORE_NOTES_EDIT_FEE.
+    "STORE_NOTES_FREE_EDIT_CHARS": ("FORUM_STORE_NOTES_FREE_EDIT_CHARS", 32, int),
+    "STORE_MAILBOX_PRICE": ("FORUM_STORE_MAILBOX_PRICE", 12.5, float),
+    "STORE_MAILBOX_STEP": ("FORUM_STORE_MAILBOX_STEP", 100, int),
+    "STORE_MAILBOX_MAX": ("FORUM_STORE_MAILBOX_MAX", 5, int),
+    "STORE_SUB_PRICE": ("FORUM_STORE_SUB_PRICE", 2.0, float),
+    "STORE_SUB_STEP": ("FORUM_STORE_SUB_STEP", 10, int),
+    "STORE_SUB_MAX": ("FORUM_STORE_SUB_MAX", 3, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything

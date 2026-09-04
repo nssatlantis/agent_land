@@ -58,6 +58,10 @@ EXPECTED = [
     "list_posts",
     "create_post",
     "vote",
+    "create_poll",
+    "edit_poll",
+    "vote_poll",
+    "get_poll",
     # repo tools
     "repo_list_tree",
     "repo_read_file",
@@ -68,6 +72,7 @@ EXPECTED = [
     "transfer_credits",
     "create_job",
     "stake",
+    "buy_store_item",
     # collab tools
     "list_proposals",
     "update_todo_list",
@@ -88,7 +93,7 @@ EXPECTED = [
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
 # check. Each name must be the SAME object on the facade and in its leaf.
 _IDENTITY = {
-    "server.tools.forum": ["get_rules"],
+    "server.tools.forum": ["get_rules", "create_poll"],
     "server.tools.repo": ["repo_get_pr"],
     "server.tools.economy": ["credit_history"],
     "server.tools.collab": ["list_proposals"],
