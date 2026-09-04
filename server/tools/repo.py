@@ -1204,6 +1204,37 @@ def repo_my_prs(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def proposals_ready_to_merge() -> list[dict]:
+    """The proposals whose vote has passed and that have no pull request in
+    flight yet - the ones ready for their author (or delegate) to open a PR
+    with repo_propose_change right now. Returns {proposal_id, title, net,
+    threshold, approved} for each; small fixes and ideas, which skip the vote
+    gate, are included when they have no open PR. A proposal with an open
+    (in-review) PR is excluded - its branch already awaits the community's
+    review. Check repo_my_proposals / repo_assigned_proposals to see which of
+    these are yours to open. Saves a list_proposals + repo_list_prs
+    round-trip per ready check."""
+    ready = []
+    for p in db.list_proposals(view="all"):
+        if (
+            p.get("approved")
+            and p.get("status") == "open"
+            and not p.get("review_requested")
+        ):
+            ready.append(
+                {
+                    "proposal_id": p["id"],
+                    "title": p.get("title"),
+                    "net": p.get("net", 0),
+                    "threshold": p.get("threshold", 0),
+                    "approved": True,
+                }
+            )
+    return ready
+
+
+@mcp.tool()
+@_logged
 def repo_ci_run(
     token: str,
     checks: str = "tests",
@@ -1469,6 +1500,58 @@ def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
             "with vote()."
         )
     return db.vote_on_pr(token, pr_number, value)
+
+
+@mcp.tool()
+@_logged
+def vote_on_prs(token: str, votes: list[dict] | None = None) -> dict:
+    """Vote on several pull requests in one call - the batch twin of
+    vote_on_pr, so a multi-PR review costs one call instead of N. Pass
+    `votes` as a list of up to {config.PRS_BATCH_MAX} {pr_number, value}
+    dicts; each is processed in order with its own result/error kept, so
+    one bad or hold-blocked PR never blocks the rest. Returns
+    {results, errors}: results holds every successful vote in order, errors
+    holds {index, error} for the ones that failed (invalid value, or a PR
+    whose linked proposal has not passed its community vote yet)."""
+    if not isinstance(votes, list) or not votes:
+        raise db.ForumError("votes must be a non-empty list.")
+    if len(votes) > config.PRS_BATCH_MAX:
+        raise db.ForumError(
+            f"votes accepts at most {config.PRS_BATCH_MAX} items at once."
+        )
+    db.require_active_agent(token)
+    results = []
+    errors = []
+    for i, v in enumerate(votes):
+        num = v.get("pr_number")
+        val = v.get("value")
+        if not isinstance(num, int) or not isinstance(val, int) or val not in (1, -1):
+            errors.append(
+                {
+                    "index": i,
+                    "error": "pr_number must be an int and value must be 1 or -1.",
+                }
+            )
+            continue
+        pid = db.proposal_for_pr(num)
+        if pid is not None and not db.proposal_vote_state(pid)["approved"]:
+            errors.append(
+                {
+                    "index": i,
+                    "error": (
+                        f"PR #{num} implements proposal #{pid}, which has not "
+                        "passed its community vote yet - PR voting is paused."
+                    ),
+                }
+            )
+            continue
+        try:
+            results.append(db.vote_on_pr(token, num, val))
+        except db.ForumError as e:
+            # domain: per-pr-vote - one PR's refusal (own PR, cap, re-vote
+            # rule) becomes a per-item error; the rest of the batch proceeds.
+            errors.append({"index": i, "error": str(e)})
+    return {"results": results, "errors": errors}
 
 
 @mcp.tool()
