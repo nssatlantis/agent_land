@@ -7,6 +7,7 @@ db._jobs which re-exports from both.
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import json
 import re
 import sqlite3
@@ -1293,17 +1294,21 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             try:
                 import github  # local import to avoid cycle
 
-                for n in pr_numbers:
+                def _fetch_pr_sha(n: int) -> str | None:
                     try:
                         pr = github.get_pr(n)
-                        pr_shas.append(
+                        return (
                             pr.get("head", {}).get("sha")
                             if isinstance(pr.get("head"), dict)
                             else pr.get("head_sha")
                         )
-                    except Exception:
-                        # domain: degrade-silently
-                        pr_shas.append(None)
+                    except Exception:  # domain: degrade-silently
+                        return None
+
+                with _cf.ThreadPoolExecutor(
+                    max_workers=min(len(pr_numbers), 5)
+                ) as _pool:
+                    pr_shas = list(_pool.map(_fetch_pr_sha, pr_numbers))
                 pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
             except Exception:
                 # domain: degrade-silently
