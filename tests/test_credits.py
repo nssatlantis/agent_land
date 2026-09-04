@@ -450,6 +450,25 @@ def test_history_category_filters():
         raise AssertionError("unknown category must be refused")
     except ForumError:
         pass
+    treasury = {
+        e["reason"]
+        for e in db.credit_history(limit=500, category="treasury")["entries"]
+    }
+    assert {"admin_mint", "proposal_mint", "admin_burn"} <= treasury
+    assert "transfer_out" not in treasury
+    for _cat, _frags in (
+        ("jobs", ("job",)),
+        ("tags", ("tag",)),
+        ("stakes", ("stake", "bounty")),
+    ):
+        _rows = db.credit_history(limit=500, category=_cat)["entries"]
+        assert all(any(f in e["reason"].lower() for f in _frags) for e in _rows), _cat
+    assert db.credit_history(limit=500, min_quarters=10**9)["entries"] == []
+    assert db.credit_history(limit=500, max_quarters=0)["entries"] == []
+    bounded = db.credit_history(limit=500, category="transfers", min_quarters=1)[
+        "entries"
+    ]
+    assert bounded and all(abs(e["delta_quarters"]) >= 1 for e in bounded)
 
 
 def test_tx_id_groups_atomic_flows():

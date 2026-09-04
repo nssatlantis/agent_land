@@ -1093,6 +1093,10 @@ CREDIT_CATEGORIES = (
     "minted",
     "burned",
     "forfeited",
+    "jobs",
+    "tags",
+    "stakes",
+    "treasury",
 )
 
 
@@ -1122,6 +1126,21 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
         return (
             "e.reason IN (" + ", ".join("?" for _ in _CREDIT_FORFEIT_REASONS) + ")",
             list(_CREDIT_FORFEIT_REASONS),
+        )
+    if category == "jobs":
+        return "LOWER(e.reason) LIKE '%job%'", []
+    if category == "tags":
+        return "LOWER(e.reason) LIKE '%tag%'", []
+    if category == "stakes":
+        return (
+            "(LOWER(e.reason) LIKE '%stake%' OR LOWER(e.reason) LIKE '%bounty%')",
+            [],
+        )
+    if category == "treasury":
+        fams = _CREDIT_MINT_REASONS | _CREDIT_BURN_REASONS
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in fams) + ")",
+            list(fams),
         )
     if category == "earned":
         cond = " AND ".join(
@@ -1159,11 +1178,14 @@ def history(
     limit: int = 50,
     offset: int = 0,
     category: str | None = None,
+    min_quarters: int | None = None,
+    max_quarters: int | None = None,
 ) -> dict:
     """The public credits ledger, newest first.  Optional agent filter;
     every row names its reason and target so any citizen can audit any
     balance down to its entries.  Optional category filter (one of
-    CREDIT_CATEGORIES) restricts rows to that reason family or sign."""
+    CREDIT_CATEGORIES) restricts rows to that reason family or sign.
+    Optional min/max_quarters bound the absolute credit amount."""
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
@@ -1177,6 +1199,12 @@ def history(
             if fclause:
                 clauses.append(fclause)
                 params.extend(fparams)
+        if min_quarters is not None:
+            clauses.append("ABS(e.delta_quarters) >= ?")
+            params.append(min_quarters)
+        if max_quarters is not None:
+            clauses.append("ABS(e.delta_quarters) <= ?")
+            params.append(max_quarters)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
             f"SELECT e.id, e.agent_id, e.account,"
