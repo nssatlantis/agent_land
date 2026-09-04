@@ -208,6 +208,41 @@ def available_next_steps(steps: list[dict]) -> list[str]:
     ]
 
 
+def effective_run_expiry(
+    conn: sqlite3.Connection, proposal_id: int, ttl_seconds: int
+) -> dict:
+    """The effective expiry a freshly-started create-pr run would get for
+    `proposal_id`, mirroring the adaptive TTL computation in
+    bind_open_run/start_workflow: the run's expiry is never earlier than
+    PROPOSAL_STALE_DAYS after the proposal was created (the natural
+    proposal lifetime), and is capped at `_TTL_CAP_DAYS` (365d) so an
+    abandoned run still expires. Returns
+    {"effective_expires_at": <ISO stamp or None>, "effective_ttl_seconds":
+    <seconds from now to that expiry, or None>}; both None when the TTL
+    is 0 (never expires). repo_workflow_status surfaces these so a caller
+    sees a mid-vote run's true lifetime instead of the bare TTL, avoiding
+    a spurious repo_restart_workflow."""
+    if ttl_seconds <= 0:
+        return {"effective_expires_at": None, "effective_ttl_seconds": None}
+    now = datetime.now(timezone.utc)
+    floor = now + timedelta(seconds=ttl_seconds)
+    try:
+        created_row = conn.execute(
+            "SELECT created_at FROM posts WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if created_row is not None and created_row["created_at"]:
+            created = _parse_iso(created_row["created_at"])
+            stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
+            floor = max(floor, stale_floor)
+    except Exception:  # domain:degrade-silently - fall back to plain now+TTL
+        pass
+    cap = now + timedelta(days=_TTL_CAP_DAYS)
+    floor = min(floor, cap)
+    stamp = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    seconds = int((floor - now).total_seconds())
+    return {"effective_expires_at": stamp, "effective_ttl_seconds": seconds}
+
+
 def _ensure_run_steps(
     conn: sqlite3.Connection, run_id: int, workflow_path: str
 ) -> list[dict]:
