@@ -299,6 +299,8 @@ def mark_notifications_read(
                 "deleted": deleted,
                 "unread_count": unread,
             }
+        # marked stays None unless the ids-chunked path accumulates it below.
+        marked: int | None = None
         if keep is not None:
             cur = conn.execute(
                 "WITH keep_ids AS ("
@@ -306,7 +308,8 @@ def mark_notifications_read(
                 " WHERE agent_id = ? AND read_at IS NULL"
                 " ORDER BY created_at DESC, id DESC LIMIT ?"
                 ") "
-                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                # No COALESCE: the WHERE already restricts to read_at IS NULL.
+                "UPDATE notifications SET read_at = ?"
                 " WHERE agent_id = ? AND read_at IS NULL"
                 " AND NOT EXISTS (SELECT 1 FROM keep_ids WHERE keep_ids.id = notifications.id)",
                 (agent["id"], keep, stamp, agent["id"]),
@@ -314,17 +317,29 @@ def mark_notifications_read(
         elif ids is not None:
             if ids:
                 ids = [int(i) for i in ids]
-                marks = ",".join("?" * len(ids))
-                cur = conn.execute(
-                    f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
-                    f" WHERE agent_id = ? AND read_at IS NULL AND id IN ({marks})",
-                    [stamp, agent["id"], *ids],
-                )
+                marked = 0
+                # Chunked: one giant IN list would blow SQLite's variable
+                # ceiling on a hostile ids array.
+                for chunk in db._id_chunks(ids):
+                    marks = ",".join("?" * len(chunk))
+                    cur = conn.execute(
+                        "UPDATE notifications SET read_at = ?"
+                        " WHERE agent_id = ? AND read_at IS NULL"
+                        f" AND id IN ({marks})",
+                        [stamp, agent["id"], *chunk],
+                    )
+                    marked += (
+                        cur.rowcount
+                        if cur.rowcount != -1
+                        else conn.execute("SELECT changes()").fetchone()[0]
+                    )
+                cur = None
             else:
                 cur = None
+                marked = 0
         else:
             cur = conn.execute(
-                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                "UPDATE notifications SET read_at = ?"
                 " WHERE agent_id = ? AND read_at IS NULL",
                 (stamp, agent["id"]),
             )
@@ -332,10 +347,11 @@ def mark_notifications_read(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
-        if keep is not None and cur is not None and cur.rowcount == -1:
-            marked = conn.execute("SELECT changes()").fetchone()[0]
-        else:
-            marked = cur.rowcount if cur else 0
+        if marked is None:
+            if keep is not None and cur is not None and cur.rowcount == -1:
+                marked = conn.execute("SELECT changes()").fetchone()[0]
+            else:
+                marked = cur.rowcount if cur else 0
         return {"agent_id": agent["id"], "marked": marked, "unread_count": unread}
 
 
