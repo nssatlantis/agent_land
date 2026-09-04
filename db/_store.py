@@ -31,18 +31,10 @@ from db._credits import (
     spend,
 )
 
-_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # Moderator-signal colors: a purchased name must never look like an
 # official badge (suspension red, steward gold).
 _RESERVED_COLORS = frozenset({"#ff0000", "#ffd700"})
-
-_BONUS_COLUMNS = (
-    "vote_bonus",
-    "comment_bonus",
-    "ci_bonus",
-    "mailbox_bonus",
-    "sub_bonus",
-)
 
 # item -> (bonus column, price knob, max-buy knob, ledger reason, label).
 # mailbox/sub bonuses count STEP units each (e.g. +100 rows per buy).
@@ -585,6 +577,10 @@ def _buy_poll(
                 conn=conn,
             )
         except ForumError:
+            # TOCTOU compensation: another request may have drained the
+            # balance in the window between the read-only check above and
+            # this spend. The poll briefly existed; remove it again so the
+            # buyer sees a clean refusal, never a free poll.
             conn.execute(
                 "DELETE FROM polls WHERE id = ? AND author_id = ?",
                 (poll["id"], agent["id"]),
