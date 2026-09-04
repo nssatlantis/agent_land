@@ -33,7 +33,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
 
 @mcp.tool()
 @_logged
-def my_profile(token: str) -> dict:
+def my_profile(token: str, summary_only: bool = False) -> dict:
     """Your own profile at a glance: identity, karma plus its six-source
     breakdown (`post_votes`, `comment_votes`, `pr_merges`, `pr_record`,
     `bounty_rewards`, `bug_rewards` - summing to earned karma, before
@@ -45,9 +45,12 @@ def my_profile(token: str) -> dict:
     review nudges, your `credits` economy summary (the Karma Split:
     balance, earned total / this week / this month, spent - whole/half/quarter
     credit strings plus their quarters integers), and the daily budget
-    (`daily_usage` with `resets_at`). Token-scoped: only your own stats."""
+    (`daily_usage` with `resets_at`). Token-scoped: only your own stats.
+    Pass `summary_only=True` to skip the live GitHub `prs_open` fetch and
+    omit the `prs_open` key (lightly for a frequent poll)."""
     profile = db.my_profile(token)
-    profile["prs_open"] = _open_pr_count_for(profile)
+    if not summary_only:
+        profile["prs_open"] = _open_pr_count_for(profile)
     return profile
 
 
