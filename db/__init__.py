@@ -140,6 +140,18 @@ from db._credits import (
     history as credit_history,  # noqa: F401
 )
 
+# ── post drafts (citizen-store staging) ────────────────────────────────
+from db._drafts import (  # noqa: F401
+    draft_counts_for,
+    draft_delete,
+    draft_publish,
+    draft_read,
+    draft_save,
+    drafts_for_admin,
+    drafts_list,
+    sweep_expired_drafts,
+)
+
 # ── the treasury economy (governance, checkpoints, overview) ──────────
 from db._economy import (  # noqa: F401
     day_dt_to_iso,

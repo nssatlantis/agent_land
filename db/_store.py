@@ -91,6 +91,8 @@ _ALL_ITEMS = (
     "pin",
     "poll",
     "notes_unlock",
+    "drafts_unlock",
+    "draft_slot",
 )
 
 
@@ -102,11 +104,12 @@ _ZERO_ENTITLEMENTS = {
     "sub_bonus": 0,
     "name_color": None,
     "notes_unlocked": 0,
+    "draft_slots": 0,
 }
 
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
-    " sub_bonus, name_color, notes_unlocked"
+    " sub_bonus, name_color, notes_unlocked, draft_slots"
 )
 
 
@@ -347,6 +350,40 @@ def get_store_catalog(token: str) -> dict:
                 ),
             }
         )
+        slots = int(ent["draft_slots"] or 0)
+        items.append(
+            {
+                "key": "drafts_unlock",
+                "label": "Post drafts (invisible staging)",
+                "effect": (
+                    "one-time unlock: stage posts + proposals privately,"
+                    f" then {config.STORE_DRAFT_CREATE_FEE} per draft"
+                ),
+                "price": config.STORE_DRAFT_UNLOCK,
+                "owned": 1 if slots else 0,
+                "max": 1,
+                "remaining": 0 if slots else 1,
+                "can_afford": bal
+                >= exact_from_credits(
+                    config.STORE_DRAFT_UNLOCK, what="STORE_DRAFT_UNLOCK"
+                ),
+            }
+        )
+        items.append(
+            {
+                "key": "draft_slot",
+                "label": "Extra draft slot",
+                "effect": f"+1 staging slot, up to {config.STORE_DRAFT_MAX_SLOTS}",
+                "price": config.STORE_DRAFT_SLOT_PRICE,
+                "owned": slots,
+                "max": config.STORE_DRAFT_MAX_SLOTS,
+                "remaining": max(0, config.STORE_DRAFT_MAX_SLOTS - slots),
+                "can_afford": bal
+                >= exact_from_credits(
+                    config.STORE_DRAFT_SLOT_PRICE, what="STORE_DRAFT_SLOT_PRICE"
+                ),
+            }
+        )
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
@@ -498,31 +535,93 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
-        # notes_unlock: the last catalog item.
-        if ent["notes_unlocked"]:
-            raise ForumError("personal notes are already unlocked.")
+        # notes_unlock.
+        if item == "notes_unlock":
+            if ent["notes_unlocked"]:
+                raise ForumError("personal notes are already unlocked.")
+            spent_q = exact_from_credits(
+                config.STORE_NOTES_UNLOCK, what="STORE_NOTES_UNLOCK"
+            )
+            spend(
+                aid,
+                spent_q,
+                "store_notes_unlock",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements SET notes_unlocked = 1 WHERE agent_id = ?",
+                (aid,),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO personal_notes (agent_id, body) VALUES (?, '')",
+                (aid,),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
+        # drafts_unlock: one-time, opens the first staging slot.
+        if item == "drafts_unlock":
+            if int(ent["draft_slots"] or 0):
+                raise ForumError(
+                    "post drafts are already unlocked — buy draft_slot for more."
+                )
+            spent_q = exact_from_credits(
+                config.STORE_DRAFT_UNLOCK, what="STORE_DRAFT_UNLOCK"
+            )
+            spend(
+                aid,
+                spent_q,
+                "store_drafts_unlock",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements SET draft_slots = 1 WHERE agent_id = ?",
+                (aid,),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "slots": 1,
+                "max_slots": config.STORE_DRAFT_MAX_SLOTS,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
+        # draft_slot: extra staging slots after the unlock, up to the cap.
+        slots = int(ent["draft_slots"] or 0)
+        if not slots:
+            raise ForumError("post drafts are locked — buy drafts_unlock first.")
+        if slots >= config.STORE_DRAFT_MAX_SLOTS:
+            raise ForumError(
+                f"draft slots are maxed out ({slots}/{config.STORE_DRAFT_MAX_SLOTS})."
+            )
         spent_q = exact_from_credits(
-            config.STORE_NOTES_UNLOCK, what="STORE_NOTES_UNLOCK"
+            config.STORE_DRAFT_SLOT_PRICE, what="STORE_DRAFT_SLOT_PRICE"
         )
         spend(
             aid,
             spent_q,
-            "store_notes_unlock",
+            "store_draft_slot",
             target_type="store",
             dest_treasury=True,
             conn=conn,
         )
         conn.execute(
-            "UPDATE store_entitlements SET notes_unlocked = 1 WHERE agent_id = ?",
-            (aid,),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO personal_notes (agent_id, body) VALUES (?, '')",
+            "UPDATE store_entitlements SET draft_slots = draft_slots + 1"
+            " WHERE agent_id = ?",
             (aid,),
         )
         return {
             "status": "purchased",
             "item": item,
+            "slots": slots + 1,
+            "max_slots": config.STORE_DRAFT_MAX_SLOTS,
             "price": format_credits(spent_q),
             "balance": format_credits(balance_for(conn, aid)),
         }

@@ -46,6 +46,8 @@ EXPECTED = [
     "buy_store_item",
     "get_store_catalog",
     "effective_vote_cap",
+    "draft_save",
+    "draft_publish",
     # proposals / content
     "create_proposal",
     "vote_on_proposal",

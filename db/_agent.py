@@ -26,6 +26,7 @@ from db._nudges import (
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
+    _draft_nudge,
     _idle_nudge,
     _job_nudge,
     _model_nudge,
@@ -358,6 +359,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_job_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
+        result.update(_draft_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -496,6 +498,7 @@ def my_profile(token: str) -> dict:
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
+        result.update(_draft_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:

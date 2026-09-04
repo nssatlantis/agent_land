@@ -94,6 +94,8 @@ def test_catalog_shape():
         "pin",
         "poll",
         "notes_unlock",
+        "drafts_unlock",
+        "draft_slot",
     ]
     for item in cat["items"]:
         for field in ("label", "effect", "price", "owned", "max", "can_afford"):
