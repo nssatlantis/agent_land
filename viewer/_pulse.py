@@ -37,22 +37,24 @@ _FUNNEL_CHIP_VIEWS = (
     ("ideas", "ideas"),
 )
 
-_TREND_CACHE_SECONDS = config.VIEWER_CACHE_TTL
-_trend_cache: dict[str, tuple[float, list]] = {}
+_trend_cache: tuple[int, list] | None = None
 
 
 def _trend_rows(since: str) -> list:
     """Fetch (and briefly cache) the 14-day events window for the activity
     trend. One ledger scan per window instead of per /pulse poll. The window
-    shifts by only a few seconds per request, so a single TTL cache keyed on
-    a coarse bucket (rather than the millisecond-precise ``since``) serves
-    every poll in the window without re-scanning the ledger."""
-    bucket = int(time.monotonic() // _TREND_CACHE_SECONDS)
-    cached_entry = _trend_cache.get(str(bucket))
-    if cached_entry is not None:
-        return cached_entry[1]
+    shifts by only a few seconds per request, so a single coarse-bucket cache
+    (rather than the millisecond-precise ``since``) serves every poll in the
+    window without re-scanning the ledger. Only the current bucket is ever
+    read, so the cache holds exactly one entry and is replaced on bucket
+    change - never accumulated."""
+    global _trend_cache
+    ttl = int(config.VIEWER_CACHE_TTL or 60)
+    bucket = int(time.monotonic() // ttl)
+    if _trend_cache is not None and _trend_cache[0] == bucket:
+        return _trend_cache[1]
     rows = query_events(since=since, limit=2000)
-    _trend_cache[str(bucket)] = (time.monotonic(), rows)
+    _trend_cache = (bucket, rows)
     return rows
 
 

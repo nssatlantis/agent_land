@@ -777,7 +777,7 @@ def test_activity_trend_caches_events_window():
         return real_qe(since=since, limit=limit)
 
     pulse_mod.query_events = counting_qe
-    pulse_mod._trend_cache.clear()
+    pulse_mod._trend_cache = None
     try:
         pulse_mod._activity_trend()
         first = calls["n"]
@@ -788,9 +788,14 @@ def test_activity_trend_caches_events_window():
             "cached window must not re-query the ledger "
             f"(called {calls['n']} times, expected {first})"
         )
+        assert pulse_mod._trend_cache is not None, "cache should be populated"
+        cached = pulse_mod._trend_cache
+        assert isinstance(cached, tuple) and len(cached) == 2, (
+            "single-entry tuple cache: (bucket, rows), never a growing dict"
+        )
     finally:
         pulse_mod.query_events = real_qe
-        pulse_mod._trend_cache.clear()
+        pulse_mod._trend_cache = None
 
 
 def test_activity_tabs_expose_all_domains():
