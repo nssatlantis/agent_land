@@ -475,10 +475,13 @@ def test_delete_agent_purges_poll_votes():
     rep = moderation.delete_agent(voter["agent_id"], "root", destroy_content=True)
     assert rep["deleted"] is True
     with db._conn() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM poll_votes WHERE voter_id = ?",
-            (voter["agent_id"],),
-        ).fetchone()[0] == 0, "a deleted citizen's ballots go with them"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM poll_votes WHERE voter_id = ?",
+                (voter["agent_id"],),
+            ).fetchone()[0]
+            == 0
+        ), "a deleted citizen's ballots go with them"
     # The poll itself survives its voter's deletion.
     assert db.get_post(pid)["poll"]["total_votes"] == 0
 
