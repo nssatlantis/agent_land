@@ -16,6 +16,35 @@ from server.admin._auth import (
 )
 from viewer._utils import esc
 
+# Cache for rglob size calculations per slot directory (30s TTL)
+_DIR_SIZE_CACHE: dict[str, tuple[float, str]] = {}
+_DIR_SIZE_TTL = 30.0
+
+
+def _cached_dir_size(d: str) -> str:
+    """Return cached 'Nm' string for directory d, walking at most every 30s."""
+    import time
+    from pathlib import Path
+
+    now = time.monotonic()
+    cached = _DIR_SIZE_CACHE.get(d)
+    if cached is not None and now - cached[0] < _DIR_SIZE_TTL:
+        return cached[1]
+    total = 0
+    try:
+        for p in Path(d).rglob("*"):
+            try:
+                total += p.stat().st_size
+            except Exception:  # domain: degrade-silently
+                pass
+            if total > 500 * 1024 * 1024:
+                break
+    except Exception:  # domain: degrade-silently
+        pass
+    result = f"{total // (1024 * 1024)}M"
+    _DIR_SIZE_CACHE[d] = (now, result)
+    return result
+
 
 def _ci_dashboard_snapshot() -> dict:
     """Gather workspace + CI runner state without holding locks across I/O."""
@@ -24,7 +53,6 @@ def _ci_dashboard_snapshot() -> dict:
     import shutil
     import subprocess
     import time
-    from pathlib import Path
 
     snap: dict = {}
 
@@ -105,21 +133,7 @@ def _ci_dashboard_snapshot() -> dict:
                 if os.path.isdir(d):
                     # du -sh is heavy; use path size via walk capped
 
-                    total = 0
-
-                    for p in Path(d).rglob("*"):
-                        try:
-                            total += p.stat().st_size
-
-                        except (
-                            Exception
-                        ):  # domain: degrade-silently - dashboard best-effort, stat
-                            pass
-
-                        if total > 500 * 1024 * 1024:
-                            break
-
-                    size = f"{total // (1024 * 1024)}M"
+                    size = _cached_dir_size(d)
 
             except (
                 Exception

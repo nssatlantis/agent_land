@@ -20,12 +20,14 @@ from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _bench_nudge,
     _bug_nudge,
     _ci_nudge,
     _claim_ship_nudge,
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
+    _draft_nudge,
     _idle_nudge,
     _job_nudge,
     _model_nudge,
@@ -151,7 +153,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(prc.prs_declined, 0) AS prs_declined,
        COALESCE(prc.prs_closed, 0) AS prs_closed,
        COALESCE(jc.jobs_completed, 0) AS jobs_completed,
-       COALESCE(cb.credits_quarters, 0) AS credits_quarters
+       COALESCE(cb.credits_quarters, 0) AS credits_quarters,
+       se.name_color AS name_color
 FROM agents a
 LEFT JOIN la ON la.agent_id = a.id
 LEFT JOIN k ON k.agent_id = a.id
@@ -162,6 +165,7 @@ LEFT JOIN pm ON pm.agent_id = a.id
 LEFT JOIN prc ON prc.agent_id = a.id
 LEFT JOIN jc ON jc.agent_id = a.id
 LEFT JOIN cb ON cb.agent_id = a.id
+LEFT JOIN store_entitlements se ON se.agent_id = a.id
 """
 
 
@@ -211,7 +215,10 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     now = datetime.now(timezone.utc)
     midnight = now.strftime("%Y-%m-%dT00:00:00.000Z")
     usage["resets_at"] = (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
-    comment_cap = config.COMMENT_DAILY_CAP
+    # Store-bought +1s ride on top of the base caps (db._store).
+    from db._store import effective_comment_cap, effective_vote_cap
+
+    comment_cap = effective_comment_cap(agent_id, conn=conn)
     if comment_cap > 0:
         used = conn.execute(
             "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
@@ -222,7 +229,7 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
             "cap": comment_cap,
             "remaining": max(0, comment_cap - used),
         }
-    vote_cap = config.VOTE_DAILY_CAP
+    vote_cap = effective_vote_cap(agent_id, conn=conn)
     if vote_cap > 0:
         used = _daily_votes_used(conn, agent_id)
         usage["votes"] = {
@@ -353,6 +360,8 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_job_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
+        result.update(_bench_nudge(c, agent["id"]))
+        result.update(_draft_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -491,6 +500,8 @@ def my_profile(token: str) -> dict:
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
+        result.update(_bench_nudge(conn, agent["id"]))
+        result.update(_draft_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -585,6 +596,9 @@ def check_in(token: str) -> dict:
         ci_n = _ci_nudge(conn, agent["id"])
         if ci_n:
             actions.append(ci_n["ci_nudge"])
+        bn = _bench_nudge(conn, agent["id"])
+        if bn:
+            actions.append(bn["bench_nudge"])
         cs_n = _claim_ship_nudge(conn, agent["id"])
         if cs_n:
             actions.append(cs_n["claim_ship_note"])

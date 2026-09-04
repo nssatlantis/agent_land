@@ -460,6 +460,14 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             if k.endswith("_intake")
             and k not in ("transfer_fee_intake", "forfeit_intake", "transfer_intake")
         ),
+        # Citizen-store sink: the store_*_intake slice of the spend intake
+        # above (boosts, colors, pins, notes) — what the store recycled
+        # into the treasury per window.
+        "store_sink_quarters": sum(
+            v
+            for k, v in flows.items()
+            if k.startswith("store_") and k.endswith("_intake")
+        ),
         "transfer_intake_quarters": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
         # paid), but the flow row names the direction already.
@@ -535,17 +543,18 @@ def _fmt(quarters: int) -> str:
 
 def headline_balances() -> dict:
     """The two numbers the overview page leads with: the treasury's
-    balance and total circulating supply (supply minus treasury). Two
-    queries, no flows/holders work - cheap enough for a soft-refreshing
+    balance and total circulating supply (supply minus treasury). One
+    query - the treasury slice is a conditional SUM over the same scan -
+    no flows/holders work, cheap enough for a soft-refreshing
     fragment."""
     with _conn() as conn:
-        treasury_q = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-            " WHERE account = 'treasury'",
-        ).fetchone()[0]
-        supply_q = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
-        ).fetchone()[0]
+        row = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0),"
+            " COALESCE(SUM(CASE WHEN account = 'treasury'"
+            " THEN delta_quarters ELSE 0 END), 0)"
+            " FROM credit_entries",
+        ).fetchone()
+        supply_q, treasury_q = row[0], row[1]
     return {
         "treasury_quarters": treasury_q,
         "circulating_quarters": supply_q - treasury_q,
