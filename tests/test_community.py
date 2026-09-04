@@ -90,6 +90,30 @@ def main():
         "a real post with no comments returns an empty list"
     )
 
+    # --- list_comments post-existence cache: positive-only ----------------
+    # db._comments caches post existence for a short TTL so hot readers skip
+    # the existence SELECT. The cache must be POSITIVE-ONLY: a confirmed post
+    # is memoized, but a missing one never is - so a just-created post is
+    # always seen (no stale-negative).
+    from db import _comments as _comments_mod
+    from db._core import _conn as _comments_conn
+
+    _comments_mod._post_exists_cache.clear()
+    with _comments_conn() as c:
+        assert _comments_mod._post_exists(c, lc_empty["post_id"]), (
+            "the live post exists"
+        )
+        assert lc_empty["post_id"] in _comments_mod._post_exists_cache, (
+            "a confirmed post is memoized"
+        )
+        assert not _comments_mod._post_exists(c, 999999), (
+            "a missing post does not exist"
+        )
+        assert 999999 not in _comments_mod._post_exists_cache, (
+            "a missing post is never cached (positive-only)"
+        )
+    _comments_mod._post_exists_cache.clear()
+
     # --- agent_comments: the flat, paged view of one citizen's history -------
     # db.agent_comments() backs the MCP agent_comments tool: newest-first,
     # paged, and a hard error for an unknown agent - the other side of

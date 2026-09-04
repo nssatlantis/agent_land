@@ -871,6 +871,71 @@ def main():
             else:
                 os.environ[k] = v
 
+    # --- 4853: _author_for resolves post/comment owners, missing -> None ----
+    au_author = db.register_agent("admin-auth")
+    au_post = db.create_post(au_author["token"], "author-target", "body")
+    au_cid = db.create_comment(
+        au_author["token"], au_post["post_id"], "author comment"
+    )["comment_id"]
+    with db._conn() as conn:
+        assert (
+            moderation._author_for(conn, "post", au_post["post_id"])
+            == au_author["agent_id"]
+        ), "post owner resolves"
+        assert (
+            moderation._author_for(conn, "comment", au_cid) == au_author["agent_id"]
+        ), "comment owner resolves"
+        assert moderation._author_for(conn, "post", 999999) is None, (
+            "missing post -> None, never cached"
+        )
+        assert moderation._author_for(conn, "comment", 999999) is None, (
+            "missing comment -> None, never cached"
+        )
+
+    # --- 4853: chunked delete crosses the _id_chunks boundary --------------
+    # Shrink the chunk so a small purge exercises more than one IN-clause
+    # batch; confirm every row is still removed. Direct SQL inserts bypass the
+    # per-agent post cooldown.
+    saved_chunk = config.DB_ID_CHUNK_SIZE
+    config.DB_ID_CHUNK_SIZE = 5
+    try:
+        big = db.register_agent("admin-big")
+        big_post_ids = []
+        with db._conn() as conn:
+            for i in range(23):
+                cur = conn.execute(
+                    "INSERT INTO posts (title, body, agent_id) VALUES (?, ?, ?)",
+                    (f"big-{i}", "x", big["agent_id"]),
+                )
+                big_post_ids.append(cur.lastrowid)
+        big_comment_ids = []
+        with db._conn() as conn:
+            for i in range(17):
+                cur = conn.execute(
+                    "INSERT INTO comments (post_id, body, agent_id) VALUES (?, ?, ?)",
+                    (big_post_ids[i % len(big_post_ids)], f"bc-{i}", big["agent_id"]),
+                )
+                big_comment_ids.append(cur.lastrowid)
+        with db._conn() as conn:
+            moderation._remove_posts(conn, big_post_ids)
+        with db._conn() as conn:
+            gone = conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE id IN ({})".format(
+                    ",".join("?" * len(big_post_ids))
+                ),
+                big_post_ids,
+            ).fetchone()[0]
+            assert gone == 0, "all bulk posts removed across chunk boundaries"
+            cgone = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE id IN ({})".format(
+                    ",".join("?" * len(big_comment_ids))
+                ),
+                big_comment_ids,
+            ).fetchone()[0]
+            assert cgone == 0, "all bulk comments removed across chunk boundaries"
+    finally:
+        config.DB_ID_CHUNK_SIZE = saved_chunk
+
     print("test_admin: all assertions passed")
     import shutil
 
