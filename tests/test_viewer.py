@@ -83,6 +83,99 @@ def test_ci_chip_none():
     assert _ci_chip({}) == ""
 
 
+def test_ci_page_stats_cache_reuse():
+    """The 60s /ci stats cache must skip the second wide query on repeat
+    hits and across different pages of the same (kind, mode) pair (270:4877).
+    A miss refills, a hit reuses, and a new (kind, mode) starts fresh."""
+    import unittest.mock as _mock
+
+    from viewer import _ci as _ci_mod
+
+    class _Req:
+        def __init__(self, page=1):
+            self.query_params = {"page": str(page)}
+
+    saved = dict(_ci_mod._STATS_CACHE)
+    _ci_mod._STATS_CACHE.clear()
+    try:
+        # Wide fetch returns 3 fake events + total=7, second call must NOT
+        # happen on the same (kind, mode) hit. Fields shaped so _ci_row
+        # renders without KeyError (created_at is required for _human_ts).
+        fake_evts = [
+            {"id": 3, "created_at": "2026-09-04T03:00:00Z", "detail": {}},
+            {"id": 2, "created_at": "2026-09-04T02:00:00Z", "detail": {}},
+            {"id": 1, "created_at": "2026-09-04T01:00:00Z", "detail": {}},
+        ]
+        with (
+            _mock.patch.object(
+                _ci_mod,
+                "query_events",
+                return_value=(fake_evts, 7),
+            ) as mq,
+            _mock.patch.object(_ci_mod, "event_total", return_value=99) as met,
+        ):
+            # Miss: refills.
+            _ci_mod.ci_page(_Req(page=1))
+            assert mq.call_count == 1, "miss fires one wide fetch"
+            assert ("ci_run", "native") in _ci_mod._STATS_CACHE
+            cached = _ci_mod._STATS_CACHE[("ci_run", "native")]
+            assert cached[2] == 7, "total comes from wide fetch, not event_total"
+            assert met.call_count == 0, "wide fetch already returned total"
+            # Hit (same kind, mode, different page): no second fetch.
+            _ci_mod.ci_page(_Req(page=2))
+            assert mq.call_count == 1, "hit skips wide fetch"
+            _ci_mod.ci_page(_Req(page=1))
+            assert mq.call_count == 1, "another hit skips wide fetch"
+            # New (kind, mode): fresh miss.
+            _ci_mod.ci_page(_Req(page=1))  # still same
+            assert mq.call_count == 1
+    finally:
+        _ci_mod._STATS_CACHE.clear()
+        _ci_mod._STATS_CACHE.update(saved)
+
+
+def test_ci_page_stats_cache_falls_back_to_event_total():
+    """When the wide fetch raises, ci_page falls back to event_total for
+    the page count and re-tries the wide fetch on the next request."""
+    import unittest.mock as _mock
+
+    from viewer import _ci as _ci_mod
+
+    class _Req:
+        query_params = {"page": "1"}
+
+    saved = dict(_ci_mod._STATS_CACHE)
+    _ci_mod._STATS_CACHE.clear()
+    try:
+        # Only the wide (with_total=True) fetch must raise; the per-page
+        # fetch keeps working so ci_page can still render. Detail is the
+        # shape _ci_top_strip / _ci_row expect.
+        def _qe_fail_wide(
+            *,
+            kind=None,
+            limit=50,
+            offset=0,
+            with_total=False,
+            **_kw,
+        ):
+            if with_total:
+                raise RuntimeError("blip")
+            return []
+
+        with (
+            _mock.patch.object(_ci_mod, "query_events", side_effect=_qe_fail_wide),
+            _mock.patch.object(_ci_mod, "event_total", return_value=42) as met,
+        ):
+            _ci_mod.ci_page(_Req())
+            assert met.call_count == 1
+            assert ("ci_run", "native") not in _ci_mod._STATS_CACHE, (
+                "exception must not cache"
+            )
+    finally:
+        _ci_mod._STATS_CACHE.clear()
+        _ci_mod._STATS_CACHE.update(saved)
+
+
 def test_proposal_lock_banner_superseded():
     p = {"proposal": {"superseded_by_id": 42, "supersedes": None}}
     html = _proposal_lock_banner(p)
@@ -1092,6 +1185,8 @@ if __name__ == "__main__":
     test_ci_chip_failure()
     test_ci_chip_pending()
     test_ci_chip_none()
+    test_ci_page_stats_cache_reuse()
+    test_ci_page_stats_cache_falls_back_to_event_total()
     test_proposal_lock_banner_superseded()
     test_proposal_lock_banner_supersedes()
     test_proposal_lock_banner_none()
