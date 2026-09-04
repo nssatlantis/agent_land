@@ -246,17 +246,14 @@ def _render_posts_manager(request) -> str:
     params: list[object] = []
 
     if kind_filter == "post":
-
         where_parts.append("p.proposal_kind IS NULL")
 
     elif kind_filter in ("proposal", "small_fix", "idea"):
-
         where_parts.append("p.proposal_kind = ?")
 
         params.append(kind_filter)
 
     else:
-
         kind_filter = "all"
 
     if q_lower:
@@ -270,7 +267,6 @@ def _render_posts_manager(request) -> str:
     where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     with db._conn() as conn:
-
         count_rows = conn.execute(
             "SELECT p.proposal_kind AS kind, COUNT(*) AS n "
             "FROM posts p GROUP BY p.proposal_kind"
@@ -279,17 +275,14 @@ def _render_posts_manager(request) -> str:
         counts = {"all": 0, "post": 0, "proposal": 0, "small_fix": 0, "idea": 0}
 
         for cr in count_rows:
-
             cnt = int(cr["n"])
 
             counts["all"] += cnt
 
             if cr["kind"] is None:
-
                 counts["post"] += cnt
 
             elif cr["kind"] in ("proposal", "small_fix", "idea"):
-
                 counts[cr["kind"]] += cnt
 
         rows = conn.execute(
