@@ -263,7 +263,9 @@ def _render_posts_manager(request) -> str:
 
         like = (
             "%"
-            + q_lower.replace(chr(92), chr(92) * 2).replace("%", chr(92) + "%").replace("_", chr(92) + "_")
+            + q_lower.replace(chr(92), chr(92) * 2)
+            .replace("%", chr(92) + "%")
+            .replace("_", chr(92) + "_")
             + "%"
         )
 
@@ -279,7 +281,8 @@ def _render_posts_manager(request) -> str:
     with db._conn() as conn:
 
         count_rows = conn.execute(
-            "SELECT p.proposal_kind AS kind, COUNT(*) AS n FROM posts p GROUP BY p.proposal_kind"
+            "SELECT p.proposal_kind AS kind, COUNT(*) AS n "
+            "FROM posts p GROUP BY p.proposal_kind"
         ).fetchall()
 
         counts = {"all": 0, "post": 0, "proposal": 0, "small_fix": 0, "idea": 0}
