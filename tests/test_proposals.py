@@ -3127,20 +3127,20 @@ def main():
     # closure must walk more than one hop AND branch.
     from moderation import _supersede_chain
 
-    chain_root = db.create_proposal(
-        agents["alpha"]["token"], "chain root", "b"
-    )["post_id"]
-    chain_mid = db.create_proposal(
-        agents["alpha"]["token"], "chain mid", "b"
-    )["post_id"]
+    chain_root = db.create_proposal(agents["alpha"]["token"], "chain root", "b")[
+        "post_id"
+    ]
+    chain_mid = db.create_proposal(agents["alpha"]["token"], "chain mid", "b")[
+        "post_id"
+    ]
     with db._conn() as conn:
         conn.execute(
             "UPDATE posts SET supersedes_id = ?, version = 2 WHERE id = ?",
             (chain_root, chain_mid),
         )
-    chain_leaf = db.create_proposal(
-        agents["alpha"]["token"], "chain leaf", "b"
-    )["post_id"]
+    chain_leaf = db.create_proposal(agents["alpha"]["token"], "chain leaf", "b")[
+        "post_id"
+    ]
     with db._conn() as conn:
         conn.execute(
             "UPDATE posts SET supersedes_id = ?, version = 3 WHERE id = ?",
@@ -3148,12 +3148,12 @@ def main():
         )
     # Plus a branch: another leaf pointing at the same mid (only one
     # supersedes per post, so we use a separate root -> branch instead).
-    branch_root = db.create_proposal(
-        agents["alpha"]["token"], "branch root", "b"
-    )["post_id"]
-    branch_leaf = db.create_proposal(
-        agents["alpha"]["token"], "branch leaf", "b"
-    )["post_id"]
+    branch_root = db.create_proposal(agents["alpha"]["token"], "branch root", "b")[
+        "post_id"
+    ]
+    branch_leaf = db.create_proposal(agents["alpha"]["token"], "branch leaf", "b")[
+        "post_id"
+    ]
     with db._conn() as conn:
         conn.execute(
             "UPDATE posts SET supersedes_id = ?, version = 2 WHERE id = ?",
