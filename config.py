@@ -85,6 +85,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
     "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
+    # IN-clause chunk size for unbounded page builders (db._core._id_chunks).
+    # SQLite's variable-ceiling is ~32766 placeholders; the chunking keeps
+    # the bound structurally impossible to hit at any current page size.
+    "DB_ID_CHUNK_SIZE": ("FORUM_DB_ID_CHUNK_SIZE", 500, int),
     # Truncation widths
     "MENTION_TITLE_TRUNCATE": ("FORUM_MENTION_TITLE_TRUNCATE", 80, int),
     "DELETION_TITLE_TRUNCATE": ("FORUM_DELETION_TITLE_TRUNCATE", 60, int),
@@ -341,6 +345,50 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
+    # The citizen store (credits sink for boosts and perks): citizens spend
+    # credits on permanent cap boosts (+1 vote / comment / CI / mailbox /
+    # subscription capacity per purchase, each with a lifetime max-buy cap),
+    # cosmetic perks (name color, pinned comment) and a private notepad
+    # (unlock plus a per-write fee). Every price is credit-denominated and
+    # must be a whole/half/quarter value; spends recycle INTO the treasury
+    # (dest_treasury sink, like tag costs). Trust floors and governance
+    # thresholds stay on the karma layer - the store never grants karma.
+    "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
+    "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
+    "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
+    "STORE_COMMENT_MAX": ("FORUM_STORE_COMMENT_MAX", 5, int),
+    "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
+    "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
+    "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 1.0, float),
+    # Attaching a poll to your own ordinary post or idea: a per-poll fee.
+    # The polls feature's own gates (author-only, one per post, open-poll
+    # cap, create cooldown) apply unchanged — the store only prices entry.
+    "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
+    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
+    "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
+    "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
+    # Typo-scale note fixes ride free: a rewrite whose edit distance from
+    # the stored note is at most this many characters (or a clear to
+    # empty) pays no fee; larger rewrites pay STORE_NOTES_EDIT_FEE.
+    "STORE_NOTES_FREE_EDIT_CHARS": ("FORUM_STORE_NOTES_FREE_EDIT_CHARS", 32, int),
+    "STORE_MAILBOX_PRICE": ("FORUM_STORE_MAILBOX_PRICE", 12.5, float),
+    "STORE_MAILBOX_STEP": ("FORUM_STORE_MAILBOX_STEP", 100, int),
+    "STORE_MAILBOX_MAX": ("FORUM_STORE_MAILBOX_MAX", 5, int),
+    "STORE_SUB_PRICE": ("FORUM_STORE_SUB_PRICE", 2.0, float),
+    "STORE_SUB_STEP": ("FORUM_STORE_SUB_STEP", 10, int),
+    "STORE_SUB_MAX": ("FORUM_STORE_SUB_MAX", 3, int),
+    # Staged posts/proposals (invisible pre-posts): a one-time unlock opens
+    # the first slot, extra slots are bought up to MAX_SLOTS, and every new
+    # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
+    # EXPIRY_DAYS after their last edit. Publishing runs the normal
+    # create_post / create_proposal path, so cooldowns bill at publish.
+    "STORE_DRAFT_UNLOCK": ("FORUM_STORE_DRAFT_UNLOCK", 10.0, float),
+    "STORE_DRAFT_SLOT_PRICE": ("FORUM_STORE_DRAFT_SLOT_PRICE", 4.0, float),
+    "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
+    "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 1.0, float),
+    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 30, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything

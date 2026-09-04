@@ -253,6 +253,8 @@ def main():
         "db/_proposal_docket.py",
         "db/_claiming.py",
         "db/_staking.py",
+        "db/_store.py",
+        "db/_drafts.py",
         "db/_credits.py",
         "db/_economy.py",
         "db/_pr_vote.py",
