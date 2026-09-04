@@ -313,8 +313,13 @@ def _render_jobs_manager(request) -> str:
 
     cards = ""
 
+    job_ids = [j["job_id"] for j in filtered[:100]]
+    details_map = {d["job_id"]: d for d in db.get_jobs(job_ids)}
+
     for j in filtered[:100]:
-        detail = db.get_job(j["job_id"])
+        detail = details_map.get(j["job_id"])
+        if detail is None:
+            continue
 
         # Status color
 

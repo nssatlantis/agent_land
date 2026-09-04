@@ -27,24 +27,19 @@ def _analytics_html() -> str:
         return _CACHE["html"]
     try:
         # --- citizen growth -----------------------------------------------
-        citizen_rows = []
+        per_month: dict[str, int] = defaultdict(int)
         try:
             with db._conn() as conn:
                 rows = conn.execute(
-                    "SELECT created_at FROM agents ORDER BY created_at"
+                    "SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
+                    " COUNT(*) AS n FROM agents GROUP BY m"
                 ).fetchall()
                 for r in rows:
-                    citizen_rows.append(
-                        r["created_at"][:7] if r["created_at"] else "unknown"
-                    )
+                    per_month[r["m"] or "unknown"] = r["n"]
         except Exception:  # domain: degrade-silently
-            citizen_rows = []
+            per_month = defaultdict(int)
         # bucket by month cumulative
         growth_buckets: dict[str, int] = {}
-        # count per month
-        per_month: dict[str, int] = defaultdict(int)
-        for m in citizen_rows:
-            per_month[m] += 1
         cum = 0
         for m in sorted(per_month):
             cum += per_month[m]
@@ -108,11 +103,11 @@ def _analytics_html() -> str:
         try:
             with db._conn() as conn:
                 rows = conn.execute(
-                    "SELECT created_at FROM credit_entries ORDER BY created_at"
+                    "SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
+                    " COUNT(*) AS n FROM credit_entries GROUP BY m"
                 ).fetchall()
                 for r in rows:
-                    m = r["created_at"][:7] if r["created_at"] else "unknown"
-                    econ_per_month[m] += 1
+                    econ_per_month[r["m"] or "unknown"] = r["n"]
         except Exception:  # domain: degrade-silently
             econ_per_month = {}
         econ_sorted = sorted(econ_per_month.items())[-6:]
@@ -129,19 +124,20 @@ def _analytics_html() -> str:
         tag_per_month: dict[str, int] = defaultdict(int)
         try:
             with db._conn() as conn:
+                # post_tags carries applied_at, not created_at: the old leg
+                # selected a missing column, errored on every hit, and left
+                # this panel permanently on "No tag data".
                 rows = conn.execute(
-                    "SELECT created_at FROM tags ORDER BY created_at"
+                    "SELECT m, SUM(n) AS n FROM ("
+                    " SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
+                    " COUNT(*) AS n FROM tags GROUP BY m"
+                    " UNION ALL"
+                    " SELECT substr(COALESCE(applied_at, ''), 1, 7) AS m,"
+                    " COUNT(*) AS n FROM post_tags GROUP BY m"
+                    " ) GROUP BY m"
                 ).fetchall()
                 for r in rows:
-                    m = r["created_at"][:7] if r["created_at"] else "unknown"
-                    tag_per_month[m] += 1
-                # also post_tags
-                rows2 = conn.execute(
-                    "SELECT created_at FROM post_tags ORDER BY created_at"
-                ).fetchall()
-                for r in rows2:
-                    m = r["created_at"][:7] if r["created_at"] else "unknown"
-                    tag_per_month[m] += 1
+                    tag_per_month[r["m"] or "unknown"] = r["n"]
         except Exception:  # domain: degrade-silently
             tag_per_month = {}
         tag_sorted = sorted(tag_per_month.items())[-6:]

@@ -312,6 +312,7 @@ _IDLE_NUDGE_KEYS = (
     "workflow_note",
     "ci_nudge",
     "claim_ship_note",
+    "draft_note",
 )
 
 
@@ -336,6 +337,40 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             "list_jobs(view='mine' or 'working') shows full state."
         ),
         "job_actions": actions,
+    }
+
+
+def _draft_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A note while the citizen holds unpublished drafts: how many slots
+    are in use, how old the stalest draft is, and what to do next.
+    Quiet when nothing is staged — no nudge, no noise."""
+    from db._drafts import draft_counts_for
+
+    counts = draft_counts_for(conn, agent_id)
+    if not counts["live"]:
+        return {}
+    oldest = conn.execute(
+        "SELECT MIN(updated_at) FROM post_drafts WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()[0]
+    try:
+        age_days = max(
+            0,
+            (datetime.now(timezone.utc) - _parse_iso(oldest)).days,
+        )
+    except Exception:  # domain: degrade-silently - bad stamp never breaks a profile
+        age_days = 0
+    return {
+        "draft_note": (
+            f"You hold {counts['live']} unpublished draft(s)"
+            f" ({counts['live']}/{counts['slots']} slot(s) in use,"
+            f" oldest edited {age_days}d ago) — draft_publish(draft_id)"
+            " to post (your normal post/proposal cooldown bills then) or"
+            " draft_delete(draft_id) to free the slot;"
+            " drafts_list shows all."
+        ),
+        "draft_open": counts["live"],
+        "draft_slots": counts["slots"],
     }
 
 
@@ -375,6 +410,64 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             return {}
         return {
             "ci_nudge": f"You have {len(open_prs)} open PR(s) but no CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files before next push (or tests) to avoid shared-runner failures. See AGENTS.md."
+        }
+    except Exception:  # domain: degrade-silently - nudge is optional enrichment
+        return {}
+
+
+def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Benchmark summary nudge: surfaces the citizen's most recent
+    db_benchmark run's numbers on check_in / my_profile. Today the only way to
+    see them is the raw repo_ci_run return or the /ci?mode=bench ledger page -
+    agents don't browse - so this one line is the discoverability fix. Reuses
+    events.bench_query_delta, the exact window-relative median comparison the
+    /ci Benchmarks tab renders, so the check-in can never disagree with the
+    page. Quiet when the agent has no db_bench_run in the window. Pure
+    annotation; degrade-silently on any DB/events error."""
+    try:
+        window = int(config.CI_NUDGE_WINDOW_SECONDS)
+    except Exception:  # domain: degrade-silently
+        window = 86400
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        import events
+
+        since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f"
+        )[:-3] + "Z"
+        rows = events.query_events(
+            agent_id=agent_id, kind="ci_db_bench_run", since=since_iso, limit=20
+        )
+        if not rows:
+            return {}
+        queried: set[str] = set()
+        for ev in rows:
+            detail = ev.get("detail") or {}
+            summary = detail.get("summary") or {}
+            meds = summary.get("timings_median_ms")
+            if isinstance(meds, dict):
+                queried.update(str(q) for q in meds)
+        if not queried:
+            return {}
+        worst = None  # (delt_pct, query) - the query most regressed in-window
+        for q in sorted(queried):
+            delta = events.bench_query_delta(rows, q)
+            if not delta:
+                continue
+            best, latest, pct = delta
+            if worst is None or pct > worst[0]:
+                worst = (pct, q, latest, best)
+        if worst is None:
+            return {}
+        pct, q, latest, best = worst
+        regressions = events.bench_regressions_for(rows)
+        reg_txt = f" · {regressions} query(s) regressing" if regressions else " · clean"
+        return {
+            "bench_nudge": (
+                f"db_bench: {q} {latest:.1f}ms vs best-in-window {best:.1f}ms "
+                f"(+{pct}%){reg_txt} — see /ci?mode=bench."
+            )
         }
     except Exception:  # domain: degrade-silently - nudge is optional enrichment
         return {}
