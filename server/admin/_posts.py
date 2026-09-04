@@ -450,6 +450,50 @@ async def posts_index(request):
     )
 
 
+def _render_drafts() -> str:
+    """Every unpublished citizen draft, newest edit first — the read-only
+    drafts ledger. Drafts are invisible to citizens (no feed, search,
+    profile or notification surface); maintainers see them here the same
+    way they see deleted-content snapshots and reports. No actions: drafts
+    belong to their authors (publish/delete are citizen tools); abuse
+    routes through the existing ban/delete paths."""
+    try:
+        drafts = db.drafts_for_admin(limit=200)
+    except Exception:  # domain: degrade-silently - empty ledger, page still renders
+        drafts = []
+    if not drafts:
+        return "<p>No unpublished drafts.</p>"
+    rows = []
+    for d in drafts:
+        kind = esc(d["proposal_kind"] or "post")
+        preview = esc(d["title"][:200])
+        body = esc(d["body"])
+        expires = esc(d["expires_at"] or "never")
+        rows.append(
+            f'<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--border);border-radius:6px">'
+            f'<div style="font-size:13px"><b>{preview}</b> '
+            f'<span style="color:var(--muted)">[{kind}]</span> '
+            f'by <a href="/admin/agents/{d["agent_id"]}">{esc(d["owner"])}</a> '
+            f'<span style="color:var(--muted)">edited {esc(d["updated_at"])}, expires {expires}</span></div>'
+            f"<details><summary>body</summary>"
+            f'<div class="post-body">{body}</div></details></div>'
+        )
+    return (
+        f"<h2>Unpublished drafts ({len(drafts)} shown)</h2>"
+        '<p style="color:var(--muted)">Invisible to citizens until published;'
+        " read-only here.</p>" + "".join(rows)
+    )
+
+
+def drafts_index(request):
+    """The /admin/drafts page: the read-only drafts ledger."""
+
+    if not _authorized(request):
+        return _denied()
+
+    return _admin_page(request, "admin - drafts", _admin_nav() + _render_drafts())
+
+
 async def admin_update_post_settings(request):
     """Admin proposal-settings editor: handles the inline form on /admin/posts.
 

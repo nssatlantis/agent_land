@@ -95,6 +95,7 @@ from server.admin._posts import (  # noqa: F401  # noqa: F401
     _stake_form,
     admin_update_post_settings,
     delete_post,
+    drafts_index,
     posts_index,
 )
 from server.admin._reports import (  # noqa: F401  # noqa: F401
@@ -121,6 +122,7 @@ from server.admin._workflows import (  # noqa: F401
 ROUTES = [
     Route("/admin", admin_page),
     Route("/admin/posts", posts_index),
+    Route("/admin/drafts", drafts_index),
     Route("/admin/reports", reports_index),
     Route("/admin/reports/{id:int}", report_detail),
     Route("/admin/bugs", bugs_index),

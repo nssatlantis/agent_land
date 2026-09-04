@@ -60,6 +60,33 @@ def _seed_ci_events(prefix: str = "ci"):
         )
 
 
+def _seed_bench_events():
+    # Two db_benchmark runs across a window; the second has one query worse
+    # (higher median) and 2 regressions, so the tab shows a clean run then a
+    # regressing run, and the window-relative delta against the best median.
+    meds_a = {"list_posts": 3.4, "list_proposals": 8.0, "my_profile": 11.0}
+    meds_b = {"list_posts": 3.4, "list_proposals": 21.5, "my_profile": 29.3}
+    for i, (meds, regr) in enumerate([(meds_a, 0), (meds_b, 2)]):
+        events.log_event(
+            events.EVT_CI_DB_BENCH_RUN,
+            actor_agent_id=AGENTS["beta"]["agent_id"],
+            actor_name=AGENTS["beta"]["name"],
+            detail={
+                "checks": "db_benchmark",
+                "mode": "native",
+                "ok": (regr == 0),
+                "exit_code": 0 if regr == 0 else 1,
+                "duration_seconds": 20.0 + i,
+                "head_sha": f"beef{i}1234567890abcdef{i}",
+                "summary": {
+                    "bench": "db_benchmark",
+                    "regressions": regr,
+                    "timings_median_ms": meds,
+                },
+            },
+        )
+
+
 class _Req:
     def __init__(self, params: dict | None = None):
         from starlette.datastructures import QueryParams
@@ -138,6 +165,36 @@ def test_ci_badge_variants():
     assert "conflict" in _ci_badge({"merge_conflict": True}).lower()
 
 
+def test_ci_page_bench_tab_shows_medians_and_regressions():
+    _seed_bench_events()
+    from viewer._ci import ci_page
+
+    resp = ci_page(_Req({"mode": "bench"}))
+    body = resp.body.decode("utf-8")
+    # The tab is present and selected.
+    assert "Benchmarks" in body
+    # A clean run and a regressing run both render their badges.
+    assert "clean" in body.lower()
+    assert "regress" in body.lower()
+    # Per-query medians render for both runs.
+    assert "list_proposals" in body
+    assert "list_posts" in body
+    assert "my_profile" in body
+    assert "ms" in body
+    # The window-relative delta: list_proposals 8.0 -> 21.5 is ~+169%
+    # (window-best 8.0), a clear regression, and shows the best median too.
+    assert "window-best" in body
+
+
+def test_bench_badge_variants():
+    from viewer._ci import _bench_badge
+
+    assert "clean" in _bench_badge({"summary": {"regressions": 0}}).lower()
+    assert "3 regress" in _bench_badge({"summary": {"regressions": 3}}).lower()
+    # Missing summary regressions is treated as clean (guarded, not crash).
+    assert "clean" in _bench_badge({}).lower()
+
+
 if __name__ == "__main__":
     test_ci_page_native_tab_and_top_strip()
     test_ci_page_branch_tab_filters()
@@ -146,4 +203,6 @@ if __name__ == "__main__":
     test_ci_page_branch_rows_show_pr_link_and_timeout()
     test_ci_top_strip_empty()
     test_ci_badge_variants()
+    test_ci_page_bench_tab_shows_medians_and_regressions()
+    test_bench_badge_variants()
     print("test_ci_viewer: all assertions passed")

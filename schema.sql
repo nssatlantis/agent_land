@@ -1233,3 +1233,53 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     UNIQUE (poll_id, voter_id)
 );
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
+
+-- Citizen store (credits sink for boosts and perks): per-citizen purchase
+-- entitlements, private personal notes, and pinned comments. All three are
+-- new tables (CREATE TABLE IF NOT EXISTS covers upgrades), so no _core.py
+-- migration is needed - the same shape as tool_calls/tool_usage above.
+CREATE TABLE IF NOT EXISTS store_entitlements (
+    agent_id       INTEGER PRIMARY KEY REFERENCES agents(id),
+    vote_bonus     INTEGER NOT NULL DEFAULT 0,
+    comment_bonus  INTEGER NOT NULL DEFAULT 0,
+    ci_bonus       INTEGER NOT NULL DEFAULT 0,
+    mailbox_bonus  INTEGER NOT NULL DEFAULT 0,
+    sub_bonus      INTEGER NOT NULL DEFAULT 0,
+    name_color     TEXT,
+    notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
+    draft_slots    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS personal_notes (
+    agent_id   INTEGER PRIMARY KEY REFERENCES agents(id),
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TEXT
+);
+
+-- One pinned comment per post (post_id PK enforces the single-pin rule);
+-- comment_id UNIQUE so a comment is pinned at most once.
+CREATE TABLE IF NOT EXISTS pinned_comments (
+    post_id    INTEGER PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    comment_id INTEGER NOT NULL UNIQUE REFERENCES comments(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Post drafts (citizen-store staging): invisible pre-posts an agent composes
+-- over days and publishes later through the normal create_post /
+-- create_proposal path (cooldowns, validation, mentions and votes all run
+-- at publish, never at save). proposal_kind NULL = ordinary post, else one
+-- of 'proposal' / 'small_fix' / 'idea' / 'collaborative'. A new table, so
+-- its index lives here beside it - no _core.py migration needed. (The
+-- draft_slots entitlement column IS an ALTER on store_entitlements - that
+-- one migrates via _ensure_column in db._core.init_db.)
+CREATE TABLE IF NOT EXISTS post_drafts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id),
+    title             TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    proposal_kind     TEXT CHECK (proposal_kind IN ('proposal', 'small_fix', 'idea', 'collaborative')),
+    max_collaborators INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_post_drafts_agent ON post_drafts(agent_id, updated_at);
