@@ -112,6 +112,37 @@ def _open_runs_for(conn, pid: int):
     ).fetchall()
 
 
+def test_batch_rows_and_pagination(agents):
+    """_open_run_rows_for_many matches the per-pid helper exactly, and
+    list_workflow_runs pages (limit/offset) without changing the default
+    first-50 window."""
+    from db._workflow import _open_run_rows_for, _open_run_rows_for_many
+
+    with db._conn() as conn:
+        pids = [
+            r["proposal_id"]
+            for r in conn.execute(
+                "SELECT DISTINCT proposal_id FROM workflow_runs"
+                " WHERE proposal_id IS NOT NULL"
+            ).fetchall()
+        ]
+        batched = _open_run_rows_for_many(conn, pids)
+        assert _open_run_rows_for_many(conn, []) == {}
+        for pid in pids:
+            single = {(r["id"], r["agent_id"]) for r in _open_run_rows_for(conn, pid)}
+            multi = {(r["id"], r["agent_id"]) for r in batched.get(pid, [])}
+            assert single == multi, f"batched rows differ for proposal {pid}"
+        full = db.list_workflow_runs(conn)
+        assert len(full) <= 50, "default window unchanged"
+        page1 = db.list_workflow_runs(conn, limit=1)
+        assert [r["id"] for r in page1] == [r["id"] for r in full[:1]]
+        rest = db.list_workflow_runs(conn, limit=50, offset=1)
+        assert [r["id"] for r in rest] == [r["id"] for r in full[1:]]
+        assert db.list_workflow_runs(conn, limit=0) == page1, "limit clamps to >= 1"
+        assert db.list_workflow_runs(conn, offset=10**9) == []
+    print("  batch rows equivalence + list pagination: ok")
+
+
 def test_per_agent_ownership(agents):
     """Per-agent run ownership (the fork): claiming a to-do item/list, taking a
     delegation, or claiming a proposal each create the CALLER's OWN open
@@ -1111,6 +1142,7 @@ def main():
 
     # run last: it leaves own runs behind, which would perturb the earlier
     # global run-ledger/sweep assertions if it ran up front.
+    test_batch_rows_and_pagination(agents)
     test_per_agent_ownership(agents)
     print("ALL WORKFLOW TESTS PASSED")
 
