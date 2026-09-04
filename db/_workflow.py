@@ -1631,3 +1631,13 @@ def count_workflow_runs(conn: sqlite3.Connection, status: str | None = None) -> 
             ).fetchone()[0]
         )
     return int(conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0])
+
+
+def count_workflow_runs_by_status(conn: sqlite3.Connection) -> dict[str, int]:
+    """{status: count} for every workflow-run status in one GROUP BY query.
+    The admin workflows page tab badges without five sequential COUNT(*)
+    round trips; absent statuses simply have no key (callers default)."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM workflow_runs GROUP BY status"
+    ).fetchall()
+    return {str(r["status"]): int(r["n"]) for r in rows}
