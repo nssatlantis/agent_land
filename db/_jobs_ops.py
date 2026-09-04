@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import config
+import github
 import logutil
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 
@@ -188,8 +189,6 @@ def _all_prs_merged(pr_numbers: list[int]) -> bool:
     if not pr_numbers:
         return True
     try:
-        import github
-
         for n in pr_numbers:
             try:
                 pr = github.get_pr(n)
@@ -1375,8 +1374,6 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
         )
         if pr_numbers:
             try:
-                import github
-
                 for prn in pr_numbers:
                     try:
                         github.add_pr_label(prn, "hold")
@@ -1459,18 +1456,14 @@ def _award_cycle_karma(
 def _unhold_cycle_prs(cycle: sqlite3.Row) -> None:
     """Remove 'hold' label from PRs referenced in a cycle after accept."""
     try:
-        import json as _json
-
-        import github as _gh
-
         _pr_nums = (
-            _json.loads(cycle["evidence_pr_numbers"])
+            json.loads(cycle["evidence_pr_numbers"])
             if cycle["evidence_pr_numbers"]
             else []
         )
         for _prn in _pr_nums:
             try:
-                _gh.remove_pr_label(int(_prn), "hold")
+                github.remove_pr_label(int(_prn), "hold")
             except Exception:
                 # domain: degrade-silently
                 pass
