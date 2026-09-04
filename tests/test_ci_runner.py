@@ -715,7 +715,7 @@ def test_native_sandbox_routes_through_docker():
         [sys.executable, "-c", "print('ok')"],
         "agentland-ci-native",
     )
-    ci_runner._ensure_tree_traversable = lambda tree_: None
+    ci_runner._ensure_tree_traversable = lambda tree_, _marker=None: None
     ci_runner._register_active = lambda *a, **k: None
     _shadow("CI_RUN_NATIVE_SANDBOX", 1)
     _shadow("CI_RUN_BRANCH_ENABLED", 1)
@@ -821,6 +821,30 @@ def _shutil_rmtree(path: Path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+def test_traversable_memoizes_per_marker():
+    """A cached (tree, sha) skips both find walks; an uncached marker runs
+    them (posix) or no-ops (other platforms, where traversal is moot)."""
+    ci_runner._TRAVERSABLE_CACHE.clear()
+    calls: list = []
+    real_run = ci_runner.subprocess.run
+    ci_runner.subprocess.run = lambda *a, **k: (
+        calls.append(a) or type("R", (), {"returncode": 0})()
+    )
+    try:
+        ci_runner._TRAVERSABLE_CACHE[("/tmp/fake-tree", "sha-one")] = True
+        ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-one")
+        assert not calls, "cache hit must skip both find walks"
+        before = len(calls)
+        ci_runner._ensure_tree_traversable("/tmp/fake-tree", "sha-two")
+        if os.name == "posix":
+            assert len(calls) > before, "a new marker must re-run the walks"
+            assert ("/tmp/fake-tree", "sha-two") in ci_runner._TRAVERSABLE_CACHE
+        ci_runner._ensure_tree_traversable("/tmp/fake-tree")
+    finally:
+        ci_runner.subprocess.run = real_run
+        ci_runner._TRAVERSABLE_CACHE.clear()
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -851,6 +875,7 @@ def main():
     test_native_sandbox_routes_through_docker()
     test_native_host_fallback_when_knob_off()
     test_native_host_fallback_with_static_tools_is_parity()
+    test_traversable_memoizes_per_marker()
     print("test_ci_runner: all ok")
 
 
