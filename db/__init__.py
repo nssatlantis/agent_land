@@ -427,6 +427,7 @@ from db._text import (  # noqa: F401
     _ensure_signature,
     _expand_mentions,
     _expand_references,
+    _load_agents_map,
     _mask_code_spans,
     _mention_targets,
     _migrate_mention_syntax,
