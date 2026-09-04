@@ -177,11 +177,13 @@ def _render_workflows(request) -> str:
             f"<td>{restart_cell}</td></tr>"
         )
 
-    counts = {}
-
     with db._conn() as conn:
-        for s in ("open", "merged", "declined", "closed", "completed"):
-            counts[s] = db.count_workflow_runs(conn, status=s)
+        counts_by_status = db.count_workflow_runs_by_status(conn)
+
+    counts = {
+        s: counts_by_status.get(s, 0)
+        for s in ("open", "merged", "declined", "closed", "completed")
+    }
 
     links = " ".join(
         (

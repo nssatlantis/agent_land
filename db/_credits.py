@@ -1027,30 +1027,32 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
     def _iso(d: datetime) -> str:
         return d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-    def _sum(extra_where: str = "", params: tuple = ()) -> int:
-        cond = f" AND {extra_where}" if extra_where else ""
-        return conn.execute(
-            f"SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-            f" WHERE agent_id = ? AND delta_quarters > 0{cond}",
-            (agent_id, *params),
-        ).fetchone()[0]
-
-    spent = conn.execute(
-        "SELECT COALESCE(SUM(-delta_quarters), 0) FROM credit_entries"
-        " WHERE agent_id = ? AND delta_quarters < 0"
+    week_iso = _iso(week_start)
+    month_iso = _iso(month_start)
+    row = conn.execute(
+        "SELECT"
+        "  COALESCE(SUM(CASE WHEN delta_quarters > 0"
+        "    THEN delta_quarters ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN delta_quarters > 0 AND created_at >= ?"
+        "    THEN delta_quarters ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN delta_quarters > 0 AND created_at >= ?"
+        "    THEN delta_quarters ELSE 0 END), 0),"
         # Not spending: flip-cancellations reverse income (they carry
         # their own *_cancel reason) and forfeitures are judgment
         # penalties that live on the karma layer - neither belongs in a
         # 'what did I spend' number (review note N2, PR #402).
-        " AND reason NOT IN ('post_vote_cancel', 'comment_vote_cancel',"
-        " 'forfeit_to_treasury', 'forfeit_burned')",
-        (agent_id,),
-    ).fetchone()[0]
+        "  COALESCE(SUM(CASE WHEN delta_quarters < 0 AND reason NOT IN"
+        "    ('post_vote_cancel','comment_vote_cancel',"
+        "    'forfeit_to_treasury','forfeit_burned')"
+        "    THEN -delta_quarters ELSE 0 END), 0)"
+        " FROM credit_entries WHERE agent_id = ?",
+        (week_iso, month_iso, agent_id),
+    ).fetchone()
     return {
-        "earned_total_quarters": _sum(),
-        "earned_this_week_quarters": _sum("created_at >= ?", (_iso(week_start),)),
-        "earned_this_month_quarters": _sum("created_at >= ?", (_iso(month_start),)),
-        "spent_total_quarters": spent,
+        "earned_total_quarters": row[0],
+        "earned_this_week_quarters": row[1],
+        "earned_this_month_quarters": row[2],
+        "spent_total_quarters": row[3],
     }
 
 
