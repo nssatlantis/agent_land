@@ -190,7 +190,6 @@ from server.tools.repo import (  # noqa: F401
     set_claimable,
     similar_prs,
     unclaim_proposal,
-    vote_on_pr,
     vote_on_prs,
 )
 
