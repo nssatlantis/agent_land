@@ -126,7 +126,9 @@ def _pick_activity_branch(
     if kind is not None:
         try:
             return branches[kind]
-        except KeyError:
+        except (
+            KeyError
+        ):  # domain: fail-loudly - unknown kind is caller error, never silent
             raise db.ForumError(
                 "kind must be one of: posts, comments, votes, events"
             ) from None
