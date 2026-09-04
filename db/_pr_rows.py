@@ -86,14 +86,24 @@ def pr_row(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | Non
         return _read(c)
 
 
-def list_pr_rows(state: str = "closed", since: str | None = None) -> list[dict] | None:
+def list_pr_rows(
+    state: str = "closed",
+    since: str | None = None,
+    q: str | None = None,
+    limit: int | None = None,
+) -> list[dict] | None:
     """Closed-PR cache rows, newest first (updated_at desc, number tiebreak).
 
     Returns None - the live-GitHub fallback signal - when the cache is
     unpopulated (zero rows AND the backfill watermark was never set), so a
     fresh database never reads 'no PRs'. `state` is accepted for symmetry;
     only closed rows are stored and open composition stays live. `since`
-    (ISO-8601 UTC) filters by updated_at, mirroring the live closed path."""
+    (ISO-8601 UTC) filters by updated_at, mirroring the live closed path.
+    `q` narrows to a case-insensitive substring hit across title/body/
+    author/head/pr_number (the /search PR predicate, pushed into SQL so
+    the search never pulls the whole growing archive); `limit` caps the
+    rows returned after ordering - the search's [:per_page] slice moves
+    into the query."""
     with _conn() as c:
         count = c.execute("SELECT COUNT(*) FROM pr_rows").fetchone()[0]
         watermark = c.execute(
@@ -103,10 +113,26 @@ def list_pr_rows(state: str = "closed", since: str | None = None) -> list[dict] 
             return None
         sql = "SELECT " + _PR_COLS + " FROM pr_rows"
         params: list = []
+        where: list[str] = []
         if since is not None:
-            sql += " WHERE updated_at IS NOT NULL AND updated_at >= ?"
+            where.append("updated_at IS NOT NULL AND updated_at >= ?")
             params.append(since)
+        if q:
+            ql = q.lower()
+            where.append(
+                "(instr(lower(COALESCE(title, '')), ?) > 0"
+                " OR instr(lower(COALESCE(body, '')), ?) > 0"
+                " OR instr(lower(COALESCE(author, '')), ?) > 0"
+                " OR instr(lower(COALESCE(head, '')), ?) > 0"
+                " OR instr(CAST(pr_number AS TEXT), ?) > 0)"
+            )
+            params.extend([ql] * 5)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY COALESCE(updated_at, created_at, '') DESC, pr_number DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
         return [_row_to_dict(r) for r in c.execute(sql, params)]
 
 
