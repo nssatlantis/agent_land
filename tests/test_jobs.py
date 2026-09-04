@@ -480,6 +480,32 @@ def test_unfunded_cycle_reward_reports_zero_credits():
     )
 
 
+def test_bonus_pool_survives_unfunded_grant():
+    """An unfunded deposit-bonus grant must not zero the pool: the worker
+    keeps an auditable claim instead of a silent loss (270:4907)."""
+    from unittest import mock
+
+    import db._jobs_ops as _jobs_ops
+
+    creator = _make_creator("jobc-bonuskeep")
+    worker = db.register_agent("jobw-bonuskeep")
+    job = _simple_job(creator)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET deposit_bonus_quarters = 8 WHERE id = ?",
+            (job["job_id"],),
+        )
+    with mock.patch("db._credits.grant", return_value=False):
+        with db._conn() as conn:
+            _jobs_ops._maybe_pay_bonus(conn, {"id": job["job_id"]}, worker["agent_id"])
+    with db._conn() as conn:
+        pool = conn.execute(
+            "SELECT deposit_bonus_quarters FROM jobs WHERE id = ?",
+            (job["job_id"],),
+        ).fetchone()[0]
+    assert pool == 8, "an unpaid bonus pool must survive, not zero"
+
+
 def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     creator = _make_creator("jobc-dec")
     worker = db.register_agent("jobw-dec")

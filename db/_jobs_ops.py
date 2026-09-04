@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
+import logutil
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 
 _PR_RE = re.compile(
@@ -1568,7 +1569,7 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
         try:
             from db._credits import grant
 
-            grant(
+            paid = grant(
                 worker_id,
                 _bonus,
                 "job_deposit_bonus",
@@ -1576,13 +1577,35 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
                 target_id=job["id"],
                 conn=conn,
             )
-            conn.execute(
-                "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
-                (job["id"],),
+        except Exception as exc:
+            # domain: never-lose-data - the pool is NOT zeroed, so the bonus
+            # survives for a later retry; the failure is logged loudly
+            # instead of vanishing inside a bare pass. (Deferred import, like
+            # every db._credits use in this file: tests mock the
+            # db._credits.grant seam, which a top-level binding would bypass.)
+            logutil.log(
+                "job_bonus_grant_failed",
+                job_id=job["id"],
+                worker_id=worker_id,
+                quarters=_bonus,
+                error=str(exc),
             )
-        except Exception:
-            # domain: degrade-silently
-            pass
+            return
+        if not paid:
+            # Unfunded treasury (or disabled credits): same deal — keep the
+            # pool, log it. Zeroing here would erase an earned bonus the
+            # worker is still owed.
+            logutil.log(
+                "job_bonus_unfunded",
+                job_id=job["id"],
+                worker_id=worker_id,
+                quarters=_bonus,
+            )
+            return
+        conn.execute(
+            "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
+            (job["id"],),
+        )
 
 
 def _seed_next_cycle(conn, job, new_done: int) -> None:
