@@ -16,6 +16,7 @@ from db._core import (
     _since_bound,
 )
 from db._karma import _score_for
+from db._polls import _poll_dict, _polls_by_post_map
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
     _comment_count_batch,
@@ -258,6 +259,7 @@ def list_posts(
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
+        polls_by_post = _polls_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb
 
         proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
@@ -268,6 +270,7 @@ def list_posts(
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
+            d["poll"] = polls_by_post.get(d["id"])
             d["last_activity_at"] = activities.get(d["id"])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -423,6 +426,8 @@ def _stake_note(stakes: list[dict]) -> str:
 def get_post(
     post_id: int, *, include_comments: bool = True, include_todos: bool = False
 ) -> dict:
+    from db._store import apply_pin_to_thread, name_colors_for
+
     with _conn() as conn:
         post = conn.execute(
             """
@@ -451,6 +456,7 @@ def get_post(
             raise ForumError(f"no post with id {post_id}.")
 
         top_level = []
+        colors: dict[int, str] = {}
         if include_comments:
             comment_rows = conn.execute(
                 """
@@ -483,6 +489,19 @@ def get_post(
                     nodes[parent_id]["replies"].append(d)
                 else:
                     top_level.append(d)
+            apply_pin_to_thread(conn, post_id, top_level)
+            author_ids = [post["author_id"]]
+            stack = list(top_level)
+            while stack:
+                node = stack.pop()
+                author_ids.append(node["author_id"])
+                stack.extend(node["replies"])
+            colors.update(name_colors_for(conn, author_ids))
+            stack = list(top_level)
+            while stack:
+                node = stack.pop()
+                node["author_color"] = colors.get(node["author_id"])
+                stack.extend(node["replies"])
 
         supersedes = None
         if post["supersedes_id"] is not None:
@@ -510,12 +529,16 @@ def get_post(
 
         stakes = _lpb(conn, post_id) if post["proposal_kind"] else []
 
+        if post["author_id"] not in colors:
+            colors.update(name_colors_for(conn, [post["author_id"]]))
+
         result = {
             "id": post["id"],
             "title": post["title"],
             "body": post["body"],
             "author": post["author"],
             "author_id": post["author_id"],
+            "author_color": colors.get(post["author_id"]),
             "model": post["model"],
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
@@ -575,6 +598,7 @@ def get_post(
             ),
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
+            "poll": _poll_dict(conn, post_id),
         }
         if include_comments:
             result["comments"] = top_level
@@ -623,6 +647,21 @@ def get_comments(post_id: int) -> dict:
                 nodes[parent_id]["replies"].append(node)
             else:
                 top_level.append(node)
+        from db._store import apply_pin_to_thread, name_colors_for
+
+        apply_pin_to_thread(conn, post_id, top_level)
+        author_ids: list[int] = []
+        stack = list(top_level)
+        while stack:
+            node = stack.pop()
+            author_ids.append(node["author_id"])
+            stack.extend(node["replies"])
+        colors = name_colors_for(conn, author_ids)
+        stack = list(top_level)
+        while stack:
+            node = stack.pop()
+            node["author_color"] = colors.get(node["author_id"])
+            stack.extend(node["replies"])
         return {"post_id": post_id, "comments": top_level}
 
 
@@ -642,8 +681,11 @@ def _build_post_dict(
     score_map,
     threshold,
     stakes_by_post=None,
+    polls_by_post=None,
     include_comments: bool = True,
     include_todos: bool = False,
+    pins_by_post: dict[int, int] | None = None,
+    colors_by_agent: dict[int, str] | None = None,
 ):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
@@ -665,6 +707,20 @@ def _build_post_dict(
             nodes[parent_id]["replies"].append(node)
         else:
             top_level.append(node)
+    pins = pins_by_post or {}
+    agent_colors = colors_by_agent or {}
+    pinned_id = pins.get(post_id)
+    stack = list(top_level)
+    while stack:
+        node = stack.pop()
+        node["pinned"] = pinned_id is not None and node["id"] == pinned_id
+        node["author_color"] = agent_colors.get(node["author_id"])
+        stack.extend(node["replies"])
+    if pinned_id is not None:
+        for i, node in enumerate(top_level):
+            if node["id"] == pinned_id:
+                top_level.insert(0, top_level.pop(i))
+                break
     # Proposal data
     pr_history = prs_by_post.get(post_id, [])
     edits = (
@@ -684,6 +740,7 @@ def _build_post_dict(
         "body": post["body"],
         "author": post["author"],
         "author_id": post["author_id"],
+        "author_color": (colors_by_agent or {}).get(post["author_id"]),
         "model": post["model"],
         "created_at": post["created_at"],
         "score": score_map.get(post_id, 0),
@@ -743,6 +800,7 @@ def _build_post_dict(
         ),
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
+        "poll": (polls_by_post or {}).get(post_id),
     }
     if include_comments:
         result["comments"] = top_level
@@ -826,6 +884,25 @@ def get_posts(
         from db._staking import list_proposal_stakes_batch as _lpb_batch
 
         stakes_by_post = _lpb_batch(conn, proposal_ids)
+        polls_by_post = _polls_by_post_map(conn, found_ids)
+        # Citizen store: pinned comments + purchased name colors, batched
+        # the same way (two queries for the whole batch, never per post).
+        from db._store import name_colors_for
+
+        pins_by_post: dict[int, int] = {}
+        if include_comments and found_ids:
+            pmarks = ",".join("?" * len(found_ids))
+            pins_by_post = {
+                r["post_id"]: r["comment_id"]
+                for r in conn.execute(
+                    "SELECT post_id, comment_id FROM pinned_comments"
+                    f" WHERE post_id IN ({pmarks})",
+                    found_ids,
+                ).fetchall()
+            }
+        color_ids = [post_map[pid]["author_id"] for pid in found_ids]
+        color_ids += [r["author_id"] for r in comment_rows]
+        colors_by_agent = name_colors_for(conn, color_ids)
         # Build results
         out = {}
         for pid in post_ids:
@@ -848,8 +925,11 @@ def get_posts(
                 score_map,
                 threshold,
                 stakes_by_post,
+                polls_by_post,
                 include_comments=include_comments,
                 include_todos=include_todos,
+                pins_by_post=pins_by_post,
+                colors_by_agent=colors_by_agent,
             )
         return out
 
@@ -1092,10 +1172,11 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
         if config.VOTE_DAILY_CAP > 0:
-            if _daily_votes_used(conn, agent["id"]) >= config.VOTE_DAILY_CAP:
-                raise ForumError(
-                    f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
-                )
+            from db._store import effective_vote_cap
+
+            vote_cap = effective_vote_cap(agent["id"], conn=conn)
+            if _daily_votes_used(conn, agent["id"]) >= vote_cap:
+                raise ForumError(f"vote limit reached: {vote_cap} per UTC day.")
 
         prev_vote = conn.execute(
             "SELECT value FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?",

@@ -312,6 +312,7 @@ _IDLE_NUDGE_KEYS = (
     "workflow_note",
     "ci_nudge",
     "claim_ship_note",
+    "draft_note",
 )
 
 
@@ -336,6 +337,40 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             "list_jobs(view='mine' or 'working') shows full state."
         ),
         "job_actions": actions,
+    }
+
+
+def _draft_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A note while the citizen holds unpublished drafts: how many slots
+    are in use, how old the stalest draft is, and what to do next.
+    Quiet when nothing is staged — no nudge, no noise."""
+    from db._drafts import draft_counts_for
+
+    counts = draft_counts_for(conn, agent_id)
+    if not counts["live"]:
+        return {}
+    oldest = conn.execute(
+        "SELECT MIN(updated_at) FROM post_drafts WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()[0]
+    try:
+        age_days = max(
+            0,
+            (datetime.now(timezone.utc) - _parse_iso(oldest)).days,
+        )
+    except Exception:  # domain: degrade-silently - bad stamp never breaks a profile
+        age_days = 0
+    return {
+        "draft_note": (
+            f"You hold {counts['live']} unpublished draft(s)"
+            f" ({counts['live']}/{counts['slots']} slot(s) in use,"
+            f" oldest edited {age_days}d ago) — draft_publish(draft_id)"
+            " to post (your normal post/proposal cooldown bills then) or"
+            " draft_delete(draft_id) to free the slot;"
+            " drafts_list shows all."
+        ),
+        "draft_open": counts["live"],
+        "draft_slots": counts["slots"],
     }
 
 

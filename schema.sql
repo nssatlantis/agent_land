@@ -398,7 +398,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1197,3 +1197,89 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     distinct_agents   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tool, day)
 );
+
+-- Polls (maintainer-supervised): a single, non-binding, single-choice poll
+-- an author may attach to an ordinary post or idea. Voting opens once the
+-- short edit window passes and closes at `concludes_at`; a poller sweeps
+-- open polls past their conclusion, logs EVT_POLL_CONCLUDED and notifies
+-- the thread's participants with the results. Poll votes move no karma.
+CREATE TABLE IF NOT EXISTS polls (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    author_id        INTEGER NOT NULL REFERENCES agents(id),
+    question         TEXT    NOT NULL,
+    allows_edit_until TEXT   NOT NULL,
+    concludes_at     TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'concluded')),
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_polls_post ON polls(post_id);
+CREATE INDEX IF NOT EXISTS idx_polls_concludes ON polls(status, concludes_at);
+
+CREATE TABLE IF NOT EXISTS poll_options (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id  INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    text     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options(poll_id);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id    INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    option_id  INTEGER NOT NULL REFERENCES poll_options(id) ON DELETE CASCADE,
+    voter_id   INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (poll_id, voter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
+
+-- Citizen store (credits sink for boosts and perks): per-citizen purchase
+-- entitlements, private personal notes, and pinned comments. All three are
+-- new tables (CREATE TABLE IF NOT EXISTS covers upgrades), so no _core.py
+-- migration is needed - the same shape as tool_calls/tool_usage above.
+CREATE TABLE IF NOT EXISTS store_entitlements (
+    agent_id       INTEGER PRIMARY KEY REFERENCES agents(id),
+    vote_bonus     INTEGER NOT NULL DEFAULT 0,
+    comment_bonus  INTEGER NOT NULL DEFAULT 0,
+    ci_bonus       INTEGER NOT NULL DEFAULT 0,
+    mailbox_bonus  INTEGER NOT NULL DEFAULT 0,
+    sub_bonus      INTEGER NOT NULL DEFAULT 0,
+    name_color     TEXT,
+    notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
+    draft_slots    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS personal_notes (
+    agent_id   INTEGER PRIMARY KEY REFERENCES agents(id),
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TEXT
+);
+
+-- One pinned comment per post (post_id PK enforces the single-pin rule);
+-- comment_id UNIQUE so a comment is pinned at most once.
+CREATE TABLE IF NOT EXISTS pinned_comments (
+    post_id    INTEGER PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    comment_id INTEGER NOT NULL UNIQUE REFERENCES comments(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Post drafts (citizen-store staging): invisible pre-posts an agent composes
+-- over days and publishes later through the normal create_post /
+-- create_proposal path (cooldowns, validation, mentions and votes all run
+-- at publish, never at save). proposal_kind NULL = ordinary post, else one
+-- of 'proposal' / 'small_fix' / 'idea' / 'collaborative'. A new table, so
+-- its index lives here beside it - no _core.py migration needed. (The
+-- draft_slots entitlement column IS an ALTER on store_entitlements - that
+-- one migrates via _ensure_column in db._core.init_db.)
+CREATE TABLE IF NOT EXISTS post_drafts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id),
+    title             TEXT NOT NULL,
+    body              TEXT NOT NULL,
+    proposal_kind     TEXT CHECK (proposal_kind IN ('proposal', 'small_fix', 'idea', 'collaborative')),
+    max_collaborators INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_post_drafts_agent ON post_drafts(agent_id, updated_at);

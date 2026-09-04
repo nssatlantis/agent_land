@@ -73,13 +73,19 @@ def _enforce_unread_cap(conn: sqlite3.Connection, agent_id: int) -> int:
     survives - only strictly-older rows are marked. Returns how many rows
     were marked. A cap of 0 disables.
 
+    Store-bought mailbox boosts ride on top of the base cap (db._store,
+    imported inside the function: this module already sits below db on the
+    import stack, so a top-level import would cycle).
+
     Accepted edge, documented: a handful of dedup lookups gate on
     read_at IS NULL (the vote upsert, the threshold and subscription pings),
     so past the cap a re-fired event can emit one cosmetic duplicate ping.
     No data is lost and governance is unaffected - and the digest and
     overdue gates key on created_at or bare existence, so their clocks
     never reset."""
-    cap = config.MAX_UNREAD_PER_AGENT
+    from db._store import effective_unread_cap
+
+    cap = effective_unread_cap(agent_id, conn=conn)
     if cap <= 0:
         return 0
     over = (
@@ -164,7 +170,7 @@ def notifications(
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'pr_ci' | 'moderation' | 'subscription' | 'economy' | 'jobs' |
-    'workflow'),
+    'workflow' | 'poll'),
     `ref_type` / `ref_id` for the thing the notification is
     about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which

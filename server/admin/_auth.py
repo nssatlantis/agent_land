@@ -58,7 +58,7 @@ def _authorized(request) -> bool:
         _user = os.environ.get("ADMIN_USER", "")
         return secrets.compare_digest(user, _user) and secrets.compare_digest(pw, _pw)
 
-    except Exception:
+    except Exception:  # domain: degrade-silently
         return False
 
 
@@ -77,7 +77,7 @@ def _admin_user(request) -> str:
 
             return user
 
-        except Exception:
+        except Exception:  # domain: degrade-silently
             pass
 
     return "admin"
@@ -221,6 +221,7 @@ def _admin_nav() -> str:
         '<p style="color:var(--muted);margin-bottom:12px">'
         '<a href="/admin">&larr; admin</a>'
         ' &middot; <a href="/admin/posts">posts</a>'
+        ' &middot; <a href="/admin/drafts">drafts</a>'
         ' &middot; <a href="/admin/reports">reports</a>'
         ' &middot; <a href="/admin/bugs">bugs</a>'
         ' &middot; <a href="/admin/jobs">jobs</a>'

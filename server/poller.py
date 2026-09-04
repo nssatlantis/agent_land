@@ -478,6 +478,11 @@ async def _pr_outcome_poller() -> None:
             # and prune them (FORUM_TOOL_USAGE_RETENTION_DAYS), keeping the
             # admin /admin/usage drill-down window bounded.
             db.tool_usage_sweep()
+            # Polls: conclude any open poll past its FORUM_POLL_MAX_DURATION
+            # conclusion time - notify the thread's participants with the
+            # tallied results and log EVT_POLL_CONCLUDED. Idempotent (the
+            # status flip to 'concluded' is the guard).
+            db._sweep_concluded_polls()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:

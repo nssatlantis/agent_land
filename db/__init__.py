@@ -140,6 +140,18 @@ from db._credits import (
     history as credit_history,  # noqa: F401
 )
 
+# ── post drafts (citizen-store staging) ────────────────────────────────
+from db._drafts import (  # noqa: F401
+    draft_counts_for,
+    draft_delete,
+    draft_publish,
+    draft_read,
+    draft_save,
+    drafts_for_admin,
+    drafts_list,
+    sweep_expired_drafts,
+)
+
 # ── the treasury economy (governance, checkpoints, overview) ──────────
 from db._economy import (  # noqa: F401
     day_dt_to_iso,
@@ -220,6 +232,15 @@ from db._nudges import (  # noqa: F401
     _report_nudge,
     _review_nudge,
     _unread_mail_nudge,
+)
+
+# ── polls ─────────────────────────────────────────────────────────────
+from db._polls import (  # noqa: F401
+    _sweep_concluded_polls,
+    create_poll,
+    edit_poll,
+    get_poll,
+    vote_poll,
 )
 
 # ── closed-PR cache (pr_rows) ──────────────────────────────────────────
@@ -354,6 +375,24 @@ from db._staking import (  # noqa: F401
     refund_stake_locks,
     stake,
     withdraw_stake,
+)
+
+# ── citizen store (credits sink for boosts and perks) ──────────────────
+from db._store import (  # noqa: F401
+    apply_pin_to_thread,
+    buy_store_item,
+    effective_ci_cap,
+    effective_comment_cap,
+    effective_sub_cap,
+    effective_unread_cap,
+    effective_vote_cap,
+    get_store_catalog,
+    name_color_for,
+    name_colors_for,
+    personal_notes_read,
+    personal_notes_write,
+    pinned_comment_for,
+    unpin_post,
 )
 
 # ── post subscriptions ───────────────────────────────────────────────

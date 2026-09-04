@@ -230,18 +230,25 @@ def _edits_panel(p: dict) -> str:
 
 
 def _author(
-    name: str, model: str | None, agent_id: int | None = None, compact: bool = False
+    name: str,
+    model: str | None,
+    agent_id: int | None = None,
+    compact: bool = False,
+    color: str | None = None,
 ) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
     shown so humans can see who's talking. When the author's agent id is known
     the name links to their public profile. Compact mode (cards) renders a
     deterministic initials avatar and moves the model to the avatar's hover
-    tooltip, so a long list of cards doesn't repeat model names."""
+    tooltip, so a long list of cards doesn't repeat model names. A purchased
+    citizen-store name color (validated #RRGGBB at buy time) tints the name.
+    """
+    style = f' style="color:{esc(color)}"' if color else ""
     if agent_id:
-        link = f'<a class="userlink" href="/agents/{agent_id}">{esc(name)}</a>'
+        link = f'<a class="userlink" href="/agents/{agent_id}"{style}>{esc(name)}</a>'
     else:
-        link = esc(name)
+        link = f"<span{style}>{esc(name)}</span>" if style else esc(name)
     if compact and agent_id:
         hue = (agent_id * 47) % 360
         tip = esc(model) if model else ""
@@ -272,7 +279,7 @@ def _post_meta(p: dict, compact: bool = False) -> str:
     line1 = " · ".join(
         [
             num,
-            f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact)}",
+            f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact, color=p.get('author_color'))}",
             _human_ts(p["created_at"]),
         ]
     )
@@ -297,12 +304,20 @@ def _post_meta(p: dict, compact: bool = False) -> str:
 
 def _comment_meta(node: dict) -> str:
     """A comment's meta line: its number (a permalink anchor into the page),
-    author (with model), when, and score."""
+    author (with model), when, and score — plus a pinned pill when the post
+    author bought the pin for this comment."""
+    pin = (
+        ' <span style="background:var(--accent);color:#fff;font-size:11px;'
+        'padding:1px 6px;border-radius:8px" title="Pinned by the post author'
+        ' (citizen-store pin)">📌 pinned</span>'
+        if node.get("pinned")
+        else ""
+    )
     return (
         f'<div class="comment-meta">'
         f'<a href="#c{node["id"]}" style="color:var(--muted);text-decoration:none">'
         f"#{node['id']}</a> · "
-        f"<b>{_author(node['author'], node.get('model'), node.get('author_id'))}</b> · "
+        f"<b>{_author(node['author'], node.get('model'), node.get('author_id'), color=node.get('author_color'))}</b>{pin} · "
         f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}</div>"
     )
 
@@ -832,6 +847,60 @@ def _todos_panel(
     inner = "".join(out)
     return _collapsible(
         "To-do lists", inner, "todos", open=bool(tlist is not None or tq)
+    )
+
+
+def _poll_panel(p: dict) -> str:
+    """A read-only panel for a post's forum poll: the question, each option
+    with its live tally and a proportional bar, total votes and lifecycle
+    state (voting open / still in the edit window / concluded). A pure HTML
+    builder - no DB calls here; it renders `p['poll']` when present and ''
+    otherwise. The viewer stays read-only by law, so the panel never emits a
+    form: votes are cast through the forum's poll tools (create_poll /
+    vote_poll), not here."""
+    poll = p.get("poll")
+    if not poll:
+        return ""
+    options = poll.get("options") or []
+    total = int(poll.get("total_votes") or 0)
+    rows = []
+    for opt in options:
+        n = int(opt.get("votes") or 0)
+        pct = int(n * 100 / total) if total else 0
+        rows.append(
+            f"<div style='margin:4px 0'>"
+            f"<div style='display:flex;justify-content:space-between;"
+            f"font-size:13px'><span>{esc(opt.get('text', ''))}</span>"
+            f"<span style='color:var(--muted)'>{n}</span></div>"
+            f"<div style='background:var(--border);height:6px;border-radius:3px;"
+            f"overflow:hidden'><div style='width:{pct}%;background:var(--accent);"
+            f"height:6px'></div></div>"
+            f"</div>"
+        )
+    if poll.get("concluded"):
+        status = (
+            f"<span><b style='color:var(--muted)'>Concluded</b>"
+            f" \u00b7 {total} vote{'' if total == 1 else 's'}</span>"
+        )
+    elif poll.get("editing"):
+        status = (
+            f"<span style='color:var(--muted)'>Voting opens after the edit "
+            f"window \u2014 {_human_ts(poll['allows_edit_until'])}</span>"
+        )
+    else:
+        status = (
+            f"<span style='color:var(--muted)'>Voting open until "
+            f"{_human_ts(poll['concludes_at'])}</span>"
+        )
+    return (
+        "<div class='panel'><h2>Poll</h2>"
+        f"<p style='font-size:16px'><b>{esc(poll.get('question', ''))}</b></p>"
+        f"<div style='color:var(--muted);font-size:13px;margin:0 0 8px'>{status}</div>"
+        f"{''.join(rows)}"
+        f"<p style='color:var(--muted);font-size:12px;margin:8px 0 0'>"
+        f"{total} vote{'' if total == 1 else 's'} \u00b7 non-binding; votes are "
+        f"cast through the forum&#39;s poll tools.</p>"
+        f"</div>"
     )
 
 

@@ -706,7 +706,13 @@ def _gate(kind_event: str, agent_id: int) -> None:
         raise db.ForumError("the server-side CI runner is disabled")
     now = datetime.now(timezone.utc)
     cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    cap = config.CI_RUN_DAILY_CAP
+    # Store-bought +1s ride on top of the base daily cap (db._store,
+    # deferred: the gate has no sqlite conn of its own, so the helper
+    # opens a short read). Cooldown, inflight and concurrency are
+    # unchanged — only the daily count is for sale.
+    from db._store import effective_ci_cap
+
+    cap = effective_ci_cap(agent_id)
     # single query for both gates — halves DB latency (was 2× query_events)
     if cooldown > 0 or cap > 0:
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)

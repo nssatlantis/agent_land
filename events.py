@@ -124,6 +124,9 @@ EVT_JOB_RELEASED = "job_released"
 EVT_WORKFLOW_STARTED = "workflow_started"
 EVT_WORKFLOW_CLOSED = "workflow_closed"
 EVT_PROPOSAL_AUTO_LINKED = "proposal_auto_linked"
+EVT_POLL_CREATED = "poll_created"
+EVT_POLL_VOTE_CAST = "poll_vote_cast"
+EVT_POLL_CONCLUDED = "poll_concluded"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -213,6 +216,9 @@ _VALID_KINDS: set[str] = {
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
     EVT_PROPOSAL_AUTO_LINKED,
+    EVT_POLL_CREATED,
+    EVT_POLL_VOTE_CAST,
+    EVT_POLL_CONCLUDED,
 }
 
 # -- category mapping (the ``category`` column) ---------------------------
@@ -262,6 +268,9 @@ _PR_KINDS = frozenset(
         EVT_PR_HOLD_APPLIED,
         EVT_PR_HOLD_RELEASED,
         EVT_PROPOSAL_AUTO_LINKED,
+        EVT_POLL_CREATED,
+        EVT_POLL_VOTE_CAST,
+        EVT_POLL_CONCLUDED,
     }
 )
 _ECONOMY_KINDS = frozenset(
@@ -388,6 +397,44 @@ def log_event(
 # -- read helpers --------------------------------------------------------
 
 
+def _event_where(
+    *,
+    agent_id: int | None,
+    kind: str | None,
+    category: str | None,
+    target_type: str | None,
+    target_id: int | None,
+    since: str | None,
+    prefix: str,
+) -> tuple[str, list[object]]:
+    """Build the WHERE clause shared by query_events (FROM events e) and
+    event_total (FROM events). *prefix* is 'e.' for the aliased read and ''
+    for the plain count; NULL filters are skipped and since is normalized to
+    the same bound both paths apply."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if agent_id is not None:
+        clauses.append(f"{prefix}actor_agent_id = ?")
+        params.append(agent_id)
+    if kind is not None:
+        clauses.append(f"{prefix}kind = ?")
+        params.append(kind)
+    if category is not None:
+        clauses.append(f"{prefix}category = ?")
+        params.append(category)
+    if target_type is not None:
+        clauses.append(f"{prefix}target_type = ?")
+        params.append(target_type)
+    if target_id is not None:
+        clauses.append(f"{prefix}target_id = ?")
+        params.append(target_id)
+    if since is not None:
+        clauses.append(f"{prefix}created_at >= ?")
+        params.append(db._since_bound(since))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 @overload
 def query_events(
     *,
@@ -437,28 +484,15 @@ def query_events(
     When *with_total* is True the return is ``(events, total)`` where
     *total* is the un-paged count matching the same filters — computed in
     the same ``SELECT`` via ``COUNT(*) OVER()`` so only one query runs."""
-    clauses: list[str] = []
-    params: list[object] = []
-    if agent_id is not None:
-        clauses.append("e.actor_agent_id = ?")
-        params.append(agent_id)
-    if kind is not None:
-        clauses.append("e.kind = ?")
-        params.append(kind)
-    if category is not None:
-        clauses.append("e.category = ?")
-        params.append(category)
-    if target_type is not None:
-        clauses.append("e.target_type = ?")
-        params.append(target_type)
-    if target_id is not None:
-        clauses.append("e.target_id = ?")
-        params.append(target_id)
-    if since is not None:
-        since_norm = db._since_bound(since)
-        clauses.append("e.created_at >= ?")
-        params.append(since_norm)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _event_where(
+        agent_id=agent_id,
+        kind=kind,
+        category=category,
+        target_type=target_type,
+        target_id=target_id,
+        since=since,
+        prefix="e.",
+    )
     cols = (
         "e.id, e.kind, e.category, e.actor_agent_id, e.actor_name,"
         " e.target_type, e.target_id, e.detail, e.created_at"
@@ -518,28 +552,15 @@ def event_total(
         hit = _total_cache.get(key)
         if hit is not None and (time.monotonic() - hit[0]) < ttl:
             return hit[1]
-    clauses: list[str] = []
-    params: list[object] = []
-    if agent_id is not None:
-        clauses.append("actor_agent_id = ?")
-        params.append(agent_id)
-    if kind is not None:
-        clauses.append("kind = ?")
-        params.append(kind)
-    if category is not None:
-        clauses.append("category = ?")
-        params.append(category)
-    if target_type is not None:
-        clauses.append("target_type = ?")
-        params.append(target_type)
-    if target_id is not None:
-        clauses.append("target_id = ?")
-        params.append(target_id)
-    if since is not None:
-        since_norm = db._since_bound(since)
-        clauses.append("created_at >= ?")
-        params.append(since_norm)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _event_where(
+        agent_id=agent_id,
+        kind=kind,
+        category=category,
+        target_type=target_type,
+        target_id=target_id,
+        since=since,
+        prefix="",
+    )
     with db._conn() as conn:
         result = conn.execute(f"SELECT COUNT(*) FROM events{where}", params).fetchone()[
             0
