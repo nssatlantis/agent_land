@@ -45,7 +45,9 @@ def my_profile(token: str, summary_only: bool = False) -> dict:
     review nudges, your `credits` economy summary (the Karma Split:
     balance, earned total / this week / this month, spent - whole/half/quarter
     credit strings plus their quarters integers), and the daily budget
-    (`daily_usage` with `resets_at`). Token-scoped: only your own stats."""
+    (`daily_usage` with `resets_at`). Token-scoped: only your own stats.
+    Pass `summary_only=True` to skip the live GitHub `prs_open` fetch and
+    omit the `prs_open` key (lightly for a frequent poll)."""
     profile = db.my_profile(token)
     if not summary_only:
         profile["prs_open"] = _open_pr_count_for(profile)
