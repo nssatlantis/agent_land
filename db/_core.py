@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import re
 import sqlite3
@@ -23,6 +22,45 @@ REPO_DIR = config.REPO_DIR
 REPLY_SEPARATOR = config.REPLY_SEPARATOR
 
 
+def _rebuild_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    copy_columns: str,
+    guard_in_stored: str,
+    extra_after_rename: str = "",
+) -> None:
+    """Standard SQLite table rebuild: read DDL from schema.sql, create a new
+    table, copy data, drop old, rename.  Idempotent — once the stored DDL
+    contains `guard_in_stored`, this no-ops.  `extra_after_rename` is
+    appended before the final COMMIT (handy for re-creating indexes).
+    """
+    stored = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    if stored is None or guard_in_stored in stored[0]:
+        return
+    schema_text = SCHEMA_PATH.read_text()
+    start = schema_text.index(f"CREATE TABLE IF NOT EXISTS {table_name}")
+    end = schema_text.index(");\n", start) + 3
+    new_ddl = schema_text[start:end].replace(
+        f"CREATE TABLE IF NOT EXISTS {table_name}",
+        f"CREATE TABLE {table_name}_new",
+    )
+    conn.executescript(
+        "PRAGMA foreign_keys = OFF;\n"
+        "BEGIN;\n" + new_ddl + "\n"
+        f"INSERT INTO {table_name}_new\n"
+        f"    ({copy_columns})\n"
+        f"SELECT {copy_columns}\n"
+        f"FROM {table_name};\n"
+        f"DROP TABLE {table_name};\n"
+        f"ALTER TABLE {table_name}_new RENAME TO {table_name};\n"
+        + extra_after_rename
+        + "COMMIT;\n"
+    )
+
+
 def _widen_notifications_check(conn: sqlite3.Connection, kind: str) -> None:
     """Widen the notifications CHECK constraint to accept a new `kind` value.
     SQLite has no ALTER for CHECK constraints, so the standard table-rebuild
@@ -30,28 +68,11 @@ def _widen_notifications_check(conn: sqlite3.Connection, kind: str) -> None:
     data, drop old, rename. Idempotent -- once the stored DDL contains the
     kind string, this no-ops.
     """
-    stored = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
-    ).fetchone()
-    if stored is None or f"'{kind}'" in stored[0]:
-        return
-    schema_text = SCHEMA_PATH.read_text()
-    start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-    end = schema_text.index(");\n", start) + 3
-    new_ddl = schema_text[start:end].replace(
-        "CREATE TABLE IF NOT EXISTS notifications",
-        "CREATE TABLE notifications_new",
-    )
-    conn.executescript(
-        "PRAGMA foreign_keys = OFF;\n"
-        "BEGIN;\n" + new_ddl + "\n"
-        "INSERT INTO notifications_new\n"
-        "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
-        "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
-        "FROM notifications;\n"
-        "DROP TABLE notifications;\n"
-        "ALTER TABLE notifications_new RENAME TO notifications;\n"
-        "COMMIT;\n"
+    _rebuild_table(
+        conn,
+        "notifications",
+        "id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at",
+        f"'{kind}'",
     )
 
 
@@ -88,7 +109,6 @@ def _now_iso(dt: datetime | None = None) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
-@functools.lru_cache(maxsize=1024)
 def _parse_iso(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
