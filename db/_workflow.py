@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
+import logutil
 from db._core import REPO_DIR, ForumError, _id_chunks, _now_iso, _parse_iso
 from events import EVT_WORKFLOW_CLOSED, EVT_WORKFLOW_STARTED, log_event
 
@@ -1130,8 +1131,6 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     try:
         superseded = _proposal_superseded_by(conn, proposal_id) is not None
     except Exception as exc:  # domain:degrade-silently - treat as not superseded
-        import logutil
-
         logutil.log(
             "workflow_reconcile_probe_failed",
             proposal_id=proposal_id,
@@ -1144,8 +1143,6 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     try:
         status = _proposal_status_for(conn, proposal_id)
     except Exception as exc:  # domain:degrade-silently - skip that proposal
-        import logutil
-
         logutil.log(
             "workflow_reconcile_probe_failed",
             proposal_id=proposal_id,
@@ -1195,8 +1192,6 @@ def _ghost_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | None:
             return None
         return "closed"
     except Exception as exc:  # domain:degrade-silently - probe failure skips it
-        import logutil
-
         logutil.log(
             "workflow_reconcile_probe_failed",
             proposal_id=proposal_id,
@@ -1225,6 +1220,26 @@ def _open_run_rows_for(conn: sqlite3.Connection, proposal_id: int) -> list[sqlit
     ).fetchall()
 
 
+def _open_run_rows_for_many(
+    conn: sqlite3.Connection, proposal_ids: list[int]
+) -> dict[int, list[sqlite3.Row]]:
+    """Batched twin of _open_run_rows_for: one IN query (chunked) for the
+    reconcile sweeps instead of one query per proposal."""
+    out: dict[int, list[sqlite3.Row]] = {}
+    if not proposal_ids:
+        return out
+    for chunk in _id_chunks(sorted(set(proposal_ids))):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            "SELECT id, agent_id, proposal_id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id IN"
+            f" ({marks}) AND status = 'open'",
+            (_WORKFLOW_CREATE_PR_PATH, *chunk),
+        ).fetchall():
+            out.setdefault(int(r["proposal_id"]), []).append(r)
+    return out
+
+
 def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     """Close open create-pr runs whose proposal is already decided.
 
@@ -1246,6 +1261,7 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     radius is auditable (review D7/W9).
     """
     closed_total = 0
+    decided: list[tuple[int, str, str]] = []
     for pid in _open_run_proposal_ids(conn):
         run_status = _decided_run_status(conn, pid)
         reason = "proposal_decided"
@@ -1254,7 +1270,10 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
             reason = "no_pr_linked"
         if run_status is None:
             continue
-        rows = _open_run_rows_for(conn, pid)
+        decided.append((pid, run_status, reason))
+    rows_by_pid = _open_run_rows_for_many(conn, [pid for pid, _, _ in decided])
+    for pid, run_status, reason in decided:
+        rows = rows_by_pid.get(pid, [])
         if not rows:
             continue
         ids = [int(r["id"]) for r in rows]
@@ -1318,13 +1337,16 @@ def stale_open_run_count(conn: sqlite3.Connection) -> int:
     read: the admin page shows its 'close stale' button only when this is
     non-zero."""
     total = 0
+    stale_pids = []
     for pid in _open_run_proposal_ids(conn):
         if (
             _decided_run_status(conn, pid) is None
             and _ghost_run_status(conn, pid) is None
         ):
             continue
-        total += len(_open_run_ids_for(conn, pid))
+        stale_pids.append(pid)
+    for rows in _open_run_rows_for_many(conn, stale_pids).values():
+        total += len(rows)
     return total
 
 
@@ -1565,9 +1587,12 @@ def list_workflow_runs(
     agent_id: int | None = None,
     status: str | None = None,
     proposal_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[dict]:
     """Recent workflow_runs, newest first. Filters: `agent_id` (as starter,
-    proposal author or delegate), `status`, `proposal_id`."""
+    proposal author or delegate), `status`, `proposal_id`. Paged via
+    limit/offset (defaults preserve the historic first-50 window)."""
     clauses: list[str] = []
     params: list[object] = []
     if agent_id is not None:
@@ -1580,6 +1605,8 @@ def list_workflow_runs(
         clauses.append("wr.proposal_id = ?")
         params.append(proposal_id)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    limit = max(1, int(limit))
+    offset = max(0, int(offset))
     rows = conn.execute(
         f"SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.proposal_id, wr.pr_number,"
         f" wr.agent_id, a.name AS agent_name, wr.status, wr.created_at, wr.decided_at,"
@@ -1587,8 +1614,8 @@ def list_workflow_runs(
         f" FROM workflow_runs wr"
         f" JOIN posts p ON p.id = wr.proposal_id"
         f" LEFT JOIN agents a ON a.id = wr.agent_id{where}"
-        f" ORDER BY wr.created_at DESC LIMIT 50",
-        params,
+        f" ORDER BY wr.created_at DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
     ).fetchall()
     runs = [dict(r) for r in rows]
     if runs:
