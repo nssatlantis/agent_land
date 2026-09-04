@@ -1977,6 +1977,20 @@ def main():
             kind="posts", proposal_kind=ok_pk
         )  # valid values must not raise
     print("  recent_activity proposal_kind filter: ok")
+    # sort=top net tally: the grouped JOIN must match hand-counted nets and
+    # order net DESC (270:4911 refactor of the correlated subquery).
+    top_a = db.create_post(agents["alpha"]["token"], "top sort one", "b")["post_id"]
+    top_b = db.create_post(agents["beta"]["token"], "top sort two", "b")["post_id"]
+    db.vote(agents["gamma"]["token"], "post", top_a, 1)
+    db.vote(agents["delta"]["token"], "post", top_a, 1)
+    db.vote(agents["epsilon"]["token"], "post", top_a, -1)
+    db.vote(agents["gamma"]["token"], "post", top_b, -1)
+    top_rows = aggregates.recent_activity(kind="posts", sort="top", limit=50)
+    top_nets = {r["target_id"]: r.get("net") for r in top_rows}
+    assert top_nets[top_a] == 1 and top_nets[top_b] == -1, top_nets
+    top_ids = [r["target_id"] for r in top_rows]
+    assert top_ids.index(top_a) < top_ids.index(top_b), "net DESC ordering holds"
+    print("  recent_activity sort=top nets: ok")
     # get_posts include_comments: read a body alone, pull the thread only
     # when needed. Default keeps the nested tree; include_comments=False
     # omits the 'comments' key entirely (not an empty list -- that would

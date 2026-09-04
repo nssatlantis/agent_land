@@ -995,16 +995,33 @@ def _docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
-def _ensure_tree_traversable(tree: str) -> None:
+# Traversability memo: (tree, content-sha) pairs already chmodded.
+# Bounded best-effort cache — a miss only costs the find walks.
+_TRAVERSABLE_CACHE: dict[tuple[str, str], bool] = {}
+_TRAVERSABLE_LOCK = threading.Lock()
+
+
+def _ensure_tree_traversable(tree: str, marker: str | None = None) -> None:
     """The sandbox reads the mounted tree as uid 1000 while the host-side
     owner may be anyone (e.g. a 1001 service account with a restrictive
     umask, which denies traversal outright).  Best-effort readability for
     the tracked content only: ``.git`` is pruned from the pass on purpose,
     so fetched PR blobs are not widened on the host.  Repo files are
     public content; their world-readability persisting afterwards is
-    intentional and harmless."""
+    intentional and harmless.
+
+    `marker` (the tree's content sha at the call site) skips repeat walks:
+    runner trees are reused per slot, so the same (tree, sha) pair means
+    byte-identical content that was already chmodded — the two find walks
+    (dirs+files over ~3k files, 100-400ms) drop to a dict hit.  A new sha
+    always re-runs.  Best-effort cache (bounded, lock-guarded); a miss or
+    a cleared entry only costs the walks, never correctness."""
     if os.name != "posix":
         return
+    if marker is not None:
+        with _TRAVERSABLE_LOCK:
+            if _TRAVERSABLE_CACHE.get((tree, marker)):
+                return
     dirs = [
         "find",
         tree,
@@ -1042,6 +1059,11 @@ def _ensure_tree_traversable(tree: str) -> None:
             # domain: degrade-silently - trees already world-readable (the
             # common root-owned deployment) need nothing here anyway.
             pass
+    if marker is not None:
+        with _TRAVERSABLE_LOCK:
+            if len(_TRAVERSABLE_CACHE) > 64:
+                _TRAVERSABLE_CACHE.clear()
+            _TRAVERSABLE_CACHE[(tree, marker)] = True
 
 
 def _prune_stale_images(keep_tag: str) -> None:
@@ -1483,7 +1505,7 @@ def run_checks(
             # Local rehearsal is the overlay on top of main â€” same sandbox as branch, never native.
             sandboxed = True
             image_tag = _ensure_image(tree, merge_info["base"])
-            _ensure_tree_traversable(tree)
+            _ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
             _cpus_val = _cpus_from_argv(argv)
             try:
@@ -1536,7 +1558,7 @@ def run_checks(
                 return payload
             sandboxed = True
             image_tag = _ensure_image(tree, merge_info["base"])
-            _ensure_tree_traversable(tree)
+            _ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
             _cpus_val = _cpus_from_argv(argv)
             try:
@@ -1565,7 +1587,7 @@ def run_checks(
             )
             if sandboxed:
                 image_tag = _ensure_image(tree, head_sha)
-                _ensure_tree_traversable(tree)
+                _ensure_tree_traversable(tree, head_sha)
                 argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
                 _cpus_val = _cpus_from_argv(argv)
                 try:
@@ -1790,7 +1812,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
                 pass
             return payload
         image_tag = _ensure_image(tree, merge_info["base"])
-        _ensure_tree_traversable(tree)
+        _ensure_tree_traversable(tree, head_sha)
         argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
         _cpus_val = _cpus_from_argv(argv)
         try:
