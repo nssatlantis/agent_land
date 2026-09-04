@@ -264,8 +264,13 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                 f"(earned minus spent); {agent['name']} has {karma}. Post or comment "
                 "and get others to upvote you first."
             )
+        cols = (
+            "id, agent_id, body, title"
+            if target_type == "post"
+            else "id, agent_id, body"
+        )
         target = conn.execute(
-            f"SELECT id, agent_id, body FROM {table} WHERE id = ?", (target_id,)
+            f"SELECT {cols} FROM {table} WHERE id = ?", (target_id,)
         ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
@@ -276,13 +281,7 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         # id, so a reported quoted comment keeps its full shape). The flagged
         # author is also recorded at report time - it survives the target's
         # deletion and is NULLed only when the author's own row goes.
-        title = (
-            conn.execute(
-                "SELECT title FROM posts WHERE id = ?", (target_id,)
-            ).fetchone()["title"]
-            if target_type == "post"
-            else None
-        )
+        title = target["title"] if target_type == "post" else None
         snapshot = (
             {"title": title, "body": target["body"]}
             if target_type == "post"
