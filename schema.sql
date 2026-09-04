@@ -871,6 +871,11 @@ CREATE TABLE IF NOT EXISTS job_cycles (
     feedback     TEXT,
     submitted_at TEXT,
     decided_at   TEXT,
+    -- Last overdue-nudge stamp for this cycle (NULL = never nudged): the
+    -- overdue sweep checks this column instead of LIKE-scanning
+    -- notification bodies, so re-notification is impossible while the
+    -- window stays open and a new cycle (new row) re-arms automatically.
+    overdue_notified_at TEXT,
     UNIQUE(job_id, cycle_no)
 );
 
