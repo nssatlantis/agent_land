@@ -310,15 +310,7 @@ async def _apr_commits_impl(number: int) -> tuple[dict, list[dict]]:
         _core._arequest("GET", f"pulls/{number}"),
         _core._arequest("GET", f"pulls/{number}/commits?per_page=100&page=1"),
     )
-    commits: list[dict] = list(first)
-    last_batch = first
-    page = 2
-    while len(last_batch) == 100:
-        last_batch = await _core._arequest(
-            "GET", f"pulls/{number}/commits?per_page=100&page={page}"
-        )
-        commits.extend(last_batch)
-        page += 1
+    commits = await _apaginate(f"pulls/{number}/commits", first)
     return pr, commits
 
 
@@ -329,16 +321,37 @@ async def _apr_diff_impl(number: int) -> tuple[dict, list[dict]]:
         _core._arequest("GET", f"pulls/{number}"),
         _core._arequest("GET", f"pulls/{number}/files?per_page=100&page=1"),
     )
-    files: list[dict] = list(first)
-    last_batch = first
-    page = 2
-    while len(last_batch) == 100:
-        last_batch = await _core._arequest(
-            "GET", f"pulls/{number}/files?per_page=100&page={page}"
-        )
-        files.extend(last_batch)
-        page += 1
+    files: list[dict] = await _apaginate(f"pulls/{number}/files", first)
     return pr, files
+
+
+async def _apaginate(path: str, first: list) -> list:
+    """All pages of *path* after an already-fetched *first* batch, returned
+    in order. Continues while the last batch is a full page (per_page=100),
+    so the first page can ride along with a concurrent gather (the PR
+    payload) instead of chaining a redundant leading request."""
+    out = list(first)
+    last = first
+    page = 2
+    while len(last) == _PR_PAGE_SIZE:
+        last = await _core._arequest("GET", f"{path}?per_page=100&page={page}")
+        out.extend(last)
+        page += 1
+    return out
+
+
+async def _cached_or_fetch(key: tuple, fetch) -> Any:
+    """One cache-hit-else-fetch path for the native twin reads: look up
+    *key* in the shared PR cache, return it on a hit, else await *fetch* (a
+    zero-arg coroutine callable), warm the cache with the result and return
+    it. Single TTL source (config.PR_CACHE_SECONDS), so every twin stays
+    consistent with the sync path."""
+    cached = _core._pr_cache.get(key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    result = await fetch()
+    _core._pr_cache.set(key, result)
+    return result
 
 
 async def _aget_pr_impl(number: int, *, _pr: dict | None = None) -> dict:
@@ -380,35 +393,24 @@ async def _aget_pr_impl(number: int, *, _pr: dict | None = None) -> dict:
 async def aget_pr(number: int, *, _pr: dict | None = None) -> dict:
     """Native-await twin of get_pr - same contract, same cache key, but the
     checks/comments/files reads overlap instead of chaining."""
-    cache_key = ("get_pr", number)
-    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
-    if cached is not None:
-        return cached
-    result = await _core._on_bg(_aget_pr_impl(number, _pr=_pr))
-    _core._pr_cache.set(cache_key, result)
-    return result
+    return await _cached_or_fetch(
+        ("get_pr", number),
+        lambda: _core._on_bg(_aget_pr_impl(number, _pr=_pr)),
+    )
 
 
 async def apr_comments(number: int) -> list[dict]:
     """Native-await twin of pr_comments - both comment sources gathered."""
-    cache_key = ("pr_comments", number)
-    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
-    if cached is not None:
-        return cached
-    result = await _core._on_bg(_apr_comments_impl(number))
-    _core._pr_cache.set(cache_key, result)
-    return result
+    return await _cached_or_fetch(
+        ("pr_comments", number), lambda: _core._on_bg(_apr_comments_impl(number))
+    )
 
 
 async def apr_files(number: int) -> list[dict]:
     """Native-await twin of pr_files."""
-    cache_key = ("pr_files", number)
-    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
-    if cached is not None:
-        return cached
-    result = await _core._on_bg(_apr_files_impl(number))
-    _core._pr_cache.set(cache_key, result)
-    return result
+    return await _cached_or_fetch(
+        ("pr_files", number), lambda: _core._on_bg(_apr_files_impl(number))
+    )
 
 
 async def apr_commits(number: int) -> dict:
@@ -480,15 +482,12 @@ async def apr_checks(
     Log downloads are the expensive tail: each can be tens of KB behind a
     redirect. Shares the ("pr_checks", number) cache key with the sync
     face; ``_pr`` / ``_head_sha`` mirror pr_checks' private shortcuts."""
-    cache_key = ("pr_checks", number)
-    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
-    if cached is not None:
-        return cached
-    result = await _core._on_bg(
-        _checks._achecks_impl(number, _pr=_pr, _head_sha=_head_sha)
+    return await _cached_or_fetch(
+        ("pr_checks", number),
+        lambda: _core._on_bg(
+            _checks._achecks_impl(number, _pr=_pr, _head_sha=_head_sha)
+        ),
     )
-    _core._pr_cache.set(cache_key, result)
-    return result
 
 
 apropose_change = _atwin(propose_change)
