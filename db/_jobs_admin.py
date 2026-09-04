@@ -10,7 +10,14 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
+from db._core import (
+    ForumError,
+    _conn,
+    _id_chunks,
+    _now_iso,
+    _parse_iso,
+    _require_active_agent,
+)
 from db._jobs_ops import (
     _apply_review,
     _cycle_is_overdue,
@@ -27,6 +34,73 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
     detail = _job_detail(conn, job_id)
     assert detail is not None
     return detail
+
+
+def _validate_review(action: str, feedback: str | None) -> str:
+    """Shared accept/decline preamble for both admin review paths: the
+    action gate plus the decline-feedback requirement. Returns the
+    stripped feedback."""
+    feedback = str(feedback or "").strip()
+    if action not in ("accept", "decline"):
+        raise ForumError("action must be 'accept' or 'decline'.")
+    if action == "decline":
+        if not feedback:
+            raise ForumError(
+                "declining requires written feedback - say what needs "
+                "to change so the worker can fix it."
+            )
+        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
+            raise ForumError(
+                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
+                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
+            )
+    return feedback
+
+
+def _refund_and_close(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    owner_id: int | None,
+    *,
+    reason: str,
+) -> tuple[int, int]:
+    """Return a closing job's unearned escrow to its owner plus any
+    treasury escrow back to the treasury, zeroing both pools. Returns
+    (remaining, treasury_remaining) quarters. Shared by every cancel /
+    expiry / release path so the five money-movement clones can't drift;
+    only the ledger reason differs per path ("job_cancelled",
+    "job_expired", "job_released" + "_treasury_return"). A None owner
+    (sponsorless official) skips the escrow leg — officials hold none."""
+    from db._credits import _insert_entry, return_principal
+
+    remaining = _remaining_escrow(job)
+    if remaining > 0 and owner_id is not None:
+        return_principal(
+            owner_id,
+            remaining,
+            reason,
+            target_type="job",
+            target_id=job["id"],
+            conn=conn,
+        )
+    treasury_remaining = (
+        int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+    )
+    if treasury_remaining > 0:
+        _insert_entry(
+            conn,
+            None,
+            "treasury",
+            treasury_remaining,
+            f"{reason}_treasury_return",
+            "job",
+            job["id"],
+        )
+        conn.execute(
+            "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+            (job["id"],),
+        )
+    return remaining, treasury_remaining
 
 
 # -- admin review (sponsorless official jobs) ----------------------------
@@ -46,20 +120,7 @@ def admin_review_job(
     and non-official jobs. When punish is True on decline, -2 karma is
     deducted from the worker (like declined PR)."""
     admin = (str(admin) or "unknown").strip() or "unknown"
-    feedback = str(feedback or "").strip()
-    if action not in ("accept", "decline"):
-        raise ForumError("action must be 'accept' or 'decline'.")
-    if action == "decline":
-        if not feedback:
-            raise ForumError(
-                "declining requires written feedback - say what needs "
-                "to change so the worker can fix it."
-            )
-        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
-            raise ForumError(
-                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
-                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
-            )
+    feedback = _validate_review(action, feedback)
 
     with _conn(immediate=True) as conn:
         job = conn.execute(
@@ -119,21 +180,7 @@ def admin_review_job_as(
     as if they had called review_job themselves; the event carries
     detail.admin + detail.on_behalf_of for audit. When punish is True on
     decline, -2 karma is deducted from the worker."""
-    feedback = str(feedback or "").strip()
-    if action not in ("accept", "decline"):
-        raise ForumError("action must be 'accept' or 'decline'.")
-    if action == "decline":
-        if not feedback:
-            raise ForumError(
-                "declining requires written feedback - say what needs "
-                "to change so the worker can fix it."
-            )
-        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
-            raise ForumError(
-                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
-                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
-            )
-
+    feedback = _validate_review(action, feedback)
     admin = (str(admin) or "unknown").strip() or "unknown"
     with _conn(immediate=True) as conn:
         job = conn.execute(
@@ -211,37 +258,7 @@ def cancel_job(token: str, job_id: int) -> dict:
             raise ForumError(
                 f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
-        remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import return_principal
-
-            return_principal(
-                agent["id"],
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
-        treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
-        )
-        if treasury_remaining > 0:
-            from db._credits import _insert_entry
-
-            _insert_entry(
-                conn,
-                None,
-                "treasury",
-                treasury_remaining,
-                "job_cancelled_treasury_return",
-                "job",
-                job["id"],
-            )
-            conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
-                (job["id"],),
-            )
+        remaining, _ = _refund_and_close(conn, job, agent["id"], reason="job_cancelled")
         conn.execute(
             "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
@@ -304,37 +321,9 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
             raise ForumError(
                 f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
-        remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import return_principal
-
-            return_principal(
-                job["creator_agent_id"],
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
-        treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        remaining, treasury_remaining = _refund_and_close(
+            conn, job, job["creator_agent_id"], reason="job_cancelled"
         )
-        if treasury_remaining > 0:
-            from db._credits import _insert_entry
-
-            _insert_entry(
-                conn,
-                None,
-                "treasury",
-                treasury_remaining,
-                "job_cancelled_treasury_return",
-                "job",
-                job["id"],
-            )
-            conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
-                (job["id"],),
-            )
         conn.execute(
             "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
@@ -393,37 +382,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchall()
     closed = 0
     for job in rows:
-        remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import return_principal
-
-            return_principal(
-                agent_id,
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
-        treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
-        )
-        if treasury_remaining > 0:
-            from db._credits import _insert_entry
-
-            _insert_entry(
-                conn,
-                None,
-                "treasury",
-                treasury_remaining,
-                "job_cancelled_treasury_return",
-                "job",
-                job["id"],
-            )
-            conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
-                (job["id"],),
-            )
+        remaining, _ = _refund_and_close(conn, job, agent_id, reason="job_cancelled")
         conn.execute(
             "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
@@ -533,37 +492,9 @@ def sweep_expired_jobs() -> int:
             (cutoff,),
         ).fetchall()
         for job in stale:
-            remaining = _remaining_escrow(job)
-            if remaining > 0:
-                from db._credits import return_principal
-
-                return_principal(
-                    job["creator_agent_id"],
-                    remaining,
-                    "job_expired",
-                    target_type="job",
-                    target_id=job["id"],
-                    conn=conn,
-                )
-            treasury_remaining = (
-                int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            remaining, _ = _refund_and_close(
+                conn, job, job["creator_agent_id"], reason="job_expired"
             )
-            if treasury_remaining > 0:
-                from db._credits import _insert_entry
-
-                _insert_entry(
-                    conn,
-                    None,
-                    "treasury",
-                    treasury_remaining,
-                    "job_expired_treasury_return",
-                    "job",
-                    job["id"],
-                )
-                conn.execute(
-                    "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
-                    (job["id"],),
-                )
             conn.execute(
                 "UPDATE jobs SET status = 'expired', decided_at = ? WHERE id = ?",
                 (_now_iso(), job["id"]),
@@ -600,6 +531,36 @@ def sweep_expired_jobs() -> int:
         return len(stale)
 
 
+def _phrase_offer(row: sqlite3.Row) -> str:
+    return f"#{row['id']} '{row['title']}': accept/decline your offer"
+
+
+def _phrase_todo(row: sqlite3.Row, cutoff: str) -> str:
+    phrase = (
+        f"#{row['id']} '{row['title']}': cycle {row['cycle_no']} awaits "
+        "your work - submit_job()"
+    )
+    if _cycle_is_overdue(row["status"], row["anchor_at"], cutoff):
+        phrase += " (overdue)"
+    return phrase
+
+
+def _phrase_review(row: sqlite3.Row) -> str:
+    return (
+        f"#{row['id']} '{row['title']}': cycle {row['cycle_no']} awaits "
+        "your review_job() verdict"
+    )
+
+
+def _phrase_stale(row: sqlite3.Row, cutoff: str) -> str | None:
+    if _cycle_is_overdue(row["status"], row["anchor_at"], cutoff):
+        return (
+            f"#{row['id']} '{row['title']}': worker hasn't submitted cycle"
+            f" {row['cycle_no']} (overdue)"
+        )
+    return None
+
+
 def _outstanding_actions(
     conn: sqlite3.Connection,
     agent_id: int,
@@ -617,7 +578,7 @@ def _outstanding_actions(
         (agent_id,),
     ).fetchall()
     for r in offers:
-        out.append(f"#{r['id']} '{r['title']}': accept/decline your offer")
+        out.append(_phrase_offer(r))
     todo = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no, jc.status,"
         f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
@@ -628,13 +589,7 @@ def _outstanding_actions(
         (agent_id,),
     ).fetchall()
     for r in todo:
-        phrase = (
-            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
-            "your work - submit_job()"
-        )
-        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
-            phrase += " (overdue)"
-        out.append(phrase)
+        out.append(_phrase_todo(r, _cutoff))
     review = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -644,10 +599,7 @@ def _outstanding_actions(
         (agent_id,),
     ).fetchall()
     for r in review:
-        out.append(
-            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
-            "your review_job() verdict"
-        )
+        out.append(_phrase_review(r))
     stale = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no, jc.status,"
         f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
@@ -658,11 +610,72 @@ def _outstanding_actions(
         (agent_id,),
     ).fetchall()
     for r in stale:
-        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
-            out.append(
-                f"#{r['id']} '{r['title']}': worker hasn't submitted cycle"
-                f" {r['cycle_no']} (overdue)"
-            )
+        phrase = _phrase_stale(r, _cutoff)
+        if phrase is not None:
+            out.append(phrase)
+    return out
+
+
+def _outstanding_actions_batch(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, list[str]]:
+    """Batched twin of _outstanding_actions for the daily digest: the same
+    four predicates across many citizens in 4 IN queries (+1 for the
+    digest clocks) instead of 5 queries per citizen, grouped per agent in
+    Python. Phrase builders are shared, so digest and profile note can
+    never disagree. Returns {agent_id: [phrases]}     (agents with nothing
+    waiting are absent)."""
+    out: dict[int, list[str]] = {}
+    if not agent_ids:
+        return out
+    _cutoff = job_overdue_cutoff()
+
+    def _add(aid: int, phrase: str | None) -> None:
+        if phrase is not None:
+            out.setdefault(int(aid), []).append(phrase)
+
+    for chunk in _id_chunks(sorted(set(agent_ids))):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            "SELECT offered_to_agent_id AS aid, id, title FROM jobs"
+            " WHERE status = 'offered' AND offered_to_agent_id"
+            f" IN ({marks}) ORDER BY id",
+            chunk,
+        ).fetchall():
+            _add(r["aid"], _phrase_offer(r))
+        for r in conn.execute(
+            "SELECT j.worker_agent_id AS aid, j.id, j.title, jc.cycle_no,"
+            " jc.status,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+            " JOIN job_cycles jc ON jc.job_id = j.id"
+            " AND jc.cycle_no = j.cycles_done + 1"
+            " WHERE j.worker_agent_id"
+            f" IN ({marks}) AND j.status = 'active'"
+            " AND jc.status IN ('awaiting', 'declined') ORDER BY j.id",
+            chunk,
+        ).fetchall():
+            _add(r["aid"], _phrase_todo(r, _cutoff))
+        for r in conn.execute(
+            "SELECT j.creator_agent_id AS aid, j.id, j.title, jc.cycle_no"
+            " FROM jobs j JOIN job_cycles jc ON jc.job_id = j.id"
+            " WHERE j.creator_agent_id"
+            f" IN ({marks}) AND j.status = 'active'"
+            " AND jc.status = 'submitted' ORDER BY j.id",
+            chunk,
+        ).fetchall():
+            _add(r["aid"], _phrase_review(r))
+        for r in conn.execute(
+            "SELECT j.creator_agent_id AS aid, j.id, j.title, jc.cycle_no,"
+            " jc.status,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+            " JOIN job_cycles jc ON jc.job_id = j.id"
+            " AND jc.cycle_no = j.cycles_done + 1"
+            " WHERE j.creator_agent_id"
+            f" IN ({marks}) AND j.status = 'active'"
+            " AND jc.status IN ('awaiting', 'declined') ORDER BY j.id",
+            chunk,
+        ).fetchall():
+            _add(r["aid"], _phrase_stale(r, _cutoff))
     return out
 
 
@@ -686,21 +699,26 @@ def send_job_digests() -> int:
             " WHERE NOT banned AND (suspended_until IS NULL"
             " OR suspended_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         ).fetchall()
+        agent_ids = [int(ag["id"]) for ag in agents]
+        # One batched actions fetch + one batched clock fetch for the whole
+        # sweep, instead of 5 queries per citizen.
+        actions_by_agent = _outstanding_actions_batch(conn, agent_ids)
+        clocks = {
+            r["agent_id"]: r["created_at"]
+            for r in conn.execute(
+                "SELECT agent_id, MAX(created_at) AS created_at FROM notifications"
+                " WHERE kind = 'jobs' AND ref_type = 'job_digest'"
+                " GROUP BY agent_id"
+            ).fetchall()
+        }
         for ag in agents:
             try:
-                actions = _outstanding_actions(conn, ag["id"])
+                actions = actions_by_agent.get(int(ag["id"]), [])
                 if not actions:
                     continue
-                newest = conn.execute(
-                    "SELECT created_at FROM notifications"
-                    " WHERE agent_id = ? AND kind = 'jobs'"
-                    " AND ref_type = 'job_digest'"
-                    " ORDER BY created_at DESC LIMIT 1",
-                    (ag["id"],),
-                ).fetchone()
-                if newest is not None:
-                    if _parse_iso(newest[0]) > _parse_iso(day_ago):
-                        continue
+                newest = clocks.get(int(ag["id"]))
+                if newest is not None and _parse_iso(newest) > _parse_iso(day_ago):
+                    continue
                 body = (
                     "Job digest - the market waits on you: "
                     + "; ".join(actions[:5])
@@ -738,37 +756,7 @@ def _release_overdue_job(
     cycle_no = row["cycle_no"]
     worker_id = job["worker_agent_id"]
     creator_id = job["creator_agent_id"]
-    remaining = _remaining_escrow(job)
-    if remaining > 0 and creator_id is not None:
-        from db._credits import return_principal
-
-        return_principal(
-            creator_id,
-            remaining,
-            "job_released",
-            target_type="job",
-            target_id=job_id,
-            conn=conn,
-        )
-    treasury_remaining = (
-        int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
-    )
-    if treasury_remaining > 0:
-        from db._credits import _insert_entry
-
-        _insert_entry(
-            conn,
-            None,
-            "treasury",
-            treasury_remaining,
-            "job_released_treasury_return",
-            "job",
-            job_id,
-        )
-        conn.execute(
-            "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
-            (job_id,),
-        )
+    remaining, _ = _refund_and_close(conn, job, creator_id, reason="job_released")
     penalty = int(config.JOB_MISSED_KARMA)
     if penalty > 0 and worker_id is not None:
         try:

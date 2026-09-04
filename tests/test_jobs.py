@@ -943,6 +943,27 @@ def test_daily_digest_time_gated_on_digest_kind():
     assert _digest_count(worker["token"]) == 2
 
 
+def test_outstanding_batch_matches_single():
+    """The digest batch returns exactly the profile note's phrases per
+    agent (shared builders, shared predicates)."""
+    import db._jobs_admin as _ja
+
+    creator = _make_creator("jobc-batcheq")
+    worker = db.register_agent("jobw-batcheq")
+    job = _simple_job(creator)
+    db.claim_job(worker["token"], job["job_id"])
+    with db._conn() as conn:
+        wid = db._require_agent_by_token(conn, worker["token"])["id"]
+        cid = db._require_agent_by_token(conn, creator["token"])["id"]
+        single_w = db._jobs._outstanding_actions(conn, wid)
+        single_c = db._jobs._outstanding_actions(conn, cid)
+        batched = _ja._outstanding_actions_batch(conn, [wid, cid, 987654321])
+    assert batched[wid] == single_w
+    assert batched.get(cid, []) == single_c
+    assert 987654321 not in batched, "agents with nothing waiting are absent"
+    assert _ja._outstanding_actions_batch(conn, []) == {}
+
+
 def test_overdue_cycles():
     """Overdue marking (FORUM_JOB_CYCLE_DUE_HOURS): an active job whose
     CURRENT cycle idles past the window reads overdue on the detail, the
