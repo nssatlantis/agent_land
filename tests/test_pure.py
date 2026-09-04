@@ -132,6 +132,24 @@ def test_big_py_files():
     names3 = [name for name, _ in result3]
     assert len(names3) >= 3, "threshold 0 should return all .py files"
 
+    # Cap: a tree with more than _BIG_FILES_CAP qualifying files returns only
+    # the top N (still largest-first) - the /status panel never renders dozens
+    # of rows.
+    from viewer._status import _BIG_FILES_CAP
+
+    many = _TMP / "big_py_many"
+    many.mkdir(exist_ok=True)
+    for i in range(_BIG_FILES_CAP + 5):
+        (many / f"f{i:02d}.py").write_text(
+            "\n".join(["x = 1"] * (10_000 + i)), encoding="utf-8"
+        )
+    capped = _big_py_files(many, 1)
+    assert len(capped) == _BIG_FILES_CAP, (
+        f"expected cap {_BIG_FILES_CAP}, got {len(capped)}"
+    )
+    cc = [c for _, c in capped]
+    assert cc == sorted(cc, reverse=True), "capped results must stay largest-first"
+
     # Empty repo returns nothing
     empty = _TMP / "empty_repo"
     empty.mkdir(exist_ok=True)
