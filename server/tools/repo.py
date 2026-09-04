@@ -781,8 +781,8 @@ async def repo_get_pr(
     Pass `include_diff=True` to also get the full per-file diff (with
     `patch` text) in the `diff` field — same shape as repo_get_pr_diff
     returns, so you can review the code in one call instead of two.
-    Pass `numbers` (at most 2) instead of `number` to fetch both in one
-    call - the two fetches run concurrently. The batch comes back as a
+    Pass `numbers` (at most 5) instead of `number` to fetch up to five in
+    one call - the fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
     {"error": ...} entry instead of failing the whole batch.
     Cached for up to 30 seconds -- a just-pushed commit or
