@@ -64,6 +64,10 @@ _SKIP_DIRS = frozenset(
 )
 
 _BIG_FILES_CACHE_SECONDS = config.VIEWER_CACHE_TTL
+# Cap on how many large files the Repository panel renders - the /status
+# page only has one narrow panel for biggest.py files, so walking (and
+# rendering) more than the top 20 costs scan + DOM time for no visible gain.
+_BIG_FILES_CAP = 20
 _big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
 
 
@@ -72,7 +76,8 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
 
     Each entry is ``(relative_path, line_count)`` sorted largest-first.
     Directories in ``_SKIP_DIRS`` are pruned.  Encoding errors are ignored
-    so the scan never 500s on a broken file.
+    so the scan never 500s on a broken file.  Only the top ``_BIG_FILES_CAP``
+    are returned.
     """
     key = (str(repo_root), int(threshold))
     cached_entry = _big_files_cache.get(key)
@@ -94,6 +99,7 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
     results.sort(key=lambda x: x[1], reverse=True)
+    results = results[:_BIG_FILES_CAP]
     _big_files_cache[key] = (time.monotonic(), results)
     return results
 

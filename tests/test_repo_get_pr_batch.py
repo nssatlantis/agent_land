@@ -157,8 +157,8 @@ def test_argument_validation():
         ({}, "pass either number or numbers."),
         ({"numbers": []}, "numbers accepts at least one pull request."),
         (
-            {"numbers": [1, 2, 3]},
-            "numbers accepts at most 2 pull requests at once.",
+            {"numbers": [1, 2, 3, 4, 5, 6]},
+            "numbers accepts at most 5 pull requests at once.",
         ),
     ]
     for kwargs, message in cases:
