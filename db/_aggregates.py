@@ -79,6 +79,65 @@ _COMPACT_EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS_COMPACT))
 _EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_EVENT_PARAMS))
 _COMPACT_EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_COMPACT_EVENT_PARAMS))
 
+# The activity-timeline branch allowlist, shared by recent_activity() and
+# recent_activity_total() so the two can never disagree on valid kinds.
+_ACTIVITY_KINDS = frozenset({"posts", "comments", "votes", "events"})
+# Canonical branch order for the UNION ALL timeline and the branch picker.
+_ACTIVITY_BRANCH_ORDER = ("posts", "comments", "votes", "events")
+
+
+def _validate_activity(
+    kind: str | None, proposal_kind: str | None, agent_id: int | None
+) -> int | None:
+    """Shared argument validation for recent_activity() and
+    recent_activity_total(): the kind allowlist, the proposal_kind values,
+    and agent_id as int. Returns the normalized agent_id."""
+    if kind not in (None, *_ACTIVITY_KINDS):
+        raise db.ForumError("kind must be one of: posts, comments, votes, events")
+    if proposal_kind is not None and proposal_kind not in (
+        None,
+        "none",
+        "proposal",
+        "small_fix",
+        "idea",
+        "any",
+    ):
+        raise db.ForumError(
+            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+        )
+    if agent_id is not None:
+        try:
+            agent_id = int(agent_id)
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:  # domain: fail-loudly - invalid agent_id is user input, must surface as ForumError
+            raise db.ForumError("agent_id must be an integer.") from exc
+    return agent_id
+
+
+def _pick_activity_branch(
+    kind: str | None, branches: dict[str, tuple[str, tuple]]
+) -> tuple[str, tuple]:
+    """Pick one branch's (sql, params), or the UNION ALL of all four in
+    canonical order when kind is None. Shared by the rows builder so the
+    branch fan-out lives once. Unknown kinds fail loudly (callers validate
+    first via _validate_activity)."""
+    if kind is not None:
+        try:
+            return branches[kind]
+        except KeyError:
+            raise db.ForumError(
+                "kind must be one of: posts, comments, votes, events"
+            ) from None
+    extra: tuple = ()
+    parts = []
+    for name in _ACTIVITY_BRANCH_ORDER:
+        sql, params = branches[name]
+        parts.append(sql)
+        extra += params
+    return " UNION ALL ".join(parts), extra
+
 
 def _jx(field: str) -> str:
     return f"json_extract(e.detail, '$.{field}')"
@@ -367,12 +426,18 @@ def _recent_activity_rows(
     net DESC, created_at DESC so the most-discussed items surface first
     at the database level."""
     preview = config.BODY_PREVIEW_LENGTH
-    net_col = (
-        "(SELECT COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE -1 END), 0) AS net"
-        " FROM votes WHERE target_type='post' AND target_id=p.id)"
+    # sort=top net tally: one grouped aggregate LEFT JOINed onto the posts
+    # branch instead of a correlated subquery re-scanned per post row.
+    # COALESCE keeps the no-votes zero identical to the old subquery.
+    post_net_join = (
+        " LEFT JOIN (SELECT target_id,"
+        " COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE -1 END), 0) AS net"
+        " FROM votes WHERE target_type = 'post' GROUP BY target_id)"
+        " vn ON vn.target_id = p.id"
         if sort == "top"
-        else "NULL AS net"
+        else ""
     )
+    net_col = "COALESCE(vn.net, 0) AS net" if sort == "top" else "NULL AS net"
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
         " a.name AS actor, p.title AS text,"
@@ -380,7 +445,7 @@ def _recent_activity_rows(
         f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
         " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id,"
         f" {net_col}"
-        " FROM posts p JOIN agents a ON a.id = p.agent_id"
+        " FROM posts p JOIN agents a ON a.id = p.agent_id" + post_net_join
     )
     comment = (
         "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
@@ -423,23 +488,15 @@ def _recent_activity_rows(
         vote_params = (agent_id,)
         event_sql += " AND e.actor_agent_id = ?"
         event_params = _EVENT_PARAMS + (agent_id,)
-    extra: tuple = ()
-    if kind == "posts":
-        sql = post_sql
-        extra = post_params
-    elif kind == "comments":
-        sql = comment
-        extra = comment_params
-    elif kind == "votes":
-        sql = vote
-        extra = vote_params
-    elif kind == "events":
-        sql = event_sql
-        extra = event_params
-    else:
-        sql = " UNION ALL ".join((post_sql, comment, vote, event_sql))
-        # Order matters: post_params + comment_params + vote_params + event_params
-        extra = post_params + comment_params + vote_params + event_params
+    sql, extra = _pick_activity_branch(
+        kind,
+        {
+            "posts": (post_sql, post_params),
+            "comments": (comment, comment_params),
+            "votes": (vote, vote_params),
+            "events": (event_sql, event_params),
+        },
+    )
     if sort == "top":
         order = "net DESC, created_at DESC"
     else:
@@ -470,27 +527,7 @@ def recent_activity(
     (uniform with post/comment rows) and the target's `comment_id` when the
     vote was on a comment. Event rows render their ledger kind as a summary
     line in `text`, with `score`/`preview` NULL."""
-    if kind not in (None, "posts", "comments", "votes", "events"):
-        raise db.ForumError("kind must be one of: posts, comments, votes, events")
-    if proposal_kind is not None and proposal_kind not in (
-        None,
-        "none",
-        "proposal",
-        "small_fix",
-        "idea",
-        "any",
-    ):
-        raise db.ForumError(
-            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
-        )
-    if agent_id is not None:
-        try:
-            agent_id = int(agent_id)
-        except (
-            TypeError,
-            ValueError,
-        ) as exc:  # domain: fail-loudly - invalid agent_id is user input, must surface as ForumError
-            raise db.ForumError("agent_id must be an integer.") from exc
+    agent_id = _validate_activity(kind, proposal_kind, agent_id)
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
@@ -625,27 +662,7 @@ def recent_activity_total(
     pager's denominator. `kind` narrows to one branch, `proposal_kind`
     further restricts the posts branch, and `agent_id` filters to one
     actor, matching recent_activity()."""
-    if kind not in (None, "posts", "comments", "votes", "events"):
-        raise db.ForumError("kind must be one of: posts, comments, votes, events")
-    if proposal_kind is not None and proposal_kind not in (
-        None,
-        "none",
-        "proposal",
-        "small_fix",
-        "idea",
-        "any",
-    ):
-        raise db.ForumError(
-            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
-        )
-    if agent_id is not None:
-        try:
-            agent_id = int(agent_id)
-        except (
-            TypeError,
-            ValueError,
-        ) as exc:  # domain: fail-loudly - invalid agent_id is user input, must surface as ForumError
-            raise db.ForumError("agent_id must be an integer.") from exc
+    agent_id = _validate_activity(kind, proposal_kind, agent_id)
     suffix = _activity_proposal_kind_suffix(proposal_kind)
     with db._conn() as conn:
         if kind == "posts":
