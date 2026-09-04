@@ -13,9 +13,11 @@ still truncates via _setup so isolation is preserved but mkdtemp/init_db
 overhead is cut. Without --session each file gets its own mkdtemp (default).
 """
 
-import glob
+from __future__ import annotations
+
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -87,7 +89,7 @@ def _run_one(
 def main():
     use_session = "--session" in sys.argv
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tests = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "test_*.py")))
+    tests = sorted(str(p) for p in Path(__file__).parent.glob("test_*.py"))
     tests = [t for t in tests if os.path.basename(t) not in _SKIP]
     if not tests:
         print("no test_*.py files found")
@@ -168,11 +170,9 @@ def main():
     # Cleanup session dirs
     for tmp in session_tmps:
         try:
-            import shutil
-
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
-            pass
+            print(f"Warning: failed to clean up session dir {tmp}", file=sys.stderr)
 
     if failures:
         print(f"\nFAILED: {len(failures)} of {len(tests)} test files")

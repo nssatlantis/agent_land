@@ -18,6 +18,7 @@ Run directly with: python tests/run_ci.py
 """
 
 import glob
+import importlib.util
 import os
 import re
 import shutil
@@ -29,11 +30,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _module_available(module: str) -> bool:
-    try:
-        __import__(module)
-    except ImportError:
-        return False
-    return True
+    return importlib.util.find_spec(module) is not None
 
 
 def _run(args, cwd, env=None, capture=False):
@@ -85,7 +82,9 @@ def _run_static() -> int:
     # compileall -q . -- pyc goes to tmpfs because /repo is read-only in the
     # sandbox, and the compile itself must not touch the mounted checkout.
     env = dict(os.environ)
-    env["PYTHONPYCACHEPREFIX"] = os.path.join(tempfile.gettempdir(), "agentland_pyc")
+    pycache_dir = os.path.join(tempfile.gettempdir(), "agentland_pyc")
+    os.makedirs(pycache_dir, exist_ok=True)
+    env["PYTHONPYCACHEPREFIX"] = pycache_dir
     r = _run([sys.executable, "-m", "compileall", "-q", REPO], REPO, env=env)
     compileall = "ok" if r.returncode == 0 else "fail"
     print(f"compileall: {compileall}")
@@ -135,11 +134,15 @@ def _run_static() -> int:
         print("bash -n: skip (no bash on this host)")
     else:
         scripts = sorted(glob.glob(os.path.join(REPO, "deploy", "*.sh")))
-        r = _run(["bash", "-n"] + scripts, REPO)
-        bash_n = "ok" if r.returncode == 0 else "fail"
-        print(f"bash -n: {bash_n}")
-        if r.returncode != 0:
-            failures = 1
+        if not scripts:
+            bash_n = "skip"
+            print("bash -n: skip (no deploy/*.sh scripts found)")
+        else:
+            r = _run(["bash", "-n"] + scripts, REPO)
+            bash_n = "ok" if r.returncode == 0 else "fail"
+            print(f"bash -n: {bash_n}")
+            if r.returncode != 0:
+                failures = 1
 
     print(
         f"STATIC SUMMARY: compileall={compileall} mypy={mypy_errors} "

@@ -57,6 +57,13 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union)
 
 
+def _placeholders(items: list) -> str:
+    """The comma-joined '?' markers for a WHERE ... IN (?) clause, one per
+    bound id - built once and reused across every IN (...) that keys on the
+    same id list."""
+    return ",".join("?" * len(items))
+
+
 def find_similar_posts(
     title: str,
     body: str,
@@ -91,9 +98,10 @@ def find_similar_posts(
     all_tokens = title_tokens | body_tokens
     if not all_tokens:
         return []
-    # Optimize: cap tokens used in MATCH query to avoid OR explosion.
-    # Prefer title tokens (more discriminating) + top body tokens by length.
-    match_tokens = list(title_tokens)
+    # Optimize: cap tokens used in MATCH query (20 total) to avoid OR
+    # explosion. Prefer title tokens (more discriminating) + top body tokens
+    # by length, filling the remainder.
+    match_tokens = list(title_tokens)[:20]
     body_sorted = sorted(body_tokens - title_tokens, key=lambda t: (-len(t), t))
     match_tokens.extend(body_sorted[: max(0, 20 - len(match_tokens))])
     # Over-fetch reduced: 5x limit instead of 10x, min 50.
@@ -227,18 +235,23 @@ def similar_proposal_for(
                 """
             ).fetchall()
             threshold_votes = db._proposal_vote_threshold(conn)
+            # Per-candidate vote nets only (O(candidates), not O(all votes)):
+            # the threshold lookup keys on these ids alone.
+            nets: dict[int, int] = {}
+            if rows:
+                candidate_ids = [r["id"] for r in rows]
+                placeholders = _placeholders(candidate_ids)
+                for r in conn.execute(
+                    "SELECT post_id, COALESCE(SUM(value), 0) AS net FROM proposal_votes"
+                    f" WHERE post_id IN ({placeholders}) GROUP BY post_id",
+                    candidate_ids,
+                ).fetchall():
+                    nets[r["post_id"]] = r["net"]
         except (
             sqlite3.OperationalError
         ):  # domain: degrade-silently - similarity unavailable
             return None
     scored: list[tuple[float, int, str]] = []
-    with db._conn() as conn:
-        nets: dict[int, int] = {}
-        for r in conn.execute(
-            "SELECT post_id, COALESCE(SUM(value), 0) AS net FROM proposal_votes"
-            " GROUP BY post_id"
-        ).fetchall():
-            nets[r["post_id"]] = r["net"]
     for r in rows:
         if r["proposal_kind"] == "proposal":
             if nets.get(r["id"], 0) < threshold_votes:
@@ -557,7 +570,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             proposal_tallies: dict[int, tuple[int, int]] = {}
             if post_ids:
                 threshold = db._proposal_vote_threshold(conn)
-                placeholders = ",".join("?" * len(post_ids))
+                placeholders = _placeholders(post_ids)
                 for r in conn.execute(
                     f"""SELECT target_id, COALESCE(SUM(value), 0) AS total FROM votes
                        WHERE target_type='post' AND target_id IN ({placeholders})
@@ -696,7 +709,7 @@ def search_comments(
         comment_ids = [r["id"] for r in rows]
         scores: dict[int, int] = {}
         if comment_ids:
-            placeholders = ",".join("?" * len(comment_ids))
+            placeholders = _placeholders(comment_ids)
             for r in conn.execute(
                 f"""SELECT target_id, COALESCE(SUM(value), 0) AS total
                    FROM votes
@@ -709,7 +722,7 @@ def search_comments(
         post_ids = list({r["post_id"] for r in rows})
         proposal_tallies: dict[int, tuple[int, int]] = {}
         if post_ids:
-            placeholders = ",".join("?" * len(post_ids))
+            placeholders = _placeholders(post_ids)
             proposal_kinds: dict[int, str | None] = {}
             for r in conn.execute(
                 f"SELECT id, proposal_kind FROM posts WHERE id IN ({placeholders})",
@@ -718,7 +731,7 @@ def search_comments(
                 proposal_kinds[r["id"]] = r["proposal_kind"]
             proposal_post_ids = [pid for pid, kind in proposal_kinds.items() if kind]
             if proposal_post_ids:
-                placeholders = ",".join("?" * len(proposal_post_ids))
+                placeholders = _placeholders(proposal_post_ids)
                 for r in conn.execute(
                     f"""SELECT post_id,
                           SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,

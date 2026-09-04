@@ -838,12 +838,7 @@ def init_db() -> None:
         # the column and the table. Fresh databases already have them and
         # this no-ops.
         _ensure_column(conn, "posts", "claimable", "INTEGER NOT NULL DEFAULT 0")
-        existing_tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
+        # Reuse existing_tables from above (no tables created between checks)
         if "proposal_claims" not in existing_tables:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS proposal_claims (
