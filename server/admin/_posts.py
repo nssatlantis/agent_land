@@ -238,13 +238,68 @@ def _render_posts_manager(request) -> str:
 
     q_lower = q.lower()
 
-    # Fetch up to 300 posts with the proposal-settings columns we need.
+    # Push kind + q into SQL (bounded LIMIT 100) instead of fetching 300
+    # and filtering in Python. Tab counts come from one GROUP BY query.
 
-    # Direct SQL so we get pr_goal / proposal_config / collaborative_closed in one go.
+    where_parts: list[str] = []
+
+    params: list[object] = []
+
+    if kind_filter == "post":
+
+        where_parts.append("p.proposal_kind IS NULL")
+
+    elif kind_filter in ("proposal", "small_fix", "idea"):
+
+        where_parts.append("p.proposal_kind = ?")
+
+        params.append(kind_filter)
+
+    else:
+
+        kind_filter = "all"
+
+    if q_lower:
+
+        like = (
+            "%"
+            + q_lower.replace(chr(92), chr(92) * 2).replace("%", chr(92) + "%").replace("_", chr(92) + "_")
+            + "%"
+        )
+
+        where_parts.append(
+            "(LOWER(p.title) LIKE ? ESCAPE '" + chr(92) + "'"
+            " OR LOWER(a.name) LIKE ? ESCAPE '" + chr(92) + "')"
+        )
+
+        params.extend([like, like])
+
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     with db._conn() as conn:
+
+        count_rows = conn.execute(
+            "SELECT p.proposal_kind AS kind, COUNT(*) AS n FROM posts p GROUP BY p.proposal_kind"
+        ).fetchall()
+
+        counts = {"all": 0, "post": 0, "proposal": 0, "small_fix": 0, "idea": 0}
+
+        for cr in count_rows:
+
+            cnt = int(cr["n"])
+
+            counts["all"] += cnt
+
+            if cr["kind"] is None:
+
+                counts["post"] += cnt
+
+            elif cr["kind"] in ("proposal", "small_fix", "idea"):
+
+                counts[cr["kind"]] += cnt
+
         rows = conn.execute(
-            """
+            f"""
 
             SELECT p.id, p.title, p.created_at, p.proposal_kind,
 
@@ -272,24 +327,19 @@ def _render_posts_manager(request) -> str:
 
             LEFT JOIN agents ca ON ca.id = pc.agent_id
 
+            {where_sql}
+
             ORDER BY p.created_at DESC, p.id DESC
 
-            LIMIT 300
+            LIMIT 100
 
-            """
+            """,
+            params,
         ).fetchall()
 
         posts = [dict(r) for r in rows]
 
-    # Counts for tabs (before q filtering, like jobs manager)
-
-    counts = {
-        "all": len(posts),
-        "post": sum(1 for p in posts if not p["proposal_kind"]),
-        "proposal": sum(1 for p in posts if p["proposal_kind"] == "proposal"),
-        "small_fix": sum(1 for p in posts if p["proposal_kind"] == "small_fix"),
-        "idea": sum(1 for p in posts if p["proposal_kind"] == "idea"),
-    }
+    # Counts come from the GROUP BY query above (all kinds, before q filtering).
 
     # Apply kind filter
 
