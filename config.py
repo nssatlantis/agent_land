@@ -52,7 +52,7 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE file into a dict (no environment side effects)."""
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except OSError:  # domain: degrade-silently - a missing .env means defaults
         return {}
     out: dict[str, str] = {}
     for line in text.splitlines():
@@ -780,6 +780,29 @@ CONFIG_KNOBS: list[tuple[str, str]] = [
 _PATH_KEYS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
 _BIND_KEYS = ("FORUM_HOST", "FORUM_PORT", "VIEWER_HOST", "VIEWER_PORT")
 _SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",) + _BIND_KEYS
+# Set twin for the membership tests in reload_dotenv: the tuple above stays
+# the canonical ordered form, this one makes the per-key scan O(1) instead
+# of a 7-tuple walk on every reload.
+_SKIP_KEY_SET = frozenset(_SKIP_KEYS)
+
+
+def _safe_int(env_key: str, default: int) -> int:
+    """int(os.environ.get(env_key, default)) that cannot crash the import:
+    a bad startup-bound value (e.g. FORUM_PORT=abc) logs a warning and
+    falls back to the default instead of raising ValueError at boot."""
+    raw = os.environ.get(env_key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):  # domain: degrade-silently - bad value falls back
+        logger.warning(
+            "ignoring invalid %s=%r at startup; using default %d",
+            env_key,
+            raw,
+            default,
+        )
+        return default
 
 
 def _valid_reload_value(key: str, value: str) -> bool:
@@ -793,7 +816,10 @@ def _valid_reload_value(key: str, value: str) -> bool:
     try:
         convert(value)
         return True
-    except (ValueError, TypeError):
+    except (
+        ValueError,
+        TypeError,
+    ):  # domain: fail-loudly - invalid value is skipped with a warning, never applied
         logger.warning(
             "ignoring invalid %s=%r in .env; keeping the prior/default value",
             key,
@@ -856,9 +882,9 @@ if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
 # FORUM_HOST / FORUM_PORT / VIEWER_HOST / VIEWER_PORT. (Both default to port
 # 8000; run the two on different ports when both are up on one machine.)
 FORUM_HOST = os.environ.get("FORUM_HOST", "127.0.0.1")
-FORUM_PORT = int(os.environ.get("FORUM_PORT", "8000"))
+FORUM_PORT = _safe_int("FORUM_PORT", 8000)
 VIEWER_HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
-VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "8000"))
+VIEWER_PORT = _safe_int("VIEWER_PORT", 8000)
 
 # --- Comment threading ---
 # Separator concatenated between two comments that get auto-merged into one.
@@ -868,7 +894,7 @@ REPLY_SEPARATOR = "\n\n"
 # How often the background env watcher re-reads the .env files (seconds). The
 # FORUM_* tunables below resolve at call time, so an edit to <data dir>/.env
 # applies within this window without a restart. Paths stay startup-bound.
-ENV_POLL_SECONDS = int(os.environ.get("FORUM_ENV_POLL_SECONDS", "60"))
+ENV_POLL_SECONDS = _safe_int("FORUM_ENV_POLL_SECONDS", 60)
 
 _env_generation = 0
 _env_reloaded_at: str | None = None
@@ -909,7 +935,7 @@ def reload_dotenv() -> list[str]:
         merged.setdefault(key, value)
     changed: list[str] = []
     for key, value in merged.items():
-        if key in _SKIP_KEYS:
+        if key in _SKIP_KEY_SET:
             continue
         if not _valid_reload_value(key, value):
             continue
@@ -926,7 +952,7 @@ def reload_dotenv() -> list[str]:
             _file_sources[key] = value
             changed.append(key)
     for key, prev in list(_file_sources.items()):
-        if key in _SKIP_KEYS:
+        if key in _SKIP_KEY_SET:
             continue
         if key not in merged:
             current = os.environ.get(key)
@@ -959,7 +985,7 @@ def dotenv_fingerprint() -> tuple[tuple[str, int, int], ...]:
         try:
             st = path.stat()
             out.append((str(path), st.st_mtime_ns, st.st_size))
-        except OSError:
+        except OSError:  # domain: degrade-silently - missing file fingerprints as zero
             out.append((str(path), 0, 0))
     return tuple(out)
 
