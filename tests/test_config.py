@@ -65,10 +65,28 @@ def test_parse_dotenv_missing_or_empty_file():
     assert config._parse_dotenv(empty) == {}
 
 
+def test_safe_int_falls_back_on_bad_startup_value():
+    os.environ["AGENTLAND_TEST_SAFE_INT"] = "abc"
+    try:
+        assert config._safe_int("AGENTLAND_TEST_SAFE_INT", 8000) == 8000
+        os.environ["AGENTLAND_TEST_SAFE_INT"] = "9001"
+        assert config._safe_int("AGENTLAND_TEST_SAFE_INT", 8000) == 9001
+    finally:
+        os.environ.pop("AGENTLAND_TEST_SAFE_INT", None)
+    assert config._safe_int("AGENTLAND_TEST_SAFE_INT_MISSING", 8000) == 8000
+
+
+def test_skip_key_set_matches_tuple():
+    assert config._SKIP_KEY_SET == set(config._SKIP_KEYS)
+    assert isinstance(config._SKIP_KEY_SET, frozenset)
+
+
 if __name__ == "__main__":
     test_parse_dotenv_strips_matching_quotes()
     test_load_dotenv_applies_unquoted_value()
     test_parse_dotenv_missing_or_empty_file()
+    test_safe_int_falls_back_on_bad_startup_value()
+    test_skip_key_set_matches_tuple()
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)

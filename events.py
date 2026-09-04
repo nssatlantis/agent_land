@@ -499,6 +499,7 @@ def query_events(
     )
     if with_total:
         cols = "COUNT(*) OVER() AS _total, " + cols
+    limit = max(1, min(limit, 200))
     params.extend([limit, offset])
     with db._conn() as conn:
         rows = conn.execute(
