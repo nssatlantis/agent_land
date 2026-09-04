@@ -11,7 +11,12 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
-from events import event_total, query_events
+from events import (
+    bench_regressions_for,
+    bench_window_bests,
+    event_total,
+    query_events,
+)
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
 
@@ -125,21 +130,106 @@ def _ci_row(e: dict) -> str:
     )
 
 
+def _bench_badge(detail: dict) -> str:
+    """Badge for a single db_benchmark run: clean (regressions==0) /
+    regression. Contrast with _ci_badge: bench 'ok' is the harness exit code,
+    but the number that matters is regressions==0."""
+    regr = bench_regressions_for([{"detail": detail}])
+    if regr:
+        return (
+            '<span class="kind-badge" style="background:var(--warn);color:white">'
+            f"{regr} regress</span>"
+        )
+    return (
+        '<span class="kind-badge" style="background:var(--ok);color:white">clean</span>'
+    )
+
+
+def _bench_row(e: dict, bests: dict[str, float]) -> str:
+    """One db_benchmark timeline row: when|mode|sha7|badge|duration plus a
+    collapsible per-query median table (median ms + window-relative Δ% vs the
+    best-in-window median). `bests` is the precomputed per-query best-in-window
+    map for the fetched window (shared math with events.bench_query_delta)."""
+    detail = e.get("detail") or {}
+    when = _human_ts(e["created_at"])
+    checks = esc(str(detail.get("checks") or "db_benchmark"))
+    head_sha = str(detail.get("head_sha") or "")
+    sha7 = esc(head_sha[:7]) if head_sha else "—"
+    dur = detail.get("duration_seconds")
+    dur_html = f"{float(dur):.1f}s" if isinstance(dur, (int, float)) else "—"
+    badge = _bench_badge(detail)
+    summary = detail.get("summary") or {}
+    meds = summary.get("timings_median_ms")
+    rows_html = ""
+    if isinstance(meds, dict) and meds:
+        cells = []
+        for q in sorted(meds):
+            latest = meds[q]
+            if not isinstance(latest, (int, float)):
+                continue
+            best = bests.get(str(q))
+            if best:
+                pct = round((latest - best) / best * 100)
+            else:
+                pct = None
+            delta = ""
+            if pct is not None:
+                col = (
+                    "var(--ok)"
+                    if pct <= 0
+                    else ("var(--warn)" if pct < 20 else "var(--fail)")
+                )
+                delta = f' <span style="color:{col}">{pct:+d}% vs window-best</span>'
+            else:
+                delta = ' <span style="color:var(--muted)">no window ref</span>'
+            cells.append(
+                "<tr>"
+                f"<td style='text-align:left'>{esc(str(q))}</td>"
+                f"<td style='text-align:right'><b>{latest:.1f} ms</b>{delta}</td>"
+                "</tr>"
+            )
+        table = (
+            '<div style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'
+            '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+            "<caption style='text-align:left;color:var(--muted);font-size:12px;padding:2px 0'>"
+            f"median ms per query vs best in window ({len(meds)} queries)</caption>"
+            + "".join(cells)
+            + "</table></div>"
+        )
+        rows_html = (
+            f'<details style="margin-top:4px"><summary '
+            f'style="cursor:pointer;color:var(--muted);font-size:13px">'
+            f"per-query medians</summary>{table}</details>"
+        )
+    return (
+        '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)">'
+        f'<span style="color:var(--muted);font-size:13px">{when}</span> · '
+        f'<span style="font-size:13px">{checks}</span> · '
+        f'<span style="color:var(--muted)">{sha7}</span> · '
+        f"{badge} · {dur_html}"
+        f"{rows_html}"
+        "</div>"
+    )
+
+
 def ci_page(request: Request) -> HTMLResponse:
-    """The /ci page: tabs Native vs PR merges vs Local rehearsals, ?mode=
-    filter on the three ci_run kinds + top strip + timeline."""
+    """The /ci page: tabs Native vs PR merges vs Local rehearsals vs
+    Benchmarks, ?mode= filter on the ci_run kinds + top strip + timeline."""
     mode = (request.query_params.get("mode") or "native").lower()
-    if mode not in ("native", "branch", "local"):
+    if mode not in ("native", "branch", "local", "bench"):
         if mode in ("pr", "merges", "pr_merges", "branch_run"):
             mode = "branch"
         elif mode in ("rehearsal", "overlay", "local_run"):
             mode = "local"
+        elif mode in ("db_bench", "db_benchmark", "benchmark", "benchmarks"):
+            mode = "bench"
         else:
             mode = "native"
     kind = {
         "native": "ci_run",
         "branch": "ci_branch_run",
         "local": "ci_local_run",
+        "bench": "ci_db_bench_run",
     }[mode]
     try:
         page = max(1, int(request.query_params.get("page", "1")))
@@ -168,11 +258,13 @@ def ci_page(request: Request) -> HTMLResponse:
     native_cls = "active" if mode == "native" else ""
     branch_cls = "active" if mode == "branch" else ""
     local_cls = "active" if mode == "local" else ""
+    bench_cls = "active" if mode == "bench" else ""
     tabs = (
         '<div class="tabs">'
         f'<a href="/ci?mode=native" class="{native_cls}">Native</a>'
         f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>'
         f'<a href="/ci?mode=local" class="{local_cls}">Local</a>'
+        f'<a href="/ci?mode=bench" class="{bench_cls}">Benchmarks</a>'
         "</div>"
     )
     top_strip = _ci_top_strip(stats_evts)
@@ -189,15 +281,21 @@ def ci_page(request: Request) -> HTMLResponse:
             nav.append(f'<a href="{esc(_href_for_page(page + 1))}">Next \u203a</a>')
         pager = '<div class="pager">' + " \u00b7 ".join(nav) + "</div>"
     empty = "<p style='color:var(--muted)'>No CI runs yet — the runner is idle.</p>"
-    rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
+    if mode == "bench":
+        bench_bests = bench_window_bests(stats_evts or [])
+        rows_html = "".join(_bench_row(e, bench_bests) for e in evts) if evts else empty
+    else:
+        rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
     hint = ""
     if mode == "branch":
         hint = "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>"
     elif mode == "local":
         hint = "<p style='color:var(--muted);font-size:13px'>Local mode: <code>repo_ci_run(files=[...])</code> rehearsals — the pre-push overlay of your diff on <code>origin/main</code>, tested in the same Docker sandbox as branch runs (ledger kind <code>ci_local_run</code>).</p>"
+    elif mode == "bench":
+        hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared window-relative to the best (lowest) median in this window; clean = <code>regressions==0</code>.</p>"
     body = (
-        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main), PR merges (branch) and local rehearsal (files=). Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
+        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main), PR merges (branch), local rehearsal (files=) and db_benchmark medians. Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
         + tabs
         + top_strip
         + summary
