@@ -83,7 +83,6 @@ _CACHE_FAILURES = True  # cache RepoError too, for graceful degradation
 # cached values with no request at all; this store only saves a request when a
 # TTL miss still turns out to be revalidatable.
 _etag_store: OrderedDict[str, tuple[str, Any]] = OrderedDict()
-_ETAG_STORE_MAX = 1024
 
 
 def _etag_get(url_path: str) -> tuple[str, Any] | None:
@@ -98,7 +97,8 @@ def _etag_set(url_path: str, etag: str, value: Any) -> None:
     """Store (etag, value), evicting the oldest entry past the bound."""
     _etag_store[url_path] = (etag, value)
     _etag_store.move_to_end(url_path)
-    while len(_etag_store) > _ETAG_STORE_MAX:
+    max_store = int(config.GITHUB_ETAG_STORE_MAX)
+    while len(_etag_store) > max_store:
         _etag_store.popitem(last=False)
 
 
@@ -151,7 +151,6 @@ def _headers() -> dict:
 # --- shared async client on a dedicated background loop --------------------
 
 _GITHUB_HOST = "api.github.com"
-_CONN_IDLE_TIMEOUT = 60  # seconds an idle pooled connection stays alive
 
 _loop: asyncio.AbstractEventLoop | None = None
 _client: httpx.AsyncClient | None = None
@@ -181,7 +180,7 @@ def _build_client() -> httpx.AsyncClient:
         limits=httpx.Limits(
             max_connections=config.GITHUB_MAX_CONNECTIONS,
             max_keepalive_connections=config.GITHUB_MAX_CONNECTIONS,
-            keepalive_expiry=_CONN_IDLE_TIMEOUT,
+            keepalive_expiry=config.GITHUB_CONN_IDLE_TIMEOUT,
         ),
         timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
     )
