@@ -53,7 +53,7 @@ def _trend_rows(since: str) -> list:
     bucket = int(time.monotonic() // ttl)
     if _trend_cache is not None and _trend_cache[0] == bucket:
         return _trend_cache[1]
-    rows = query_events(since=since, limit=2000)
+    rows = query_events(since=since, limit=int(config.PULSE_TREND_LIMIT or 2000))
     _trend_cache = (bucket, rows)
     return rows
 

@@ -11,6 +11,7 @@ import concurrent.futures as _cf
 import json
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 
 import config
@@ -44,6 +45,43 @@ def _parse_pr_numbers(evidence: str) -> list[int]:
 
 
 _JOB_VIEWS = ("open", "mine", "working", "all")
+
+# Explicit jobs-row columns shared by the single-row fetches below: an
+# explicit list instead of SELECT * so a schema change breaks loudly at
+# the query (missing column) rather than silently downstream (KeyError
+# far from the fetch). Covers every jobs column the row consumers read.
+_JOB_COLS = (
+    "id, creator_agent_id, worker_agent_id, offered_to_agent_id, title,"
+    " description, scope, kind, payment_quarters, total_cycles, cycles_done,"
+    " official, taker_deposit_quarters, deposit_bonus_quarters,"
+    " treasury_escrow_quarters, status, created_at, decided_at"
+)
+
+# Board-total memo: {(view, agent_id): (monotonic_seconds, total)}.
+# list_jobs runs its COUNT beside every page fetch; the total only feeds
+# pagination, so a 5s-old value is fine and hot board polls skip the scan.
+_BOARD_TOTAL_CACHE: dict[tuple[str, int | None], tuple[float, int]] = {}
+_BOARD_TOTAL_TTL = 5.0
+
+
+def _board_total_cached(
+    conn: sqlite3.Connection, view: str, agent_id: int | None, where: str, params: list
+) -> int:
+    """Board total with a 5s memo. Keyed by (view, agent) — limit/offset
+    never change a total, and the WHERE is a pure function of those two."""
+    now = time.monotonic()
+    key = (view, agent_id)
+    hit = _BOARD_TOTAL_CACHE.get(key)
+    if hit is not None and now - hit[0] < _BOARD_TOTAL_TTL:
+        return hit[1]
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM jobs j {where}",
+        params,
+    ).fetchone()[0]
+    if len(_BOARD_TOTAL_CACHE) > 256:
+        _BOARD_TOTAL_CACHE.clear()
+    _BOARD_TOTAL_CACHE[key] = (now, total)
+    return total
 
 
 def _fmt_q(quarters: int) -> str:
@@ -540,10 +578,11 @@ def _handle_taker_deposit(
         return
     from db._credits import balance_for, spend
 
-    if balance_for(conn, agent_id) < deposit_q:
+    balance = balance_for(conn, agent_id)
+    if balance < deposit_q:
         raise ForumError(
             f"this job requires a {_fmt_q(deposit_q)} deposit; "
-            f"you have {_fmt_q(balance_for(conn, agent_id))}."
+            f"you have {_fmt_q(balance)}."
         )
     half_treasury = (deposit_q + 1) // 2
     half_escrow = deposit_q // 2
@@ -589,6 +628,9 @@ def create_job(
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post."""
+    from db._credits import format_credits as _fc
+    from db._credits import to_quarters as _tq
+
     if taker_deposit_credits is None:
         taker_deposit_credits = float(
             config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME
@@ -596,30 +638,18 @@ def create_job(
             else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
         )
     try:
-        taker_deposit_q = int(
-            __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-                float(taker_deposit_credits)
-            )
-        )
+        taker_deposit_q = int(_tq(float(taker_deposit_credits)))
     except Exception as exc:
         raise ForumError(f"bad taker_deposit value: {exc}") from None
-    min_one = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)
-        )
-    )
-    min_rec = int(
-        __import__("db._credits", fromlist=["to_quarters"]).to_quarters(
-            float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)
-        )
-    )
+    min_one = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
     min_needed = min_one if kind == "one_time" else min_rec
     if taker_deposit_q < min_needed:
         raise ForumError(
             f"taker deposit "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(taker_deposit_q)}"
+            f"{_fc(taker_deposit_q)}"
             f" below minimum "
-            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)}"
+            f"{_fc(min_needed)}"
             f" for {kind} jobs."
         )
     title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
@@ -954,10 +984,12 @@ def list_jobs(
             raise ForumError("view='working' requires your token.")
         clauses.append("j.worker_agent_id = ? AND j.status IN ('active', 'completed')")
     with _conn() as conn:
+        agent_id: int | None = None
         if view in ("mine", "working"):
             assert token is not None
             agent = _require_active_agent(conn, token)
-            params.append(agent["id"])
+            agent_id = agent["id"]
+            params.append(agent_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         _cutoff = job_overdue_cutoff()
         rows = conn.execute(
@@ -977,10 +1009,7 @@ def list_jobs(
             f" {where} ORDER BY j.id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM jobs j {where}",
-            params,
-        ).fetchone()[0]
+        total = _board_total_cached(conn, view, agent_id, where, params)
         jobs_out = [
             {
                 "job_id": r["id"],
@@ -1067,7 +1096,7 @@ def claim_job(token: str, job_id: int) -> dict:
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?",
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
             (int(job_id),),
         ).fetchone()
         if job is None:
@@ -1146,7 +1175,7 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?",
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
         if job is None:
@@ -1237,7 +1266,7 @@ def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True) -> d
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?",
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
             (int(job_id),),
         ).fetchone()
         if job is None:
@@ -1267,7 +1296,7 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?",
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
             (int(job_id),),
         ).fetchone()
         if job is None:
@@ -1820,7 +1849,7 @@ def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?",
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
             (int(job_id),),
         ).fetchone()
         if job is None:
