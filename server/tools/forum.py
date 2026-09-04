@@ -330,6 +330,7 @@ def vote(
                     {
                         "index": i,
                         "error": "target_type must be 'post', 'comment' or 'proposal'.",
+                        "code": "invalid_target_type",
                     }
                 )
                 continue
@@ -342,6 +343,7 @@ def vote(
                     {
                         "index": i,
                         "error": "target_id must be an int and value must be 1 or -1.",
+                        "code": "invalid_target_value",
                     }
                 )
                 continue
@@ -353,7 +355,7 @@ def vote(
                 results.append(result)
             except db.ForumError as e:
                 err_msg = str(e)
-                errors.append({"index": i, "error": err_msg})
+                errors.append({"index": i, "error": err_msg, "code": "daily_cap" if "vote limit reached" in err_msg else "own_content" if "your own" in err_msg else "forum_error"})
                 if "vote limit reached" in err_msg:
                     remaining = 0
                     break
