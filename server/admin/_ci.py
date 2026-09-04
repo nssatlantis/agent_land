@@ -4,6 +4,8 @@ server/admin/_ci.py — CI / workspaces dashboard (admin-only, 5/10s poll).
 
 from __future__ import annotations
 
+import asyncio
+
 import config
 from server.admin._auth import (
     _admin_nav,
@@ -558,9 +560,12 @@ async def ci_admin_page(request):
     if not _authorized(request):
         return _denied()
 
-    return _admin_page(
-        request, "admin - ci", _admin_nav() + _render_ci_dashboard(request)
-    )
+    # The snapshot walks slot trees on cache miss (up to ~400ms of sync
+    # rglob/stat) — run it off the event loop so the 5s dashboard poll
+    # never stalls other requests. _render_ci_dashboard only reads the
+    # request (CSRF field, query params), so thread execution is safe.
+    body = await asyncio.to_thread(_render_ci_dashboard, request)
+    return _admin_page(request, "admin - ci", _admin_nav() + body)
 
 
 async def ci_clear_pending(request):
