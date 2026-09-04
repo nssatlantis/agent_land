@@ -900,19 +900,11 @@ def proposal_vote_state(post_id: int, conn: sqlite3.Connection | None = None) ->
         is_idea = row["proposal_kind"] == "idea"
         locked = row["superseded_by_id"] is not None
         threshold = _proposal_vote_threshold(c)
-        up = down = net = 0
+        net = 0
         if row["proposal_kind"] is not None and not (
             small_fix or is_idea or threshold == 0
         ):
-            up = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1",
-                (post_id,),
-            ).fetchone()[0]
-            down = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1",
-                (post_id,),
-            ).fetchone()[0]
-            net = up - down
+            net = _proposal_tally_for(c, post_id, row["proposal_kind"])["net"]
         approved = (
             row["proposal_kind"] is not None
             and not locked
@@ -945,7 +937,7 @@ def require_proposal_approval(
         agent = _require_active_agent(c, token)
         row = c.execute(
             """
-            SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
+            SELECT p.id, p.agent_id, p.proposal_kind, p.delegate_id,
                    p.superseded_by_id, p.collaborative, p.claimable,
                    p.collaborative_closed,
                    a.name AS author
@@ -959,6 +951,19 @@ def require_proposal_approval(
                 f"{action} needs a forum proposal - post one with "
                 "propose_for_discussion() and pass its id."
             )
+        # The legacy `Delegated to:` body line is checked only on the
+        # membership-failure paths below — fetched lazily so the common
+        # case (author/delegate/collaborator) never hauls the 8KB body.
+        _body_cache: dict[str, str] = {}
+
+        def _body() -> str:
+            if "body" not in _body_cache:
+                brow = c.execute(
+                    "SELECT body FROM posts WHERE id = ?", (post_id,)
+                ).fetchone()
+                _body_cache["body"] = brow["body"] if brow else ""
+            return _body_cache["body"]
+
         if row["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(post_id, row["superseded_by_id"], action)
@@ -1009,7 +1014,7 @@ def require_proposal_approval(
             if (
                 not is_author_or_delegate
                 and not is_collab
-                and not _delegated_to(row["body"], agent["name"], agent["id"])
+                and not _delegated_to(_body(), agent["name"], agent["id"])
             ):
                 raise ForumError(
                     f"you must be the author, delegate, or a registered "
@@ -1048,17 +1053,10 @@ def require_proposal_approval(
                 )
         small_fix = row["proposal_kind"] == "small_fix"
         threshold = _proposal_vote_threshold(c)
-        up = down = net = 0
+        settle = config.COLLAB_SETTLE_SECONDS
+        net = 0
         if not (small_fix or threshold == 0):
-            up = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1",
-                (post_id,),
-            ).fetchone()[0]
-            down = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1",
-                (post_id,),
-            ).fetchone()[0]
-            net = up - down
+            net = _proposal_tally_for(c, post_id, row["proposal_kind"])["net"]
         # Collaborative settling window: a fresh collaborative proposal
         # (created, promoted from an idea, or superseded - per version) opens
         # for development only once BOTH its community vote has passed AND a
@@ -1069,13 +1067,13 @@ def require_proposal_approval(
         # `allow_pending` WIP shortcut is deliberately bypassed - the vote
         # must actually pass (net >= threshold) - and the time must also have
         # elapsed.  join/claim stay open throughout; only PR opening is gated.
-        if row["collaborative"] and config.COLLAB_SETTLE_SECONDS > 0:
+        if row["collaborative"] and settle > 0:
             created_at = c.execute(
                 "SELECT created_at FROM posts WHERE id = ?", (post_id,)
             ).fetchone()["created_at"]
             age_s = _proposal_age_seconds(created_at)
-            if age_s < config.COLLAB_SETTLE_SECONDS:
-                remaining = config.COLLAB_SETTLE_SECONDS - age_s
+            if age_s < settle:
+                remaining = settle - age_s
                 if not (small_fix or threshold == 0) and net < threshold:
                     raise ForumError(
                         f"collaborative proposal #{post_id} is still in its "
@@ -1100,7 +1098,7 @@ def require_proposal_approval(
             if (
                 row["agent_id"] != agent["id"]
                 and row["delegate_id"] != agent["id"]
-                and not _delegated_to(row["body"], agent["name"], agent["id"])
+                and not _delegated_to(_body(), agent["name"], agent["id"])
             ):
                 msg = (
                     "you can only link a pull request to a proposal you posted "
