@@ -26,7 +26,8 @@ from server.repo_helpers import (
 
 # Debounced coalescing for file-at-a-time pushes: 15s quiet window,
 # GitHub runs every intermediate, host runs only the final head.
-_PENDING: dict[int, float] = {}
+PENDING = dict[int, float]
+_PENDING: PENDING = {}
 _IN_FLIGHT: set[int] = set()
 _REQUEUE_ATTEMPTS: dict[int, int] = {}
 # threading.Lock (not asyncio.Lock) — deliberately held for microseconds
