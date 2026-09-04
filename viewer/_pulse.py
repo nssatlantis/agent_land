@@ -4,11 +4,13 @@ over existing db helpers (no db/schema changes)."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 import db
 import db._aggregates as aggregates
 from events import query_events
@@ -35,15 +37,40 @@ _FUNNEL_CHIP_VIEWS = (
     ("ideas", "ideas"),
 )
 
+_trend_cache: tuple[int, list] | None = None
+
+
+def _trend_rows(since: str) -> list:
+    """Fetch (and briefly cache) the 14-day events window for the activity
+    trend. One ledger scan per window instead of per /pulse poll. The window
+    shifts by only a few seconds per request, so a single coarse-bucket cache
+    (rather than the millisecond-precise ``since``) serves every poll in the
+    window without re-scanning the ledger. Only the current bucket is ever
+    read, so the cache holds exactly one entry and is replaced on bucket
+    change - never accumulated."""
+    global _trend_cache
+    ttl = int(config.VIEWER_CACHE_TTL or 60)
+    bucket = int(time.monotonic() // ttl)
+    if _trend_cache is not None and _trend_cache[0] == bucket:
+        return _trend_cache[1]
+    rows = query_events(since=since, limit=2000)
+    _trend_cache = (bucket, rows)
+    return rows
+
 
 def _activity_trend() -> str:
     """A 14-day activity series derived from the events ledger (bucketed by
     UTC day, client-side) plus a 'last 7d vs prior 7d' delta, and the
     all-time activity total. recent_activity_total() has no window, so the
-    daily series comes from query_events(since=...) - disclosed in the PR."""
+    daily series comes from query_events(since=...) - disclosed in the PR.
+
+    The events query is expensive (a ledger scan), so its rows are cached for
+    a short window; the /pulse poll is 30s, and one cached scan per ~60s costs
+    a fraction of what a fresh scan per poll does.
+    """
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    rows = query_events(since=since, limit=2000)
+    rows = _trend_rows(since)
     per_day: dict[str, int] = {}
     for e in rows:
         day = e["created_at"][:10]

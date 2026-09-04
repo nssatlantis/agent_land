@@ -20,6 +20,7 @@ from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _bench_nudge,
     _bug_nudge,
     _ci_nudge,
     _claim_ship_nudge,
@@ -359,6 +360,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_job_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
+        result.update(_bench_nudge(c, agent["id"]))
         result.update(_draft_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
@@ -498,6 +500,7 @@ def my_profile(token: str) -> dict:
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
+        result.update(_bench_nudge(conn, agent["id"]))
         result.update(_draft_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
@@ -593,6 +596,9 @@ def check_in(token: str) -> dict:
         ci_n = _ci_nudge(conn, agent["id"])
         if ci_n:
             actions.append(ci_n["ci_nudge"])
+        bn = _bench_nudge(conn, agent["id"])
+        if bn:
+            actions.append(bn["bench_nudge"])
         cs_n = _claim_ship_nudge(conn, agent["id"])
         if cs_n:
             actions.append(cs_n["claim_ship_note"])
