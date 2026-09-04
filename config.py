@@ -724,6 +724,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
     "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
     "VIEWER_CACHE_TTL": ("FORUM_VIEWER_CACHE_TTL", 60, int),
+    # Pulse trend window + CI page size (270:4882 follow-up): the activity-trend
+    # ledger scan cap and the /ci rows per page, previously hardcoded 2000/50.
+    "PULSE_TREND_LIMIT": ("FORUM_PULSE_TREND_LIMIT", 2000, int),
+    "CI_PER_PAGE": ("FORUM_CI_PER_PAGE", 50, int),
     # Polls (maintainer-supervised): a single, non-binding, single-choice poll
     # an author attaches to an ordinary post or idea. MIN/MAX_OPTIONS bound
     # the answer list; EDIT_WINDOW_SECONDS is how long the author may fix a
