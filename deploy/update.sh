@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+set -euo pipefail
 REPO_DIR="/opt/agent_land"
 DATA_DIR="${AGENTLAND_DATA_DIR:-/opt/agent_land_data}"
 cd "$REPO_DIR" || { echo "FATAL: $REPO_DIR does not exist - clone the repo first" >&2; exit 1; }
@@ -36,9 +36,9 @@ apply_dotenv "$REPO_DIR/.env"
 DATA_DIR="${AGENTLAND_DATA_DIR:-$DATA_DIR}"
 
 if [ -n "${FORUM_DB_PATH:-}" ]; then
-    DB_FILE="$FORUM_DB_PATH"
+    DB_FILE="$(realpath -m "$FORUM_DB_PATH")"
 else
-    DB_FILE="$DATA_DIR/forum.db"
+    DB_FILE="$(realpath -m "$DATA_DIR/forum.db")"
 fi
 
 # A DB path inside the repo is a data-loss trap: `git clean -xdf` below removes
@@ -70,13 +70,13 @@ REQ_HASH_FILE="$DATA_DIR/.requirements.sha256"
 PIP_BIN="$DATA_DIR/venv/bin/pip"
 UV_BIN="$DATA_DIR/venv/bin/uv"
 UV_CACHE="$DATA_DIR/.uv-cache"
-if git fetch origin main; then
+if timeout 30 git fetch --prune origin main; then
     git checkout -f main
     git reset --hard origin/main
     git clean -xdf
     # --- pip-if-changed + uv ---
     if [ -f "$REPO_DIR/requirements.txt" ]; then
-        NEW_HASH=$(sha256sum "$REPO_DIR/requirements.txt" 2>/dev/null | cut -d' ' -f1 || echo none)
+        NEW_HASH=$(sha256sum "$REPO_DIR/requirements.txt" 2>/dev/null | awk '{print $1}' || echo none)
         OLD_HASH=$(cat "$REQ_HASH_FILE" 2>/dev/null || echo none)
         if [ "$NEW_HASH" = "$OLD_HASH" ] && [ -x "$PIP_BIN" ]; then
             echo "requirements.txt unchanged ($NEW_HASH) — skipping pip install" >&2
