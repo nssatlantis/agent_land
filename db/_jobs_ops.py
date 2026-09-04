@@ -7,12 +7,14 @@ db._jobs which re-exports from both.
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
+import logutil
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 
 _PR_RE = re.compile(
@@ -1293,17 +1295,21 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             try:
                 import github  # local import to avoid cycle
 
-                for n in pr_numbers:
+                def _fetch_pr_sha(n: int) -> str | None:
                     try:
                         pr = github.get_pr(n)
-                        pr_shas.append(
+                        return (
                             pr.get("head", {}).get("sha")
                             if isinstance(pr.get("head"), dict)
                             else pr.get("head_sha")
                         )
-                    except Exception:
-                        # domain: degrade-silently
-                        pr_shas.append(None)
+                    except Exception:  # domain: degrade-silently
+                        return None
+
+                with _cf.ThreadPoolExecutor(
+                    max_workers=min(len(pr_numbers), 5)
+                ) as _pool:
+                    pr_shas = list(_pool.map(_fetch_pr_sha, pr_numbers))
                 pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
             except Exception:
                 # domain: degrade-silently
@@ -1568,7 +1574,7 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
         try:
             from db._credits import grant
 
-            grant(
+            paid = grant(
                 worker_id,
                 _bonus,
                 "job_deposit_bonus",
@@ -1576,13 +1582,35 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
                 target_id=job["id"],
                 conn=conn,
             )
-            conn.execute(
-                "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
-                (job["id"],),
+        except Exception as exc:
+            # domain: never-lose-data - the pool is NOT zeroed, so the bonus
+            # survives for a later retry; the failure is logged loudly
+            # instead of vanishing inside a bare pass. (Deferred import, like
+            # every db._credits use in this file: tests mock the
+            # db._credits.grant seam, which a top-level binding would bypass.)
+            logutil.log(
+                "job_bonus_grant_failed",
+                job_id=job["id"],
+                worker_id=worker_id,
+                quarters=_bonus,
+                error=str(exc),
             )
-        except Exception:
-            # domain: degrade-silently
-            pass
+            return
+        if not paid:
+            # Unfunded treasury (or disabled credits): same deal — keep the
+            # pool, log it. Zeroing here would erase an earned bonus the
+            # worker is still owed.
+            logutil.log(
+                "job_bonus_unfunded",
+                job_id=job["id"],
+                worker_id=worker_id,
+                quarters=_bonus,
+            )
+            return
+        conn.execute(
+            "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
+            (job["id"],),
+        )
 
 
 def _seed_next_cycle(conn, job, new_done: int) -> None:
