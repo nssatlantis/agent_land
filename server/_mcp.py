@@ -57,6 +57,47 @@ class _LoggedRepoError(github.RepoError, ToolError):
     keeps the message text over the wire under mcp>=2.1.0."""
 
 
+def _agent_id_for(kwargs: dict[str, Any]) -> int | None:
+    """Resolve the calling agent's id from the token kwarg. The token itself
+    is never logged - only the resolved id (or None for tool calls without
+    one, e.g. public reads)."""
+    _tok = kwargs.get("token")
+    return db.agent_id_for_token(_tok) if _tok else None
+
+
+def _record_call(
+    fn: Callable[..., Any],
+    *,
+    start: float,
+    ok: bool,
+    note: str,
+    agent_id: int | None,
+) -> None:
+    """Log one tool call's outcome in the wrapper's finally block: the timed
+    structured log line, then the best-effort stats write that must never
+    break the tool call itself."""
+    duration_ms = (_time.perf_counter() - start) * 1000
+    logutil.tool_log(
+        fn.__name__,
+        ok=ok,
+        agent_id=agent_id,
+        duration_ms=duration_ms,
+        note=note,
+    )
+    try:
+        db.record_tool_call(
+            fn.__name__,
+            ok=ok,
+            agent_id=agent_id,
+            duration_ms=duration_ms,
+            note=note,
+        )
+    except (
+        Exception
+    ):  # domain: degrade-silently - stats write must never break the tool call
+        pass
+
+
 def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Time and log every MCP tool call (tool, agent_id, duration, outcome).
     Agent identity comes from the resolved agent_id - the token itself is
@@ -71,8 +112,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             start = _time.perf_counter()
             ok, note = True, ""
-            _tok = kwargs.get("token")
-            agent_id = db.agent_id_for_token(_tok) if _tok else None
+            agent_id = _agent_id_for(kwargs)
             try:
                 return await fn(*args, **kwargs)
             except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
@@ -85,23 +125,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
                 ok, note = False, f"{type(exc).__name__}: {exc}"
                 raise
             finally:
-                logutil.tool_log(
-                    fn.__name__,
-                    ok=ok,
-                    agent_id=agent_id,
-                    duration_ms=(_time.perf_counter() - start) * 1000,
-                    note=note,
-                )
-                try:
-                    db.record_tool_call(
-                        fn.__name__,
-                        ok=ok,
-                        agent_id=agent_id,
-                        duration_ms=(_time.perf_counter() - start) * 1000,
-                        note=note,
-                    )
-                except Exception:  # domain: degrade-silently - stats write must never break the tool call
-                    pass
+                _record_call(fn, start=start, ok=ok, note=note, agent_id=agent_id)
 
         return awrapper
 
@@ -109,8 +133,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         start = _time.perf_counter()
         ok, note = True, ""
-        _tok = kwargs.get("token")
-        agent_id = db.agent_id_for_token(_tok) if _tok else None
+        agent_id = _agent_id_for(kwargs)
         try:
             return fn(*args, **kwargs)
         except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
@@ -123,24 +146,6 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
             ok, note = False, f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            logutil.tool_log(
-                fn.__name__,
-                ok=ok,
-                agent_id=agent_id,
-                duration_ms=(_time.perf_counter() - start) * 1000,
-                note=note,
-            )
-            try:
-                db.record_tool_call(
-                    fn.__name__,
-                    ok=ok,
-                    agent_id=agent_id,
-                    duration_ms=(_time.perf_counter() - start) * 1000,
-                    note=note,
-                )
-            except (
-                Exception
-            ):  # domain: degrade-silently - stats write must never break the tool call
-                pass
+            _record_call(fn, start=start, ok=ok, note=note, agent_id=agent_id)
 
     return wrapper

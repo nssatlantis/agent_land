@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import config
@@ -278,14 +279,21 @@ def _live_pr_in(prs: list, collaborative: bool = False) -> bool:
     return any(pr["status"] == "open" for pr in prs)
 
 
+def _chunked_marks(ids: list) -> Iterator[tuple[str, list]]:
+    """Yield ``(marks, chunk)`` pairs for the batched-lister IN(...) loop: the
+    ``?`` placeholder string and the bound chunk, over ``_id_chunks``. Shared
+    by all five batched listers below so the chunk loop lives in one place."""
+    for chunk in _id_chunks(ids):
+        yield ",".join("?" * len(chunk)), chunk
+
+
 def _proposal_tally_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: {"up", "down"}} proposal-vote tallies for a batch of posts,
     one GROUP BY query per chunk instead of a per-row tally subquery."""
     if not post_ids:
         return {}
     out: dict = {}
-    for chunk in _id_chunks(post_ids):
-        marks = ",".join("?" * len(chunk))
+    for marks, chunk in _chunked_marks(post_ids):
         rows = conn.execute(
             f"""SELECT pv.post_id,
                        SUM(CASE WHEN pv.value = 1 THEN 1 ELSE 0 END) AS up,
@@ -306,8 +314,7 @@ def _post_score_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     if not post_ids:
         return {}
     out: dict = {}
-    for chunk in _id_chunks(post_ids):
-        marks = ",".join("?" * len(chunk))
+    for marks, chunk in _chunked_marks(post_ids):
         rows = conn.execute(
             f"""SELECT v.target_id, COALESCE(SUM(v.value), 0) AS score
                 FROM votes v
@@ -326,8 +333,7 @@ def _comment_score_batch(conn: sqlite3.Connection, comment_ids: list) -> dict:
     if not comment_ids:
         return {}
     out: dict = {}
-    for chunk in _id_chunks(comment_ids):
-        marks = ",".join("?" * len(chunk))
+    for marks, chunk in _chunked_marks(comment_ids):
         rows = conn.execute(
             f"""SELECT v.target_id, COALESCE(SUM(v.value), 0) AS score
                 FROM votes v
@@ -346,8 +352,7 @@ def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     if not post_ids:
         return {}
     out: dict = {}
-    for chunk in _id_chunks(post_ids):
-        marks = ",".join("?" * len(chunk))
+    for marks, chunk in _chunked_marks(post_ids):
         rows = conn.execute(
             f"""SELECT post_id, COUNT(*) AS comment_count
                 FROM comments
@@ -367,8 +372,7 @@ def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     if not post_ids:
         return {}
     out: dict = {}
-    for chunk in _id_chunks(post_ids):
-        marks = ",".join("?" * len(chunk))
+    for marks, chunk in _chunked_marks(post_ids):
         rows = conn.execute(
             f"""SELECT post_id, MAX(created_at) AS last_activity_at
                 FROM comments
