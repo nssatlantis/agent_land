@@ -610,42 +610,50 @@ def _todo_row_claim_badge(lst: dict, mode: str) -> str:
         return (
             " <span title='"
             + tip
+            + "' aria-label='"
+            + tip
             + "' style='color:var(--accent);font-size:13px'>&#9679;</span>"
             " <span style='color:var(--accent);font-size:13px'>claimed by "
             + claimer
             + "</span>"
         )
     return (
-        " <span title='unclaimed list'"
+        " <span title='unclaimed list' aria-label='unclaimed list'"
         " style='color:var(--muted);font-size:13px'>&#9679;</span>"
     )
 
 
 def _todo_item_row(it: dict, mode: str) -> str:
-    """One to-do item row: claim dot, done box, id, text and optional PR chip.
+    """One to-do item row: state-colored box, id, text and optional PR chip.
 
-    Item-level dots show in item/hybrid mode; pure list mode keeps ownership
-    on the whole list, so per-item dots would be noise."""
-    if mode != "list":
-        if it.get("claimed_by"):
-            tip = "claimed by " + esc(str(it["claimed_by"]))
-            if it.get("claimed_at"):
-                tip += " at " + esc(str(it["claimed_at"]))
-            if not it.get("done") and it.get("pr_number") is None:
-                tip += " - no bound PR yet"
-            dot = (
-                "<span title='"
-                + tip
-                + "' style='color:var(--accent);font-size:13px'>&#9679;</span> "
-            )
-        else:
-            dot = (
-                "<span title='unclaimed'"
-                " style='color:var(--muted);font-size:13px'>"
-                "&#9679;</span> "
-            )
+    The checkbox carries the whole item state so no separate claim dot is
+    needed: red unticked = open and unclaimed, blue unticked = open and
+    claimed, green ticked = done. The glyph differs too (box / box-tick)
+    and the state is named in words (title + aria-label), so meaning never
+    depends on color alone. Pure list mode keeps ownership on the whole
+    list, so per-item boxes stay neutral there."""
+    if it.get("done"):
+        box, color = "\u2611", "var(--ok)"
+        tip = "done"
+        if it.get("pr_number") is not None:
+            tip += " via PR #" + esc(str(it["pr_number"]))
+        text_color = "var(--muted)"
+    elif mode == "list":
+        box, color = "\u2610", "var(--muted)"
+        tip = "open"
+        text_color = "var(--text)"
+    elif it.get("claimed_by"):
+        box, color = "\u2610", "var(--accent)"
+        tip = "claimed by " + esc(str(it["claimed_by"]))
+        if it.get("claimed_at"):
+            tip += " at " + esc(str(it["claimed_at"]))
+        if it.get("pr_number") is None:
+            tip += " - no bound PR yet"
+        text_color = "var(--text)"
     else:
-        dot = ""
+        box, color = "\u2610", "var(--fail)"
+        tip = "open, unclaimed"
+        text_color = "var(--text)"
     pr = it.get("pr_number")
     if pr is not None:
         try:
@@ -658,24 +666,89 @@ def _todo_item_row(it: dict, mode: str) -> str:
             pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
     else:
         pr_chip = ""
-    box = "☑" if it.get("done") else "☐"
     return (
-        f"<div style='margin:.15rem 0'>{dot}"
-        f"<span style='color:var(--muted)'>{box}</span> "
+        f"<div style='margin:.15rem 0'>"
+        f"<span title='{tip}' aria-label='{tip}' style='color:{color}'>{box}</span> "
         f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
         f">#{esc(str(it['id']))}</span>"
-        f"{esc(it['text'])}"
+        f"<span style='color:{text_color}'>{esc(it['text'])}</span>"
         f"{pr_chip}" + "</div>"
     )
 
 
 _TODO_PAGE_SIZE = 25
 
+# Expand-all (`?tall=1`) is offered only at or below this many board-wide
+# items: above it the panel keeps per-list drill-in so one click can never
+# embed thousands of rows. Tunable; the guard reads summary counts before
+# any item fetch, so over-cap boards cost no extra query.
+_TODO_TALL_CAP = 250
+
+_TODO_FILTERS = ("all", "open", "done")
+
+
+def _todo_legend(list_mode: bool = False) -> str:
+    """One-line key for the checkbox grammar, rendered with the same glyphs
+    and colors as the rows so the mapping is visual, not just textual."""
+    return (
+        "<div style='color:var(--muted);font-size:13px;margin:4px 0 8px'>"
+        "<span style='color:var(--fail)'>\u2610</span> open"
+        " \u00b7 <span style='color:var(--accent)'>\u2610</span> claimed"
+        " \u00b7 <span style='color:var(--ok)'>\u2611</span> done"
+        " \u00b7 PR #N auto-checks on merge"
+        + (" \u00b7 list-mode boards show ownership on the header" if list_mode else "")
+        + "</div>"
+    )
+
+
+def _todo_filter_toggle(
+    post_id: int,
+    active: str,
+    tlist: int | None = None,
+    tq: str | None = None,
+    tall: bool = False,
+) -> str:
+    """All/Open/Done segmented control for a drilled-in, searched or expanded
+    board. Links keep the board position (tlist / tq / tall) and land back
+    on the panel; switching filter resets to page 1. The active segment
+    carries aria-current, the codebase's tab convention."""
+    segs = []
+    for key in _TODO_FILTERS:
+        qs = []
+        if tlist is not None:
+            qs.append(f"tlist={int(tlist)}")
+        if tq:
+            qs.append(f"tq={urllib.parse.quote_plus(tq)}")
+        if tall:
+            qs.append("tall=1")
+        if key != "all":
+            qs.append(f"tfilter={key}")
+        href = (
+            f"/posts/{post_id}?{'&'.join(qs)}#sec-todos"
+            if qs
+            else f"/posts/{post_id}#sec-todos"
+        )
+        cls = ' class="active" aria-current="page"' if key == active else ""
+        segs.append(f"<a href='{href}'{cls}>{key.capitalize()}</a>")
+    return (
+        "<div class='sort-row' style='margin:4px 0 8px'>show:"
+        "<span class='seg'>" + "".join(segs) + "</span></div>"
+    )
+
+
+def _todo_scope_note(tfilter: str) -> str:
+    """Quiet 'showing open/done only' note: under a filter the db returns
+    filter-scoped counts, so the counts line needs the scope named."""
+    if tfilter not in ("open", "done"):
+        return ""
+    return f" \u00b7 showing {tfilter} only"
+
 
 def _todo_pager(post_id: int, page: int, total: int, **qs: str) -> str:
     """Compact Prev/Next pager for a drilled-in list or search page, building
-    links that keep the other query params (tlist / tq). Returns '' on a
-    single page. Kept local to avoid a dependency on viewer._feed_helpers."""
+    links that keep the other query params (tlist / tq / tfilter) and land
+    back on the to-do panel (`#sec-todos`). Returns '' on a single page.
+    Kept local to avoid a dependency on viewer._feed_helpers."""
     total_pages = max(1, (total + _TODO_PAGE_SIZE - 1) // _TODO_PAGE_SIZE)
     if total_pages <= 1:
         return ""
@@ -688,25 +761,32 @@ def _todo_pager(post_id: int, page: int, total: int, **qs: str) -> str:
     if page > 1:
         nav.insert(
             0,
-            f'<a href="/posts/{post_id}?tpage={page - 1}{pairs}"'
-            f" style='color:var(--accent)'>\u2039 Prev</a>",
+            f'<a href="/posts/{post_id}?tpage={page - 1}{pairs}#sec-todos"'
+            f" style='color:var(--accent)' rel='prev'"
+            f" aria-label='previous to-do page'>\u2039 Prev</a>",
         )
     if page < total_pages:
         nav.append(
-            f'<a href="/posts/{post_id}?tpage={page + 1}{pairs}"'
-            f" style='color:var(--accent)'>Next \u203a</a>"
+            f'<a href="/posts/{post_id}?tpage={page + 1}{pairs}#sec-todos"'
+            f" style='color:var(--accent)' rel='next'"
+            f" aria-label='next to-do page'>Next \u203a</a>"
         )
     return '<div style="margin:6px 0">' + " \u00b7 ".join(nav) + "</div>"
 
 
 def _todo_search_box(post_id: int, tq: str = "") -> str:
     """A GET search form that full-text searches this proposal's to-do items
-    and list titles via search_todos."""
+    and list titles via search_todos. The onsubmit restores the panel
+    fragment (plain GET forms strip it), so a search lands back on the
+    to-do panel instead of the top of the page."""
     q = esc(tq)
     return (
-        f'<form method="get" action="/posts/{post_id}" style="margin:8px 0">'
+        f'<form method="get" action="/posts/{post_id}"'
+        f" onsubmit=\"this.action='/posts/{post_id}#sec-todos'\""
+        f' style="margin:8px 0">'
         f'<input type="text" name="tq" value="{q}"'
         f' placeholder="search to-do items / lists"'
+        f' aria-label="Search to-do items"'
         f' style="padding:4px 8px;border:1px solid var(--border);'
         f"border-radius:6px;background:var(--card);color:var(--text);"
         f'width:220px"> <button type="submit"'
@@ -723,21 +803,29 @@ def _todos_panel(
     tq: str | None = None,
     list_data: dict | None = None,
     search_data: dict | None = None,
+    tfilter: str = "all",
+    tall_data: list | None = None,
 ) -> str:
     """A proposal's to-do board, read-only and fully escaped - the viewer
     stays read-only by law; editing happens through the forum's per-list
     tools (create_todo_list / update_todo_list). Renders a lightweight
     summary (list/item/done counts plus per-list headers) from the caller's
-    `todos_summary`, and never embeds the whole board: drilling in (`tlist`)
-    or searching (`tq`) renders the caller-fetched `list_data` /
-    `search_data` (the get_todos_list / search_todos results) paged. Renders
+    `todos_summary`, and never embeds the whole board unasked: drilling in
+    (`tlist`) or searching (`tq`) renders the caller-fetched `list_data` /
+    `search_data` (the get_todos_list / search_todos results) paged, while
+    expand-all (`tall_data`, the get_todos_for_post board, only fetched at
+    or below _TODO_TALL_CAP) renders every list inline. `tfilter`
+    (all/open/done) scopes the drilled, searched or expanded items via the
+    readers' own filter - the summary counts stay board-wide. Renders
     nothing for ordinary posts and proposals without lists. A pure HTML
     builder - no DB calls here; the page handler fetches the lightweight
     summary and any drill-in page."""
     summary = p.get("todos_summary") or {}
     lists = summary.get("lists") or []
-    if not lists and list_data is None and search_data is None:
+    if not lists and list_data is None and search_data is None and tall_data is None:
         return ""
+    if tfilter not in _TODO_FILTERS:
+        tfilter = "all"
     post_id = int(p["id"])
     header = (
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
@@ -769,16 +857,21 @@ def _todos_panel(
         f"height:6px'></div>"
         f"</div>"
     )
+    out.append(
+        _todo_legend(list_mode=any(lst.get("claim_mode") == "list" for lst in lists))
+    )
     if search_data is not None:
         total = search_data.get("total", 0)
         hits = search_data.get("hits") or []
         out.append(
-            f"<div style='margin:4px 0'><a href='/posts/{post_id}'"
+            f"<div style='margin:4px 0'><a href='/posts/{post_id}#sec-todos'"
             f" style='color:var(--accent);text-decoration:none'>\u2190 all lists</a>"
             f"<span style='color:var(--muted)'>&nbsp;\u00b7 {total} hit"
-            f"{'' if total == 1 else 's'} for \u201c{esc(tq or '')}\u201d</span></div>"
+            f"{'' if total == 1 else 's'} for \u201c{esc(tq or '')}\u201d"
+            f"{_todo_scope_note(tfilter)}</span></div>"
         )
         out.append(_todo_search_box(post_id, tq or ""))
+        out.append(_todo_filter_toggle(post_id, tfilter, tq=tq or None))
         if not hits:
             out.append("<p style='color:var(--muted)'>No matching items.</p>")
         for hit in hits:
@@ -796,14 +889,23 @@ def _todos_panel(
             out.append(
                 f"<div style='margin:.15rem 0'>{lede}" + _todo_item_row(entry, "hybrid")
             )
-        out.append(_todo_pager(post_id, tpage, total, tq=tq or ""))
+        out.append(
+            _todo_pager(
+                post_id,
+                tpage,
+                total,
+                tq=tq or "",
+                tfilter="" if tfilter == "all" else tfilter,
+            )
+        )
     elif list_data is not None:
         mode = list_data.get("claim_mode") or "item"
         out.append(
-            f"<div style='margin:4px 0'><a href='/posts/{post_id}'"
+            f"<div style='margin:4px 0'><a href='/posts/{post_id}#sec-todos'"
             f" style='color:var(--accent);text-decoration:none'>\u2190 all lists</a></div>"
         )
         out.append(_todo_search_box(post_id))
+        out.append(_todo_filter_toggle(post_id, tfilter, tlist=tlist))
         out.append(
             f"<h3 style='margin:.6rem 0 .2rem'>"
             f"<span class='todo-id' title='to-do list id #{esc(str(list_data['id']))}'"
@@ -814,11 +916,16 @@ def _todos_panel(
         total = list_data.get("total_items", len(list_data.get("items") or []))
         out.append(
             f"<div style='color:var(--muted);font-size:13px;margin-bottom:6px'>"
-            f"{done}/{total} done \u00b7 {total - done} remaining</div>"
+            f"{done}/{total} done \u00b7 {total - done} remaining"
+            f"{_todo_scope_note(tfilter)}</div>"
         )
         items = list_data.get("items") or []
         if not items:
-            out.append("<p style='color:var(--muted)'>No items.</p>")
+            out.append(
+                "<p style='color:var(--muted)'>"
+                + (f"No {tfilter} items." if tfilter != "all" else "No items.")
+                + "</p>"
+            )
         for it in items:
             out.append(_todo_item_row(it, mode))
         out.append(
@@ -827,10 +934,62 @@ def _todos_panel(
                 tpage,
                 total,
                 tlist="" if tlist is None else str(tlist),
+                tfilter="" if tfilter == "all" else tfilter,
             )
         )
+    elif tall_data is not None:
+        out.append(
+            f"<div style='margin:4px 0'><a href='/posts/{post_id}#sec-todos'"
+            f" style='color:var(--accent);text-decoration:none'>\u21d1 collapse all</a>"
+            f"<span style='color:var(--muted)'>&nbsp;\u00b7 {len(tall_data)} list"
+            f"{'' if len(tall_data) == 1 else 's'} expanded"
+            f"{_todo_scope_note(tfilter)}</span></div>"
+        )
+        out.append(_todo_search_box(post_id))
+        out.append(_todo_filter_toggle(post_id, tfilter, tall=True))
+        for lst in tall_data:
+            mode = lst.get("claim_mode", "item")
+            items = lst.get("items") or []
+            ndone = sum(1 for it in items if it.get("done"))
+            out.append(
+                f"<h3 style='margin:.6rem 0 .1rem'>"
+                f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
+                f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}"
+                f"{_todo_row_claim_badge(lst, mode)}</h3>"
+            )
+            out.append(
+                f"<div style='color:var(--muted);font-size:13px;margin:0 0 4px'>"
+                f"{ndone}/{len(items)} done"
+                + (
+                    f" \u00b7 {len(items) - ndone} remaining"
+                    if len(items) - ndone
+                    else ""
+                )
+                + "</div>"
+            )
+            if not items:
+                out.append(
+                    "<p style='color:var(--muted)'>"
+                    + (f"No {tfilter} items." if tfilter != "all" else "No items.")
+                    + "</p>"
+                )
+            for it in items:
+                out.append(_todo_item_row(it, mode))
     else:
         out.append(_todo_search_box(post_id))
+        if total_items <= _TODO_TALL_CAP:
+            out.append(
+                f"<div style='margin:4px 0 8px'>"
+                f"<a href='/posts/{post_id}?tall=1#sec-todos'"
+                f" style='color:var(--accent);text-decoration:none'>"
+                f"\u21d3 expand all {total_lists} list"
+                f"{'' if total_lists == 1 else 's'}</a></div>"
+            )
+        elif lists:
+            out.append(
+                "<div style='color:var(--muted);font-size:13px;margin:4px 0 8px'>"
+                "Board too large to expand at once \u2014 drill into lists.</div>"
+            )
         for lst in lists:
             mode = lst.get("claim_mode", "item")
             total = lst.get("total_items", 0)
@@ -840,7 +999,7 @@ def _todos_panel(
                 f"<h3 style='margin:.6rem 0 .1rem'>"
                 f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
                 f">#{esc(str(lst['id']))}</span>"
-                f"<a href='/posts/{post_id}?tlist={lst['id']}'"
+                f"<a href='/posts/{post_id}?tlist={lst['id']}#sec-todos'"
                 f" style='color:var(--text);text-decoration:none'"
                 f" title='expand this list'>{esc(lst['title'])}</a>"
                 f"{_todo_row_claim_badge(lst, mode)}</h3>"
@@ -850,7 +1009,7 @@ def _todos_panel(
                 f"{done}/{total} done"
                 + (f" \u00b7 {remaining} remaining" if remaining else "")
                 + (
-                    f" \u00b7 <a href='/posts/{post_id}?tlist={lst['id']}'"
+                    f" \u00b7 <a href='/posts/{post_id}?tlist={lst['id']}#sec-todos'"
                     f" style='color:var(--accent);text-decoration:none'>expand \u203a</a>"
                     if total
                     else ""
@@ -859,7 +1018,10 @@ def _todos_panel(
             )
     inner = "".join(out)
     return _collapsible(
-        "To-do lists", inner, "todos", open=bool(tlist is not None or tq)
+        "To-do lists",
+        inner,
+        "todos",
+        open=bool(tlist is not None or tq or tall_data is not None),
     )
 
 
