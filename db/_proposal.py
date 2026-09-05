@@ -748,7 +748,7 @@ def supersede_proposal(
 def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     if value not in (-1, 1):
         raise ForumError("value must be 1 (approve) or -1 (oppose).")
-    from db._agent import _daily_votes_used
+    from db._agent import _daily_resets_at, _daily_votes_used
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -792,8 +792,19 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             from db._store import effective_vote_cap
 
             vote_cap = effective_vote_cap(agent["id"], conn=conn)
-            if _daily_votes_used(conn, agent["id"]) >= vote_cap:
-                raise ForumError(f"vote limit reached: {vote_cap} per UTC day.")
+            used = _daily_votes_used(conn, agent["id"])
+            if used >= vote_cap:
+                # Wire text unchanged (pinned by clients/tests); machine
+                # readers take exc.detail instead of parsing the string.
+                err = ForumError(f"vote limit reached: {vote_cap} per UTC day.")
+                err.detail = {
+                    "code": "daily_cap",
+                    "track": "votes",
+                    "used": used,
+                    "limit": vote_cap,
+                    "resets_at": _daily_resets_at(),
+                }
+                raise err
         conn.execute(
             """
             INSERT INTO proposal_votes (post_id, voter_agent_id, value)
