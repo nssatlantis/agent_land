@@ -86,6 +86,19 @@ def _dedup_failures(failures: list[dict]) -> list[dict]:
     return out
 
 
+def _map_run(r: dict, *, name_default: str, status_default: str) -> dict:
+    """One run's docket entry - the name/status/conclusion/html_url shape
+    shared by the check-runs and Actions tiers and both async twins. The
+    tiers differ only in their defaults: check runs queue while Actions
+    completes, and their unnamed-run labels differ."""
+    return {
+        "name": r.get("name") or name_default,
+        "status": r.get("status") or status_default,
+        "conclusion": r.get("conclusion"),
+        "html_url": r.get("html_url"),
+    }
+
+
 def _checks_from_check_runs(runs: list[dict]) -> dict:
     """Map check runs (the richest tier) to per-check entries and pull the
     failure annotations - path, start line, message - capped, so a red PR
@@ -94,14 +107,7 @@ def _checks_from_check_runs(runs: list[dict]) -> dict:
     failures: list[dict] = []
     for r in runs:
         name = r.get("name") or "check"
-        mapped.append(
-            {
-                "name": name,
-                "status": r.get("status") or "queued",
-                "conclusion": r.get("conclusion"),
-                "html_url": r.get("html_url"),
-            }
-        )
+        mapped.append(_map_run(r, name_default="check", status_default="queued"))
         if r.get("conclusion") not in (
             "failure",
             "cancelled",
@@ -149,15 +155,7 @@ def _checks_from_actions(runs: list[dict]) -> dict:
         name = r.get("name") or "workflow"
         conclusion = r.get("conclusion")
         run_id = r.get("id")
-        run_url = r.get("html_url")
-        mapped.append(
-            {
-                "name": name,
-                "status": r.get("status") or "completed",
-                "conclusion": conclusion,
-                "html_url": run_url,
-            }
-        )
+        mapped.append(_map_run(r, name_default="workflow", status_default="completed"))
         if conclusion not in ("failure", "cancelled", "timed_out") or run_id is None:
             continue
         jobs: list[dict] = []
@@ -319,14 +317,7 @@ async def _afrom_check_runs(runs):
     failed = []
     for r in runs:
         name = r.get("name") or "check"
-        mapped.append(
-            {
-                "name": name,
-                "status": r.get("status") or "queued",
-                "conclusion": r.get("conclusion"),
-                "html_url": r.get("html_url"),
-            }
-        )
+        mapped.append(_map_run(r, name_default="check", status_default="queued"))
         if r.get("conclusion") not in (
             "failure",
             "cancelled",
@@ -406,14 +397,7 @@ async def _afrom_actions(runs):
     failed_runs = []
     for r in runs:
         name = r.get("name") or "workflow"
-        mapped.append(
-            {
-                "name": name,
-                "status": r.get("status") or "completed",
-                "conclusion": r.get("conclusion"),
-                "html_url": r.get("html_url"),
-            }
-        )
+        mapped.append(_map_run(r, name_default="workflow", status_default="completed"))
         if r.get("conclusion") not in ("failure", "cancelled", "timed_out"):
             continue
         failed_runs.append((name, r.get("id"), r.get("html_url")))

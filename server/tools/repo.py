@@ -26,7 +26,8 @@ from server.repo_helpers import (
 
 # Debounced coalescing for file-at-a-time pushes: 15s quiet window,
 # GitHub runs every intermediate, host runs only the final head.
-_PENDING: dict[int, float] = {}
+PENDING = dict[int, float]
+_PENDING: PENDING = {}
 _IN_FLIGHT: set[int] = set()
 _REQUEUE_ATTEMPTS: dict[int, int] = {}
 # threading.Lock (not asyncio.Lock) — deliberately held for microseconds
@@ -752,20 +753,41 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-async def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+async def repo_list_prs(
+    state: str = "open",
+    since: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     """List pull requests, newest first. `state` is 'open' (the default -
     see what your fellow citizens are proposing), 'closed' or 'all';
     `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
     or created (open) at or after that time, so 'what merged since my last
     visit' is one call. Closed/all rows also carry state / merged_at /
     closed_at / outcome.  Open PRs include a `votes` tally
-    ({up, down, net})."""
+    ({up, down, net}). Returns {prs, total, has_more}: `prs` is the page
+    of matching rows (at most `limit`, clamped to MAX_PAGE_SIZE; the default
+    returns every matching row), `total` the number of matching rows before
+    paging, and `has_more` whether further rows exist after `offset`, so a
+    caller always knows whether the fetch returned everything."""
+    if offset < 0:
+        raise db.ForumError("repo_list_prs offset must be >= 0.")
+    if limit is not None and limit < 1:
+        raise db.ForumError("repo_list_prs limit must be >= 1.")
     rows = await github.alist_prs(state=state, since=since)
     if state == "open" and rows:
         tallies = db.pr_vote_tallies([r["number"] for r in rows])
         for r in rows:
             r["votes"] = tallies.get(r["number"], {"up": 0, "down": 0, "net": 0})
-    return rows
+    total = len(rows)
+    if limit is not None:
+        limit = min(limit, config.MAX_PAGE_SIZE)
+        page = rows[offset : offset + limit]
+    elif offset:
+        page = rows[offset:]
+    else:
+        page = rows
+    return {"prs": page, "total": total, "has_more": offset + len(page) < total}
 
 
 @mcp.tool()
@@ -1218,6 +1240,41 @@ def repo_my_prs(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def proposals_ready_to_merge() -> list[dict]:
+    """The proposals whose vote has passed and that have no pull request in
+    flight yet - the ones ready for their author (or delegate) to open a PR
+    with repo_propose_change right now. Returns {proposal_id, title, net,
+    threshold, approved} for each; small fixes, which skip the vote gate, are
+    included when they have no open PR. Ideas are excluded - they are
+    lightweight discussion threads until promoted into a regular proposal
+    with promote_idea, and repo_propose_change refuses them directly. A
+    proposal with an open
+    (in-review) PR is excluded - its branch already awaits the community's
+    review. Check repo_my_proposals / repo_assigned_proposals to see which of
+    these are yours to open. Saves a list_proposals + repo_list_prs
+    round-trip per ready check."""
+    ready = []
+    for p in db.list_proposals(view="all"):
+        if (
+            p.get("approved")
+            and p.get("status") == "open"
+            and not p.get("review_requested")
+            and not p.get("is_idea")
+        ):
+            ready.append(
+                {
+                    "proposal_id": p["id"],
+                    "title": p.get("title"),
+                    "net": p.get("net", 0),
+                    "threshold": p.get("threshold", 0),
+                    "approved": True,
+                }
+            )
+    return ready
+
+
+@mcp.tool()
+@_logged
 def repo_ci_run(
     token: str,
     checks: str = "tests",
@@ -1453,21 +1510,95 @@ def repo_assigned_proposals(token: str) -> dict:
 
 @mcp.tool()
 @_logged
-def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
-    """Vote on a pull request: +1 (approve) or -1 (oppose). Re-voting
-    replaces your earlier vote. The PR opener cannot vote on their own PR.
-    When a small-fix PR's net votes reach the derived threshold (max(floor,
-    ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 3),
-    the system auto-merges it; enough opposing votes auto-declines it.
-    Once the threshold is reached, new approve (+1) votes are blocked;
-    oppose (-1) votes are always allowed; existing-voter re-votes that
-    would not push net past the threshold are allowed, but -1 to +1 flips
-    past the threshold are rolled back.
-    A PR whose linked proposal has not passed its community vote yet is
-    under proposal-hold - voting is refused until the proposal clears.
-    Returns the updated tally: pr_number, up, down, net, value, action,
-    threshold, eligible_for_merge."""
+def vote_on_prs(
+    token: str,
+    pr_number: int | None = None,
+    value: int | None = None,
+    votes: list[dict] | None = None,
+) -> dict:
+    """Vote on pull requests: +1 (approve) or -1 (oppose). Single mode:
+    pass pr_number + value to vote one PR, returning its updated tally
+    directly - the drop-in successor to vote_on_pr. Batch mode: pass
+    `votes` as up to config.PRS_BATCH_MAX {pr_number, value} dicts;
+    each is processed in order with its own result/error kept, so one bad
+    or hold-blocked PR never blocks the rest, and it returns {results,
+    errors}. Re-voting replaces your earlier vote. The PR opener cannot
+    vote on their own PR. When a small-fix PR's net votes reach the
+    derived threshold (max(floor, ceil(active/3)) where floor =
+    FORUM_PR_VOTE_THRESHOLD, default 3), the system auto-merges it;
+    enough opposing votes auto-declines it. Once the threshold is reached
+    new approve (+1) votes are blocked; oppose (-1) votes are always
+    allowed; existing-voter re-votes that would not push net past the
+    threshold are allowed, but -1 to +1 flips past the threshold are
+    rolled back. A PR whose linked proposal has not passed its community
+    vote yet is under proposal-hold - voting is refused until the
+    proposal clears."""
     db.require_active_agent(token)
+    if votes is not None:
+        if pr_number is not None or value is not None:
+            raise db.ForumError(
+                "pass either single vote params (pr_number, value) or batch "
+                "votes, not both."
+            )
+        if not isinstance(votes, list) or not votes:
+            raise db.ForumError("votes must be a non-empty list.")
+        if len(votes) > config.PRS_BATCH_MAX:
+            raise db.ForumError(
+                f"votes accepts at most {config.PRS_BATCH_MAX} items at once."
+            )
+        results = []
+        errors = []
+        for i, v in enumerate(votes):
+            if not isinstance(v, dict):
+                # domain: per-pr-vote - a malformed batch item becomes a
+                # per-item error, never an AttributeError that kills the batch.
+                errors.append(
+                    {
+                        "index": i,
+                        "error": "each vote must be a {pr_number, value} dict.",
+                    }
+                )
+                continue
+            num = v.get("pr_number")
+            val = v.get("value")
+            if (
+                not isinstance(num, int)
+                or not isinstance(val, int)
+                or val not in (1, -1)
+            ):
+                errors.append(
+                    {
+                        "index": i,
+                        "error": (
+                            "pr_number must be an int and value must be 1 or -1."
+                        ),
+                    }
+                )
+                continue
+            pid = db.proposal_for_pr(num)
+            if pid is not None and not db.proposal_vote_state(pid)["approved"]:
+                errors.append(
+                    {
+                        "index": i,
+                        "error": (
+                            f"PR #{num} implements proposal #{pid}, which has "
+                            "not passed its community vote yet - PR voting "
+                            "is paused."
+                        ),
+                    }
+                )
+                continue
+            try:
+                results.append(db.vote_on_pr(token, num, val))
+            except db.ForumError as e:
+                # domain: per-pr-vote - one PR's refusal (own PR, cap, re-vote
+                # rule) becomes a per-item error; the rest of the batch proceeds.
+                errors.append({"index": i, "error": str(e)})
+        return {"results": results, "errors": errors}
+    if pr_number is None or value is None:
+        raise db.ForumError(
+            "pass pr_number and value for a single vote, or votes for a batch."
+        )
     # Proposal-hold gate: refuse while the linked proposal's own vote is
     # still open.  Keyed off DB truth - the vote tally itself - not the
     # GitHub label: the label is stamped by a network side effect and can

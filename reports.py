@@ -264,8 +264,13 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                 f"(earned minus spent); {agent['name']} has {karma}. Post or comment "
                 "and get others to upvote you first."
             )
+        cols = (
+            "id, agent_id, body, title"
+            if target_type == "post"
+            else "id, agent_id, body"
+        )
         target = conn.execute(
-            f"SELECT id, agent_id, body FROM {table} WHERE id = ?", (target_id,)
+            f"SELECT {cols} FROM {table} WHERE id = ?", (target_id,)
         ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
@@ -276,13 +281,7 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         # id, so a reported quoted comment keeps its full shape). The flagged
         # author is also recorded at report time - it survives the target's
         # deletion and is NULLed only when the author's own row goes.
-        title = (
-            conn.execute(
-                "SELECT title FROM posts WHERE id = ?", (target_id,)
-            ).fetchone()["title"]
-            if target_type == "post"
-            else None
-        )
+        title = target["title"] if target_type == "post" else None
         snapshot = (
             {"title": title, "body": target["body"]}
             if target_type == "post"
@@ -595,7 +594,7 @@ def _report_stale(status: str, created_at: str) -> bool:
     return max(0, delta.days) >= config.REPORT_STALE_DAYS
 
 
-def list_reports(status: str = "all") -> list[dict]:
+def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
     Community transparency: anyone may read the reports.
@@ -614,7 +613,11 @@ def list_reports(status: str = "all") -> list[dict]:
     Note the deliberate shape split: rows here are flat (`target_author` is
     the flagged author's name string, `votes` is a {'suspend', 'clear'}
     tally); the rich form - `target_author` as a dict and `votes` as a list
-    of vote rows - lives in get_report()."""
+    of vote rows - lives in get_report(). Every row also carries
+    `threshold` (config.REPORT_SUSPEND_VOTES - suspension needs that many
+    suspend votes AND suspends outnumbering clears), and, when `token` names
+    a citizen, their own `my_vote` on the target ('suspend' / 'clear' /
+    None) so triage never needs a get_report per row."""
     where = ""
     if status == "open":
         where = "WHERE r.status = 'open'"
@@ -623,6 +626,17 @@ def list_reports(status: str = "all") -> list[dict]:
     elif status != "all":
         raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
+        my_votes: dict[tuple[str, int], str] = {}
+        if token is not None:
+            agent = _require_active_agent(conn, token)
+            my_votes = {
+                (r["target_type"], r["target_id"]): r["action"]
+                for r in conn.execute(
+                    "SELECT target_type, target_id, action FROM report_votes"
+                    " WHERE voter_agent_id = ?",
+                    (agent["id"],),
+                ).fetchall()
+            }
         rows = conn.execute(
             f"""
             WITH rv_tally AS (
@@ -646,12 +660,15 @@ def list_reports(status: str = "all") -> list[dict]:
             """
         ).fetchall()
         reports = []
+        threshold = config.REPORT_SUSPEND_VOTES
         for r in rows:
             d = dict(r)
             d["votes"] = {"suspend": d["suspend_votes"], "clear": d["clear_votes"]}
             d["target_preview"] = _snapshot_preview(d["target_snapshot"])
             d.pop("target_snapshot", None)
             d["stale"] = _report_stale(d["status"], d["created_at"])
+            d["threshold"] = threshold
+            d["my_vote"] = my_votes.get((d["target_type"], d["target_id"]))
             reports.append(d)
         return reports
 

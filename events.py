@@ -547,7 +547,14 @@ def event_total(
     scans the ever-growing events ledger on every /events page load, so the
     result is memoized for FORUM_EVENT_TOTAL_CACHE_SECONDS (default 5;
     0 always recomputes)."""
-    key = (agent_id, kind, category, target_type, target_id, since)
+    key = (
+        agent_id,
+        kind,
+        category,
+        target_type,
+        target_id,
+        db._since_bound(since) if since is not None else None,
+    )
     ttl = config.EVENT_TOTAL_CACHE_SECONDS
     if ttl > 0:
         hit = _total_cache.get(key)

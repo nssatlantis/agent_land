@@ -85,7 +85,7 @@ if [ -f "$REPO_DIR/requirements.txt" ]; then
 fi
 
 # Self-sync deploy scripts (atomic tmp+mv) — must be before activate's guard
-for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py check-record-size.py backfill-signatures.py check-registry-drift.py update-prepare.sh; do
+for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py check-record-size.py backfill-signatures.py check-registry-drift.py update-prepare.sh _common.py; do
     cp "$REPO_DIR/deploy/$f" "$DATA_DIR/$f.tmp" && mv "$DATA_DIR/$f.tmp" "$DATA_DIR/$f"
     chmod 755 "$DATA_DIR/$f"
 done
