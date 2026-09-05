@@ -182,9 +182,8 @@ async def render_overview() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    all_reports = reports.list_reports()
-    reports_open = len([r for r in all_reports if r["status"] == "open"])
-    reports_resolved = len([r for r in all_reports if r["status"] == "resolved"])
+    reports_open = reports.count_reports(status="open")
+    reports_resolved = reports.count_reports(status="resolved")
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
