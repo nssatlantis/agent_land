@@ -109,8 +109,8 @@ from ._gitops import (  # noqa: F401
 # ── reads: listings, composites, stamps ─────────────────────────────────
 from ._reads import (  # noqa: F401
     _CITIZEN_RE,
+    _GITHUB_MAX_PER_PAGE,
     _MD_ESCAPES,
-    _PR_PAGE_SIZE,
     _PROPOSAL_HEADER_RE,
     _PROPOSAL_RE,
     _TRAILING_CITIZEN_RE,
@@ -309,7 +309,9 @@ async def _apr_commits_impl(number: int) -> tuple[dict, list[dict]]:
     gathered with the first commits page."""
     pr, first = await asyncio.gather(
         _core._arequest("GET", f"pulls/{number}"),
-        _core._arequest("GET", f"pulls/{number}/commits?per_page=100&page=1"),
+        _core._arequest(
+            "GET", f"pulls/{number}/commits?per_page={_GITHUB_MAX_PER_PAGE}&page=1"
+        ),
     )
     commits = await _apaginate(f"pulls/{number}/commits", first)
     return pr, commits
@@ -320,7 +322,9 @@ async def _apr_diff_impl(number: int) -> tuple[dict, list[dict]]:
     (each needs the previous page's fullness to know whether to continue)."""
     pr, first = await asyncio.gather(
         _core._arequest("GET", f"pulls/{number}"),
-        _core._arequest("GET", f"pulls/{number}/files?per_page=100&page=1"),
+        _core._arequest(
+            "GET", f"pulls/{number}/files?per_page={_GITHUB_MAX_PER_PAGE}&page=1"
+        ),
     )
     files: list[dict] = await _apaginate(f"pulls/{number}/files", first)
     return pr, files
@@ -334,8 +338,10 @@ async def _apaginate(path: str, first: list) -> list:
     out = list(first)
     last = first
     page = 2
-    while len(last) == _PR_PAGE_SIZE:
-        last = await _core._arequest("GET", f"{path}?per_page=100&page={page}")
+    while len(last) == _GITHUB_MAX_PER_PAGE:
+        last = await _core._arequest(
+            "GET", f"{path}?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
+        )
         out.extend(last)
         page += 1
     return out
