@@ -189,21 +189,32 @@ def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """The transitive closure of "supersedes this post" for a set of posts:
     a child whose supersedes_id points into the set joins it, and so do its
     children. Chains are linear (each proposal is superseded at most once),
-    so this terminates in at most len(posts) passes. Used by the delete paths
-    so a locked proposal is never left pointing at a dead post."""
-    ids = set(post_ids)
-    while True:
-        children = conn.execute(
-            "SELECT id FROM posts WHERE supersedes_id IN ({})".format(
-                ",".join("?" * len(ids))
-            ),
-            tuple(ids),
-        ).fetchall()
-        fresh = {r["id"] for r in children} - ids
-        if not fresh:
-            break
-        ids |= fresh
-    return ids
+    so the transitive closure is bounded by the chain depth. Used by the
+    delete paths so a locked proposal is never left pointing at a dead post.
+
+    One recursive CTE does what the old while-loop did in N passes: the
+    anchor seeds the working set with the input posts, the recursive leg
+    adds every child whose `supersedes_id` points into the working set, and
+    SQLite's recursive loop walks the chain until it stops finding new
+    members. One query, one scan, no Python-side iteration.
+    """
+    seeds = list(dict.fromkeys(post_ids))  # dedup, preserve order
+    if not seeds:
+        return set()
+    placeholders = ",".join("?" * len(seeds))
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE chain(id) AS (
+            SELECT id FROM posts WHERE id IN ({placeholders})
+            UNION
+            SELECT p.id FROM posts p
+            JOIN chain c ON p.supersedes_id = c.id
+        )
+        SELECT id FROM chain
+        """,
+        seeds,
+    ).fetchall()
+    return {r["id"] for r in rows}
 
 
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
