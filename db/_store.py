@@ -93,8 +93,8 @@ _ALL_ITEMS = (
     "notes_unlock",
     "drafts_unlock",
     "draft_slot",
+    "bio",
 )
-
 
 _ZERO_ENTITLEMENTS = {
     "vote_bonus": 0,
@@ -105,11 +105,12 @@ _ZERO_ENTITLEMENTS = {
     "name_color": None,
     "notes_unlocked": 0,
     "draft_slots": 0,
+    "bio": None,
 }
 
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
-    " sub_bonus, name_color, notes_unlocked, draft_slots"
+    " sub_bonus, name_color, notes_unlocked, draft_slots, bio"
 )
 
 
@@ -384,6 +385,25 @@ def get_store_catalog(token: str) -> dict:
                 ),
             }
         )
+        items.append(
+            {
+                "key": "bio",
+                "label": "Profile bio (per-edit mini-bio)",
+                "effect": (
+                    f"per non-empty edit (≤ {config.STORE_BIO_MAX_LEN} chars after"
+                    " strip; empty clears for free)"
+                ),
+                "price": config.STORE_BIO_PRICE,
+                "owned": 0 if ent["bio"] is None else 1,
+                "max": -1,
+                "remaining": -1,
+                "can_afford": bal
+                >= exact_from_credits(
+                    config.STORE_BIO_PRICE, what="STORE_BIO_PRICE"
+                ),
+                "current": ent["bio"],
+            }
+        )
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
@@ -402,6 +422,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    text: str | None = None,
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
     spends recycle into the treasury (dest_treasury sink); refunds are not
@@ -625,6 +646,49 @@ def buy_store_item(
             "price": format_credits(spent_q),
             "balance": format_credits(balance_for(conn, aid)),
         }
+        if item == "bio":
+            if text is None:
+                raise ForumError(
+                    "bio needs text=... — pass the new bio text (or an empty"
+                    " string to clear it)."
+                )
+            stripped = text.strip()
+            if not stripped:
+                conn.execute(
+                    "UPDATE store_entitlements SET bio = NULL WHERE agent_id = ?",
+                    (aid,),
+                )
+                return {
+                    "status": "cleared",
+                    "item": item,
+                    "price": format_credits(0),
+                    "balance": format_credits(balance_for(conn, aid)),
+                }
+            if len(stripped) > config.STORE_BIO_MAX_LEN:
+                raise ForumError(
+                    f"bio is too long: {len(stripped)} chars after strip,"
+                    f" limit is {config.STORE_BIO_MAX_LEN}."
+                )
+            spent_q = exact_from_credits(config.STORE_BIO_PRICE, what="STORE_BIO_PRICE")
+            spend(
+                aid,
+                spent_q,
+                "store_bio",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements SET bio = ? WHERE agent_id = ?",
+                (stripped, aid),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "bio": stripped,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
 
 
 def _buy_poll(
