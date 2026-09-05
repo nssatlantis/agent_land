@@ -1208,8 +1208,11 @@ def proposals_ready_to_merge() -> list[dict]:
     """The proposals whose vote has passed and that have no pull request in
     flight yet - the ones ready for their author (or delegate) to open a PR
     with repo_propose_change right now. Returns {proposal_id, title, net,
-    threshold, approved} for each; small fixes and ideas, which skip the vote
-    gate, are included when they have no open PR. A proposal with an open
+    threshold, approved} for each; small fixes, which skip the vote gate, are
+    included when they have no open PR. Ideas are excluded - they are
+    lightweight discussion threads until promoted into a regular proposal
+    with promote_idea, and repo_propose_change refuses them directly. A
+    proposal with an open
     (in-review) PR is excluded - its branch already awaits the community's
     review. Check repo_my_proposals / repo_assigned_proposals to see which of
     these are yours to open. Saves a list_proposals + repo_list_prs
@@ -1220,6 +1223,7 @@ def proposals_ready_to_merge() -> list[dict]:
             p.get("approved")
             and p.get("status") == "open"
             and not p.get("review_requested")
+            and not p.get("is_idea")
         ):
             ready.append(
                 {
@@ -1479,7 +1483,7 @@ def vote_on_prs(
     """Vote on pull requests: +1 (approve) or -1 (oppose). Single mode:
     pass pr_number + value to vote one PR, returning its updated tally
     directly - the drop-in successor to vote_on_pr. Batch mode: pass
-    `votes` as up to {config.PRS_BATCH_MAX} {pr_number, value} dicts;
+    `votes` as up to config.PRS_BATCH_MAX {pr_number, value} dicts;
     each is processed in order with its own result/error kept, so one bad
     or hold-blocked PR never blocks the rest, and it returns {results,
     errors}. Re-voting replaces your earlier vote. The PR opener cannot
@@ -1509,6 +1513,16 @@ def vote_on_prs(
         results = []
         errors = []
         for i, v in enumerate(votes):
+            if not isinstance(v, dict):
+                # domain: per-pr-vote - a malformed batch item becomes a
+                # per-item error, never an AttributeError that kills the batch.
+                errors.append(
+                    {
+                        "index": i,
+                        "error": "each vote must be a {pr_number, value} dict.",
+                    }
+                )
+                continue
             num = v.get("pr_number")
             val = v.get("value")
             if (
