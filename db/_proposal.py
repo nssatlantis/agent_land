@@ -14,6 +14,7 @@ from db._core import (
     _humanize_interval,
     _now_iso,
     _require_active_agent,
+    active_citizens,
 )
 from db._karma import effective_karma
 from db._proposal_delegation import _delegated_to
@@ -1083,7 +1084,7 @@ def require_proposal_approval(
             if age_s < settle:
                 remaining = settle - age_s
                 if not (small_fix or threshold == 0) and net < threshold:
-                    raise ForumError(
+                    exc = ForumError(
                         f"collaborative proposal #{post_id} is still in its "
                         f"settling window ({_humanize_interval(remaining)} "
                         "left) and its community vote hasn't passed yet "
@@ -1093,6 +1094,13 @@ def require_proposal_approval(
                         "ask citizens to approve it with vote(); development "
                         "opens once the vote passes and the window elapses."
                     )
+                    exc.detail = {
+                        "code": "threshold_not_met",
+                        "net": net,
+                        "threshold": threshold,
+                        "active": active_citizens(c),
+                    }
+                    raise exc
                 raise ForumError(
                     f"collaborative proposal #{post_id}'s community vote has "
                     f"passed, but its settling window "
@@ -1123,12 +1131,19 @@ def require_proposal_approval(
                 raise ForumError(msg)
         if not (small_fix or threshold == 0):
             if net < threshold and not allow_pending:
-                raise ForumError(
+                exc = ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
                     f"(needs {threshold}); the community's "
                     "vote has not passed yet. Ask citizens to approve it with "
                     "vote() and try again."
                 )
+                exc.detail = {
+                    "code": "threshold_not_met",
+                    "net": net,
+                    "threshold": threshold,
+                    "active": active_citizens(c),
+                }
+                raise exc
             if net < threshold and allow_pending:
                 # Proposal-hold scope cap (#375 review): an unapproved
                 # proposal carries at most ONE pull request in flight, so
@@ -1137,7 +1152,7 @@ def require_proposal_approval(
                 held = _live_pr_numbers(c, post_id)
                 if held:
                     pr_list = ", ".join(f"#{n}" for n in held)
-                    raise ForumError(
+                    exc = ForumError(
                         f"proposal #{post_id} still awaits the community's "
                         f"vote ({net} net of {threshold}), and its pull "
                         f"request{'s' if len(held) != 1 else ''} {pr_list} "
@@ -1146,6 +1161,14 @@ def require_proposal_approval(
                         "repo_update_pr, withdraw it with repo_close_pr, "
                         "or wait for the vote to pass."
                     )
+                    exc.detail = {
+                        "code": "threshold_not_met",
+                        "net": net,
+                        "threshold": threshold,
+                        "active": active_citizens(c),
+                        "held_prs": held,
+                    }
+                    raise exc
         return post_id
 
 
