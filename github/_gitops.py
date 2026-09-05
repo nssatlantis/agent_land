@@ -219,15 +219,14 @@ def _ws_ensure_pool() -> queue.Queue[int]:
             # Rebuild from still-idle tokens only: a token for a slot held
             # across the resize must NOT be re-minted, or two operations
             # would share one directory. Brand-new slots get fresh tokens;
-            # retired ones vanish with the old queue.
+            # retired ones vanish with the old queue. The drain needs no
+            # Empty guard: every mutator reaches its queue through
+            # _ws_ensure_pool, so under this lock the old queue is stable.
             old_q = _workspace_queue
             assert old_q is not None
             carried: list[int] = []
-            while True:
-                try:
-                    t = old_q.get_nowait()
-                except queue.Empty:
-                    break
+            while not old_q.empty():
+                t = old_q.get_nowait()
                 if t < len(_ws_slots) and t not in carried:
                     carried.append(t)
             rebuilt: queue.Queue[int] = queue.Queue()
