@@ -43,7 +43,8 @@ def _changes_for_repo_propose(
         if not isinstance(files, list) or not files:
             raise db.ForumError(
                 "files must be a non-empty list of {path, content} or "
-                "{path, edits} entries."
+                "{path, edits} entries "
+                f"(got {_shape_note(files)})."
             )
         changes: list[dict] = []
         seen: set[str] = set()
@@ -149,7 +150,8 @@ def _changes_for_repo_update(files: list[dict] | str | None) -> list[dict]:
     if not isinstance(files, list) or not files:
         raise db.ForumError(
             "files must be a non-empty list of {path, content}, {path, edits} "
-            "{path, delete: True} or {path, reset: True} entries."
+            "{path, delete: True} or {path, reset: True} entries "
+            f"(got {_shape_note(files)})."
         )
     changes: list[dict] = []
     seen: set[str] = set()
@@ -204,6 +206,46 @@ def _changes_for_repo_update(files: list[dict] | str | None) -> list[dict]:
     return changes
 
 
+def _shape_note(value) -> str:
+    """One-fragment shape echo for files/edits refusals: the received type,
+    plus truncated keys for dicts so a client that serialized an array as
+    an object can see the positional-keys story without a round-trip
+    (#B12 round 2). Key preview is capped so a hostile mapping cannot
+    bloat the error."""
+    if isinstance(value, dict):
+        keys = sorted(value, key=repr)[:8]
+        more = "…" if len(value) > 8 else ""
+        return f"dict with keys {keys}{more}"
+    return type(value).__name__
+
+
+def _positional_list(value: dict) -> list | None:
+    """Rebuild a list from a dict with exactly the keys 0..n-1 (canonical
+    decimal strings) - the shape some clients produce when they serialize
+    a nested array as an object (#B12 round 2). Anything else (empty,
+    sparse, non-canonical like "00"/"+1"/-1, non-string keys) returns None
+    so the caller falls through to the existing refusal. Single-op-shaped
+    dicts ({"find": …}) deliberately do NOT convert - that would mask a
+    forgotten-brackets user error as success."""
+    keys = list(value.keys())
+    if not keys:
+        return None
+    idx = []
+    for k in keys:
+        # ASCII-digit check first: int() would also take "+1"/unicode digits,
+        # and the canonical round-trip below rejects "00" — no try/except, so
+        # the exception-domain ratchet stays untouched.
+        if not isinstance(k, str) or not k.isascii() or not k.isdigit():
+            return None
+        n = int(k)
+        if str(n) != k:
+            return None
+        idx.append(n)
+    if sorted(idx) != list(range(len(keys))):
+        return None
+    return [value[str(i)] for i in range(len(keys))]
+
+
 def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     """Shape-validate a patch-mode `edits` list for a files[files_idx] entry.
     Each op is {find: non-empty str, replace: str, occurrence: optional
@@ -212,17 +254,22 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     malformed shapes and oversized lists early, before any GitHub read.
     A JSON string that parses to such a list is accepted too: some clients
     deliver nested arrays stringified (the same quirk _coerce_files_json
-    handles one layer up for `files`; #B12)."""
+    handles one layer up for `files`; #B12). A dict with exactly
+    positional keys 0..n-1 is rebuilt to that list for the same reason."""
     if isinstance(edits, str):
         try:
             edits = json.loads(edits)
         except json.JSONDecodeError:
             pass
+    elif isinstance(edits, dict):
+        converted = _positional_list(edits)
+        if converted is not None:
+            edits = converted
     if not isinstance(edits, list) or not edits:
         raise db.ForumError(
             f"files[{files_idx}] 'edits' for {path!r} must be a non-empty "
             "list of {'find': ..., 'replace': ...} ops "
-            f"(got {type(edits).__name__})."
+            f"(got {_shape_note(edits)})."
         )
     if len(edits) > github._MAX_EDITS_PER_FILE:
         raise db.ForumError(
