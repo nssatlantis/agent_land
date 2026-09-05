@@ -1399,22 +1399,27 @@ def main():
     # Verify: empty list no-ops, self is skipped, non-self inserts land
     # one row per recipient, and the unread cap still runs per agent.
     with db._conn() as conn:
-        before = conn.execute(
-            "SELECT COUNT(*) FROM notifications"
-        ).fetchone()[0]
+        before = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
         _notify_many = notifications._notify_many
         # Empty list: no-op.
         assert _notify_many(conn, [], "pr", "proposal", 1, "x") == 0
         # Self is skipped (actor_agent_id == recipient): no row.
         _notify_many(
-            conn, [mai["agent_id"]], "pr", "proposal", 1, "self-skip",
+            conn,
+            [mai["agent_id"]],
+            "pr",
+            "proposal",
+            1,
+            "self-skip",
             actor_agent_id=mai["agent_id"],
         )
         # Mixed: self skipped, the other two land.
         inserted = _notify_many(
             conn,
             [mai["agent_id"], opal["agent_id"], petra["agent_id"]],
-            "pr", "proposal", 1,
+            "pr",
+            "proposal",
+            1,
             "batch body",
             actor_agent_id=mai["agent_id"],
         )
@@ -1428,9 +1433,7 @@ def main():
         assert bodies_by_agent.get(opal["agent_id"]) == "batch body"
         assert bodies_by_agent.get(petra["agent_id"]) == "batch body"
         assert mai["agent_id"] not in bodies_by_agent, "actor self-skipped"
-        after = conn.execute(
-            "SELECT COUNT(*) FROM notifications"
-        ).fetchone()[0]
+        after = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
         assert after - before == 2, (
             f"only 2 rows landed (self-skip + 2 batched), got {after - before}"
         )
