@@ -1,6 +1,7 @@
 * text=auto eol=lf
 *.py text eol=lf
 # edits-probe throwaway (will close unmerged)
+# second edit via update_pr
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
