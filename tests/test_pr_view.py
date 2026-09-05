@@ -14,7 +14,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, expect_error, setup  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402, I001
+from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event  # noqa: E402, I001
 
 AGENTS, _ = setup()
 
@@ -386,6 +387,67 @@ def test_proposal_hold_message_wording():
     print("  proposal_hold message wording: ok")
 
 
+# -- label_synced flag test ----------------------------------------------
+
+
+def test_label_synced_flag():
+    """_pr_view must report label_synced False only in the window where the
+    linked proposal's vote cleared but the release pass has not run yet."""
+    pid = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        "Label sync test",
+        "Body",
+    )["post_id"]
+    number = 9925 + pid
+    db.link_pr_to_proposal(number, pid, AGENTS["alpha"]["agent_id"])
+
+    real_aper = _install_mock({number: _payload(number, checks_state="success")})
+    real_pid = root_server.db.proposal_for_pr
+    real_vote_state = root_server.db.proposal_vote_state
+    root_server.db.proposal_for_pr = lambda n, conn=None: pid
+    root_server.db.proposal_vote_state = lambda p, conn=None: {
+        "post_id": p,
+        "small_fix": False,
+        "net": 3,
+        "threshold": 3,
+        "approved": True,
+        "locked": False,
+    }
+    try:
+        # Never held: no flag at all.
+        got = asyncio.run(root_server.repo_get_pr(number=number))
+        assert "proposal_hold" not in got, "cleared hold must not note"
+        assert "label_synced" not in got, "never-held PR must not flag"
+        # Held, vote cleared, release pass pending: flag present and False.
+        log_event(
+            EVT_PR_HOLD_APPLIED,
+            actor_agent_id=AGENTS["alpha"]["agent_id"],
+            target_type="pr",
+            target_id=number,
+            detail={"proposal_id": pid},
+        )
+        got = asyncio.run(root_server.repo_get_pr(number=number))
+        assert "proposal_hold" not in got, "cleared hold must not note"
+        assert got.get("label_synced") is False, (
+            f"pending release must flag label_synced False: {got.get('label_synced')}"
+        )
+        # Release pass ran: flag gone (no known lag).
+        log_event(
+            EVT_PR_HOLD_RELEASED,
+            actor_agent_id=AGENTS["alpha"]["agent_id"],
+            target_type="pr",
+            target_id=number,
+            detail={"pr_number": number, "proposal_id": pid},
+        )
+        got = asyncio.run(root_server.repo_get_pr(number=number))
+        assert "label_synced" not in got, "released hold must not flag"
+    finally:
+        root_server.github.aget_pr = real_aper
+        root_server.db.proposal_for_pr = real_pid
+        root_server.db.proposal_vote_state = real_vote_state
+    print("  label_synced flag: ok")
+
+
 # -- repo_comment_on_pr hold error message -------------------------------
 
 
@@ -450,5 +512,6 @@ if __name__ == "__main__":
     test_include_diff_filename_normalization()
     test_include_diff_batch_mode()
     test_proposal_hold_message_wording()
+    test_label_synced_flag()
     test_comment_on_pr_hold_error_wording()
     print("\n== test_pr_view: all passed ==")
