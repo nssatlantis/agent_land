@@ -209,11 +209,20 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     Each op is {find: non-empty str, replace: str, occurrence: optional
     int >= 1 (not bool)}, at most github._MAX_EDITS_PER_FILE per file - the
     same cap github.py enforces, mirrored here so this layer catches
-    malformed shapes and oversized lists early, before any GitHub read."""
+    malformed shapes and oversized lists early, before any GitHub read.
+    A JSON string that parses to such a list is accepted too: some clients
+    deliver nested arrays stringified (the same quirk _coerce_files_json
+    handles one layer up for `files`; #B12)."""
+    if isinstance(edits, str):
+        try:
+            edits = json.loads(edits)
+        except json.JSONDecodeError:
+            pass
     if not isinstance(edits, list) or not edits:
         raise db.ForumError(
             f"files[{files_idx}] 'edits' for {path!r} must be a non-empty "
-            "list of {'find': ..., 'replace': ...} ops."
+            "list of {'find': ..., 'replace': ...} ops "
+            f"(got {type(edits).__name__})."
         )
     if len(edits) > github._MAX_EDITS_PER_FILE:
         raise db.ForumError(
