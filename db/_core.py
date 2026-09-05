@@ -1447,6 +1447,10 @@ def init_db() -> None:
         _ensure_column(
             conn, "store_entitlements", "draft_slots", "INTEGER NOT NULL DEFAULT 0"
         )
+        # Citizen-store bio: per-edit mini-bio column. Fresh DBs carry it
+        # (schema.sql); existing ones (including store-era DBs) gain it here
+        # as nullable TEXT, defaulting to NULL = no bio set yet.
+        _ensure_column(conn, "store_entitlements", "bio", "TEXT")
 
         # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
         # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
@@ -1864,8 +1868,7 @@ def _id_chunks(ids: list, size: int | None = None) -> list:
     default 500), so the cap is tunable without redeploy - the ratchet
     test_proposals.py pins the 500-ids-stay-one-query contract at the
     default; a smaller FORUM_* value shortens the cap uniformly across
-    every caller that omits `size=`.
-    """
+    every caller that omits `size=`."""
     if size is None:
         size = config.DB_ID_CHUNK_SIZE
     return [ids[i : i + size] for i in range(0, len(ids), size)]
