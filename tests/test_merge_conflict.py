@@ -2,6 +2,7 @@
 _safe_path, _repo_url, _push_ref (PR #184)."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -516,6 +517,87 @@ def test_git_timeout_scrubs_token():
         github._core.GITHUB_TOKEN = old
 
 
+# ---- rebase already-current fast path (real git, local bare remote) -------
+
+
+def _rgit(*args, cwd=None):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _rcommit(repo_dir, filename, content, message):
+    with open(os.path.join(repo_dir, filename), "w") as f:
+        f.write(content)
+    _rgit("add", "-A", cwd=repo_dir)
+    _rgit(
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "-m",
+        message,
+        cwd=repo_dir,
+    )
+
+
+def _mk_rebase_fixture():
+    """Bare remote with main + a feature branch that already contains main."""
+    tmp = tempfile.mkdtemp()
+    bare = os.path.join(tmp, "remote.git")
+    seed = os.path.join(tmp, "seed")
+    os.makedirs(seed)
+    _rgit("init", "--bare", "-q", "-b", "main", bare)
+    _rgit("init", "-q", "-b", "main", cwd=seed)
+    _rcommit(seed, "README.md", "seed\n", "seed")
+    _rgit("push", "-q", bare, "main", cwd=seed)
+    _rgit("checkout", "-q", "-b", "feature", cwd=seed)
+    _rcommit(seed, "feature.txt", "feature\n", "feature work")
+    _rgit("push", "-q", bare, "feature", cwd=seed)
+    return tmp, bare
+
+
+def test_rebase_skips_already_current_branch():
+    """rebase_pr_onto_main fast-paths when the head already contains main
+    (no rebase, no push, same sha) - and rebases normally once behind."""
+    import github._gitops as gitops
+
+    tmp, bare = _mk_rebase_fixture()
+    pr_data = {"state": "open", "head": {"ref": "feature"}, "base": {"ref": "main"}}
+    verbs: list[str] = []
+    real_git = gitops._git
+
+    def spy_git(repo_dir, *args, **kwargs):
+        verbs.append(args[0])
+        return real_git(repo_dir, *args, **kwargs)
+
+    try:
+        with (
+            patch("github._core._ensure_token"),
+            patch("github._core._request", return_value=pr_data),
+            patch("github._gitops._repo_url", return_value=bare),
+            patch("github._gitops._git", side_effect=spy_git),
+        ):
+            res = github.rebase_pr_onto_main(42)
+            assert res["status"] == "ok", res
+            assert "rebase" not in verbs, verbs
+            assert "push" not in verbs, verbs
+            # Advance main on the remote so the feature falls behind.
+            work2 = os.path.join(tmp, "work2")
+            _rgit("clone", "-q", bare, work2)
+            _rcommit(work2, "main2.txt", "more\n", "second")
+            _rgit("push", "-q", "origin", "main", cwd=work2)
+            verbs.clear()
+            res2 = github.rebase_pr_onto_main(42)
+            assert res2["status"] == "ok", res2
+            assert "rebase" in verbs, verbs
+            assert "push" in verbs, verbs
+            assert res2["new_sha"] != res["new_sha"], (res, res2)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("  rebase skips already-current branch, proceeds when behind: ok")
+
+
 # ---- runner ---------------------------------------------------------------
 
 
@@ -545,6 +627,7 @@ def main():
     test_resolve_markers_in_content_rejected()
     test_resolve_success()
     test_git_timeout_scrubs_token()
+    test_rebase_skips_already_current_branch()
     print("test_merge_conflict: all assertions passed")
 
 
