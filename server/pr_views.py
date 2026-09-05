@@ -89,6 +89,7 @@ async def _pr_view(
     """One assembled pull-request view for repo_get_pr: GitHub state plus
     the forum's vote tally/threshold/eligibility, a human-readable ci_note,
     the proposal-hold note when the linked proposal's vote has not cleared,
+    a label_synced flag while a cleared hold's GitHub cosmetics still lag,
     and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well."""
     result = await _aget_pr_revalidated(number)
@@ -110,6 +111,31 @@ async def _pr_view(
             if pid_hold is not None
             else None
         )
+        # Hold-label sync state (270:4872): the release pass keys off these
+        # same two events, so the view can report its pending window without
+        # any extra GitHub read. Only meaningful once the vote has cleared
+        # (below) - while blocked the hold note itself is the signal.
+        hold_applied = False
+        hold_released = False
+        if pid_hold is not None and hold_state is not None and hold_state["approved"]:
+            from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED
+
+            hold_applied = (
+                conn.execute(
+                    "SELECT 1 FROM events WHERE kind = ? AND"
+                    " target_type = 'pr' AND target_id = ? LIMIT 1",
+                    (EVT_PR_HOLD_APPLIED, number),
+                ).fetchone()
+                is not None
+            )
+            hold_released = (
+                conn.execute(
+                    "SELECT 1 FROM events WHERE kind = ? AND"
+                    " target_type = 'pr' AND target_id = ? LIMIT 1",
+                    (EVT_PR_HOLD_RELEASED, number),
+                ).fetchone()
+                is not None
+            )
         if token:
             try:
                 my_vote = db.my_pr_vote(token, number, conn=conn)
@@ -149,6 +175,15 @@ async def _pr_view(
                     "the proposal now or wait for it to clear."
                 ),
             }
+        elif hold_applied and not hold_released:
+            # Vote cleared but the poller's release pass has not run yet:
+            # every forum gate is already open while the GitHub-side
+            # cosmetics (the 'WIP: ' title prefix and the 'proposal-hold'
+            # label) still show for up to one sweep. Say so explicitly so
+            # the stale label is never read as a still-blocked PR. The key
+            # is only present while a lag is known; absence means no known
+            # lag (never held, or already released).
+            result["label_synced"] = False
     if include_diff:
         try:
             raw_diff = await github.apr_diff(number)

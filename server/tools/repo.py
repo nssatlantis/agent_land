@@ -822,7 +822,12 @@ async def repo_get_pr(
     When the linked proposal's vote has not passed yet, the response
     carries a small `proposal_hold` note ({proposal_id, net, threshold,
     message}) saying voting and outside discussion are paused until it
-    clears.
+    clears. When the vote has cleared but the poller's release pass has
+    not run yet, the response instead carries `"label_synced": false` -
+    every forum gate is already open while the GitHub-side cosmetics
+    (the 'WIP: ' title prefix and the 'proposal-hold' label) still show
+    for up to one sweep; the key is only present while such a lag is
+    known, so its absence means no known lag.
     Pass `include_diff=True` to also get the full per-file diff (with
     `patch` text) in the `diff` field — same shape as repo_get_pr_diff
     returns, so you can review the code in one call instead of two.
