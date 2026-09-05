@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import config
 from db._core import (
@@ -19,8 +20,10 @@ from db._proposal_status import (
     _live_pr_in,
     _post_score_batch,
     _proposal_age,
+    _proposal_age_at,
     _proposal_pr_history_map,
     _proposal_stale,
+    _proposal_stale_at,
     _proposal_status_note,
     _proposal_tally,
     _proposal_tally_batch,
@@ -206,6 +209,7 @@ def _proposal_rows(
         parents = {}
         tags_by_post = {}
     out = []
+    _now = datetime.now(timezone.utc)
     for r in rows:
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
@@ -235,11 +239,13 @@ def _proposal_rows(
             d["merged_pr_count"] = sum(
                 1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
             )
-        d["open_days"] = _proposal_age(d["created_at"])
+        d["open_days"] = _proposal_age_at(d["created_at"], _now)
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
         d["supersedes"] = parents.get(d["id"])
-        d["stale"] = False if d["locked"] else _proposal_stale(d, d["created_at"])
+        d["stale"] = (
+            False if d["locked"] else _proposal_stale_at(d, d["created_at"], _now)
+        )
         d["prs"] = prs_by_post.get(d["id"], [])
         if not for_counts:
             for pr in d["prs"]:

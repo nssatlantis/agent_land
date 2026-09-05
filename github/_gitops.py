@@ -148,6 +148,30 @@ _workspace_queue: queue.Queue[int] | None = None
 _ws_slots: list[dict] = []
 _ws_lock = threading.Lock()
 
+# Cumulative pool-use counters (process lifetime) for the /status workspace
+# snapshot - the answer to "is the pool getting any use" without host-log
+# access. Mutated only under _ws_lock; read via _ws_stats_snapshot().
+_ws_stats: dict[str, int] = {
+    "acquires": 0,
+    "full_fetches": 0,
+    "fetch_skips": 0,
+    "temp_fallbacks": 0,
+    "saturations": 0,
+    "fresh_clones": 0,
+}
+
+
+def _ws_bump(key: str) -> None:
+    """Count one pool event. Cheap (one locked dict write); never fails."""
+    with _ws_lock:
+        _ws_stats[key] = _ws_stats.get(key, 0) + 1
+
+
+def _ws_stats_snapshot() -> dict[str, int]:
+    """Copy of the cumulative pool counters for the admin snapshot."""
+    with _ws_lock:
+        return dict(_ws_stats)
+
 
 def _ws_mode_persistent() -> bool:
     return config.GIT_WORKSPACE_MODE == "persistent"
@@ -180,7 +204,8 @@ def _ws_ensure_pool() -> queue.Queue[int]:
     surplus tokens vanish even while never released back. A slot held
     during a resize finishes its operation against its own dict reference;
     a token for a retired index is dropped at release time instead of
-    requeued. Retired slot directories stay on disk, inert like any
+    requeued. Rebuilds carry over idle tokens only, so a held slot is
+    never double-issued. Retired slot directories stay on disk, inert like any
     orphaned workspace under _ws_root(), and are reused if the pool grows
     back (normalize treats them as pre-existing workspaces)."""
     global _workspace_queue, _ws_slots
@@ -215,8 +240,23 @@ def _ws_ensure_pool() -> queue.Queue[int]:
             else:
                 del _ws_slots[desired:]
                 logutil.log("workspace_pool_shrink", prev=prev, desired=desired)
+            # Rebuild from still-idle tokens only: a token for a slot held
+            # across the resize must NOT be re-minted, or two operations
+            # would share one directory. Brand-new slots get fresh tokens;
+            # retired ones vanish with the old queue. The drain needs no
+            # Empty guard: every mutator reaches its queue through
+            # _ws_ensure_pool, so under this lock the old queue is stable.
+            old_q = _workspace_queue
+            assert old_q is not None
+            carried: list[int] = []
+            while not old_q.empty():
+                t = old_q.get_nowait()
+                if t < len(_ws_slots) and t not in carried:
+                    carried.append(t)
             rebuilt: queue.Queue[int] = queue.Queue()
-            for i in range(len(_ws_slots)):
+            for t in carried:
+                rebuilt.put(t)
+            for i in range(prev, len(_ws_slots)):
                 rebuilt.put(i)
             _workspace_queue = rebuilt
     return _workspace_queue
@@ -306,12 +346,14 @@ def _ws_fresh_clone(slot: dict) -> None:
         slot["last_fetch"] = time.monotonic()
         slot["dirty"] = False
         logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="local")
+        _ws_bump("fresh_clones")
         return
     _git(parent, "clone", _repo_url(with_token=False), os.path.basename(slot["dir"]))
     _seed_identity(slot["dir"])
     slot["last_fetch"] = time.monotonic()
     slot["dirty"] = False
     logutil.log("workspace_clone_fresh", slot=_ws_label(slot), seed="origin")
+    _ws_bump("fresh_clones")
 
 
 def _ws_normalize(slot: dict) -> None:
@@ -321,7 +363,7 @@ def _ws_normalize(slot: dict) -> None:
     flows hardcode `git checkout -b pr_head origin/<head>`, and a leftover
     local branch from a previous operation would make that fatal (legacy
     code survived only because it deleted the whole temp clone). Only the
-    network fetch is gated by the TTL: dirty-or-stale slots refresh all
+    network fetch is gated by the TTL: TTL-stale slots refresh all
     remote branches; fresh-but-clean ones skip the network because every
     flow fetches its own specific base/head refs at body start anyway."""
     if not os.path.isdir(os.path.join(slot["dir"], ".git")):
@@ -339,6 +381,9 @@ def _ws_normalize(slot: dict) -> None:
                 "+refs/heads/*:refs/remotes/origin/*",
             )
             slot["last_fetch"] = time.monotonic()
+            _ws_bump("full_fetches")
+        else:
+            _ws_bump("fetch_skips")
         _ws_git_scrub(slot["dir"])
         # Heal slots created before identity seeding existed (and keep the
         # guarantee fresh): every acquire leaves the slot commit-ready.
@@ -409,6 +454,8 @@ def _workspace():
     except queue.Empty:
         # Pool saturated: legacy temp clone instead of a new error class.
         logutil.log("workspace_pool_saturated", timeout=timeout)
+        _ws_bump("saturations")
+        _ws_bump("temp_fallbacks")
         yield from _temp_fallback()
         return
     try:
@@ -416,8 +463,10 @@ def _workspace():
     except IndexError:
         # The pool shrank between issuing this token and our acquire; the
         # slot no longer exists. Retire the token, degrade to temp.
+        _ws_bump("temp_fallbacks")
         yield from _temp_fallback()
         return
+    _ws_bump("acquires")
     try:
         _t0 = time.monotonic()
         _ws_normalize(slot)
@@ -431,10 +480,12 @@ def _workspace():
         slot["dirty"] = True
         raise
     finally:
-        # Retired index (pool shrank while we held the slot): drop the
-        # token instead of requeueing it.
+        # Re-resolve the live queue: the pool may have been resized while
+        # we held the slot, and a token returned to a dead queue object
+        # would starve the live pool. A retired index (pool shrank while
+        # we held the slot) is still dropped instead of requeued.
         if idx < max(1, int(config.GIT_WORKSPACE_POOL)):
-            q.put(idx)
+            _ws_ensure_pool().put(idx)
 
 
 # Fallback committer identity for every working tree we create. Deployment
