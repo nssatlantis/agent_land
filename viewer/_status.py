@@ -64,11 +64,32 @@ _SKIP_DIRS = frozenset(
 )
 
 _BIG_FILES_CACHE_SECONDS = config.VIEWER_CACHE_TTL
+_RECORD_CACHE_SECONDS = config.VIEWER_CACHE_TTL
 # Cap on how many large files the Repository panel renders - the /status
 # page only has one narrow panel for biggest.py files, so walking (and
 # rendering) more than the top 20 costs scan + DOM time for no visible gain.
 _BIG_FILES_CAP = 20
 _big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
+
+_record_files_cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+
+
+def _record_file_sizes(repo_root: Path) -> list[tuple[str, str]]:
+    """Return (name, human_size) for each record file, cached 60s."""
+    key = str(repo_root)
+    cached = _record_files_cache.get(key)
+    now = time.monotonic()
+    if cached is not None:
+        ts, rows = cached
+        if now - ts < _RECORD_CACHE_SECONDS:
+            return rows
+    result: list[tuple[str, str]] = []
+    for name in _RECORD_FILES:
+        path = repo_root / name
+        if path.is_file():
+            result.append((name, _human_bytes(path.stat().st_size)))
+    _record_files_cache[key] = (now, result)
+    return result
 
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
@@ -685,11 +706,7 @@ async def status_page(request: Request) -> HTMLResponse:
     )
 
     # --- record files -----------------------------------------------------
-    record_rows = []
-    for name in _RECORD_FILES:
-        path = Path(db.REPO_DIR) / name
-        if path.is_file():
-            record_rows.append((name, _human_bytes(path.stat().st_size)))
+    record_rows = _record_file_sizes(Path(db.REPO_DIR))
     record_panel = _collapsible(
         "Record files",
         f"<table class='kv'>{_rows(record_rows)}</table>",
