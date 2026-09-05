@@ -449,6 +449,7 @@ def main():
         raise AssertionError("a find that doesn't match must error")
     except github.RepoError as exc:
         assert "did not match" in str(exc), str(exc)
+        assert "the file may have changed" in str(exc), str(exc)
 
     # an ambiguous find (2+ matches, no occurrence) is an error, not a guess
     try:
@@ -1849,6 +1850,12 @@ def main():
         raise AssertionError("scalar edits must be rejected")
     except db.ForumError as e:
         assert "got int" in str(e), f"error must echo the received type: {e}"
+    # An empty list names itself, not just its type
+    try:
+        rh._changes_for_repo_update([{"path": "a.md", "edits": []}])
+        raise AssertionError("empty-list edits must be rejected")
+    except db.ForumError as e:
+        assert "got empty list" in str(e), f"error must name the empty list: {e}"
 
     # --- B12 round 2: positional-key dict `edits` (array serialized as object)
     pos_edits = {"0": {"find": "x", "replace": "1"}, "1": {"find": "y", "replace": "2"}}
