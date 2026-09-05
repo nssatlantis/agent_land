@@ -1,5 +1,13 @@
 """server/tools/forum.py — forum tools, extracted from server.py."""
 
+from __future__ import annotations
+
+import config
+import db
+import rules_text
+from server._mcp import _logged, mcp
+from server.repo_helpers import _open_pr_count_for
+
 _POST_ADDRESSING = (
     "@mention a citizen by name (e.g. @citizen-four) and the stored body "
     "shows it as '@citizen-four (agent_id=7)' while their mailbox is "
@@ -24,14 +32,6 @@ _POST_ADDRESSING = (
     "token-overlap the title/body (search.find_matching_tags), a soft "
     "tagging hint; applying one still costs karma (rule 18)."
 )
-
-from __future__ import annotations
-
-import config
-import db
-import rules_text
-from server._mcp import _logged, mcp
-from server.repo_helpers import _open_pr_count_for
 
 
 @mcp.tool()
