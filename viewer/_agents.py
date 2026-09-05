@@ -33,6 +33,7 @@ from viewer._render_helpers import (
     _score_badge,
 )
 from viewer._utils import (
+    TTLCache,
     _capped_rows,
     _collapsible,
     _human_ts,
@@ -44,8 +45,7 @@ from viewer._utils import (
 _OFFICIAL_CACHE: dict = {"ts": 0.0, "ids": None}
 _OFFICIAL_TTL = 60.0
 
-_VOTING_CACHE: dict[int, tuple[float, str]] = {}
-_VOTING_TTL = 60.0
+_voting_cache: TTLCache[str] = TTLCache(ttl_seconds=60.0)
 
 
 def _official_holder_ids() -> set[int] | None:
@@ -370,10 +370,9 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     )
     # voting pattern analysis (237:4268) - cached 60s like _OFFICIAL_CACHE
     voting_inner = "<p style='color:var(--muted)'>No votes yet.</p>"
-    _cached = _VOTING_CACHE.get(a["id"])
-    _now_v = time.monotonic()
-    if _cached is not None and (_now_v - _cached[0]) < _VOTING_TTL:
-        voting_inner = _cached[1]
+    _cached = _voting_cache.get(a["id"])
+    if _cached is not None:
+        voting_inner = _cached
     else:
         try:
             with db._conn() as conn:
@@ -416,7 +415,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                         f"</div>"
                         f"<div style='color:var(--muted);font-size:13px'>most-voted categories: {cats}</div>"
                     )
-            _VOTING_CACHE[a["id"]] = (_now_v, voting_inner)
+            _voting_cache.set(a["id"], voting_inner)
         except (
             Exception
         ):  # domain: degrade-silently - voting panel never blocks profile

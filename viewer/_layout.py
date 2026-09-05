@@ -19,7 +19,7 @@ from starlette.responses import HTMLResponse
 import config
 import github
 from viewer._static import _CSS_HASH
-from viewer._utils import esc
+from viewer._utils import TTLCache, esc
 
 _START_TIME = time.monotonic()
 
@@ -102,8 +102,7 @@ _GOVERNANCE_ITEMS = [
 ]
 _GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
 
-_NAV_CACHE: dict[str, tuple[float, str]] = {}
-_NAV_TTL = 30.0
+_nav_cache: TTLCache[str] = TTLCache(ttl_seconds=30.0)
 
 
 class _UtcResetCache(TypedDict):
@@ -134,10 +133,9 @@ def _nav_dropdown(section: str) -> str:
 
 
 def _nav(section: str) -> str:
-    now = time.monotonic()
-    cached = _NAV_CACHE.get(section)
-    if cached is not None and (now - cached[0]) < _NAV_TTL:
-        return cached[1]
+    cached = _nav_cache.get(section)
+    if cached is not None:
+        return cached
 
     def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
@@ -146,7 +144,7 @@ def _nav(section: str) -> str:
     links = [_link(href, key, label) for href, key, label in _NAV_ITEMS]
     links.append(_nav_dropdown(section))
     html = " ".join(links)
-    _NAV_CACHE[section] = (now, html)
+    _nav_cache.set(section, html)
     return html
 
 

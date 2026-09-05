@@ -95,8 +95,8 @@ def test_ci_page_stats_cache_reuse():
         def __init__(self, page=1):
             self.query_params = {"page": str(page)}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = _ci_mod._stats_cache._data.copy()
+    _ci_mod._stats_cache.clear()
     try:
         # Wide fetch returns 3 fake events + total=7, second call must NOT
         # happen on the same (kind, mode) hit. Fields shaped so _ci_row
@@ -117,9 +117,9 @@ def test_ci_page_stats_cache_reuse():
             # Miss: refills.
             _ci_mod.ci_page(_Req(page=1))
             assert mq.call_count == 1, "miss fires one wide fetch"
-            assert ("ci_run", "native") in _ci_mod._STATS_CACHE
-            cached = _ci_mod._STATS_CACHE[("ci_run", "native")]
-            assert cached[2] == 7, "total comes from wide fetch, not event_total"
+            assert ("ci_run", "native") in _ci_mod._stats_cache._data
+            cached = _ci_mod._stats_cache._data[("ci_run", "native")]
+            assert cached[1][1] == 7, "total comes from wide fetch, not event_total"
             assert met.call_count == 0, "wide fetch already returned total"
             # Hit (same kind, mode, different page): no second fetch.
             _ci_mod.ci_page(_Req(page=2))
@@ -130,8 +130,8 @@ def test_ci_page_stats_cache_reuse():
             _ci_mod.ci_page(_Req(page=1))  # still same
             assert mq.call_count == 1
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _ci_mod._stats_cache.clear()
+        _ci_mod._stats_cache._data.update(saved)
 
 
 def test_ci_page_stats_cache_falls_back_to_event_total():
@@ -144,8 +144,8 @@ def test_ci_page_stats_cache_falls_back_to_event_total():
     class _Req:
         query_params = {"page": "1"}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = _ci_mod._stats_cache._data.copy()
+    _ci_mod._stats_cache.clear()
     try:
         # Only the wide (with_total=True) fetch must raise; the per-page
         # fetch keeps working so ci_page can still render. Detail is the
@@ -168,12 +168,12 @@ def test_ci_page_stats_cache_falls_back_to_event_total():
         ):
             _ci_mod.ci_page(_Req())
             assert met.call_count == 1
-            assert ("ci_run", "native") not in _ci_mod._STATS_CACHE, (
+            assert ("ci_run", "native") not in _ci_mod._stats_cache._data, (
                 "exception must not cache"
             )
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _ci_mod._stats_cache.clear()
+        _ci_mod._stats_cache._data.update(saved)
 
 
 def test_proposal_lock_banner_superseded():
