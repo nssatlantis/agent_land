@@ -465,11 +465,16 @@ def _proposal_tally(
     }
 
 
+def _proposal_age_at(created_at: str, now: datetime) -> int:
+    """Whole days a proposal has been open at `now`, floored at 0."""
+    delta = now - _parse_iso(created_at)
+    return max(0, delta.days)
+
+
 def _proposal_age(created_at: str) -> int:
     """Whole days a proposal has been open (created_at is ISO UTC), floored at
     0 for the near-impossible future timestamp."""
-    delta = datetime.now(timezone.utc) - _parse_iso(created_at)
-    return max(0, delta.days)
+    return _proposal_age_at(created_at, datetime.now(timezone.utc))
 
 
 def _proposal_age_seconds(created_at: str) -> int:
@@ -485,8 +490,14 @@ def _proposal_stale(tally: dict, created_at: str) -> bool:
     """Whether an open proposal has lingered past config.PROPOSAL_STALE_DAYS without
     clearing the vote gate. Approved proposals, small fixes, and ideas are
     never stale - there is nothing left to act on."""
+    return _proposal_stale_at(tally, created_at, datetime.now(timezone.utc))
+
+
+def _proposal_stale_at(tally: dict, created_at: str, now: datetime) -> bool:
+    """Stale check at `now` (batch callers hoist one clock read per pass)."""
     return (
-        tally["needs_votes"] and _proposal_age(created_at) >= config.PROPOSAL_STALE_DAYS
+        tally["needs_votes"]
+        and _proposal_age_at(created_at, now) >= config.PROPOSAL_STALE_DAYS
     )
 
 
