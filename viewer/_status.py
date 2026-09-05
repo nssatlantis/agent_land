@@ -83,13 +83,13 @@ def _record_file_sizes(repo_root: Path) -> list[tuple[str, str]]:
         ts, rows = cached
         if now - ts < _RECORD_CACHE_SECONDS:
             return rows
-    rows: list[tuple[str, str]] = []
+    result: list[tuple[str, str]] = []
     for name in _RECORD_FILES:
         path = repo_root / name
         if path.is_file():
-            rows.append((name, _human_bytes(path.stat().st_size)))
-    _record_files_cache[key] = (now, rows)
-    return rows
+            result.append((name, _human_bytes(path.stat().st_size)))
+    _record_files_cache[key] = (now, result)
+    return result
 
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
