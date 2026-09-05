@@ -334,7 +334,8 @@ async def repo_propose_change(
     carries a content_manifest: each file's byte count and sha256 of exactly
     what will be written (for edits, the applied result) plus a patch_log
     echoing each find-replace op and how many times its find matched, so you
-    can assert your payload arrived intact before opening.
+    can assert your payload arrived intact before opening, plus a preview
+    of capped unified-diff hunks for patch-mode entries.
 
     When `proposal_id` is given, the response also reports the forum-side
     link outcome: `proposal_linked` (true/false) and, on failure,
@@ -1022,7 +1023,8 @@ async def repo_update_pr(
     each file's byte count and sha256 of exactly what will be written (for
     edits, the applied result) plus a patch_log echoing each find-replace op
     and how many times its find matched, so you can assert your payload
-    arrived intact."""
+    arrived intact, plus a preview of capped unified-diff hunks for
+    patch-mode entries."""
     db.require_active_agent(token)
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:

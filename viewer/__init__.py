@@ -1779,10 +1779,6 @@ def _staking_body(request: Request) -> str:
     ):
         status = None
     all_stakes = db.list_all_stakes()
-    if status is None:
-        stakes = all_stakes
-    else:
-        stakes = [s for s in all_stakes if s["status"] == status]
     total_exposure_karma = sum(
         s["per_pr"] * s["max_prs"]
         for s in all_stakes
@@ -1820,7 +1816,16 @@ def _staking_body(request: Request) -> str:
         ValueError,
     ):  # domain: degrade-silently - bad page param means page 1
         page = 1
-    filtered_stakes = db.list_all_stakes(status=status, currency=currency)
+    # Filter the already-fetched full set in Python: the tab counts and
+    # exposure totals above need every row, so a second SQL round-trip
+    # would re-fetch what we already hold. Order (id DESC) is preserved,
+    # and the predicates mirror list_all_stakes' WHERE exactly.
+    filtered_stakes = [
+        s
+        for s in all_stakes
+        if (status is None or s["status"] == status)
+        and (currency is None or s.get("currency") == currency)
+    ]
     total_filtered = len(filtered_stakes)
     total_pages = max(1, (total_filtered + STAKING_PER_PAGE - 1) // STAKING_PER_PAGE)
     page = min(page, total_pages)
