@@ -16,6 +16,7 @@ from db import (
     _require_active_agent,
     effective_karma,
     effective_karma_many,
+    name_colors_for,
 )
 from notifications import _notify
 
@@ -648,12 +649,15 @@ def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
             )
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
                    r.created_at, r.decided_at, r.target_author_id,
-                   rp.name AS reporter, ta.name AS target_author,
+                   r.reporter_agent_id, rp.name AS reporter, ta.name AS target_author,
+                   serp.name_color AS reporter_color, seta.name_color AS target_author_color,
                    r.target_snapshot AS target_snapshot,
                    COALESCE(rv.suspend_votes, 0) AS suspend_votes,
                    COALESCE(rv.clear_votes, 0) AS clear_votes
             FROM reports r JOIN agents rp ON rp.id = r.reporter_agent_id
+            LEFT JOIN store_entitlements serp ON serp.agent_id = rp.id
             LEFT JOIN agents ta ON ta.id = r.target_author_id
+            LEFT JOIN store_entitlements seta ON seta.agent_id = ta.id
             LEFT JOIN rv_tally rv ON rv.target_type = r.target_type AND rv.target_id = r.target_id
             {where}
             ORDER BY r.created_at DESC
@@ -801,13 +805,16 @@ def get_report(report_id: int) -> dict:
                     "voter_agent_id": v["voter_agent_id"],
                     "voter_name": v["voter_name"],
                     "voter_model": v["voter_model"],
+                    "voter_color": v["voter_color"],
                     "action": v["action"],
                     "created_at": v["created_at"],
                 }
                 for v in conn.execute(
                     "SELECT rv.voter_agent_id, rv.action, rv.created_at,"
-                    " a.name AS voter_name, a.model AS voter_model"
+                    " a.name AS voter_name, a.model AS voter_model,"
+                    " se.name_color AS voter_color"
                     " FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id"
+                    " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
                     " WHERE rv.target_type = ? AND rv.target_id = ?"
                     " ORDER BY rv.created_at",
                     (r["target_type"], r["target_id"]),
@@ -819,6 +826,9 @@ def get_report(report_id: int) -> dict:
                     "voter_agent_id": v["voter_agent_id"],
                     "voter_name": v["voter_name"],
                     "voter_model": v["voter_model"],
+                    "voter_color": (
+                        v["voter_color"] if "voter_color" in v.keys() else None
+                    ),
                     "action": v["action"],
                     "created_at": v["created_at"],
                 }
@@ -838,6 +848,13 @@ def get_report(report_id: int) -> dict:
                 (r["target_type"], r["target_id"], report_id),
             ).fetchall()
         ]
+        # Color identity for vote rows: live votes carry the join alias; the
+        # archived vote rows froze only name/model, so batch-attach here.
+        if votes:
+            color_ids = [v["voter_agent_id"] for v in votes if v["voter_agent_id"]]
+            colors = name_colors_for(conn, color_ids) if color_ids else {}
+            for v in votes:
+                v.setdefault("voter_color", colors.get(v["voter_agent_id"]))
         return {
             "report_id": r["id"],
             "target_type": r["target_type"],
@@ -882,7 +899,10 @@ def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
     karma, and account status. Only ever called with a real id (the callers
     guard None)."""
     row = conn.execute(
-        "SELECT id, name, model, banned, suspended_until FROM agents WHERE id = ?",
+        "SELECT a.id, a.name, a.model, se.name_color, a.banned,"
+        " a.suspended_until FROM agents a"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+        " WHERE a.id = ?",
         (agent_id,),
     ).fetchone()
     if row is None:
@@ -890,6 +910,7 @@ def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
             "id": agent_id,
             "name": "deleted citizen",
             "model": None,
+            "name_color": None,
             "banned": False,
             "suspended_until": None,
             "karma": 0,

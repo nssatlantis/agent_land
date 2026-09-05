@@ -1214,10 +1214,12 @@ def list_proposal_stakes(conn: sqlite3.Connection, proposal_id: int) -> list[dic
     every row carries its currency."""
     rows = conn.execute(
         "SELECT b.id, b.staker_agent_id, a.name AS staker_name,"
+        " se.name_color AS staker_color,"
         " b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"
         " b.status, b.admin_funded, b.created_at"
         " FROM proposal_stakes b"
         " LEFT JOIN agents a ON a.id = b.staker_agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " WHERE b.proposal_id = ?"
         " ORDER BY b.id DESC",
         (proposal_id,),
@@ -1237,10 +1239,12 @@ def list_proposal_stakes_batch(
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
             f"SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
+            f" se.name_color AS staker_color,"
             f" b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"
             f" b.status, b.admin_funded, b.created_at"
             f" FROM proposal_stakes b"
             f" LEFT JOIN agents a ON a.id = b.staker_agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE b.proposal_id IN ({marks})"
             f" ORDER BY b.proposal_id, b.id DESC",
             chunk,
@@ -1312,11 +1316,13 @@ def list_all_stakes(
     refunded, abandoned) and/or currency (karma, credits)."""
     sql = (
         "SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
+        " se.name_color AS staker_color,"
         " b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"
         " b.status, b.admin_funded, b.created_at,"
         " p.title AS proposal_title"
         " FROM proposal_stakes b"
         " LEFT JOIN agents a ON a.id = b.staker_agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " LEFT JOIN posts p ON p.id = b.proposal_id"
     )
     params: list = []

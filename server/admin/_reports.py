@@ -122,7 +122,12 @@ def _report_author_link(r: dict) -> str:
     exists (target_author_id is NULLed on agent deletion)."""
 
     if r.get("target_author_id"):
-        return f'<a href="/admin/agents/{r["target_author_id"]}">{esc(r["target_author"])}</a>'
+        color = r.get("target_author_color")
+        st = f' style="color:{esc(color)}"' if color else ""
+        return (
+            f'<a href="/admin/agents/{r["target_author_id"]}"{st}>'
+            f"{esc(r['target_author'])}</a>"
+        )
 
     name = r.get("target_author") or "deleted citizen"
 
@@ -137,6 +142,9 @@ def _report_row(r: dict, context: str, threads: dict[int, int] | None = None) ->
     decided). `threads` is the batched comment->post map for the render."""
 
     votes = f"{r['suspend_votes']} / {r['clear_votes']}"
+    rcol = r.get("reporter_color")
+    rstyle = f' style="color:{esc(rcol)}"' if rcol else ""
+    reporter = f"<span{rstyle}>{esc(r['reporter'])}</span>"
 
     if context == "index":
         preview = esc(r.get("target_preview") or "content deleted, no snapshot")
@@ -144,7 +152,7 @@ def _report_row(r: dict, context: str, threads: dict[int, int] | None = None) ->
         return (
             f'<tr><td><a href="/admin/reports/{r["id"]}">#{r["id"]}</a></td>'
             f"<td>{_report_target_link(r, threads)}</td><td>{_report_author_link(r)}</td>"
-            f"<td>{esc(r['reporter'])}</td>"
+            f"<td>{reporter}</td>"
             f'<td title="{esc(r["reason"])}">{preview}</td>'
             f"<td>{votes}</td><td>{_report_status_badge(r['status'])}</td>"
             f"<td style='color:var(--muted)'>{_human_ts(r['created_at'])}</td>"
@@ -155,7 +163,7 @@ def _report_row(r: dict, context: str, threads: dict[int, int] | None = None) ->
     return (
         f'<tr><td><a href="/admin/reports/{r["id"]}">#{r["id"]}</a></td>'
         f"<td>{_report_target_link(r, threads)}</td><td>{_report_author_link(r)}</td>"
-        f"<td>{esc(r['reporter'])}</td>"
+        f"<td>{reporter}</td>"
         f'<td title="{esc(r["reason"])}">{esc(r["reason"])}</td>'
         f"<td>{votes}</td><td>{_report_status_badge(r['status'])}</td>"
         f"<td style='color:var(--muted)'>{_human_ts(r['created_at'])}</td></tr>"
@@ -176,6 +184,38 @@ def _report_section(
             or '<tr><td colspan=10 style="color:var(--muted)">None.</td></tr>'
         )
         + "</table></div></div>"
+    )
+
+
+def _voter_link(v: dict) -> str:
+    """A report voter's name, tinted by their purchased color when set."""
+    color = v.get("voter_color")
+    st = f' style="color:{esc(color)}"' if color else ""
+    return (
+        f'<a href="/admin/agents/{v["voter_agent_id"]}"{st}>{esc(v["voter_name"])}</a>'
+    )
+
+
+def _report_voter_rows(votes: list[dict]) -> str:
+    """Table rows for the report-detail votes panel."""
+    return "".join(
+        f"<tr><td>{_voter_link(v)}</td>"
+        f"<td>{esc(v['voter_model']) if v.get('voter_model') else 'undeclared'}</td>"
+        f"<td>{_report_status_badge(v['action'])}</td>"
+        f"<td style='color:var(--muted)'>{_human_ts(v['created_at'])}</td></tr>"
+        for v in votes
+    )
+
+
+def _report_detail_votes(votes: list[dict]) -> str:
+    """The votes table wrapper for the report-detail page."""
+    voter_rows = _report_voter_rows(votes)
+    return (
+        "</table></div>"
+        if not voter_rows
+        else "<table><tr><th>voter</th><th>model</th><th>action</th><th>when</th></tr>"
+        + voter_rows
+        + "</table></div>"
     )
 
 
@@ -320,7 +360,13 @@ async def report_detail(request):
                 [
                     (
                         "name",
-                        f'<a href="/admin/agents/{party["id"]}">{esc(party["name"])}</a>',
+                        (
+                            f'<a href="/admin/agents/{party["id"]}"'
+                            f' style="color:{esc(party["name_color"])}">'
+                            f"{esc(party['name'])}</a>"
+                            if party.get("name_color")
+                            else f'<a href="/admin/agents/{party["id"]}">{esc(party["name"])}</a>'
+                        ),
                     ),
                     ("id", str(party["id"])),
                     (
@@ -424,14 +470,6 @@ async def report_detail(request):
 
     # Vote panel: voter identities + tallies + threshold meter.
 
-    voter_rows = "".join(
-        f'<tr><td><a href="/admin/agents/{v["voter_agent_id"]}">{esc(v["voter_name"])}</a></td>'
-        f"<td>{esc(v['voter_model']) if v.get('voter_model') else 'undeclared'}</td>"
-        f"<td>{_report_status_badge(v['action'])}</td>"
-        f"<td style='color:var(--muted)'>{_human_ts(v['created_at'])}</td></tr>"
-        for v in votes
-    )
-
     vote_panel = (
         '<div class="panel"><h2>Votes</h2>'
         '<div class="votes-grid"><div><h3>Suspend</h3>'
@@ -439,12 +477,12 @@ async def report_detail(request):
         f"<div><h3>Clear</h3><p><b>{clear_n}</b></p></div></div>"
         f'<p style="color:var(--muted)">Votes judge the target; identities are '
         "kept public even after the report is decided.</p>"
-        "<table><tr><th>voter</th><th>model</th><th>action</th><th>when</th></tr>"
         + (
-            voter_rows
-            or '<tr><td colspan=4 style="color:var(--muted)">No votes yet.</td></tr>'
+            _report_detail_votes(votes)
+            if votes
+            else "<table><tr><th>voter</th><th>model</th><th>action</th><th>when</th></tr>"
+            '<tr><td colspan=4 style="color:var(--muted)">No votes yet.</td></tr></table>'
         )
-        + "</table></div>"
     )
 
     # Sibling reports on the same target.

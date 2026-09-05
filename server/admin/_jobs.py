@@ -27,6 +27,18 @@ from server.admin._auth import (
 from viewer._utils import esc
 
 
+def _tint_style(color: str | None) -> str:
+    """Inline style for a purchased citizen name color ('' when none)."""
+    return f' style="color:{esc(color)}"' if color else ""
+
+
+def _party_name(dg: dict | None, fallback: str = "admin") -> str:
+    """A job party's name, tinted by their purchased name color when set."""
+    if not dg:
+        return fallback
+    return f"<span{_tint_style(dg.get('name_color'))}>{esc(dg['name'])}</span>"
+
+
 async def create_stake(request):
 
     if not _authorized(request):
@@ -383,9 +395,7 @@ def _render_jobs_manager(request) -> str:
             if sub:
                 is_sponsored = detail["creator"] is not None
 
-                sponsor = (
-                    esc(detail["creator"]["name"]) if detail["creator"] else "admin"
-                )
+                sponsor = _party_name(detail["creator"])
 
                 audit_note = (
                     f"on behalf of sponsor <b>{sponsor}</b> (creator +1 karma)"
@@ -433,8 +443,8 @@ def _render_jobs_manager(request) -> str:
             f"{status_badge}</div>"
             f'<div style="font-size:13px;color:var(--muted)">{esc(detail["payment_credits"])} cr ├ù {detail["cycles_done"]}/{detail["total_cycles"]} ┬╖ scope: {esc(detail["scope"] or "-")}</div>'
             f"</div>"
-            f'<div style="font-size:13px;color:var(--muted);margin:4px 0">by {esc(detail["creator"]["name"]) if detail["creator"] else "admin"} &middot; '
-            f"{'worked by ' + esc(detail['worker']['name']) if detail['worker'] else ('offer to ' + esc(detail['offered_to']['name']) if detail['offered_to'] else 'open on board')}</div>"
+            f'<div style="font-size:13px;color:var(--muted);margin:4px 0">by {_party_name(detail["creator"])} &middot; '
+            f"{('worked by ' + _party_name(detail['worker'])) if detail['worker'] else (('offer to ' + _party_name(detail['offered_to'])) if detail['offered_to'] else 'open on board')}</div>"
             f'<div style="font-size:14px;margin-top:4px">{esc(detail["description"] or "")}</div>'
             f'<ol style="margin:6px 0 0 18px;padding:0">{steps_html}</ol>'
             f"{cycles_html}"
@@ -539,13 +549,11 @@ async def jobs_detail_page(request):
         sub = next((c for c in detail["cycles"] if c["status"] == "submitted"), None)
 
         if sub:
-            is_sponsored = detail["creator"] is not None
-
-            sponsor = esc(detail["creator"]["name"]) if detail["creator"] else "admin"
+            sponsor = _party_name(detail["creator"])
 
             audit_note = (
                 f"on behalf of sponsor <b>{sponsor}</b>"
-                if is_sponsored
+                if detail["creator"]
                 else "as pure admin"
             )
 
@@ -580,8 +588,8 @@ async def jobs_detail_page(request):
         )
         + f'<span style="background:{col};color:white;padding:1px 6px;border-radius:999px;font-size:11px">{esc(detail["status"])}</span></h2>'
         + f'<p style="color:var(--muted)">{esc(detail["payment_credits"])} cr ├ù {detail["cycles_done"]}/{detail["total_cycles"]} ┬╖ scope: {esc(detail["scope"] or "-")} ┬╖ kind: {esc(detail["kind"])}</p>'
-        + f"<p>by {esc(detail['creator']['name']) if detail['creator'] else 'admin'} &middot; "
-        + (f"worked by {esc(detail['worker']['name'])}" if detail["worker"] else "open")
+        + f"<p>by {_party_name(detail['creator'])} &middot; "
+        + (f"worked by {_party_name(detail['worker'])}" if detail["worker"] else "open")
         + "</p>"
         + f"<p>{esc(detail['description'] or '')}</p>"
         + f'<ol style="margin:6px 0 0 18px">{steps_html}</ol>'

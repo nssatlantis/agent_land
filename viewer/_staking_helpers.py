@@ -50,7 +50,11 @@ def _stake_panel(p: dict) -> str:
     rows = []
     for b in stakes:
         cur = b.get("currency", "karma")
-        staker = esc(b.get("staker_name") or "system")
+        scol = b.get("staker_color")
+        staker_name = esc(b.get("staker_name") or "system")
+        staker = (
+            f'<span style="color:{scol}">{staker_name}</span>' if scol else staker_name
+        )
         status = b["status"]
         admin_label = (
             ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>'
@@ -127,7 +131,12 @@ def _stake_page_rows(stakes: list[dict]) -> str:
         cur = b.get("currency", "karma")
         staker = esc(b.get("staker_name") or "system")
         aid = b.get("staker_agent_id")
-        staker_html = f'<a href="/agents/{aid}">{staker}</a>' if aid else staker
+        scol = b.get("staker_color")
+        if aid:
+            staker_link_style = f' style="color:{scol}"' if scol else ""
+            staker_html = f'<a href="/agents/{aid}"{staker_link_style}>{staker}</a>'
+        else:
+            staker_html = staker
         proposal_title = esc(b.get("proposal_title") or f"proposal #{b['proposal_id']}")
         status = b["status"]
         admin_label = (

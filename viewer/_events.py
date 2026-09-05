@@ -90,7 +90,11 @@ _EVENT_KIND_BADGES = {
 def _event_description(e: dict) -> str:
     """Human-readable description for one event row."""
     k = e["kind"]
-    actor = esc(e.get("actor_name") or "system")
+    actor_raw = e.get("actor_name")
+    acolor = e.get("actor_color")
+    actor = esc(actor_raw or "system")
+    if acolor and actor_raw:
+        actor = f'<span style="color:{acolor}">{actor}</span>'
     d = e.get("detail") or {}
     tt = e.get("target_type") or ""
     tid = e.get("target_id")
@@ -396,8 +400,10 @@ def _event_row(e: dict) -> str:
     label, color = _EVENT_KIND_BADGES.get(e["kind"], (e["kind"], "var(--muted)"))
     badge = f'<span class="badge" style="background:{color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
     actor = e.get("actor_name")
+    acolor = e.get("actor_color")
+    link_style = f' style="color:{acolor}"' if acolor else ""
     actor_html = (
-        f'<a href="/agents/{e["actor_agent_id"]}">{esc(actor)}</a>'
+        f'<a href="/agents/{e["actor_agent_id"]}"{link_style}>{esc(actor)}</a>'
         if actor
         else "\u2014"
     )

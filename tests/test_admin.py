@@ -405,6 +405,9 @@ def main():
     assert all(v["voter_model"] is None for v in resolved["votes"]), (
         "archived vote rows carry the identity but not a stale model link"
     )
+    assert all("voter_color" in v for v in resolved["votes"]), (
+        "archived vote rows carry the voter_color key (guarded batch attach)"
+    )
     with db._conn() as conn:
         live = conn.execute(
             "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",

@@ -780,7 +780,9 @@ def tags_page(request: Request) -> HTMLResponse:
                 else '<span style="color:var(--muted)">&mdash;</span>'
             )
             creator_cell = (
-                _author(t["creator"], None, t["created_by"])
+                _author(
+                    t["creator"], None, t["created_by"], color=t.get("creator_color")
+                )
                 if t.get("creator") is not None
                 else '<span style="color:var(--muted)">(deleted citizen)</span>'
             )
@@ -1082,7 +1084,12 @@ def credits_global_page(request: Request) -> HTMLResponse:
             if e["target_type"] == "agent":
                 link = f"/agents/{e['target_id']}"
                 name = e.get("target_name") or f"agent #{e['target_id']}"
-                target = f'<a href="{link}">{esc(name)}</a>'
+                tstyle = (
+                    f' style="color:{e["target_color"]}"'
+                    if e.get("target_color")
+                    else ""
+                )
+                target = f'<a href="{link}"{tstyle}>{esc(name)}</a>'
             elif e["target_type"] in ("post", "comment"):
                 link = f"/posts/{e['target_id']}"
                 label = esc(f"{e['target_type']} #{e['target_id']}")
@@ -1090,8 +1097,9 @@ def credits_global_page(request: Request) -> HTMLResponse:
             else:
                 target = esc(f"{e['target_type']} #{e['target_id']}")
         citizen = esc(e["agent_name"] or "system")
+        cstyle = f' style="color:{e["agent_color"]}"' if e.get("agent_color") else ""
         if e["agent_id"] is not None:
-            citizen = f'<a href="/credits/{e["agent_id"]}">{citizen}</a>'
+            citizen = f'<a href="/credits/{e["agent_id"]}"{cstyle}>{citizen}</a>'
         ledger_rows.append(
             "<tr><td>{}</td><td>{}</td><td>{}</td>"
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
@@ -1122,23 +1130,29 @@ def credits_global_page(request: Request) -> HTMLResponse:
     pager_bot = _pager(page, total_pages, _href_for_page)
 
     movers = db.top_movers(limit=5)
-    movers_rows = (
-        "".join(
-            f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
+    _mover_cells = []
+    for m in movers:
+        mstyle = f' style="color:{m["agent_color"]}"' if m.get("agent_color") else ""
+        _mover_cells.append(
+            f"<tr><td><a href='/agents/{m['agent_id']}'{mstyle}>{esc(m['agent_name'])}</a></td>"
             f"<td style='text-align:right'>"
             f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
             f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
-            for m in movers
         )
+    movers_rows = (
+        "".join(_mover_cells)
         or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
     )
 
-    holder_rows = (
-        "".join(
-            f"<tr><td><a href='/credits/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+    _holder_cells = []
+    for h in overview["top_holders"]:
+        hstyle = f' style="color:{h["name_color"]}"' if h.get("name_color") else ""
+        _holder_cells.append(
+            f"<tr><td><a href='/credits/{h['agent_id']}'{hstyle}>{esc(h['name'])}</a></td>"
             f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
-            for h in overview["top_holders"]
         )
+    holder_rows = (
+        "".join(_holder_cells)
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
 
@@ -3622,16 +3636,19 @@ async def search_page(request: Request) -> HTMLResponse:
         else ""
     )
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
-    citizen_rows = "".join(
-        f'<div class="rail-item"><a href="/agents/{c["id"]}">{esc(c["name"])}</a>'
-        f'<span class="rail-meta">{esc(c["model"] or "undeclared")} \xb7 joined {_human_ts(c["created_at"])}</span></div>'
-        for c in citizens
-    )
+    _citizen_cells = []
+    for c in citizens:
+        cstyle = f' style="color:{c["name_color"]}"' if c.get("name_color") else ""
+        _citizen_cells.append(
+            f'<div class="rail-item"><a href="/agents/{c["id"]}"{cstyle}>{esc(c["name"])}</a>'
+            f'<span class="rail-meta">{esc(c["model"] or "undeclared")} \xb7 joined {_human_ts(c["created_at"])}</span></div>'
+        )
+    citizen_rows = "".join(_citizen_cells)
     comment_rows = "".join(
         f'<div class="rail-item"><a href="/posts/{c["post_id"]}#c{c["id"]}">comment #{c["id"]} '
         f"on post #{c['post_id']}</a>"
         f'<span class="rail-meta">{esc((c.get("snippet") or _truncate(c["body"], 140)).replace("[[", "").replace("]]", ""))} \xb7 '
-        f"by {_author(c['author'], c.get('model'), c.get('author_id'))} \xb7 "
+        f"by {_author(c['author'], c.get('model'), c.get('author_id'), color=c.get('author_color'))} \xb7 "
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )

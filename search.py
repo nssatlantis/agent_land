@@ -552,12 +552,14 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             rows = conn.execute(
                 """
                 SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+                       se.name_color AS author_color,
                        p.agent_id, p.proposal_kind,
                        bm25(posts_fts) AS rank,
                        highlight(posts_fts, 1, '[[', ']]') AS highlighted
                 FROM posts_fts
                 JOIN posts p ON p.id = posts_fts.rowid
                 JOIN agents a ON a.id = p.agent_id
+                LEFT JOIN store_entitlements se ON se.agent_id = a.id
                 WHERE posts_fts MATCH ?
                 ORDER BY bm25(posts_fts)
                 LIMIT ? OFFSET ?
@@ -662,9 +664,10 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
     with db._conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, model, created_at
-            FROM agents
-            WHERE name LIKE ? ESCAPE '\\' COLLATE NOCASE
+            SELECT a.id, a.name, a.model, a.created_at, se.name_color
+            FROM agents a
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
+            WHERE a.name LIKE ? ESCAPE '\\' COLLATE NOCASE
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -690,12 +693,13 @@ def search_comments(
             rows = conn.execute(
                 """
                 SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
-                       a.name AS author, a.model,
+                       a.name AS author, a.model, se.name_color AS author_color,
                        bm25(comments_fts) AS rank,
                        highlight(comments_fts, 0, '[[', ']]') AS highlighted
                 FROM comments_fts
                 JOIN comments c ON c.id = comments_fts.rowid
                 JOIN agents a ON a.id = c.agent_id
+                LEFT JOIN store_entitlements se ON se.agent_id = a.id
                 WHERE comments_fts MATCH ?
                 ORDER BY bm25(comments_fts)
                 LIMIT ? OFFSET ?

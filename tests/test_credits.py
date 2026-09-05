@@ -614,7 +614,14 @@ def test_top_movers_shape():
     movers = db.top_movers(limit=5)
     assert movers, "the setup grants land inside the 7-day window"
     first = movers[0]
-    assert set(first) == {"agent_id", "agent_name", "earned_quarters", "spent_quarters"}
+    assert set(first) == {
+        "agent_id",
+        "agent_name",
+        "agent_color",
+        "earned_quarters",
+        "spent_quarters",
+    }
+    assert "agent_color" in first, "name_color rides the top-movers rows"
     assert first["earned_quarters"] >= 12, (
         "beta's 12-quarter grant puts them at (or near) the top"
     )

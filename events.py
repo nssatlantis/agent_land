@@ -525,6 +525,13 @@ def query_events(
             }
             for r in rows
         ]
+        if events:
+            actor_ids = [e["actor_agent_id"] for e in events if e["actor_agent_id"]]
+            colors = db.name_colors_for(conn, actor_ids) if actor_ids else {}
+            for e in events:
+                e["actor_color"] = (
+                    colors.get(e["actor_agent_id"]) if e["actor_agent_id"] else None
+                )
         return (events, total) if with_total else events
 
 

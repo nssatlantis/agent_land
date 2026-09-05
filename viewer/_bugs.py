@@ -161,7 +161,9 @@ def bugs_page(request):
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{sev}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"] or "unknown")}</a>'
+            f'by <a href="/bugs?agent_id={r["agent_id"]}" '
+            f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
+            f"{esc(r['reporter_name'] or 'unknown')}</a>"
             f"{_human_ts(r['created_at'])}{url_part}{dupes}"
             f"</div></div>"
         )
@@ -242,9 +244,14 @@ def bug_detail_page(request):
     if report["duplicates"]:
         items = []
         for d in report["duplicates"]:
+            dcolor = d.get("agent_name_color")
+            dname_html = (
+                f'<span style="color:{dcolor}">{esc(d["agent_name"])}</span>'
+                if dcolor
+                else esc(d["agent_name"])
+            )
             items.append(
-                f"<li>{esc(d['agent_name'])} filed a duplicate"
-                f" {_human_ts(d['created_at'])}</li>"
+                f"<li>{dname_html} filed a duplicate {_human_ts(d['created_at'])}</li>"
             )
         dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
 
@@ -265,7 +272,9 @@ def bug_detail_page(request):
         f"{conf}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
-        f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"] or "unknown")}</a>'
+        f'<td><a href="/agents/{report["agent_id"]}" '
+        f'style="color:{report.get("reporter_color") or "var(--accent)"}">'
+        f"{esc(report['reporter_name'] or 'unknown')}</a>"
         f" {_human_ts(report['created_at'])}</td></tr>"
         f"<tr><th>Confidence</th>"
         f"<td>{(report['confidence'] or 0)} / {threshold}"

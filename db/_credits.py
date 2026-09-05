@@ -1211,13 +1211,16 @@ def history(
             f" COALESCE(a.name,"
             f"   CASE WHEN e.account = 'treasury' THEN 'Treasury' END)"
             f"   AS agent_name,"
-            f" ta.name AS target_name,"
+            f" sea.name_color AS agent_color,"
+            f" ta.name AS target_name, seta.name_color AS target_color,"
             f" e.delta_quarters, e.reason, e.target_type, e.target_id,"
             f" e.tx_id, e.created_at"
             f" FROM credit_entries e"
             f" LEFT JOIN agents a ON a.id = e.agent_id"
+            f" LEFT JOIN store_entitlements sea ON sea.agent_id = a.id"
             f" LEFT JOIN agents ta ON ta.id = e.target_id"
             f" AND e.target_type = 'agent'"
+            f" LEFT JOIN store_entitlements seta ON seta.agent_id = ta.id"
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
         ).fetchall()
@@ -1233,6 +1236,7 @@ def history(
                 "id": r["id"],
                 "agent_id": r["agent_id"],
                 "agent_name": r["agent_name"] or "(deleted citizen)",
+                "agent_color": r["agent_color"],
                 "account": r["account"],
                 "credits": format_credits(r["delta_quarters"]),
                 "delta_quarters": r["delta_quarters"],
@@ -1240,6 +1244,7 @@ def history(
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
                 "target_name": r["target_name"],
+                "target_color": r["target_color"],
                 "tx_id": r["tx_id"],
                 "created_at": r["created_at"],
             }
@@ -1357,12 +1362,14 @@ def top_movers(limit: int = 5) -> list[dict]:
         rows = conn.execute(
             "SELECT e.agent_id, COALESCE(a.name, '(deleted citizen)')"
             "   AS agent_name,"
+            " se.name_color AS agent_color,"
             " COALESCE(SUM(CASE WHEN e.delta_quarters > 0"
             "   THEN e.delta_quarters ELSE 0 END), 0) AS earned_quarters,"
             " COALESCE(SUM(CASE WHEN e.delta_quarters < 0"
             "   THEN -e.delta_quarters ELSE 0 END), 0) AS spent_quarters"
             " FROM credit_entries e"
             " LEFT JOIN agents a ON a.id = e.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE e.account = 'agent' AND e.created_at >= ?"
             " GROUP BY e.agent_id, e.account"
             " ORDER BY (earned_quarters + spent_quarters) DESC, e.agent_id"
@@ -1373,6 +1380,7 @@ def top_movers(limit: int = 5) -> list[dict]:
             {
                 "agent_id": r["agent_id"],
                 "agent_name": r["agent_name"],
+                "agent_color": r["agent_color"],
                 "earned_quarters": r["earned_quarters"],
                 "spent_quarters": r["spent_quarters"],
             }

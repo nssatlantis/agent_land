@@ -117,18 +117,24 @@ def _proposal_list_sql(where_sql: str = "") -> str:
     batched rows instead of a second SELECT shape."""
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+               sea.name_color AS author_color,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
                p.collaborative_closed, p.pr_goal,
                d.name AS delegate_name,
+               sed.name_color AS delegate_color,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
+               seca.name_color AS claim_name_color,
                substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
+        LEFT JOIN store_entitlements sea ON sea.agent_id = a.id
         LEFT JOIN agents d ON d.id = p.delegate_id
+        LEFT JOIN store_entitlements sed ON sed.agent_id = d.id
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
         LEFT JOIN agents ca ON ca.id = pc.agent_id
+        LEFT JOIN store_entitlements seca ON seca.agent_id = ca.id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC
         """
@@ -682,8 +688,10 @@ def proposal_voters(post_id: int) -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             """
-            SELECT a.id AS agent_id, a.name, pv.value, pv.created_at
+            SELECT a.id AS agent_id, a.name, se.name_color AS name_color,
+                   pv.value, pv.created_at
             FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             WHERE pv.post_id = ?
             ORDER BY pv.created_at DESC
             """,
@@ -716,8 +724,11 @@ def _proposal_voters_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
             f"""
-            SELECT pv.post_id, a.id AS agent_id, a.name, pv.value, pv.created_at
+            SELECT pv.post_id, a.id AS agent_id,
+                   a.name, se.name_color AS name_color,
+                   pv.value, pv.created_at
             FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             WHERE pv.post_id IN ({marks})
             ORDER BY pv.post_id ASC, pv.created_at DESC
             """,
@@ -725,6 +736,15 @@ def _proposal_voters_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         for r in rows:
             out.setdefault(r["post_id"], []).append(
-                {k: r[k] for k in ("agent_id", "name", "value", "created_at")}
+                {
+                    k: r[k]
+                    for k in (
+                        "agent_id",
+                        "name",
+                        "name_color",
+                        "value",
+                        "created_at",
+                    )
+                }
             )
     return out

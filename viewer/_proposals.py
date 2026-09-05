@@ -277,10 +277,16 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 name = esc(str(lst["claimed_by"]))
                 if name not in claimers:
                     cid = lst.get("claimed_by_id")
+                    ccolor = lst.get("claimed_by_color")
                     claimers[name] = (
-                        f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
-                        if cid is not None
-                        else name
+                        f'<a class="userlink" href="/agents/{int(cid)}"'
+                        f' style="color:{ccolor}">{name}</a>'
+                        if cid is not None and ccolor
+                        else (
+                            f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
+                            if cid is not None
+                            else name
+                        )
                     )
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'

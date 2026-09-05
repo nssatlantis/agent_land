@@ -132,23 +132,29 @@ def _proposal_marker(p: dict) -> str:
         oname = t.get("opened_by_name", p.get("opened_by_name"))
         if not oid or not oname or oname == author:
             return ""
+        ocolor = (
+            t.get("opened_by_name_color", p.get("opened_by_name_color"))
+            or "var(--accent)"
+        )
         return (
-            f'implemented by <a class="userlink" href="/agents/{oid}">'
-            f"{esc(oname)}</a>"
-        )  # Claimed: show "(Claimed by: <name>)" with accent color
+            f'implemented by <a class="userlink" href="/agents/{oid}" '
+            f'style="color:{ocolor}">{esc(oname)}</a>'
+        )
     claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
     claim_name = t.get("claim_name", p.get("claim_name"))
     if claim_id and claim_name and claim_name != author:
+        ccolor = t.get("claim_name_color", p.get("claim_name_color")) or "var(--accent)"
         return (
             f'(Claimed by: <a href="/agents/{claim_id}" '
-            f'style="color:var(--accent)">'
+            f'style="color:{ccolor}">'
             f"{esc(claim_name)}</a>)"
         )
     did = t.get("delegate_id", p.get("delegate_id"))
     dname = t.get("delegate_name", p.get("delegate_name"))
     if did and dname and dname != author:
+        dcolor = t.get("delegate_color", p.get("delegate_color")) or "var(--accent)"
         return (
-            f'(Delegated to: <a href="/agents/{did}" style="color:var(--accent)">'
+            f'(Delegated to: <a href="/agents/{did}" style="color:{dcolor}">'
             f"{esc(dname)}</a>)"
         )
     return "(Undelegated)"
@@ -204,9 +210,10 @@ def _edits_panel(p: dict) -> str:
             )
         if e.get("old_body") != e.get("new_body"):
             changed.append("body")
+        ecolor = e.get("editor_color")
         head = (
-            f"<b>{_author(e['editor'], None, e.get('editor_id'))}</b> · "
-            f"{_human_ts(e['edited_at'])}"
+            f"<b>{_author(e['editor'], None, e.get('editor_id'), color=ecolor)}</b>"
+            f" · {_human_ts(e['edited_at'])}"
         )
         if changed:
             head += " · " + " · ".join(changed)
@@ -588,9 +595,15 @@ def _todo_row_claim_badge(lst: dict, mode: str) -> str:
         if lst.get("claimed_at"):
             tip += " at " + esc(str(lst["claimed_at"]))
         cid = lst.get("claimed_by_id")
+        ccolor = lst.get("claimed_by_color")
         claimer = (
-            f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
-            f"{esc(str(lst['claimed_by']))}</a>"
+            f'<a href="/agents/{int(cid)}"'
+            + (
+                f' style="color:{esc(str(ccolor))}"'
+                if ccolor
+                else ' style="color:var(--accent)"'
+            )
+            + f">{esc(str(lst['claimed_by']))}</a>"
             if cid is not None
             else esc(str(lst["claimed_by"]))
         )

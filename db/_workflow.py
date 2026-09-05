@@ -1644,11 +1644,13 @@ def list_workflow_runs(
     offset = max(0, int(offset))
     rows = conn.execute(
         f"SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.proposal_id, wr.pr_number,"
-        f" wr.agent_id, a.name AS agent_name, wr.status, wr.created_at, wr.decided_at,"
+        f" wr.agent_id, a.name AS agent_name, se.name_color AS agent_name_color,"
+        f" wr.status, wr.created_at, wr.decided_at,"
         f" wr.expires_at, p.title"
         f" FROM workflow_runs wr"
         f" JOIN posts p ON p.id = wr.proposal_id"
-        f" LEFT JOIN agents a ON a.id = wr.agent_id{where}"
+        f" LEFT JOIN agents a ON a.id = wr.agent_id"
+        f" LEFT JOIN store_entitlements se ON se.agent_id = a.id{where}"
         f" ORDER BY wr.created_at DESC LIMIT ? OFFSET ?",
         (*params, limit, offset),
     ).fetchall()

@@ -294,17 +294,29 @@ def _job_detail_from_parts(
         "status": job["status"],
         "overdue": _overdue_flag(job["status"], cur_status, job["anchor_at"], cutoff),
         "creator": (
-            {"agent_id": job["creator_agent_id"], "name": job["creator_name"]}
+            {
+                "agent_id": job["creator_agent_id"],
+                "name": job["creator_name"],
+                "name_color": job["creator_color"],
+            }
             if job["creator_agent_id"] is not None
             else None
         ),
         "worker": (
-            {"agent_id": job["worker_agent_id"], "name": job["worker_name"]}
+            {
+                "agent_id": job["worker_agent_id"],
+                "name": job["worker_name"],
+                "name_color": job["worker_color"],
+            }
             if job["worker_agent_id"] is not None
             else None
         ),
         "offered_to": (
-            {"agent_id": job["offered_to_agent_id"], "name": job["offered_to_name"]}
+            {
+                "agent_id": job["offered_to_agent_id"],
+                "name": job["offered_to_name"],
+                "name_color": job["offered_to_color"],
+            }
             if job["offered_to_agent_id"] is not None
             else None
         ),
@@ -347,12 +359,17 @@ def _parse_cycle_evidence(r: sqlite3.Row) -> tuple[list[int], list[str]]:
 def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     """Full detail for one job: parties, checklist, per-cycle state."""
     job = conn.execute(
-        "SELECT j.*, c.name AS creator_name, w.name AS worker_name,"
-        f" o.name AS offered_to_name, {_job_overdue_anchor_sql('j')} AS anchor_at"
+        "SELECT j.*, c.name AS creator_name, sc.name_color AS creator_color,"
+        " w.name AS worker_name, sw.name_color AS worker_color,"
+        f" o.name AS offered_to_name, so.name_color AS offered_to_color,"
+        f" {_job_overdue_anchor_sql('j')} AS anchor_at"
         " FROM jobs j"
         " LEFT JOIN agents c ON c.id = j.creator_agent_id"
+        " LEFT JOIN store_entitlements sc ON sc.agent_id = c.id"
         " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+        " LEFT JOIN store_entitlements sw ON sw.agent_id = w.id"
         " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
+        " LEFT JOIN store_entitlements so ON so.agent_id = o.id"
         " WHERE j.id = ?",
         (job_id,),
     ).fetchone()
@@ -406,12 +423,17 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
     for chunk in _id_chunks(list(job_ids)):
         marks = ",".join("?" * len(chunk))
         job_rows = conn.execute(
-            "SELECT j.*, c.name AS creator_name, w.name AS worker_name,"
-            f" o.name AS offered_to_name, {_job_overdue_anchor_sql('j')} AS anchor_at"
+            "SELECT j.*, c.name AS creator_name, sc.name_color AS creator_color,"
+            " w.name AS worker_name, sw.name_color AS worker_color,"
+            f" o.name AS offered_to_name, so.name_color AS offered_to_color,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at"
             " FROM jobs j"
             " LEFT JOIN agents c ON c.id = j.creator_agent_id"
+            " LEFT JOIN store_entitlements sc ON sc.agent_id = c.id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+            " LEFT JOIN store_entitlements sw ON sw.agent_id = w.id"
             " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
+            " LEFT JOIN store_entitlements so ON so.agent_id = o.id"
             f" WHERE j.id IN ({marks})",
             chunk,
         ).fetchall()

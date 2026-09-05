@@ -319,9 +319,10 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     _sweep_expired_claims(conn, [post_id])
     lists = conn.execute(
         "SELECT tl.id, tl.title, tl.claimed_by_agent_id,"
-        " tl.claimed_at, a.name AS claimed_name"
+        " tl.claimed_at, a.name AS claimed_name, se.name_color AS claimed_name_color"
         " FROM todo_lists tl"
         " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " WHERE tl.post_id = ? ORDER BY tl.position, tl.id",
         (post_id,),
     ).fetchall()
@@ -332,9 +333,10 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     items = conn.execute(
         f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
         f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
-        f" a.name AS claimed_by_name"
+        f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
         f" FROM todo_items ti"
         f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+        f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
         list_ids,
     ).fetchall()
@@ -357,6 +359,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         }
         if mode != 0 and r["claimed_by_agent_id"] is not None:
             list_entry["claimed_by"] = r["claimed_name"]
+            list_entry["claimed_by_color"] = r["claimed_name_color"]
             list_entry["claimed_by_id"] = r["claimed_by_agent_id"]
             list_entry["claimed_at"] = r["claimed_at"]
         out.append(list_entry)
@@ -384,9 +387,10 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         marks = ",".join("?" * len(chunk))
         lists = conn.execute(
             f"SELECT tl.id, tl.post_id, tl.title, tl.claimed_by_agent_id,"
-            f" tl.claimed_at, a.name AS claimed_name"
+            f" tl.claimed_at, a.name AS claimed_name, se.name_color AS claimed_name_color"
             f" FROM todo_lists tl"
             f" LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE tl.post_id IN ({marks}) ORDER BY tl.post_id, tl.position, tl.id",
             chunk,
         ).fetchall()
@@ -397,9 +401,10 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         items = conn.execute(
             f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
             f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
-            f" a.name AS claimed_by_name"
+            f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
             f" FROM todo_items ti"
             f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE ti.list_id IN ({item_marks})"
             f" ORDER BY ti.list_id, ti.position, ti.id",
             [r["id"] for r in lists],
@@ -416,6 +421,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
                 and it["claimed_by_agent_id"] is not None
             ):
                 entry["claimed_by"] = it["claimed_by_name"]
+                entry["claimed_by_color"] = it["claimed_by_name_color"]
                 entry["claimed_by_id"] = it["claimed_by_agent_id"]
                 entry["claimed_at"] = it["claimed_at"]
             by_list.setdefault(it["list_id"], []).append(entry)
@@ -429,6 +435,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             }
             if mode != 0 and lst["claimed_by_agent_id"] is not None:
                 list_entry["claimed_by"] = lst["claimed_name"]
+                list_entry["claimed_by_color"] = lst["claimed_name_color"]
                 list_entry["claimed_by_id"] = lst["claimed_by_agent_id"]
                 list_entry["claimed_at"] = lst["claimed_at"]
             out.setdefault(lst["post_id"], []).append(list_entry)
@@ -916,13 +923,14 @@ def get_todos_summary(post_id: int) -> dict:
         _sweep_expired_claims(conn, [post_id])
         rows = conn.execute(
             "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
-            " a.name AS claimed_name,"
+            " a.name AS claimed_name, se.name_color AS claimed_name_color,"
             " COUNT(ti.id) AS total_items,"
             " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
             "   AS done_items"
             " FROM todo_lists tl"
             " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE tl.post_id = ? GROUP BY tl.id"
             " ORDER BY tl.position, tl.id",
             (post_id,),
@@ -960,6 +968,7 @@ def get_todos_summary(post_id: int) -> dict:
         }
         if mode != 0 and r["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = r["claimed_name"]
+            entry["claimed_by_color"] = r["claimed_name_color"]
             entry["claimed_by_id"] = r["claimed_by_agent_id"]
             entry["claimed_at"] = r["claimed_at"]
         lists_out.append(entry)
@@ -997,13 +1006,14 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         mode = mode_by_post.get(post_id, 0)
         rows = conn.execute(
             "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
-            " a.name AS claimed_name,"
+            " a.name AS claimed_name, se.name_color AS claimed_name_color,"
             " COUNT(ti.id) AS total_items,"
             " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
             "   AS done_items"
             " FROM todo_lists tl"
             " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE tl.post_id = ? GROUP BY tl.id"
             " ORDER BY tl.position, tl.id",
             (post_id,),
@@ -1026,6 +1036,7 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             }
             if mode != 0 and r["claimed_by_agent_id"] is not None:
                 entry["claimed_by"] = r["claimed_name"]
+                entry["claimed_by_color"] = r["claimed_name_color"]
                 entry["claimed_by_id"] = r["claimed_by_agent_id"]
                 entry["claimed_at"] = r["claimed_at"]
             lists_out.append(entry)
@@ -1064,9 +1075,10 @@ def _todos_list_row(
     get_todos_list so a bad list_id raises cleanly."""
     row = conn.execute(
         "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
-        " a.name AS claimed_name"
+        " a.name AS claimed_name, se.name_color AS claimed_name_color"
         " FROM todo_lists tl"
         " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " WHERE tl.post_id = ? AND tl.id = ?",
         (post_id, list_id),
     ).fetchone()
@@ -1080,6 +1092,7 @@ def _todos_list_row(
     }
     if mode != 0 and row["claimed_by_agent_id"] is not None:
         entry["claimed_by"] = row["claimed_name"]
+        entry["claimed_by_color"] = row["claimed_name_color"]
         entry["claimed_by_id"] = row["claimed_by_agent_id"]
         entry["claimed_at"] = row["claimed_at"]
     return entry, mode
@@ -1138,9 +1151,11 @@ def get_todos_list(
         total_done = total_row["done"]
         item_rows = conn.execute(
             f"SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
-            f" ti.claimed_at, ti.pr_number, a.name AS claimed_by_name"
+            f" ti.claimed_at, ti.pr_number,"
+            f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
             f" FROM todo_items ti"
             f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
             (list_id, limit, offset),
         ).fetchall()
@@ -1150,6 +1165,7 @@ def get_todos_list(
         entry["pr_number"] = it["pr_number"]
         if mode != 1 and it["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = it["claimed_by_name"]
+            entry["claimed_by_color"] = it["claimed_by_name_color"]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
             entry["claimed_at"] = it["claimed_at"]
         items.append(entry)
@@ -1217,9 +1233,10 @@ def get_todos_page(
         board_total_done = board_row["done"]
         rows = conn.execute(
             "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
-            " a.name AS claimed_name"
+            " a.name AS claimed_name, se.name_color AS claimed_name_color"
             " FROM todo_lists tl"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE tl.post_id = ? ORDER BY tl.position, tl.id LIMIT ? OFFSET ?",
             (post_id, limit, offset),
         ).fetchall()
@@ -1250,6 +1267,7 @@ def get_todos_page(
         }
         if mode != 0 and r["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = r["claimed_name"]
+            entry["claimed_by_color"] = r["claimed_name_color"]
             entry["claimed_by_id"] = r["claimed_by_agent_id"]
             entry["claimed_at"] = r["claimed_at"]
         lists_out.append(entry)
@@ -1341,12 +1359,14 @@ def search_todos(
         hit_rows = conn.execute(
             f"SELECT ti.id, ti.text, ti.done, ti.pr_number,"
             f" ti.claimed_by_agent_id, ti.claimed_at,"
-            f" a.name AS claimed_by_name, tl.id AS list_id,"
+            f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color,"
+            f" tl.id AS list_id,"
             f" tl.title AS list_title"
             f" FROM todo_items_fts f"
             f" JOIN todo_items ti ON ti.id = f.rowid"
             f" JOIN todo_lists tl ON tl.id = ti.list_id"
             f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
             (phrase, post_id, limit, offset),
         ).fetchall()
@@ -1362,6 +1382,7 @@ def search_todos(
         entry["pr_number"] = hit["pr_number"]
         if mode != 1 and hit["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = hit["claimed_by_name"]
+            entry["claimed_by_color"] = hit["claimed_by_name_color"]
             entry["claimed_by_id"] = hit["claimed_by_agent_id"]
             entry["claimed_at"] = hit["claimed_at"]
         hits.append(entry)

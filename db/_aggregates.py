@@ -334,6 +334,7 @@ _RECENT_EVENT_DETAILED_SQL = (
     "SELECT 'event' AS event_type, e.id AS target_id,"
     " e.actor_agent_id AS agent_id,"
     " COALESCE(a.name, 'system') AS actor,"
+    " se.name_color AS actor_color,"
     f" {_event_text_sql()} AS text,"
     " 'event' AS target_type,"
     " NULL AS preview,"
@@ -342,16 +343,19 @@ _RECENT_EVENT_DETAILED_SQL = (
     f" {_event_post_id_sql()} AS post_id,"
     " NULL AS comment_id, NULL AS net"
     " FROM events e LEFT JOIN agents a ON a.id = e.actor_agent_id"
+    " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
     f" WHERE e.kind IN ({_EVENT_KIND_PLACEHOLDERS})"
 )
 
 _RECENT_EVENT_COMPACT_SQL = (
     "SELECT 'event' AS event_type, e.id AS target_id,"
     " COALESCE(a.name, 'system') AS actor,"
+    " se.name_color AS actor_color,"
     f" {_event_text_sql()} AS text,"
     " e.created_at AS created_at,"
     f" {_event_post_id_sql()} AS post_id"
     " FROM events e LEFT JOIN agents a ON a.id = e.actor_agent_id"
+    " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
     f" WHERE e.kind IN ({_COMPACT_EVENT_KIND_PLACEHOLDERS})"
 )
 
@@ -400,17 +404,22 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
         rows = conn.execute(
             """
             SELECT 'post' AS event_type, p.id AS target_id, a.name AS actor,
+                   se.name_color AS actor_color,
                    p.title AS text, p.created_at AS created_at, p.id AS post_id
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             UNION ALL
-            SELECT 'comment', c.id, a.name, c.body, c.created_at, c.post_id
+            SELECT 'comment', c.id, a.name, se.name_color AS actor_color,
+                   c.body, c.created_at, c.post_id
             FROM comments c JOIN agents a ON a.id = c.agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             UNION ALL
-            SELECT 'vote', v.id, a.name,
+            SELECT 'vote', v.id, a.name, se.name_color AS actor_color,
                    CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
                        v.target_type || ' #' || v.target_id,
                    v.created_at, NULL AS post_id
             FROM votes v JOIN agents a ON a.id = v.agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             UNION ALL
             """
             + _RECENT_EVENT_COMPACT_SQL
@@ -486,25 +495,28 @@ def _recent_activity_rows(
     net_col = "COALESCE(vn.net, 0) AS net" if sort == "top" else "NULL AS net"
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
-        " a.name AS actor, p.title AS text,"
+        " a.name AS actor, se.name_color AS actor_color,"
+        " p.title AS text,"
         " 'post' AS target_type,"
         f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
         " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id,"
         f" {net_col}"
-        " FROM posts p JOIN agents a ON a.id = p.agent_id" + post_net_join
+        " FROM posts p JOIN agents a ON a.id = p.agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id" + post_net_join
     )
     comment = (
         "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
-        " a.name AS actor,"
+        " a.name AS actor, se.name_color AS actor_color,"
         f" substr(c.body, 1, {preview}) AS text,"
         " 'comment' AS target_type,"
         f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
         " c.created_at AS created_at, c.post_id, NULL AS comment_id, NULL AS net"
         " FROM comments c JOIN agents a ON a.id = c.agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
     )
     vote = (
         "SELECT 'vote' AS event_type, v.target_id AS target_id, a.id AS agent_id,"
-        " a.name AS actor,"
+        " a.name AS actor, se.name_color AS actor_color,"
         " CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||"
         " v.target_type || ' #' || v.target_id AS text,"
         " v.target_type AS target_type,"
@@ -512,6 +524,7 @@ def _recent_activity_rows(
         " NULL AS proposal_kind, v.created_at AS created_at,"
         " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id, NULL AS net"
         " FROM votes v JOIN agents a ON a.id = v.agent_id"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
         " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
     )
