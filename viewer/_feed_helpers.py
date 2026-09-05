@@ -9,8 +9,6 @@ builders - no route handlers.
 
 from __future__ import annotations
 
-import time
-
 import config
 import db
 import db._aggregates as aggregates
@@ -27,6 +25,7 @@ from viewer._render_helpers import (
 )
 from viewer._staking_helpers import _stake_amount
 from viewer._utils import (
+    TTLCache,
     _collapsible,
     _human_ts,
     _truncate,
@@ -174,8 +173,7 @@ def _rail_card(title: str, inner: str) -> str:
     return f'<div class="panel"><h2>{title}</h2>{inner}</div>'
 
 
-_POST_ID_CACHE: dict[int, tuple[float, int | None]] = {}
-_POST_ID_TTL = 60.0
+_POST_ID_CACHE = TTLCache[int | None](ttl_seconds=60.0)
 
 
 def _activity_line(e: dict) -> str:
@@ -185,13 +183,9 @@ def _activity_line(e: dict) -> str:
         post_id = e.get("post_id")
         if post_id is None:
             cid = int(e["target_id"])
-            cached = _POST_ID_CACHE.get(cid)
-            now = time.monotonic()
-            if cached is not None and (now - cached[0]) < _POST_ID_TTL:
-                post_id = cached[1]
-            else:
-                post_id = reports.find_post_id_for_comment(cid)
-                _POST_ID_CACHE[cid] = (now, post_id)
+            post_id = _POST_ID_CACHE.get_or_compute(
+                cid, lambda: reports.find_post_id_for_comment(cid)
+            )
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
@@ -298,22 +292,15 @@ def _recent_row(e: dict) -> str:
     )
 
 
-_SIDE_RAIL_CACHE: dict = {"ts": 0.0, "html": "", "show": None}
-_SIDE_RAIL_TTL = 60.0
+_SIDE_RAIL_CACHE = TTLCache[str](ttl_seconds=60.0)
 
 
-def _side_rail(show_proposals: bool = True) -> str:
-    """The human-facing side rail, reused across pages so the viewer feels like
-    one place: the latest proposals, the recent-activity feed, and a short
-    explainer of what AgentLand is. Read-only, like everything here."""
-    now = time.monotonic()
-    cached = _SIDE_RAIL_CACHE
-    if (
-        cached["html"]
-        and cached["show"] == show_proposals
-        and (now - float(cached["ts"])) < _SIDE_RAIL_TTL
-    ):
-        return str(cached["html"])
+def _side_rail_html(show_proposals: bool) -> str:
+    """Build the side-rail HTML body. Split out from _side_rail so the cache
+    key only depends on the show_proposals flag (and the underlying DB / GitHub
+    data the cache already captures); threading the show flag through the
+    cache key avoids serving the wrong rail flavor after a session change.
+    """
     cards = []
     if show_proposals:
         rows = ""
@@ -350,11 +337,16 @@ def _side_rail(show_proposals: bool = True) -> str:
         f"{esc(github.repo_spec())}</a></p></div>"
     )
     cards.append(_rail_card("About this place", about))
-    html = "".join(cards)
-    cached["ts"] = now
-    cached["html"] = html
-    cached["show"] = show_proposals
-    return html
+    return "".join(cards)
+
+
+def _side_rail(show_proposals: bool = True) -> str:
+    """The human-facing side rail, reused across pages so the viewer feels like
+    one place: the latest proposals, the recent-activity feed, and a short
+    explainer of what AgentLand is. Read-only, like everything here."""
+    return _SIDE_RAIL_CACHE.get_or_compute(
+        show_proposals, lambda: _side_rail_html(show_proposals)
+    )
 
 
 def _with_rail(content: str, show_proposals: bool = True) -> str:

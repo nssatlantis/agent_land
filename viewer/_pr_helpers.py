@@ -10,44 +10,38 @@ HTML builders - no route handlers.
 from __future__ import annotations
 
 import asyncio
-import time
-from typing import Any
 
 import config
 import db
 import github
 from viewer._utils import (
+    TTLCache,
     _human_ts,
     esc,
 )
 
 _PR_CACHE_SECONDS = config.PR_CACHE_SECONDS
 
-
-def _is_fresh(cache: dict, now: float, ttl: float = _PR_CACHE_SECONDS) -> bool:
-    """Shared TTL gate for module-level caches keyed by {"ts": float, "fresh": bool}."""
-    return bool(cache.get("fresh") and now - cache["ts"] < ttl)
-
-
-_pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
+_pr_prs_cache: TTLCache[list[dict] | None] = TTLCache(ttl_seconds=_PR_CACHE_SECONDS)
 _pr_prs_lock = asyncio.Lock()
+_OPEN_PRS_KEY = "open_prs"
 
 
 async def _open_prs() -> list[dict] | None:
-    now = time.monotonic()
-    if _is_fresh(_pr_prs_cache, now):
-        return _pr_prs_cache["prs"]
+    cached = _pr_prs_cache.get(_OPEN_PRS_KEY)
+    if cached is not None:
+        return cached
     async with _pr_prs_lock:
-        now = time.monotonic()
-        if _is_fresh(_pr_prs_cache, now):
-            return _pr_prs_cache["prs"]
+        cached = _pr_prs_cache.get(_OPEN_PRS_KEY)
+        if cached is not None:
+            return cached
         try:
             prs = await asyncio.to_thread(github.open_prs)
         except (
             Exception
         ):  # domain: degrade-silently - GitHub outage degrades to no PR list
             prs = None
-        _pr_prs_cache.update(ts=time.monotonic(), prs=prs, fresh=True)
+        _pr_prs_cache.set(_OPEN_PRS_KEY, prs)
         return prs
 
 
@@ -60,23 +54,15 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
     return by_agent
 
 
-_pr_diff_cache: dict[str, Any] = {
-    "ts": 0.0,
-    "number": None,
-    "diff": None,
-    "missing": False,
-    "fresh": False,
-}
+_pr_diff_cache: TTLCache[tuple[dict | None, bool]] = TTLCache(
+    ttl_seconds=_PR_CACHE_SECONDS
+)
 
 
 async def _pr_diff(number: int) -> tuple[dict | None, bool]:
-    now = time.monotonic()
-    if (
-        _pr_diff_cache["fresh"]
-        and _pr_diff_cache["number"] == number
-        and _is_fresh(_pr_diff_cache, now)
-    ):
-        return _pr_diff_cache["diff"], _pr_diff_cache["missing"]
+    cached = _pr_diff_cache.get(number)
+    if cached is not None:
+        return cached
     try:
         diff = await asyncio.to_thread(github.pr_diff, number)
         missing = False
@@ -86,10 +72,9 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     except Exception:
         missing = False
         diff = None
-    _pr_diff_cache.update(
-        ts=time.monotonic(), number=number, diff=diff, missing=missing, fresh=True
-    )
-    return diff, missing
+    result = (diff, missing)
+    _pr_diff_cache.set(number, result)
+    return result
 
 
 async def _pr_checks(number: int) -> dict | None:
@@ -345,7 +330,9 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
     return f"{open_count} / {limit}"
 
 
-_prs_state_cache: dict[str, dict[str, Any]] = {}
+_prs_state_cache: TTLCache[list[dict] | None] = TTLCache(
+    ttl_seconds=_PR_CACHE_SECONDS
+)
 
 
 async def _prs_page_rows(state: str) -> list[dict] | None:
@@ -355,15 +342,14 @@ async def _prs_page_rows(state: str) -> list[dict] | None:
     is unreachable (the caller renders a muted notice)."""
     if state == "open":
         return await _open_prs()
-    now = time.monotonic()
-    ent = _prs_state_cache.get(state)
-    if ent and _is_fresh(ent, now):
-        return ent["rows"]
+    cached = _prs_state_cache.get(state)
+    if cached is not None:
+        return cached
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
     except Exception:  # domain: degrade-silently - list still renders muted
         rows = None
-    _prs_state_cache[state] = {"ts": time.monotonic(), "rows": rows, "fresh": True}
+    _prs_state_cache.set(state, rows)
     return rows
 
 

@@ -27,6 +27,7 @@ import events
 import github
 import reports
 from viewer._utils import (
+    TTLCache,
     _collapsible,
     _human_bytes,
     _human_duration,
@@ -69,27 +70,25 @@ _RECORD_CACHE_SECONDS = config.VIEWER_CACHE_TTL
 # page only has one narrow panel for biggest.py files, so walking (and
 # rendering) more than the top 20 costs scan + DOM time for no visible gain.
 _BIG_FILES_CAP = 20
-_big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
+_big_files_cache = TTLCache[list[tuple[str, int]]](ttl_seconds=_BIG_FILES_CACHE_SECONDS)
 
-_record_files_cache: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+_record_files_cache = TTLCache[list[tuple[str, str]]](ttl_seconds=_RECORD_CACHE_SECONDS)
 
 
 def _record_file_sizes(repo_root: Path) -> list[tuple[str, str]]:
     """Return (name, human_size) for each record file, cached 60s."""
     key = str(repo_root)
     cached = _record_files_cache.get(key)
-    now = time.monotonic()
     if cached is not None:
-        ts, rows = cached
-        if now - ts < _RECORD_CACHE_SECONDS:
-            return rows
-    result: list[tuple[str, str]] = []
-    for name in _RECORD_FILES:
-        path = repo_root / name
-        if path.is_file():
-            result.append((name, _human_bytes(path.stat().st_size)))
-    _record_files_cache[key] = (now, result)
-    return result
+        return cached
+    return _record_files_cache.get_or_compute(
+        key,
+        lambda: [
+            (name, _human_bytes((repo_root / name).stat().st_size))
+            for name in _RECORD_FILES
+            if (repo_root / name).is_file()
+        ],
+    )
 
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
@@ -101,11 +100,21 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     are returned.
     """
     key = (str(repo_root), int(threshold))
-    cached_entry = _big_files_cache.get(key)
-    if cached_entry is not None:
-        ts, cached = cached_entry
-        if time.monotonic() - ts < _BIG_FILES_CACHE_SECONDS:
-            return cached
+    cached = _big_files_cache.get(key)
+    if cached is not None:
+        return cached
+    return _big_files_cache.get_or_compute(
+        key,
+        lambda: _scan_big_py_files(repo_root, threshold),
+    )
+
+
+def _scan_big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
+    """Actual scan; factored out so TTLCache.get_or_compute's compute arg
+    is a small, named, easy-to-mock function. The cache key is (repo_root,
+    threshold) so the same repo with a different threshold is a separate
+    entry, and a different repo is a separate entry too.
+    """
     results: list[tuple[str, int]] = []
     for path in sorted(repo_root.rglob("*.py")):
         if any(part in _SKIP_DIRS for part in path.parts):
@@ -120,9 +129,7 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
     results.sort(key=lambda x: x[1], reverse=True)
-    results = results[:_BIG_FILES_CAP]
-    _big_files_cache[key] = (time.monotonic(), results)
-    return results
+    return results[:_BIG_FILES_CAP]
 
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
@@ -131,7 +138,15 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
 # last fetch succeeded; a failed fetch keeps the previous refs but marks the
 # panel stale instead of pretending.
 _GIT_FETCH_CACHE_SECONDS = config.GIT_FETCH_CACHE_SECONDS
-_git_fetch_cache = {"ts": 0.0, "ok": False}
+# TTLCache holds the (ts, ok) tuple under a single "main" key. The panel
+# reads `ts` and `ok` from the tuple; legacy readers that indexed
+# `_git_fetch_cache["ts"]` get an AttributeError if they survive the
+# refactor, so this is the right moment to migrate them to the new
+# shape - all call sites are inside this file.
+_git_fetch_cache: TTLCache[tuple[float, bool]] = TTLCache(
+    ttl_seconds=_GIT_FETCH_CACHE_SECONDS
+)
+_GIT_FETCH_KEY = "main"
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -176,10 +191,13 @@ def _git_sync_status() -> dict:
         # Refresh origin/main on a short TTL. Ahead/behind is compared against
         # this ref explicitly (not @{upstream}), so an unset upstream can't
         # silently degrade to a permanent "0 / 0".
-        now = time.monotonic()
-        if now - _git_fetch_cache["ts"] >= _GIT_FETCH_CACHE_SECONDS:
+        cached = _git_fetch_cache.get(_GIT_FETCH_KEY)
+        if cached is None:
             ok = _git_ok(["fetch", "origin", "main"], repo_root)
-            _git_fetch_cache.update(ts=now, ok=ok)
+            now = time.monotonic()
+            _git_fetch_cache.set(_GIT_FETCH_KEY, (now, ok))
+            cached = (now, ok)
+        last_fetch_ts, ok = cached
         ahead_behind = _git(
             ["rev-list", "--left-right", "--count", "HEAD...origin/main"], repo_root
         )
@@ -196,8 +214,8 @@ def _git_sync_status() -> dict:
             "dirty": bool(_git(["status", "--porcelain"], repo_root)),
             "commits_ahead": int(ahead),
             "commits_behind": int(behind),
-            "stale": not _git_fetch_cache["ok"],
-            "last_fetch": _git_fetch_cache["ts"],
+            "stale": not ok,
+            "last_fetch": last_fetch_ts,
         }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -230,12 +248,14 @@ async def _timed(
 # global and assumes one server process (asyncio is single-threaded, so no
 # lock is needed); under a multi-worker deploy each worker would hold its
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
-_STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
+_STATUS_CACHE: TTLCache[tuple[dict, dict, dict, list | None]] = TTLCache(
+    ttl_seconds=5.0
+)
 
 _TOP_TABLES_CACHE_SECONDS = 300
-_top_tables_cache: dict[
-    str, tuple[float, tuple[list[tuple[str, int, int, int, int, int]], int | None]]
-] = {}
+_top_tables_cache: TTLCache[
+    tuple[list[tuple[str, int, int, int, int, int]], int | None]
+] = TTLCache(ttl_seconds=_TOP_TABLES_CACHE_SECONDS)
 
 
 def _storage_table_rows(
@@ -256,9 +276,19 @@ def _storage_table_rows(
     key = "storage_tables"
     cached = _top_tables_cache.get(key)
     if cached is not None:
-        ts, result = cached
-        if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
-            return result
+        return cached
+    return _top_tables_cache.get_or_compute(
+        key, lambda: _scan_storage_table_rows(conn, limit)
+    )
+
+
+def _scan_storage_table_rows(
+    conn: Any, limit: int
+) -> tuple[list[tuple[str, int, int, int, int, int]], int | None]:
+    """Actual scan; factored out so TTLCache.get_or_compute's compute arg
+    is a small, named, easy-to-mock function. The cache key is fixed
+    (the panel renders one set of table facts per call).
+    """
     pages_map: dict[str, int] = {}
     bytes_map: dict[str, int] = {}
     overflow_map: dict[str, int] = {}
@@ -316,9 +346,7 @@ def _storage_table_rows(
             )
         )
     tables.sort(key=lambda t: (t[5], t[1]), reverse=True)
-    result = (tables[:limit], total_bytes)
-    _top_tables_cache[key] = (time.monotonic(), result)
-    return result
+    return (tables[:limit], total_bytes)
 
 
 _NETWORK_TIMEOUT_SECONDS = 10
@@ -333,13 +361,8 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     config.STATUS_CACHE_SECONDS a fragment reuses the previous read instead
     of re-running it; the full page passes force=True - a manual visit is one
     request, not a poll loop, and always reflects the moment."""
-    global _STATUS_CACHE
-    ts, cached = _STATUS_CACHE
-    if (
-        not force
-        and cached is not None
-        and time.monotonic() - ts < config.STATUS_CACHE_SECONDS
-    ):
+    cached = _STATUS_CACHE.get("status") if not force else None
+    if cached is not None:
         return cached
     # Kick off the two network-touching / git reads first so the db reads
     # below overlap them. Both are time-bounded so a slow GitHub can't block
@@ -388,7 +411,7 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     # keeps the last-known-good values so subsequent fragment reads within
     # the TTL don't serve a timeout error as if it were data.
     if not _repo_timeout and not _prs_timeout:
-        _STATUS_CACHE = (time.monotonic(), result)
+        _STATUS_CACHE.set("status", result)
     return result
 
 
@@ -640,7 +663,6 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
 
 async def status_page(request: Request) -> HTMLResponse:
     from viewer._layout import _START_TIME, POLL_MS, _page, _poll_config
-    from viewer._pr_helpers import _pr_prs_cache
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
@@ -759,7 +781,6 @@ async def status_page(request: Request) -> HTMLResponse:
         f"<tr><th>repo</th><td>{esc(github.repo_spec())}</td></tr>"
         f"<tr><th>base branch</th><td>{esc(github.base_branch())}</td></tr>"
         f"<tr><th>open PRs</th><td>{pr_count if pr_count is not None else 'unreachable'}</td></tr>"
-        f"<tr><th>last checked</th><td>{_human_duration(max(0, time.monotonic() - _pr_prs_cache['ts']))} ago</td></tr>"
         "</table>"
     )
     if prs is None:
