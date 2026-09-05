@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import inspect
-import json
 import time as _time
 from collections.abc import Callable
 from typing import Any
@@ -104,21 +103,9 @@ def _record_call(
 
 
 def _fmt_error(exc: db.ForumError) -> str:
-    """Format a ForumError for the MCP wire.  When the error carries a
-    ``detail`` dict it is appended as a JSON suffix so both human-readable
-    text and machine-parseable data arrive in one response — backward
-    compatible (agents that don't parse the suffix see the same message as
-    before) and forward compatible (agents that do can extract structured
-    fields without extra calls)."""
-    msg = str(exc)
-    detail = getattr(exc, "detail", None)
-    if detail:
-        try:
-            suffix = json.dumps(detail, separators=(",", ":"))
-        except (TypeError, ValueError):  # domain: degrade-silently
-            return msg
-        return f"{msg}\n\ndetail={suffix}"
-    return msg
+    """Format a ForumError for the MCP wire.  Returns the plain message;
+    callers that need structured data can read ``exc.detail`` directly."""
+    return str(exc)
 
 
 def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
