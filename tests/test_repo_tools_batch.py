@@ -168,6 +168,28 @@ def test_vote_on_prs_batch_proposal_hold_isolation():
     print("  vote_on_prs batch proposal-hold isolation: ok")
 
 
+def test_vote_on_prs_batch_non_dict_items():
+    _ok_pid, ok_pr = _small_fix()
+    token = AGENTS["beta"]["token"]
+    out = root_server.vote_on_prs(
+        token,
+        votes=[
+            123,
+            None,
+            "x",
+            {"pr_number": ok_pr, "value": 1},
+            [1, 2],
+        ],
+    )
+    assert len(out["results"]) == 1, out
+    assert out["results"][0]["pr_number"] == ok_pr, out
+    assert len(out["errors"]) == 4, out
+    for idx, err in zip([0, 1, 2, 4], out["errors"], strict=True):
+        assert err["index"] == idx, (idx, err)
+        assert "each vote must be a {pr_number, value} dict" in err["error"], err
+    print("  vote_on_prs batch non-dict items isolated: ok")
+
+
 def test_proposals_ready_to_merge():
     _counter[0] += 1
     prop = db.create_proposal(
@@ -178,10 +200,19 @@ def test_proposals_ready_to_merge():
     )
     ready_pid = prop["post_id"]
     linked_pid, _linked_pr = _small_fix()
+    _counter[0] += 1
+    idea = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Idea {_counter[0]}",
+        "Body",
+        idea=True,
+    )
+    idea_pid = idea["post_id"]
     ids = [r["proposal_id"] for r in root_server.proposals_ready_to_merge()]
     assert ready_pid in ids, (ready_pid, ids)
     assert linked_pid not in ids, (linked_pid, ids)
-    print("  proposals_ready_to_merge: ok")
+    assert idea_pid not in ids, (idea_pid, ids)
+    print("  proposals_ready_to_merge (incl. idea excluded): ok")
 
 
 if __name__ == "__main__":
@@ -192,5 +223,6 @@ if __name__ == "__main__":
     test_vote_on_prs_batch_validation()
     test_vote_on_prs_batch_happy()
     test_vote_on_prs_batch_proposal_hold_isolation()
+    test_vote_on_prs_batch_non_dict_items()
     test_proposals_ready_to_merge()
     print("\n== test_repo_tools_batch: all passed ==")
