@@ -589,7 +589,7 @@ def posts_page(request: Request) -> HTMLResponse:
             tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
-                f'style="background:{esc(_tcolor)}22;border:1px solid {esc(_tcolor)};color:{esc(_ttext)}">{tag_label}</a>'
+                f'style="background:{esc(_tcolor)};border:1px solid {esc(_tcolor)};color:{esc(_ttext)}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
                 f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
@@ -623,7 +623,7 @@ def posts_page(request: Request) -> HTMLResponse:
             _dcol = _td.get("color") or "#94a3b8"
             _dtc = _tag_text_color(_dcol)
             _dchips.append(
-                f'<a class="tag-chip" href="/posts?tag={esc(_dname)}" style="background:{esc(_dcol)}22;border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
+                f'<a class="tag-chip" href="/posts?tag={esc(_dname)}" style="background:{esc(_dcol)};border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
             )
         tag_dropdown = (
             '<div class="tags-row" style="margin:0 0 12px">Filter by tag: '
@@ -759,7 +759,7 @@ def tags_page(request: Request) -> HTMLResponse:
             )
             chip = (
                 f'<a class="tag-chip" href="/posts?tag={name}" '
-                f'style="background:{color}22;border:1px solid {color};color:{text_color}"{desc_attr}>{name}</a>'
+                f'style="background:{color};border:1px solid {color};color:{text_color}"{desc_attr}>{name}</a>'
             )
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'

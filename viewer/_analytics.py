@@ -26,25 +26,75 @@ def _analytics_html() -> str:
     if _CACHE["html"] and (now - _CACHE["ts"]) < _CACHE_TTL:
         return _CACHE["html"]
     try:
-        # --- citizen growth -----------------------------------------------
-        per_month: dict[str, int] = defaultdict(int)
+        # All time-series data in a single DB round-trip (was 3 separate
+        # full-table scans before this merge — item 4918).
+        growth_per_month: dict[str, int] = defaultdict(int)
+        prop_per_month: dict[str, int] = defaultdict(int)
+        econ_per_month: dict[str, int] = defaultdict(int)
+        tag_per_month: dict[str, int] = defaultdict(int)
+        pr_total = pr_merged = 0
         try:
             with db._conn() as conn:
+                # Three category counts + proposal PR merge stats in one trip.
                 rows = conn.execute(
-                    "SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
-                    " COUNT(*) AS n FROM agents GROUP BY m"
+                    "SELECT m, src, n FROM ("
+                    " SELECT substr(COALESCE(created_at,''),1,7) AS m,"
+                    " 'agents' AS src, COUNT(*) AS n FROM agents GROUP BY m"
+                    " UNION ALL"
+                    " SELECT substr(COALESCE(created_at,''),1,7) AS m,"
+                    " 'proposals' AS src, COUNT(*) AS n FROM posts"
+                    " WHERE proposal_kind IS NOT NULL GROUP BY m"
+                    " UNION ALL"
+                    " SELECT substr(COALESCE(created_at,''),1,7) AS m,"
+                    " 'economy' AS src, COUNT(*) AS n FROM credit_entries"
+                    " GROUP BY m"
+                    " UNION ALL"
+                    " SELECT m, 'tags' AS src, SUM(n) AS n FROM ("
+                    "  SELECT substr(COALESCE(created_at,''),1,7) AS m,"
+                    "  COUNT(*) AS n FROM tags GROUP BY m"
+                    "  UNION ALL"
+                    "  SELECT substr(COALESCE(applied_at,''),1,7) AS m,"
+                    "  COUNT(*) AS n FROM post_tags GROUP BY m"
+                    " ) GROUP BY m"
+                    ") GROUP BY m, src"
                 ).fetchall()
                 for r in rows:
-                    per_month[r["m"] or "unknown"] = r["n"]
+                    m = r["m"] or "unknown"
+                    src = r["src"]
+                    n = r["n"]
+                    if src == "agents":
+                        growth_per_month[m] = n
+                    elif src == "proposals":
+                        prop_per_month[m] = n
+                    elif src == "economy":
+                        econ_per_month[m] = n
+                    elif src == "tags":
+                        tag_per_month[m] = n
+                # PR merge rate from proposal_links + proposal_outcomes
+                pr_row = conn.execute(
+                    "SELECT COUNT(*) AS total,"
+                    " SUM(CASE WHEN o.status='merged' THEN 1 ELSE 0 END)"
+                    " AS merged"
+                    " FROM proposal_links pl"
+                    " LEFT JOIN proposal_outcomes o"
+                    " ON o.pr_number = pl.pr_number"
+                ).fetchone()
+                if pr_row:
+                    pr_total = pr_row["total"] or 0
+                    pr_merged = pr_row["merged"] or 0
         except Exception:  # domain: degrade-silently
-            per_month = defaultdict(int)
-        # bucket by month cumulative
+            growth_per_month = defaultdict(int)
+            prop_per_month = defaultdict(int)
+            econ_per_month = defaultdict(int)
+            tag_per_month = defaultdict(int)
+            pr_total = pr_merged = 0
+
+        # --- citizen growth (cumulative) ------------------------------------
         growth_buckets: dict[str, int] = {}
         cum = 0
-        for m in sorted(per_month):
-            cum += per_month[m]
+        for m in sorted(growth_per_month):
+            cum += growth_per_month[m]
             growth_buckets[m] = cum
-        # last 6 months
         growth_sorted = sorted(growth_buckets.items())[-6:]
         growth_html = ""
         if growth_sorted:
@@ -55,27 +105,7 @@ def _analytics_html() -> str:
         else:
             growth_html = '<tr><td colspan=3 style="color:var(--muted)">No citizen data.</td></tr>'
 
-        # --- proposal velocity + PR merge rate -------------------------------
-        # Reuse single list_proposals call for both panels (one scan, not two)
-        prop_rows: list[str] = []
-        pr_total = pr_merged = 0
-        try:
-            props_all = db.list_proposals(limit=1000, view="all", sort="newest")
-            for p in props_all:
-                if p.get("proposal_kind"):
-                    prop_rows.append(p.get("created_at", "")[:7])
-                prs = p.get("prs") or []
-                for pr in prs:
-                    pr_total += 1
-                    if pr.get("status") == "merged":
-                        pr_merged += 1
-        except Exception:  # domain: degrade-silently
-            prop_rows = []
-            pr_total = pr_merged = 0
-        prop_per_month: dict[str, int] = defaultdict(int)
-        for m in prop_rows:
-            if m:
-                prop_per_month[m] += 1
+        # --- proposal velocity ---------------------------------------------
         prop_sorted = sorted(prop_per_month.items())[-6:]
         prop_html = ""
         if prop_sorted:
@@ -87,6 +117,8 @@ def _analytics_html() -> str:
             prop_html = (
                 '<tr><td colspan=3 style="color:var(--muted)">No proposals.</td></tr>'
             )
+
+        # --- PR merge rate --------------------------------------------------
         pr_rate = int(round(pr_merged / pr_total * 100)) if pr_total else 0
         pr_html = (
             f"<p style='color:var(--muted);font-size:13px'>{pr_merged} merged / {pr_total} linked PRs \u00b7 {pr_rate}% merge rate"
@@ -99,17 +131,6 @@ def _analytics_html() -> str:
         )
 
         # --- economy velocity ----------------------------------------------
-        econ_per_month: dict[str, int] = defaultdict(int)
-        try:
-            with db._conn() as conn:
-                rows = conn.execute(
-                    "SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
-                    " COUNT(*) AS n FROM credit_entries GROUP BY m"
-                ).fetchall()
-                for r in rows:
-                    econ_per_month[r["m"] or "unknown"] = r["n"]
-        except Exception:  # domain: degrade-silently
-            econ_per_month = {}
         econ_sorted = sorted(econ_per_month.items())[-6:]
         econ_html = ""
         if econ_sorted:
@@ -121,25 +142,6 @@ def _analytics_html() -> str:
             econ_html = '<tr><td colspan=3 style="color:var(--muted)">No economy entries.</td></tr>'
 
         # --- tag adoption --------------------------------------------------
-        tag_per_month: dict[str, int] = defaultdict(int)
-        try:
-            with db._conn() as conn:
-                # post_tags carries applied_at, not created_at: the old leg
-                # selected a missing column, errored on every hit, and left
-                # this panel permanently on "No tag data".
-                rows = conn.execute(
-                    "SELECT m, SUM(n) AS n FROM ("
-                    " SELECT substr(COALESCE(created_at, ''), 1, 7) AS m,"
-                    " COUNT(*) AS n FROM tags GROUP BY m"
-                    " UNION ALL"
-                    " SELECT substr(COALESCE(applied_at, ''), 1, 7) AS m,"
-                    " COUNT(*) AS n FROM post_tags GROUP BY m"
-                    " ) GROUP BY m"
-                ).fetchall()
-                for r in rows:
-                    tag_per_month[r["m"] or "unknown"] = r["n"]
-        except Exception:  # domain: degrade-silently
-            tag_per_month = {}
         tag_sorted = sorted(tag_per_month.items())[-6:]
         tag_html = ""
         if tag_sorted:
