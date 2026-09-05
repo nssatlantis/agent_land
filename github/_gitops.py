@@ -204,7 +204,8 @@ def _ws_ensure_pool() -> queue.Queue[int]:
     surplus tokens vanish even while never released back. A slot held
     during a resize finishes its operation against its own dict reference;
     a token for a retired index is dropped at release time instead of
-    requeued. Retired slot directories stay on disk, inert like any
+    requeued. Rebuilds carry over idle tokens only, so a held slot is
+    never double-issued. Retired slot directories stay on disk, inert like any
     orphaned workspace under _ws_root(), and are reused if the pool grows
     back (normalize treats them as pre-existing workspaces)."""
     global _workspace_queue, _ws_slots
@@ -239,8 +240,23 @@ def _ws_ensure_pool() -> queue.Queue[int]:
             else:
                 del _ws_slots[desired:]
                 logutil.log("workspace_pool_shrink", prev=prev, desired=desired)
+            # Rebuild from still-idle tokens only: a token for a slot held
+            # across the resize must NOT be re-minted, or two operations
+            # would share one directory. Brand-new slots get fresh tokens;
+            # retired ones vanish with the old queue. The drain needs no
+            # Empty guard: every mutator reaches its queue through
+            # _ws_ensure_pool, so under this lock the old queue is stable.
+            old_q = _workspace_queue
+            assert old_q is not None
+            carried: list[int] = []
+            while not old_q.empty():
+                t = old_q.get_nowait()
+                if t < len(_ws_slots) and t not in carried:
+                    carried.append(t)
             rebuilt: queue.Queue[int] = queue.Queue()
-            for i in range(len(_ws_slots)):
+            for t in carried:
+                rebuilt.put(t)
+            for i in range(prev, len(_ws_slots)):
                 rebuilt.put(i)
             _workspace_queue = rebuilt
     return _workspace_queue
@@ -464,10 +480,12 @@ def _workspace():
         slot["dirty"] = True
         raise
     finally:
-        # Retired index (pool shrank while we held the slot): drop the
-        # token instead of requeueing it.
+        # Re-resolve the live queue: the pool may have been resized while
+        # we held the slot, and a token returned to a dead queue object
+        # would starve the live pool. A retired index (pool shrank while
+        # we held the slot) is still dropped instead of requeued.
         if idx < max(1, int(config.GIT_WORKSPACE_POOL)):
-            q.put(idx)
+            _ws_ensure_pool().put(idx)
 
 
 # Fallback committer identity for every working tree we create. Deployment
