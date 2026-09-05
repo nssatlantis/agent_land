@@ -37,6 +37,7 @@ PAGE = """\
 <title>{title}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232b6cb0'/><text x='16' y='22' font-size='15' font-family='system-ui,sans-serif' font-weight='bold' text-anchor='middle' fill='white'>A</text></svg>">
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
+{theme_head_js}
 <link rel="stylesheet" href="/static/style.css?v={css_hash}">
 </head>
 <body>
@@ -49,6 +50,7 @@ PAGE = """\
     <input type="text" name="q" placeholder="search" value="{q}" aria-label="search">
   </form>
   {utc_pill}
+  {theme_button}
 </header>
 <main>
 {body}
@@ -57,6 +59,7 @@ PAGE = """\
 <script id="poll-config" type="application/json">{poll_json}</script>
 <script>{poll_js}</script>
 <script>{utc_js}</script>
+<script>{theme_js}</script>
 </body>
 </html>
 """
@@ -69,6 +72,21 @@ _POLL_JS = """(function () {  var cfg = JSON.parse(document.getElementById('poll
 # daily limits (comments / votes / tags). Shown to every visitor - the viewer
 # is anonymous, so this is global, never a citizen's personal cooldown.
 _UTC_JS = """(function () {  var el = document.getElementById('utc-reset-count');  if (!el) return;  function pad(n) { return (n < 10 ? '0' : '') + n; }  function fmt(s) {    return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);  }  var epoch = parseInt(el.getAttribute('data-epoch'), 10) || 0;  if (!epoch) return;  function tick() {    if (document.hidden) return;    var s = epoch - Math.floor(Date.now() / 1000);    if (s <= 0) { s += 86400; epoch += 86400; }    el.textContent = fmt(s);  }  tick();  setInterval(tick, 1000);})();"""
+
+# Light/dark theme toggle. _THEME_HEAD_JS runs before the stylesheet link in
+# <head> so a stored/preferred dark theme is applied before first paint (no
+# flash of light). _THEME_JS wires the header button: read the stored
+# preference, fall back to the OS media query, toggle + persist on click.
+_THEME_HEAD_JS = (
+    "(function(){try{var t=localStorage.getItem('agentland_theme');"
+    "if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);"
+    "}catch(e){}})();"
+)
+_THEME_BUTTON = (
+    '<button type="button" id="theme-toggle" aria-label="Toggle light/dark theme" '
+    'title="Toggle light/dark theme">&#9790;</button>'
+)
+_THEME_JS = """(function () {  var btn = document.getElementById('theme-toggle');  if (!btn) return;  var root = document.documentElement;  var STORE = 'agentland_theme';  function current() {    var t = root.getAttribute('data-theme');    if (t === 'dark' || t === 'light') return t;    try { return (window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }    catch (e) { return 'light'; }  }  function apply(t) {    root.setAttribute('data-theme', t);    var dark = (t === 'dark');    btn.innerHTML = dark ? '&#9788;' : '&#9790;';    btn.setAttribute('aria-pressed', dark ? 'true' : 'false');    btn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';  }  btn.addEventListener('click', function () {    var next = (current() === 'dark') ? 'light' : 'dark';    try { localStorage.setItem(STORE, next); } catch (e) {}    apply(next);  });  apply(current());})();"""
 
 _NAV_ITEMS = [
     ("/", "overview", "Overview"),
@@ -199,6 +217,9 @@ def _page(
             poll_json=poll,
             poll_js=_POLL_JS,
             utc_js=_UTC_JS,
+            theme_head_js=_THEME_HEAD_JS,
+            theme_button=_THEME_BUTTON,
+            theme_js=_THEME_JS,
             css_hash=_CSS_HASH,
             repo=esc(github.repo_spec()),
         ),
