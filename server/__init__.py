@@ -169,6 +169,7 @@ from server.tools.repo import (  # noqa: F401
     claim_proposal,
     delegate_proposal,
     link_pr_to_todo_item,
+    proposals_ready_to_merge,
     repo_assigned_proposals,
     repo_ci_run,
     repo_close_pr,
@@ -189,7 +190,7 @@ from server.tools.repo import (  # noqa: F401
     set_claimable,
     similar_prs,
     unclaim_proposal,
-    vote_on_pr,
+    vote_on_prs,
 )
 
 __all__ = [

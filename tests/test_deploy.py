@@ -483,6 +483,7 @@ def scenario_broken_config():
         (fake / "config.py").write_text(
             "this is not valid python :(\n", encoding="utf-8"
         )
+        shutil.copy(DEPLOY / "_common.py", fake / "deploy" / "_common.py")
         for script in (
             "check-db-boot.py",
             "restore-db.py",
@@ -626,6 +627,11 @@ def scenario_update_sh_wiring():
     guard = _find(lines, 'check-db-boot.py"; then')
     assert sync < guard, (
         f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
+    )
+    assert "_common.py" in lines[sync], (
+        "the sync loop must install _common.py: backup-db.py / restore-db.py / "
+        "check-db-boot.py / backfill-signatures.py import it (regression: MCP "
+        "server would fail to boot with ModuleNotFoundError otherwise)"
     )
     assert "restore-db.py --list" in text, "update.sh must document --list"
     assert "--force" not in text, (

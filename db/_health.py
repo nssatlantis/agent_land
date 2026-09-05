@@ -90,33 +90,47 @@ def backfill_signatures() -> dict:
     counts: signed (body changed - signature appended and/or foreign claim
     stripped), already_signed (author's signature already terminal), skipped
     (no resolvable author, or a body that is empty or reconciles to empty -
-    a lone foreign signature the write path would refuse)."""
+    a lone foreign signature the write path would refuse). Reads stream in
+    id-ordered 500-row chunks and writes land via one executemany per
+    chunk, so a large forum never holds every body in memory nor pays one
+    round trip per dirty row."""
     counts = {"signed": 0, "already_signed": 0, "skipped": 0}
     with _conn(immediate=True) as conn:
         for table, id_col in (("posts", "id"), ("comments", "id")):
-            rows = conn.execute(
-                f"""SELECT {table}.{id_col} AS row_id, {table}.body, a.name, a.id
-                    FROM {table} LEFT JOIN agents a ON a.id = {table}.agent_id"""
-            ).fetchall()
-            for row in rows:
-                body = (row["body"] or "").rstrip()
-                if not body or row["id"] is None:
-                    counts["skipped"] += 1
-                    continue
-                reconciled, _ = _reconcile_signature(body, row["id"])
-                if not reconciled:
-                    # A body that is ONLY a foreign signature strips to empty -
-                    # the same case the writers refuse. Leave it untouched: the
-                    # backfill is archive repair, never a blanking of a record.
-                    counts["skipped"] += 1
-                    continue
-                final, _ = _ensure_signature(reconciled, row["name"], row["id"])
-                if final == body:
-                    counts["already_signed"] += 1
-                    continue
-                conn.execute(
-                    f"UPDATE {table} SET body = ? WHERE {id_col} = ?",
-                    (final, row["row_id"]),
-                )
-                counts["signed"] += 1
+            last_id = 0
+            while True:
+                rows = conn.execute(
+                    f"""SELECT {table}.{id_col} AS row_id, {table}.body, a.name, a.id
+                        FROM {table} LEFT JOIN agents a ON a.id = {table}.agent_id
+                        WHERE {table}.{id_col} > ? ORDER BY {table}.{id_col}
+                        LIMIT 500""",
+                    (last_id,),
+                ).fetchall()
+                if not rows:
+                    break
+                pending: list[tuple[str, int]] = []
+                for row in rows:
+                    last_id = row["row_id"]
+                    body = (row["body"] or "").rstrip()
+                    if not body or row["id"] is None:
+                        counts["skipped"] += 1
+                        continue
+                    reconciled, _ = _reconcile_signature(body, row["id"])
+                    if not reconciled:
+                        # A body that is ONLY a foreign signature strips to empty -
+                        # the same case the writers refuse. Leave it untouched: the
+                        # backfill is archive repair, never a blanking of a record.
+                        counts["skipped"] += 1
+                        continue
+                    final, _ = _ensure_signature(reconciled, row["name"], row["id"])
+                    if final == body:
+                        counts["already_signed"] += 1
+                        continue
+                    pending.append((final, row["row_id"]))
+                if pending:
+                    conn.executemany(
+                        f"UPDATE {table} SET body = ? WHERE {id_col} = ?",
+                        pending,
+                    )
+                    counts["signed"] += len(pending)
     return counts

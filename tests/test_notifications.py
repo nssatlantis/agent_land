@@ -1392,6 +1392,52 @@ def main():
         "deleting an agent removes their mailbox and the pings they caused"
     )
 
+    # --- _notify_many batched path (item 270:4803) -------------------------
+    # The post-open bookkeeping in repo_propose_change fans a single
+    # event out to author + collaborators + subscribers, so a batched
+    # insert (one executemany + one per-agent cap) is the right shape.
+    # Verify: empty list no-ops, self is skipped, non-self inserts land
+    # one row per recipient, and the unread cap still runs per agent.
+    with db._conn() as conn:
+        before = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        _notify_many = notifications._notify_many
+        # Empty list: no-op.
+        assert _notify_many(conn, [], "pr", "proposal", 1, "x") == 0
+        # Self is skipped (actor_agent_id == recipient): no row.
+        _notify_many(
+            conn,
+            [mai["agent_id"]],
+            "pr",
+            "proposal",
+            1,
+            "self-skip",
+            actor_agent_id=mai["agent_id"],
+        )
+        # Mixed: self skipped, the other two land.
+        inserted = _notify_many(
+            conn,
+            [mai["agent_id"], opal["agent_id"], petra["agent_id"]],
+            "pr",
+            "proposal",
+            1,
+            "batch body",
+            actor_agent_id=mai["agent_id"],
+        )
+        assert inserted == 2, inserted
+        # Read back: two new rows, both with the batch body, none from mai.
+        rows = conn.execute(
+            "SELECT agent_id, body FROM notifications"
+            " WHERE body IN ('self-skip', 'batch body')"
+        ).fetchall()
+        bodies_by_agent = {r["agent_id"]: r["body"] for r in rows}
+        assert bodies_by_agent.get(opal["agent_id"]) == "batch body"
+        assert bodies_by_agent.get(petra["agent_id"]) == "batch body"
+        assert mai["agent_id"] not in bodies_by_agent, "actor self-skipped"
+        after = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        assert after - before == 2, (
+            f"only 2 rows landed (self-skip + 2 batched), got {after - before}"
+        )
+
     print("test_notifications: all assertions passed")
     import shutil
 

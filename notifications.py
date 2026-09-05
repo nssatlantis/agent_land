@@ -38,6 +38,47 @@ def _actor_name(
     return arow["name"] if arow else None
 
 
+def _notify_many(
+    conn: sqlite3.Connection,
+    agent_ids: list[int],
+    kind: str,
+    ref_type: str | None,
+    ref_id: int | None,
+    body: str,
+    actor_agent_id: int | None = None,
+    actor_name: str | None = None,
+) -> int:
+    """Batch-insert one notification per agent_id in a single executemany
+    plus a per-agent unread-cap enforcement. The single-event equivalent
+    of looping _notify(), so the post-open bookkeeping (which notifies
+    author + collaborators + subscribers for one PR) does one round-trip
+    instead of 1 + N + 1 round-trips.
+
+    Self-notifications are silently dropped (same as _notify). The
+    actor_name is resolved once up front and shared across the batch
+    (no per-row _actor_name lookup). Returns the number of rows
+    actually inserted.
+    """
+    if not agent_ids:
+        return 0
+    if actor_agent_id is not None:
+        agent_ids = [a for a in agent_ids if a != actor_agent_id]
+    if not agent_ids:
+        return 0
+    actor_name_resolved = _actor_name(conn, actor_agent_id, actor_name)
+    conn.executemany(
+        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (a, kind, ref_type, ref_id, actor_agent_id, actor_name_resolved, body)
+            for a in agent_ids
+        ],
+    )
+    for a in set(agent_ids):
+        _enforce_unread_cap(conn, a)
+    return len(agent_ids)
+
+
 def _notify(
     conn: sqlite3.Connection,
     agent_id: int,

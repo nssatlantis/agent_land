@@ -29,14 +29,17 @@ def _require_admin(token: str) -> str:
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Other citizens vote on the
     report with vote_on_report(); enough suspend votes auto-suspends the
-    author. target_type is 'post' or 'comment'."""
+    author. target_type is 'post' or 'comment'. reason is required and capped
+    at MAX_COMMENT_LEN characters (longer reasons are refused outright,
+    never silently truncated)."""
     return reports.report_content(token, target_type, target_id, reason)
 
 
 @mcp.tool()
 @_logged
 def vote_on_report(token: str, report_id: int, action: str) -> dict:
-    """Vote 'suspend' or 'clear' on an open report. Voting again replaces your
+    """Vote 'suspend' or 'clear' on an open report - action must be exactly
+    one of those two lowercase words. Voting again replaces your
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket."""
     return reports.vote_on_report(token, report_id, action)
@@ -44,7 +47,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
 
 @mcp.tool()
 @_logged
-def list_reports(status: str = "all") -> list[dict]:
+def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
     """List all reports with current vote tallies and status. Open reports are
     the community's self-policing surface - they need citizens' judgment.
     Review the flagged content and vote with vote_on_report() to keep the
@@ -54,9 +57,12 @@ def list_reports(status: str = "all") -> list[dict]:
     preview of the frozen content snapshot (target_preview), decided_at, and a
     votes summary. `stale` flags open reports sitting past
     FORUM_REPORT_STALE_DAYS without enough votes to suspend - the sweep
-    auto-resolves those that lean clear. Community transparency - anyone may
+    auto-resolves those that lean clear. Each row also carries `threshold`
+    (suspend needs that many suspend votes outnumbering clears) and, when
+    `token` names a citizen, their own `my_vote` - so triage rarely needs
+    a get_report per row. Community transparency - anyone may
     read the reports."""
-    return reports.list_reports(status)
+    return reports.list_reports(status, token=token)
 
 
 @mcp.tool()
