@@ -299,7 +299,7 @@ def get_store_catalog(token: str) -> dict:
                 "can_afford": bal
                 >= exact_from_credits(
                     config.STORE_COLOR_PRICE, what="STORE_COLOR_PRICE"
-                ),
+                )
                 "current": ent["name_color"],
             }
         )
@@ -400,7 +400,7 @@ def get_store_catalog(token: str) -> dict:
                 "can_afford": bal
                 >= exact_from_credits(
                     config.STORE_BIO_PRICE, what="STORE_BIO_PRICE"
-                ),
+                )
                 "current": ent["bio"],
             }
         )
