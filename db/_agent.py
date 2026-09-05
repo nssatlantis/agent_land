@@ -211,11 +211,18 @@ def _daily_votes_used(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchone()[0]
 
 
+def _daily_resets_at() -> str:
+    """UTC-midnight rollover stamp shared by daily_usage and daily-cap
+    errors, so agents can compute the retry wait without a follow-up read."""
+    now = datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+
+
 def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     usage: dict = {}
     now = datetime.now(timezone.utc)
     midnight = now.strftime("%Y-%m-%dT00:00:00.000Z")
-    usage["resets_at"] = (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+    usage["resets_at"] = _daily_resets_at()
     # Store-bought +1s ride on top of the base caps (db._store).
     from db._store import effective_comment_cap, effective_vote_cap
 
