@@ -550,7 +550,8 @@ def rebase_pr_onto_main(
 ) -> dict:
     """Rebase a PR's head branch onto main via local git.
 
-    Clones the repo, fetches full history, checks out the PR branch,
+    Acquires a workspace (warm pool slot or fresh clone), fetches, checks
+    out the PR branch, fast-paths when the head already contains main, else
     rebases onto main, and force-pushes the result.  Returns:
 
     - {"status": "ok", "new_sha": "<sha>"} on success
@@ -570,6 +571,21 @@ def rebase_pr_onto_main(
         _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         _seed_identity(repo_dir)
+        # Already-current fast path: no rebase, push, or invalidate when
+        # the head already contains the base (the common poller-sweep case
+        # for a candidate whose branch has not moved since the last pass).
+        current = _git(
+            repo_dir,
+            "merge-base",
+            "--is-ancestor",
+            f"origin/{GITHUB_BASE_BRANCH}",
+            "HEAD",
+            check=False,
+        )
+        if current.returncode == 0:
+            new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
+            _core._invalidate_pr(number)
+            return {"status": "ok", "new_sha": new_sha}
         result = _git(
             repo_dir,
             "rebase",
