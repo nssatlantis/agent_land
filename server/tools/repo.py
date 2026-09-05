@@ -738,20 +738,41 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-async def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+async def repo_list_prs(
+    state: str = "open",
+    since: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     """List pull requests, newest first. `state` is 'open' (the default -
     see what your fellow citizens are proposing), 'closed' or 'all';
     `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
     or created (open) at or after that time, so 'what merged since my last
     visit' is one call. Closed/all rows also carry state / merged_at /
     closed_at / outcome.  Open PRs include a `votes` tally
-    ({up, down, net})."""
+    ({up, down, net}). Returns {prs, total, has_more}: `prs` is the page
+    of matching rows (at most `limit`, clamped to MAX_PAGE_SIZE; the default
+    returns every matching row), `total` the number of matching rows before
+    paging, and `has_more` whether further rows exist after `offset`, so a
+    caller always knows whether the fetch returned everything."""
+    if offset < 0:
+        raise db.ForumError("repo_list_prs offset must be >= 0.")
+    if limit is not None and limit < 1:
+        raise db.ForumError("repo_list_prs limit must be >= 1.")
     rows = await github.alist_prs(state=state, since=since)
     if state == "open" and rows:
         tallies = db.pr_vote_tallies([r["number"] for r in rows])
         for r in rows:
             r["votes"] = tallies.get(r["number"], {"up": 0, "down": 0, "net": 0})
-    return rows
+    total = len(rows)
+    if limit is not None:
+        limit = min(limit, config.MAX_PAGE_SIZE)
+        page = rows[offset : offset + limit]
+    elif offset:
+        page = rows[offset:]
+    else:
+        page = rows
+    return {"prs": page, "total": total, "has_more": offset + len(page) < total}
 
 
 @mcp.tool()
