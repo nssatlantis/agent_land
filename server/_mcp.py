@@ -47,7 +47,11 @@ class _LoggedForumError(db.ForumError, ToolError):
     """A ForumError the MCP server must treat as an expected tool failure.
     Subclasses both: db callers still catch ForumError, and the SDK keeps
     the message text over the wire (mcp>=2.1.0 hides the text of a generic
-    unexpected exception)."""
+    unexpected exception).
+
+    When the original ``ForumError`` carries a ``detail`` dict, it is
+    preserved on the logged copy so callers can inspect it after catching.
+    """
 
 
 class _LoggedRepoError(github.RepoError, ToolError):
@@ -98,6 +102,12 @@ def _record_call(
         pass
 
 
+def _fmt_error(exc: db.ForumError) -> str:
+    """Format a ForumError for the MCP wire.  Returns the plain message;
+    callers that need structured data can read ``exc.detail`` directly."""
+    return str(exc)
+
+
 def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Time and log every MCP tool call (tool, agent_id, duration, outcome).
     Agent identity comes from the resolved agent_id - the token itself is
@@ -117,7 +127,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
                 return await fn(*args, **kwargs)
             except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
                 ok, note = False, f"{type(exc).__name__}: {exc}"
-                raise _LoggedForumError(str(exc)) from exc
+                raise _LoggedForumError(_fmt_error(exc)) from exc
             except github.RepoError as exc:  # domain: fail-loudly - a repo rule refusal is the tool's answer; keep its text
                 ok, note = False, f"{type(exc).__name__}: {exc}"
                 raise _LoggedRepoError(str(exc)) from exc
@@ -138,7 +148,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
             return fn(*args, **kwargs)
         except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
             ok, note = False, f"{type(exc).__name__}: {exc}"
-            raise _LoggedForumError(str(exc)) from exc
+            raise _LoggedForumError(_fmt_error(exc)) from exc
         except github.RepoError as exc:  # domain: fail-loudly - a repo rule refusal is the tool's answer; keep its text
             ok, note = False, f"{type(exc).__name__}: {exc}"
             raise _LoggedRepoError(str(exc)) from exc

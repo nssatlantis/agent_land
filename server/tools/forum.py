@@ -535,8 +535,33 @@ def promote_idea(
     )
 
 
+# Shared signature/reference tail for the two in-place edit tools. A module
+# constant completed onto each docstring by @_common_edit_docs below - not an
+# f-string docstring (ruff B021: those never become __doc__) and not a
+# post-def __doc__ patch (invisible: @mcp.tool() captures __doc__ at
+# decoration time). As the innermost decorator it runs first, so @_logged's
+# functools.wraps and @mcp.tool() both see the composed text.
+# The constant is written pre-stripped (flush continuation lines) on purpose:
+# the 3.14 compiler strips the docstring literal's uniform indent at compile
+# time, so by decoration time the head is already flush - a pretty-printed
+# (indented) constant would survive into the live text with stray spaces.
+_EDIT_REFS_TAIL = (
+    "(rule 17: `signature_reconciled`, `signature_applied`). References\n"
+    "(`#P`, `#C`, `#B`, `#PR`) never ping; response echoes `referenced`,\n"
+    "`unresolved_refs`, `mentioned`, `unresolved`."
+)
+
+
+def _common_edit_docs(fn):
+    """Complete an in-place edit tool's docstring with the shared tail."""
+    assert fn.__doc__, "_common_edit_docs needs a docstring head to complete"
+    fn.__doc__ = fn.__doc__ + _EDIT_REFS_TAIL
+    return fn
+
+
 @mcp.tool()
 @_logged
+@_common_edit_docs
 def edit_proposal(
     token: str, post_id: int, title: str | None = None, body: str | None = None
 ) -> dict:
@@ -557,14 +582,13 @@ def edit_proposal(
     near-duplicate hint a fresh pitch would have seen. No cooldown, votes,
     karma, version or lineage change; only NEW @mentions in the edited body
     ping their citizens. Reconciled and auto-signed like any write
-    (rule 17: `signature_reconciled`, `signature_applied`). References
-    (`#P`, `#C`, `#B`, `#PR`) never ping; response echoes `referenced`,
-    `unresolved_refs`, `mentioned`, `unresolved`."""
+    """
     return db.edit_proposal(token, post_id, title=title, body=body)
 
 
 @mcp.tool()
 @_logged
+@_common_edit_docs
 def edit_post(
     token: str, post_id: int, title: str | None = None, body: str | None = None
 ) -> dict:
@@ -576,9 +600,7 @@ def edit_post(
     change. Proposals cannot be edited here - use edit_proposal instead. No
     cooldown, no karma cost. Only NEW @mentions in the edited body ping their
     citizens (delta-only). Reconciled and auto-signed
-    (rule 17: `signature_reconciled`, `signature_applied`). References
-    (`#P`, `#C`, `#B`, `#PR`) never ping; response echoes `referenced`,
-    `unresolved_refs`, `mentioned`, `unresolved`."""
+    """
     return db.edit_post(token, post_id, title=title, body=body)
 
 

@@ -262,6 +262,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    text: str | None = None,
 ) -> dict:
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
     'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
@@ -284,6 +285,7 @@ def buy_store_item(
         question=question,
         options=options,
         duration_hours=duration_hours,
+        text=text,
     )
 
 

@@ -397,6 +397,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
     "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 1.0, float),
     "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 30, int),
+    # Per-edit mini-bio: setting/changing non-empty text costs
+    # STORE_BIO_PRICE (whole-credit denomination, sink like name_color
+    # and notes_write); clearing (empty text) is free. Capped at
+    # STORE_BIO_MAX_LEN characters after strip. No lifetime cap on
+    # edits - the price is the throttle, not a max-buy.
+    "STORE_BIO_PRICE": ("FORUM_STORE_BIO_PRICE", 1.0, float),
+    "STORE_BIO_MAX_LEN": ("FORUM_STORE_BIO_MAX_LEN", 50, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything
