@@ -559,7 +559,8 @@ def _mk_rebase_fixture():
 
 def test_rebase_skips_already_current_branch():
     """rebase_pr_onto_main fast-paths when the head already contains main
-    (no rebase, no push, same sha) - and rebases normally once behind."""
+    (no rebase, no push, no invalidation, same sha) - and rebases normally
+    once behind."""
     import github._gitops as gitops
 
     tmp, bare = _mk_rebase_fixture()
@@ -577,11 +578,13 @@ def test_rebase_skips_already_current_branch():
             patch("github._core._request", return_value=pr_data),
             patch("github._gitops._repo_url", return_value=bare),
             patch("github._gitops._git", side_effect=spy_git),
+            patch("github._core._invalidate_pr") as mock_inv,
         ):
             res = github.rebase_pr_onto_main(42)
             assert res["status"] == "ok", res
             assert "rebase" not in verbs, verbs
             assert "push" not in verbs, verbs
+            mock_inv.assert_not_called()
             # Advance main on the remote so the feature falls behind.
             work2 = os.path.join(tmp, "work2")
             _rgit("clone", "-q", bare, work2)
@@ -593,6 +596,7 @@ def test_rebase_skips_already_current_branch():
             assert "rebase" in verbs, verbs
             assert "push" in verbs, verbs
             assert res2["new_sha"] != res["new_sha"], (res, res2)
+            mock_inv.assert_called_once()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("  rebase skips already-current branch, proceeds when behind: ok")
