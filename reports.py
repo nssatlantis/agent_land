@@ -606,14 +606,16 @@ def count_reports(status: str = "all") -> int:
     elif status != "all":
         raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM reports {where}"
-        ).fetchone()
+        row = conn.execute(f"SELECT COUNT(*) FROM reports {where}").fetchone()
         return row[0] if row else 0
 
 
-def list_reports(status: str = "all", token: str | None = None,
-                 limit: int | None = None, offset: int = 0) -> list[dict]:
+def list_reports(
+    status: str = "all",
+    token: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
     Community transparency: anyone may read the reports.
