@@ -502,55 +502,70 @@ async def repo_propose_change(
                     target_id=plan["pr_number"],
                     detail={"proposal_id": proposal_id},
                 )
-            # The proposal's author should hear that a PR went up for their
-            # proposal when someone else opened it - a delegate or a
-            # collaborator - because they run the review for collaborative
-            # proposals. Opening your own PR pings nobody (_notify no-ops on
-            # self-actions).
-            from db._collaborative import list_proposal_collaborators
-            from notifications import _notify
+            # The proposal's author + every collaborator should hear that
+            # a PR went up for their proposal (they run the review for
+            # collaborative proposals). Opening your own PR pings nobody
+            # (_notify_many no-ops on self-actions). Subscribers get a
+            # separate notification with its own kind + dedup window.
+            #
+            # The single UNION query returns the proposal's author + every
+            # collaborator agent_id in one round-trip; the UNION dedups
+            # when the author is also a collaborator. Two _notify_many
+            # calls then send the two message variants in a single
+            # executemany each (instead of 1 + N looped INSERTs).
+            from db._subscriptions import _notify_subscribers
+            from notifications import _notify_many
 
+            pr_number = plan["pr_number"]
+            author_msg = (
+                f"PR #{pr_number} opened for your proposal #{proposal_id}: {title}"
+            )
+            collab_msg = (
+                f"PR #{pr_number} opened for collaborative proposal"
+                f" #{proposal_id} by {who['name']}: {title}"
+            )
+            subscriber_msg = (
+                f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
+            )
             with db._conn() as conn:
+                recipient_rows = conn.execute(
+                    "SELECT agent_id FROM posts WHERE id = ?"
+                    " UNION"
+                    " SELECT agent_id FROM proposal_collaborators"
+                    " WHERE proposal_id = ?",
+                    (proposal_id, proposal_id),
+                ).fetchall()
                 author_row = conn.execute(
                     "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
                 ).fetchone()
-                if author_row is not None and author_row["agent_id"] != who["agent_id"]:
-                    _notify(
+                author_id = author_row["agent_id"] if author_row else None
+                collab_ids = [
+                    r["agent_id"] for r in recipient_rows if r["agent_id"] != author_id
+                ]
+                if author_id is not None:
+                    _notify_many(
                         conn,
-                        author_row["agent_id"],
+                        [author_id],
                         "pr",
                         "proposal",
                         proposal_id,
-                        f"PR #{plan['pr_number']} opened for your proposal "
-                        f"#{proposal_id}: {title}",
+                        author_msg,
                         actor_agent_id=who["agent_id"],
                     )
-                # Also notify fellow collaborators that a new PR went up.
-                collabs = list_proposal_collaborators(proposal_id, conn=conn)
-                for col in collabs:
-                    if col["agent_id"] != who["agent_id"]:
-                        _notify(
-                            conn,
-                            col["agent_id"],
-                            "pr",
-                            "proposal",
-                            proposal_id,
-                            f"PR #{plan['pr_number']} opened for"
-                            f" collaborative proposal #{proposal_id}"
-                            f" by {who['name']}: {title}",
-                            actor_agent_id=who["agent_id"],
-                        )
-
-                # Notify subscribers of this post about the new
-                # PR - a sibling of the collaborator loop so it runs
-                # once per open, inside the connection block.
-                from db._subscriptions import _notify_subscribers
-
+                if collab_ids:
+                    _notify_many(
+                        conn,
+                        collab_ids,
+                        "pr",
+                        "proposal",
+                        proposal_id,
+                        collab_msg,
+                        actor_agent_id=who["agent_id"],
+                    )
                 _notify_subscribers(
                     conn,
                     proposal_id,
-                    f"PR #{plan['pr_number']} opened for"
-                    f" proposal #{proposal_id}: {title}",
+                    subscriber_msg,
                     actor_agent_id=who["agent_id"],
                     ref_type="post",
                     ref_id=proposal_id,
@@ -738,20 +753,41 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-async def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+async def repo_list_prs(
+    state: str = "open",
+    since: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     """List pull requests, newest first. `state` is 'open' (the default -
     see what your fellow citizens are proposing), 'closed' or 'all';
     `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
     or created (open) at or after that time, so 'what merged since my last
     visit' is one call. Closed/all rows also carry state / merged_at /
     closed_at / outcome.  Open PRs include a `votes` tally
-    ({up, down, net})."""
+    ({up, down, net}). Returns {prs, total, has_more}: `prs` is the page
+    of matching rows (at most `limit`, clamped to MAX_PAGE_SIZE; the default
+    returns every matching row), `total` the number of matching rows before
+    paging, and `has_more` whether further rows exist after `offset`, so a
+    caller always knows whether the fetch returned everything."""
+    if offset < 0:
+        raise db.ForumError("repo_list_prs offset must be >= 0.")
+    if limit is not None and limit < 1:
+        raise db.ForumError("repo_list_prs limit must be >= 1.")
     rows = await github.alist_prs(state=state, since=since)
     if state == "open" and rows:
         tallies = db.pr_vote_tallies([r["number"] for r in rows])
         for r in rows:
             r["votes"] = tallies.get(r["number"], {"up": 0, "down": 0, "net": 0})
-    return rows
+    total = len(rows)
+    if limit is not None:
+        limit = min(limit, config.MAX_PAGE_SIZE)
+        page = rows[offset : offset + limit]
+    elif offset:
+        page = rows[offset:]
+    else:
+        page = rows
+    return {"prs": page, "total": total, "has_more": offset + len(page) < total}
 
 
 @mcp.tool()
