@@ -100,6 +100,7 @@ from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._render_helpers import (
     _TODO_PAGE_SIZE,
+    _TODO_TALL_CAP,
     _author,
     _discussion_digest,
     _edits_panel,
@@ -298,6 +299,8 @@ def render_post(
     tlist: int | None = None,
     tpage: int = 1,
     tq: str | None = None,
+    tfilter: str = "all",
+    tall: bool = False,
 ) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
@@ -305,9 +308,13 @@ def render_post(
         db.ForumError
     ):
         return _page(f"no post {post_id}", "<p>No such post.</p>")
+    if tfilter not in ("all", "open", "done"):
+        tfilter = "all"
     # The whole-board `todos` is no longer embedded in get_post; the to-do
     # panel + contribution header read this lightweight summary and page
-    # through get_todos_list / search_todos only when drilled in.
+    # through get_todos_list / search_todos only when drilled in - or read
+    # the whole board once via get_todos_for_post for expand-all, guarded
+    # by _TODO_TALL_CAP on the summary counts before any item fetch.
     todos_summary: dict = {}
     if p.get("proposal_kind"):
         try:
@@ -318,15 +325,22 @@ def render_post(
             todos_summary = {}
     p["todos_summary"] = todos_summary
     # The to-do panel is a pure renderer; the page handler does the only
-    # DB reads - a paged drill-in (get_todos_list) for `tlist`, or a
-    # paged full-text search (search_todos) for `tq` - and hands the row
-    # snapshot to _todos_panel. Failures degrade silently to the summary.
+    # DB reads - a paged drill-in (get_todos_list) for `tlist`, a paged
+    # full-text search (search_todos) for `tq`, or the capped whole board
+    # (get_todos_for_post) for `tall` - and hands the row snapshot to
+    # _todos_panel. Precedence is tq > tlist > tall; a bad tfilter falls
+    # back to 'all'. Failures degrade silently to the summary.
     list_data: dict | None = None
     search_data: dict | None = None
+    tall_data: list | None = None
     if tq is not None and tq != "":
         try:
             search_data = db.search_todos(
-                post_id, tq, offset=(tpage - 1) * _TODO_PAGE_SIZE, limit=_TODO_PAGE_SIZE
+                post_id,
+                tq,
+                filter=tfilter,
+                offset=(tpage - 1) * _TODO_PAGE_SIZE,
+                limit=_TODO_PAGE_SIZE,
             )
         except db.ForumError:  # domain: degrade-silently - empty search page
             search_data = {"hits": [], "total": 0}
@@ -335,6 +349,7 @@ def render_post(
             list_data = db.get_todos_list(
                 post_id,
                 int(tlist),
+                filter=tfilter,
                 offset=(tpage - 1) * _TODO_PAGE_SIZE,
                 limit=_TODO_PAGE_SIZE,
             )
@@ -344,6 +359,16 @@ def render_post(
             ValueError,
         ):  # domain: degrade-silently - unknown list shows summary
             list_data = None
+    elif tall:
+        try:
+            if int(todos_summary.get("total_items", 0)) <= _TODO_TALL_CAP:
+                tall_data = db.get_todos_for_post(post_id, filter=tfilter)
+        except (
+            db.ForumError,
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - over-cap/unknown shows summary
+            tall_data = None
     comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
@@ -380,6 +405,8 @@ def render_post(
             tq=tq,
             list_data=list_data,
             search_data=search_data,
+            tfilter=tfilter,
+            tall_data=tall_data,
         )
         + (
             f'<div class="panel"><h2>Contribution tracking \u00b7 '
@@ -2815,7 +2842,19 @@ def post_page(request: Request) -> HTMLResponse:
         ):  # domain: degrade-silently - bad list id shows summary
             tlist = None
     tq = q.get("tq") or None
-    return render_post(request.path_params["id"], tlist=tlist, tpage=tpage, tq=tq)
+    tfilter = str(q.get("tfilter") or "all")
+    if tfilter not in ("all", "open", "done"):
+        # domain: degrade-silently - bad filter falls back to the full board
+        tfilter = "all"
+    tall = str(q.get("tall") or "") == "1"
+    return render_post(
+        request.path_params["id"],
+        tlist=tlist,
+        tpage=tpage,
+        tq=tq,
+        tfilter=tfilter,
+        tall=tall,
+    )
 
 
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
