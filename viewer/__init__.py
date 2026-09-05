@@ -2536,7 +2536,7 @@ def _economy_body(request: Request) -> str:
     # Job escrow projection timeline (4396) — display-only, degrade-silently
     _job_escrow_html = ""
     try:
-        _jobs_all = db.list_jobs(view="all", limit=100).get("jobs", [])
+        _jobs_all = db.list_jobs(view="all", limit=1000).get("jobs", [])
         _active_jobs = [
             j
             for j in _jobs_all
