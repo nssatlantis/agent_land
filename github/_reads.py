@@ -30,8 +30,9 @@ from ._core import (
 # GitHub silently caps pulls?per_page= at 100 regardless of what is asked.
 # Clamp to that so a caller (or FORUM_GITHUB_PRS_PER_PAGE above the cap) can
 # never get a short page that the pagination loops below mistake for the end
-# of the listing.
-_MAX_GITHUB_PERPAGE = 100
+# of the listing. Single source for every per_page=100 in this package (the
+# page loops, the pulls listings, _paginated_get) so the cap can never drift.
+_GITHUB_MAX_PER_PAGE = 100
 
 
 def repo_spec() -> str:
@@ -333,7 +334,7 @@ def _open_pulls_page(per_page: int, page: int) -> list:
     default sort for state=open). Mirrors _closed_pulls_page - including the
     per_page clamp, so a FORUM_GITHUB_PRS_PER_PAGE above GitHub's silent cap
     can't produce a short first page that pagination mistakes for the end."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     return _core._request(
         "GET",
         f"pulls?state=open&per_page={per_page}&page={page}",
@@ -342,7 +343,7 @@ def _open_pulls_page(per_page: int, page: int) -> list:
 
 async def _aopen_pulls_page(per_page: int, page: int) -> list:
     """Native-await twin of _open_pulls_page."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     return await _core._on_bg(
         _core._arequest(
             "GET",
@@ -458,19 +459,19 @@ def open_pr_labels() -> set[str]:
     page = 1
     while True:
         batch = _core._request(
-            "GET", f"pulls?state=open&per_page={_PR_PAGE_SIZE}&page={page}"
+            "GET", f"pulls?state=open&per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
         )
         for p in batch:
             for l in p.get("labels") or []:
                 labels.add(l.get("name", ""))
-        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+        if len(batch) < _GITHUB_MAX_PER_PAGE or page >= _PR_PAGE_CAP:
             return labels
         page += 1
 
 
 def _closed_pulls_page(state: str, per_page: int, page: int) -> list:
     """One page of the closed/all pulls listing, newest by updated."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     return _core._request(
         "GET",
         f"pulls?state={state}&sort=updated&direction=desc&per_page={per_page}&page={page}",
@@ -479,7 +480,7 @@ def _closed_pulls_page(state: str, per_page: int, page: int) -> list:
 
 async def _aclosed_pulls_page(state: str, per_page: int, page: int) -> list:
     """Native-await twin of _closed_pulls_page."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     return await _core._on_bg(
         _core._arequest(
             "GET",
@@ -495,7 +496,7 @@ def _paginated_closed_pulls(state: str, per_page: int) -> list:
     bounded by _PR_PAGE_CAP makes a full listing explicit and complete.
     Clamp per_page to GitHub's 100 cap so the short-page stop can't be fooled
     by a caller (or FORUM_GITHUB_PRS_PER_PAGE) above it."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     out: list = []
     page = 1
     while True:
@@ -508,7 +509,7 @@ def _paginated_closed_pulls(state: str, per_page: int) -> list:
 
 async def _apaginated_closed_pulls(state: str, per_page: int) -> list:
     """Native-await twin of _paginated_closed_pulls."""
-    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
+    per_page = min(per_page, _GITHUB_MAX_PER_PAGE)
     out: list = []
     page = 1
     while True:
@@ -936,9 +937,11 @@ def pr_diff(number: int) -> dict:
     files: list[dict] = []
     page = 1
     while True:
-        batch = _core._request("GET", f"pulls/{number}/files?per_page=100&page={page}")
+        batch = _core._request(
+            "GET", f"pulls/{number}/files?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
+        )
         files.extend(batch)
-        if len(batch) < 100:
+        if len(batch) < _GITHUB_MAX_PER_PAGE:
             break
         page += 1
     result = {
@@ -963,10 +966,9 @@ def pr_diff(number: int) -> dict:
     return result
 
 
-_PR_PAGE_SIZE = 100
 # Safety cap: a misbehaving server that never sends a short page must not
-# turn one list read into an unbounded loop. 50 x 100 items is far past any
-# real pull request.
+# turn one list read into an unbounded loop. 50 x _GITHUB_MAX_PER_PAGE items
+# is far past any real pull request.
 _PR_PAGE_CAP = 50
 
 
@@ -977,9 +979,11 @@ def _paginated_get(path: str) -> list:
     out: list = []
     page = 1
     while True:
-        batch = _core._request("GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}")
+        batch = _core._request(
+            "GET", f"{path}?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
+        )
         out.extend(batch)
-        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+        if len(batch) < _GITHUB_MAX_PER_PAGE or page >= _PR_PAGE_CAP:
             return out
         page += 1
 
@@ -990,10 +994,10 @@ async def _apaginated_get(path: str) -> list:
     page = 1
     while True:
         batch = await _core._arequest(
-            "GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}"
+            "GET", f"{path}?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
         )
         out.extend(batch)
-        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+        if len(batch) < _GITHUB_MAX_PER_PAGE or page >= _PR_PAGE_CAP:
             return out
         page += 1
 
