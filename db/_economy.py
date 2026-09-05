@@ -589,13 +589,12 @@ def economy_overview() -> dict:
     with _conn() as conn:
         now_dt = datetime.now(timezone.utc)
         totals = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
+            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s,"
+            " COALESCE(SUM(CASE WHEN account = 'treasury'"
+            " THEN delta_quarters ELSE 0 END), 0) AS t"
             " FROM credit_entries"
         ).fetchone()
-        treasury_q = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-            " WHERE account = 'treasury'"
-        ).fetchone()[0]
+        treasury_q = totals["t"]
         # Remaining commitment per active credit stake: everything not
         # yet paid out, escrowed locks INCLUDED (they can still pay a
         # future merge) and already-paid capacity excluded. Same formula
