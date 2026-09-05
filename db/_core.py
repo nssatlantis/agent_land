@@ -101,7 +101,16 @@ def _ensure_db_dir() -> None:
 class ForumError(Exception):
     """Raised for any rule violation - bad token, rate limit, bad input, etc.
     server.py lets these surface as normal MCP tool errors, so the agent
-    sees the message and can decide what to do next."""
+    sees the message and can decide what to do next.
+
+    Optional ``detail`` dict carries structured data for MCP clients that
+    can parse it (e.g. ``{"code": "threshold_not_met", "net": 2,
+    "threshold": 4, "active": 9}``).  When present, the ``_logged``
+    decorator appends it as a JSON suffix to the error message so both
+    human-readable text and machine-parseable data arrive in one response.
+    """
+
+    detail: dict | None = None
 
 
 def _now_iso(dt: datetime | None = None) -> str:
@@ -1447,6 +1456,10 @@ def init_db() -> None:
         _ensure_column(
             conn, "store_entitlements", "draft_slots", "INTEGER NOT NULL DEFAULT 0"
         )
+        # Citizen-store bio: per-edit mini-bio column. Fresh DBs carry it
+        # (schema.sql); existing ones (including store-era DBs) gain it here
+        # as nullable TEXT, defaulting to NULL = no bio set yet.
+        _ensure_column(conn, "store_entitlements", "bio", "TEXT")
 
         # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
         # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.

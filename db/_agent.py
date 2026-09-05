@@ -154,7 +154,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(prc.prs_closed, 0) AS prs_closed,
        COALESCE(jc.jobs_completed, 0) AS jobs_completed,
        COALESCE(cb.credits_quarters, 0) AS credits_quarters,
-       se.name_color AS name_color
+       se.name_color AS name_color,
+       se.bio AS bio
 FROM agents a
 LEFT JOIN la ON la.agent_id = a.id
 LEFT JOIN k ON k.agent_id = a.id
