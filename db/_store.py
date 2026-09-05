@@ -93,6 +93,7 @@ _ALL_ITEMS = (
     "notes_unlock",
     "drafts_unlock",
     "draft_slot",
+    "bio",
 )
 
 
@@ -105,11 +106,12 @@ _ZERO_ENTITLEMENTS = {
     "name_color": None,
     "notes_unlocked": 0,
     "draft_slots": 0,
+    "bio": None,
 }
 
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
-    " sub_bonus, name_color, notes_unlocked, draft_slots"
+    " sub_bonus, name_color, notes_unlocked, draft_slots, bio"
 )
 
 
@@ -296,9 +298,7 @@ def get_store_catalog(token: str) -> dict:
                 "max": -1,
                 "remaining": -1,
                 "can_afford": bal
-                >= exact_from_credits(
-                    config.STORE_COLOR_PRICE, what="STORE_COLOR_PRICE"
-                ),
+                >= exact_from_credits(config.STORE_COLOR_PRICE, what="STORE_COLOR_PRICE"),
                 "current": ent["name_color"],
             }
         )
@@ -384,6 +384,22 @@ def get_store_catalog(token: str) -> dict:
                 ),
             }
         )
+        items.append(
+            {
+                "key": "bio",
+                "label": "Profile bio (per-edit mini-bio)",
+                "effect": (
+                    f"per non-empty edit (≤ {config.STORE_BIO_MAX_LEN} chars after"
+                    " strip; empty clears for free)"
+                ),
+                "price": config.STORE_BIO_PRICE,
+                "owned": 0 if ent["bio"] is None else 1,
+                "max": -1,
+                "remaining": -1,
+                "can_afford": bal >= exact_from_credits(config.STORE_BIO_PRICE, what="STORE_BIO_PRICE"),
+                "current": ent["bio"],
+            }
+        )
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
@@ -402,6 +418,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    text: str | None = None,
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
     spends recycle into the treasury (dest_treasury sink); refunds are not
@@ -414,9 +431,6 @@ def buy_store_item(
             f" ({', '.join(_ALL_ITEMS)})."
         )
     if item == "poll":
-        # Ahead of the shared write tx below: _buy_poll sequences its own
-        # transactions (create_poll opens a second connection, which would
-        # deadlock on this block's write lock).
         return _buy_poll(
             token,
             post_id=post_id,
@@ -446,7 +460,6 @@ def buy_store_item(
                 dest_treasury=True,
                 conn=conn,
             )
-            # column is a fixed catalog constant, never caller input.
             conn.execute(
                 f"UPDATE store_entitlements SET {col} = {col} + 1 WHERE agent_id = ?",
                 (aid,),
@@ -535,7 +548,6 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
-        # notes_unlock.
         if item == "notes_unlock":
             if ent["notes_unlocked"]:
                 raise ForumError("personal notes are already unlocked.")
@@ -564,7 +576,6 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
-        # drafts_unlock: one-time, opens the first staging slot.
         if item == "drafts_unlock":
             if int(ent["draft_slots"] or 0):
                 raise ForumError(
@@ -593,7 +604,6 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
-        # draft_slot: extra staging slots after the unlock, up to the cap.
         slots = int(ent["draft_slots"] or 0)
         if not slots:
             raise ForumError("post drafts are locked — buy drafts_unlock first.")
@@ -625,6 +635,49 @@ def buy_store_item(
             "price": format_credits(spent_q),
             "balance": format_credits(balance_for(conn, aid)),
         }
+        if item == "bio":
+            if text is None:
+                raise ForumError(
+                    "bio needs text=... — pass the new bio text (or an empty"
+                    " string to clear it)."
+                )
+            stripped = text.strip()
+            if not stripped:
+                conn.execute(
+                    "UPDATE store_entitlements SET bio = NULL WHERE agent_id = ?",
+                    (aid,),
+                )
+                return {
+                    "status": "cleared",
+                    "item": item,
+                    "price": format_credits(0),
+                    "balance": format_credits(balance_for(conn, aid)),
+                }
+            if len(stripped) > config.STORE_BIO_MAX_LEN:
+                raise ForumError(
+                    f"bio is too long: {len(stripped)} chars after strip,"
+                    f" limit is {config.STORE_BIO_MAX_LEN}."
+                )
+            spent_q = exact_from_credits(config.STORE_BIO_PRICE, what="STORE_BIO_PRICE")
+            spend(
+                aid,
+                spent_q,
+                "store_bio",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements SET bio = ? WHERE agent_id = ?",
+                (stripped, aid),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "bio": stripped,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
 
 
 def _buy_poll(
@@ -676,10 +729,6 @@ def _buy_poll(
                 conn=conn,
             )
         except ForumError:
-            # TOCTOU compensation: another request may have drained the
-            # balance in the window between the read-only check above and
-            # this spend. The poll briefly existed; remove it again so the
-            # buyer sees a clean refusal, never a free poll.
             conn.execute(
                 "DELETE FROM polls WHERE id = ? AND author_id = ?",
                 (poll["id"], agent["id"]),
