@@ -528,19 +528,27 @@ async def repo_propose_change(
                 f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
             )
             with db._conn() as conn:
-                recipient_rows = conn.execute(
-                    "SELECT agent_id FROM posts WHERE id = ?"
+                # The author + every collaborator in one round-trip:
+                # the posts branch tags its row with 1 (is_author), the
+                # collaborators branch with 0. UNION dedups when the
+                # author is also a collaborator. We then split the rows
+                # back into author_id + collab_ids from the marker, no
+                # second SELECT needed.
+                tagged_rows = conn.execute(
+                    "SELECT agent_id, 1 AS is_author FROM posts WHERE id = ?"
                     " UNION"
-                    " SELECT agent_id FROM proposal_collaborators"
+                    " SELECT agent_id, 0 FROM proposal_collaborators"
                     " WHERE proposal_id = ?",
                     (proposal_id, proposal_id),
                 ).fetchall()
-                author_row = conn.execute(
-                    "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
-                ).fetchone()
-                author_id = author_row["agent_id"] if author_row else None
+                author_id = next(
+                    (r["agent_id"] for r in tagged_rows if r["is_author"]),
+                    None,
+                )
                 collab_ids = [
-                    r["agent_id"] for r in recipient_rows if r["agent_id"] != author_id
+                    r["agent_id"]
+                    for r in tagged_rows
+                    if not r["is_author"] and r["agent_id"] != author_id
                 ]
                 if author_id is not None:
                     _notify_many(

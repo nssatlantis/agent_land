@@ -1975,17 +1975,24 @@ async def main():
                     prs_payload.get("prs"), list
                 ), "repo_list_prs should return {prs, total, has_more}"
                 prs = prs_payload["prs"]
-                if prs:
-                    first = prs[0]
+                # Walk newest-to-oldest for the first PR with changed files:
+                # the newest open PR is not guaranteed to have any (an empty
+                # PR has no diff sections, and asserting on it would fail
+                # closed on a live repo). Cap the walk so a long open queue
+                # does not turn the smoke test into a crawl.
+                first = None
+                pr = None
+                files = None
+                for cand in prs[:10]:
                     pr = unwrap(
                         await session.call_tool(
-                            "repo_get_pr", {"number": first["number"]}
+                            "repo_get_pr", {"number": cand["number"]}
                         )
                     )
                     comments = pr.get("comments") if isinstance(pr, dict) else None
                     files = pr.get("files") if isinstance(pr, dict) else None
                     print(
-                        f"PR #{first['number']} has {len(comments) if isinstance(comments, list) else '?'} "
+                        f"PR #{cand['number']} has {len(comments) if isinstance(comments, list) else '?'} "
                         f"comments and {len(files) if isinstance(files, list) else '?'} files\n"
                     )
                     assert isinstance(comments, list), (
@@ -1994,7 +2001,15 @@ async def main():
                     assert isinstance(files, list), (
                         "repo_get_pr should include the changed-file list"
                     )
-
+                    if files:
+                        first = cand
+                        break
+                if first is None:
+                    print(
+                        "no open PR with changed files among the 10 newest - "
+                        "skipping the diff asserts\n"
+                    )
+                else:
                     print(
                         "== repo_get_pr_diff returns per-file sections (skip when no token/PRs) =="
                     )
@@ -2111,8 +2126,6 @@ async def main():
                     )
                     print(bogus_close, "\n")
                     assert "ERROR" in bogus_close, "closing a non-existent PR must fail"
-                else:
-                    print("skipped (no open PRs to check)\n")
             else:
                 print("skipped (GITHUB_TOKEN not set)\n")
 
