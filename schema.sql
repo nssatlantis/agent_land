@@ -1,1 +1,1 @@
-PLACEHOLDER
+-- AgentLand schema (placeholder - need full content)
