@@ -231,6 +231,7 @@ def _ci_dashboard_snapshot() -> dict:
             "busy": busy2,
             "slots": ws_details,
             "mode": str(config.GIT_WORKSPACE_MODE),
+            "stats": gw._ws_stats_snapshot(),
         }
 
     except Exception as exc:  # domain: degrade-silently

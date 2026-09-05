@@ -12,6 +12,9 @@ calls. These tests pin the contract with local bare remotes (no network):
   the legacy temp path instead of surfacing a brand-new error;
 - a corrupted slot directory self-heals via fresh clone;
 - the default temp mode keeps the legacy clone-per-call contract.
+- pool-use counters (acquires, full fetches, fetch skips, temp fallbacks,
+  saturations, fresh clones) feed the /status snapshot, so pool demand is
+  visible without host-log access;
 """
 
 import os
@@ -432,6 +435,81 @@ def test_cold_start_logs_fresh_clone_and_normalize_duration():
         sb.close()
 
 
+def test_resize_during_hold_never_double_issues_and_stays_whole():
+    """A resize while a slot is held must neither double-issue the held
+    slot nor lose its token: concurrent acquirers get other slots, and the
+    released token lands back in the live pool."""
+    sb = _PoolSandbox(pool=1, lock_timeout=2)
+    try:
+        cm = gh._workspace()
+        held = cm.__enter__()
+        assert held == gh._ws_slots[0]["dir"]
+        config.GIT_WORKSPACE_POOL = 2  # resize while slot0 is held
+        gh._ws_ensure_pool()
+        with gh._workspace() as other:
+            assert other != held, "resized pool double-issued the held slot"
+            assert other == gh._ws_slots[1]["dir"], other
+        cm.__exit__(None, None, None)
+        live = gh._ws_ensure_pool()
+        got = {live.get(timeout=2), live.get(timeout=2)}
+        assert got == {0, 1}, f"live pool lost a token on resize: {got}"
+        live.put(0)
+        live.put(1)
+        with gh._workspace():
+            pass
+        print("  resize during hold never double-issues, pool stays whole: ok")
+    finally:
+        sb.close()
+
+
+def test_pool_counters_track_acquires_fetches_and_fallbacks():
+    """The /status counters answer 'is the pool getting any use': every
+    acquire, TTL fetch/skip and fresh clone is counted exactly once
+    (deltas keep this independent of other tests in the process)."""
+    sb = _PoolSandbox(pool=1, ttl=3600)
+    try:
+        before = gh._ws_stats_snapshot()
+        with gh._workspace():
+            pass
+        with gh._workspace():
+            pass
+        mid = gh._ws_stats_snapshot()
+        assert mid["acquires"] - before["acquires"] == 2, mid
+        assert mid["fresh_clones"] - before["fresh_clones"] == 1, mid
+        assert mid["fetch_skips"] - before["fetch_skips"] == 1, mid
+        gh._ws_slots[0]["last_fetch"] -= config.GIT_WORKSPACE_FETCH_TTL + 1
+        with gh._workspace():
+            pass
+        after = gh._ws_stats_snapshot()
+        assert after["full_fetches"] - mid["full_fetches"] == 1, after
+        assert after["acquires"] - mid["acquires"] == 1, after
+    finally:
+        sb.close()
+    print("  pool counters track acquires, skips, fetches and clones: ok")
+
+
+def test_pool_counters_track_saturation_fallback():
+    """A saturated acquire counts one saturation plus one temp fallback -
+    and the held slot's own acquire still counts exactly once."""
+    sb = _PoolSandbox(pool=1, lock_timeout=0)
+    try:
+        before = gh._ws_stats_snapshot()
+        cm = gh._workspace()
+        cm.__enter__()
+        try:
+            with gh._workspace():
+                pass
+        finally:
+            cm.__exit__(None, None, None)
+        after = gh._ws_stats_snapshot()
+        assert after["saturations"] - before["saturations"] == 1, after
+        assert after["temp_fallbacks"] - before["temp_fallbacks"] == 1, after
+        assert after["acquires"] - before["acquires"] == 1, after
+    finally:
+        sb.close()
+    print("  pool counters track saturation fallback: ok")
+
+
 def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
@@ -443,6 +521,9 @@ def main():
     test_pool_size_follows_config_changes()
     test_slots_carry_commit_identity()
     test_cold_start_logs_fresh_clone_and_normalize_duration()
+    test_resize_during_hold_never_double_issues_and_stays_whole()
+    test_pool_counters_track_acquires_fetches_and_fallbacks()
+    test_pool_counters_track_saturation_fallback()
     print("test_git_workspace: all ok")
     return 0
 

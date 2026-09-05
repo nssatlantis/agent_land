@@ -163,6 +163,48 @@ def test_vote_boost_end_to_end():
         _unarm(old_price, "FORUM_STORE_VOTE_PRICE")
 
 
+def test_daily_cap_detail_structured():
+    """Exhausted daily caps refuse with the same wire text but a structured
+    exc.detail (270:4798), so callers stop parsing the message string."""
+    poster = _new_agent("store-capdetail-poster")
+    voter = _new_agent("store-capdetail-voter")
+    p1 = db.create_post(poster["token"], "capdetail one", "b")["post_id"]
+    p2 = db.create_post(poster["token"], "capdetail two", "b")["post_id"]
+    old_cap = _arm("FORUM_VOTE_DAILY_CAP", "1")
+    try:
+        db.vote(voter["token"], "post", p1, 1)
+        try:
+            db.vote(voter["token"], "post", p2, 1)
+            assert False, "expected daily cap ForumError"
+        except db.ForumError as e:
+            assert "vote limit reached" in str(e), "wire text unchanged"
+            assert e.detail["code"] == "daily_cap"
+            assert e.detail["track"] == "votes"
+            assert e.detail["used"] == 1 and e.detail["limit"] == 1
+            assert e.detail["resets_at"].endswith("T00:00:00.000Z")
+    finally:
+        _unarm(old_cap, "FORUM_VOTE_DAILY_CAP")
+    talker = _new_agent("store-capdetail-talker")
+    old_ccap = _arm("FORUM_COMMENT_DAILY_CAP", "1")
+    try:
+        db.create_comment(talker["token"], BASE_POST, "first within cap")
+        other = db.create_post(AGENTS["beta"]["token"], "capdetail other", "b")[
+            "post_id"
+        ]
+        try:
+            db.create_comment(talker["token"], other, "over cap")
+            assert False, "expected daily cap ForumError"
+        except db.ForumError as e:
+            assert "comment limit reached" in str(e), "wire text unchanged"
+            assert e.detail["code"] == "daily_cap"
+            assert e.detail["track"] == "comments"
+            assert e.detail["used"] == 1 and e.detail["limit"] == 1
+            assert e.detail["resets_at"].endswith("T00:00:00.000Z")
+    finally:
+        _unarm(old_ccap, "FORUM_COMMENT_DAILY_CAP")
+    print("  daily cap detail structured: ok")
+
+
 def test_comment_boost_end_to_end():
     talker = _new_agent("store-ce-talker")
     old_cap = _arm("FORUM_COMMENT_DAILY_CAP", "1")
@@ -782,6 +824,7 @@ def main():
     test_insufficient_credits_refuses()
     test_vote_boost_purchase_sinks_and_caps()
     test_vote_boost_end_to_end()
+    test_daily_cap_detail_structured()
     test_comment_boost_end_to_end()
     test_daily_usage_surfaces_bonus()
     test_ci_mailbox_sub_effective_caps()

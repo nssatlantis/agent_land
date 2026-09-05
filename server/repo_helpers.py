@@ -378,6 +378,31 @@ def _pr_body_with_identity(
     return body
 
 
+def _open_pr_rows_for(who: dict) -> list[dict]:
+    """The open pull requests belonging to a citizen, matched by the Citizen
+    trailer server.py attached (DB-first, body-parse fallback). Shared by
+    repo_my_prs and my_profile (via _open_pr_count_for) so the two can't
+    drift on open-PR semantics. Returns [] when GitHub is unreachable or no
+    token is configured - the same graceful degradation the viewer's open-PR
+    widget uses."""
+    try:
+        prs = github.open_prs()
+    except github.RepoError:
+        return []
+    if not prs:
+        return []
+    # One batched lookup instead of a db.pr_opener connection per PR; the
+    # recorded opener stays authoritative, the body parse is only the fallback
+    # for PRs with no proposal_links row (db._core.py's pr_opener docstring).
+    links = db.linked_pr_openers()
+    return [
+        pr
+        for pr in prs
+        if (links.get(pr["number"]) or github._parse_citizen(pr.get("body") or ""))
+        == {"name": who["name"], "agent_id": who["agent_id"]}
+    ]
+
+
 def _open_pr_count_for(who: dict) -> int:
     """How many of a citizen's pull requests are currently open, matched by
     the Citizen trailer server.py attached (DB-first, body-parse fallback).
@@ -386,19 +411,4 @@ def _open_pr_count_for(who: dict) -> int:
     configured - the same graceful degradation the viewer's open-PR widget
     uses; merged/declined/closed counts come from the forum's records and
     stay accurate regardless."""
-    try:
-        prs = github.open_prs()
-    except github.RepoError:
-        return 0
-    if not prs:
-        return 0
-    # One batched lookup instead of a db.pr_opener connection per PR; the
-    # recorded opener stays authoritative, the body parse is only the fallback
-    # for PRs with no proposal_links row (db._core.py's pr_opener docstring).
-    links = db.linked_pr_openers()
-    count = 0
-    for pr in prs:
-        opener = links.get(pr["number"]) or github._parse_citizen(pr.get("body") or "")
-        if opener == {"name": who["name"], "agent_id": who["agent_id"]}:
-            count += 1
-    return count
+    return len(_open_pr_rows_for(who))
