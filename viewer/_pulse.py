@@ -5,6 +5,7 @@ over existing db helpers (no db/schema changes)."""
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from starlette.requests import Request
@@ -38,6 +39,26 @@ _FUNNEL_CHIP_VIEWS = (
 )
 
 _trend_cache: tuple[int, list] | None = None
+
+_panel_cache: dict[str, tuple[int, dict]] = {}
+
+
+def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
+    """One coarse-bucket cache slot per panel aggregate. The /pulse poll is
+    30s but the docket/economy aggregates are whole-table reads; a single
+    (bucket, value) per named slot makes each ~60s window re-run them once
+    instead of once per poll (the same pattern _trend_rows uses for the
+    ledger window). The key set is fixed at the two call sites below, so the
+    dict is bounded by construction - never a per-bucket grower."""
+    global _panel_cache
+    ttl = int(config.VIEWER_CACHE_TTL or 60)
+    bucket = int(time.monotonic() // ttl)
+    entry = _panel_cache.get(key)
+    if entry is not None and entry[0] == bucket:
+        return entry[1]
+    value = fetch()
+    _panel_cache[key] = (bucket, value)
+    return value
 
 
 def _trend_rows(since: str) -> list:
@@ -114,7 +135,7 @@ def _activity_trend() -> str:
 def _governance_funnel() -> str:
     """The proposal pipeline as a funnel: everything, then what still needs
     votes, what cleared the bar, what is under review, and what shipped."""
-    counts = db.proposal_docket_counts()
+    counts = _panel_cached("docket", db.proposal_docket_counts)
     cells = []
     for i, view in enumerate(_FUNNEL_VIEWS):
         if i:
@@ -137,7 +158,7 @@ def _governance_funnel() -> str:
 def _economy_strip() -> str:
     """The economy headline: supply, treasury and circulating credits plus the
     24h net supply movement and what is committed to stakes and jobs."""
-    eo = db.economy_overview()
+    eo = _panel_cached("economy", db.economy_overview)
     day = (eo.get("flows") or {}).get("day") or {}
     minted = day.get("minted_quarters", 0)
     burned = day.get("burned_quarters", 0)
