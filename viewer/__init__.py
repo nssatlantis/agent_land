@@ -2261,12 +2261,22 @@ def _economy_body(request: Request) -> str:
             return f'<a href="{link}">{esc(label)}</a>'
         return esc(f"{e['target_type']} #{e['target_id']}")
 
-    ledger = (
-        db.credit_history(
-            agent_id=view_agent, limit=per_page, offset=(page - 1) * per_page
-        )
-        if view_agent
-        else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    _cat_to_db = {
+        "earned": "earned",
+        "jobs": "jobs",
+        "tags": "tags",
+        "stakes": "stakes",
+        "transfers": "transfers",
+        "treasury": "treasury",
+        "forfeits": "forfeited",
+    }
+    ledger = db.credit_history(
+        agent_id=view_agent,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        category=_cat_to_db.get(cat) if cat else None,
+        min_quarters=min_q,
+        max_quarters=max_q,
     )
     # Category tabs + filtering (4209) — display-only, degrade-silently, reuses global categories pattern
     _economy_cats = [
@@ -2336,80 +2346,10 @@ def _economy_body(request: Request) -> str:
         )
         + "</form>"
     )
-    # Filter displayed entries when cat is set (viewer-side, degrade-silently)
+    # Category/amount filters run in SQL now (db.credit_history category +
+    # min/max_quarters) so paging and has_more reflect the filtered ledger;
+    # _display_entries is already the filtered page.
     _display_entries = ledger["entries"]
-    if cat is not None:
-        try:
-            if cat == "earned":
-                _display_entries = [
-                    e
-                    for e in _display_entries
-                    if e.get("delta_quarters", 0) > 0
-                    and e.get("account") == "agent"
-                    and "transfer" not in e.get("reason", "")
-                    and "mint" not in e.get("reason", "")
-                    and "burn" not in e.get("reason", "")
-                    and "forfeit" not in e.get("reason", "")
-                ]
-            elif cat == "jobs":
-                _display_entries = [
-                    e for e in _display_entries if "job" in e.get("reason", "").lower()
-                ]
-            elif cat == "tags":
-                _display_entries = [
-                    e for e in _display_entries if "tag" in e.get("reason", "").lower()
-                ]
-            elif cat == "stakes":
-                _display_entries = [
-                    e
-                    for e in _display_entries
-                    if "stake" in e.get("reason", "").lower()
-                    or "bounty" in e.get("reason", "").lower()
-                ]
-            elif cat == "transfers":
-                _display_entries = [
-                    e
-                    for e in _display_entries
-                    if "transfer" in e.get("reason", "").lower()
-                ]
-            elif cat == "treasury":
-                _display_entries = [
-                    e
-                    for e in _display_entries
-                    if "mint" in e.get("reason", "").lower()
-                    or "burn" in e.get("reason", "").lower()
-                    or "genesis" in e.get("reason", "").lower()
-                ]
-            elif cat == "forfeits":
-                _display_entries = [
-                    e
-                    for e in _display_entries
-                    if "forfeit" in e.get("reason", "").lower()
-                ]
-        except (
-            Exception
-        ):  # domain: degrade-silently - filtering never blocks ledger render
-            _display_entries = ledger["entries"]
-    # Amount range filtering (4397) — display-only, degrade-silently, absolute value
-    if min_q is not None or max_q is not None:
-        try:
-            _filtered_amt: list[dict] = []
-            for _e in _display_entries:
-                try:
-                    _dq = int(_e.get("delta_quarters", 0))
-                except Exception:  # domain: degrade-silently - malformed delta_quarters just skips entry, never blocks ledger
-                    continue
-                _aq = abs(_dq)
-                if min_q is not None and _aq < min_q:
-                    continue
-                if max_q is not None and _aq > max_q:
-                    continue
-                _filtered_amt.append(_e)
-            _display_entries = _filtered_amt
-        except (
-            Exception
-        ):  # domain: degrade-silently - amount filtering never blocks ledger render
-            pass
 
     def _ledger_tx_row(_g: dict) -> str:
         _when = esc(_g["created_at"][:19].replace("T", " "))
@@ -2460,14 +2400,8 @@ def _economy_body(request: Request) -> str:
     # Genesis & burns panel (4395) — display-only, degrade-silently
     _genesis_html = ""
     try:
-        _gen_ledger = db.credit_history(limit=100, offset=0)
-        _gen_entries = [
-            e
-            for e in _gen_ledger["entries"]
-            if "genesis" in e.get("reason", "").lower()
-            or "mint" in e.get("reason", "").lower()
-            or "burn" in e.get("reason", "").lower()
-        ]
+        _gen_ledger = db.credit_history(limit=20, offset=0, category="treasury")
+        _gen_entries = _gen_ledger["entries"]
         if _gen_entries:
             _gen_rows = "".join(
                 f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
