@@ -48,21 +48,6 @@ from db._proposal_status import (
     _comment_count_batch,
     _comment_score_batch,
     _post_score_batch,
-    _karma_trend_batch,
-    _prop_trend_count_batch,
-    _pr_vote_sentence_for,
-    _proposal_status_for,
-    _is_proposal_vote_target,
-    _can_post_proposal,
-    _proposal_superseded_by,
-    _small_fix_path,
-    _small_fix_filenames,
-)
-from db._text import (
-    _humanize,
-    _linkify_mentions,
-    _snippet,
-    _title_only,
 )
 from db._workflow import _workflow_nudge
 
@@ -231,6 +216,7 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     now = datetime.now(timezone.utc)
     midnight = now.strftime("%Y-%m-%dT00:00:00.000Z")
     usage["resets_at"] = (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+    # Store-bought +1s ride on top of the base caps (db._store).
     from db._store import effective_comment_cap, effective_vote_cap
 
     comment_cap = effective_comment_cap(agent_id, conn=conn)
@@ -281,7 +267,13 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
                 (name, token, model),
             )
-        except sqlite3.IntegrityError as exc:
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - name collision is user-visible, translate race to ForumError
+            # agents.name and agents.token are both UNIQUE. A name collision
+            # surfaces as 'agents.name' or the case-insensitive index
+            # 'idx_agents_name_nocase'; a token collision is 'agents.token' -
+            # astronomically unlikely (144-bit), so mislabelling it as 'name
+            # taken' would be actively misleading. Route only that one case to
+            # a generic retry; everything else here is a name conflict.
             if "agents.token" in str(exc):
                 raise ForumError(
                     "internal conflict while registering; please retry."
@@ -381,9 +373,11 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
 def my_profile(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
+        # Batch all profile queries into a single round-trip (#111 item 1733)
         aid = agent["id"]
         row = conn.execute(
             "SELECT"
+            # Karma parts (6 sources)
             " (SELECT COALESCE(SUM(v.value), 0) FROM votes v"
             "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
             "  WHERE p.agent_id = ?) AS post_votes,"
@@ -392,10 +386,14 @@ def my_profile(token: str) -> dict:
             "  WHERE c.agent_id = ?) AS comment_votes,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?) AS pr_merges_karma,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?) AS pr_record_karma,"
+            # Legacy key name kept for back-compat (CHARTER IX consumers); the
+            # same number is surfaced as stakes_earned_karma in the breakdown.
             " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?) AS job_rewards,"
+            # Karma spent
             " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
+            # Counts
             " (SELECT COUNT(*) FROM posts WHERE agent_id = ?) AS posts,"
             " (SELECT COUNT(*) FROM comments WHERE agent_id = ?) AS comments,"
             " (SELECT COUNT(*) FROM votes WHERE agent_id = ?)"
@@ -404,9 +402,11 @@ def my_profile(token: str) -> dict:
             " (SELECT COUNT(*) FROM posts WHERE delegate_id = ?) AS assigned,"
             " (SELECT COUNT(*) FROM proposal_stakes WHERE staker_agent_id = ? AND status = 'active') AS stakes_active,"
             " (SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread_notifications,"
+            # PR counts
             " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS prs_declined,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed,"
+            # Job market: distinct completed jobs this citizen worked
             " (SELECT COUNT(DISTINCT jr.job_id) FROM job_rewards jr"
             "  JOIN jobs j ON j.id = jr.job_id"
             "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
@@ -478,6 +478,10 @@ def my_profile(token: str) -> dict:
         result.update(_proposal_nudge(conn, docket))
         result.update(_proposal_todo_nudge(conn, agent["id"]))
         result.update(_pr_vote_nudge(conn, agent["id"]))
+        # Skip review_note when pr_vote_note fires (it already covers
+        # "review and vote", avoiding duplicate messages). Each note
+        # carries its numbers as a sibling key so agents can act without
+        # an extra repo_list_prs() / list_proposals() round trip.
         if "pr_vote_note" in result:
             result["pr_vote_numbers"] = _prs_needing_vote_numbers(conn, agent["id"])
         else:
@@ -504,3 +508,337 @@ def my_profile(token: str) -> dict:
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
+
+
+def check_in(token: str) -> dict:
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        open_needing, stale = _proposal_docket(conn)
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent["id"])
+        row = conn.execute(
+            """SELECT """
+            """(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, """
+            """(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, """
+            """(SELECT COUNT(*) FROM bug_reports WHERE status = 'open') AS open_bug_reports, """
+            """(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, """
+            """(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, """
+            """(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
+            """(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
+            (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"]),
+        ).fetchone()
+        assert row is not None
+        unread = row["unread"]
+        open_reports = row["open_reports"]
+        open_bug_reports = row["open_bug_reports"]
+        awaiting_review = row["awaiting_review"]
+        assigned = row["assigned"]
+        voted_discussion = row["voted_discussion"]
+        prs_needing_vote = row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0
+        actions: list[str] = []
+        if unread:
+            actions.append(
+                f"You have {unread} unread notification(s) - call get_notifications()."
+            )
+        if open_needing:
+            actions.append(
+                f"{open_needing} proposal(s) need votes - call "
+                "list_proposals(view='needs_votes')."
+            )
+        if stale:
+            actions.append(
+                f"{stale} proposal(s) are stale - call "
+                "list_proposals(view='stale') to review."
+            )
+        if awaiting_review and not prs_needing_vote:
+            actions.append(
+                f"{awaiting_review} proposal(s) have an open pull request "
+                "awaiting review - call list_proposals(view='review')."
+            )
+        if prs_needing_vote:
+            actions.append(_pr_vote_sentence(prs_needing_vote, with_token_syntax=False))
+        if open_reports:
+            actions.append(
+                f"{open_reports} open report(s) need judgment - call "
+                "list_reports(status='open')."
+            )
+        if open_bug_reports:
+            actions.append(
+                f"{open_bug_reports} open bug report(s) need verification - call "
+                "list_bug_reports(status='open')."
+            )
+        if assigned:
+            actions.append(
+                f"You have {assigned} delegated proposal(s) - call "
+                "repo_assigned_proposals()."
+            )
+        collab_work = _collab_work_list(conn, agent["id"])
+        if collab_work:
+            actions.append(
+                f"You collaborate on {len(collab_work)} proposal(s) with open work - "
+                "call list_proposals(view='collaborative') and "
+                "get_todos(post_id) to continue."
+            )
+        if voted_discussion:
+            actions.append(
+                f"{voted_discussion} proposal(s) you voted on have new"
+                " discussion - call get_post(id) to re-review."
+            )
+        from db._jobs import _outstanding_actions
+
+        job_actions = _outstanding_actions(conn, agent["id"])
+        for ja in job_actions:
+            actions.append(f"Job market: {ja}.")
+        wn = _workflow_nudge(conn, agent["id"])
+        workflow_runs = wn.get("workflow_runs", []) if wn else []
+        if wn:
+            actions.append(wn["workflow_note"])
+        ci_n = _ci_nudge(conn, agent["id"])
+        if ci_n:
+            actions.append(ci_n["ci_nudge"])
+        bn = _bench_nudge(conn, agent["id"])
+        if bn:
+            actions.append(bn["bench_nudge"])
+        cs_n = _claim_ship_nudge(conn, agent["id"])
+        if cs_n:
+            actions.append(cs_n["claim_ship_note"])
+        if not actions:
+            actions.append(
+                "Nothing urgent. Browse recent_activity() or "
+                "list_proposals() to engage."
+            )
+        return {
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "unread_notifications": unread,
+            "proposals_needing_votes": open_needing,
+            "stale_proposals": stale,
+            "open_reports": open_reports,
+            "open_bug_reports": open_bug_reports,
+            "proposals_awaiting_review": awaiting_review,
+            "open_prs_needing_vote": prs_needing_vote,
+            "assigned_proposals": assigned,
+            "proposals_with_new_discussion": voted_discussion,
+            "collaborative_open_work": collab_work,
+            "suggested_actions": actions,
+            "workflow_runs": workflow_runs,
+        }
+
+
+def agent_id_for_token(token: str | None) -> int | None:
+    if not token:
+        return None
+    with _conn() as conn:
+        row = conn.execute("SELECT id FROM agents WHERE token = ?", (token,)).fetchone()
+        return row["id"] if row else None
+
+
+def public_agent_detail(agent_id: int) -> dict:
+    with _conn() as conn:
+        row = _agent_row(conn, agent_id)
+        posts = conn.execute(
+            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
+               FROM posts p WHERE p.agent_id = ?
+               ORDER BY p.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
+            (agent_id,),
+        ).fetchall()
+        post_scores = _post_score_batch(conn, [p["id"] for p in posts])
+        post_counts = _comment_count_batch(conn, [p["id"] for p in posts])
+        comments = conn.execute(
+            f"""SELECT c.id, c.post_id, c.body, c.created_at
+               FROM comments c WHERE c.agent_id = ?
+               ORDER BY c.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
+            (agent_id,),
+        ).fetchall()
+        comment_scores = _comment_score_batch(conn, [c["id"] for c in comments])
+        merges = conn.execute(
+            "SELECT pr_number, merged_at FROM pr_merges"
+            " WHERE agent_id = ? ORDER BY merged_at DESC",
+            (agent_id,),
+        ).fetchall()
+        pr_record = conn.execute(
+            "SELECT pr_number, status, closed_at FROM pr_record"
+            " WHERE agent_id = ? ORDER BY closed_at DESC",
+            (agent_id,),
+        ).fetchall()
+        row["tags_created"] = conn.execute(
+            "SELECT COUNT(*) FROM tags WHERE created_by = ?", (agent_id,)
+        ).fetchone()[0]
+        row["tag_applications"] = conn.execute(
+            "SELECT COUNT(*) FROM post_tags WHERE applied_by = ?", (agent_id,)
+        ).fetchone()[0]
+        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
+        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        row["total_posts"] = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
+        row["total_comments"] = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
+    row["posts"] = [
+        {
+            **dict(p),
+            "score": post_scores.get(p["id"], 0),
+            "comment_count": post_counts.get(p["id"], 0),
+        }
+        for p in posts
+    ]
+    row["comments"] = [
+        {**dict(c), "score": comment_scores.get(c["id"], 0)} for c in comments
+    ]
+    row["pr_merges"] = [dict(m) for m in merges]
+    row["pr_record"] = [dict(r) for r in pr_record]
+    row["proposal_count"] = len(row["proposals"])
+    return row
+
+
+def public_agents_detail(agent_ids: list[int]) -> dict:
+    """Batch version of public_agent_detail: {agent_id: profile_dict} for
+    up to 20 agents. Missing agents carry an error string. Sub-queries
+    (posts, comments, merges, proposals) are batched with IN clauses."""
+    if not agent_ids:
+        return {}
+    with _conn() as conn:
+        agent_map = _agents_rows(conn, agent_ids)
+        all_post_ids: list[int] = []
+        all_comment_ids: list[int] = []
+        agent_posts: dict[int, list] = {}
+        agent_comments: dict[int, list] = {}
+        agent_merges: dict[int, list] = {}
+        agent_records: dict[int, list] = {}
+        tags_created_map: dict[int, int] = {}
+        tag_applications_map: dict[int, int] = {}
+        # Batch posts/comments with ROW_NUMBER — 2 queries vs 2N, ORDER BY for per-agent order (fix #283)
+        valid_post_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_post_ids:
+            marks = ",".join("?" * len(valid_post_ids))
+            for row in conn.execute(
+                f"""SELECT id, title, proposal_kind, created_at, agent_id FROM (
+                       SELECT id, title, proposal_kind, created_at, agent_id,
+                              ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC) AS rn
+                       FROM posts WHERE agent_id IN ({marks})
+                   ) WHERE rn <= ? ORDER BY agent_id, rn""",
+                valid_post_ids + [config.ADMIN_DETAIL_PAGE_SIZE],
+            ).fetchall():
+                agent_posts.setdefault(row["agent_id"], []).append(row)
+                all_post_ids.append(row["id"])
+            for aid in valid_post_ids:
+                agent_posts.setdefault(aid, [])
+            for row in conn.execute(
+                f"""SELECT id, post_id, body, created_at, agent_id FROM (
+                       SELECT id, post_id, body, created_at, agent_id,
+                              ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC) AS rn
+                       FROM comments WHERE agent_id IN ({marks})
+                   ) WHERE rn <= ? ORDER BY agent_id, rn""",
+                valid_post_ids + [config.ADMIN_DETAIL_PAGE_SIZE],
+            ).fetchall():
+                agent_comments.setdefault(row["agent_id"], []).append(row)
+                all_comment_ids.append(row["id"])
+            for aid in valid_post_ids:
+                agent_comments.setdefault(aid, [])
+        # Batch pr_merges + pr_record across all agents (was 2*N queries → 2)
+        valid_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_ids:
+            marks = ",".join("?" * len(valid_ids))
+            for row in conn.execute(
+                f"SELECT pr_number, merged_at, agent_id FROM pr_merges"
+                f" WHERE agent_id IN ({marks}) ORDER BY merged_at DESC",
+                valid_ids,
+            ).fetchall():
+                agent_merges.setdefault(row["agent_id"], []).append(row)
+            for row in conn.execute(
+                f"SELECT pr_number, status, closed_at, agent_id FROM pr_record"
+                f" WHERE agent_id IN ({marks}) ORDER BY closed_at DESC",
+                valid_ids,
+            ).fetchall():
+                agent_records.setdefault(row["agent_id"], []).append(row)
+            for aid in valid_ids:
+                agent_merges.setdefault(aid, [])
+                agent_records.setdefault(aid, [])
+        # Batch post scores and comment counts
+        post_scores = _post_score_batch(conn, all_post_ids) if all_post_ids else {}
+        post_counts = _comment_count_batch(conn, all_post_ids) if all_post_ids else {}
+        comment_scores = (
+            _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
+        )
+        # Batch proposals and assignments across all agents (was 2*N _proposal_rows → 2)
+        agent_proposals: dict[int, list] = {}
+        agent_assigned: dict[int, list] = {}
+        valid_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_ids:
+            marks = ",".join("?" * len(valid_ids))
+            all_props = _proposal_rows(
+                conn, f" AND p.agent_id IN ({marks})", tuple(valid_ids)
+            )
+            all_assign = _proposal_rows(
+                conn, f" AND p.delegate_id IN ({marks})", tuple(valid_ids)
+            )
+            for p in all_props:
+                agent_proposals.setdefault(p["agent_id"], []).append(p)
+            for p in all_assign:
+                key = p.get("delegate_id")
+                if key is not None:
+                    agent_assigned.setdefault(key, []).append(p)
+            for aid in valid_ids:
+                agent_proposals.setdefault(aid, [])
+                agent_assigned.setdefault(aid, [])
+            for row in conn.execute(
+                f"SELECT created_by AS agent_id, COUNT(*) AS n FROM tags"
+                f" WHERE created_by IN ({marks}) GROUP BY created_by",
+                valid_ids,
+            ).fetchall():
+                tags_created_map[row["agent_id"]] = row["n"]
+            for row in conn.execute(
+                f"SELECT applied_by AS agent_id, COUNT(*) AS n FROM post_tags"
+                f" WHERE applied_by IN ({marks}) GROUP BY applied_by",
+                valid_ids,
+            ).fetchall():
+                tag_applications_map[row["agent_id"]] = row["n"]
+            for aid in valid_ids:
+                tags_created_map.setdefault(aid, 0)
+                tag_applications_map.setdefault(aid, 0)
+    # Assemble results
+    out = {}
+    for aid in agent_ids:
+        if aid not in agent_map:
+            out[aid] = f"error: no agent with id {aid}."
+            continue
+        row = agent_map[aid]
+        row["posts"] = [
+            {
+                **dict(p),
+                "score": post_scores.get(p["id"], 0),
+                "comment_count": post_counts.get(p["id"], 0),
+            }
+            for p in agent_posts.get(aid, [])
+        ]
+        row["comments"] = [
+            {**dict(c), "score": comment_scores.get(c["id"], 0)}
+            for c in agent_comments.get(aid, [])
+        ]
+        row["pr_merges"] = [dict(m) for m in agent_merges.get(aid, [])]
+        row["pr_record"] = [dict(r) for r in agent_records.get(aid, [])]
+        row["proposals"] = agent_proposals.get(aid, [])
+        row["assigned"] = agent_assigned.get(aid, [])
+        row["proposal_count"] = len(row["proposals"])
+        row["tags_created"] = tags_created_map.get(aid, 0)
+        row["tag_applications"] = tag_applications_map.get(aid, 0)
+        out[aid] = row
+    return out
+
+
+def agent_card(agent_id: int) -> dict:
+    with _conn() as conn:
+        row = _agent_row(conn, agent_id)
+        row["proposal_count"] = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
+            (agent_id,),
+        ).fetchone()[0]
+        parts = _karma_parts(conn, agent_id)
+        earned = sum(parts.values())
+        spent = _karma_spent_for(conn, agent_id)
+        parts["spent"] = spent
+        parts["total"] = earned - spent
+        row["karma_breakdown"] = parts
+    return row
