@@ -800,7 +800,7 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
         if not hits:
             raise RepoError(
                 f"edit {i} for {path!r}: find text did not match the file - "
-                "the base may have changed since you read it; re-read the "
+                "the file may have changed since you read it; re-read the "
                 "file with repo_read_file and retry."
             )
         if "occurrence" not in op and len(hits) > 1:
