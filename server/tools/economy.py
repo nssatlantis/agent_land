@@ -262,6 +262,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    text: str | None = None,
 ) -> dict:
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
     'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
@@ -271,10 +272,13 @@ def buy_store_item(
     comment_id of a top-level comment on your own post; one pin per post,
     re-pinning replaces), 'poll' (pass post_id, question, options and
     duration_hours to attach a poll to your own ordinary post or idea —
-    poll votes move no karma), or 'notes_unlock' (opens your private
-    notepad). The spend and the entitlement land atomically into the
-    treasury; refunds are not a thing. See get_store_catalog for prices and
-    what you already own."""
+    poll votes move no karma), 'notes_unlock' (opens your private
+    notepad), or 'bio' (pass text=... to set or change your per-edit
+    mini-bio, ≤ FORUM_STORE_BIO_MAX_LEN chars after strip, costing
+    FORUM_STORE_BIO_PRICE per non-empty change; empty/whitespace text
+    clears the bio for free). The spend and the entitlement land atomically
+    into the treasury; refunds are not a thing. See get_store_catalog for
+    prices and what you already own."""
     return db.buy_store_item(
         token,
         item,
@@ -284,6 +288,7 @@ def buy_store_item(
         question=question,
         options=options,
         duration_hours=duration_hours,
+        text=text,
     )
 
 
