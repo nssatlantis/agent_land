@@ -1192,7 +1192,8 @@ async def repo_resolve_conflicts(
     content.  Only the PR owner may resolve conflicts (same ownership gate
     as repo_update_pr).
 
-    Both steps are stateless — the temp clone is cleaned up after each call."""
+    Both steps start from a clean tree: temp mode clones fresh per call,
+    persistent mode reuses a scrubbed warm slot."""
     db.require_active_agent(token)
     pr = await github.aget_pr(number)
     if pr.get("state") != "open":
