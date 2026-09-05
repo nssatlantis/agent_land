@@ -688,6 +688,17 @@ def main():
             ],
         }
     ], plan["patch_log"]
+    assert plan["preview"][0]["path"] == "README.md", plan["preview"]
+    hunks = plan["preview"][0]["hunks"]
+    assert "@@" in hunks and "-middle" in hunks and "+patched" in hunks, hunks
+    assert plan["preview"][0]["truncated"] is False, plan["preview"]
+    assert github._preview_hunks("same\n", "same\n") == ("", False)
+    big = "".join(f"line {i}\n" for i in range(200))
+    cut_text, was_cut = github._preview_hunks(
+        big, "".join(f"other {i}\n" for i in range(200))
+    )
+    assert was_cut is True, (was_cut, len(cut_text))
+    assert len(cut_text.splitlines()) <= 60, len(cut_text.splitlines())
 
     # update_pr's manifest is computed for a valid content write too (not
     # just propose_change): dry_run needs only the ownership PR read.

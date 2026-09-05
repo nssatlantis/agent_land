@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 from contextlib import nullcontext
@@ -538,8 +539,6 @@ def _normalize_state(state: list[dict]) -> list[dict]:
 def _apply_ops(state: list[dict], ops: list[dict]) -> list[dict]:
     """Apply delta ops to a deep copy of state, returning the new state. Each
     op mutates by item/list id; list/items retain their stored ordering."""
-    import copy
-
     state = copy.deepcopy(state)
 
     def find_list(lst_id: int) -> dict | None:
@@ -756,8 +755,6 @@ def _store_todo_edit(
     # still fall back to a snapshot. pr ops are normalized on replay (they pop
     # pr_number, which the live serializer always sets to None), so compare
     # the normalized shapes.
-    import copy
-
     churn = (
         had_ids
         and not force
@@ -1434,8 +1431,6 @@ def _derive_edits(rows: list) -> list[dict]:
     their own before snapshot and pass through unchanged. Either way the
     reader returns the same full before/after trail."""
     out: list[dict] = []
-    import copy
-
     current: list[dict] = []
     for r in rows:
         if r["old_lists"]:

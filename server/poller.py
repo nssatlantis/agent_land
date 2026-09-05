@@ -609,15 +609,31 @@ def _auto_link_sweep(since_iso: str, max_matches: int) -> int:
     don't count against the cap). Every entry is fault-isolated so one
     poisoned PR (GitHub read, sqlite contention, a refused link) never
     starves the rest. Designed to run on a worker thread."""
-    with db._conn() as conn:
-        touched = {
-            r["pr_number"] for r in conn.execute("SELECT pr_number FROM proposal_links")
-        } | {
-            r["pr_number"]
-            for r in conn.execute("SELECT pr_number FROM proposal_outcomes")
-        }
+    # Membership only matters for this window's candidates, so scope both
+    # lookups with WHERE pr_number IN (candidates): O(window), not O(total).
+    candidates = _auto_link_candidates(since_iso)
+    numbers = [p["number"] for p in candidates if p.get("merged_at")]
+    touched: set[int] = set()
+    if numbers:
+        marks = ",".join("?" * len(numbers))
+        with db._conn() as conn:
+            touched = {
+                r["pr_number"]
+                for r in conn.execute(
+                    "SELECT pr_number FROM proposal_links"
+                    f" WHERE pr_number IN ({marks})",
+                    numbers,
+                )
+            } | {
+                r["pr_number"]
+                for r in conn.execute(
+                    "SELECT pr_number FROM proposal_outcomes"
+                    f" WHERE pr_number IN ({marks})",
+                    numbers,
+                )
+            }
     matches = 0
-    for p in _auto_link_candidates(since_iso):
+    for p in candidates:
         if not p.get("merged_at"):
             continue  # only merged PRs concern the retro-link
         number = p["number"]

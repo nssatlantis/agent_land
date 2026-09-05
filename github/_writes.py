@@ -10,6 +10,7 @@ manifests) they share. Nothing here ever writes to the base branch.
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import re
 import secrets
@@ -101,13 +102,17 @@ def propose_change(
     resolved: list[dict] = []
     for p in planned:
         if "edits" in p:
-            content, sha, log = _resolve_patch(p["path"], base_branch, p["edits"])
+            content, sha, log, preview, truncated = _resolve_patch(
+                p["path"], base_branch, p["edits"]
+            )
             resolved.append(
                 {
                     "path": p["path"],
                     "content": content,
                     "sha": sha,
                     "patch_log": log,
+                    "preview_hunks": preview,
+                    "preview_truncated": truncated,
                 }
             )
         else:
@@ -151,6 +156,7 @@ def propose_change(
         "changes": [p["path"] for p in resolved],
         "content_manifest": _content_manifest(resolved),
         "patch_log": _patch_log(resolved),
+        "preview": _preview_list(resolved),
     }
     if dry_run:
         return plan
@@ -216,6 +222,7 @@ def propose_change(
         "changes": [p["path"] for p in resolved],
         "content_manifest": _content_manifest(resolved),
         "patch_log": _patch_log(resolved),
+        "preview": _preview_list(resolved),
     }
 
 
@@ -317,9 +324,14 @@ def update_pr(
     base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
     for p in planned:
         if "edits" in p:
-            p["content"], p["sha"], p["patch_log"] = _resolve_patch(
+            content, sha, log, preview, truncated = _resolve_patch(
                 p["path"], branch, p["edits"]
             )
+            p["content"] = content
+            p["sha"] = sha
+            p["patch_log"] = log
+            p["preview_hunks"] = preview
+            p["preview_truncated"] = truncated
         elif "content" in p:
             # Whole-file update: preserve PR branch EOL until renormalize.
             # For dry_run keep network-free (canonical LF) like propose_change.
@@ -394,6 +406,7 @@ def update_pr(
         "changes": [p["path"] for p in planned],
         "content_manifest": _content_manifest(planned),
         "patch_log": _patch_log(planned),
+        "preview": _preview_list(planned),
     }
     if body is not None:
         plan["body"] = body
@@ -625,6 +638,53 @@ def _patch_log(planned: list[dict]) -> list[dict]:
     ]
 
 
+# Cap on preview hunks per file (the dry_run/open `preview` key). Previews
+# are a reading aid, not the change itself, so they stay small no matter
+# how big the patched file is.
+_PREVIEW_CONTEXT_LINES = 3
+_PREVIEW_MAX_LINES = 60
+_PREVIEW_MAX_CHARS = 3000
+
+
+def _preview_hunks(base: str, new: str) -> tuple[str, bool]:
+    """Capped unified diff of base -> applied result for the `preview` key.
+
+    Pure function, no network. Returns (hunks, truncated); identical texts
+    preview as ("", False). Callers only ever pass decoded text (patch mode
+    refuses binaries before resolve), so there is no binary branch. The
+    explicit lineterm keeps yielded lines terminator-free, so the line cap
+    counts exactly what is stored.
+    """
+    if base == new:
+        return "", False
+    hunks = difflib.unified_diff(
+        base.splitlines(), new.splitlines(), n=_PREVIEW_CONTEXT_LINES, lineterm=""
+    )
+    lines = list(hunks)
+    text = "\n".join(lines)
+    if len(lines) > _PREVIEW_MAX_LINES or len(text) > _PREVIEW_MAX_CHARS:
+        text = "\n".join(lines[:_PREVIEW_MAX_LINES])[:_PREVIEW_MAX_CHARS]
+        return text, True
+    return text, False
+
+
+def _preview_list(planned: list[dict]) -> list[dict]:
+    """Per-file preview hunks for patch-mode entries ({path, hunks, ...}).
+
+    Mirrors _patch_log: patch entries only; content/delete/reset entries
+    carry nothing to preview.
+    """
+    return [
+        {
+            "path": p["path"],
+            "hunks": p["preview_hunks"],
+            "truncated": p["preview_truncated"],
+        }
+        for p in planned
+        if "preview_hunks" in p
+    ]
+
+
 def _validate_change(path: str, c: dict) -> dict:
     """Validate one change entry's content-or-edits tail and return the planned
     entry. Shared by propose_change (content/edits only) and update_pr (which
@@ -783,10 +843,10 @@ def _resolve_edits(
 
 def _resolve_patch(
     path: str, ref: str, edits: list[dict]
-) -> tuple[str, str | None, list[dict]]:
+) -> tuple[str, str | None, list[dict], str, bool]:
     """Resolve a patch-mode `edits` list against a ref, end to end: fetch the
     base from that ref (404-safe), detect its EOL and normalize the ops onto
-    it, apply them, and return (content, sha, log). The GET doubles as the
+    it, apply them, and return (content, sha, log, preview, truncated). The GET doubles as the
     sha resolution for the follow-up PUT. Shared by propose_change (base
     branch) and update_pr (PR branch head), so the two patch paths resolve
     identically."""
@@ -810,7 +870,8 @@ def _resolve_patch(
             neo["occurrence"] = op["occurrence"]
         normalized_edits.append(neo)
     content, log = _resolve_edits(path, data, normalized_edits)
-    return content, data.get("sha") if data else None, log
+    hunks, truncated = _preview_hunks(_decode_content_text(path, data), content)
+    return content, data.get("sha") if data else None, log, hunks, truncated
 
 
 def _put_params(

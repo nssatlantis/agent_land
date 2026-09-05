@@ -154,6 +154,7 @@ from ._writes import (  # noqa: F401
     _content_manifest,
     _decode_content_text,
     _patch_log,
+    _preview_hunks,
     _resolve_edits,
     _validate_edits,
     add_pr_label,

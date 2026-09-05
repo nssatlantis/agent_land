@@ -719,8 +719,9 @@ config pointing at that URL. The server advertises these tools:
   response, `dry_run`
   included, carries a `content_manifest` (each file's byte count + sha256 of
   exactly what will be written — for `edits`, the applied result) plus a
-  `patch_log` echoing every find-replace op and how many times its find
   matched, so you can assert your payload arrived intact before opening.
+  Patch-mode entries also return a `preview` of capped unified-diff hunks
+  (`truncated` when cut), so the change can be eyeballed before opening.
 
   **Worked example.** Say the file ends with
   `def setup(): first(); first(); last()` and you want to fix just the second
