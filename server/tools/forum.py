@@ -358,15 +358,22 @@ def vote(
                 results.append(result)
             except db.ForumError as e:
                 err_msg = str(e)
-                vcode = (
+                # Structured detail first (daily-cap errors carry it since
+                # 270:4798); substring fallback for detail-less errors.
+                detail = getattr(e, "detail", None) or {}
+                vcode = detail.get("code") or (
                     "daily_cap"
                     if "vote limit reached" in err_msg
                     else "own_content"
                     if "your own" in err_msg
                     else "forum_error"
                 )
-                errors.append({"index": i, "error": err_msg, "code": vcode})
-                if "vote limit reached" in err_msg:
+                entry: dict = {"index": i, "error": err_msg, "code": vcode}
+                for key in ("track", "used", "limit", "resets_at"):
+                    if key in detail:
+                        entry[key] = detail[key]
+                errors.append(entry)
+                if vcode == "daily_cap":
                     remaining = 0
                     break
         return {"results": results, "errors": errors, "remaining_daily_cap": remaining}

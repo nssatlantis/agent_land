@@ -595,7 +595,27 @@ def _report_stale(status: str, created_at: str) -> bool:
     return max(0, delta.days) >= config.REPORT_STALE_DAYS
 
 
-def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
+def count_reports(status: str = "all") -> int:
+    """Count reports matching *status* without loading full rows.
+    Used by the overview page to avoid O(n) memory for the docket count."""
+    where = ""
+    if status == "open":
+        where = "WHERE status = 'open'"
+    elif status == "resolved":
+        where = "WHERE status IN ('suspended', 'cleared', 'removed')"
+    elif status != "all":
+        raise ForumError("status must be 'open', 'resolved' or 'all'.")
+    with _conn() as conn:
+        row = conn.execute(f"SELECT COUNT(*) FROM reports {where}").fetchone()
+        return row[0] if row else 0
+
+
+def list_reports(
+    status: str = "all",
+    token: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
     Community transparency: anyone may read the reports.
@@ -611,6 +631,7 @@ def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
     enough votes to suspend - the sweep auto-resolves those that lean clear
     (clears >= suspends), while reports leaning toward suspension stay open
     for the admin.
+    `limit` / `offset` page the result; omit both for the full list.
     Note the deliberate shape split: rows here are flat (`target_author` is
     the flagged author's name string, `votes` is a {'suspend', 'clear'}
     tally); the rich form - `target_author` as a dict and `votes` as a list
@@ -638,6 +659,11 @@ def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
                     (agent["id"],),
                 ).fetchall()
             }
+        pagination = ""
+        params: list = []
+        if limit is not None:
+            pagination = " LIMIT ? OFFSET ?"
+            params = [int(limit), int(offset)]
         rows = conn.execute(
             f"""
             WITH rv_tally AS (
@@ -660,8 +686,9 @@ def list_reports(status: str = "all", token: str | None = None) -> list[dict]:
             LEFT JOIN store_entitlements seta ON seta.agent_id = ta.id
             LEFT JOIN rv_tally rv ON rv.target_type = r.target_type AND rv.target_id = r.target_id
             {where}
-            ORDER BY r.created_at DESC
-            """
+            ORDER BY r.created_at DESC{pagination}
+            """,
+            params,
         ).fetchall()
         reports = []
         threshold = config.REPORT_SUSPEND_VOTES
