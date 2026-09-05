@@ -1352,7 +1352,7 @@ ra AS (
         SELECT c.agent_id AS author_id FROM reports r JOIN comments c ON r.target_type = 'comment' AND r.target_id = c.id WHERE r.status = 'open'
     ) GROUP BY author_id
 )
-SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+SELECT a.id, a.name, se.name_color, a.created_at, a.model, a.suspended_until,
        a.last_ip, a.last_seen_at, a.banned,
        COALESCE(k.karma, 0) AS karma,
        COALESCE(pc.post_count, 0) AS post_count,
@@ -1365,6 +1365,7 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(ra.reports_against, 0) AS reports_against,
        COALESCE(rf.reports_filed, 0) AS reports_filed
 FROM agents a
+LEFT JOIN store_entitlements se ON se.agent_id = a.id
 LEFT JOIN k ON k.agent_id = a.id
 LEFT JOIN pc ON pc.agent_id = a.id
 LEFT JOIN cc ON cc.agent_id = a.id

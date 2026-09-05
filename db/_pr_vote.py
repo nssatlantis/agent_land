@@ -293,12 +293,14 @@ def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
         {
             "agent_id": r["voter_id"],
             "name": r["name"],
+            "name_color": r["name_color"],
             "value": r["value"],
             "created_at": r["created_at"],
         }
         for r in conn.execute(
-            "SELECT pv.voter_id, a.name, pv.value, pv.created_at"
+            "SELECT pv.voter_id, a.name, se.name_color, pv.value, pv.created_at"
             " FROM pr_votes pv JOIN agents a ON a.id = pv.voter_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE pv.pr_number = ? ORDER BY pv.created_at",
             (pr_number,),
         ).fetchall()

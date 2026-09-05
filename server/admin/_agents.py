@@ -59,8 +59,11 @@ def _render_citizens(request) -> str:
                 '<button type="submit">ban</button></form>'
             )
 
+        ncol = a.get("name_color")
+        nstyle = f' style="color:{esc(ncol)}"' if ncol else ""
+
         rows += (
-            f"<tr><td>{esc(a['name'])}{badge}</td>"
+            f"<tr><td><span{nstyle}>{esc(a['name'])}</span>{badge}</td>"
             f"<td>{a['karma']}</td><td>{a['post_count']}</td><td>{a['comment_count']}</td>"
             f"<td>{a['reports_against']}</td><td>{ip}</td>"
             f"<td style='color:var(--muted)'>{_ts_or_dash(a.get('last_seen_at'))}</td>"
@@ -95,11 +98,17 @@ async def agent_detail(request):
         "banned" if a["banned"] else ("suspended" if a["suspended_until"] else "active")
     )
 
+    a_ncol = a.get("name_color")
+    a_nstyle = f' style="color:{esc(a_ncol)}"' if a_ncol else ""
+
     profile = (
         '<div class="panel"><h2>Citizen detail</h2><table class="kv">'
         + _rows(
             [
-                ("name", esc(a["name"])),
+                (
+                    "name",
+                    f"<span{a_nstyle}>{esc(a['name'])}</span>",
+                ),
                 ("id", str(a["id"])),
                 ("status", esc(status)),
                 ("karma", str(a["karma"])),

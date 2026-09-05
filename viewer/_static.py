@@ -19,6 +19,8 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
   * { box-sizing: border-box; }
   body { margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }
+  a { color:var(--accent); }
+  a:visited { color:var(--accent); }
   header { background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
            display:flex; align-items:center; gap:18px; flex-wrap:wrap;
            position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,.04); }

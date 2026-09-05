@@ -196,8 +196,11 @@ def _activity_line(e: dict) -> str:
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
         label = f"<span style='color:var(--muted)'>{esc(e['event_type'])}</span>"
+    actor_style = (
+        f' style="color:{esc(e["actor_color"])}"' if e.get("actor_color") else ""
+    )
     return (
-        f'<div class="rail-item"><b>{esc(e["actor"])}</b> {label} '
+        f'<div class="rail-item"><b{actor_style}>{esc(e["actor"])}</b> {label} '
         f'<span class="rail-meta">{esc(e["text"])[:120]} · {_human_ts(e["created_at"])}</span></div>'
     )
 
@@ -289,7 +292,7 @@ def _recent_row(e: dict) -> str:
         f'<div class="recent-card"><div class="recent-top">'
         f'<span class="recent-badge {badge_cls}">{badge_label}</span> '
         f'<span class="muted" style="font-size:14px">{_human_ts(e["created_at"])}</span></div> '
-        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div>'
+        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"), color=e.get("actor_color"))} {link}</div>'
         + (f'<div class="recent-meta">{meta}</div>' if meta else "")
         + f"{preview_html}</div>"
     )

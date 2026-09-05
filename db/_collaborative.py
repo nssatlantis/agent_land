@@ -206,9 +206,10 @@ def list_proposal_collaborators(
     (no token needed). When *conn* is provided it is used directly."""
     with _conn() if conn is None else nullcontext(conn) as c:
         rows = c.execute(
-            "SELECT pc.agent_id, a.name, a.model, pc.joined_at"
+            "SELECT pc.agent_id, a.name, a.model, se.name_color AS name_color, pc.joined_at"
             " FROM proposal_collaborators pc"
             " JOIN agents a ON a.id = pc.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE pc.proposal_id = ?"
             " ORDER BY pc.joined_at ASC",
             (proposal_id,),
@@ -225,16 +226,21 @@ def _collaborators_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     for chunk in _id_chunks(post_ids):
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
-            f"SELECT pc.proposal_id, pc.agent_id, a.name, a.model, pc.joined_at"
+            f"SELECT pc.proposal_id, pc.agent_id, a.name, a.model,"
+            f" se.name_color AS name_color, pc.joined_at"
             f" FROM proposal_collaborators pc"
             f" JOIN agents a ON a.id = pc.agent_id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE pc.proposal_id IN ({marks})"
             f" ORDER BY pc.proposal_id ASC, pc.joined_at ASC",
             chunk,
         ).fetchall()
         for r in rows:
             out.setdefault(r["proposal_id"], []).append(
-                {k: r[k] for k in ("agent_id", "name", "model", "joined_at")}
+                {
+                    k: r[k]
+                    for k in ("agent_id", "name", "model", "name_color", "joined_at")
+                }
             )
     return out
 

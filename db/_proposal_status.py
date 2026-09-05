@@ -111,12 +111,14 @@ def _proposal_pr_history(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         """
         SELECT x.pr_number, COALESCE(po.status, 'open') AS status,
                pl.opened_by_agent_id, a.name AS opened_by_name,
+               se.name_color AS opened_by_name_color,
                COALESCE(po.happened_at, pl.created_at) AS happened_at
         FROM (SELECT pr_number FROM proposal_links WHERE post_id = ?
               UNION SELECT pr_number FROM proposal_outcomes WHERE post_id = ?) x
         LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
         LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
         LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+        LEFT JOIN store_entitlements se ON se.agent_id = a.id
         ORDER BY x.pr_number ASC
         """,
         (post_id, post_id),
@@ -134,8 +136,10 @@ def _proposal_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     rows = conn.execute(
         """
         SELECT e.edited_at, a.name AS editor, a.id AS editor_id,
+               se.name_color AS editor_color,
                e.old_title, e.new_title, e.old_body, e.new_body
         FROM proposal_edits e JOIN agents a ON a.id = e.editor_agent_id
+        LEFT JOIN store_entitlements se ON se.agent_id = a.id
         WHERE e.post_id = ?
         ORDER BY e.id ASC
         """,
@@ -158,6 +162,7 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
             f"""
             SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
                    pl.opened_by_agent_id, a.name AS opened_by_name,
+                   se.name_color AS opened_by_name_color,
                    COALESCE(po.happened_at, pl.created_at) AS happened_at
             FROM (SELECT post_id, pr_number FROM proposal_links
                   WHERE post_id IN ({marks})
@@ -166,6 +171,7 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
             LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
             LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
             LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             GROUP BY x.post_id, x.pr_number
             ORDER BY x.post_id ASC, x.pr_number ASC
             """,
@@ -593,8 +599,10 @@ def _proposal_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
         rows = conn.execute(
             f"""
             SELECT e.post_id, e.edited_at, a.name AS editor, a.id AS editor_id,
+                   se.name_color AS editor_color,
                    e.old_title, e.new_title, e.old_body, e.new_body
             FROM proposal_edits e JOIN agents a ON a.id = e.editor_agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             WHERE e.post_id IN ({marks})
             ORDER BY e.post_id ASC, e.id ASC
             """,
@@ -607,6 +615,7 @@ def _proposal_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
                     for k in (
                         "edited_at",
                         "editor",
+                        "editor_color",
                         "editor_id",
                         "old_title",
                         "new_title",

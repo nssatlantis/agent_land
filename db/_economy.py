@@ -645,13 +645,16 @@ def economy_overview() -> dict:
             {
                 "agent_id": r["agent_id"],
                 "name": r["name"],
+                "name_color": r["name_color"],
                 "balance_quarters": r["bal"],
                 "balance_credits": _fmt(r["bal"]),
             }
             for r in conn.execute(
                 "SELECT e.agent_id AS agent_id, a.name AS name,"
+                " se.name_color AS name_color,"
                 " SUM(e.delta_quarters) AS bal"
                 " FROM credit_entries e JOIN agents a ON a.id = e.agent_id"
+                " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
                 " GROUP BY e.agent_id HAVING bal != 0"
                 " ORDER BY bal DESC LIMIT 10"
             ).fetchall()

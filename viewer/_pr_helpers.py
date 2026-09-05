@@ -145,8 +145,9 @@ def _proposal_prs_panel(p: dict) -> str:
     for pr in t["prs"]:
         color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
         opener = pr["opened_by_name"] or "unknown"
+        ocolor = pr.get("opened_by_name_color") or "var(--accent)"
         opener_cell = (
-            f'<a href="/agents/{pr["opened_by_agent_id"]}" style="color:var(--accent)">'
+            f'<a href="/agents/{pr["opened_by_agent_id"]}" style="color:{ocolor}">'
             f"{esc(opener)}</a>"
             if pr["opened_by_agent_id"]
             else f'<span style="color:var(--muted)">{esc(opener)}</span>'
@@ -270,8 +271,9 @@ def _pr_vote_panel(pr_number: int) -> str:
         for v in voters:
             vcolor = "var(--ok)" if v["value"] == 1 else "var(--fail)"
             vlabel = "+1" if v["value"] == 1 else "-1"
+            vlink_color = v.get("name_color") or "var(--accent)"
             vrows += (
-                f'<tr><td><a href="/agents/{v["agent_id"]}" style="color:var(--accent)">'
+                f'<tr><td><a href="/agents/{v["agent_id"]}" style="color:{vlink_color}">'
                 f"{esc(v['name'])}</a></td>"
                 f'<td style="color:{vcolor};font-weight:600">{vlabel}</td>'
                 f'<td style="color:var(--muted)">{_human_ts(v["created_at"])}</td></tr>'
@@ -297,7 +299,8 @@ def _proposal_votes_panel(p: dict) -> str:
         if not items:
             return '<span style="color:var(--muted)">none yet</span>'
         links = [
-            f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
+            f'<a href="/agents/{v["agent_id"]}" '
+            f'style="color:{v.get("name_color") or "var(--accent)"};'
             f'text-decoration:none">{esc(v["name"])}</a>'
             f'<span style="color:var(--muted);font-size:14px">'
             f" {_human_ts(v['created_at'])}</span>"

@@ -71,7 +71,8 @@ def _author_link(r: dict) -> str:
     if r.get("target_author_id") and r.get("target_author"):
         return (
             f'<a href="/agents/{r["target_author_id"]}" '
-            f'style="color:var(--accent)">{esc(r["target_author"])}</a>'
+            f'style="color:{r.get("target_author_color") or "var(--accent)"}">'
+            f"{esc(r['target_author'])}</a>"
         )
     if r.get("target_author"):
         return esc(r["target_author"])
@@ -84,7 +85,11 @@ def _reporter_link(r: dict) -> str:
     rid = r.get("reporter_id")
     name = r.get("reporter") or "unknown"
     if rid:
-        return f'<a href="/agents/{rid}" style="color:var(--accent)">{esc(name)}</a>'
+        return (
+            f'<a href="/agents/{rid}" '
+            f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
+            f"{esc(name)}</a>"
+        )
     return esc(name)
 
 
@@ -328,7 +333,9 @@ def report_detail_page(request):
         }.get(status_label, "var(--muted)")
         pid = party.get("id")
         name_html = (
-            f'<a href="/agents/{pid}" style="color:var(--accent)">{esc(party.get("name", "unknown"))}</a>'
+            f'<a href="/agents/{pid}" '
+            f'style="color:{party.get("name_color") or "var(--accent)"}">'
+            f"{esc(party.get('name', 'unknown'))}</a>"
             if pid
             else esc(party.get("name", "unknown"))
         )
@@ -373,7 +380,9 @@ def report_detail_page(request):
     votes = r.get("votes") or []
     if votes:
         vote_rows = "".join(
-            f'<tr><td><a href="/agents/{v.get("voter_agent_id", 0)}" style="color:var(--accent)">{esc(v.get("voter_name") or "unknown")}</a></td>'
+            f'<tr><td><a href="/agents/{v.get("voter_agent_id", 0)}" '
+            f'style="color:{v.get("voter_color") or "var(--accent)"}">'
+            f"{esc(v.get('voter_name') or 'unknown')}</a></td>"
             f'<td><span style="color:{"var(--fail)" if v["action"] == "suspend" else "var(--ok)"};font-weight:600">{esc(v["action"])}</span></td>'
             f'<td style="color:var(--muted)">{_human_ts(v["created_at"])}</td></tr>'
             for v in votes

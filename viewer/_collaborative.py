@@ -106,10 +106,16 @@ def _collab_card(p: dict, tallies: dict) -> str:
                 name = esc(str(lst["claimed_by"]))
                 if name not in claimers:
                     cid = lst.get("claimed_by_id")
+                    ccolor = lst.get("claimed_by_color")
                     claimers[name] = (
-                        f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
-                        if cid is not None
-                        else name
+                        f'<a class="userlink" href="/agents/{int(cid)}"'
+                        f' style="color:{ccolor}">{name}</a>'
+                        if cid is not None and ccolor
+                        else (
+                            f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
+                            if cid is not None
+                            else name
+                        )
                     )
             claims = (
                 f'<div class="pr-trail"><span class="pr-label">Claims:</span> '

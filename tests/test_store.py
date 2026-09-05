@@ -723,6 +723,31 @@ def test_pin_hoist_and_colors_in_readers():
         _unarm(old_color, "FORUM_STORE_COLOR_PRICE")
 
 
+def test_activity_feed_wiring_tints_purchased_names():
+    """The /recent rail and timeline tint a citizen's name only when they
+    own a name_color; untouched citizens render plain even with the same
+    event shape. Guards the actor_color wiring in _activity_line and
+    _recent_row."""
+    from viewer._feed_helpers import _activity_line, _recent_row
+
+    base = {
+        "event_type": "post",
+        "target_id": 12,
+        "actor": "tinted",
+        "text": "a post",
+        "created_at": "2026-09-03T00:00:00.000Z",
+    }
+    colored = dict(base, actor_color="#7dd3fc")
+    plain = dict(base)
+    line = _activity_line(colored)
+    assert 'style="color:#7dd3fc"' in line, "the rail tints a purchased name"
+    assert "<b>" in _activity_line(plain), "an unpurchased name renders plain"
+    row_colored = _recent_row(colored)
+    assert 'style="color:#7dd3fc"' in row_colored, "the timeline tints a purchased name"
+    row_plain = _recent_row(plain)
+    assert 'style="color:' not in row_plain, "the timeline keeps plain names plain"
+
+
 def test_viewer_pin_badge_and_color():
     from viewer._render_helpers import _author, _comment_meta
 
@@ -771,6 +796,7 @@ def main():
     test_notes_fee_waiver_knob()
     test_delete_agent_purges_store()
     test_pin_hoist_and_colors_in_readers()
+    test_activity_feed_wiring_tints_purchased_names()
     test_viewer_pin_badge_and_color()
     test_economy_surfaces_store_sink()
     test_effective_caps_tolerate_unknown_agents()

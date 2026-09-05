@@ -127,11 +127,13 @@ def list_tags() -> list:
             """
             SELECT t.id, t.name, t.color, t.created_by, t.created_at,
                    t.retired, t.retired_at, t.description, a.name AS creator,
+                   se.name_color AS creator_color,
                    COUNT(pt.tag_id) AS usage_count,
                    COUNT(DISTINCT pt.applied_by) AS applier_count,
                    COUNT(DISTINCT p.agent_id) AS post_author_count,
                    MAX(pt.applied_at) AS last_applied_at
             FROM tags t LEFT JOIN agents a ON a.id = t.created_by
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             LEFT JOIN post_tags pt ON pt.tag_id = t.id
             LEFT JOIN posts p ON p.id = pt.post_id
             GROUP BY t.id

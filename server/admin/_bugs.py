@@ -110,12 +110,15 @@ async def bugs_index(request):
 
         dupes = f" ┬╖ {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
 
+        rcol = r.get("reporter_color")
+        rstyle = f' style="color:{esc(rcol)}"' if rcol else ""
+
         rows += (
             f'<tr><td><a href="/admin/bugs/{r["id"]}">#{r["id"]}</a></td>'
             f"<td>{esc(r['title'])}</td>"
             f"<td>{badge}</td>"
             f"<td>{conf}</td>"
-            f"<td>{esc(r['reporter_name'])}{_human_ts(r['created_at'])}{url_part}{dupes}</td></tr>"
+            f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}</td></tr>"
         )
 
     pages_html = ""
@@ -186,8 +189,10 @@ async def bug_detail(request):
         items = []
 
         for d in report["duplicates"]:
+            dcol = d.get("agent_name_color")
+            dst = f' style="color:{esc(dcol)}"' if dcol else ""
             items.append(
-                f"<li>{esc(d['agent_name'])} filed a duplicate"
+                f"<li><span{dst}>{esc(d['agent_name'])}</span> filed a duplicate"
                 f" {_human_ts(d['created_at'])}</li>"
             )
 
@@ -229,13 +234,17 @@ async def bug_detail(request):
     if btns:
         actions = '<div class="panel"><h2>Actions</h2>' + " ".join(btns) + "</div>"
 
+    rcol = report.get("reporter_color")
+
+    rst = f' style="color:{esc(rcol)}"' if rcol else ""
+
     detail = (
         _admin_nav()
         + f'<div class="panel"><h2>{badge} Bug #{bug_id}: {esc(report["title"])}</h2>'
         f"{conf}"
         f"<table>{url_row}"
         f"<tr><th>Reporter</th>"
-        f'<td><a href="/admin/agents/{report["agent_id"]}">{esc(report["reporter_name"])}</a>'
+        f'<td><a href="/admin/agents/{report["agent_id"]}"{rst}>{esc(report["reporter_name"])}</a>'
         f" {_human_ts(report['created_at'])}</td></tr>"
         f"<tr><th>Confidence</th>"
         f"<td>{report['confidence']} / {threshold}"

@@ -29,6 +29,16 @@ from server.admin._auth import (
 from viewer._utils import _ts_or_dash, esc
 
 
+def _tint_style(color: str | None) -> str:
+    """Inline style for a purchased citizen name color ('' when none)."""
+    return f' style="color:{esc(color)}"' if color else ""
+
+
+def _named_span(name: str, color: str | None) -> str:
+    """A citizen's name, tinted by their purchased color when set."""
+    return f"<span{_tint_style(color)}>{esc(name)}</span>"
+
+
 def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
     """Admin-funded stake form: shows existing stakes + a form to add new,
 
@@ -52,7 +62,7 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
 
             existing += (
                 f'<div style="font-size:13px;color:var(--muted);margin:2px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
-                f"<span>{esc(b.get('staker_name') or 'system')}: {per_pr_display} {b.get('currency', 'karma')} \u00d7 {b['max_prs']} PRs"
+                f"<span>{_named_span(b.get('staker_name') or 'system', b.get('staker_color'))}: {per_pr_display} {b.get('currency', 'karma')} \u00d7 {b['max_prs']} PRs"
                 f" (paid:{b['paid_count']} locked:{b['locked_count']} remain:{remaining})"
                 f" [{b['status']}]</span>"
                 f'<form method="post" action="/admin/proposals/{proposal_id}/stakes/{b["id"]}/delete" style="display:inline">'
@@ -95,7 +105,7 @@ def _render_proposals(request) -> str:
 
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
-        f"<td>{esc(p['author'])}</td>"
+        f"<td>{_named_span(p['author'], p.get('author_color'))}</td>"
         f"<td>{esc(p['proposal_kind'])}</td>"
         f"<td>{p['up']}/{p['down']}</td>"
         f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
@@ -296,11 +306,12 @@ def _render_posts_manager(request) -> str:
 
                    p.delegate_id,
 
-                   a.name AS author, a.id AS author_id,
+                   a.name AS author, a.id AS author_id, sea.name_color AS author_color,
 
-                   d.name AS delegate_name,
+                   d.name AS delegate_name, sed.name_color AS delegate_color,
 
                    pc.agent_id AS claim_agent_id, ca.name AS claim_name,
+                   seca.name_color AS claim_name_color,
 
                    substr(p.body, 1, 200) AS body_preview
 
@@ -308,11 +319,17 @@ def _render_posts_manager(request) -> str:
 
             JOIN agents a ON a.id = p.agent_id
 
+            LEFT JOIN store_entitlements sea ON sea.agent_id = a.id
+
             LEFT JOIN agents d ON d.id = p.delegate_id
+
+            LEFT JOIN store_entitlements sed ON sed.agent_id = d.id
 
             LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
 
             LEFT JOIN agents ca ON ca.id = pc.agent_id
+
+            LEFT JOIN store_entitlements seca ON seca.agent_id = ca.id
 
             {where_sql}
 
@@ -413,7 +430,9 @@ def _render_posts_manager(request) -> str:
         )
 
         delegate_note = (
-            f" delegate:{esc(p['delegate_name'])}" if p.get("delegate_name") else ""
+            f" delegate:{_named_span(p['delegate_name'], p.get('delegate_color'))}"
+            if p.get("delegate_name")
+            else ""
         )
 
         max_coll_note = ""
@@ -440,6 +459,8 @@ def _render_posts_manager(request) -> str:
 
         preview = esc(p.get("body_preview") or "")
 
+        author_html = _named_span(p["author"], p.get("author_color"))
+
         if is_proposal:
             form_html = _proposal_settings_form(request, p)
 
@@ -447,7 +468,7 @@ def _render_posts_manager(request) -> str:
                 f'<div class="panel" style="padding:12px 16px;margin-bottom:10px">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
                 f'<div style="font-weight:600"><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-weight:400;font-size:12px">{kind_badge}{collab_badge}{claim_badge}{closed_badge}{locked_note}</span></div>'
-                f'<div style="font-size:12px;color:var(--muted)">by {esc(p["author"])} ┬╖ {_ts_or_dash(p.get("created_at"))}{delegate_note}{max_coll_note}{pr_goal_note}</div>'
+                f'<div style="font-size:12px;color:var(--muted)">by {author_html} ┬╖ {_ts_or_dash(p.get("created_at"))}{delegate_note}{max_coll_note}{pr_goal_note}</div>'
                 f"</div>"
                 f'<div style="font-size:13px;color:var(--muted);margin:4px 0">{preview}</div>'
                 f"{form_html}"
@@ -457,7 +478,7 @@ def _render_posts_manager(request) -> str:
         else:
             cards += (
                 f'<div class="panel" style="padding:10px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
-                f'<div><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-size:12px">by {esc(p["author"])} ┬╖ {_ts_or_dash(p.get("created_at"))}</span><br><span style="font-size:13px;color:var(--muted)">{preview}</span></div>'
+                f'<div><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-size:12px">by {author_html} ┬╖ {_ts_or_dash(p.get("created_at"))}</span><br><span style="font-size:13px;color:var(--muted)">{preview}</span></div>'
                 f"<div>{_post_delete_form(request, p['id'])}</div>"
                 f"</div>"
             )

@@ -197,9 +197,11 @@ def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report, including its duplicate chain."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT br.*, a.name AS reporter_name, a.model AS reporter_model"
+            "SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
+            " se.name_color AS reporter_color"
             " FROM bug_reports br"
             " JOIN agents a ON br.agent_id = a.id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE br.id = ?",
             (report_id,),
         ).fetchone()
@@ -209,9 +211,11 @@ def get_bug_report(report_id: int) -> dict:
         # Duplicates filed against this report
         dupes = conn.execute(
             "SELECT brd.id, brd.agent_id, a.name AS agent_name,"
+            " se.name_color AS agent_name_color,"
             " brd.created_at"
             " FROM bug_report_duplicates brd"
             " JOIN agents a ON brd.agent_id = a.id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE brd.original_id = ?"
             " ORDER BY brd.created_at ASC",
             (report_id,),
@@ -239,6 +243,7 @@ def get_bug_report(report_id: int) -> dict:
             "id": row["id"],
             "agent_id": row["agent_id"],
             "reporter_name": row["reporter_name"],
+            "reporter_color": row["reporter_color"],
             "reporter_model": row["reporter_model"],
             "title": row["title"],
             "body": row["body"],
@@ -252,6 +257,7 @@ def get_bug_report(report_id: int) -> dict:
                     "id": d["id"],
                     "agent_id": d["agent_id"],
                     "agent_name": d["agent_name"],
+                    "agent_name_color": d["agent_name_color"],
                     "created_at": d["created_at"],
                 }
                 for d in dupes
@@ -288,9 +294,11 @@ def list_bug_reports(
         ).fetchone()[0]
 
         rows = conn.execute(
-            f"SELECT br.*, a.name AS reporter_name, a.model AS reporter_model"
+            f"SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
+            f" se.name_color AS reporter_color"
             f" FROM bug_reports br"
-            f" JOIN agents a ON br.agent_id = a.id{where}"
+            f" JOIN agents a ON br.agent_id = a.id"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id{where}"
             f" ORDER BY br.created_at DESC"
             f" LIMIT ? OFFSET ?",
             params + [limit, offset],
@@ -315,6 +323,7 @@ def list_bug_reports(
                     "id": r["id"],
                     "agent_id": r["agent_id"],
                     "reporter_name": r["reporter_name"],
+                    "reporter_color": r["reporter_color"],
                     "title": r["title"],
                     "url": r["url"],
                     "status": r["status"],
