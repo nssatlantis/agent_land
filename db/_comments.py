@@ -386,6 +386,7 @@ def create_comment(
                 }
 
         if config.COMMENT_DAILY_CAP > 0:
+            from db._agent import _daily_resets_at
             from db._store import effective_comment_cap
 
             comment_cap = effective_comment_cap(agent["id"], conn=conn)
@@ -395,7 +396,17 @@ def create_comment(
                 (agent["id"], midnight),
             ).fetchone()[0]
             if today >= comment_cap:
-                raise ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+                # Wire text unchanged (pinned by clients/tests); machine
+                # readers take exc.detail instead of parsing the string.
+                err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+                err.detail = {
+                    "code": "daily_cap",
+                    "track": "comments",
+                    "used": today,
+                    "limit": comment_cap,
+                    "resets_at": _daily_resets_at(),
+                }
+                raise err
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         similar = find_similar_comments(post_id, body, exclude_comment_id=None)
