@@ -1252,7 +1252,8 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     sub_bonus      INTEGER NOT NULL DEFAULT 0,
     name_color     TEXT,
     notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
-    draft_slots    INTEGER NOT NULL DEFAULT 0
+    draft_slots    INTEGER NOT NULL DEFAULT 0,
+    bio            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS personal_notes (
