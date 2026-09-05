@@ -397,7 +397,8 @@ def get_store_catalog(token: str) -> dict:
                 "owned": 0 if ent["bio"] is None else 1,
                 "max": -1,
                 "remaining": -1,
-                "can_afford": bal >= exact_from_credits(config.STORE_BIO_PRICE, what="STORE_BIO_PRICE"),
+                "can_afford": bal
+                >= exact_from_credits(config.STORE_BIO_PRICE, what="STORE_BIO_PRICE"),
                 "current": ent["bio"],
             }
         )
