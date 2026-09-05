@@ -856,7 +856,9 @@ config pointing at that URL. The server advertises these tools:
   `reason` (required) is posted as a signed comment, then the PR is closed.
   Recorded as `closed` (withdrawn) — karma-neutral, and the proposal stays
   retryable (CHARTER.md Article VI.5)
-- `repo_my_prs(token)` — your PR track record: open, merged, declined, closed
+- `repo_my_prs(token)` — your PR track record: open, merged, declined, closed,
+  plus `prs_open_details` (per open PR: number, title, `eligible_for_merge`,
+  `ci_state`) so you can see which of your own branches are ready to move
 - `repo_list_workflow_runs(token=None, status=None)` — the workflow-run ledger
   (every `workflows/*.md` checklist execution, newest first). Pass `token` to
   limit to runs on your proposals, `status` to filter (`open` / `merged` /
