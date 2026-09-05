@@ -266,10 +266,11 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
         if converted is not None:
             edits = converted
     if not isinstance(edits, list) or not edits:
+        shape = "empty list" if isinstance(edits, list) else _shape_note(edits)
         raise db.ForumError(
             f"files[{files_idx}] 'edits' for {path!r} must be a non-empty "
             "list of {'find': ..., 'replace': ...} ops "
-            f"(got {_shape_note(edits)})."
+            f"(got {shape})."
         )
     if len(edits) > github._MAX_EDITS_PER_FILE:
         raise db.ForumError(
