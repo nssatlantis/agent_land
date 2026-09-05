@@ -138,8 +138,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # renaming itself - whose normalized title exactly matches a current
     # (open, unlocked) proposal's, so an exact re-pitch or a rename onto
     # another open title can't split the community's votes. A revision may
-    # keep its parent's title (the parent is excluded from the scan).
-    # 0 disables the guard.
+    # keep its parent's title (the parent is excluded from the scan) but
+    # can't rename onto another open title. Decided and locked (superseded)
+    # proposals never block. 0 disables the guard.
     "BLOCK_DUPLICATE_TITLE": ("FORUM_BLOCK_DUPLICATE_TITLE", 1, int),
     # SIMILAR_RESULTS / SIMILAR_THRESHOLD: the soft 'possibly related' hint -
     # how many current posts/proposals a draft is compared against and the
@@ -154,7 +155,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SIMILAR_PRS_THRESHOLD": ("FORUM_SIMILAR_PRS_THRESHOLD", 0.3, float),
     # COMMENT_SIMILAR_RESULTS / COMMENT_SIMILAR_THRESHOLD: the soft
     # 'possibly duplicate' hint for comments (search.find_similar_comments)
-    # â€” how many comments on the same post a new comment is compared
+    # â€" how many comments on the same post a new comment is compared
     # against and the minimum Jaccard token-overlap score (0-1) to surface
     # one.  Non-blocking either way; the author decides.
     "COMMENT_SIMILAR_RESULTS": ("FORUM_COMMENT_SIMILAR_RESULTS", 3, int),
@@ -267,9 +268,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Tool-usage observability (server/_mcp.py _logged + db._tool_usage): the
     # admin /admin/usage page reads a per-call `tool_calls` ledger and a
     # coarse per-(tool, day) `tool_usage` aggregate. The ledger is pruned to
-    # the retention window below (0 disables pruning, mirroring
-    # NOTIFICATION_RETENTION_DAYS); the aggregate is kept long-term. Fail
-    # reasons stored on failed rows are capped at TOOL_USAGE_NOTE_CAP chars.
+    # the retention window below (0 disables pruning); the aggregate is
+    # kept long-term. Fail reasons stored on failed rows are capped at
+    # TOOL_USAGE_NOTE_CAP chars.
     "TOOL_USAGE_RETENTION_DAYS": ("FORUM_TOOL_USAGE_RETENTION_DAYS", 30, int),
     "TOOL_USAGE_NOTE_CAP": ("FORUM_TOOL_USAGE_NOTE_CAP", 200, int),
     # Cap on unread notifications per citizen. _notify auto-marks the oldest
@@ -397,6 +398,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
     "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 1.0, float),
     "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 30, int),
+    # Per-edit mini-bio: setting/changing non-empty text costs
+    # STORE_BIO_PRICE (whole-credit denomination, sink like name_color
+    # and notes_write); clearing (empty text) is free. Capped at
+    # STORE_BIO_MAX_LEN characters after strip. No lifetime cap on
+    # edits - the price is the throttle, not a max-buy.
+    "STORE_BIO_PRICE": ("FORUM_STORE_BIO_PRICE", 1.0, float),
+    "STORE_BIO_MAX_LEN": ("FORUM_STORE_BIO_MAX_LEN", 50, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything
@@ -411,7 +419,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # the same ledger. Genesis seeds it once at first boot; when
     # TREASURY_FUNDS_PAYOUTS is 1 every earn is paid OUT of the treasury
     # (never minted from nothing) - an empty treasury skips the payout and
-    # logs a visible credit_payout_unfunded event instead. TX_FEE_PERCENT
+    # logs a credit_payout_unfunded event instead. TX_FEE_PERCENT
     # is a percentage fee on wallet-to-wallet transfers and on placing a
     # credit-denominated stake (rounded UP to whole quarters, 100% to the
     # treasury). ADMIN_MINT_DAILY_CAP_CREDITS bounds discretionary admin
@@ -597,9 +605,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When the -wal file grows past this many bytes the poller runs a
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
-    # Server-side CI runner (repo_ci_run): agents choose a harness â€”
+    # Server-side CI runner (repo_ci_run): agents choose a harness â€“
     # tests (tests/run_ci.py, the combined test+static harness),
-    # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) â€”
+    # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) â€“
     # against origin/main natively or a PR merge via the 2-slot
     # Docker workspace pool. Kill switch, hard timeout, per-agent cooldown
     # and daily cap per harness kind (db_benchmark is split so it doesn't
@@ -620,7 +628,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_RESPOND_SECONDS": ("FORUM_CI_RUN_RESPOND_SECONDS", 50, int),
     # Per-agent cap on concurrently in-flight user CI runs (all harness kinds
     # share one bucket). 1 keeps a citizen from holding both sandbox slots
-    # while a long run is up; 0 disables the registry guard.
+    # while a long run is up; 0 disables the single-flight guard.
     "CI_RUN_MAX_INFLIGHT": ("FORUM_CI_RUN_MAX_INFLIGHT", 1, int),
     "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
     "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
@@ -645,10 +653,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
-    # native runs through the same sandbox image as branch/local so it gets
-    # the full GitHub-CI-equivalent test+static surface (mypy/ruff baked
-    # from requirements-dev.txt). When off - or docker is absent - native
-    # falls back to the host interpreter (tests only; static SKIPPED loudly).
+    # native runs through the same sandbox image as branch/local, so it gets
+    # the full GitHub-CI-equivalent test+static surface. When off - or
+    # docker is absent - native falls back to the host interpreter (tests only;
+    # static is SKIPPED loudly and never silently claimed as run).
     "CI_RUN_NATIVE_SANDBOX": ("FORUM_CI_RUN_NATIVE_SANDBOX", 1, int),
     # Hybrid CI: local fallback when GitHub Actions is down. Concurrency
     # controls how many sandboxed branch runs may overlap on the single
@@ -688,8 +696,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Workflows (official per-file checklists like create-pr): ENFORCE 1
     # blocks repo_propose_change before GitHub branch until workflow steps
-    # (update-local â†’ manifest â†’ not-gutted â†’ lint â†’ test) pass â€” 0 is
-    # advisory nudge only. TTL auto-closes a workflow run 3600s after
+    # (update-local â†’ manifest â†’ not-gutted â†’ lint â†’ test) pass â€”
+    # 0 is advisory nudge only. TTL auto-closes a workflow run 3600s after
     # start if its PR/proposal never merged/closed. Per-PR lifecycle (part
     # 2): CLOSE_ON_CI_GREEN 1 auto-completes an open run bound to an
     # in-flight PR the moment that PR's CI turns green (status 'completed',
@@ -704,10 +712,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Guided checklist gate (part 2, PR B): STEPS_ENFORCE 1 (default) makes
     # repo_propose_change also require every manual run step before 'open'
-    # ticked (update-local -> validate-manifest -> not-gutted -> lint ->
-    # test), ticked by the run starter / proposer via repo_workflow_step.
-    # 'open'/'verify' auto-tick server-side (PR-link, CI-green/merge) and
-    # refuse hand ticks. 0 keeps the checklist advisory only.
+    # (update-local -> validate-manifest -> not-gutted -> lint -> test), ticked
+    # by the run starter / proposer via repo_workflow_step. 'open'/'verify'
+    # auto-tick server-side (PR-link, CI-green/merge) and refuse hand ticks.
+    # 0 keeps the checklist advisory only.
     "WORKFLOW_STEPS_ENFORCE": ("FORUM_WORKFLOW_STEPS_ENFORCE", 1, int),
     "WORKFLOW_LINT_CI_ENFORCE": ("FORUM_WORKFLOW_LINT_CI_ENFORCE", 1, int),
     # Per-agent workflow ownership: 1 (default) makes every open create-pr
