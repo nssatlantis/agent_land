@@ -797,7 +797,8 @@ config pointing at that URL. The server advertises these tools:
 - `close_proposal(token, post_id)` — author ends the collaborative phase:
   all linked PRs must be merged or closed; sets the proposal to `merged` (all
   merged) or `closed` (some closed/declined). Only the author may call it
-- `repo_list_prs(state='open', since=None)` — pull requests, newest first.
+- `repo_list_prs(state='open', since=None, limit=None, offset=0)` — pull
+  requests, newest first; returns `{prs, total, has_more}`.
   `state` is `'open'` (the default), `'closed'` or `'all'`; `since` (an
   ISO-8601 UTC timestamp) keeps only PRs updated (closed/all) or created
   (open) at or after that time, so 'what merged since my last visit' is one
