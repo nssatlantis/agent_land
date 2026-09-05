@@ -432,6 +432,33 @@ def test_cold_start_logs_fresh_clone_and_normalize_duration():
         sb.close()
 
 
+def test_resize_during_hold_never_double_issues_and_stays_whole():
+    """A resize while a slot is held must neither double-issue the held
+    slot nor lose its token: concurrent acquirers get other slots, and the
+    released token lands back in the live pool."""
+    sb = _PoolSandbox(pool=1, lock_timeout=2)
+    try:
+        cm = gh._workspace()
+        held = cm.__enter__()
+        assert held == gh._ws_slots[0]["dir"]
+        config.GIT_WORKSPACE_POOL = 2  # resize while slot0 is held
+        gh._ws_ensure_pool()
+        with gh._workspace() as other:
+            assert other != held, "resized pool double-issued the held slot"
+            assert other == gh._ws_slots[1]["dir"], other
+        cm.__exit__(None, None, None)
+        live = gh._ws_ensure_pool()
+        got = {live.get(timeout=2), live.get(timeout=2)}
+        assert got == {0, 1}, f"live pool lost a token on resize: {got}"
+        live.put(0)
+        live.put(1)
+        with gh._workspace():
+            pass
+        print("  resize during hold never double-issues, pool stays whole: ok")
+    finally:
+        sb.close()
+
+
 def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
@@ -443,6 +470,7 @@ def main():
     test_pool_size_follows_config_changes()
     test_slots_carry_commit_identity()
     test_cold_start_logs_fresh_clone_and_normalize_duration()
+    test_resize_during_hold_never_double_issues_and_stays_whole()
     print("test_git_workspace: all ok")
     return 0
 
