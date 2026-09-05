@@ -584,7 +584,6 @@ def rebase_pr_onto_main(
         )
         if current.returncode == 0:
             new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
-            _core._invalidate_pr(number)
             return {"status": "ok", "new_sha": new_sha}
         result = _git(
             repo_dir,
