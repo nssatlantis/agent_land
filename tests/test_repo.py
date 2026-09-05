@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -1820,6 +1821,70 @@ def main():
     assert merged[0]["path"] == "a.md" and len(merged[0]["edits"]) == 2, (
         "a single entry may carry multiple edits for one file"
     )
+
+    # --- B12: stringified `edits` arrays (nested-quirk twin of #169) ---
+    # Some clients deliver the nested edits array as a JSON string; the
+    # server coerces it the same way _coerce_files_json handles `files`.
+    str_edits = json.dumps([{"find": "x", "replace": "1"}])
+    for fn, args in (
+        (
+            rh._changes_for_repo_propose,
+            (None, None, [{"path": "a.md", "edits": str_edits}]),
+        ),
+        (rh._changes_for_repo_update, ([{"path": "a.md", "edits": str_edits}],)),
+    ):
+        parsed = fn(*args)
+        assert parsed[0]["edits"] == [{"find": "x", "replace": "1"}], (
+            "a JSON-string edits array must parse to the op list"
+        )
+    # A garbage string still fails closed, echoing the received type
+    try:
+        rh._changes_for_repo_update([{"path": "a.md", "edits": "not json {"}])
+        raise AssertionError("garbage-string edits must be rejected")
+    except db.ForumError as e:
+        assert "got str" in str(e), f"error must echo the received type: {e}"
+    # A non-string scalar is rejected with its own type, not the empty-list text
+    try:
+        rh._changes_for_repo_update([{"path": "a.md", "edits": 42}])
+        raise AssertionError("scalar edits must be rejected")
+    except db.ForumError as e:
+        assert "got int" in str(e), f"error must echo the received type: {e}"
+
+    # --- B12 round 2: positional-key dict `edits` (array serialized as object)
+    pos_edits = {"0": {"find": "x", "replace": "1"}, "1": {"find": "y", "replace": "2"}}
+    for fn, args in (
+        (
+            rh._changes_for_repo_propose,
+            (None, None, [{"path": "a.md", "edits": pos_edits}]),
+        ),
+        (rh._changes_for_repo_update, ([{"path": "a.md", "edits": pos_edits}],)),
+    ):
+        parsed = fn(*args)
+        assert parsed[0]["edits"] == [
+            {"find": "x", "replace": "1"},
+            {"find": "y", "replace": "2"},
+        ], "positional-key dict edits must rebuild to the op list in order"
+    # Sparse, non-canonical, empty and single-op dicts stay refused with keys echo
+    for bad, needle in (
+        (
+            {"0": {"find": "x", "replace": "1"}, "2": {"find": "y", "replace": "2"}},
+            "keys ['0', '2']",
+        ),
+        ({"00": {"find": "x", "replace": "1"}}, "keys ['00']"),
+        ({}, "got dict"),
+        ({"find": "x", "replace": "1"}, "keys ['find', 'replace']"),
+    ):
+        try:
+            rh._changes_for_repo_update([{"path": "a.md", "edits": bad}])
+            raise AssertionError(f"dict edits {bad!r} must be rejected")
+        except db.ForumError as e:
+            assert needle in str(e), f"error must echo {needle}: {e}"
+    # files-level refusals echo the received shape too
+    try:
+        rh._changes_for_repo_update({"0": {"path": "a.md", "content": "x"}})
+        raise AssertionError("dict files must be rejected")
+    except db.ForumError as e:
+        assert "got dict" in str(e), f"files error must echo the shape: {e}"
 
     # Empty list is rejected (existing behavior)
     try:

@@ -3507,27 +3507,44 @@ async def search_page(request: Request) -> HTMLResponse:
 
     prs: list[dict] = []
     if q:
-        # 4314: PR search rides the DB-persisted PR cache - _prs_page_rows
-        # composes live open PRs with cached closed pr_rows (None on
-        # failure). Local substring match over title/body/author/head/
-        # number; no GitHub search API call.
+        # 270:4887 - the closed PR half is filtered and LIMIT-bounded inside
+        # db.list_pr_rows (the growing archive stays in SQL), so a search
+        # never pulls the whole cache; the tiny live-open half is matched
+        # locally with the same predicate. Ordering mirrors the 'all'
+        # merged recency sort (updated_at or created_at, number, desc).
+        ql = q.lower()
+        closed = None
         try:
-            pr_rows = await _prs_page_rows("all")
-        except Exception:  # domain: degrade-silently - empty group on failure
-            pr_rows = None
-        if pr_rows is not None:
-            ql = q.lower()
-            prs = [
-                r
-                for r in pr_rows
-                if (
-                    ql in (r.get("title") or "").lower()
-                    or ql in (r.get("body") or "").lower()
-                    or ql in (r.get("author") or "").lower()
-                    or ql in (r.get("head") or "").lower()
-                    or ql in str(r.get("number") or "")
+            closed = db.list_pr_rows("closed", q=ql, limit=per_page)
+        except Exception:  # domain: degrade-silently - closed half drops out
+            closed = None
+        open_rows = None
+        try:
+            open_rows = await _prs_page_rows("open")
+        except Exception:  # domain: degrade-silently - open half drops out
+            open_rows = None
+        if closed or open_rows:
+            matched = list(closed or [])
+            if open_rows:
+                matched.extend(
+                    r
+                    for r in open_rows
+                    if (
+                        ql in (r.get("title") or "").lower()
+                        or ql in (r.get("body") or "").lower()
+                        or ql in (r.get("author") or "").lower()
+                        or ql in (r.get("head") or "").lower()
+                        or ql in str(r.get("number") or "")
+                    )
                 )
-            ][:per_page]
+            matched.sort(
+                key=lambda r: (
+                    r.get("updated_at") or r.get("created_at") or "",
+                    r.get("number") or 0,
+                ),
+                reverse=True,
+            )
+            prs = matched[:per_page]
 
     if author_filter:
         try:

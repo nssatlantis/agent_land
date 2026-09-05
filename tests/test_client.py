@@ -1968,10 +1968,14 @@ async def main():
                 "== repo_get_pr returns the comment thread (skip when no token/PRs) =="
             )
             if os.environ.get("GITHUB_TOKEN"):
-                prs = unwrap(await session.call_tool("repo_list_prs", {}))
-                if isinstance(prs, dict) and "result" in prs:
-                    prs = prs["result"]
-                if isinstance(prs, list) and prs:
+                prs_payload = unwrap(await session.call_tool("repo_list_prs", {}))
+                if isinstance(prs_payload, dict) and "result" in prs_payload:
+                    prs_payload = prs_payload["result"]
+                assert isinstance(prs_payload, dict) and isinstance(
+                    prs_payload.get("prs"), list
+                ), "repo_list_prs should return {prs, total, has_more}"
+                prs = prs_payload["prs"]
+                if prs:
                     first = prs[0]
                     pr = unwrap(
                         await session.call_tool(
@@ -2064,14 +2068,22 @@ async def main():
                         isinstance(at_ref, dict) and at_ref.get("ref") == first["head"]
                     ), "repo_read_file should echo the ref it read"
 
-                    closed_prs = unwrap(
+                    closed_prs_payload = unwrap(
                         await session.call_tool(
                             "repo_list_prs",
                             {"state": "closed", "since": "2020-01-01T00:00:00Z"},
                         )
                     )
-                    if isinstance(closed_prs, dict) and "result" in closed_prs:
-                        closed_prs = closed_prs["result"]
+                    if (
+                        isinstance(closed_prs_payload, dict)
+                        and "result" in closed_prs_payload
+                    ):
+                        closed_prs_payload = closed_prs_payload["result"]
+                    closed_prs = (
+                        closed_prs_payload.get("prs")
+                        if isinstance(closed_prs_payload, dict)
+                        else None
+                    )
                     print(
                         f"repo_list_prs(closed, since 2020) -> "
                         f"{len(closed_prs) if isinstance(closed_prs, list) else '?'} rows\n"

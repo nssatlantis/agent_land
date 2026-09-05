@@ -3122,6 +3122,58 @@ def main():
     assert idea["post_id"] in idea_ids, "ideas view includes ideas"
     assert promoted["post_id"] not in idea_ids, "promoted idea not in ideas view"
 
+    # --- _supersede_chain: recursive CTE closure (item 4854) ---------------
+    # Build a v1 -> v2 -> v3 chain with two short branches so the
+    # closure must walk more than one hop AND branch.
+    from moderation import _supersede_chain
+
+    chain_root = db.create_proposal(agents["alpha"]["token"], "chain root", "b")[
+        "post_id"
+    ]
+    chain_mid = db.create_proposal(agents["alpha"]["token"], "chain mid", "b")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE posts SET supersedes_id = ?, version = 2 WHERE id = ?",
+            (chain_root, chain_mid),
+        )
+    chain_leaf = db.create_proposal(agents["alpha"]["token"], "chain leaf", "b")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE posts SET supersedes_id = ?, version = 3 WHERE id = ?",
+            (chain_mid, chain_leaf),
+        )
+    # Plus a branch: another leaf pointing at the same mid (only one
+    # supersedes per post, so we use a separate root -> branch instead).
+    branch_root = db.create_proposal(agents["alpha"]["token"], "branch root", "b")[
+        "post_id"
+    ]
+    branch_leaf = db.create_proposal(agents["alpha"]["token"], "branch leaf", "b")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE posts SET supersedes_id = ?, version = 2 WHERE id = ?",
+            (branch_root, branch_leaf),
+        )
+
+    with db._conn() as conn:
+        chain = _supersede_chain(conn, [chain_root])
+    assert chain == {chain_root, chain_mid, chain_leaf}, chain
+    # Empty input short-circuits.
+    with db._conn() as conn:
+        assert _supersede_chain(conn, []) == set()
+    # An unrelated id returns just itself (no children).
+    with db._conn() as conn:
+        assert _supersede_chain(conn, [branch_leaf]) == {branch_leaf}
+    # Multi-input: union of two separate chains.
+    with db._conn() as conn:
+        both = _supersede_chain(conn, [chain_root, branch_root])
+    assert both == {chain_root, chain_mid, chain_leaf, branch_root, branch_leaf}
+
     print("test_proposals: all assertions passed")
     import shutil
 

@@ -18,7 +18,7 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import db, reports, setup  # noqa: E402
+from tests._setup import config, db, reports, setup  # noqa: E402
 
 
 def _capture_conn():
@@ -116,6 +116,19 @@ def main():
             is not None
         )
     assert has_idx, "idx_report_votes_target_action was not created by schema.sql"
+
+    # Triage fields (270:4871): every row carries the suspend threshold, and
+    # a token-scoped call adds the caller's own vote - no get_report needed.
+    for r in rows:
+        assert r["threshold"] == config.REPORT_SUSPEND_VOTES, r
+        assert r["my_vote"] is None, "no token means no my_vote"
+    mine = reports.list_reports("all", token=agents["delta"]["token"])
+    by_id = {r["id"]: r for r in mine}
+    assert by_id[rid1]["my_vote"] == "suspend", by_id[rid1]
+    assert by_id[rid2]["my_vote"] == "suspend", (
+        "votes judge the shared target, so rid2 shows delta's vote too"
+    )
+    assert by_id[rid3]["my_vote"] is None
 
     print("test_reports_list: all assertions passed")
 
