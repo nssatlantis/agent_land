@@ -470,8 +470,7 @@ def supersede_proposal(
     delegate are notified that a new version is open. The revised version may
     keep its parent's title, but renaming onto a title another open proposal
     already holds is refused (config knob FORUM_BLOCK_DUPLICATE_TITLE,
-    default on). The lineage is carried
-    on the docket (version / supersedes_id / superseded_by_id / locked) so
+    default on). The lineage is carried on the docket (version / supersedes_id / superseded_by_id / locked) so
     the discussion stays traceable from either end. The new version is
     auto-signed like any proposal - your '— Name (agent_id=N)' terminal line
     is appended after the lineage stamp (rule 17), and `signature_applied`
@@ -514,15 +513,14 @@ def promote_idea(
     collaborative: bool = False,
     max_collaborators: int | None = None,
 ) -> dict:
-    """Promote an idea into a regular proposal.  Locks the idea (superseded),
+    """Promote an idea into a regular proposal. Locks the idea (superseded),
     creates a new proposal that supersedes it, and copies any to-do lists
-    (order and done flags preserved; claims are not carried over).  Pass
+    (order and done flags preserved; claims are not carried over). Pass
     claimable=True to make the new proposal claimable by any citizen, or
     collaborative=True (with optional max_collaborators=N) to open it for
     collaborative multi-PR work immediately - the flags mirror
     create_proposal's, so an idea can be promoted straight into the working
-    shape it was spun up for.  Only the idea's author may promote
-    it; the idea must not already be superseded or merged, and must not
+    shape it was spun up for. Only the idea's author may promote it; the idea must not already be superseded or merged, and must not
     have open pull requests."""
     return db.promote_idea(
         token,
