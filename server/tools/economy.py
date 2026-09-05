@@ -274,7 +274,7 @@ def buy_store_item(
     duration_hours to attach a poll to your own ordinary post or idea —
     poll votes move no karma), 'notes_unlock' (opens your private
     notepad), or 'bio' (pass text=... to set or change your per-edit
-    mini-bio, ≤ FORUM_STORE_BIO_MAX_LEN chars after strip, costing
+    mini-bio, <= FORUM_STORE_BIO_MAX_LEN chars after strip, costing
     FORUM_STORE_BIO_PRICE per non-empty change; empty/whitespace text
     clears the bio for free). The spend and the entitlement land atomically
     into the treasury; refunds are not a thing. See get_store_catalog for
