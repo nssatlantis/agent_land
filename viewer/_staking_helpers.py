@@ -8,18 +8,15 @@ HTML builders - no route handlers.
 
 from __future__ import annotations
 
-import time
-from typing import Any
-
 import db
 from db._staking import list_stake_locks
+from viewer._cache import _cached
 from viewer._utils import (
     _human_ts,
     esc,
 )
 
 _STAKE_SUMMARY_CACHE_SECONDS = 60.0
-_stake_summary_cache: dict[str, Any] = {"ts": 0.0, "html": None}
 
 
 def _stake_amount(amount, currency: str) -> str:
@@ -214,59 +211,50 @@ def _stake_locks_detail(stake_id: int) -> str:
 def _stake_summary_card() -> str:
     """A compact staking summary for the overview page: available, locked
     and paid amounts across all active stakes, split by currency. Cached 60s
-    like _governance/_pulse to avoid per-request `list_all_stakes`."""
-    now = time.monotonic()
-    cached_ts = _stake_summary_cache["ts"]
-    cached_html = _stake_summary_cache["html"]
-    if (
-        cached_html is not None
-        and isinstance(cached_ts, (int, float))
-        and now - float(cached_ts) < _STAKE_SUMMARY_CACHE_SECONDS
-    ):
-        return str(cached_html)
-    stakes = db.list_all_stakes(status="active")
-    if not stakes:
-        _stake_summary_cache.update(ts=now, html="")
-        return ""
+    via viewer._cache._cached to avoid per-request `list_all_stakes`."""
 
-    # single pass — was 6× scans via _sum/getattr_b (stakes already filtered to active)
-    ka = ca = kl = cl = kp = cp = 0
-    for b in stakes:
-        cur = b.get("currency", "karma")
-        rem = b["max_prs"] - b["paid_count"] - b["locked_count"]
-        if cur == "karma":
-            ka += b["per_pr"] * rem
-            kl += b["per_pr"] * b["locked_count"]
-            kp += b["per_pr"] * b["paid_count"]
-        else:
-            ca += b["per_pr"] * rem
-            cl += b["per_pr"] * b["locked_count"]
-            cp += b["per_pr"] * b["paid_count"]
-    if not (ka or ca or kl or cl or kp or cp):
-        _stake_summary_cache.update(ts=now, html="")
-        return ""
-    parts = []
-    if ka:
-        parts.append(f"{ka} karma available")
-    if ca:
-        parts.append(f"{_stake_amount(ca, 'credits')} credits available")
-    if kl:
-        parts.append(f"{kl} karma locked")
-    if cl:
-        parts.append(f"{_stake_amount(cl, 'credits')} credits locked")
-    if kp:
-        parts.append(f"{kp} karma paid")
-    if cp:
-        parts.append(f"{_stake_amount(cp, 'credits')} credits paid")
-    html = (
-        '<div class="panel"><h2>Staking \xb7 '
-        '<a href="/staking" style="color:var(--accent);font-weight:normal;font-size:14px">view all \u2192</a></h2>'
-        '<p class="meta">'
-        + str(len(stakes))
-        + " active stakes \xb7 "
-        + " \xb7 ".join(parts)
-        + "</p>"
-        "</div>"
-    )
-    _stake_summary_cache.update(ts=now, html=html)
-    return html
+    def _fetch() -> str:
+        stakes = db.list_all_stakes(status="active")
+        if not stakes:
+            return ""
+
+        # single pass — was 6× scans via _sum/getattr_b (stakes already filtered to active)
+        ka = ca = kl = cl = kp = cp = 0
+        for b in stakes:
+            cur = b.get("currency", "karma")
+            rem = b["max_prs"] - b["paid_count"] - b["locked_count"]
+            if cur == "karma":
+                ka += b["per_pr"] * rem
+                kl += b["per_pr"] * b["locked_count"]
+                kp += b["per_pr"] * b["paid_count"]
+            else:
+                ca += b["per_pr"] * rem
+                cl += b["per_pr"] * b["locked_count"]
+                cp += b["per_pr"] * b["paid_count"]
+        if not (ka or ca or kl or cl or kp or cp):
+            return ""
+        parts = []
+        if ka:
+            parts.append(f"{ka} karma available")
+        if ca:
+            parts.append(f"{_stake_amount(ca, 'credits')} credits available")
+        if kl:
+            parts.append(f"{kl} karma locked")
+        if cl:
+            parts.append(f"{_stake_amount(cl, 'credits')} credits locked")
+        if kp:
+            parts.append(f"{kp} karma paid")
+        if cp:
+            parts.append(f"{_stake_amount(cp, 'credits')} credits paid")
+        return (
+            '<div class="panel"><h2>Staking \xb7 '
+            '<a href="/staking" style="color:var(--accent);font-weight:normal;font-size:14px">view all \u2192</a></h2>'
+            '<p class="meta">'
+            + str(len(stakes))
+            + " active stakes \xb7 "
+            + " \xb7 ".join(parts)
+            + "</p>"
+            "</div>"
+        )
+
+    return _cached("stake_summary", _STAKE_SUMMARY_CACHE_SECONDS, _fetch)
