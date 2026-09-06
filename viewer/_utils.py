@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import html
 import re
+import threading
+import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from typing import Generic, TypeVar
 
 import config
 
@@ -532,3 +536,113 @@ def _markdown(source: str, anchors: bool = False) -> str:
     if in_code:  # unterminated fence: show what we collected
         out.append(f"<pre><code>{esc(chr(10).join(code_buf))}</code></pre>")
     return "".join(out)
+
+
+# --- in-memory TTL cache ------------------------------------------------
+# Replaces the triplicated ad-hoc `_FOO_CACHE: dict = {} / _FOO_TTL = 60.0`
+# pattern that ships in viewer/_feed_helpers.py and viewer/_status.py.
+# One shared per-process instance per cache slot; the lookup is O(1) under
+# a single RLock (synchronous code path - viewers run in a thread pool but
+# the critical section is a dict read, so a non-contended lock is fine).
+# Stale entries are dropped on read (no background sweep), so the dict
+# never grows past the working set the page actually visits.
+#
+# Usage:
+#   _foo_cache = TTLCache(ttl_seconds=60.0)
+#   def foo(key):
+#       return _foo_cache.get_or_compute(key, lambda: _expensive(key))
+#
+# `get_or_compute` holds the lock across `compute()` too, so a thundering
+# herd of concurrent requests on a cold key collapses to a single compute
+# (the others see the freshly-set value when they reacquire). This is the
+# "no thundering herd" half of the inspection item 4921.
+
+V = TypeVar("V")
+
+
+class TTLCache(Generic[V]):
+    """Bounded time-to-live cache: O(1) get/set keyed by an arbitrary hashable.
+
+    Not thread-safe across PROCESSES (processes have their own dicts);
+    thread-safe WITHIN a process via a single re-entrant lock, so a holder
+    can recurse into a nested `get_or_compute` for the same instance
+    without deadlocking. The class is intentionally tiny: every viewer
+    cache uses the same get_or_compute / set / invalidate pattern.
+    """
+
+    __slots__ = ("_ttl", "_data", "_lock")
+
+    def __init__(self, ttl_seconds: float):
+        self._ttl = float(ttl_seconds)
+        self._data: dict = {}
+        # RLock so a re-entrant get_or_compute (rare, but possible when
+        # the compute function itself consults this same cache) does not
+        # deadlock. The critical section is a dict read, so contention
+        # is negligible.
+        self._lock = threading.RLock()
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def get(self, key) -> V | None:
+        """Return the cached value for `key` if present and fresh, else None.
+
+        Drops a stale entry as a side-effect, so the dict never grows past
+        the working set the page actually visits.
+        """
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return None
+            ts, value = entry
+            if self._now() - ts < self._ttl:
+                return value
+            del self._data[key]
+            return None
+
+    def set(self, key, value: V) -> None:
+        with self._lock:
+            self._data[key] = (self._now(), value)
+
+    def invalidate(self, key) -> None:
+        with self._lock:
+            self._data.pop(key, None)
+
+    def pop(self, key, default=...) -> V | None:
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                if default is ...:
+                    raise KeyError(key)
+                return default
+            ts, value = entry
+            if self._now() - ts >= self._ttl:
+                del self._data[key]
+                if default is ...:
+                    raise KeyError(key)
+                return default
+            del self._data[key]
+            return value
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+    def get_or_compute(self, key, compute: Callable[[], V]) -> V:
+        """Return the cached value or run `compute()` under the lock.
+
+        The lock is held across the compute so a thundering herd of N
+        concurrent callers on a cold key collapses to a single compute;
+        the next N-1 waiters see the freshly-set value when they
+        reacquire and re-read. Hot reads (cache hit) only take the lock
+        long enough for a dict get.
+        """
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is not None:
+                ts, value = entry
+                if self._now() - ts < self._ttl:
+                    return value
+            value = compute()
+            self._data[key] = (self._now(), value)
+            return value
