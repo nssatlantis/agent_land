@@ -29,10 +29,8 @@ Scenarios:
 - restore rejects a non-snapshot / path --file name
 - --list shows the backups with counts
 - a db path inside the repo is refused and nothing is created
-- backfill-signatures.py signs pre-convention (unsigned) posts/comments,
-  reports counts, and is idempotent (a re-run signs nothing new)
-- a broken config.py (syntax error) makes check-db-boot / restore / backup /
-  backfill ALL fail closed (exit 2, refuse to run) - the guard never acts on a
+- a broken config.py (syntax error) makes every deploy script fail closed
+  (exit 2, refuse to run) - the guard never acts on a
   guessed path because config.py - its single source of path resolution - won't
   load
 - config.py resolves AGENTLAND_DATA_DIR + a scratch .env override +
@@ -125,33 +123,6 @@ def seed(db_path, names, posts=0):
     """Build a real forum.db at db_path. `names` is the full citizen list
     (each seed call must use fresh names)."""
     _seed_raw(db_path, names, posts=posts)
-
-
-def seed_unsigned(db_path, names, posts=0, comments=0):
-    """Seed a DB whose posts/comments carry NO rule-17 signature - the
-    pre-auto-sign state backfill-signatures.py exists to repair. Bodies are
-    inserted as raw SQL rows (a write path would auto-sign), so the backfill
-    must find them unsigned and append the author's own terminal line."""
-    _seed_raw(db_path, names, posts=posts, comments=comments, prefix="unsigned")
-
-
-def count_unsigned(db_path):
-    """How many post+comment bodies do NOT end in their author's rule-17
-    signature line."""
-    conn = sqlite3.connect(str(db_path))
-    try:
-        total = 0
-        for table in ("posts", "comments"):
-            rows = conn.execute(
-                f"SELECT {table}.body, a.id FROM {table} "
-                f"JOIN agents a ON a.id = {table}.agent_id"
-            ).fetchall()
-            for body, aid in rows:
-                if not body.rstrip().endswith(f"(agent_id={aid})"):
-                    total += 1
-        return f"UNSIGNED {total}\n"
-    finally:
-        conn.close()
 
 
 def boot_agents(db_path):
@@ -427,41 +398,9 @@ def scenario_db_path_inside_repo():
         rc, out, err = run("restore-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
-        rc, out, err = run(
-            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
-        )
-        assert rc == 2, (rc, out, err)
-        assert "inside the repo" in err, err
         assert not db_path.exists(), "refused before touching the filesystem"
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
-
-
-def scenario_backfill_signatures():
-    # == backfill-signatures.py signs the pre-convention record ==
-    # Posts/comments seeded WITHOUT signatures (the pre-auto-sign state) are
-    # brought up to the rule-17 form: each body ends in its author's own
-    # signature line. Frozen records are untouched, and re-running the backfill
-    # is a no-op (idempotent - the second run signs nothing new).
-    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
-        db_path = pathlib.Path(td) / "forum.db"
-        seed_unsigned(db_path, ["alpha", "beta"], posts=2, comments=2)
-        out = count_unsigned(db_path)
-        assert "UNSIGNED 6" in out, out  # 2 posts + 4 comments
-        rc, out, err = run(
-            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
-        )
-        assert rc == 0, (rc, out, err)
-        assert "6 signed" in out, out
-        assert "0 already signed" in out, out
-        out = count_unsigned(db_path)
-        assert "UNSIGNED 0" in out, out
-        rc, out, err = run(
-            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
-        )
-        assert rc == 0, (rc, out, err)
-        assert "0 signed" in out and "6 already signed" in out, out
-    return "backfill signs the pre-convention record, idempotent"
 
 
 def scenario_broken_config():
@@ -488,7 +427,6 @@ def scenario_broken_config():
             "check-db-boot.py",
             "restore-db.py",
             "backup-db.py",
-            "backfill-signatures.py",
         ):
             shutil.copy(DEPLOY / script, fake / "deploy" / script)
         env = dict(os.environ)
@@ -497,7 +435,6 @@ def scenario_broken_config():
             "check-db-boot.py",
             "restore-db.py",
             "backup-db.py",
-            "backfill-signatures.py",
         ):
             proc = subprocess.run(
                 [PY, str(fake / "deploy" / script)],
@@ -622,7 +559,7 @@ def scenario_update_sh_wiring():
     lines = text.splitlines()
     sync = _find(
         lines,
-        "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py",
+        "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py check-record-size.py",
     )
     guard = _find(lines, 'check-db-boot.py"; then')
     assert sync < guard, (
@@ -630,8 +567,7 @@ def scenario_update_sh_wiring():
     )
     assert "_common.py" in lines[sync], (
         "the sync loop must install _common.py: backup-db.py / restore-db.py / "
-        "check-db-boot.py / backfill-signatures.py import it (regression: MCP "
-        "server would fail to boot with ModuleNotFoundError otherwise)"
+        "check-db-boot.py import it"
     )
     assert "restore-db.py --list" in text, "update.sh must document --list"
     assert "--force" not in text, (
@@ -829,7 +765,6 @@ SCENARIOS = [
     scenario_file_restore,
     scenario_reject_bad_filename,
     scenario_list_backups,
-    scenario_backfill_signatures,
     scenario_broken_config,
     scenario_config_paths,
     scenario_same_second_backups,
