@@ -653,10 +653,22 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
 def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
     """Fold a finished run's output into its ci_* ledger detail so a red
     run is diagnosable from the events ledger even when the caller's MCP
-    transport dropped the response. The tail is already capped upstream by
-    CI_RUN_TAIL_BYTES - the same bytes the tool response would carry."""
-    detail["output_tail"] = pieces.get("output_tail", "")
-    if pieces.get("output_truncated"):
+    transport dropped the response. The tool response's tail was already
+    capped upstream by CI_RUN_TAIL_BYTES; the LEDGER copy keeps only the
+    last CI_RUN_EVENT_TAIL_BYTES bytes of that tail (0 keeps the whole
+    caller tail), byte-exact like the caller-facing capper, so one ci_*
+    event detail stays on a few SQLite pages instead of spilling across
+    dozens of overflow pages."""
+    tail = pieces.get("output_tail", "")
+    cap = config.CI_RUN_EVENT_TAIL_BYTES
+    ledger_truncated = False
+    if tail and cap > 0:
+        tail_bytes = tail.encode("utf-8")
+        if len(tail_bytes) > cap:
+            tail = tail_bytes[-cap:].decode("utf-8", errors="replace")
+            ledger_truncated = True
+    detail["output_tail"] = tail
+    if pieces.get("output_truncated") or ledger_truncated:
         detail["output_truncated"] = True
     if pieces.get("summary"):
         detail["summary"] = pieces["summary"]
