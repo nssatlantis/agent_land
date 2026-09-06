@@ -81,6 +81,7 @@ def test_knob_defaults():
     assert config.CI_RUN_COOLDOWN_SECONDS == 60
     assert config.CI_RUN_DAILY_CAP == 10
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
+    assert config.CI_RUN_EVENT_TAIL_BYTES == 3072
 
 
 def test_unknown_checks_rejected():
@@ -314,6 +315,103 @@ def test_multibyte_tail_is_byte_exact():
         assert len(result["output_tail"].encode("utf-8")) <= 64 + 4, (
             "tail exceeded its byte budget"
         )
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_ledger_tail_is_capped_separately():
+    """The ci_* ledger copy of a run's tail is capped at
+    CI_RUN_EVENT_TAIL_BYTES while the tool response keeps
+    CI_RUN_TAIL_BYTES, and a ledger-only trim still flags
+    output_truncated on the event."""
+    stub = _StubTree(
+        "benchmarks",
+        """
+        import sys
+        print("x" * 50000)
+        sys.exit(0)
+    """,
+    )
+    _shadow("CI_RUN_TAIL_BYTES", 4096)
+    _shadow("CI_RUN_EVENT_TAIL_BYTES", 128)
+    try:
+        uid = _uid()
+        before = len(
+            events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        )
+        result = ci_runner.run_checks(uid, "t", "benchmarks")
+        assert result["output_truncated"] is True
+        assert len(result["output_tail"].encode("utf-8")) <= 4096 + 4
+        # The caller's tail stays far bigger than the ledger copy.
+        assert len(result["output_tail"]) > 4000
+        after = events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        assert len(after) == before + 1
+        detail = after[0]["detail"]
+        assert len(detail["output_tail"].encode("utf-8")) <= 128 + 4
+        assert detail["output_truncated"] is True
+        # The ledger copy is the last cap bytes of the caller-facing tail.
+        assert result["output_tail"].endswith(detail["output_tail"])
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_ledger_tail_not_truncated_when_within_event_cap():
+    """A run whose output fits inside CI_RUN_EVENT_TAIL_BYTES reaches the
+    ledger uncapped and un-flagged (the ledger only reports a trim it
+    actually made)."""
+    stub = _StubTree(
+        "benchmarks",
+        """
+        import sys
+        print("short output")
+        sys.exit(0)
+    """,
+    )
+    _shadow("CI_RUN_EVENT_TAIL_BYTES", 4096)
+    try:
+        uid = _uid()
+        before = len(
+            events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        )
+        result = ci_runner.run_checks(uid, "t", "benchmarks")
+        assert result["output_truncated"] is False
+        after = events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        assert len(after) == before + 1
+        detail = after[0]["detail"]
+        assert detail["output_tail"] == result["output_tail"]
+        assert detail.get("output_truncated") is None
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_ledger_tail_full_when_event_cap_zero():
+    """CI_RUN_EVENT_TAIL_BYTES=0 keeps the full caller tail on the ledger -
+    the explicit out from the ledger cap."""
+    stub = _StubTree(
+        "benchmarks",
+        """
+        import sys
+        print("x" * 50000)
+        sys.exit(0)
+    """,
+    )
+    _shadow("CI_RUN_TAIL_BYTES", 2048)
+    _shadow("CI_RUN_EVENT_TAIL_BYTES", 0)
+    try:
+        uid = _uid()
+        before = len(
+            events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        )
+        result = ci_runner.run_checks(uid, "t", "benchmarks")
+        assert result["output_truncated"] is True
+        after = events.query_events(agent_id=uid, kind=events.EVT_CI_BENCHMARK_RUN)
+        assert len(after) == before + 1
+        detail = after[0]["detail"]
+        assert detail["output_tail"] == result["output_tail"]
+        assert detail["output_truncated"] is True
     finally:
         _restore()
         stub.cleanup()
@@ -868,6 +966,9 @@ def main():
     test_handoff_error_propagates_within_deadline()
     test_single_flight_refuses_concurrent_second_run()
     test_output_tail_truncation()
+    test_ledger_tail_is_capped_separately()
+    test_ledger_tail_not_truncated_when_within_event_cap()
+    test_ledger_tail_full_when_event_cap_zero()
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()
     test_env_keep_carries_docker_daemon_config()
