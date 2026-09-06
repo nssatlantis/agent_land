@@ -8,8 +8,6 @@ modules (see the split-up viewer helpers).
 
 from __future__ import annotations
 
-import time
-
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -17,6 +15,7 @@ import config
 import db
 import github
 from db._credits import format_credits as _fmt_q
+from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._render_helpers import (
@@ -28,25 +27,17 @@ from viewer._render_helpers import (
 )
 from viewer._utils import _human_ts, _show_more, _truncate, esc
 
-_VERDICT_CACHE: dict[int, tuple[float, tuple[str, str]]] = {}
 _VERDICT_TTL = 60
+_VERDICT_CACHE_NS = "verdict"
 
 
 def _cached_verdict(p: dict) -> tuple[str, str]:
     pid = p.get("id")
-    if pid is not None:
-        entry = _VERDICT_CACHE.get(int(pid))
-        if entry is not None:
-            ts, val = entry
-            if (time.monotonic() - ts) < _VERDICT_TTL:
-                return val
-    val = _proposal_verdict(p)
-    if pid is not None:
-        try:
-            _VERDICT_CACHE[int(pid)] = (time.monotonic(), val)
-        except Exception:  # domain: degrade-silently - cache never blocks card
-            pass
-    return val
+    if pid is None:
+        return _proposal_verdict(p)
+    return _cached(
+        (_VERDICT_CACHE_NS, int(pid)), _VERDICT_TTL, lambda: _proposal_verdict(p)
+    )
 
 
 _DOCKET_EMPTIES = {
