@@ -166,7 +166,6 @@ from db._economy import (  # noqa: F401
 
 # ── health / migrations ────────────────────────────────────────────────
 from db._health import (  # noqa: F401
-    backfill_signatures,
     integrity_ok,
     process_info,
     schema_version,
