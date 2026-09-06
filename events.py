@@ -120,6 +120,7 @@ EVT_JOB_COMPLETED = "job_completed"
 EVT_JOB_CANCELLED = "job_cancelled"
 EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
+EVT_JOB_REACTIVATED = "job_reactivated"
 
 EVT_WORKFLOW_STARTED = "workflow_started"
 EVT_WORKFLOW_CLOSED = "workflow_closed"
@@ -213,6 +214,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_CANCELLED,
     EVT_JOB_EXPIRED,
     EVT_JOB_RELEASED,
+    EVT_JOB_REACTIVATED,
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
     EVT_PROPOSAL_AUTO_LINKED,
@@ -309,6 +311,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_CANCELLED,
         EVT_JOB_EXPIRED,
         EVT_JOB_RELEASED,
+        EVT_JOB_REACTIVATED,
     }
 )
 _TAGS_KINDS = frozenset(
