@@ -588,6 +588,16 @@ async def jobs_detail_page(request):
             f'<button type="submit" style="color:#c53030">close job</button></form></div>'
         )
 
+    reactivate_html = ""
+
+    if detail["status"] in ("expired", "cancelled") and detail["official"]:
+        reactivate_html = (
+            f'<div class="panel"><h3>Re-activate official position</h3><form method="post" action="/admin/jobs/{job_id}/reactivate">'
+            f"{_csrf_field(request)}"
+            f'<label><input type="checkbox" name="confirm" required> confirm re-activate (re-escrow remaining payout from treasury)</label> '
+            f'<button type="submit" style="background:var(--ok);color:white">re-activate</button></form></div>'
+        )
+
     body = (
         _admin_nav()
         + f'<div class="panel" style="border-left:4px solid {col}"><h2>{esc(detail["title"])} <span style="color:var(--muted)">#{detail["job_id"]}</span> '
