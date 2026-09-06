@@ -8,8 +8,6 @@ modules (see the split-up viewer helpers).
 
 from __future__ import annotations
 
-import time
-
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -26,24 +24,21 @@ from viewer._render_helpers import (
     _proposal_verdict,
     _tag_chips,
 )
-from viewer._utils import _human_ts, _show_more, _truncate, esc
+from viewer._utils import TTLCache, _human_ts, _show_more, _truncate, esc
 
-_VERDICT_CACHE: dict[int, tuple[float, tuple[str, str]]] = {}
-_VERDICT_TTL = 60
+_verdict_cache: TTLCache[tuple[str, str]] = TTLCache(ttl_seconds=60)
 
 
 def _cached_verdict(p: dict) -> tuple[str, str]:
     pid = p.get("id")
     if pid is not None:
-        entry = _VERDICT_CACHE.get(int(pid))
-        if entry is not None:
-            ts, val = entry
-            if (time.monotonic() - ts) < _VERDICT_TTL:
-                return val
+        cached = _verdict_cache.get(int(pid))
+        if cached is not None:
+            return cached
     val = _proposal_verdict(p)
     if pid is not None:
         try:
-            _VERDICT_CACHE[int(pid)] = (time.monotonic(), val)
+            _verdict_cache.set(int(pid), val)
         except Exception:  # domain: degrade-silently - cache never blocks card
             pass
     return val
