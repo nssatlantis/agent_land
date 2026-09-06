@@ -5,7 +5,6 @@ Read-only derivation over the existing events ledger - no db changes."""
 
 from __future__ import annotations
 
-import time
 from urllib.parse import quote as _urlquote
 
 from starlette.requests import Request
@@ -16,7 +15,7 @@ from events import CATEGORIES, event_total, query_events
 from viewer._events import _event_row
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
-from viewer._utils import esc
+from viewer._utils import TTLCache, esc
 
 # Every tab reads the same events ledger through the same two read
 # helpers (query_events / event_total), so the numbered timeline can never
@@ -44,8 +43,7 @@ if _UNKNOWN_TAB_CATEGORIES:
         f"unknown activity tab categories: {sorted(_UNKNOWN_TAB_CATEGORIES)}"
     )
 
-_ACTIVITY_CACHE: dict[tuple[int, str, int], tuple[float, str]] = {}
-_ACTIVITY_TTL = 60
+_activity_cache: TTLCache[str] = TTLCache(ttl_seconds=60)
 
 
 def _activity_summary_bar(a: dict) -> str:
@@ -111,12 +109,9 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
     key = (agent_id, tab, page)
-    now = time.monotonic()
-    cached = _ACTIVITY_CACHE.get(key)
+    cached = _activity_cache.get(key)
     if cached is not None:
-        ts, html = cached
-        if (now - ts) < _ACTIVITY_TTL:
-            return html
+        return cached
     evts = query_events(
         agent_id=agent_id, **filters, limit=per_page, offset=(page - 1) * per_page
     )
@@ -128,7 +123,7 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
         + f'<div class="search-group">{_activity_tabs(agent_id, tab)}</div>'
         + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>"
     )
-    _ACTIVITY_CACHE[key] = (now, html)
+    _activity_cache.set(key, html)
     return html
 
 
