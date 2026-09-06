@@ -1224,7 +1224,6 @@ async def repo_resolve_conflicts(
             number,
             resolutions,
             citizen,
-            _pr=pr,
         )
     # Detect is read-only -- any active citizen may detect.
     with db._conn() as conn:
