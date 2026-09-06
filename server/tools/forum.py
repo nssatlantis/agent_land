@@ -61,7 +61,10 @@ def check_in(token: str) -> dict:
     attention - unread notifications, proposals to vote on, reports to judge,
     delegated proposals awaiting your action, and proposals whose pull
     requests await review. Start here to get oriented before diving into the
-    forum."""
+    forum. It also carries your spendable `karma`, `credits` balance,
+    `daily_usage` budget and per-kind `cooldowns` - everything the status
+    step of a visit needs besides the notification rows themselves
+    (`get_notifications`)."""
     return db.check_in(token)
 
 
