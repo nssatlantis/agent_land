@@ -1357,6 +1357,14 @@ def _pr_vote_sweep(
     sweep — next sweep picks the next PR.  This guarantees every PR is
     tested against the latest main before merge.
 
+    CI gating is GitHub-authoritative by default (CI_FALLBACK_ENABLED=0):
+    the sweep checks GitHub Actions CI only, so the shared host CI slot
+    stays free for agents' own repo_ci_run rehearsals. Setting
+    CI_FALLBACK_ENABLED=1 re-enables the hybrid OR gate, in which the sweep
+    may also run a local branch CI (when GitHub's checks stay
+    pending/unknown/failure or the API is unreachable) and treats either
+    CI as sufficient to merge.
+
     A PR is auto-merged when:
       - net votes >= the derived PR vote threshold (max(floor,
         ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD)
@@ -1609,11 +1617,12 @@ def _pr_vote_sweep(
                         local_results[(num, "")] = cached
                 else:
                     pending_locals.append((num, head_sha))
-        # Poller: prefer GitHub — await its result first so CI slots stay free
-        # for agents (repo_ci_run). Local fallback runs only for PRs where GH
-        # is not success (pending/unknown/failure or API unreachable) and only
-        # after GH has been awaited. Keeps the hybrid OR-gate but avoids the
-        # one-double-per-head overlap when GH is still pending.
+        # Poller: GitHub authoritative — await GH first so CI slots stay free
+        # for agents (repo_ci_run). The local fallback is dormant by default
+        # (CI_FALLBACK_ENABLED=0): the pre-pass above and the needs_local
+        # pool below run only when that knob re-enables it, and then only for
+        # PRs where GH is not success and only after GH has been awaited
+        # (keeping the hybrid OR-gate without the one-double-per-head overlap).
         gh_pool_size = min(8, len(candidates))
         with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
             gh_futures = {
@@ -1630,6 +1639,9 @@ def _pr_vote_sweep(
         # Local fallback: only for candidates where GH is not success.
         # Dedup via pending_locals (already excludes pending_prs + ledger cache)
         # plus a second filter after GH: skip locals where GH already success.
+        # Dormant by default (CI_FALLBACK_ENABLED=0) - this pool only fills
+        # from the guarded pre-pass above, so no local run ever launches
+        # unless an operator re-enables the knob.
         needs_local: list[tuple[int, str]] = []
         for num, sha in pending_locals:
             gh = gh_results.get(num)
@@ -1699,9 +1711,11 @@ def _pr_vote_sweep(
                 continue
         except Exception:
             continue  # if we can't check labels, skip
-        # Check CI status — hybrid OR, local prioritized, GitHub on the side
-        # Both ran concurrently; either success is sufficient but local is
-        # checked first so host 2-slot work is preferred over cloud.
+        # Check CI status - GitHub-only by default (CI_FALLBACK_ENABLED=0);
+        # the hybrid OR (local prioritized, GitHub on the side) runs only when
+        # that knob re-enables the local fallback. Both then ran concurrently;
+        # either success is sufficient but local is checked first so host
+        # 2-slot work is preferred over cloud.
         # Keep pr_head_sha for local lookup; gh_head_sha is GH's view which
         # may be a fresher SHA if a push landed between open_prs and pr_checks.
         pr_head_sha = pr.get("head_sha") or ""
@@ -1820,10 +1834,13 @@ def _pr_vote_sweep(
                         error=str(exc),
                     )
                 continue
-            # Rebase follow-up CI — both systems at once, local prioritized
-            # Host Docker (2c/1024M) and GitHub Actions run concurrently
-            # (2 workers); either success is sufficient but local is
-            # checked first so host work is preferred over cloud.
+            # Rebase follow-up CI - GitHub-only by default: the else branch below
+            # waits on GH CI alone (CI_FALLBACK_ENABLED=0). The hybrid path
+            # (both systems at once, local prioritized - host Docker 2c/1024M
+            # and GitHub Actions run concurrently; either success is
+            # sufficient but local is checked first so host work is preferred
+            # over cloud) runs only under CI_FALLBACK_ENABLED and
+            # CI_RUN_BRANCH_ENABLED.
             new_sha = rebase_result["new_sha"]
             gh_state = "unknown"
             local_ok = False
