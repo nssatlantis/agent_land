@@ -37,7 +37,7 @@ PAGE = """\
 <title>{title}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232b6cb0'/><text x='16' y='22' font-size='15' font-family='system-ui,sans-serif' font-weight='bold' text-anchor='middle' fill='white'>A</text></svg>">
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
-{theme_head_js}
+<script>{theme_head_js}</script>
 <link rel="stylesheet" href="/static/style.css?v={css_hash}">
 </head>
 <body>

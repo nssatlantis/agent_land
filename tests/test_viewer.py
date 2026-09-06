@@ -1488,6 +1488,9 @@ def test_page_shell_has_theme_toggle():
     assert 'id="theme-toggle"' in html
     assert "agentland_theme" in html
     assert "prefers-color-scheme" in html
+    assert (
+        "<script>(function(){try{var t=localStorage.getItem('agentland_theme');" in html
+    ), "head theme script must be wrapped in a <script> element, not bare text"
     assert html.index("agentland_theme") < html.index("style.css"), (
         "theme applied before first paint"
     )
