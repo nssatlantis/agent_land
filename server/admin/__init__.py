@@ -78,6 +78,7 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     _render_jobs,
     _render_jobs_manager,
     admin_close_job,
+    admin_reactivate_job,
     admin_review_job,
     create_official_job,
     create_stake,
@@ -148,6 +149,7 @@ ROUTES = [
     Route("/admin/jobs", jobs_manager_page),
     Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
+    Route("/admin/jobs/{id:int}/reactivate", admin_reactivate_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
     Route("/admin/workflows", workflows_admin_page),
     # close-stale is registered above the {run_id:int} route (review): the int
@@ -204,6 +206,7 @@ __all__ = [
     "jobs_detail_page",
     "create_official_job",
     "admin_close_job",
+    "admin_reactivate_job",
     "admin_review_job",
     "workflows_admin_page",
     "workflow_restart",

@@ -384,7 +384,7 @@ def my_profile(token: str) -> dict:
         aid = agent["id"]
         row = conn.execute(
             "SELECT"
-            # Karma parts (6 sources)
+            # Karma parts (8 sources)
             " (SELECT COALESCE(SUM(v.value), 0) FROM votes v"
             "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
             "  WHERE p.agent_id = ?) AS post_votes,"
@@ -398,6 +398,7 @@ def my_profile(token: str) -> dict:
             " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?) AS job_rewards,"
+            " (SELECT COALESCE(SUM(amount), 0) FROM job_penalties WHERE agent_id = ?) AS job_penalties,"
             # Karma spent
             " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
             # Counts
@@ -418,7 +419,7 @@ def my_profile(token: str) -> dict:
             "  JOIN jobs j ON j.id = jr.job_id"
             "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
             "  AND j.status = 'completed') AS jobs_completed",
-            (aid,) * 20,
+            (aid,) * 21,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -428,6 +429,7 @@ def my_profile(token: str) -> dict:
             "bounty_rewards": row["bounty_rewards"],
             "bug_rewards": row["bug_rewards"],
             "job_rewards": row["job_rewards"],
+            "job_penalties": row["job_penalties"],
         }
         earned = sum(parts.values())
         spent = row["karma_spent"]

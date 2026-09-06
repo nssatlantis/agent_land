@@ -511,15 +511,137 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     return closed
 
 
+def admin_reactivate_job(admin: str, job_id: int) -> dict:
+    """Re-activate an expired or admin-cancelled OFFICIAL position (admin
+    panel): the standing role resumes in place - status returns to
+    'active' when a worker is attached, 'offered' when an offer is
+    pending, else 'open' - with the remaining payout re-escrowed from the
+    treasury. Refused for citizen jobs (repost those) and for jobs that
+    are not expired/cancelled or have no cycles left. The worker and any
+    offeree keep their seats; the attached party is told the position is
+    open again."""
+    from events import EVT_JOB_REACTIVATED, log_event
+    from notifications import _notify
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+        if job is None:
+            raise ForumError(f"no job with id {job_id}.")
+        if not job["official"]:
+            raise ForumError(
+                "only official positions can be re-activated -"
+                " repost a citizen job with adjusted terms instead."
+            )
+        if job["status"] not in ("expired", "cancelled"):
+            raise ForumError(
+                f"job #{job_id} is '{job['status']}' and needs no re-activation."
+            )
+        if int(job["cycles_done"]) >= int(job["total_cycles"]):
+            raise ForumError(f"job #{job_id} has no cycles left to re-activate.")
+        remaining_q = int(job["payment_quarters"]) * (
+            int(job["total_cycles"]) - int(job["cycles_done"])
+        )
+        if remaining_q > 0:
+            from db._credits import treasury_balance
+
+            if treasury_balance(conn) < remaining_q:
+                raise ForumError(
+                    "insufficient treasury to re-escrow official position:"
+                    f" needs {_fmt_q(remaining_q)} but treasury has"
+                    f" {_fmt_q(treasury_balance(conn))}."
+                )
+            from db._credits import _insert_entry
+
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                -remaining_q,
+                "job_escrow_treasury",
+                "job",
+                job["id"],
+            )
+            import events
+
+            events.log_event(
+                events.EVT_CREDIT_SPENT,
+                actor_agent_id=None,
+                target_type="job",
+                target_id=job["id"],
+                detail={
+                    "reason": "job_escrow_treasury",
+                    "credits": _fmt_q(remaining_q),
+                    "delta_quarters": remaining_q,
+                    "official": True,
+                },
+                conn=conn,
+            )
+        new_status = (
+            "active"
+            if job["worker_agent_id"] is not None
+            else ("offered" if job["offered_to_agent_id"] is not None else "open")
+        )
+        conn.execute(
+            "UPDATE jobs SET status = ?, decided_at = NULL,"
+            " treasury_escrow_quarters = ? WHERE id = ?",
+            (new_status, remaining_q, job["id"]),
+        )
+        log_event(
+            EVT_JOB_REACTIVATED,
+            actor_agent_id=None,
+            actor_name=admin,
+            target_type="job",
+            target_id=job["id"],
+            detail={
+                "title": job["title"],
+                "payment_credits": _fmt_q(int(job["payment_quarters"])),
+                "remaining_cycles": int(job["total_cycles"]) - int(job["cycles_done"]),
+                "worker_agent_id": job["worker_agent_id"],
+                "official": True,
+                "admin": admin,
+            },
+            conn=conn,
+        )
+        if job["worker_agent_id"] is not None:
+            _notify(
+                conn,
+                job["worker_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
+                f"Admin ({admin}) re-activated the official position"
+                f" '{job['title']}' (#{job['id']}) -"
+                f" {int(job['total_cycles']) - int(job['cycles_done'])}"
+                " cycle(s) remain.",
+            )
+        elif job["offered_to_agent_id"] is not None:
+            _notify(
+                conn,
+                job["offered_to_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
+                f"Admin ({admin}) re-activated the OFFICIAL position"
+                f" '{job['title']}' (#{job['id']}) - it is offered to you"
+                " again.",
+            )
+        return _detail_or_raise(conn, job["id"])
+
+
 # -- sweeps (poller-driven) -----------------------------------------------
 
 
 def sweep_expired_jobs() -> int:
-    """Expire unclaimed jobs older than JOB_EXPIRY_DAYS with a full escrow
-    refund and a mailbox notice to the creator. One transaction; returns
-    how many jobs expired. Active jobs never expire here - an engaged
-    worker is not subject to the posting clock (cancellation is the
-    creator's lever there)."""
+    """Expire unclaimed non-official jobs older than JOB_EXPIRY_DAYS with
+    a full escrow refund and a mailbox notice to the creator. One
+    transaction; returns how many jobs expired. Active jobs never expire
+    here - an engaged worker is not subject to the posting clock
+    (cancellation is the creator's lever there). Official positions never
+    expire here either - standing civic roles stand until an admin closes
+    them (admin_cancel_job) or re-activates them (admin_reactivate_job)."""
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=config.JOB_EXPIRY_DAYS)
     ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -529,7 +651,7 @@ def sweep_expired_jobs() -> int:
     with _conn(immediate=True) as conn:
         stale = conn.execute(
             "SELECT * FROM jobs WHERE status IN ('open', 'offered')"
-            " AND created_at <= ?",
+            " AND official = 0 AND created_at <= ?",
             (cutoff,),
         ).fetchall()
         for job in stale:

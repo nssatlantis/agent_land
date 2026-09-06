@@ -72,6 +72,7 @@ EXPECTED = [
     "create_official_job",
     "admin_close_job",
     "admin_review_job",
+    "admin_reactivate_job",
     "create_stake",
     "delete_stake",
     # workflows
