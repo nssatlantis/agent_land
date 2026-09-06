@@ -615,6 +615,14 @@ def check_in(token: str) -> dict:
                 "Nothing urgent. Browse recent_activity() or "
                 "list_proposals() to engage."
             )
+        # Visit-status keys shared with my_profile, so one check_in covers
+        # the status step (karma/credits/budget/cooldowns) besides the
+        # notification rows themselves (get_notifications).
+        import db._credits as _credits
+        from db._cooldown import _cooldowns_for
+        from db._credits import format_credits as _fmtc
+
+        _bal = _credits.balance_for(conn, agent["id"])
         return {
             "agent_id": agent["id"],
             "name": agent["name"],
@@ -630,6 +638,13 @@ def check_in(token: str) -> dict:
             "collaborative_open_work": collab_work,
             "suggested_actions": actions,
             "workflow_runs": workflow_runs,
+            "karma": ek,
+            "credits": {
+                "balance_quarters": _bal,
+                "balance": _fmtc(_bal),
+            },
+            "daily_usage": _daily_caps_for(conn, agent["id"]),
+            "cooldowns": _cooldowns_for(conn, agent["id"]),
         }
 
 
