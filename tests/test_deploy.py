@@ -48,6 +48,7 @@ Scenarios:
 - restore-db.py --list flags snapshots that fail quick_check as (corrupt)
 """
 
+import json
 import os
 import pathlib
 import secrets
@@ -398,9 +399,119 @@ def scenario_db_path_inside_repo():
         rc, out, err = run("restore-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
+        rc, out, err = run("trim-ci-events.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 2, (rc, out, err)
+        assert "inside the repo" in err, err
         assert not db_path.exists(), "refused before touching the filesystem"
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
+
+
+def scenario_trim_ci_events():
+    # == trim-ci-events.py caps historical oversized ci_* event tails ==
+    # Seeds a db whose events carry pre-cap detail rows with an oversized
+    # `output_tail` plus rows already within the cap, non-ci details, and a
+    # malformed one. Dry-run trims nothing; --apply caps the oversized tails
+    # byte-exactly (last cap bytes, output_truncated=True) while every other
+    # detail key survives; a re-run trims 0 (idempotent); --vacuum alone
+    # runs without touching rows.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha"], posts=0)
+        cap_env = {"FORUM_CI_RUN_EVENT_TAIL_BYTES": "8"}
+        raw = {}
+        raw["oversized"] = json.dumps(
+            {
+                "output_tail": "x" * 500,
+                "summary": {"checks": "tests", "passed_files": 12},
+                "failed_files": ["a.py", "b.py"],
+                "exit_code": 1,
+            }
+        )
+        raw["capped"] = json.dumps({"output_tail": "y" * 5})
+        raw["nodetail"] = json.dumps({"some": "thing"})
+        raw["nondict"] = json.dumps(["not", "a", "dict"])
+        raw["malformed"] = "{not json"
+        conn = sqlite3.connect(str(db_path))
+        raw_order = ("oversized", "capped", "nodetail", "nondict", "malformed")
+        ids: dict[str, int] = {}
+        orig: dict[str, str] = {}
+        stored: dict[int, str] = {}
+        try:
+            for k in raw_order:
+                kind = "ci_run" if k in ("oversized", "capped") else "post_created"
+                cur = conn.execute(
+                    "INSERT INTO events (kind, actor_agent_id, detail, created_at)"
+                    " VALUES (?, NULL, ?, '2026-01-01T00:00:00.000Z')",
+                    (kind, raw[k]),
+                )
+                ids[k] = cur.lastrowid
+            conn.commit()
+            stored = dict(conn.execute("SELECT id, detail FROM events").fetchall())
+            for k in raw_order:
+                orig[k] = stored[ids[k]]
+        finally:
+            conn.close()
+
+        def read_detail(c):
+            return dict(c.execute("SELECT id, detail FROM events").fetchall())
+
+        # Dry run: exit 0, reports a pending trim, nothing written.
+        rc, out, err = run(
+            "trim-ci-events.py", env=cap_env | {"FORUM_DB_PATH": str(db_path)}
+        )
+        assert rc == 0, (rc, out, err)
+        assert "would trim 1 of 5" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert read_detail(conn) == stored, "dry-run must not write"
+        finally:
+            conn.close()
+        # --apply: caps the oversized tail, keeps every other key.
+        rc, out, err = run(
+            "trim-ci-events.py",
+            "--apply",
+            env=cap_env | {"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "trimmed 1 of 5" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = read_detail(conn)
+            detail = json.loads(rows[ids["oversized"]])
+            assert detail["output_tail"] == "x" * 8, (
+                "output_tail is byte-capped to the last 8 bytes"
+            )
+            assert detail["output_truncated"] is True
+            assert detail["summary"] == {"checks": "tests", "passed_files": 12}
+            assert detail["failed_files"] == ["a.py", "b.py"]
+            assert detail["exit_code"] == 1
+            for k in ("capped", "nodetail", "nondict", "malformed"):
+                assert rows[ids[k]] == orig[k], f"{k} detail must be untouched"
+        finally:
+            conn.close()
+        # Idempotent: a re-run has nothing left to trim.
+        rc, out, err = run(
+            "trim-ci-events.py",
+            "--apply",
+            env=cap_env | {"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "trimmed 0 of 5" in out, out
+        # --vacuum alone runs without touching rows.
+        rc, out, err = run(
+            "trim-ci-events.py",
+            "--vacuum",
+            env=cap_env | {"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "VACUUM complete" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert read_detail(conn) == rows, "--vacuum must not touch rows"
+        finally:
+            conn.close()
+    return "trim-ci-events caps oversized event tails, idempotent"
 
 
 def scenario_broken_config():
@@ -427,6 +538,7 @@ def scenario_broken_config():
             "check-db-boot.py",
             "restore-db.py",
             "backup-db.py",
+            "trim-ci-events.py",
         ):
             shutil.copy(DEPLOY / script, fake / "deploy" / script)
         env = dict(os.environ)
@@ -435,6 +547,7 @@ def scenario_broken_config():
             "check-db-boot.py",
             "restore-db.py",
             "backup-db.py",
+            "trim-ci-events.py",
         ):
             proc = subprocess.run(
                 [PY, str(fake / "deploy" / script)],
@@ -765,6 +878,7 @@ SCENARIOS = [
     scenario_file_restore,
     scenario_reject_bad_filename,
     scenario_list_backups,
+    scenario_trim_ci_events,
     scenario_broken_config,
     scenario_config_paths,
     scenario_same_second_backups,
