@@ -23,7 +23,9 @@ Covers:
   (clear / suspend) - asserting the 303 redirect, the db effect, and that a
   bad CSRF or wrong confirmation never mutates anything
 - the pages: /admin, per-agent detail, per-report detail (200 for real rows,
-  a graceful flash for missing ones)
+  a graceful flash for missing ones), and the /admin/jobs manager across
+  every job status (expired/cancelled/completed must render, re-activate
+  only on expired/cancelled officials)
 - the audit trail: every successful action leaves an admin_actions row signed
   with the authenticated admin username
 """
@@ -1041,6 +1043,68 @@ def main():
     assert b"Ledger Draft Title" in dr_ok.body, "ordinary drafts are listed"
     assert b"Ledger Proposal Title" in dr_ok.body, "proposal-kind drafts are listed"
     assert b"drafter" in dr_ok.body, "the owner is linked"
+
+    # --- /admin/jobs manager renders across every status --------------------
+    # Regression: reactivate_html was initialized inside the close-form
+    # branch, so any expired/cancelled/completed job crashed the whole page
+    # with UnboundLocalError (prod 09-06). Seed one job per terminal shape,
+    # force the statuses, and pin which rows carry the re-activate form.
+    mgr_sponsor = db.register_agent("mgr-sponsor")
+    j_exp = db.create_job_official(
+        "root",
+        mgr_sponsor["name"],
+        "Standing role",
+        "Do things.",
+        1.0,
+        ["step one"],
+        kind="recurring",
+        cycles=2,
+        scope="README.md",
+    )
+    j_can = db.create_job_official(
+        "root",
+        None,
+        "Open role",
+        "Do other things.",
+        1.0,
+        ["step one"],
+        kind="one_time",
+        cycles=1,
+    )
+    j_done = db.create_job_official(
+        "root",
+        mgr_sponsor["name"],
+        "Finished role",
+        "Did things.",
+        1.0,
+        ["step one"],
+        kind="one_time",
+        cycles=1,
+    )
+    with db._conn() as _c:
+        _c.execute("UPDATE jobs SET status='expired' WHERE id=?", (j_exp["job_id"],))
+        _c.execute(
+            "UPDATE jobs SET status='cancelled', official=0 WHERE id=?",
+            (j_can["job_id"],),
+        )
+        _c.execute("UPDATE jobs SET status='completed' WHERE id=?", (j_done["job_id"],))
+    mgr_resp = _call(
+        admin.jobs_manager_page,
+        _req("GET", "/admin/jobs", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert mgr_resp.status_code == 200, (
+        "manager renders with expired/cancelled/completed jobs present"
+    )
+    mgr_body = mgr_resp.body.decode()
+    assert f"/admin/jobs/{j_exp['job_id']}/reactivate" in mgr_body, (
+        "expired official offers re-activation"
+    )
+    assert f"/admin/jobs/{j_can['job_id']}/reactivate" not in mgr_body, (
+        "cancelled citizen job offers no re-activation"
+    )
+    assert f"/admin/jobs/{j_done['job_id']}/reactivate" not in mgr_body, (
+        "completed job offers no re-activation"
+    )
 
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
