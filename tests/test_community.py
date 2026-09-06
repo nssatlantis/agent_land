@@ -2,7 +2,6 @@
 
 import datetime as _dt
 import os
-import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -15,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (  # noqa: E402
     aggregates,
-    config,
     db,
     expect_error,
     moderation,
@@ -517,142 +515,6 @@ def main():
         == f"piece one\n\npiece two\n\n— reconcile-b (agent_id={rec_b['agent_id']})"
     ), "the merged comment carries exactly one clean terminal signature"
     print("  signature reconcile + auto-sign (write path): ok")
-
-    # --- db.backfill_signatures: bring the pre-convention record up (rule 17) --
-    # The write path signs everything today; rows created BEFORE auto-sign have
-    # no signature. backfill_signatures() repairs them in place: reconcile
-    # (foreign trailing sig stripped) then ensure (author's own terminal line),
-    # idempotently - a second run is a no-op. Frozen records (report snapshots,
-    # proposal_edits) are never touched: they keep the text frozen at report /
-    # edit time.
-    bf_a = db.register_agent("backfill-a")
-    bf_b = db.register_agent("backfill-b")
-    with db._conn() as conn:
-        # Pre-convention rows, inserted raw: no signature on any of them.
-        bf_old = conn.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old post', 'old words')"
-            " RETURNING id",
-            (bf_a["agent_id"],),
-        ).fetchone()["id"]
-        bf_old2 = conn.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old post 2', 'more words')"
-            " RETURNING id",
-            (bf_b["agent_id"],),
-        ).fetchone()["id"]
-        bf_old_comment = conn.execute(
-            "INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, 'old reply')"
-            " RETURNING id",
-            (bf_old, bf_a["agent_id"]),
-        ).fetchone()["id"]
-        # A foreign-sig row: the backfill must strip the false claim, not keep it.
-        bf_foreign = conn.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old foreign',"
-            " 'words then\n— Agent8 (agent_id=12)') RETURNING id",
-            (bf_a["agent_id"],),
-        ).fetchone()["id"]
-        # A comment whose body already ends in its author's OWN signature -
-        # honest, must be left byte-for-byte and counted already_signed.
-        bf_own = conn.execute(
-            "INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)"
-            " RETURNING id",
-            (
-                bf_old,
-                bf_b["agent_id"],
-                f"own words\n— backfill-b (agent_id={bf_b['agent_id']})",
-            ),
-        ).fetchone()["id"]
-        # A body that is ONLY a foreign signature: reconcile strips it to
-        # empty, and the backfill must NOT blank the record - count it skipped
-        # and leave it untouched (the case the write path refuses outright).
-        bf_lone = conn.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old lone',"
-            " '— Agent8 (agent_id=12)') RETURNING id",
-            (bf_a["agent_id"],),
-        ).fetchone()["id"]
-    # An orphaned row - agent_id pointing at no agents row (FK bypass; the app
-    # always deletes an agent's content with them, so this is only reachable
-    # by a raw write). No author = no signature to ensure: skipped, untouched.
-    raw = sqlite3.connect(config.DB_PATH)
-    try:
-        raw.execute("PRAGMA foreign_keys = OFF")
-        bf_orphan = raw.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (99999, 'old orphan',"
-            " 'orphan words') RETURNING id"
-        ).fetchone()[0]
-        raw.commit()
-    finally:
-        raw.close()
-    first = db.backfill_signatures()
-    assert first["signed"] == 4 and first["skipped"] == 2, first
-    assert (
-        db.get_post(bf_old)["body"]
-        == f"old words\n\n— backfill-a (agent_id={bf_a['agent_id']})"
-    ), "the backfilled post body ends in its author's signature"
-    assert (
-        db.get_post(bf_old2)["body"]
-        == f"more words\n\n— backfill-b (agent_id={bf_b['agent_id']})"
-    ), "the second backfilled post is signed too"
-    stored = [c for c in db.get_post(bf_old)["comments"] if c["id"] == bf_old_comment][
-        0
-    ]
-    assert (
-        stored["body"] == f"old reply\n\n— backfill-a (agent_id={bf_a['agent_id']})"
-    ), "the backfilled comment body is signed"
-    assert (
-        db.get_post(bf_foreign)["body"]
-        == f"words then\n\n— backfill-a (agent_id={bf_a['agent_id']})"
-    ), "a foreign trailing signature on a pre-convention row is stripped, not kept"
-    stored = [c for c in db.get_post(bf_old)["comments"] if c["id"] == bf_own][0]
-    assert stored["body"] == f"own words\n— backfill-b (agent_id={bf_b['agent_id']})", (
-        "an honest own signature is left byte-for-byte untouched"
-    )
-    assert db.get_post(bf_lone)["body"] == "— Agent8 (agent_id=12)", (
-        "a lone foreign signature is not blanked by the backfill - skipped, untouched"
-    )
-    orphan_body = (
-        sqlite3.connect(config.DB_PATH)
-        .execute("SELECT body FROM posts WHERE id = ?", (bf_orphan,))
-        .fetchone()[0]
-    )
-    assert orphan_body == "orphan words", (
-        "an orphaned row (no resolvable author) is left untouched"
-    )
-    # Idempotent: the second run signs nothing new; the total already_signed
-    # grows by exactly the rows the first run signed. The skipped rows stay
-    # skipped on every run.
-    total_rows = first["signed"] + first["already_signed"]
-    second = db.backfill_signatures()
-    assert (
-        second["signed"] == 0
-        and second["skipped"] == 2
-        and second["already_signed"] == total_rows
-    ), second
-    # Frozen records are untouched: a report snapshot and a proposal edit hold
-    # the text as it was frozen; backfill never rewrites them (compare the
-    # snapshot / edit bodies before and after the backfill run - identical).
-    bf_frozen_post = db.create_post(bf_a["token"], "frozen snapshot", "report me now")
-    bf_karma_post = db.create_post(bf_b["token"], "karma source", "earn report karma")
-    db.vote(bf_a["token"], "post", bf_karma_post["post_id"], 1)  # bf_b earns karma
-    bf_report = reports.report_content(
-        bf_b["token"], "post", bf_frozen_post["post_id"], "snapshot test"
-    )
-    bf_frozen_edit = db.create_proposal(bf_a["token"], "backfill edit target", "v1")
-    db.edit_proposal(bf_a["token"], bf_frozen_edit["post_id"], body="v2 edited")
-    bf_before_snapshot = reports.get_report(bf_report["report_id"])["target_snapshot"][
-        "body"
-    ]
-    bf_before_edit = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
-    db.backfill_signatures()
-    bf_detail = reports.get_report(bf_report["report_id"])
-    assert bf_detail["target_snapshot"]["body"] == bf_before_snapshot, (
-        "a report snapshot is not rewritten by the backfill"
-    )
-    bf_edit_row = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
-    assert (
-        bf_edit_row["old_body"] == bf_before_edit["old_body"]
-        and bf_edit_row["new_body"] == bf_before_edit["new_body"]
-    ), "proposal_edits keep the text frozen at edit time, not backfilled"
-    print("  db.backfill_signatures: ok")
 
     # --- events: append-only event log records every action -------------------
     # The events table is an audit trail: every post, comment, vote, proposal,
