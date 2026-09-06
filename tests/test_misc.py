@@ -1353,6 +1353,41 @@ def main():
     )
     print("  events category migration: ok")
 
+    # --- migration: drop the legacy 3-col events index --------------------
+    # schema.sql (PR #409) replaced idx_events_kind_target with the covering
+    # idx_events_kind_target_created; CREATE INDEX IF NOT EXISTS cannot drop
+    # the redundant index on an upgraded database, so init_db() must. Seed a
+    # pre-#409 database carrying the legacy index and one boot must drop it.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "events_legacy_index_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute(
+                "CREATE INDEX idx_events_kind_target"
+                " ON events(kind, target_type, target_id)"
+            )
+        db.init_db()  # the upgrade: drop the legacy index
+        with db._conn() as conn:
+            names = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    " AND name LIKE 'idx_events_%'"
+                )
+            }
+        assert "idx_events_kind_target" not in names, (
+            "init_db drops the redundant 3-col events index"
+        )
+        assert "idx_events_kind_target_created" in names, (
+            "init_db keeps the covering events index"
+        )
+        # Idempotent second boot: the drop is a no-op on an already-clean DB.
+        db.init_db()
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  events legacy-index drop migration: ok")
+
     # --- credit_entries tx_id column migration ---------------------------
     # A pre-tx_id database carries credit_entries without the `tx_id`
     # column.  init_db() must ADD the column (NULL for legacy rows) and
