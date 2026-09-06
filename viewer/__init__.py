@@ -2932,7 +2932,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-_RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
 _record_cache: dict = {}
 
 
@@ -2956,7 +2955,7 @@ async def _record_md(filename: str) -> str | None:
     the MCP endpoint)."""
     now = time.monotonic()
     entry = _record_cache.get(filename)
-    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
         return entry["md"]
     md = await asyncio.to_thread(_read_record_md, filename)
     _record_cache[filename] = {"ts": now, "md": md}
@@ -3007,7 +3006,7 @@ async def _record_stamp(filename: str) -> str:
     loop also serves the MCP endpoint)."""
     now = time.monotonic()
     entry = _record_stamp_cache.get(filename)
-    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
         return entry["stamp"]
     stamp = await asyncio.to_thread(_read_record_stamp, filename)
     _record_stamp_cache[filename] = {"ts": now, "stamp": stamp}
@@ -3070,7 +3069,7 @@ async def _record_recent(filename: str) -> str:
     Runs in a worker thread."""
     now = time.monotonic()
     entry = _record_recent_cache.get(filename)
-    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
         return entry["html"]
     commits = await asyncio.to_thread(_read_record_recent, filename)
     html = _recent_changes_html(commits)
