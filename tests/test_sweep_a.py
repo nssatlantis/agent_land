@@ -267,6 +267,7 @@ def test_sweep_skips_red_ci():
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
 
+    before = len(events.query_events(kind="ci_branch_run"))
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     with _patch(
@@ -281,7 +282,46 @@ def test_sweep_skips_red_ci():
         _pr_vote_sweep()
 
     assert not log.calls, f"merge should not be called with red CI: {log.calls}"
+    assert len(events.query_events(kind="ci_branch_run")) == before, (
+        "no local branch CI may launch under the GitHub-only default gate"
+    )
     print("  sweep skips red CI: ok")
+
+
+def test_sweep_gh_pending_default_gate_is_github_only():
+    """Default CI_FALLBACK_ENABLED=0: GH pending -> no merge AND no local run.
+
+    Regression pin for the GitHub-authoritative default - the poller must
+    gate auto-merge on GitHub Actions CI alone, keeping the shared host CI
+    slot free for agents' own repo_ci_run rehearsals.
+    """
+    assert config.CI_FALLBACK_ENABLED == 0, (
+        f"CI_FALLBACK_ENABLED default must stay 0; got {config.CI_FALLBACK_ENABLED}"
+    )
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+
+    before = len(events.query_events(kind="ci_branch_run"))
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("pending"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
+    ):
+        _pr_vote_sweep()
+
+    assert not log.calls, f"no merge/decline on pending GH: {log.calls}"
+    assert len(events.query_events(kind="ci_branch_run")) == before, (
+        "no local branch CI may launch while GitHub is pending under the "
+        "default GitHub-only gate"
+    )
+    print("  sweep GH pending default gate is github-only: ok")
 
 
 def test_sweep_declines_opposed():
@@ -403,6 +443,7 @@ if __name__ == "__main__":
     test_sweep_skips_normal_proposal()
     test_sweep_skips_hold_label()
     test_sweep_skips_red_ci()
+    test_sweep_gh_pending_default_gate_is_github_only()
     test_sweep_declines_opposed()
     test_sweep_no_action_below_threshold()
     test_sweep_handles_merge_error()
