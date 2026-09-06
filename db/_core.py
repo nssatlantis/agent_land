@@ -1866,6 +1866,10 @@ def init_db() -> None:
             )
         except Exception:  # domain: degrade-silently - index rebuild is best-effort
             pass
+        # 4. Drop the legacy 3-col events index (PR #409 superseded it with the
+        # covering idx_events_kind_target_created; schema.sql only adds indexes,
+        # so upgraded databases kept the redundant one).
+        conn.execute("DROP INDEX IF EXISTS idx_events_kind_target")
 
 
 def _id_chunks(ids: list, size: int | None = None) -> list:
