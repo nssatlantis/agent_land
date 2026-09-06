@@ -37,6 +37,7 @@ FILE_LIST = (
     "server/middleware.py",
     "server/records.py",
     "server/pr_views.py",
+    "server/ci_runner.py",
     "server/__main__.py",
     "server/tools/forum.py",
     "server/tools/repo.py",
