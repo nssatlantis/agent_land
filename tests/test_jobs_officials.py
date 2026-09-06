@@ -201,7 +201,8 @@ def test_cancel_and_admin_close_move_nothing_for_officials():
     assert _treasury() == t0 + 56, "treasury escrow refunded on cancel"
     mails = [b for _, b in _mail(worker["token"])]
     assert any("Admin moderation (maintainer) closed" in m for m in mails)
-    # Expiry sweep also refunds treasury escrow
+    # Expiry sweep spares official positions - standing roles never
+    # auto-expire, so no treasury escrow moves either.
     stale = db.create_job_official("m", sponsor["name"], "stale role", "d", 2.0, ["s"])
     t1 = _treasury()
     with db._conn(immediate=True) as conn:
@@ -210,10 +211,10 @@ def test_cancel_and_admin_close_move_nothing_for_officials():
             (stale["job_id"],),
         )
     before_sup = _supply()
-    assert db._jobs.sweep_expired_jobs() >= 1
-    assert db.get_job(stale["job_id"])["status"] == "expired"
-    assert _treasury() == t1 + 56
-    assert _supply() == before_sup + 56
+    assert db._jobs.sweep_expired_jobs() == 0
+    assert db.get_job(stale["job_id"])["status"] == "open"
+    assert _treasury() == t1
+    assert _supply() == before_sup
 
 
 def test_delete_agent_with_official_jobs_moves_cleanly():
@@ -387,6 +388,31 @@ def test_admin_panel_flow_end_to_end():
     )
     assert db.get_job(j2["job_id"])["status"] == before
 
+    # Reactivate an expired official through its moderation button.
+    rej = db.create_job_official(
+        "m", AGENTS["beta"]["name"], "re-panel", "d", 1.0, ["s"]
+    )
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'expired',"
+            " decided_at = '2026-02-01T00:00:00.000Z',"
+            " treasury_escrow_quarters = 0 WHERE id = ?",
+            (rej["job_id"],),
+        )
+    r = asyncio.run(
+        admin_mod.admin_reactivate_job(
+            _req(
+                "POST",
+                f"/admin/jobs/{rej['job_id']}/reactivate",
+                path_params={"id": rej["job_id"]},
+                cookies={admin_mod._CSRF_COOKIE: csrf},
+                body={"csrf": csrf, "confirm": "on"},
+            )
+        )
+    )
+    assert r.status_code == 200, r.body.decode()[:300]
+    assert db.get_job(rej["job_id"])["status"] == "open"
+
 
 def test_list_jobs_exposes_offered_to_for_the_panel():
     """ember-flash note (1): open vs offered must be distinguishable in
@@ -441,6 +467,132 @@ def test_event_labels_name_admin_and_never_say_zero_credits():
     assert not any("refunded 0 credits" in t for t in texts), (
         "zero-escrow settlements must never render as 'refunded 0 credits'"
     )
+
+
+def test_reactivate_expired_official_restores_offer_and_reescrows():
+    sponsor = db.register_agent("off-react")
+    worker = db.register_agent("off-reactw")
+    job = db.create_job_official(
+        "m",
+        sponsor["name"],
+        "react role",
+        "d",
+        2.0,
+        ["s"],
+        offer_to=worker["name"],
+    )
+    jid = job["job_id"]
+    # Aged past the deadline: the sweep must spare standing roles now.
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = ?",
+            (jid,),
+        )
+    t0 = _treasury()
+    assert db._jobs.sweep_expired_jobs() == 0
+    assert db.get_job(jid)["status"] == "offered"
+    assert _treasury() == t0
+    # Simulate a pre-change expiry, then re-activate back to offered.
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'expired',"
+            " decided_at = '2026-02-01T00:00:00.000Z',"
+            " treasury_escrow_quarters = 0 WHERE id = ?",
+            (jid,),
+        )
+    out = db.admin_reactivate_job("maintainer", jid)
+    assert out["status"] == "offered" and out["official"] is True
+    with db._conn() as conn:
+        esc = conn.execute(
+            "SELECT treasury_escrow_quarters FROM jobs WHERE id = ?", (jid,)
+        ).fetchone()[0]
+        kinds = [
+            r[0]
+            for r in conn.execute(
+                "SELECT kind FROM events WHERE target_type = 'job' AND target_id = ?",
+                (jid,),
+            ).fetchall()
+        ]
+    assert esc == 56, "remaining payout re-escrowed from treasury"
+    assert _treasury() == t0 - 56
+    assert "job_reactivated" in kinds
+    mails = [b for _, b in _mail(worker["token"])]
+    assert any("re-activated" in m for m in mails)
+
+
+def test_reactivate_cancelled_official_keeps_worker_and_reescrows_remainder():
+    sponsor = db.register_agent("off-react2")
+    worker = db.register_agent("off-react2w")
+    job = db.create_job_official(
+        "m",
+        sponsor["name"],
+        "react chronicler",
+        "d",
+        2.0,
+        ["s"],
+        offer_to=worker["name"],
+    )
+    jid = job["job_id"]
+    db.accept_job_offer(worker["token"], jid)
+    db.submit_job(worker["token"], jid, "#P1")
+    db.review_job(sponsor["token"], jid, "accept")
+    db.submit_job(worker["token"], jid, "#P2")
+    db.review_job(sponsor["token"], jid, "accept")
+    assert db.get_job(jid)["cycles_done"] == 2
+    t0 = _treasury()
+    db.admin_cancel_job("maintainer", jid)
+    assert db.get_job(jid)["status"] == "cancelled"
+    assert _treasury() == t0 + 40, "cancel refunds the 5-cycle remainder"
+    out = db.admin_reactivate_job("maintainer", jid)
+    assert out["status"] == "active"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT worker_agent_id, treasury_escrow_quarters FROM jobs WHERE id = ?",
+            (jid,),
+        ).fetchone()
+    assert row[0] == worker["agent_id"] and row[1] == 40
+    assert _treasury() == t0, "re-activation re-locks the remainder"
+    # Refusals: live jobs, unknown ids, citizen-shaped rows, dry treasury.
+    try:
+        db.admin_reactivate_job("maintainer", jid)
+        raise AssertionError("live jobs need no re-activation")
+    except db.ForumError as exc:
+        assert "re-activation" in str(exc)
+    try:
+        db.admin_reactivate_job("maintainer", 999999)
+        raise AssertionError("unknown jobs refuse")
+    except db.ForumError as exc:
+        assert "no job with id" in str(exc)
+    civ = db.create_job_official("m", sponsor["name"], "civ shape", "d", 1.0, ["s"])
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE jobs SET official = 0, status = 'expired' WHERE id = ?",
+            (civ["job_id"],),
+        )
+    try:
+        db.admin_reactivate_job("maintainer", civ["job_id"])
+        raise AssertionError("citizen jobs refuse")
+    except db.ForumError as exc:
+        assert "only official positions" in str(exc)
+    broke = db.create_job_official("m", sponsor["name"], "broke role", "d", 2.0, ["s"])
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'expired', treasury_escrow_quarters = 0"
+            " WHERE id = ?",
+            (broke["job_id"],),
+        )
+        from db._credits import burn
+
+        burn(_treasury(), reason="drain", admin="t", conn=conn)
+    try:
+        db.admin_reactivate_job("maintainer", broke["job_id"])
+        raise AssertionError("broke treasury refuses")
+    except db.ForumError as exc:
+        assert "insufficient treasury" in str(exc)
+    with db._conn(immediate=True) as conn:
+        from db._credits import mint
+
+        mint(40000, "test_suite_re-topup", admin="test-suite", conn=conn)
 
 
 if __name__ == "__main__":

@@ -677,9 +677,10 @@ async def main():
                 "bounty_rewards",
                 "bug_rewards",
                 "job_rewards",
+                "job_penalties",
                 "spent",
                 "total",
-            }, "the breakdown names the seven earned sources plus spent and total"
+            }, "the breakdown names the eight earned sources plus spent and total"
             assert isinstance(prof["prs_open"], int), (
                 "prs_open is present (0 when GitHub is unreachable)"
             )

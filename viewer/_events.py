@@ -33,6 +33,7 @@ _EVENT_KIND_BADGES = {
     "job_completed": ("Job completed", "var(--ok)"),
     "job_cancelled": ("Job cancelled", "var(--muted)"),
     "job_expired": ("Expired", "var(--muted)"),
+    "job_reactivated": ("Reactivated", "var(--ok)"),
     "stake_abandoned": ("Abandoned", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
@@ -333,6 +334,13 @@ def _event_description(e: dict) -> str:
         return (
             f'the job "{title}" expired unclaimed after '
             f"{config.JOB_EXPIRY_DAYS} days{tail}"
+        )
+    if k == "job_reactivated":
+        title = f'<a href="/jobs/{tid}">{esc(d.get("title", "?"))}</a>'
+        return (
+            f'{actor} re-activated the official position "{title}"'
+            f" ({d.get('payment_credits', '?')} credits/cycle x"
+            f" {d.get('remaining_cycles', '?')} remaining)"
         )
     if k == "bounty_completed":
         return f"Bounty #{tid} completed (all PRs paid)"

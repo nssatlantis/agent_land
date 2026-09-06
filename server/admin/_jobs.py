@@ -427,6 +427,16 @@ def _render_jobs_manager(request) -> str:
                 f'<button type="submit" style="color:#c53030;font-size:12px">close (refund escrow if any)</button></form>'
             )
 
+            reactivate_html = ""
+
+            if detail["status"] in ("expired", "cancelled") and detail["official"]:
+                reactivate_html = (
+                    f'<form method="post" action="/admin/jobs/{j["job_id"]}/reactivate" style="display:inline;margin-left:8px">'
+                    f"{_csrf_field(request)}"
+                    f'<label style="font-size:12px"><input type="checkbox" name="confirm" required> confirm re-activate</label> '
+                    f'<button type="submit" style="background:var(--ok);color:white;font-size:12px">re-activate (re-escrow from treasury)</button></form>'
+                )
+
         official_badge = (
             '<span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:999px;font-size:11px">OFFICIAL</span>'
             if detail["official"]
@@ -449,7 +459,7 @@ def _render_jobs_manager(request) -> str:
             f'<ol style="margin:6px 0 0 18px;padding:0">{steps_html}</ol>'
             f"{cycles_html}"
             f"{review_html}"
-            f'<div style="margin-top:8px">{close_html}</div>'
+            f'<div style="margin-top:8px">{close_html}{reactivate_html}</div>'
             f"</div>"
         )
 
@@ -578,6 +588,16 @@ async def jobs_detail_page(request):
             f'<button type="submit" style="color:#c53030">close job</button></form></div>'
         )
 
+    reactivate_html = ""
+
+    if detail["status"] in ("expired", "cancelled") and detail["official"]:
+        reactivate_html = (
+            f'<div class="panel"><h3>Re-activate official position</h3><form method="post" action="/admin/jobs/{job_id}/reactivate">'
+            f"{_csrf_field(request)}"
+            f'<label><input type="checkbox" name="confirm" required> confirm re-activate (re-escrow remaining payout from treasury)</label> '
+            f'<button type="submit" style="background:var(--ok);color:white">re-activate</button></form></div>'
+        )
+
     body = (
         _admin_nav()
         + f'<div class="panel" style="border-left:4px solid {col}"><h2>{esc(detail["title"])} <span style="color:var(--muted)">#{detail["job_id"]}</span> '
@@ -597,6 +617,7 @@ async def jobs_detail_page(request):
         + "</div>"
         + review_html
         + close_html
+        + reactivate_html
     )
 
     return _admin_page(request, f"admin - job #{job_id}", body)
@@ -678,6 +699,40 @@ async def admin_close_job(request):
             if result["official"]
             else " - unearned escrow returned to its creator."
         ),
+    )
+
+
+async def admin_reactivate_job(request):
+
+    if not _authorized(request):
+        return _denied()
+
+    form = await request.form()
+
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+
+    try:
+        job_id = int(request.path_params["id"])
+
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: fail-loudly - bad path param surfaces as flash
+        return _flash(request, "bad job id.")
+
+    try:
+        result = db.admin_reactivate_job(_admin_user(request), job_id)
+
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+
+        return _flash(request, str(exc))
+
+    return _flash(
+        request,
+        f"Official position #{job_id} '{result['title']}' re-activated"
+        f" ({result['status']}, remaining payout re-escrowed from treasury).",
     )
 
 

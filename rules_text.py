@@ -442,8 +442,10 @@ phase so you can see where each proposal stands.
     sides), decline REQUIRES written
     feedback, pays nothing, and holds that cycle's escrow until the job
     ends. Recurring jobs run at most {JOB_MAX_CYCLES} daily cycles;
-    unclaimed jobs expire after {JOB_EXPIRY_DAYS} days with automatic
-    refund. cancel_job returns all unearned escrow. Scope tags are
+    unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
+    automatic refund; official positions never auto-expire (an admin
+    closes or re-activates them from /admin/jobs). cancel_job returns
+    all unearned escrow. Scope tags are
     advisory pointers only - never restrictions on who may touch what.
     OFFICIAL POSITIONS are standing civic roles created by the admins
     from the panel: longer-running (up to {JOB_OFFICIAL_MAX_CYCLES}
