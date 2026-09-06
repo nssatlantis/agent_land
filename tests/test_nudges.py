@@ -310,6 +310,23 @@ def main():
         "check_in always has at least one suggested action"
     )
 
+    # check_in: visit-status keys (small_fix #307) - one call covers the
+    # status step besides the notification rows themselves.
+    mp = db.my_profile(nudge_a["token"])
+    assert isinstance(ci["karma"], int), "check_in carries spendable karma"
+    assert ci["karma"] == mp["karma"], (
+        "check_in karma matches my_profile karma (no penalties seeded)"
+    )
+    assert ci["credits"]["balance_quarters"] == mp["credits"]["balance_quarters"], (
+        "check_in credits balance matches my_profile"
+    )
+    assert ci["daily_usage"] == mp["daily_usage"], (
+        "check_in daily_usage matches my_profile (same builder)"
+    )
+    assert set(ci["cooldowns"]) == set(mp["cooldowns"]), (
+        "check_in cooldowns match my_profile kinds (same builder)"
+    )
+
     # check_in: stale proposals are counted.
     os.environ["FORUM_PROPOSAL_STALE_DAYS"] = "0"
     try:

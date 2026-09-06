@@ -624,7 +624,8 @@ def _todo_row_claim_badge(lst: dict, mode: str) -> str:
 
 
 def _todo_item_row(it: dict, mode: str) -> str:
-    """One to-do item row: state-colored box, id, text and optional PR chip.
+    """One to-do item card: state-striped container, header row (box + text)
+    and a muted meta row (id, PR pill, claim pill, list pill).
 
     The checkbox carries the whole item state so no separate claim dot is
     needed: red unticked = open and unclaimed, blue unticked = open and
@@ -638,10 +639,12 @@ def _todo_item_row(it: dict, mode: str) -> str:
         if it.get("pr_number") is not None:
             tip += " via PR #" + esc(str(it["pr_number"]))
         text_color = "var(--muted)"
+        card = "todo-done"
     elif mode == "list":
         box, color = "\u2610", "var(--muted)"
         tip = "open"
         text_color = "var(--text)"
+        card = ""
     elif it.get("claimed_by"):
         box, color = "\u2610", "var(--accent)"
         tip = "claimed by " + esc(str(it["claimed_by"]))
@@ -650,29 +653,49 @@ def _todo_item_row(it: dict, mode: str) -> str:
         if it.get("pr_number") is None:
             tip += " - no bound PR yet"
         text_color = "var(--text)"
+        card = "todo-claimed"
     else:
         box, color = "\u2610", "var(--fail)"
         tip = "open, unclaimed"
         text_color = "var(--text)"
+        card = "todo-open"
     pr = it.get("pr_number")
     if pr is not None:
         try:
             prid = int(pr)
             if it.get("done"):
-                pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+                pr_chip = f'<a href="/prs/{prid}" class="todo-pill pr-done" title="merged via PR #{prid}">PR #{prid}</a>'
             else:
-                pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{prid}</span>'
+                pr_chip = f'<span class="todo-pill pr-open" title="auto-checks when this PR merges">PR #{prid}</span>'
         except (TypeError, ValueError):
-            pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+            pr_chip = f'<span class="todo-pill pr-open" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
     else:
         pr_chip = ""
-    return (
-        f"<div style='margin:.15rem 0'>"
-        f"<span title='{tip}' aria-label='{tip}' style='color:{color}'>{box}</span> "
+    meta = [
         f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
         f">#{esc(str(it['id']))}</span>"
-        f"<span style='color:{text_color}'>{esc(it['text'])}</span>"
-        f"{pr_chip}" + "</div>"
+    ]
+    if pr_chip:
+        meta.append(pr_chip)
+    if it.get("claimed_by") and mode != "list":
+        meta.append(
+            "<span class='todo-pill claim'>claimed by "
+            + esc(str(it["claimed_by"]))
+            + "</span>"
+        )
+    if it.get("list_title"):
+        meta.append(
+            "<span class='todo-pill list'>" + esc(str(it["list_title"])) + "</span>"
+        )
+    cls = "todo-item" + (f" {card}" if card else "")
+    return (
+        f"<div class='{cls}'>"
+        f"<div class='todo-item-head'>"
+        f"<span title='{tip}' aria-label='{tip}' style='color:{color}'>{box}</span> "
+        f"<span class='todo-item-text' style='color:{text_color}'>{esc(it['text'])}</span>"
+        f"</div>"
+        f"<div class='todo-item-meta'>{''.join(meta)}</div>"
+        f"</div>"
     )
 
 
@@ -742,6 +765,22 @@ def _todo_scope_note(tfilter: str) -> str:
     if tfilter not in ("open", "done"):
         return ""
     return f" \u00b7 showing {tfilter} only"
+
+
+def _todo_list_bar(done: int, total: int) -> str:
+    """Mini progress bar for one list header: `{done}/{total}` as a 6px bar
+    in the board bar's style. Pure function of already-fetched counts, so
+    drill-in, expanded and summary headers all render it with no extra
+    query."""
+    pct = int(done * 100 / total) if total else 0
+    return (
+        f"<div style='background:var(--border);height:6px;border-radius:3px;"
+        f"overflow:hidden;margin:0 0 8px'"
+        f" role='progressbar' aria-valuenow='{pct}'"
+        f" aria-valuemin='0' aria-valuemax='100'>"
+        f"<div style='width:{pct}%;background:var(--accent);height:6px'></div>"
+        f"</div>"
+    )
 
 
 def _todo_pager(post_id: int, page: int, total: int, **qs: str) -> str:
@@ -881,14 +920,9 @@ def _todos_panel(
                 "done": hit.get("done", False),
                 "pr_number": hit.get("pr_number"),
                 "claimed_by": hit.get("claimed_by"),
+                "list_title": hit.get("list_title", ""),
             }
-            lede = (
-                f"<span class='todo-id' style='color:var(--muted)'>"
-                f"[{esc(hit.get('list_title', ''))}]</span> "
-            )
-            out.append(
-                f"<div style='margin:.15rem 0'>{lede}" + _todo_item_row(entry, "hybrid")
-            )
+            out.append(_todo_item_row(entry, "hybrid"))
         out.append(
             _todo_pager(
                 post_id,
@@ -907,7 +941,7 @@ def _todos_panel(
         out.append(_todo_search_box(post_id))
         out.append(_todo_filter_toggle(post_id, tfilter, tlist=tlist))
         out.append(
-            f"<h3 style='margin:.6rem 0 .2rem'>"
+            f"<h3 class='todo-list-head' style='margin:.6rem 0 .2rem'>"
             f"<span class='todo-id' title='to-do list id #{esc(str(list_data['id']))}'"
             f">#{esc(str(list_data['id']))}</span>{esc(list_data['title'])}"
             f"{_todo_row_claim_badge(list_data, mode)}</h3>"
@@ -919,6 +953,7 @@ def _todos_panel(
             f"{done}/{total} done \u00b7 {total - done} remaining"
             f"{_todo_scope_note(tfilter)}</div>"
         )
+        out.append(_todo_list_bar(done, total))
         items = list_data.get("items") or []
         if not items:
             out.append(
@@ -952,7 +987,7 @@ def _todos_panel(
             items = lst.get("items") or []
             ndone = sum(1 for it in items if it.get("done"))
             out.append(
-                f"<h3 style='margin:.6rem 0 .1rem'>"
+                f"<h3 class='todo-list-head' style='margin:.6rem 0 .1rem'>"
                 f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
                 f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}"
                 f"{_todo_row_claim_badge(lst, mode)}</h3>"
@@ -967,6 +1002,7 @@ def _todos_panel(
                 )
                 + "</div>"
             )
+            out.append(_todo_list_bar(ndone, len(items)))
             if not items:
                 out.append(
                     "<p style='color:var(--muted)'>"
@@ -1016,6 +1052,7 @@ def _todos_panel(
                 )
                 + "</div>"
             )
+            out.append(_todo_list_bar(done, total))
     inner = "".join(out)
     return _collapsible(
         "To-do lists",

@@ -365,6 +365,25 @@ STYLE_CSS = (
   .bug-conf-track { background:var(--track); border-radius:4px; height:8px; width:200px; display:inline-block; }
   .todo-id { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
              font-size:12px; color:var(--todo-dim); margin-right:.35rem; }
+  .todo-item { background:var(--panel); border:1px solid var(--line);
+               border-left:3px solid var(--dim); border-radius:8px;
+               padding:8px 12px; margin:8px 0; }
+  .todo-item:hover { border-color:var(--accent); }
+  .todo-item.todo-open { border-left-color:var(--fail); }
+  .todo-item.todo-claimed { border-left-color:var(--accent); }
+  .todo-item.todo-done { border-left-color:transparent; opacity:.72; }
+  .todo-item-head { display:flex; gap:8px; align-items:baseline; font-size:15px; }
+  .todo-item-text { flex:1; min-width:0; }
+  .todo-item-meta { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+                    color:var(--muted); font-size:12.5px; margin-top:4px; }
+  .todo-pill { display:inline-block; padding:0 8px; border-radius:10px;
+               border:1px solid var(--line); text-decoration:none; }
+  .todo-pill.pr-done { color:var(--accent); border-color:var(--accent); }
+  .todo-pill.pr-open { color:var(--warn); border-color:var(--warn); }
+  .todo-pill.claim { color:var(--accent); border-color:var(--accent); }
+  .todo-pill.list { color:var(--muted); }
+  .todo-list-head { position:sticky; top:70px; background:var(--panel);
+                    z-index:1; padding:4px 0; }
   th:not(.sort-on) a { position:relative; padding-right:18px; }
   th:not(.sort-on) a::after { content: " ⇅"; font-size:12px; opacity:0.4; }
   th:not(.sort-on) a:hover::after { opacity:1; }
