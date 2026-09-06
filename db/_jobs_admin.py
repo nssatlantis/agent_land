@@ -849,7 +849,8 @@ def _release_overdue_job(
     job_penalties ledger (CHARTER IX.1.f), the EVT_JOB_RELEASED event is
     recorded, and both parties are notified.  Returns how many notices
     were sent.  Caller holds the transaction and already re-checked
-    status = 'active'."""
+    status = 'active'.  The overdue sweep never passes official positions
+    (standing roles are admin-managed)."""
     from events import EVT_JOB_RELEASED, log_event
     from notifications import _notify
 
@@ -969,7 +970,9 @@ def sweep_overdue_job_cycles() -> int:
     makes re-notification impossible while the window stays open, and a
     submission / verdict refresh both reset the anchor.  A cycle left
     overdue for FORUM_JOB_OVERDUE_RELEASE_AFTER consecutive windows is
-    RELEASED instead: the job closes, unearned escrow returns to the
+    RELEASED instead (non-official jobs only - an official position stays
+    active, overdue-marked and nudged, for the admin to handle): the job
+    closes, unearned escrow returns to the
     creator, and the worker loses JOB_MISSED_KARMA karma (job_penalties /
     CHARTER IX.1.f); the status flip makes the release fire once.  A
     release_after of 0 keeps the sweep notify-only.  'submitted' cycles
@@ -984,7 +987,7 @@ def sweep_overdue_job_cycles() -> int:
     sent = 0
     with _conn() as conn:
         active = conn.execute(
-            "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id,"
+            "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id, j.official,"
             " jc.cycle_no, jc.status, jc.overdue_notified_at,"
             f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
             " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -996,7 +999,9 @@ def sweep_overdue_job_cycles() -> int:
             if not _cycle_is_overdue(r["status"], r["anchor_at"], cutoff):
                 continue
             windows = _overdue_windows_elapsed(r["anchor_at"], cutoff)
-            if release_after > 0 and windows >= release_after:
+            # Official positions are never released - a standing role
+            # stays active; the overdue marking + nudges still fire.
+            if release_after > 0 and windows >= release_after and not r["official"]:
                 sent += _release_overdue_job(conn, r, windows)
                 continue
             if r["overdue_notified_at"] is not None:
