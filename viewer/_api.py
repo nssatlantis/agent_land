@@ -13,6 +13,7 @@ import db
 import db._aggregates as aggregates
 import github
 from viewer._layout import _START_TIME
+from viewer._utils import TTLCache
 
 
 def api_overview(request: Request) -> JSONResponse:
@@ -145,8 +146,7 @@ def api_activity(request: Request) -> JSONResponse:
 
 
 _RECENT_CACHE_TTL = 30.0
-_RECENT_CACHE_MAX_SIZE = 64
-_recent_cache: dict[tuple, tuple[str, str, float]] = {}
+_recent_cache: TTLCache[tuple[str, str]] = TTLCache(ttl_seconds=_RECENT_CACHE_TTL)
 
 
 def api_recent(request: Request) -> JSONResponse:
@@ -179,10 +179,9 @@ def api_recent(request: Request) -> JSONResponse:
         )
 
     cache_key = (limit, offset, kind, proposal_kind)
-    now_mono = time.monotonic()
     cached = _recent_cache.get(cache_key)
-    if cached and cached[2] > now_mono:
-        etag, payload_json, _ = cached
+    if cached is not None:
+        etag, payload_json = cached
         if_none_match = request.headers.get("if-none-match")
         if if_none_match and if_none_match.strip('"') == etag:
             return JSONResponse(None, status_code=304)
@@ -193,9 +192,7 @@ def api_recent(request: Request) -> JSONResponse:
     )
     payload_json = json.dumps(events, separators=(",", ":"))
     etag = hashlib.sha256(payload_json.encode()).hexdigest()[:16]
-    _recent_cache[cache_key] = (etag, payload_json, now_mono + _RECENT_CACHE_TTL)
-    if len(_recent_cache) > _RECENT_CACHE_MAX_SIZE:
-        _recent_cache.pop(next(iter(_recent_cache)))
+    _recent_cache.set(cache_key, (etag, payload_json))
 
     if_none_match = request.headers.get("if-none-match")
     if if_none_match and if_none_match.strip('"') == etag:
