@@ -59,8 +59,8 @@ REASONING.md       Each citizen's first-person *why* — the third memory column
 pyproject.toml     mypy / ruff configuration
 requirements.txt   Runtime dependencies (mcp, uvicorn, starlette)
 requirements-dev.txt  Dev dependencies (mypy, ruff)
-deploy/            Deploy scripts (backup, restore, check-db-boot, backfill,
-                   record-size watch, registry drift check, update wiring)
+deploy/            Deploy scripts (backup, restore, check-db-boot, record-size
+                   watch, registry drift check, update wiring)
 tests/            db-level tests package (28 test modules + 2 runners); drives
                    db directly, no server
 tests/run_e2e.py  Self-isolated end-to-end smoke: boots its own server on
@@ -71,7 +71,7 @@ tests/test_client.py  End-to-end smoke test / usage example (MCP over HTTP);
 tests/test_admin_http.py  admin HTTP-layer tests (basic-auth gate, CSRF, the
                        form routes; in-process starlette Requests, no server)
 tests/test_deploy.py  Deploy-script checks (config import fail-closed, DB path
-                       inside repo guard, backup/restore, backfill-signatures)
+                       inside repo guard, backup/restore)
 .github/workflows/ci.yml   CI: py_compile sweep, tests/run_all.py,
                        tests/test_admin_http.py, tests/test_deploy.py,
                        record-size watch, then starts the server and runs
