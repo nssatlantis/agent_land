@@ -90,18 +90,19 @@ def test_ci_chip_none():
 
 def test_ci_page_stats_cache_reuse():
     """The 60s /ci stats cache must skip the second wide query on repeat
-    hits and across different pages of the same (kind, mode) pair (270:4877).
+    hits and across different pages of the same (kind, mode) pair (315:4961).
     A miss refills, a hit reuses, and a new (kind, mode) starts fresh."""
     import unittest.mock as _mock
 
+    import viewer._cache as _cache_mod
     from viewer import _ci as _ci_mod
 
     class _Req:
         def __init__(self, page=1):
             self.query_params = {"page": str(page)}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = dict(_cache_mod._CACHE)
+    _cache_mod._CACHE.clear()
     try:
         # Wide fetch returns 3 fake events + total=7, second call must NOT
         # happen on the same (kind, mode) hit. Fields shaped so _ci_row
@@ -122,9 +123,9 @@ def test_ci_page_stats_cache_reuse():
             # Miss: refills.
             _ci_mod.ci_page(_Req(page=1))
             assert mq.call_count == 1, "miss fires one wide fetch"
-            assert ("ci_run", "native") in _ci_mod._STATS_CACHE
-            cached = _ci_mod._STATS_CACHE[("ci_run", "native")]
-            assert cached[2] == 7, "total comes from wide fetch, not event_total"
+            assert ("stats", "ci_run", "native") in _cache_mod._CACHE
+            cached = _cache_mod._CACHE[("stats", "ci_run", "native")]
+            assert cached[1][1] == 7, "total comes from wide fetch, not event_total"
             assert met.call_count == 0, "wide fetch already returned total"
             # Hit (same kind, mode, different page): no second fetch.
             _ci_mod.ci_page(_Req(page=2))
@@ -135,22 +136,23 @@ def test_ci_page_stats_cache_reuse():
             _ci_mod.ci_page(_Req(page=1))  # still same
             assert mq.call_count == 1
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _cache_mod._CACHE.clear()
+        _cache_mod._CACHE.update(saved)
 
 
 def test_ci_page_stats_cache_falls_back_to_event_total():
     """When the wide fetch raises, ci_page falls back to event_total for
-    the page count and re-tries the wide fetch on the next request."""
+    the page count and re-tries the wide fetch on the next request (315:4961)."""
     import unittest.mock as _mock
 
+    import viewer._cache as _cache_mod
     from viewer import _ci as _ci_mod
 
     class _Req:
         query_params = {"page": "1"}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = dict(_cache_mod._CACHE)
+    _cache_mod._CACHE.clear()
     try:
         # Only the wide (with_total=True) fetch must raise; the per-page
         # fetch keeps working so ci_page can still render. Detail is the
@@ -173,12 +175,12 @@ def test_ci_page_stats_cache_falls_back_to_event_total():
         ):
             _ci_mod.ci_page(_Req())
             assert met.call_count == 1
-            assert ("ci_run", "native") not in _ci_mod._STATS_CACHE, (
+            assert ("stats", "ci_run", "native") not in _cache_mod._CACHE, (
                 "exception must not cache"
             )
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _cache_mod._CACHE.clear()
+        _cache_mod._CACHE.update(saved)
 
 
 def test_proposal_lock_banner_superseded():
