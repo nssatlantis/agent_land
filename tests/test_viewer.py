@@ -890,6 +890,127 @@ def test_todos_panel_tall_branch_and_cap():
     assert "Board too large to expand at once" in html
 
 
+def test_todo_item_card_skeleton():
+    # Open card: state class, head row (box + text), meta row (id first).
+    row = _todo_item_row({"id": 1, "text": "x", "done": False}, "item")
+    assert "class='todo-item todo-open'" in row
+    assert "class='todo-item-head'" in row
+    assert "class='todo-item-meta'" in row
+    assert "class='todo-item-text'" in row
+    assert "todo-id" in row
+    # Claimed card carries the stripe class plus a visible claim pill.
+    row = _todo_item_row(
+        {"id": 2, "text": "y", "done": False, "claimed_by": "beta"}, "item"
+    )
+    assert "class='todo-item todo-claimed'" in row
+    assert "todo-pill claim" in row
+    assert "claimed by beta" in row
+    # Done card dims via class; unclaimed cards carry no claim pill.
+    row = _todo_item_row({"id": 3, "text": "z", "done": True}, "item")
+    assert "class='todo-item todo-done'" in row
+    assert "todo-pill claim" not in row
+    # List mode: plain card, no state stripe (ownership lives on headers).
+    row = _todo_item_row({"id": 4, "text": "w", "done": False}, "list")
+    assert "class='todo-item'" in row
+    assert "todo-open" not in row and "todo-claimed" not in row
+
+
+def test_todo_item_pr_pills():
+    # Merged PR: accent link pill; in-flight PR: warn span pill.
+    row = _todo_item_row({"id": 5, "text": "m", "done": True, "pr_number": 41}, "item")
+    assert 'class="todo-pill pr-done"' in row
+    assert 'href="/prs/41"' in row
+    row = _todo_item_row({"id": 6, "text": "n", "done": False, "pr_number": 42}, "item")
+    assert 'class="todo-pill pr-open"' in row
+    assert "href=" not in row
+
+
+def test_todos_panel_search_list_pill():
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 1,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 12,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 1,
+                    "done_items": 0,
+                    "remaining": 1,
+                },
+            ],
+        },
+    }
+    search_data = {
+        "total": 1,
+        "hits": [
+            {
+                "item_id": 34,
+                "list_title": "Bugs",
+                "text": "fix it",
+                "done": False,
+                "pr_number": None,
+                "claimed_by": None,
+            }
+        ],
+    }
+    html = _todos_panel(p, tq="fix", search_data=search_data)
+    assert "todo-pill list" in html, "hit carries its list as a pill"
+    assert "[Bugs]" not in html, "the old bracket lede is gone"
+
+
+def test_todos_panel_list_bar_and_sticky():
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 30,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 12,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 30,
+                    "done_items": 1,
+                    "remaining": 29,
+                },
+            ],
+        },
+    }
+    # Summary headers stay static; the bar still renders per list.
+    html = _todos_panel(p)
+    assert "todo-list-head" not in html
+    assert "width:3%" in html, "1/30 done bar"
+    assert "aria-valuenow='3'" in html
+    # Drill and tall headers stick and carry bars.
+    list_data = {
+        "id": 12,
+        "title": "Bugs",
+        "claim_mode": "item",
+        "total_items": 30,
+        "total_done": 1,
+        "items": [{"id": 34, "text": "fix it", "done": False}],
+    }
+    drill = _todos_panel(p, tlist=12, list_data=list_data)
+    assert "todo-list-head" in drill
+    assert "width:3%" in drill
+    tall_data = [
+        {
+            "id": 12,
+            "title": "Bugs",
+            "claim_mode": "item",
+            "items": [{"id": 34, "text": "fix it", "done": False}],
+        }
+    ]
+    tall = _todos_panel(p, tall_data=tall_data)
+    assert "todo-list-head" in tall
+    assert "width:0%" in tall, "0/1 done bar"
+
+
 def test_docket_card_shows_list_claim_summary():
     # A collaborative proposal running whole-list claiming renders a quiet
     # claims line on its docket card so reserved lists are visible without

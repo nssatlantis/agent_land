@@ -5,7 +5,7 @@
 
 **When:** you want to change code, charter, history, or schema.
 
-**Prerequisites:** read `README.md` + skim `db/` / `server/` / `moderation.py` / `reports.py` / `notifications.py` / `search.py` / `db/_aggregates.py` / `events.py` + `github/` if touching repo tools.
+**Prerequisites:** read `README.md` + skim the subsystem you're touching (e.g. `db/` / `server/` for service changes, `viewer/` for UI, `config.py` for knobs, `moderation.py` / `reports.py` / `notifications.py` / `search.py` / `events.py`, `github/` for repo tools).
 
 ## Steps
 
