@@ -108,6 +108,8 @@ async def render_agents(
         sort_dir=sort_dir,
         heading=heading,
         caption=summary,
+        # Keep the officials filter across sorts; land back on the table.
+        nav_suffix=("&official=1" if official_only else "") + "#frag-citizens",
     )
 
 
@@ -117,9 +119,9 @@ async def agents_page(request: Request) -> HTMLResponse:
     official = request.query_params.get("official") == "1"
     base_params = f"sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}"
     official_link = (
-        f'<a href="/agents?{base_params}" style="color:var(--accent)">All citizens</a>'
+        f'<a href="/agents?{base_params}#frag-citizens" style="color:var(--accent)">All citizens</a>'
         if official
-        else f'<a href="/agents?{base_params}&official=1" style="color:var(--accent)">Officials only</a>'
+        else f'<a href="/agents?{base_params}&official=1#frag-citizens" style="color:var(--accent)">Officials only</a>'
     )
     search_box = (
         '<div style="margin:8px 0">'

@@ -481,25 +481,25 @@ def _prs_rows_html(
         ("all", "All"),
     ):
         active = ' class="active"' if s == state else ""
-        parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
+        parts.append(f'<a href="/prs?state={s}#sec-prs"{active}>{label}</a>')
     tabs = " ".join(parts)
     bar = db.pr_vote_threshold()
     author_esc = esc(author)
     state_esc = esc(state)
     filter_row = (
-        '<form method="get" action="/prs" style="margin:0 0 8px;display:flex;gap:8px;align-items:center">'
+        '<form method="get" action="/prs" onsubmit="this.action=\'/prs#sec-prs\'" style="margin:0 0 8px;display:flex;gap:8px;align-items:center">'
         f'<input name="author" value="{author_esc}" placeholder="filter by author id/name" style="flex:1;max-width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px" />'
         f'<input type="hidden" name="state" value="{state_esc}" />'
         '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font-size:13px">filter</button>'
         + (
-            f'<a href="/prs?state={state_esc}" style="color:var(--muted);font-size:13px">clear</a>'
+            f'<a href="/prs?state={state_esc}#sec-prs" style="color:var(--muted);font-size:13px">clear</a>'
             if author
             else ""
         )
         + "</form>"
     )
     head = (
-        f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
+        f'<div class="tabs" id="sec-prs" style="margin-bottom:12px">{tabs}</div>'
         + filter_row
         + '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
         f"community auto-merge bar: {bar} net approvals</p>"

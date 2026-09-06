@@ -296,16 +296,18 @@ def ci_page(request: Request) -> HTMLResponse:
     bench_cls = "active" if mode == "bench" else ""
     tabs = (
         '<div class="tabs">'
-        f'<a href="/ci?mode=native" class="{native_cls}">Native</a>'
-        f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>'
-        f'<a href="/ci?mode=local" class="{local_cls}">Local</a>'
-        f'<a href="/ci?mode=bench" class="{bench_cls}">Benchmarks</a>'
+        f'<a href="/ci?mode=native#sec-ci" class="{native_cls}">Native</a>'
+        f'<a href="/ci?mode=branch#sec-ci" class="{branch_cls}">PR merges</a>'
+        f'<a href="/ci?mode=local#sec-ci" class="{local_cls}">Local</a>'
+        f'<a href="/ci?mode=bench#sec-ci" class="{bench_cls}">Benchmarks</a>'
         "</div>"
     )
     top_strip = _ci_top_strip(stats_evts)
 
     def _href_for_page(n: int) -> str:
-        return f"/ci?mode={mode}&page={n}" if n > 1 else f"/ci?mode={mode}"
+        base = f"/ci?mode={mode}&page={n}" if n > 1 else f"/ci?mode={mode}"
+        # Land back on the runs table, not the top of the page.
+        return base + "#sec-ci"
 
     pager = ""
     if total_pages > 1:
@@ -330,7 +332,7 @@ def ci_page(request: Request) -> HTMLResponse:
     elif mode == "bench":
         hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared window-relative to the best (lowest) median in this window; clean = <code>regressions==0</code>.</p>"
     body = (
-        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main), PR merges (branch), local rehearsal (files=) and db_benchmark medians. Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
+        '<div class="panel" id="sec-ci"><h2>Build health</h2><p style=\'color:var(--muted);font-size:15px\'>CI runs via the sandboxed runner — native (main), PR merges (branch), local rehearsal (files=) and db_benchmark medians. Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>'
         + tabs
         + top_strip
         + summary

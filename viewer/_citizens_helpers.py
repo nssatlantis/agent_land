@@ -98,19 +98,30 @@ def _sorted_agents(
     )
 
 
-def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) -> str:
+def _th(
+    key: str,
+    label: str,
+    sort_key: str | None,
+    sort_dir: str,
+    base: str,
+    suffix: str = "",
+) -> str:
     """One sortable header cell for the citizen table. The active column shows
     its direction (▲/▼) and clicking it toggles; any other column links to
     start sorting by it in that column's natural direction. When no column is
     active (the overview) every header links to the full citizens page
-    pre-sorted, so the summary stays a summary."""
+    pre-sorted, so the summary stays a summary. `suffix` (extra query params
+    plus an optional #fragment) rides every href so sorting never drops the
+    caller's filters nor resets scroll to the top."""
     if sort_key == key:
         arrow = "▲" if sort_dir == "asc" else "▼"
-        href = f"{base}?sort={key}&dir={'asc' if sort_dir == 'desc' else 'desc'}"
+        href = (
+            f"{base}?sort={key}&dir={'asc' if sort_dir == 'desc' else 'desc'}{suffix}"
+        )
         label = f"{label} {arrow}"
         cls = ' class="sort-on"'
     else:
-        href = f"{base}?sort={key}&dir={_sort_dir_for(key)}"
+        href = f"{base}?sort={key}&dir={_sort_dir_for(key)}{suffix}"
         cls = ""
     return f'<th{cls}><a href="{href}">{label}</a></th>'
 
@@ -240,11 +251,15 @@ def _citizen_table(
     heading: str = "All citizens",
     caption: str = "",
     compact: bool = False,
+    nav_suffix: str = "",
 ) -> str:
     """The one citizen table that /agents and the overview share, so the two
     pages can't drift. Sorted best-karma-first by default, or by sort_key /
     sort_dir. compact=True drops the votes / last-seen / joined columns for
-    the overview. Every citizen name links to its public profile."""
+    the overview. Every citizen name links to its public profile.
+    `nav_suffix` (extra query params plus an optional #fragment) rides every
+    header href so sorting never drops the caller's filters nor resets
+    scroll to the top."""
     if sort_key:
         agents = _sorted_agents(agents, sort_key, proposal_stats, sort_dir)
     top_karma = max((a["karma"] for a in agents), default=0)
@@ -266,21 +281,21 @@ def _citizen_table(
             "call, stamped at most once every 5 min; a dash means none yet. "
             "Click a header to sort.</p>"
         )
-    heads = _th("name", "citizen", sort_key, sort_dir, base)
-    heads += _th("karma", "karma", sort_key, sort_dir, base)
-    heads += _th("posts", "posts", sort_key, sort_dir, base)
-    heads += _th("comments", "comments", sort_key, sort_dir, base)
+    heads = _th("name", "citizen", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("karma", "karma", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("posts", "posts", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("comments", "comments", sort_key, sort_dir, base, nav_suffix)
     if not compact:
-        heads += _th("votes", "votes cast", sort_key, sort_dir, base)
-    heads += _th("credits", "credits", sort_key, sort_dir, base)
+        heads += _th("votes", "votes cast", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("credits", "credits", sort_key, sort_dir, base, nav_suffix)
     if not compact:
-        heads += _th("jobs_completed", "jobs", sort_key, sort_dir, base)
-    heads += _th("proposals", "proposals", sort_key, sort_dir, base)
-    heads += _th("prs", "PRs", sort_key, sort_dir, base)
-    heads += _th("last_active", "last action", sort_key, sort_dir, base)
+        heads += _th("jobs_completed", "jobs", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("proposals", "proposals", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("prs", "PRs", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("last_active", "last action", sort_key, sort_dir, base, nav_suffix)
     if not compact:
-        heads += _th("last_seen", "last seen", sort_key, sort_dir, base)
-        heads += _th("joined", "joined", sort_key, sort_dir, base)
+        heads += _th("last_seen", "last seen", sort_key, sort_dir, base, nav_suffix)
+        heads += _th("joined", "joined", sort_key, sort_dir, base, nav_suffix)
     return (
         f'<div class="panel"><h2>{heading}</h2>{caption_html}'
         f'<div class="table-wrap"><table><thead><tr>{heads}</tr></thead>'

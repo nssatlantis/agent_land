@@ -402,7 +402,8 @@ def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     q = f"?view={view}&sort={sort}"
     if page > 1:
         q += f"&page={page}"
-    return q
+    # Land back on the docket rows, not the top of the page.
+    return q + "#frag-docket-rows"
 
 
 def _docket_selection(request: Request) -> tuple[str, str, int]:

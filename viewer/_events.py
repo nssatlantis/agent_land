@@ -516,7 +516,7 @@ def _event_calendar(
         c = counts.get(d, 0)
         intensity = (c / maxc) if maxc else 0.0
         bg = f"rgba(34,197,94,{intensity:.2f})" if c else "var(--bg-alt)"
-        href = f"/events?date={month}-{d:02d}{filters_qs}"
+        href = f"/events?date={month}-{d:02d}{filters_qs}#events-list"
         cells.append(
             f"<a class='cal-cell' title='{c} events' href='{href}' "
             f"style='display:inline-block;min-width:26px;height:26px;line-height:26px;"
@@ -528,10 +528,8 @@ def _event_calendar(
     grid += "".join("<span style='visibility:hidden'>.</span>" for _ in range(lead))
     grid += "".join(cells)
     grid += "</div>"
-    prev_m = (
-        f"/events?month={(first - _dt.timedelta(days=1)).strftime('%Y-%m')}{filters_qs}"
-    )
-    next_m = f"/events?month={(first + _dt.timedelta(days=ndays)).strftime('%Y-%m')}{filters_qs}"
+    prev_m = f"/events?month={(first - _dt.timedelta(days=1)).strftime('%Y-%m')}{filters_qs}#events-list"
+    next_m = f"/events?month={(first + _dt.timedelta(days=ndays)).strftime('%Y-%m')}{filters_qs}#events-list"
     nav = (
         f"<div style='margin:4px 0'><a href='{prev_m}'>\u2039 Prev</a> "
         f"<b>{first.strftime('%B %Y')}</b> "
@@ -613,7 +611,16 @@ def events_page(request: Request) -> HTMLResponse:
     if agent_id is not None:
         filters_qs += f"&amp;agent_id={agent_id}"
     since_val = date + "T00:00" if date else (since[:16] if since else "")
-    clear_href = f"/events?month={month}" + filters_qs
+    # Preserved scope for tab switches: agent + since + date ride along so
+    # picking a category/kind never silently drops the other filters.
+    keep_qs = ""
+    if agent_id is not None:
+        keep_qs += f"&amp;agent_id={agent_id}"
+    if since:
+        keep_qs += f"&amp;since={esc(since)}"
+    if date:
+        keep_qs += f"&amp;date={date}"
+    clear_href = f"/events?month={month}" + filters_qs + "#events-list"
     date_note = ""
     if date:
         date_note = (
@@ -657,7 +664,7 @@ def events_page(request: Request) -> HTMLResponse:
         "system": "System",
     }
     cat_tabs = " \xb7 ".join(
-        f'<a href="/events?category={c}{"&amp;kind=" + kind if kind else ""}"'
+        f'<a href="/events?category={c}{"&amp;kind=" + kind if kind else ""}{keep_qs}#events-list"'
         f"{active_style if c == category and kind is None else ''}>"
         f"{_CATEGORY_LABELS.get(c, c)}</a>"
         for c in sorted(CATEGORIES)
@@ -707,8 +714,15 @@ def events_page(request: Request) -> HTMLResponse:
             parts.append(f"category={category}")
         if k is not None:
             parts.append(f"kind={k}")
+        if agent_id is not None:
+            parts.append(f"agent_id={agent_id}")
+        if since:
+            parts.append(f"since={esc(since)}")
+        if date:
+            parts.append(f"date={date}")
         qs = "&amp;".join(parts)
-        return f"/events?{qs}" if qs else "/events"
+        # Land back on the ledger list, not the top of the page.
+        return f"/events?{qs}#events-list" if qs else "/events#events-list"
 
     tabs = " \xb7 ".join(
         f'<a href="{_kind_href(key)}"{active_style if key == kind else ""}>{label}</a>'
@@ -729,9 +743,13 @@ def events_page(request: Request) -> HTMLResponse:
         if date is not None:
             qs += f"date={date}&"
         if page > 1:
-            nav.insert(0, f'<a href="/events?{qs}page={page - 1}">\u2039 Prev</a>')
+            nav.insert(
+                0, f'<a href="/events?{qs}page={page - 1}#events-list">\u2039 Prev</a>'
+            )
         if page < total_pages:
-            nav.append(f'<a href="/events?{qs}page={page + 1}">Next \u203a</a>')
+            nav.append(
+                f'<a href="/events?{qs}page={page + 1}#events-list">Next \u203a</a>'
+            )
         pager = '<div class="pager">' + " \xb7 ".join(nav) + "</div>"
 
     empty = (
@@ -743,7 +761,7 @@ def events_page(request: Request) -> HTMLResponse:
         + f'<div class="search-group">{cat_tabs}</div>'
         + f'<div class="search-group">{tabs}</div>'
         + '<div class="search-group" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-        + '<form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<form method="get" onsubmit="this.action=\'/events#events-list\'" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         + (
             f'<input type="hidden" name="category" value="{esc(category)}">'
             if category

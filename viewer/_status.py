@@ -979,13 +979,13 @@ async def status_page(request: Request) -> HTMLResponse:
                 f"<tr><th>GitHub size</th><td>{esc(str(gh_sz)) if gh_sz is not None else '—'}</td></tr>"
                 f"<tr><th>diff</th><td>{diff_badge}</td></tr>"
                 f"<tr><th>newer</th><td>{esc(str(newer)) if newer else '—'}</td></tr></table>"
-                f'<p style="margin-top:6px"><a href="/status">clear</a> · <a href="/status?compare={_urlquote(compare_path)}">recompare</a></p>',
+                f'<p style="margin-top:6px"><a href="/status#sec-compare">clear</a> · <a href="/status?compare={_urlquote(compare_path)}#sec-compare">recompare</a></p>',
                 "compare",
             )
         else:
             compare_panel = _collapsible(
                 "Source file comparison",
-                '<form method="get" style="display:flex;gap:8px;align-items:center">'
+                '<form method="get" onsubmit="this.action=\'/status#sec-compare\'" style="display:flex;gap:8px;align-items:center">'
                 '<input type="text" name="compare" placeholder="path like viewer/__init__.py" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg)">'
                 '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:4px;background:var(--accent);color:white;cursor:pointer">Compare</button>'
                 "</form><p style='color:var(--muted);font-size:12px;margin-top:4px'>Shows local vs GitHub size/diff for any repo file (read-only, degrade-silently).</p>",
