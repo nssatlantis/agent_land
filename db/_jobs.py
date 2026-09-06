@@ -13,6 +13,7 @@ import sqlite3
 from db._jobs_admin import (  # noqa: F401
     _outstanding_actions,
     admin_cancel_job,
+    admin_reactivate_job,
     admin_review_job,
     admin_review_job_as,
     cancel_job,

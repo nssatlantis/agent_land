@@ -58,6 +58,7 @@ _RECENT_EVENT_KINDS = frozenset(
         "job_completed",
         "job_cancelled",
         "job_expired",
+        "job_reactivated",
     }
 )
 
@@ -313,6 +314,8 @@ def _event_text_sql() -> str:
         f"     AS INTEGER), 0) > 0"
         f"     THEN ' (refunded ' || {_jxd('refunded_credits')}"
         f"       || ' credits of escrow)' ELSE '' END END"
+        f" WHEN 'job_reactivated' THEN 're-activated '"
+        f"   || {_jx('title')} || ' (official position)'"
         f" WHEN 'job_expired' THEN 'a job expired unclaimed'"
         f"   || CASE WHEN COALESCE(CAST({_jx('refunded_quarters')}"
         f"   AS INTEGER), 0) > 0"

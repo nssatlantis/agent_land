@@ -396,9 +396,10 @@ def main():
         "bounty_rewards",
         "bug_rewards",
         "job_rewards",
+        "job_penalties",
         "spent",
         "total",
-    }, "the breakdown names the seven earned karma sources plus spent and total"
+    }, "the breakdown names the eight earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", (
@@ -452,6 +453,7 @@ def main():
         "bounty_rewards": 0,
         "bug_rewards": 0,
         "job_rewards": 0,
+        "job_penalties": 0,
         "spent": 0,
         "total": 1 - 1 + 1 + config.PR_DECLINE_KARMA,
     }, "the breakdown reports each earned karma source exactly, spent at zero"
@@ -468,7 +470,7 @@ def main():
     )
 
     # --- karma breakdown (the viewer's "karma = where it comes from" line) -
-    # db.karma_breakdown exposes the seven Article IX sources as one dict, and
+    # db.karma_breakdown exposes the eight Article IX sources as one dict, and
     # its total must always equal the karma number the gates read.
     scout = db.register_agent("karma-scout")
     sid = scout["agent_id"]

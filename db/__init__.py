@@ -177,6 +177,7 @@ from db._health import (  # noqa: F401
 from db._jobs import (  # noqa: F401
     accept_job_offer,
     admin_cancel_job,
+    admin_reactivate_job,
     admin_review_job,
     admin_review_job_as,
     cancel_job,

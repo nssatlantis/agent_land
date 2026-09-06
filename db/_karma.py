@@ -194,14 +194,15 @@ def effective_karma_many(
 
 
 def karma_breakdown(agent_id: int) -> dict:
-    """A citizen's karma split into its seven earned sources (CHARTER.md
+    """A citizen's karma split into its eight earned sources (CHARTER.md
         Article IX): `post_votes` (net votes on their posts), `comment_votes`
         (net votes on their comments), `pr_merges` (credits for merged pull
         requests), `pr_record` (costs for declined ones), `bounty_rewards`
         (rewards from karma-denominated stakes), `bug_rewards`
     (bug-report fix rewards), and
         `job_rewards` (+JOB_KARMA_PER_CYCLE for both sides of every accepted
-        job cycle), plus
+        job cycle), `job_penalties` (overdue/missed-job penalties, IX.1.f),
+        plus
         `spent` (what the staking lock ledger has taken; tags moved to
     credits in the Karma Split)
         and `total` = earned minus spent - the same number the profile shows
