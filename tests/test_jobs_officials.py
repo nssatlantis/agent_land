@@ -595,6 +595,74 @@ def test_reactivate_cancelled_official_keeps_worker_and_reescrows_remainder():
         mint(40000, "test_suite_re-topup", admin="test-suite", conn=conn)
 
 
+def test_overdue_official_is_nudged_never_released():
+    """Overdue release spares officials: an engaged worker's missed cycle
+    still nudges (and still flags overdue on the board), but the standing
+    role is never auto-cancelled and no penalty lands."""
+    import importlib
+
+    import config as live_config
+
+    sponsor = db.register_agent("off-odue")
+    worker = db.register_agent("off-oduew")
+    job = db.create_job_official(
+        "m",
+        sponsor["name"],
+        "odue role",
+        "d",
+        2.0,
+        ["s"],
+        offer_to=worker["name"],
+    )
+    jid = job["job_id"]
+    db.accept_job_offer(worker["token"], jid)
+    old_due = os.environ.get("FORUM_JOB_CYCLE_DUE_HOURS")
+    old_rel = os.environ.get("FORUM_JOB_OVERDUE_RELEASE_AFTER")
+    os.environ["FORUM_JOB_CYCLE_DUE_HOURS"] = "1"
+    os.environ["FORUM_JOB_OVERDUE_RELEASE_AFTER"] = "2"
+    importlib.reload(live_config)
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f"
+        )[:-3] + "Z"
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE events SET created_at = ? WHERE target_type = 'job'"
+                " AND target_id = ? AND kind IN ('job_claimed','job_submitted',"
+                "'job_cycle_accepted','job_cycle_declined')",
+                (past, jid),
+            )
+        sent = db._jobs.sweep_overdue_job_cycles()
+        assert sent >= 1, "the overdue worker is still nudged"
+        assert db.get_job(jid)["status"] == "active"
+        assert db.get_job(jid)["overdue"] is True
+        with db._conn() as conn:
+            pen = conn.execute(
+                "SELECT amount FROM job_penalties WHERE job_id = ?", (jid,)
+            ).fetchone()
+            nudge = conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                " AND body LIKE '%submit your work%'",
+                (worker["agent_id"], jid),
+            ).fetchall()
+        assert pen is None, "no penalty lands on officials"
+        assert len(nudge) == 1, "worker nudged exactly once"
+        assert db._jobs.sweep_overdue_job_cycles() == 0, "no repeat traffic"
+    finally:
+        if old_due is None:
+            os.environ.pop("FORUM_JOB_CYCLE_DUE_HOURS", None)
+        else:
+            os.environ["FORUM_JOB_CYCLE_DUE_HOURS"] = old_due
+        if old_rel is None:
+            os.environ.pop("FORUM_JOB_OVERDUE_RELEASE_AFTER", None)
+        else:
+            os.environ["FORUM_JOB_OVERDUE_RELEASE_AFTER"] = old_rel
+        importlib.reload(live_config)
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
