@@ -227,6 +227,7 @@ STYLE_CSS = (
   .comment .post-body { padding-left:24px; max-width:72ch; }
   .comment:target { background:var(--target); }
   .comment { margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }
+  details#sec-todos { scroll-margin-top:70px; }
   .comment:hover { background:var(--hover-overlay); }
   .post-body ul, .post-body ol { margin:6px 0; padding-left:22px; }
   .post-body code { background:var(--strong); padding:1px 4px; border-radius:3px; font-size:0.9em; }

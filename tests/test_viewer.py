@@ -49,11 +49,13 @@ from viewer._pr_helpers import (
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
 from viewer._render_helpers import (
+    _TODO_TALL_CAP,
     _poll_panel,
     _proposal_lock_banner,
     _proposal_stats,
     _tag_chips,
     _tag_text_color,
+    _todo_item_row,
     _todos_panel,
 )  # noqa: E402
 from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
@@ -588,8 +590,8 @@ def test_todos_panel_shows_list_and_item_ids():
 
 
 def test_todos_panel_list_mode_shows_list_level_claims():
-    # List claim mode: ownership lives on the whole list, so per-item dots
-    # are suppressed; instead every list header carries a dot - grey for an
+    # List claim mode: ownership lives on the whole list, so per-item boxes
+    # stay neutral; instead every list header carries a badge - grey for an
     # unclaimed list, blue with an inline claimer link for a claimed one.
     p = {
         "id": 12,
@@ -617,11 +619,10 @@ def test_todos_panel_list_mode_shows_list_level_claims():
     assert "claimed by" in html, "claimer name is visible without hover"
     assert 'href="/agents/2"' in html, "claimer name links to their profile"
     assert "title='unclaimed'" not in html, (
-        "no grey per-item dot for items under a claimed list"
+        "no per-item state boxes in the summary view"
     )
-    # An unclaimed list in list mode shows the grey LIST-level dot (tooltip
-    # 'unclaimed list', distinct from the item-level 'unclaimed' tooltip)
-    # and no per-item dots.
+    # An unclaimed list in list mode shows the grey LIST-level badge (tooltip
+    # 'unclaimed list') and neutral per-item boxes once drilled in.
     p2 = {
         "id": 12,
         "todos_summary": {
@@ -646,10 +647,10 @@ def test_todos_panel_list_mode_shows_list_level_claims():
     )
     assert "claimed by" not in html2
     assert "title='unclaimed'" not in html2, (
-        "grey per-item dots suppressed for unclaimed lists too"
+        "no per-item state boxes in the summary view either"
     )
-    # Item mode (default) keeps the grey unclaimed dots - shown when the
-    # caller drills into a list and items render.
+    # Item mode (default) colors the box itself - shown when the caller
+    # drills into a list and items render: red unticked for open/unclaimed.
     p3 = {
         "id": 12,
         "todos_summary": {
@@ -677,7 +678,216 @@ def test_todos_panel_list_mode_shows_list_level_claims():
         "items": [{"id": 8, "text": "stale read", "done": False}],
     }
     html3 = _todos_panel(p3, tlist=7, list_data=list_data)
-    assert "title='unclaimed'" in html3, "item mode still shows the grey unclaimed dot"
+    assert "title='open, unclaimed'" in html3, "open item names its state"
+    assert "aria-label='open, unclaimed'" in html3, "state exposed to AT"
+    assert "color:var(--fail)" in html3, "open box is red"
+    assert "&#9679;" not in html3, "the old claim dot is gone from item rows"
+
+
+def test_todo_item_row_state_matrix():
+    # Open + unclaimed: red unticked box, full-text color, named state.
+    row = _todo_item_row({"id": 1, "text": "x", "done": False}, "item")
+    assert "\u2610" in row and "\u2611" not in row
+    assert "color:var(--fail)" in row
+    assert "aria-label='open, unclaimed'" in row
+    # Open + claimed: blue unticked box, claimer in the tip.
+    row = _todo_item_row(
+        {
+            "id": 2,
+            "text": "y",
+            "done": False,
+            "claimed_by": "beta",
+            "claimed_at": "2026-08-27T12:00:00.000Z",
+        },
+        "item",
+    )
+    assert "color:var(--accent)" in row
+    assert "claimed by beta" in row
+    assert "no bound PR yet" in row
+    # Done: green ticked box, muted text, PR named when bound.
+    row = _todo_item_row({"id": 3, "text": "z", "done": True, "pr_number": 41}, "item")
+    assert "\u2611" in row
+    assert "color:var(--ok)" in row
+    assert "title='done via PR #41'" in row
+    assert "color:var(--muted)" in row
+    assert "line-through" not in row, "done items mute, never strikethrough"
+    # List mode: neutral box - ownership lives on the header badge.
+    row = _todo_item_row({"id": 4, "text": "w", "done": False}, "list")
+    assert "color:var(--fail)" not in row
+    assert "color:var(--accent)" not in row
+    assert "title='open'" in row
+
+
+def test_todos_panel_legend_toggle_and_fragments():
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 2,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 12,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 2,
+                    "done_items": 1,
+                    "remaining": 1,
+                },
+            ],
+        },
+    }
+    html = _todos_panel(p)
+    # Legend keys the checkbox grammar with the same glyphs/colors.
+    assert "\u2610</span> open" in html
+    assert "\u2611</span> done" in html
+    assert "PR #N auto-checks on merge" in html
+    # Expand links land back on the panel, not the top of the page.
+    assert "?tlist=12#sec-todos" in html
+    # Search box is labelled and restores the fragment on submit.
+    assert 'aria-label="Search to-do items"' in html
+    assert "onsubmit=\"this.action='/posts/12#sec-todos'\"" in html
+    # Drill view carries the toggle with All active + aria-current.
+    list_data = {
+        "id": 12,
+        "title": "Bugs",
+        "claim_mode": "item",
+        "total_items": 30,
+        "total_done": 1,
+        "items": [{"id": 34, "text": "fix the stale read", "done": False}],
+    }
+    drill = _todos_panel(p, tlist=12, list_data=list_data)
+    assert ">All</a>" in drill and ">Open</a>" in drill and ">Done</a>" in drill
+    assert (
+        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
+        in drill
+    )
+    assert "?tlist=12&tfilter=open#sec-todos" in drill, "toggle keeps the list"
+    assert "\u2190 all lists</a>" in drill
+    assert "/posts/12#sec-todos" in drill, "back link lands on the panel"
+    # Multi-page pager keeps tlist, names the direction, lands on panel.
+    assert "rel='next'" in drill and "aria-label='next to-do page'" in drill
+    assert "?tpage=2&tlist=12#sec-todos" in drill
+
+
+def test_todos_panel_filter_scope_note_and_fallback():
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 1,
+            "total_items": 2,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 12,
+                    "title": "Bugs",
+                    "claim_mode": "item",
+                    "total_items": 2,
+                    "done_items": 0,
+                    "remaining": 2,
+                },
+            ],
+        },
+    }
+    list_data = {
+        "id": 12,
+        "title": "Bugs",
+        "claim_mode": "item",
+        "total_items": 2,
+        "total_done": 0,
+        "items": [{"id": 34, "text": "fix the stale read", "done": False}],
+    }
+    html = _todos_panel(p, tlist=12, list_data=list_data, tfilter="open")
+    assert "showing open only" in html, "filter-scoped counts name their scope"
+    assert (
+        "<a href='/posts/12?tlist=12&tfilter=open#sec-todos'"
+        ' class="active" aria-current="page">Open</a>' in html
+    )
+    # A bad filter degrades to the full board, never an empty panel.
+    html = _todos_panel(p, tlist=12, list_data=list_data, tfilter="bogus")
+    assert "showing " not in html
+    assert (
+        '<a href=\'/posts/12#sec-todos\' class="active" aria-current="page">All</a>'
+        in html
+    )
+
+
+def test_todos_panel_tall_branch_and_cap():
+    p = {
+        "id": 12,
+        "todos_summary": {
+            "total_lists": 2,
+            "total_items": 3,
+            "total_done": 1,
+            "lists": [
+                {
+                    "id": 1,
+                    "title": "A",
+                    "claim_mode": "item",
+                    "total_items": 2,
+                    "done_items": 1,
+                    "remaining": 1,
+                },
+                {
+                    "id": 2,
+                    "title": "B",
+                    "claim_mode": "item",
+                    "total_items": 1,
+                    "done_items": 0,
+                    "remaining": 1,
+                },
+            ],
+        },
+    }
+    # Under-cap summary offers expand-all with the panel fragment.
+    html = _todos_panel(p)
+    assert "?tall=1#sec-todos" in html
+    assert "expand all 2 lists" in html
+    # Tall mode renders every list inline with a collapse link.
+    tall_data = [
+        {
+            "id": 1,
+            "title": "A",
+            "claim_mode": "item",
+            "items": [
+                {"id": 11, "text": "one", "done": True},
+                {"id": 12, "text": "two", "done": False},
+            ],
+        },
+        {
+            "id": 2,
+            "title": "B",
+            "claim_mode": "item",
+            "items": [{"id": 21, "text": "three", "done": False}],
+        },
+    ]
+    tall = _todos_panel(p, tall_data=tall_data)
+    assert "collapse all" in tall
+    assert "/posts/12#sec-todos" in tall
+    assert ">#11</span>" in tall and ">#21</span>" in tall
+    assert "?tall=1" not in tall, "no expand link while expanded"
+    # Over-cap boards keep drill-in with a quiet note instead.
+    big = dict(
+        p,
+        todos_summary={
+            "total_lists": 1,
+            "total_items": _TODO_TALL_CAP + 1,
+            "total_done": 0,
+            "lists": [
+                {
+                    "id": 9,
+                    "title": "Huge",
+                    "claim_mode": "item",
+                    "total_items": _TODO_TALL_CAP + 1,
+                    "done_items": 0,
+                    "remaining": _TODO_TALL_CAP + 1,
+                },
+            ],
+        },
+    )
+    html = _todos_panel(big)
+    assert "?tall=1" not in html
+    assert "Board too large to expand at once" in html
 
 
 def test_docket_card_shows_list_claim_summary():
