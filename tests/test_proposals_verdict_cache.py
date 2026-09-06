@@ -41,7 +41,7 @@ _SHAPES = [
     _prop(3),
     _prop(4, locked=True),
     _prop(5, proposal_kind="idea"),
-    _prop(6, proposal_gain="idea", stale=True, open_days=9),
+    _prop(6, proposal_kind="idea", stale=True, open_days=9),
     _prop(7, review_requested=True),
     _prop(8, status="declined"),
 ]
