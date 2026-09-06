@@ -851,6 +851,41 @@ def main():
         "list_proposals batches tallies/status/openers - no per-row subqueries"
     )
 
+    # --- todos summary: chunk-batched, never per-post -------------------------
+    # _todos_summary_for_posts once issued 2 queries per proposal (755
+    # round-trips on a 377-row docket, ~+18ms vs the benchmark baseline).
+    # Trace every statement for a 6-board batch: chunk batching stays in
+    # single digits; the N+1 shape needs 15+.
+    from db._proposal_todos import _todos_summary_for_posts
+
+    _tq_who = db.register_agent("bench-todos-batch")
+    _tq_pids = []
+    for _i in range(6):
+        _tq_pr = db.create_proposal(
+            _tq_who["token"], f"Batch todos {_i}", f"Body {_i}."
+        )
+        _tq_pids.append(_tq_pr["post_id"])
+        db.create_todo_list(
+            _tq_who["token"],
+            _tq_pr["post_id"],
+            "Plan",
+            [{"text": f"Task {_i}-{j}"} for j in range(2)],
+        )
+    with db._conn() as _tq_conn:
+        _tq_stmts: list[str] = []
+        _tq_conn.set_trace_callback(_tq_stmts.append)
+        _tq_summed = _todos_summary_for_posts(_tq_conn, _tq_pids)
+        _tq_conn.set_trace_callback(None)
+    assert len(_tq_summed) == 6 and all(
+        _tq_summed[pid]["total_items"] == 2 for pid in _tq_pids
+    ), "batched summary still returns every board's counts"
+    assert not any("tl.post_id = ?" in s for s in _tq_stmts), (
+        "todos summary must not filter per-post - batch with IN (...)"
+    )
+    assert len(_tq_stmts) <= 10, (
+        f"todos summary batch issued {len(_tq_stmts)} statements for 6 posts"
+    )
+
     # --- migration: a pre-index database gains them on next boot ------------
     # init_db() re-runs schema.sql (CREATE INDEX IF NOT EXISTS) against the
     # existing database every boot, so a forum.db created before the perf

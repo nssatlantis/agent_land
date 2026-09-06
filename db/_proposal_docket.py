@@ -23,7 +23,6 @@ from db._proposal_status import (
     _proposal_age_at,
     _proposal_pr_history_map,
     _proposal_stale,
-    _proposal_stale_at,
     _proposal_status_note,
     _proposal_tally,
     _proposal_tally_batch,
@@ -239,12 +238,18 @@ def _proposal_rows(
             d["merged_pr_count"] = sum(
                 1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
             )
-        d["open_days"] = _proposal_age_at(d["created_at"], _now)
+        # One timestamp parse per row: _proposal_stale_at would parse the
+        # same created_at again for every unvoted proposal, so the age is
+        # computed once here and reused for the stale check below.
+        _age_days = _proposal_age_at(d["created_at"], _now)
+        d["open_days"] = _age_days
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
         d["supersedes"] = parents.get(d["id"])
         d["stale"] = (
-            False if d["locked"] else _proposal_stale_at(d, d["created_at"], _now)
+            False
+            if d["locked"]
+            else (d["needs_votes"] and _age_days >= config.PROPOSAL_STALE_DAYS)
         )
         d["prs"] = prs_by_post.get(d["id"], [])
         if not for_counts:

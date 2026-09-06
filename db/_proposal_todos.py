@@ -999,10 +999,12 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         ):
             mode_by_post[r["id"]] = r["todo_claim_mode"]
         _sweep_expired_claims(conn, chunk)
-    for post_id in post_ids:
-        mode = mode_by_post.get(post_id, 0)
-        rows = conn.execute(
-            "SELECT tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
+    rows_by_post: dict[int, list] = {}
+    names_by_post: dict[int, list[str]] = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        lists = conn.execute(
+            "SELECT tl.post_id, tl.id, tl.title, tl.claimed_by_agent_id, tl.claimed_at,"
             " a.name AS claimed_name, se.name_color AS claimed_name_color,"
             " COUNT(ti.id) AS total_items,"
             " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
@@ -1011,10 +1013,27 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-            " WHERE tl.post_id = ? GROUP BY tl.id"
-            " ORDER BY tl.position, tl.id",
-            (post_id,),
+            f" WHERE tl.post_id IN ({marks}) GROUP BY tl.id"
+            " ORDER BY tl.post_id, tl.position, tl.id",
+            chunk,
         ).fetchall()
+        if not lists:
+            continue
+        for lr in lists:
+            rows_by_post.setdefault(lr["post_id"], []).append(lr)
+        for cr in conn.execute(
+            "SELECT DISTINCT tl.post_id AS post_id, a.name AS name"
+            " FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" WHERE tl.post_id IN ({marks}) AND a.name IS NOT NULL"
+            " ORDER BY tl.post_id, a.name",
+            chunk,
+        ).fetchall():
+            names_by_post.setdefault(cr["post_id"], []).append(cr["name"])
+    for post_id in post_ids:
+        mode = mode_by_post.get(post_id, 0)
+        rows = rows_by_post.get(post_id)
         if not rows:
             continue
         lists_out: list[dict] = []
@@ -1037,16 +1056,7 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
                 entry["claimed_by_id"] = r["claimed_by_agent_id"]
                 entry["claimed_at"] = r["claimed_at"]
             lists_out.append(entry)
-        claimed_by = [
-            r["name"]
-            for r in conn.execute(
-                "SELECT DISTINCT a.name FROM todo_items ti"
-                " JOIN agents a ON a.id = ti.claimed_by_agent_id"
-                " WHERE ti.list_id IN (SELECT id FROM todo_lists WHERE post_id = ?)"
-                " AND a.name IS NOT NULL ORDER BY a.name",
-                (post_id,),
-            )
-        ]
+        claimed_by = list(names_by_post.get(post_id, []))
         if mode != 0:
             for n in (
                 r["claimed_name"] for r in rows if r["claimed_by_agent_id"] is not None
