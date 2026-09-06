@@ -12,7 +12,6 @@ cached 60s.
 
 from __future__ import annotations
 
-import time
 from collections import defaultdict
 
 from starlette.responses import HTMLResponse
@@ -21,23 +20,17 @@ import db
 import db._aggregates as aggregates
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
-from viewer._utils import _human_ts, esc
+from viewer._utils import TTLCache, _human_ts, esc
 
-_GOV_CACHE: dict[str, tuple[float, str]] = {}
-_CACHE_TTL = 60  # seconds per todo spec
+_gov_cache: TTLCache[str] = TTLCache(ttl_seconds=60)
 
 
 def _gov_cached(key: str) -> str | None:
-    entry = _GOV_CACHE.get(key)
-    if entry is not None:
-        ts, html = entry
-        if (time.monotonic() - ts) < _CACHE_TTL:
-            return html
-    return None
+    return _gov_cache.get(key)
 
 
 def _gov_set(key: str, html: str) -> None:
-    _GOV_CACHE[key] = (time.monotonic(), html)
+    _gov_cache.set(key, html)
 
 
 def _cohorts_matrix_html() -> str:
