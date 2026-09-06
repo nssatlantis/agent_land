@@ -138,7 +138,7 @@ def _ci_ensure_pool() -> queue.Queue[int]:
                         idx = _CI_QUEUE.get_nowait()
                         if idx < desired:
                             avail.append(idx)
-                    except queue.Empty:
+                    except queue.Empty:  # domain: degrade-silently - drain raced another thread's swap; queue rebuild stays correct
                         break
                 rebuilt: queue.Queue[int] = queue.Queue()
                 for idx in avail:
@@ -295,7 +295,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
                 idx = q.get(block=True, timeout=timeout)
             else:
                 idx = q.get(block=False)
-        except queue.Empty as exc:
+        except queue.Empty as exc:  # domain: fail-loudly - no free slot after stale-queue retry; the caller gets a busy error
             # Stale-queue retry: live config may have rebuilt _CI_QUEUE
             # while we held old q. Retry once with fresh queue.
             with _CI_LOCK:
@@ -620,7 +620,9 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
             try:
                 with open(full, encoding="utf-8", newline="") as fh:
                     text = fh.read()
-            except UnicodeDecodeError:
+            except (
+                UnicodeDecodeError
+            ):  # domain: fail-loudly - a binary patch target surfaces as a user error
                 raise db.ForumError(
                     f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
                 ) from None
@@ -738,7 +740,7 @@ def _gate(kind_event: str, agent_id: int) -> None:
                 ts = datetime.strptime(
                     rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
                 ).replace(tzinfo=timezone.utc)
-            except Exception:
+            except Exception:  # domain: degrade-silently - unparseable timestamp means no cooldown applied
                 ts = None
             if ts is not None and ts >= now - timedelta(seconds=cooldown):
                 elapsed = now - ts
@@ -1244,7 +1246,10 @@ def _drain(pipe, chunks: list, start_holder: dict, retain: int, state: dict) -> 
     while True:
         try:
             chunk = pipe.read(65536)
-        except (OSError, ValueError):
+        except (
+            OSError,
+            ValueError,
+        ):  # domain: degrade-silently - output pipe died; keep what was captured
             break
         if not chunk:
             break
@@ -1492,7 +1497,9 @@ def run_checks(
     try:
         # User-initiated: wait up to 10s for a slot, then Retry-After
         slot = _ci_acquire_slot(reserve=False, timeout=10)
-    except db.ForumError:
+    except (
+        db.ForumError
+    ):  # domain: fail-loudly - busy error propagates after tmp cleanup
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     try:
@@ -1517,7 +1524,7 @@ def run_checks(
             assert pr_number is not None
             try:
                 tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
-            except TypeError:
+            except TypeError:  # domain:degrade-silently - fallback for tests that monkeypatch with no slot arg
                 # Fallback for tests that monkeypatch _prepare_pr_tree with no slot arg
                 tree, head_sha, merge_info = _prepare_pr_tree(pr_number)
             if merge_info["conflict"]:
@@ -1571,7 +1578,7 @@ def run_checks(
         else:
             try:
                 tree, head_sha = _prepare_tree(slot=slot)
-            except TypeError:
+            except TypeError:  # domain:degrade-silently - fallback for tests that monkeypatch with no slot arg
                 tree, head_sha = _prepare_tree()
             # Native is a reference run on origin/main. When the host has
             # docker (and sandboxing is on) it routes through the same image
@@ -1701,9 +1708,11 @@ def run_checks(
                                                     _sk,
                                                 ),
                                             )
-                                        except Exception:
+                                        except Exception:  # domain:degrade-silently - per-step auto-tick best-effort
                                             pass
-                        except Exception:
+                        except (
+                            Exception
+                        ):  # domain:degrade-silently - per-run auto-tick best-effort
                             pass
         except Exception:  # domain: degrade-silently - auto-tick best-effort
             pass
@@ -1738,7 +1747,9 @@ def run_checks(
         ):  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
-            except RuntimeError:
+            except (
+                RuntimeError
+            ):  # domain:degrade-silently - legacy test-held lock release; no-op in prod
                 pass
 
 
@@ -1769,13 +1780,15 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     try:
         # Poller/ticker: reserve 1 slot for user, non-blocking skip
         slot = _ci_acquire_slot(reserve=True, timeout=None)
-    except db.ForumError:
+    except (
+        db.ForumError
+    ):  # domain: fail-loudly - busy error propagates after tmp cleanup
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     try:
         try:
             tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
-        except TypeError:
+        except TypeError:  # domain:degrade-silently - fallback for tests that monkeypatch with no slot arg
             tree, head_sha, merge_info = _prepare_pr_tree(pr_number)
         if merge_info["conflict"]:
             duration = round(time.monotonic() - started, 2)
@@ -1808,7 +1821,9 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
                         "duration_seconds": duration,
                     },
                 )
-            except Exception:
+            except (
+                Exception
+            ):  # domain:degrade-silently - conflict-return ledger write best-effort
                 pass
             return payload
         image_tag = _ensure_image(tree, merge_info["base"])
@@ -1854,11 +1869,11 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             events.log_event(
                 kind_event, actor_agent_id=None, actor_name="poller", detail=detail
             )
-        except Exception:
+        except Exception:  # domain:degrade-silently - ledger write best-effort
             pass
         try:
             _git(tree, "gc", "--prune=now", "--quiet")
-        except Exception:
+        except Exception:  # domain:degrade-silently - blob hygiene best-effort
             pass
         return result
     finally:
@@ -1869,12 +1884,16 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             pass  # domain: degrade-silently - deregistration best-effort
         try:
             _ci_release_slot(slot)
-        except Exception:
+        except (
+            Exception
+        ):  # domain:degrade-silently - releasing a retired slot is best-effort
             pass
         if (
             _RUN_LOCK.locked()
         ):  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
-            except RuntimeError:
+            except (
+                RuntimeError
+            ):  # domain:degrade-silently - legacy test-held lock release; no-op in prod
                 pass
