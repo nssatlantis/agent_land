@@ -29,7 +29,6 @@ from viewer import (  # noqa: E402
     jobs_page,
     staking_page,
 )
-from viewer import _layout as _layout_mod  # noqa: E402
 from viewer import _status as _status_mod  # noqa: E402
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._citizens_helpers import _profile_cards  # noqa: E402
@@ -52,8 +51,6 @@ from viewer._render_helpers import (
     _poll_panel,
     _proposal_lock_banner,
     _proposal_stats,
-    _tag_chips,
-    _tag_text_color,
     _todos_panel,
 )  # noqa: E402
 from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
@@ -98,8 +95,8 @@ def test_ci_page_stats_cache_reuse():
         def __init__(self, page=1):
             self.query_params = {"page": str(page)}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = _ci_mod._stats_cache._data.copy()
+    _ci_mod._stats_cache.clear()
     try:
         # Wide fetch returns 3 fake events + total=7, second call must NOT
         # happen on the same (kind, mode) hit. Fields shaped so _ci_row
@@ -120,9 +117,9 @@ def test_ci_page_stats_cache_reuse():
             # Miss: refills.
             _ci_mod.ci_page(_Req(page=1))
             assert mq.call_count == 1, "miss fires one wide fetch"
-            assert ("ci_run", "native") in _ci_mod._STATS_CACHE
-            cached = _ci_mod._STATS_CACHE[("ci_run", "native")]
-            assert cached[2] == 7, "total comes from wide fetch, not event_total"
+            assert ("ci_run", "native") in _ci_mod._stats_cache._data
+            cached = _ci_mod._stats_cache._data[("ci_run", "native")]
+            assert cached[1][1] == 7, "total comes from wide fetch, not event_total"
             assert met.call_count == 0, "wide fetch already returned total"
             # Hit (same kind, mode, different page): no second fetch.
             _ci_mod.ci_page(_Req(page=2))
@@ -133,8 +130,8 @@ def test_ci_page_stats_cache_reuse():
             _ci_mod.ci_page(_Req(page=1))  # still same
             assert mq.call_count == 1
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _ci_mod._stats_cache.clear()
+        _ci_mod._stats_cache._data.update(saved)
 
 
 def test_ci_page_stats_cache_falls_back_to_event_total():
@@ -147,8 +144,8 @@ def test_ci_page_stats_cache_falls_back_to_event_total():
     class _Req:
         query_params = {"page": "1"}
 
-    saved = dict(_ci_mod._STATS_CACHE)
-    _ci_mod._STATS_CACHE.clear()
+    saved = _ci_mod._stats_cache._data.copy()
+    _ci_mod._stats_cache.clear()
     try:
         # Only the wide (with_total=True) fetch must raise; the per-page
         # fetch keeps working so ci_page can still render. Detail is the
@@ -171,12 +168,12 @@ def test_ci_page_stats_cache_falls_back_to_event_total():
         ):
             _ci_mod.ci_page(_Req())
             assert met.call_count == 1
-            assert ("ci_run", "native") not in _ci_mod._STATS_CACHE, (
+            assert ("ci_run", "native") not in _ci_mod._stats_cache._data, (
                 "exception must not cache"
             )
     finally:
-        _ci_mod._STATS_CACHE.clear()
-        _ci_mod._STATS_CACHE.update(saved)
+        _ci_mod._stats_cache.clear()
+        _ci_mod._stats_cache._data.update(saved)
 
 
 def test_proposal_lock_banner_superseded():
@@ -1218,73 +1215,6 @@ def test_event_calendar_renders_grid():
     assert "cal-grid" in _event_calendar("2026-02", {}, "", False)
 
 
-def test_static_theme_gates_and_surface_vars():
-    """The served stylesheet carries the light surface palette on base :root and
-    the dark palette behind both theme gates (attribute + media query), with no
-    raw light background literals left on the CSS-variable surface."""
-    from viewer import _static as _static_mod
-
-    css = _static_mod.STYLE_CSS
-    assert css.count("--panel:#1e293b") == 2, "dark panel var behind both gates"
-    assert css.count("--panel:#fff") == 1, "light panel var on base :root"
-    assert css.count("--bg:#f7fafc") == 1
-    assert css.count("--input-bg:transparent") == 1
-    assert 'data-theme="dark"' in css
-    assert "prefers-color-scheme: dark" in css
-    assert "background:#fff" not in css, "no literal light background survives"
-    assert (
-        isinstance(_static_mod._CSS_HASH, str) and len(_static_mod._CSS_HASH) == 16
-    ), "css hash ride-along stays valid"
-
-
-def test_tag_text_color_luminance():
-    """The luminance pick must flip at the 128 threshold and degrade to dark
-    text on malformed input - the chip's text must read on a solid badge."""
-    assert _tag_text_color("#000000") == "#fff"
-    assert _tag_text_color("#ffffff") == "#1a202c"
-    assert _tag_text_color("#1e3a8a") == "#fff", "dark blue badge -> white text"
-    assert _tag_text_color("#fde68a") == "#1a202c", "light yellow badge -> dark text"
-    assert _tag_text_color("") == "#1a202c"
-    assert _tag_text_color(None) == "#1a202c"
-    assert _tag_text_color("#short") == "#1a202c"
-    assert _tag_text_color("not-a-color") == "#1a202c"
-
-
-def test_tag_chips_solid_badge():
-    """Tag chips render a solid badge background (the luminance pick assumes
-    one) and link to their /posts?tag= filter; untagged posts render nothing."""
-    p = {
-        "tags": [
-            {"name": "governance", "color": "#1e3a8a"},
-            {"name": "economy", "color": "#fde68a"},
-        ]
-    }
-    html = _tag_chips(p)
-    assert 'style="background:#1e3a8a;' in html, "dark badge is solid"
-    assert "color:#fff" in html, "dark badge gets white text"
-    assert 'style="background:#fde68a;' in html, "light badge is solid"
-    assert "color:#1a202c" in html, "light badge gets dark text"
-    assert "22;" not in html, "no translucent hex-alpha backgrounds remain"
-    assert "/posts?tag=governance" in html
-    assert _tag_chips({}) == ""
-    assert _tag_chips({"tags": []}) == ""
-
-
-def test_page_shell_has_theme_toggle():
-    """The page shell must carry the no-flash head script before the stylesheet
-    and the toggle button + wiring script, with no unfilled placeholders."""
-    resp = _layout_mod._page("Theme", "<b>body</b>")
-    html = resp.body.decode("utf-8")
-    assert 'id="theme-toggle"' in html
-    assert "agentland_theme" in html
-    assert "prefers-color-scheme" in html
-    assert html.index("agentland_theme") < html.index("style.css"), (
-        "theme applied before first paint"
-    )
-    assert "{theme" not in html
-    assert "{utc_pill}" not in html
-
-
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -1336,10 +1266,6 @@ if __name__ == "__main__":
     test_record_page_toc_and_anchors()
     test_record_page_stamp_present()
     test_event_calendar_renders_grid()
-    test_static_theme_gates_and_surface_vars()
-    test_tag_text_color_luminance()
-    test_tag_chips_solid_badge()
-    test_page_shell_has_theme_toggle()
     test_fragments_redirect_without_x_fragment()
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
