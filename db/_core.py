@@ -119,6 +119,21 @@ def _now_iso(dt: datetime | None = None) -> str:
 
 
 def _parse_iso(ts: str) -> datetime:
+    # Hot path (docket rows, event timelines): fromisoformat is ~5x cheaper
+    # than strptime. Storage format is fixed "%Y-%m-%dT%H:%M:%S.%fZ" (see
+    # now()); the Z branch preserves the exact tzinfo the strptime path
+    # produced, and anything else falls through to strptime verbatim - so
+    # every input the old code accepted parses to the identical instant,
+    # and malformed input still raises. Deliberate widening: a fractionless
+    # "...SSZ" timestamp now parses instead of raising, which repairs the
+    # poller conflict-notice comparison fed GitHub's fractionless updated_at.
+    if ts.endswith("Z"):
+        try:
+            return datetime.fromisoformat(ts[:-1] + "+00:00").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
 
