@@ -229,6 +229,13 @@ STYLE_CSS = (
   .comment:target { background:var(--target); }
   .comment { margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }
   details#sec-todos { scroll-margin-top:70px; }
+  /* In-page targets for same-page tab/filter/sort/pager navigation: every
+  link lands back on its panel instead of the top of the page (70px clears
+  the sticky site header, like .comment above). */
+  #sec-ledger, #sec-tags, #sec-credits-ledger, #sec-credits-wallet,
+  #sec-record, #sec-bugs, #sec-ci, #sec-prs, #sec-reports, #sec-activity,
+  #frag-posts-list, #frag-recent-list, #frag-docket-rows, #events-list,
+  #frag-jobs, #stake-list, #frag-citizens, details[id^="sec-"] { scroll-margin-top:70px; }
   .comment:hover { background:var(--hover-overlay); }
   .post-body ul, .post-body ol { margin:6px 0; padding-left:22px; }
   .post-body code { background:var(--strong); padding:1px 4px; border-radius:3px; font-size:0.9em; }

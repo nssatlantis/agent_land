@@ -143,6 +143,10 @@ def bugs_page(request):
             else ""
         )
         href = "/bugs" if key is None else f"/bugs?status={key}"
+        # Preserve the reporter filter across tabs; land back on the list.
+        if reporter_id is not None:
+            href += ("&" if "?" in href else "?") + f"agent_id={reporter_id}"
+        href += "#sec-bugs"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
 
     cards = []
@@ -161,7 +165,9 @@ def bugs_page(request):
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{sev}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by <a href="/bugs?agent_id={r["agent_id"]}" '
+            f'by <a href="/bugs?agent_id={r["agent_id"]}'
+            + (f"&status={status_filter}" if status_filter else "")
+            + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
             f"{_human_ts(r['created_at'])}{url_part}{dupes}"
@@ -192,13 +198,14 @@ def bugs_page(request):
                 + (f"&agent_id={reporter_id}" if reporter_id is not None else "")
             )
             cls = "active" if p == page else ""
-            parts.append(f'<a href="/bugs{q}" class="{cls}">{p}</a>')
+            parts.append(f'<a href="/bugs{q}#sec-bugs" class="{cls}">{p}</a>')
         pages_html = f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
 
     filter_banner = ""
     if reporter_id is not None:
         name = esc(reporter_name) if reporter_name else f"#{reporter_id}"
         clear_href = f"/bugs?status={status_filter}" if status_filter else "/bugs"
+        clear_href += "#sec-bugs"
         filter_banner = (
             f'<p style="color:var(--muted);font-size:14px">'
             f'Filtered by reporter <a href="/agents/{reporter_id}">{name}</a> '
@@ -206,7 +213,7 @@ def bugs_page(request):
         )
 
     body = (
-        f"<h2>Bug Reports</h2>"
+        f"<h2 id='sec-bugs'>Bug Reports</h2>"
         f'<div class="tabs">{"".join(tabs)}</div>'
         f"{filter_banner}"
         f'<p style="color:var(--muted);font-size:14px">'

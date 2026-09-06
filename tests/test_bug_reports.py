@@ -180,6 +180,19 @@ def test_viewer_bugs_page(helpers):
     print("  viewer bugs page: ok")
 
 
+def test_viewer_bugs_nav_lands_on_list():
+    """/bugs tabs/pager target the list (sec-bugs); tabs keep the reporter."""
+    from viewer._bugs import bugs_page
+
+    class FragReq:
+        query_params = {"status": "open", "agent_id": "7"}
+
+    body = bugs_page(FragReq()).body.decode()
+    assert "id='sec-bugs'" in body
+    assert "/bugs?status=confirmed&agent_id=7#sec-bugs" in body
+    print("  viewer bugs nav fragments: ok")
+
+
 def test_viewer_bug_detail(helpers):
     """Smoke test: bug_detail_page renders."""
     from viewer._bugs import bug_detail_page
@@ -390,6 +403,7 @@ if __name__ == "__main__":
     test_reference_expansion(helpers)
     test_linked_proposals(helpers)
     test_viewer_bugs_page(helpers)
+    test_viewer_bugs_nav_lands_on_list()
     test_viewer_bug_detail(helpers)
     test_api_bugs(helpers)
     test_small_fix_gates_bug_confidence(helpers)

@@ -45,8 +45,8 @@ def _status_badge(status: str) -> str:
 def _target_link(r: dict) -> str:
     """A clickable target label: 'post #17' or 'comment #C5 on post #77'.
 
-    Comment targets link to the parent post (the thread), not the comment
-    itself, because reports are about the conversation the comment lives in.
+    Comment targets deep-link to the comment itself (`#c{id}` anchor) so a
+    reviewer lands on the flagged words, with the thread one click away.
     """
     if r["target_type"] == "post":
         return (
@@ -58,7 +58,7 @@ def _target_link(r: dict) -> str:
     if thread is None:
         return f"comment #{r['target_id']}"
     return (
-        f'<a href="/posts/{thread}#comment-{r["target_id"]}" '
+        f'<a href="/posts/{thread}#c{r["target_id"]}" '
         f'style="color:var(--accent)" title="jump to comment #{r["target_id"]} '
         f'on post #{thread}">comment #{r["target_id"]}</a>'
         f' <span style="color:var(--muted);font-size:12px">on post #{thread}</span>'
@@ -168,19 +168,20 @@ def reports_page(request):
             params.append(f"reports_q={esc(quote(reports_q))}")
         if n > 1:
             params.append(f"page={n}")
-        return f"/reports?{'&'.join(params)}"
+        # Land back on the table, not the top of the page.
+        return f"/reports?{'&'.join(params)}#sec-reports"
 
     tabs = []
     for key, label in (("all", "All"), ("open", "Open"), ("resolved", "Resolved")):
         cls = "active" if key == status_filter else ""
         q_part = f"&reports_q={esc(quote(reports_q))}" if reports_q else ""
-        href = f"/reports?status={key}{q_part}"
+        href = f"/reports?status={key}{q_part}#sec-reports"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
     tabs_html = '<div class="tabs">' + "".join(tabs) + "</div>"
     # Isolated filter input: distinct id/name from global top-search, with
     # stopPropagation so key events never bubble to the global search bar.
     filter_html = (
-        '<form method="get" action="/reports" style="margin:8px 0;display:flex;gap:8px;align-items:center">'
+        '<form method="get" action="/reports" onsubmit="this.action=\'/reports#sec-reports\'" style="margin:8px 0;display:flex;gap:8px;align-items:center">'
         f'<input type="hidden" name="status" value="{esc(status_filter)}">'
         f'<input id="reports-filter-input" name="reports_q" type="text" value="{esc(reports_q)}"'
         ' placeholder="filter by reason…" autocomplete="off" spellcheck="false"'
@@ -190,7 +191,7 @@ def reports_page(request):
         + (
             '<a href="/reports?status='
             + esc(status_filter)
-            + '" style="color:var(--muted);font-size:13px">clear</a>'
+            + '#sec-reports" style="color:var(--muted);font-size:13px">clear</a>'
             if reports_q
             else ""
         )
@@ -243,7 +244,7 @@ def reports_page(request):
     pager_top = _pager(page, total_pages, _href_for_page, top=True)
     pager_bot = _pager(page, total_pages, _href_for_page)
     body = (
-        '<div class="panel"><h2>Reports</h2>'
+        '<div class="panel" id="sec-reports"><h2>Reports</h2>'
         "<p style='color:var(--muted);font-size:15px'>"
         "Community transparency: every report and how it was judged. "
         "The frozen content snapshot survives deletion; resolved reports "

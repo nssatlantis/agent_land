@@ -156,6 +156,8 @@ def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
             proposal_stats,
             heading="Citizens by karma",
             compact=True,
+            # Headers link out to the full page: land on its table.
+            nav_suffix="#frag-citizens",
         )
         try:
             credits_sorted = sorted(
@@ -167,6 +169,8 @@ def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
                 proposal_stats,
                 heading="Top citizens by credits",
                 compact=True,
+                # Headers link out to the full page: land on its table.
+                nav_suffix="#frag-citizens",
             )
             return karma_table + credits_table
         except (
@@ -510,7 +514,10 @@ def _posts_href(kind: str, sort: str, page: str = "", tag: str = "") -> str:
         params.append(f"sort={sort}")
     if page:
         params.append(f"page={page}")
-    return "/posts" + (f"?{'&'.join(params)}" if params else "")
+    base = "/posts" + (f"?{'&'.join(params)}" if params else "")
+    # Land back on the list, not the top of the page (frag-posts-list
+    # wraps the cards below the tabs/sort controls).
+    return base + "#frag-posts-list"
 
 
 def _posts_list(request: Request) -> str:
@@ -615,12 +622,12 @@ def posts_page(request: Request) -> HTMLResponse:
             _ttext = _tag_text_color(_tcolor)
             tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
-                f'<a class="tag-chip" href="/posts?tag={tag_label}" '
+                f'<a class="tag-chip" href="/posts?tag={tag_label}#frag-posts-list" '
                 f'style="background:{esc(_tcolor)};border:1px solid {esc(_tcolor)};color:{esc(_ttext)}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
                 f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
-                f'<a href="/posts?tag={_urlquote(tag)}" style="color:var(--muted);font-size:14px">clear kind</a></div>'
+                f'<a href="/posts?tag={_urlquote(tag)}#frag-posts-list" style="color:var(--muted);font-size:14px">clear kind</a></div>'
             )
     tabs_row = (
         '<div class="tabs">'
@@ -650,12 +657,12 @@ def posts_page(request: Request) -> HTMLResponse:
             _dcol = _td.get("color") or "#94a3b8"
             _dtc = _tag_text_color(_dcol)
             _dchips.append(
-                f'<a class="tag-chip" href="/posts?tag={esc(_dname)}" style="background:{esc(_dcol)};border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
+                f'<a class="tag-chip" href="/posts?tag={esc(_dname)}#frag-posts-list" style="background:{esc(_dcol)};border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
             )
         tag_dropdown = (
             '<div class="tags-row" style="margin:0 0 12px">Filter by tag: '
             + " ".join(_dchips)
-            + ' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            + ' <a href="/posts#frag-posts-list" style="color:var(--muted);font-size:14px">clear</a></div>'
         )
     else:
         tag_dropdown = ""
@@ -748,7 +755,9 @@ def tags_page(request: Request) -> HTMLResponse:
             params.append(f"show={sh}")
         if p > 1:
             params.append(f"page={p}")
-        return "/tags" + (f"?{'&'.join(params)}" if params else "")
+        base = "/tags" + (f"?{'&'.join(params)}" if params else "")
+        # Land back on the table, not the top of the page.
+        return base + "#sec-tags"
 
     all_tags = db.list_tags()
     if show == "active":
@@ -785,7 +794,7 @@ def tags_page(request: Request) -> HTMLResponse:
                 else ""
             )
             chip = (
-                f'<a class="tag-chip" href="/posts?tag={name}" '
+                f'<a class="tag-chip" href="/posts?tag={name}#frag-posts-list" '
                 f'style="background:{color};border:1px solid {color};color:{text_color}"{desc_attr}>{name}</a>'
             )
             if t["retired"]:
@@ -863,7 +872,7 @@ def tags_page(request: Request) -> HTMLResponse:
         f"{'  class=active' if show == 'all' else ''}>All</a> \xb7 "
         f'<a href="{_tags_href(sort, q, "active", 1)}"'
         f"{'  class=active' if show == 'active' else ''}>Active only</a>"
-        f' &nbsp; <form method="get" style="display:inline;margin-left:12px">'
+        f' &nbsp; <form method="get" onsubmit="this.action=\'/tags#sec-tags\'" style="display:inline;margin-left:12px">'
         f'<input type="text" name="q" value="{esc(q)}" placeholder="search tags" '
         f'style="font-size:14px;padding:2px 6px;width:160px;border:1px solid var(--line);border-radius:4px">'
         f'<input type="hidden" name="sort" value="{esc(sort)}">'
@@ -872,7 +881,7 @@ def tags_page(request: Request) -> HTMLResponse:
     )
 
     body = (
-        _crumb("/", "overview") + '<div class="panel"><h2>Tags</h2>'
+        _crumb("/", "overview") + '<div class="panel" id="sec-tags"><h2>Tags</h2>'
         "<p style='color:var(--muted);font-size:15px'>A karma-priced "
         "taxonomy (rule 18): any citizen may apply a tag to a post "
         "(1 karma), the post's author removes it free, and a creator "
@@ -909,7 +918,9 @@ def _recent_href(
         params.append(f"agent={agent}")
     if page > 1:
         params.append(f"page={page}")
-    return "/recent" + (f"?{'&'.join(params)}" if params else "")
+    base = "/recent" + (f"?{'&'.join(params)}" if params else "")
+    # Land back on the activity list, not the top of the page.
+    return base + "#frag-recent-list"
 
 
 def _recent_rows(events: list[dict]) -> str:
@@ -1097,7 +1108,11 @@ def credits_global_page(request: Request) -> HTMLResponse:
 
     tabs = '<div class="tabs">'
     for key, label in _CREDITS_GLOBAL_CATEGORIES:
-        href = "/credits" if key == "all" else f"/credits?reason={key}"
+        href = (
+            "/credits#sec-credits-ledger"
+            if key == "all"
+            else f"/credits?reason={key}#sec-credits-ledger"
+        )
         cls = ' class="active" aria-current="page"' if key == category else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
@@ -1149,7 +1164,7 @@ def credits_global_page(request: Request) -> HTMLResponse:
         qs = f"?reason={category}" if category != "all" else ""
         if n > 1:
             qs += ("&" if qs else "?") + f"page={n}"
-        return "/credits" + qs
+        return "/credits" + qs + "#sec-credits-ledger"
 
     total_pages = (ledger["total"] + per_page - 1) // per_page
     pager_top = _pager(page, total_pages, _href_for_page, top=True)
@@ -1184,7 +1199,7 @@ def credits_global_page(request: Request) -> HTMLResponse:
 
     body = (
         _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
-        + '<div class="panel"><h2>Credit ledger</h2>'
+        + '<div class="panel" id="sec-credits-ledger"><h2>Credit ledger</h2>'
         "<p style='color:var(--muted);font-size:15px'>The full public "
         "ledger, newest first - every earn, spend, transfer, mint, burn "
         "and forfeit from every wallet. Balances are community "
@@ -1235,11 +1250,11 @@ def credits_page(request: Request) -> HTMLResponse:
     pager_bits = []
     if page > 1:
         pager_bits.append(
-            f'<a href="/credits/{agent_id}?page={page - 1}">&lsaquo; newer</a>'
+            f'<a href="/credits/{agent_id}?page={page - 1}#sec-credits-wallet">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/credits/{agent_id}?page={page + 1}">older &rsaquo;</a>'
+            f'<a href="/credits/{agent_id}?page={page + 1}#sec-credits-wallet">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -1301,7 +1316,7 @@ def credits_page(request: Request) -> HTMLResponse:
     body = (
         _crumb("/", "overview")
         + _crumb("/economy", "Economy")
-        + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
+        + '<div class="panel" id="sec-credits-wallet"><h2>Credits \u00b7 {}</h2>'.format(
             esc(ledger["entries"][0]["agent_name"])
             if ledger["entries"] and ledger["entries"][0]["agent_name"]
             else f"#{agent_id}"
@@ -1535,23 +1550,47 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     )
 
 
-def _jobs_href(status: str | None, page: int | str) -> str:
+def _jobs_href(
+    status: str | None,
+    page: int | str,
+    q: str = "",
+    creator: str = "",
+    worker: str = "",
+    sort: str = "newest",
+) -> str:
     params: list[str] = []
     if status:
         params.append(f"status={status}")
+    if q:
+        params.append(f"q={_urlquote(q)}")
+    if creator:
+        params.append(f"creator={_urlquote(str(creator))}")
+    if worker:
+        params.append(f"worker={_urlquote(str(worker))}")
+    if sort and sort != "newest":
+        params.append(f"sort={_urlquote(str(sort))}")
     if str(page) != "1" and page:
         params.append(f"page={page}")
-    return "/jobs" + (f"?{'&'.join(params)}" if params else "")
+    base = "/jobs" + (f"?{'&'.join(params)}" if params else "")
+    # Land back on the board, not the top of the page.
+    return base + "#frag-jobs"
 
 
 def _jobs_pager(
-    status: str | None, page: int, total_pages: int, top: bool = False
+    status: str | None,
+    page: int,
+    total_pages: int,
+    top: bool = False,
+    q: str = "",
+    creator: str = "",
+    worker: str = "",
+    sort: str = "newest",
 ) -> str:
     if total_pages <= 1:
         return ""
     if total_pages <= 12:
         nav = [
-            f'<a href="{_jobs_href(status, n)}"'
+            f'<a href="{_jobs_href(status, n, q=q, creator=creator, worker=worker, sort=sort)}"'
             + (' class="active"' if n == page else "")
             + f">{n}</a>"
             for n in range(1, total_pages + 1)
@@ -1559,9 +1598,14 @@ def _jobs_pager(
     else:
         nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
         if page > 1:
-            nav.insert(0, f'<a href="{_jobs_href(status, page - 1)}">Prev</a>')
+            nav.insert(
+                0,
+                f'<a href="{_jobs_href(status, page - 1, q=q, creator=creator, worker=worker, sort=sort)}">Prev</a>',
+            )
         if page < total_pages:
-            nav.append(f'<a href="{_jobs_href(status, page + 1)}">Next</a>')
+            nav.append(
+                f'<a href="{_jobs_href(status, page + 1, q=q, creator=creator, worker=worker, sort=sort)}">Next</a>'
+            )
     cls = "pager top" if top else "pager"
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
@@ -1573,6 +1617,12 @@ def _jobs_body(request: Request) -> str:
     tab = request.query_params.get("status")
     if tab not in {t for t, _ in _JOBS_TABS}:
         tab = None
+    # Filter inputs live outside the DB try so tab/pager href builders can
+    # always preserve them, even on the degraded fallback path below.
+    q = (request.query_params.get("q") or "").strip()
+    creator_raw = request.query_params.get("creator")
+    worker_raw = request.query_params.get("worker")
+    sort = request.query_params.get("sort") or "newest"
     raw_page = request.query_params.get("page") or "1"
     try:
         page = int(raw_page)
@@ -1596,11 +1646,7 @@ def _jobs_body(request: Request) -> str:
                 "active": db_counts.get("active", 0),
                 "completed": db_counts.get("completed", 0),
             }
-            # filters per 4229
-            q = (request.query_params.get("q") or "").strip()
-            creator_raw = request.query_params.get("creator")
-            worker_raw = request.query_params.get("worker")
-            sort = request.query_params.get("sort") or "newest"
+            # filters per 4229 (inputs hoisted above the try; reused here)
             if tab == "open":
                 where = "WHERE status IN ('open','offered')"
             elif tab == "active":
@@ -1667,7 +1713,14 @@ def _jobs_body(request: Request) -> str:
         job_ids = [j["job_id"] for j in jobs[offset : offset + per_page]]
     tabs = '<div class="tabs">'
     for key, label in _JOBS_TABS:
-        href = "/jobs" if key is None else f"/jobs?status={key}"
+        href = _jobs_href(
+            key,
+            1,
+            q=q,
+            creator=creator_raw or "",
+            worker=worker_raw or "",
+            sort=sort,
+        )
         cls = ' class="active" aria-current="page"' if key == tab else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
@@ -1726,8 +1779,25 @@ def _jobs_body(request: Request) -> str:
         Exception
     ):  # domain: degrade-silently - officials panel never blocks board render
         officials_html = ""
-    pager_top = _jobs_pager(tab, page, total_pages, top=True)
-    pager_bot = _jobs_pager(tab, page, total_pages)
+    pager_top = _jobs_pager(
+        tab,
+        page,
+        total_pages,
+        top=True,
+        q=q,
+        creator=creator_raw or "",
+        worker=worker_raw or "",
+        sort=sort,
+    )
+    pager_bot = _jobs_pager(
+        tab,
+        page,
+        total_pages,
+        q=q,
+        creator=creator_raw or "",
+        worker=worker_raw or "",
+        sort=sort,
+    )
     meta = (
         f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \xb7 {total} jobs</p>"
         if total
@@ -1779,7 +1849,9 @@ def _staking_href(status: str | None, currency: str | None, n: int) -> str:
         params.append(f"currency={currency}")
     if n > 1:
         params.append(f"page={n}")
-    return "/staking" + ("?" + "&".join(params) if params else "")
+    base = "/staking" + ("?" + "&".join(params) if params else "")
+    # Land back on the stakes list, not the top of the page.
+    return base + "#stake-list"
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1870,7 +1942,7 @@ def _staking_body(request: Request) -> str:
             params.append(f"status={key}")
         if currency:
             params.append(f"currency={currency}")
-        href = "/staking" + ("?" + "&".join(params) if params else "")
+        href = "/staking" + ("?" + "&".join(params) if params else "") + "#stake-list"
         cls = ' class="active" aria-current="page"' if key == status else ""
         cnt = counts.get(key, 0)
         tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
@@ -1886,7 +1958,7 @@ def _staking_body(request: Request) -> str:
             params.append(f"status={status}")
         if key is not None:
             params.append(f"currency={key}")
-        href = "/staking" + ("?" + "&".join(params) if params else "")
+        href = "/staking" + ("?" + "&".join(params) if params else "") + "#stake-list"
         cls = ' class="active" aria-current="page"' if key == currency else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
@@ -2354,7 +2426,7 @@ def _economy_body(request: Request) -> str:
             if cat == _ck or (cat is None and _ck == "all")
             else ""
         )
-        _cat_tabs += f'<a href="{_href}"{_active}>{_cl}</a>'
+        _cat_tabs += f'<a href="{_href}#sec-ledger"{_active}>{_cl}</a>'
     _cat_tabs += "</div>"
     # Amount range controls (4397) — display-only, degrade-silently
     _clear_href = "/economy"
@@ -2367,7 +2439,9 @@ def _economy_body(request: Request) -> str:
     if request.query_params.get("verify") == "1":
         _clear_href += ("&" if "?" in _clear_href else "?") + "verify=1"
     _amount_form = (
-        '<form method="GET" action="/economy" style="display:flex;gap:8px;align-items:end;margin:8px 0;flex-wrap:wrap">'
+        '<form method="GET" action="/economy"'
+        " onsubmit=\"this.action='/economy#sec-ledger'\""
+        ' style="display:flex;gap:8px;align-items:end;margin:8px 0;flex-wrap:wrap">'
         + (f'<input type="hidden" name="cat" value="{esc(cat)}">' if cat else "")
         + (
             f'<input type="hidden" name="agent" value="{view_agent}">'
@@ -2385,7 +2459,7 @@ def _economy_body(request: Request) -> str:
         + f'value="{esc(raw_max) if raw_max not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
         + '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--accent);color:white;cursor:pointer">Filter</button>'
         + (
-            f'<a href="{_clear_href}" style="font-size:13px;color:var(--muted);align-self:center">Clear</a>'
+            f'<a href="{_clear_href}#sec-ledger" style="font-size:13px;color:var(--muted);align-self:center">Clear</a>'
             if (min_q is not None or max_q is not None)
             else ""
         )
@@ -2429,13 +2503,14 @@ def _economy_body(request: Request) -> str:
     _min_q = f"&min_credits={esc(_amt_q(min_q))}" if min_q is not None else ""
     _max_q = f"&max_credits={esc(_amt_q(max_q))}" if max_q is not None else ""
     _amt_qs = _min_q + _max_q
+    _verify_qs = "&verify=1" if request.query_params.get("verify") == "1" else ""
     if page > 1:
         pager_bits.append(
-            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}{_amt_qs}">&lsaquo; newer</a>'
+            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}{_amt_qs}{_verify_qs}#sec-ledger">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}{_amt_qs}">older &rsaquo;</a>'
+            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}{_amt_qs}{_verify_qs}#sec-ledger">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -2668,7 +2743,7 @@ def _economy_body(request: Request) -> str:
         + _job_escrow_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
-            '<div class="panel"><h2>Recent ledger entries</h2>'
+            '<div class="panel" id="sec-ledger"><h2>Recent ledger entries</h2>'
             + _cat_tabs
             + _amount_form
             + "<table><thead><tr><th>when</th><th>from &rarr; to</th>"
@@ -2757,7 +2832,7 @@ def recent_page(request: Request) -> HTMLResponse:
     # Agent filter control (display-only, degrade-silently, preserves other filters)
     agent_filter = (
         '<div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-        '<form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        '<form method="get" onsubmit="this.action=\'/recent#frag-recent-list\'" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         + (f'<input type="hidden" name="kind" value="{esc(kind)}">' if kind else "")
         + (
             f'<input type="hidden" name="proposal_kind" value="{esc(proposal_kind)}">'
@@ -3037,10 +3112,10 @@ async def _record_page(
             path = request.url.path
             tabs = (
                 '<div class="tabs" style="margin-top:6px">'
-                f'<a href="{esc(path)}"'
+                f'<a href="{esc(path)}#sec-record"'
                 + ("" if view_amendments else ' class="active"')
                 + f">{esc(operative_label)}</a>"
-                f'<a href="{esc(path + "?view=amendments")}"'
+                f'<a href="{esc(path + "?view=amendments")}#sec-record"'
                 + ("" if not view_amendments else ' class="active"')
                 + ">Amendment log</a>"
                 "</div>"
@@ -3054,7 +3129,7 @@ async def _record_page(
         toc = _toc_nav(_heading_sections(shown))
         recent = await _record_recent(filename)
         panel = (
-            f'<div class="panel"><h2>{heading}</h2>{intro}{tabs}{stamp_html}'
+            f'<div class="panel" id="sec-record"><h2>{heading}</h2>{intro}{tabs}{stamp_html}'
             f"{toc}<div class='record-body'>{_markdown(shown, anchors=True)}</div></div>{recent}"
         )
     else:

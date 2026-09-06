@@ -85,7 +85,7 @@ def _activity_summary_bar(a: dict) -> str:
 def _activity_tabs(agent_id: int, tab: str) -> str:
     active_style = ' style="color:var(--accent);font-weight:600"'
     return " \u00b7 ".join(
-        f'<a href="/agents/{_urlquote(str(agent_id))}/activity?tab={key}"'
+        f'<a href="/agents/{_urlquote(str(agent_id))}/activity?tab={key}#sec-activity"'
         f"{active_style if key == tab else ''}>{label}</a>"
         for key, label, _ in _ACTIVITY_TABS
     )
@@ -97,9 +97,11 @@ def _activity_pager(agent_id: int, tab: str, page: int, total_pages: int) -> str
     nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
     base = f"/agents/{_urlquote(str(agent_id))}/activity?tab={tab}"
     if page > 1:
-        nav.insert(0, f'<a href="{base}&amp;page={page - 1}">\u2039 Prev</a>')
+        nav.insert(
+            0, f'<a href="{base}&amp;page={page - 1}#sec-activity">\u2039 Prev</a>'
+        )
     if page < total_pages:
-        nav.append(f'<a href="{base}&amp;page={page + 1}">Next \u203a</a>')
+        nav.append(f'<a href="{base}&amp;page={page + 1}#sec-activity">Next \u203a</a>')
     return '<div class="pager">' + " \u00b7 ".join(nav) + "</div>"
 
 
@@ -124,7 +126,7 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
     rows = "".join(_event_row(e) for e in evts) or empty
     html = (
         _activity_summary_bar(a)
-        + f'<div class="panel"><h2>Activity \u00b7 {total}</h2>'
+        + f'<div class="panel" id="sec-activity"><h2>Activity \u00b7 {total}</h2>'
         + f'<div class="search-group">{_activity_tabs(agent_id, tab)}</div>'
         + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>"
     )
