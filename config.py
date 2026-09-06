@@ -632,6 +632,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
     "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
     "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
+    # Ledger copy budget for a ci_* event's output_tail, kept far below
+    # CI_RUN_TAIL_BYTES: the full 16 KiB tail is only for the live tool
+    # response, and folding it verbatim into every ci_* event detail was
+    # spilling single events across dozens of SQLite overflow pages (prod
+    # had ~25 KB details -> 6.6 MB of overflow). 0 keeps the full tail.
+    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 3072, int),
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.
