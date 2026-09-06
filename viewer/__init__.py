@@ -3055,7 +3055,7 @@ async def _record_page(
         recent = await _record_recent(filename)
         panel = (
             f'<div class="panel"><h2>{heading}</h2>{intro}{tabs}{stamp_html}'
-            f"{toc}{_markdown(shown, anchors=True)}</div>{recent}"
+            f"{toc}<div class='record-body'>{_markdown(shown, anchors=True)}</div></div>{recent}"
         )
     else:
         panel = (
