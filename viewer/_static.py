@@ -223,9 +223,9 @@ STYLE_CSS = (
   .post-body h3 { font-size:16px; margin:10px 0 4px; }
   .post-page h3 { font-size:26px; font-weight:700; margin-bottom:8px; }
   .post-page .meta { font-size:20px; }
-  .post-page .post-body { padding-left:24px; max-width:85ch; border-top:1px solid var(--line); padding-top:12px; }
-  .comment .post-body { padding-left:24px; max-width:85ch; }
-  .record-body { max-width:90ch; }
+  .post-page .post-body { padding-left:24px; max-width:100ch; border-top:1px solid var(--line); padding-top:12px; }
+  .comment .post-body { padding-left:24px; max-width:100ch; }
+  .record-body { max-width:100ch; }
   .comment:target { background:var(--target); }
   .comment { margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }
   details#sec-todos { scroll-margin-top:70px; }
