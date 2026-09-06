@@ -17,6 +17,7 @@ import db
 import search
 from viewer._staking_helpers import _stake_amount
 from viewer._utils import (
+    TTLCache,
     _collapsible,
     _human_ts,
     _inline_md,
@@ -32,8 +33,7 @@ _PROPOSAL_SIMILAR_CACHE: OrderedDict[tuple[str, str], tuple[float, list]] = (
 _PROPOSAL_SIMILAR_TTL = 60
 _PROPOSAL_SIMILAR_CACHE_MAX = 128
 
-_STAKED_CACHE: dict[int, tuple[float, str]] = {}
-_STAKED_TTL = 60.0
+_staked_cache: TTLCache[str] = TTLCache(ttl_seconds=60.0)
 
 
 def _score_badge(score: int) -> str:
@@ -363,7 +363,7 @@ def _tag_text_color(hex_color: str) -> str:
 def _tag_chips(p: dict) -> str:
     """A post's tags as read-only pills, each colored by its own
     allowlisted #RRGGBB (validated at creation, so safe to inline; the
-    solid background rides both themes) and linking to its
+    translucent background rides both themes) and linking to its
     /posts?tag=<name> filter. Renders nothing for untagged posts."""
     tags = p.get("tags") or []
     if not tags:
@@ -379,7 +379,7 @@ def _tag_chips(p: dict) -> str:
         )
         chips.append(
             f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
-            f'style="background:{color};'
+            f'style="background:{color}22;'
             f"border:1px solid {color};"
             f'color:{text_color}"{title_attr}>'
             f"{esc(t['name'])}</a>"
@@ -458,10 +458,9 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         pass
     # cached per proposal id 60s like _governance (4714)
     pid = p.get("id")
-    now = time.monotonic() if isinstance(pid, int) else 0
-    cached = _STAKED_CACHE.get(pid) if isinstance(pid, int) else None
-    if cached is not None and (now - cached[0]) < _STAKED_TTL:
-        staked_parts = [cached[1]] if cached[1] else []
+    cached = _staked_cache.get(pid) if isinstance(pid, int) else None
+    if cached is not None:
+        staked_parts = [cached] if cached else []
     else:
         staked_parts = []
         if p.get("proposal_kind"):
@@ -475,7 +474,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
                 if staked_parts:
                     break
         if isinstance(pid, int):
-            _STAKED_CACHE[pid] = (now, " + ".join(staked_parts) if staked_parts else "")
+            _staked_cache.set(pid, " + ".join(staked_parts) if staked_parts else "")
     if staked_parts:
         parts.append(
             f'<span class="verdict-chip vc-ok" title="staked">'
