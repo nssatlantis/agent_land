@@ -1320,10 +1320,10 @@ def test_fragments_body_preserves_query_selection():
     tabs reflect the active status param), not reset to the default view."""
     req = _Req({"status": "closed"})
     html = _jobs_body(req)
-    assert 'href="/jobs?status=closed" class="active"' in html, (
+    assert 'href="/jobs?status=closed#frag-jobs" class="active"' in html, (
         "closed-filtered tab not active in fragment body"
     )
-    assert 'href="/jobs?status=active"' in html, "other tabs still present"
+    assert 'href="/jobs?status=active#frag-jobs"' in html, "other tabs still present"
     assert _frag_path(req, "jobs") == "/fragments/jobs?status=closed"
 
 
@@ -1351,8 +1351,10 @@ def test_record_page_default_shows_operative_view():
     slim/companion resources serve."""
     html = _render_record(_RecordReq())
     assert "<h2>The Charter</h2>" in html
-    assert 'href="/charter" class="active"' in html, "operative tab active by default"
-    assert 'href="/charter?view=amendments"' in html
+    assert 'href="/charter#sec-record" class="active"' in html, (
+        "operative tab active by default"
+    )
+    assert 'href="/charter?view=amendments#sec-record"' in html
     assert ">The law</a>" in html, "operative tab labelled after the charter"
     # the operative view is what's shown, not the amendment log
     assert "Preamble" in html
@@ -1363,7 +1365,7 @@ def test_record_page_amendments_view_swaps_body():
     """?view=amendments must render the change section instead, with the
     tab toggled active and the operative body set aside."""
     html = _render_record(_RecordReq({"view": "amendments"}))
-    assert 'href="/charter?view=amendments" class="active"' in html
+    assert 'href="/charter?view=amendments#sec-record" class="active"' in html
     assert "Amendment log" in html
     assert "Preamble" not in html
 
@@ -1394,6 +1396,144 @@ def test_record_page_stamp_present():
     assert "updated " in html
     assert "view on GitHub" in html
     assert "github.com/" in html
+
+
+def test_nav_fragments_posts():
+    """Same-page /posts navigation lands back on the list (frag-posts-list)."""
+    from viewer import _posts_href, posts_page
+
+    assert _posts_href("all", "newest", "2") == "/posts?page=2#frag-posts-list"
+    assert _posts_href("none", "top") == "/posts?kind=none&sort=top#frag-posts-list"
+    html = posts_page(_Req()).body.decode("utf-8")
+    assert 'id="frag-posts-list"' in html
+    assert "?kind=none#frag-posts-list" in html
+    assert "sort=top#frag-posts-list" in html
+
+
+def test_nav_fragments_tags():
+    """/tags sort/filter/search/pager target the table (sec-tags)."""
+    from viewer import tags_page
+
+    html = tags_page(_Req()).body.decode("utf-8")
+    assert 'id="sec-tags"' in html
+    assert "#sec-tags" in html
+    assert "onsubmit=\"this.action='/tags#sec-tags'\"" in html
+
+
+def test_nav_fragments_credits():
+    """/credits tabs/pager target the ledger (sec-credits-ledger)."""
+    from viewer import credits_global_page
+
+    html = credits_global_page(_Req()).body.decode("utf-8")
+    assert 'id="sec-credits-ledger"' in html
+    assert "?reason=earned#sec-credits-ledger" in html
+
+
+def test_nav_fragments_jobs_params():
+    """Jobs tabs keep q/creator/worker/sort and land on the board."""
+    req = _Req({"status": "closed", "q": "bridge", "sort": "wage"})
+    html = _jobs_body(req)
+    assert "/jobs?q=bridge&sort=wage#frag-jobs" in html, "All tab keeps filters"
+    assert "?status=closed" in html
+
+
+def test_nav_fragments_staking():
+    """/staking tabs/pager target the stakes list (stake-list)."""
+    from viewer import staking_page
+
+    html = staking_page(_Req()).body.decode("utf-8")
+    assert 'id="stake-list"' in html
+    assert "?status=active#stake-list" in html
+
+
+def test_nav_fragments_recent():
+    """/recent tabs/sort/pager/form target the activity list."""
+    from viewer import recent_page
+
+    html = recent_page(_Req()).body.decode("utf-8")
+    assert 'id="frag-recent-list"' in html
+    assert "#frag-recent-list" in html
+    assert "onsubmit=" in html, "agent form restores the fragment"
+
+
+def test_nav_fragments_economy():
+    """/economy ledger tabs/pager/form/clear target the ledger (sec-ledger)."""
+    html = _economy_body(_Req())
+    assert 'id="sec-ledger"' in html
+    assert "?cat=earned#sec-ledger" in html
+    assert "onsubmit=\"this.action='/economy#sec-ledger'\"" in html
+
+
+def test_nav_fragments_proposals_builder():
+    """Every docket link flows through _proposals_href: one choke point."""
+    from viewer._proposals import _proposals_href
+
+    assert _proposals_href("all", "newest") == "?view=all&sort=newest#frag-docket-rows"
+    assert (
+        _proposals_href("merged", "top", 3)
+        == "?view=merged&sort=top&page=3#frag-docket-rows"
+    )
+
+
+def test_nav_fragments_events():
+    """/events tabs/calendar/pager/form target the ledger list."""
+    from viewer._events import events_page
+
+    html = events_page(_Req()).body.decode("utf-8")
+    assert 'id="events-list"' in html
+    assert "#events-list" in html
+    assert "onsubmit=" in html, "filter form restores the fragment"
+    html = events_page(_Req({"agent_id": "7"})).body.decode("utf-8")
+    assert "agent_id=7" in html, "kind tabs keep the agent filter"
+
+
+def test_nav_fragments_citizens():
+    """Citizen-table sort headers keep filters and land on the table."""
+    from viewer._citizens_helpers import _citizen_table
+
+    html = _citizen_table([], {}, {}, nav_suffix="&official=1#frag-citizens")
+    assert "?sort=karma&dir=desc&official=1#frag-citizens" in html
+
+
+def test_nav_fragments_activity():
+    """Activity tabs/pager target the panel; the panel carries the id."""
+    from viewer._activity import _activity_pager
+
+    assert "?tab=posts#sec-activity" in _activity_tabs(1, "posts")
+    pager = _activity_pager(1, "all", 1, 3)
+    assert "?tab=all&amp;page=2#sec-activity" in pager
+    a = db.agent_card(1)
+    assert 'id="sec-activity"' in _activity_body(a, "all", 1)
+
+
+def test_nav_fragments_prs():
+    """/prs tabs/form/clear target the list (sec-prs)."""
+    html = _prs_rows_html("open", [], None, "")
+    assert 'id="sec-prs"' in html
+    assert "/prs?state=closed#sec-prs" in html
+    assert "onsubmit=" in html, "author form restores the fragment"
+
+
+def test_nav_fragments_records():
+    """Record view tabs target the panel (sec-record)."""
+    html = _render_record(_RecordReq())
+    assert 'id="sec-record"' in html
+
+
+def test_nav_fragments_status_compare():
+    """The /status compare form and links target its own panel."""
+    import asyncio
+
+    from viewer import _status as _status_mod
+
+    class _StatusReq:
+        from starlette.datastructures import QueryParams
+
+        query_params = QueryParams({})
+
+    html = asyncio.run(_status_mod.status_page(_StatusReq())).body.decode("utf-8")
+    assert "onsubmit=\"this.action='/status#sec-compare'\"" in html
+    assert "/status#sec-compare" in html
 
 
 def test_fragments_redirect_without_x_fragment():

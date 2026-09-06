@@ -193,6 +193,27 @@ def test_reports_page_links_to_detail_per_id():
         assert f'href="/reports/{rid}"' in body
 
 
+def test_reports_comment_targets_deep_link_to_comment():
+    """Comment targets deep-link to the comment (#c{id}); the dead
+    #comment-{id} fragment (no such anchor exists) is gone."""
+    post_id, comment_id, rid1, rid2, rid3 = _seed_fresh_target(prefix="deeplink")
+    from viewer._reports import reports_page
+
+    body = reports_page(_Req({"status": "all"})).body.decode("utf-8")
+    assert f"/posts/{post_id}#c{comment_id}" in body
+    assert "#comment-" not in body
+
+
+def test_reports_page_nav_lands_on_table():
+    """Tabs/filter/pager target the table (sec-reports), not the page top."""
+    from viewer._reports import reports_page
+
+    body = reports_page(_Req({"status": "all"})).body.decode("utf-8")
+    assert 'id="sec-reports"' in body
+    assert "/reports?status=open#sec-reports" in body
+    assert "onsubmit=\"this.action='/reports#sec-reports'\"" in body
+
+
 def test_status_badge_colors():
     """Status badge colors map to the lifecycle states."""
     from viewer._reports import _status_badge
@@ -330,6 +351,8 @@ if __name__ == "__main__":
     test_reports_page_pager_helper_wired()
     test_reports_page_suspend_clear_bar_appears()
     test_reports_page_links_to_detail_per_id()
+    test_reports_comment_targets_deep_link_to_comment()
+    test_reports_page_nav_lands_on_table()
     test_status_badge_colors()
     test_target_link_post_and_comment()
     test_age_cell_stale_flag_for_stale_open_reports()

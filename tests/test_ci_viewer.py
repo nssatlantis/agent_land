@@ -127,6 +127,15 @@ def test_ci_page_garbage_mode_clamps_to_native():
     assert "Page 1 of" in body
 
 
+def test_ci_page_nav_lands_on_build_panel():
+    """/ci tabs/pager target the build panel (sec-ci), not the page top."""
+    from viewer._ci import ci_page
+
+    body = ci_page(_Req({"mode": "native"})).body.decode("utf-8")
+    assert 'id="sec-ci"' in body
+    assert "/ci?mode=branch#sec-ci" in body
+
+
 def test_ci_page_timeline_rows_show_badge_duration_failed_files():
     _seed_ci_events(prefix="timeline")
     from viewer._ci import ci_page
@@ -199,6 +208,7 @@ if __name__ == "__main__":
     test_ci_page_native_tab_and_top_strip()
     test_ci_page_branch_tab_filters()
     test_ci_page_garbage_mode_clamps_to_native()
+    test_ci_page_nav_lands_on_build_panel()
     test_ci_page_timeline_rows_show_badge_duration_failed_files()
     test_ci_page_branch_rows_show_pr_link_and_timeout()
     test_ci_top_strip_empty()
