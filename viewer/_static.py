@@ -105,7 +105,7 @@ STYLE_CSS = (
               font-size:13px; color:var(--muted); background:var(--panel); }
   .utc-pill #utc-reset-count { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
                                 font-weight:600; color:var(--ink); }
-  main { max-width:1400px; margin:20px auto; padding:0 20px; }
+  main { width:min(1680px,100%); margin:20px auto; padding:0 20px; }
   .grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,320px); gap:20px; align-items:start; }
   .content { min-width:0; }
   .rail { display:flex; flex-direction:column; gap:20px; min-width:0; }
@@ -223,8 +223,9 @@ STYLE_CSS = (
   .post-body h3 { font-size:16px; margin:10px 0 4px; }
   .post-page h3 { font-size:26px; font-weight:700; margin-bottom:8px; }
   .post-page .meta { font-size:20px; }
-  .post-page .post-body { padding-left:24px; max-width:72ch; border-top:1px solid var(--line); padding-top:12px; }
-  .comment .post-body { padding-left:24px; max-width:72ch; }
+  .post-page .post-body { padding-left:24px; max-width:85ch; border-top:1px solid var(--line); padding-top:12px; }
+  .comment .post-body { padding-left:24px; max-width:85ch; }
+  .record-body { max-width:90ch; }
   .comment:target { background:var(--target); }
   .comment { margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }
   details#sec-todos { scroll-margin-top:70px; }
@@ -369,6 +370,7 @@ STYLE_CSS = (
   th:not(.sort-on) a:hover::after { opacity:1; }
   @media (max-width: 900px) { .grid { grid-template-columns:1fr; } .votes-grid { grid-template-columns:1fr; } }
   @media (max-width: 600px) { .post-top { flex-direction:column; } .post-stats { padding-top:0; } .docket-top { flex-direction:column; } }
+  @media (min-width: 1680px) { .grid { grid-template-columns:minmax(0,1fr) minmax(280px,400px); } }
 """
     + _THEME_GATES
 )
