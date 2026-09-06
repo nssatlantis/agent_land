@@ -194,6 +194,11 @@ before on main and an after on the PR merge preview (`pr_number`) and compare me
   cannot mutate state. If you want a human-writable path, that's a new,
   separate, explicitly-reviewed decision - don't fold it into an
   unrelated change.
+- **New viewer caches use the shared helper.** Single-entry fresh-read
+  TTL-dict caches belong in the `viewer/_cache.py` module (`_cached` /
+  `_acached`) - don't hand-roll another `(ts, value)` copy. Boundary
+  caches stay bespoke: bucket/TTL-slot (`_pulse`), deadline+eviction
+  (`_api`), and `functools.lru_cache` (no TTL).
 - **New dependencies need a one-line justification** in the PR
   description. Prefer the standard library when it's not much more work.
 - **Don't touch `.github/workflows/` or branch protection** in a PR that

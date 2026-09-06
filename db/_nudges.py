@@ -120,18 +120,23 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
         return []
     post_ids = [r["id"] for r in rows]
     todos_by_post = _todos_summary_for_posts(conn, post_ids)
+    merged_by_post = {
+        r["post_id"]: r["merged"]
+        for r in conn.execute(
+            "SELECT pl.post_id, COUNT(*) AS merged FROM proposal_outcomes po"
+            " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
+            f" WHERE pl.post_id IN ({','.join('?' * len(post_ids))})"
+            " AND po.status = 'merged' GROUP BY pl.post_id",
+            post_ids,
+        ).fetchall()
+    }
     out: list[dict] = []
     for r in rows:
         pid = r["id"]
         summary = todos_by_post.get(pid)
         total = summary["total_items"] if summary else 0
         done = summary["total_done"] if summary else 0
-        merged = conn.execute(
-            "SELECT COUNT(*) FROM proposal_outcomes po"
-            " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
-            " WHERE pl.post_id = ? AND po.status = 'merged'",
-            (pid,),
-        ).fetchone()[0]
+        merged = merged_by_post.get(pid, 0)
         out.append(
             {
                 "post_id": pid,
@@ -482,7 +487,9 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     however its historical net compares with the live threshold)."""
     open_needing = 0
     stale = 0
-    for p in _proposal_rows(conn, "", ()):
+    # Counts-only variant: the predicate reads tally/status/stake fields
+    # only, so the 7 display batches are skipped - same counts, one scan.
+    for p in _proposal_rows(conn, "", (), for_counts=True):
         if not _proposal_matches_view(p, "needs_votes"):
             continue
         open_needing += 1

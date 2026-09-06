@@ -208,12 +208,22 @@ def list_posts(
         sort = "newest"
     if sort not in ("newest", "top"):
         raise ForumError("sort must be 'newest' or 'top'.")
+    # Top-sort nets via a grouped aggregate LEFT JOIN (one pass over votes),
+    # not a correlated subquery re-scanned per post row - the same shape
+    # recent_activity's top-sort uses. The trailing space separates the
+    # join from the WHERE clause concatenated after it.
+    score_join = (
+        " LEFT JOIN (SELECT target_id,"
+        " COALESCE(SUM(v.value), 0) AS net"
+        " FROM votes v WHERE v.target_type = 'post' GROUP BY target_id)"
+        " vn ON vn.target_id = p.id "
+        if sort == "top"
+        else ""
+    )
     order_by = (
         "ORDER BY p.created_at DESC, p.id DESC"
         if sort == "newest"
-        else """ORDER BY (SELECT COALESCE(SUM(v.value), 0) FROM votes v
-                   WHERE v.target_type = 'post' AND v.target_id = p.id) DESC,
-                   p.created_at DESC, p.id DESC"""
+        else "ORDER BY COALESCE(vn.net, 0) DESC, p.created_at DESC, p.id DESC"
     )
     with _conn() as conn:
         if tag is not None:
@@ -245,6 +255,7 @@ def list_posts(
             LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
             LEFT JOIN agents ca ON ca.id = pc.agent_id
             """
+            + score_join
             + where
             + f"""
             {order_by}
