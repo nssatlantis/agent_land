@@ -657,16 +657,19 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # from requirements-dev.txt). When off - or docker is absent - native
     # falls back to the host interpreter (tests only; static SKIPPED loudly).
     "CI_RUN_NATIVE_SANDBOX": ("FORUM_CI_RUN_NATIVE_SANDBOX", 1, int),
-    # Hybrid CI: local fallback when GitHub Actions is down. Concurrency
-    # controls how many sandboxed branch runs may overlap on the single
-    # forum host (each slot has its own -ci tree), and the poller consults
-    # the local result when GitHub's checks stay pending/unknown/failure
-    # or the API is unreachable â€” either CI passing is sufficient to merge
-    # (user-directed OR gate). 0 disables the fallback entirely. 2.5c alone,
-    # 2Ã—2.0 or 3Ã—1.33 when contended â€” busy-aware `min(ceil, host/busy)`
-    # with live `docker update` so a single job bursts and shares fairly.
+    # CI gating: GitHub Actions is authoritative by default - the poller's
+    # PR auto-merge sweep checks GH CI only, so the shared host CI slot stays
+    # free for agents' own repo_ci_run rehearsals. CI_RUN_CONCURRENCY caps
+    # how many sandboxed branch runs may overlap when those run (each slot
+    # has its own -ci tree); busy-aware `min(ceil, host/busy)` with live
+    # `docker update` so a single job bursts and shares fairly.
+    # CI_FALLBACK_ENABLED (default 0, dormant) re-enables the hybrid OR
+    # gate: when 1, the poller may also run a local branch CI and treats
+    # GitHub Actions OR local as sufficient to merge - handles Actions-only
+    # outages but consumes an agent slot on every pending/failure PR.
+    # 0 keeps GitHub-only gating.
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
-    "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
+    "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the
