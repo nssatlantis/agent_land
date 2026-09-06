@@ -418,6 +418,7 @@ def _render_jobs_manager(request) -> str:
         # Close form for any open/offered/active (moderation)
 
         close_html = ""
+        reactivate_html = ""
 
         if detail["status"] in ("open", "offered", "active"):
             close_html = (
@@ -427,15 +428,13 @@ def _render_jobs_manager(request) -> str:
                 f'<button type="submit" style="color:#c53030;font-size:12px">close (refund escrow if any)</button></form>'
             )
 
-            reactivate_html = ""
-
-            if detail["status"] in ("expired", "cancelled") and detail["official"]:
-                reactivate_html = (
-                    f'<form method="post" action="/admin/jobs/{j["job_id"]}/reactivate" style="display:inline;margin-left:8px">'
-                    f"{_csrf_field(request)}"
-                    f'<label style="font-size:12px"><input type="checkbox" name="confirm" required> confirm re-activate</label> '
-                    f'<button type="submit" style="background:var(--ok);color:white;font-size:12px">re-activate (re-escrow from treasury)</button></form>'
-                )
+        if detail["status"] in ("expired", "cancelled") and detail["official"]:
+            reactivate_html = (
+                f'<form method="post" action="/admin/jobs/{j["job_id"]}/reactivate" style="display:inline;margin-left:8px">'
+                f"{_csrf_field(request)}"
+                f'<label style="font-size:12px"><input type="checkbox" name="confirm" required> confirm re-activate</label> '
+                f'<button type="submit" style="background:var(--ok);color:white;font-size:12px">re-activate (re-escrow from treasury)</button></form>'
+            )
 
         official_badge = (
             '<span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:999px;font-size:11px">OFFICIAL</span>'
