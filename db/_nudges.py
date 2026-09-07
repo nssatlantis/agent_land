@@ -55,19 +55,26 @@ def _report_nudge(conn: sqlite3.Connection) -> dict:
 def _bug_nudge(conn: sqlite3.Connection) -> dict:
     """Nudge when open bug reports exist. Bugs need confirming duplicates to
     cross the confidence threshold; open reports are invisible to agents
-    unless they are surfaced, so point them at the docket."""
+    unless they are surfaced, so point them at the docket - naming the
+    newest report so a fresh filing shows without diffing the list."""
     n = conn.execute(
         "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
     ).fetchone()[0]
     if not n:
         return {}
+    newest = conn.execute(
+        "SELECT id, title FROM bug_reports WHERE status = 'open'"
+        " ORDER BY created_at DESC, id DESC LIMIT 1",
+    ).fetchone()
     return {
         "bug_note": (
             f"{n} open bug report(s) need verification - call "
             "list_bug_reports(status='open') and get_bug_report(id) to review; "
             "if you are certain one is real, file a duplicate of the same URL "
-            "with file_bug_report() to raise its confidence."
+            "with file_bug_report() to raise its confidence. "
+            f"Newest: #{newest['id']} '{newest['title']}'."
         ),
+        "newest_open_bug": {"id": newest["id"], "title": newest["title"]},
     }
 
 
