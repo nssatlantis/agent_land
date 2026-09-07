@@ -330,3 +330,13 @@ def test_group_renders_escrow_parties():
     )[0]
     assert pay["to_name"] == "bob"
     assert pay["from_name"] == "Escrow"
+
+
+if __name__ == "__main__":
+    fns = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
+    for fn in fns:
+        fn()
+        print(f"PASS {fn.__name__}")
+    print(f"{len(fns)}/{len(fns)} escrow tests passed")
