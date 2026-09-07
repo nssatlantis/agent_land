@@ -227,7 +227,6 @@ def test_backfill_repairs_legacy_holding():
     assert _supply() == s_pre - 24, "the legacy shape destroyed supply"
     with db._conn(immediate=True) as c:
         c.execute("DELETE FROM economy_meta WHERE key = 'escrow_account_live'")
-
     res = db._economy.backfill_escrow_account()
     assert res["backfilled_quarters"] == 24 and res["jobs"] == 1
     assert _supply() == s_pre, "the repair restores destroyed supply"
