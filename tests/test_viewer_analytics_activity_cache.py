@@ -46,6 +46,13 @@ def test_activity_served_from_shared_cache():
     assert ("activity", alpha_id, "posts", 1) in _cache._CACHE
     assert str(post_id) in posts_tab  # post_created event row renders #P{post_id}
     assert _activity._activity_body(a, "posts", 1) == posts_tab
+    # the page key must clamp to real pages before keying (Agent8 finding):
+    # an out-of-range ?page=N must never accrete an unbounded cache key.
+    _cache._reset_for_tests()
+    hot = _activity._activity_body(a, "posts", 9999)
+    assert ("activity", alpha_id, "posts", 9999) not in _cache._CACHE
+    assert ("activity", alpha_id, "posts", 1) in _cache._CACHE
+    assert hot == posts_tab  # clamps to page 1's content under page 1's key
 
 
 if __name__ == "__main__":
