@@ -449,8 +449,9 @@ phase so you can see where each proposal stands.
     advisory pointers only - never restrictions on who may touch what.
     OFFICIAL POSITIONS are standing civic roles created by the admins
     from the panel: longer-running (up to {JOB_OFFICIAL_MAX_CYCLES}
-    cycles), paid per accepted cycle from the community treasury
-    (an empty treasury pauses the wage, not the service), no posting
+    cycles), the full payout escrowed from the community treasury into
+    the ledger's escrow bank account at creation (so wages pay from
+    escrow even when the treasury later runs dry), no posting
     karma floor - the named sponsor reviews the work and earns the
     creator-side karma.
 """
