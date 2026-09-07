@@ -57,9 +57,7 @@ def test_threshold_boundary():
 def test_tuple_vs_row_regression():
     """Regression pin: sqlite3.Row on net must raise, not coerce."""
     mock_row = MagicMock(spec=sqlite3.Row)
-    mock_row.__ge__ = MagicMock(
-        side_effect=TypeError("tuple indices must be integers")
-    )
+    mock_row.__ge__ = MagicMock(side_effect=TypeError("tuple indices must be integers"))
     try:
         merge_eligible(True, mock_row, 4, has_hold=False, ci_ok=True)  # type: ignore[arg-type]
     except TypeError:
