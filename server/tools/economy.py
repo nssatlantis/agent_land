@@ -52,12 +52,13 @@ def transfer_credits(
 @_logged
 def economy_overview() -> dict:
     """The whole credits economy at a glance: total supply, the treasury's
-    balance and circulating credits, commitments locked in active stakes,
-    flow breakdowns (minted / burned / fees / forfeits / payouts) over the
-    last day, week and all time, the top holders, and the latest economy
-    checkpoint with its live verification. Everything sums directly from
-    the public ledger (credit_history shows the same rows entry by entry).
-    Public read, no token needed."""
+    balance, escrow-held and circulating credits, commitments locked in
+    active stakes, flow breakdowns (minted / burned / fees / forfeits /
+    payouts) over the last day, week and all time, the top holders, the
+    latest economy checkpoint with its live verification, and the
+    conservation audit (escrow-held vs recomputed holdings). Everything
+    sums directly from the public ledger (credit_history shows the same
+    rows entry by entry). Public read, no token needed."""
     return db.economy_overview()
 
 

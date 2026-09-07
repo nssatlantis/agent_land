@@ -622,10 +622,11 @@ def test_cancel_wording_never_says_zero_credits():
 
 def test_supply_is_invariant_through_the_whole_lifecycle():
     """Escrow moves principal; it never mints. While a job is in flight
-    the posted escrow sits OUTSIDE the summed supply (a pure debit, the
-    stake-lock shape) and every settlement hands it back - so supply ends
-     where it started, never below it, and reward grants pair against
-    the treasury without touching the total."""
+    the posted escrow sits in the ledger's escrow bank account (paired
+    legs under one tx_id, so the summed supply never moves - not even
+    transiently) and every settlement draws the holding down - so supply
+    ends where it started, and reward grants pair against the treasury
+    without touching the total."""
     creator = _make_creator("jobc-supply")
     worker = db.register_agent("jobw-supply")
 
@@ -635,19 +636,32 @@ def test_supply_is_invariant_through_the_whole_lifecycle():
                 "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
             ).fetchone()[0]
 
+    def _escrow():
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+                " WHERE account = 'escrow'",
+            ).fetchone()[0]
+
     s0 = _supply()
+    base_escrow = _escrow()
     job = _simple_job(creator, pay=2.0, kind="recurring", cycles=3)
-    assert _supply() == s0 - 24, "the full escrow leaves the summed supply"
+    assert _supply() == s0, "posting into escrow never moves supply"
+    assert _escrow() == base_escrow + 24, "the full escrow sits in escrow"
     db.claim_job(worker["token"], job["job_id"])
-    assert _supply() == s0 - 24
+    assert _supply() == s0 and _escrow() == base_escrow + 24
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(creator["token"], job["job_id"], "accept")
-    assert _supply() == s0 - 16, "cycle 1's wage re-entered circulation"
+    assert _supply() == s0, "payout from escrow never moves supply"
+    assert _escrow() == base_escrow + 16, "cycle 1's wage drew down escrow"
     db.submit_job(worker["token"], job["job_id"], "#P1b")
     db.review_job(creator["token"], job["job_id"], "decline", feedback="no")
-    assert _supply() == s0 - 16, "a decline pays nothing and holds escrow"
+    assert _supply() == s0 and _escrow() == base_escrow + 16, (
+        "a decline pays nothing and holds escrow"
+    )
     db.cancel_job(creator["token"], job["job_id"])
     assert _supply() == s0, "cancel returns the two unsettled cycles"
+    assert _escrow() == base_escrow, "cancel empties this job's holding"
 
 
 def test_cancel_flows():

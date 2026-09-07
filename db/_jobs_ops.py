@@ -660,7 +660,7 @@ def _handle_taker_deposit(
             agent_id,
             half_escrow,
             "job_deposit_escrow",
-            dest_treasury=False,
+            dest_escrow=True,
             target_type="job",
             target_id=job_id,
             conn=conn,
@@ -764,6 +764,7 @@ def create_job(
             agent["id"],
             escrow_q,
             "job_escrow",
+            dest_escrow=True,
             target_type="job",
             target_id=job_id,
             conn=conn,
@@ -893,30 +894,13 @@ def create_job_official(
                     f"needs {_fmt_q(treasury_escrow_q)} but treasury has "
                     f"{_fmt_q(treasury_balance(conn))}."
                 )
-            from db._credits import _insert_entry
+            from db._credits import treasury_to_escrow
 
-            _insert_entry(
-                conn,
-                None,
-                "treasury",
-                -treasury_escrow_q,
+            treasury_to_escrow(
+                treasury_escrow_q,
                 "job_escrow_treasury",
-                "job",
-                job_id,
-            )
-            import events
-
-            events.log_event(
-                events.EVT_CREDIT_SPENT,
-                actor_agent_id=None,
                 target_type="job",
                 target_id=job_id,
-                detail={
-                    "reason": "job_escrow_treasury",
-                    "credits": _fmt_q(treasury_escrow_q),
-                    "delta_quarters": treasury_escrow_q,
-                    "official": True,
-                },
                 conn=conn,
             )
         log_event(
@@ -1484,8 +1468,6 @@ def _unhold_cycle_prs(cycle: sqlite3.Row) -> None:
 def _check_deposit_return(conn, job, cycle, worker_id) -> None:
     """Handle deposit return on final cycle when all PRs are merged, and
     official treasury escrow deduction."""
-    from db._credits import return_principal
-
     # Treasury escrow for official: deduct from treasury_escrow_quarters
     if job["official"]:
         if (
@@ -1516,7 +1498,9 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
             _half_treasury = (_deposit_q + 1) // 2
             _half_escrow = _deposit_q // 2
             if _half_escrow > 0:
-                return_principal(
+                from db._credits import release_escrow
+
+                release_escrow(
                     worker_id,
                     _half_escrow,
                     "job_deposit_return_escrow",
@@ -1546,38 +1530,26 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
 
 
 def _pay_worker(conn, job, worker_id) -> None:
-    """Pay the worker their cycle wage (official from escrow, citizen
-    from return_principal) and log the credit event."""
+    """Pay the worker their cycle wage from the escrow bank account
+    (release_escrow for both citizen and official legs) and log the
+    credit event. The agent leg keeps the exact legacy reason either
+    way; the matching escrow leg draws the holding down under the same
+    tx_id."""
     if job["official"]:
-        from db._credits import _insert_entry
+        from db._credits import release_escrow
 
-        _insert_entry(
-            conn,
+        release_escrow(
             worker_id,
-            "agent",
             job["payment_quarters"],
             "official_job_wage",
-            "job",
-            job["id"],
-        )
-        import events
-
-        events.log_event(
-            events.EVT_CREDIT_EARNED,
-            actor_agent_id=worker_id,
             target_type="job",
             target_id=job["id"],
-            detail={
-                "reason": "official_job_wage",
-                "credits": _fmt_q(job["payment_quarters"]),
-                "delta_quarters": job["payment_quarters"],
-            },
             conn=conn,
         )
     else:
-        from db._credits import return_principal
+        from db._credits import release_escrow
 
-        return_principal(
+        release_escrow(
             worker_id,
             job["payment_quarters"],
             "job_payout",
@@ -1638,6 +1610,21 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
                 quarters=_bonus,
             )
             return
+        # The pool's principal sits in the escrow account (it arrived via
+        # the deposit's escrow half): the grant above pays the worker from
+        # the treasury, so drain the pool's holding back to the treasury
+        # to replenish it - otherwise the bonus would fund twice and
+        # strand escrow. The grant seam stays (a refused grant keeps the
+        # pool AND the holding for a later retry).
+        from db._credits import escrow_to_treasury
+
+        escrow_to_treasury(
+            _bonus,
+            "job_bonus_pool_drain",
+            target_type="job",
+            target_id=job["id"],
+            conn=conn,
+        )
         conn.execute(
             "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
             (job["id"],),

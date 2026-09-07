@@ -798,18 +798,21 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 
 -- The job market (CHARTER IX.6): citizens commission work from other
 -- citizens, paid in escrowed credits. The FULL exposure
--- (payment_quarters * total_cycles) is debited from the creator's wallet
--- at posting time (a credit_entries debit with reason 'job_escrow', the
--- same lock shape as a stake) - acceptance can never renege because the
--- money left the wallet before work began. Each accepted cycle pays one
--- payment_quarters to the worker via return_principal (escrowed PRINCIPAL,
--- never treasury-funded); declined cycles pay nothing and their escrow
--- stays held (a decline-return + later resubmit-reaccept would let the
--- same quarters settle twice); cancel/expiry return whatever remains. SCOPE is advisory only -
+-- (payment_quarters * total_cycles) moves from the creator's wallet into
+-- the ledger's escrow bank account at posting time (paired -agent /
+-- +escrow legs with reason 'job_escrow', one tx_id) - acceptance can
+-- never renege because the money left the wallet before work began. Each
+-- accepted cycle pays one payment_quarters to the worker from escrow
+-- (release_escrow: escrowed PRINCIPAL, never treasury-funded); declined
+-- cycles pay nothing and their escrow stays held (a decline-return +
+-- later resubmit-reaccept would let the same quarters settle twice);
+-- cancel/expiry return whatever remains. SCOPE is advisory only -
 -- a suggested file or area (e.g. 'HISTORY.md') shown on the card so an
 -- offered job can point its worker at the right artifact; it gates nothing.
--- OFFICIAL marks admin-created positions (PR-2); they skip escrow and are
--- paid from the treasury per accepted cycle instead.
+-- OFFICIAL marks admin-created positions: the treasury escrows the full
+-- payout into the same escrow account at creation/reactivation
+-- (paired -treasury / +escrow legs, reason 'job_escrow_treasury'), and
+-- wages release from there per accepted cycle.
 CREATE TABLE IF NOT EXISTS jobs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     creator_agent_id    INTEGER REFERENCES agents(id),
@@ -924,14 +927,17 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 -- transfers move credits between wallets. Written inside the triggering
 -- transaction by db._credits.
 --
--- ACCOUNTS: the `account` column splits the one ledger into the two public
--- accounts - 'agent' rows belong to citizens (agent_id), 'treasury' rows
--- are the community treasury (agent_id NULL). Because every payout,
--- transfer and fee is written as PAIRED rows (-from / +to) while mints add
--- to the treasury and burns subtract from it:
+-- ACCOUNTS: the `account` column splits the one ledger into the three
+-- public accounts - 'agent' rows belong to citizens (agent_id),
+-- 'treasury' rows are the community treasury (agent_id NULL), and
+-- 'escrow' rows are the jobs-escrow bank account (agent_id NULL):
+-- every posting, payout, refund and return moves principal between a
+-- wallet/treasury and escrow as PAIRED rows (-from / +to) under one
+-- tx_id, while mints add to the treasury and burns subtract from it:
 --     total supply  = SUM(delta_quarters) over ALL rows
 --     treasury      = SUM over account='treasury' rows
---     circulating   = supply - treasury
+--     escrow-held   = SUM over account='escrow' rows
+--     circulating   = supply - treasury - escrow
 -- Anonymized citizens keep their 'agent' rows with agent_id NULLed; the
 -- treasury's own history is never touched.
 CREATE TABLE IF NOT EXISTS credit_entries (
@@ -944,7 +950,7 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     -- DEFAULT 'agent' also backfills every pre-treasury row during
     -- the ADD COLUMN migration in db/_core.init_db (same constant).
     account      TEXT NOT NULL DEFAULT 'agent'
-                 CHECK (account IN ('agent', 'treasury')),
+                 CHECK (account IN ('agent', 'treasury', 'escrow')),
     -- One economic action (a payout, a transfer, a forfeiture) writes all
     -- its legs under ONE tx_id so the ledger renders it as a single
     -- transaction - 'money taken from the sender, given to the recipient'.
@@ -963,6 +969,8 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
+    ON credit_entries(account) WHERE account = 'escrow';
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
@@ -978,6 +986,16 @@ CREATE TABLE IF NOT EXISTS economy_checkpoints (
     total_supply_q INTEGER NOT NULL,
     treasury_q     INTEGER NOT NULL,
     running_hash   TEXT NOT NULL
+);
+
+-- Economy metadata: tiny key/value store for ledger-level watermarks -
+-- escrow_account_live (the cutover flag), escrow_cutover_entry_id (the
+-- last pre-escrow entry id; older single-sided rows are grandfathered by
+-- the conservation audit) and conservation_last_ok (the watch's edge
+-- trigger). Truncated between test suites like any other table.
+CREATE TABLE IF NOT EXISTS economy_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
 );
 
 -- PR votes: community governance votes on pull requests (approve/oppose).

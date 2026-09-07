@@ -154,6 +154,7 @@ from db._drafts import (  # noqa: F401
 
 # ── the treasury economy (governance, checkpoints, overview) ──────────
 from db._economy import (  # noqa: F401
+    conservation_watch_tick,
     day_dt_to_iso,
     economy_admin_adjust,
     economy_overview,

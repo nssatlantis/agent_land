@@ -76,19 +76,39 @@ def test_overview_tracks_held_in_job_escrow_through_lifecycle():
     )
 
 
-def test_official_positions_hold_no_escrow():
+def test_official_positions_hold_ledger_escrow():
     sponsor = _make_creator("ejc-off")
+    worker = db.register_agent("ejw-off")
     base = _overview()["held_in_job_escrow_quarters"]
-    # Official now escrows full payout from treasury at creation (reserve)
-    # So held_in_job_escrow should increase by payment*cycles (but from treasury, not citizen)
-    # For this test, we check that citizen escrow doesn't increase, but treasury escrow does
-    # The overview's held_in_job_escrow currently tracks citizen escrow only, so it stays 0 for official
-    # (treasury escrow is tracked separately in economy overview)
-    db.create_job_official(
-        "m", sponsor["name"], "role", "d", 2.0, ["s"], kind="recurring", cycles=4
+    supply0 = _overview()["total_supply_quarters"]
+    # The treasury escrows the full payout into the ledger's escrow bank
+    # account at creation (paired legs): held rises, supply does not move.
+    job = db.create_job_official(
+        "m",
+        sponsor["name"],
+        "role",
+        "d",
+        2.0,
+        ["s"],
+        kind="recurring",
+        cycles=4,
+        offer_to=worker["name"],
     )
+    assert _overview()["held_in_job_escrow_quarters"] == base + 32, (
+        "official payout escrows into the ledger-held figure"
+    )
+    assert _overview()["total_supply_quarters"] == supply0, (
+        "escrowing moves principal between accounts, never supply"
+    )
+    db.accept_job_offer(worker["token"], job["job_id"])
+    db.submit_job(worker["token"], job["job_id"], "#P1")
+    db.review_job(sponsor["token"], job["job_id"], "accept")
+    assert _overview()["held_in_job_escrow_quarters"] == base + 24, (
+        "an accepted cycle draws the escrow holding down by its wage"
+    )
+    db.admin_cancel_job("maintainer", job["job_id"])
     assert _overview()["held_in_job_escrow_quarters"] == base, (
-        "official wages are treasury escrow, not citizen escrow — citizen held stays 0"
+        "cancel returns the official holding to the treasury - no leak"
     )
 
 

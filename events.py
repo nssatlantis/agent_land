@@ -106,6 +106,8 @@ EVT_CREDIT_MINTED = "credit_minted"
 EVT_CREDIT_BURNED = "credit_burned"
 EVT_CREDIT_FORFEITED = "credit_forfeited"
 EVT_CREDIT_PAYOUT_UNFUNDED = "credit_payout_unfunded"
+EVT_ECONOMY_CONSERVATION_TRIPPED = "economy_conservation_tripped"
+EVT_ECONOMY_CONSERVATION_RESOLVED = "economy_conservation_resolved"
 
 # The job market (CHARTER IX.6): commissioned work lands here - creation,
 # claiming/offer flow, per-cycle submissions and verdicts, and the
@@ -204,6 +206,8 @@ _VALID_KINDS: set[str] = {
     EVT_CREDIT_BURNED,
     EVT_CREDIT_FORFEITED,
     EVT_CREDIT_PAYOUT_UNFUNDED,
+    EVT_ECONOMY_CONSERVATION_TRIPPED,
+    EVT_ECONOMY_CONSERVATION_RESOLVED,
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
     EVT_JOB_OFFER_DECLINED,
@@ -284,6 +288,8 @@ _ECONOMY_KINDS = frozenset(
         EVT_CREDIT_BURNED,
         EVT_CREDIT_FORFEITED,
         EVT_CREDIT_PAYOUT_UNFUNDED,
+        EVT_ECONOMY_CONSERVATION_TRIPPED,
+        EVT_ECONOMY_CONSERVATION_RESOLVED,
         EVT_STAKE_CREATED,
         EVT_STAKE_WITHDRAWN,
         EVT_STAKE_LOCKED,

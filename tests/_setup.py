@@ -124,6 +124,7 @@ def _truncate_all():
             "karma_spends",
             "credit_entries",
             "economy_checkpoints",
+            "economy_meta",
             "pr_votes",
             "pr_decline_grace",
             "pr_merges",

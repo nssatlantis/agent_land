@@ -133,11 +133,11 @@ def test_accept_pays_wage_from_treasury_supply_neutral():
     # Wage 8q was already escrowed (56q at creation), now paid from escrow; JOB_CREDIT_CREDITS 1q each still from treasury
     assert _bal(worker["agent_id"]) == 8 + 1
     assert _bal(sponsor["agent_id"]) == 1
-    # After one accept of 7-cycle job: creation -56, rewards -2 (paired), wage from escrow +8 => supply -48
+    # After one accept of 7-cycle job: creation moves 56 treasury->escrow
+    # (supply-neutral), rewards -2 treasury (paired), wage pays from escrow
+    # (supply-neutral) => treasury -58, supply unchanged throughout.
     assert _treasury() == t0 - 58  # -56 escrow + -2 rewards
-    assert _supply() == s0 - 48, (
-        "escrowed wage held outside supply, +8 return on accept"
-    )
+    assert _supply() == s0, "escrow moves principal; supply never moves"
     with db._conn() as conn:
         kw = db._karma_parts(conn, worker["agent_id"])
         kc = db._karma_parts(conn, sponsor["agent_id"])

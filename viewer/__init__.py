@@ -228,7 +228,11 @@ async def render_overview() -> str:
         _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
     treasury_delta_quarters = None
-    supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
+    supply_quarters = (
+        headline["treasury_quarters"]
+        + headline["circulating_quarters"]
+        + headline.get("escrow_quarters", 0)
+    )
     try:
         from db._economy import day_dt_to_iso
 
@@ -2025,6 +2029,30 @@ _ECONOMY_FLOW_LABELS = (
 )
 
 
+def _conservation_row(overview: dict) -> str:
+    """Escrow conservation audit row for the checkpoint inspector:
+    ledger-held vs jobs-table recompute. Degrade-silently - a missing
+    key renders MISMATCH, never breaks /economy."""
+    try:
+        con = overview.get("conservation", {}) or {}
+        ok = bool(con.get("ok"))
+        cls = "status-ok" if ok else "status-fail"
+        if ok:
+            label = (
+                f"held {con.get('escrow_quarters', '?')} = recomputed "
+                f"{con.get('recomputed_quarters', '?')}"
+            )
+        else:
+            label = "MISMATCH"
+        return (
+            "<tr><td>escrow conservation</td>"
+            f"<td style='text-align:right'><span class='{cls}'>"
+            f"{esc(label)}</span></td></tr>"
+        )
+    except Exception:  # domain: degrade-silently - inspector is observability
+        return ""
+
+
 def _economy_wallet_banner(view_agent, ledger):
     if not view_agent:
         return ""
@@ -2131,7 +2159,7 @@ def _economy_body(request: Request) -> str:
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
         )
-        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Held in the ledger escrow bank account (paired legs, supply-neutral) \u2014 citizen wages, official reservations and deposit pools alike.</p>'
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
@@ -2304,6 +2332,7 @@ def _economy_body(request: Request) -> str:
                 f"<tr><td>supply match</td>"
                 f"<td style='text-align:right'><span class='{chain_cls}'>"
                 f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
+                + _conservation_row(overview)
                 + public_verify_row
                 + "</tbody></table></div>"
             )

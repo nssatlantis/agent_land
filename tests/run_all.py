@@ -176,6 +176,7 @@ def main():
 
     if failures:
         print(f"\nFAILED: {len(failures)} of {len(tests)} test files")
+        print("FAILED FILES: " + ", ".join(sorted(n for n, _ in failures)))
         sys.exit(1)
     print(f"\nall {len(tests)} test files passed")
 

@@ -542,22 +542,25 @@ def _fmt(quarters: int) -> str:
 
 
 def headline_balances() -> dict:
-    """The two numbers the overview page leads with: the treasury's
-    balance and total circulating supply (supply minus treasury). One
-    query - the treasury slice is a conditional SUM over the same scan -
-    no flows/holders work, cheap enough for a soft-refreshing
-    fragment."""
+    """The three numbers the overview page leads with: the treasury's
+    balance, the escrow bank account's holding, and total circulating
+    supply (supply minus treasury minus escrow). One query - the slices
+    are conditional SUMs over the same scan - no flows/holders work,
+    cheap enough for a soft-refreshing fragment."""
     with _conn() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(delta_quarters), 0),"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
+            " THEN delta_quarters ELSE 0 END), 0),"
+            " COALESCE(SUM(CASE WHEN account = 'escrow'"
             " THEN delta_quarters ELSE 0 END), 0)"
             " FROM credit_entries",
         ).fetchone()
-        supply_q, treasury_q = row[0], row[1]
+        supply_q, treasury_q, escrow_q = row[0], row[1], row[2]
     return {
         "treasury_quarters": treasury_q,
-        "circulating_quarters": supply_q - treasury_q,
+        "escrow_quarters": escrow_q,
+        "circulating_quarters": supply_q - treasury_q - escrow_q,
     }
 
 
@@ -584,17 +587,21 @@ def economy_overview() -> dict:
     commitments, credits held in job escrow, live job counts, treasury
     flow breakdown over three windows (job placement fees ride the
     spend-intake row; official wages and job rewards draw through the
-    payouts-out row), top holders, and the latest checkpoint with its
-    live verification."""
+    payouts-out row), top holders, the latest checkpoint with its live
+    verification, and the conservation audit (escrow-held vs recomputed
+    holdings, per-tx zero-sum)."""
     with _conn() as conn:
         now_dt = datetime.now(timezone.utc)
         totals = conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s,"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
-            " THEN delta_quarters ELSE 0 END), 0) AS t"
+            " THEN delta_quarters ELSE 0 END), 0) AS t,"
+            " COALESCE(SUM(CASE WHEN account = 'escrow'"
+            " THEN delta_quarters ELSE 0 END), 0) AS e"
             " FROM credit_entries"
         ).fetchone()
         treasury_q = totals["t"]
+        escrow_q = totals["e"]
         # Remaining commitment per active credit stake: everything not
         # yet paid out, escrowed locks INCLUDED (they can still pay a
         # future merge) and already-paid capacity excluded. Same formula
@@ -604,16 +611,15 @@ def economy_overview() -> dict:
             " FROM proposal_stakes"
             " WHERE currency = 'credits' AND status = 'active'"
         ).fetchone()[0]
-        # Credits currently held OUTSIDE the summed supply as job escrow
-        # (posting is a pure debit - the wage x unsettled cycles of every
-        # live citizen job). Without this card, an open job market makes
-        # 'total supply' dip with no visible explanation. Officials hold
-        # no escrow: their future wages are treasury income obligations,
-        # not held principal, so they stay out of this figure.
+        # Credits held IN the ledger's escrow bank account as job escrow:
+        # every posting, payout, refund and return moves principal through
+        # escrow as paired legs, so the summed supply never moves and this
+        # card reads the holding straight off the ledger - citizen wage x
+        # unsettled cycles, official treasury reservations and
+        # taker-deposit bonus pools alike.
         job_escrow = conn.execute(
-            "SELECT COALESCE(SUM(payment_quarters *"
-            " (total_cycles - cycles_done)), 0) FROM jobs"
-            " WHERE official = 0 AND status IN ('open', 'offered', 'active')",
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'escrow'",
         ).fetchone()[0]
         from db._jobs import open_active_job_counts
 
@@ -727,12 +733,13 @@ def economy_overview() -> dict:
             "total_supply_credits": _fmt(supply_q),
             "treasury_quarters": treasury_q,
             "treasury_credits": _fmt(treasury_q),
-            "circulating_quarters": supply_q - treasury_q,
-            "circulating_credits": _fmt(supply_q - treasury_q),
+            "circulating_quarters": supply_q - treasury_q - escrow_q,
+            "circulating_credits": _fmt(supply_q - treasury_q - escrow_q),
             "committed_to_active_stakes_quarters": committed,
             "committed_to_active_stakes_credits": _fmt(committed),
             "held_in_job_escrow_quarters": job_escrow,
             "held_in_job_escrow_credits": _fmt(job_escrow),
+            "conservation": verify_conservation(conn),
             "open_jobs": jobs_open,
             "active_jobs": jobs_engaged,
             "flows": windows,
@@ -749,3 +756,263 @@ def economy_overview() -> dict:
                 "checkpoint_seconds": config.ECONOMY_CHECKPOINT_SECONDS,
             },
         }
+
+
+# -- conservation audit (the escrow bank account's invariant) ------------
+
+_ESCROW_BACKFILL_SUFFIX = "_backfill"
+
+
+def _escrow_cutover_id(conn: sqlite3.Connection) -> int:
+    """The last pre-escrow entry id: rows at or below it are grandfathered
+    by the conservation audit (single-sided escrow debits from before the
+    bank account existed). 0 when the cutover was never recorded (a fresh
+    database whose whole history is paired)."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM economy_meta WHERE key = 'escrow_cutover_entry_id'"
+        ).fetchone()
+    except Exception:  # domain: degrade-silently - no meta table yet
+        return 0
+    if row is None:
+        return 0
+    try:
+        return max(0, int(row[0]))
+    except (TypeError, ValueError):  # domain: degrade-silently - corrupt watermark
+        return 0
+
+
+def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
+    """Recompute what the escrow bank account SHOULD hold from the jobs
+    table (the independent counterweight to the ledger sum): citizen wage
+    x unsettled cycles on live jobs, official treasury reservations on
+    live positions, and taker-deposit bonus pools on live jobs."""
+    live = "status IN ('open', 'offered', 'active')"
+    citizen = conn.execute(
+        "SELECT COALESCE(SUM(payment_quarters *"
+        f" (total_cycles - cycles_done)), 0) FROM jobs WHERE official = 0 AND {live}",
+    ).fetchone()[0]
+    official = conn.execute(
+        "SELECT COALESCE(SUM(treasury_escrow_quarters), 0) FROM jobs"
+        f" WHERE official = 1 AND {live}",
+    ).fetchone()[0]
+    pools = conn.execute(
+        f"SELECT COALESCE(SUM(deposit_bonus_quarters), 0) FROM jobs WHERE {live}",
+    ).fetchone()[0]
+    return int(citizen) + int(official) + int(pools)
+
+
+def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
+    cutover = _escrow_cutover_id(c)
+    escrow_q = c.execute(
+        "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+        " WHERE account = 'escrow'"
+    ).fetchone()[0]
+    recomputed = _live_escrow_holdings(c)
+    # Rule A: per-tx zero-sum over post-cutover escrow-touching txs -
+    # every escrow move is paired legs under one tx_id, so each such tx
+    # must net to zero across ALL its legs (summing escrow legs alone
+    # can never be zero: every helper writes exactly one escrow leg per
+    # tx). A '*_backfill' repair leg is single-sided BY DESIGN (it
+    # re-creates principal a pre-cutover debit destroyed) and is exempt
+    # when every leg of its tx is a backfill leg.
+    tx_sums = c.execute(
+        "SELECT tx_id, COALESCE(SUM(delta_quarters), 0) AS s"
+        " FROM credit_entries WHERE tx_id IN (SELECT tx_id FROM credit_entries"
+        " WHERE account = 'escrow' AND id > ? AND tx_id IS NOT NULL)"
+        " GROUP BY tx_id",
+        (cutover,),
+    ).fetchall()
+    tx_violations = [r["tx_id"] for r in tx_sums if r["s"] != 0]
+    if tx_violations:
+        reasons = c.execute(
+            "SELECT tx_id, reason FROM credit_entries WHERE tx_id IN"
+            f" ({','.join('?' * len(tx_violations))})",
+            tuple(tx_violations),
+        ).fetchall()
+        by_tx: dict[int, list[str]] = {}
+        for r in reasons:
+            by_tx.setdefault(r["tx_id"], []).append(r["reason"])
+        tx_violations = [
+            t
+            for t in tx_violations
+            if not all(
+                (x or "").endswith(_ESCROW_BACKFILL_SUFFIX) for x in by_tx.get(t, [])
+            )
+        ]
+    # Rule C: no bare (NULL-tx) escrow rows past the cutover - every new
+    # escrow leg belongs to a tx; legacy single-sided rows sit at or
+    # below the cutover by construction.
+    null_tx_rows = c.execute(
+        "SELECT COUNT(*) FROM credit_entries WHERE account = 'escrow'"
+        " AND id > ? AND tx_id IS NULL",
+        (cutover,),
+    ).fetchone()[0]
+    # Rule B: the ledger sum equals the jobs-table recompute.
+    ok = not tx_violations and null_tx_rows == 0 and escrow_q == recomputed
+    return {
+        "ok": ok,
+        "escrow_quarters": escrow_q,
+        "recomputed_quarters": recomputed,
+        "tx_violations": tx_violations,
+        "null_tx_rows": null_tx_rows,
+        "cutover_entry_id": cutover,
+    }
+
+
+def verify_conservation(conn: sqlite3.Connection | None = None) -> dict:
+    """Audit the escrow bank account (Rule A: post-cutover escrow txs sum
+    to zero; Rule B: escrow balance equals the jobs-table recompute;
+    Rule C: no bare NULL-tx escrow rows past the cutover). Total
+    function: never raises - a weird ledger reports failure, it never
+    breaks /economy or any money path."""
+    try:
+        with _conn() if conn is None else nullcontext(conn) as c:
+            return _verify_conservation_inner(c)
+    except Exception as exc:  # domain: degrade-silently - audit never breaks callers
+        return {
+            "ok": False,
+            "error": str(exc),
+            "escrow_quarters": 0,
+            "recomputed_quarters": 0,
+            "tx_violations": [],
+            "null_tx_rows": 0,
+            "cutover_entry_id": 0,
+        }
+
+
+def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
+    """One-time repair: write one '+escrow' counter-leg per live job
+    holding that predates the bank account (single-sided debits the old
+    code destroyed). Only the UNPAIRED remainder is written (legacy
+    holdings have no escrow legs at all, so the remainder is the whole
+    holding). Each leg gets its own tx_id and a 'job_escrow_backfill'
+    reason so the audit exempts it from Rule A by design. Idempotent via
+    economy_meta.escrow_account_live: a second run writes nothing. Supply
+    RISES by the restored total - that is the repair (the old debit had
+    wrongly shrunk it); circulating does not move."""
+    from db._credits import _insert_entry, _new_tx_id
+
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        try:
+            live = c.execute(
+                "SELECT value FROM economy_meta WHERE key = 'escrow_account_live'"
+            ).fetchone()
+        except Exception:  # domain: economy-migration - no meta table yet
+            live = None
+        if live is not None and live[0] == "1":
+            return {"backfilled_quarters": 0, "jobs": 0, "already_live": True}
+        max_id = c.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
+        ).fetchone()[0]
+        rows = c.execute(
+            "SELECT id, official, payment_quarters, total_cycles, cycles_done,"
+            " COALESCE(treasury_escrow_quarters, 0) AS teq,"
+            " COALESCE(deposit_bonus_quarters, 0) AS pool"
+            " FROM jobs WHERE status IN ('open', 'offered', 'active')"
+        ).fetchall()
+        total = 0
+        jobs = 0
+        for r in rows:
+            if r["official"]:
+                holding = int(r["teq"])
+            else:
+                holding = int(r["payment_quarters"]) * max(
+                    0, int(r["total_cycles"]) - int(r["cycles_done"])
+                )
+            holding += int(r["pool"])
+            # Only the UNPAIRED remainder needs a repair leg: escrow legs
+            # already on the ledger for this job (paired intakes minus
+            # releases, all stamped with this job as target) cover part
+            # or all of it. Legacy holdings have no escrow legs at all.
+            paired = c.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+                " WHERE account = 'escrow' AND target_type = 'job'"
+                " AND target_id = ?",
+                (r["id"],),
+            ).fetchone()[0]
+            holding -= int(paired)
+            if holding <= 0:
+                continue
+            tx_id = _new_tx_id(c)
+            _insert_entry(
+                c,
+                None,
+                "escrow",
+                holding,
+                "job_escrow_backfill",
+                "job",
+                r["id"],
+                tx_id=tx_id,
+            )
+            total += holding
+            jobs += 1
+        c.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('escrow_account_live', '1')"
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            f" ('escrow_cutover_entry_id', '{int(max_id)}')"
+        )
+        return {"backfilled_quarters": total, "jobs": jobs, "already_live": False}
+
+
+def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
+    """Poller hook: edge-triggered conservation alerting. Compares the
+    live audit against economy_meta.conservation_last_ok and logs
+    economy_conservation_tripped on ok->fail, economy_conservation_resolved
+    on fail->ok (a first observation just records). Loud, never
+    load-bearing: failures degrade to a log line, the money paths never
+    gate on this."""
+    try:
+        with _conn() if conn is None else nullcontext(conn) as c:
+            result = _verify_conservation_inner(c)
+            try:
+                row = c.execute(
+                    "SELECT value FROM economy_meta WHERE key = 'conservation_last_ok'"
+                ).fetchone()
+            except Exception:  # domain: degrade-silently - no meta table yet
+                row = None
+            last = row[0] if row else None
+            now = "1" if result["ok"] else "0"
+            if last is None or last == now:
+                c.execute(
+                    "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+                    " ('conservation_last_ok', ?)",
+                    (now,),
+                )
+                return {**result, "event": None}
+            import events
+
+            kind = (
+                events.EVT_ECONOMY_CONSERVATION_RESOLVED
+                if result["ok"]
+                else events.EVT_ECONOMY_CONSERVATION_TRIPPED
+            )
+            events.log_event(
+                kind,
+                actor_agent_id=None,
+                target_type="economy",
+                target_id=None,
+                detail={
+                    "escrow_quarters": result["escrow_quarters"],
+                    "recomputed_quarters": result["recomputed_quarters"],
+                    "tx_violations": result["tx_violations"],
+                    "null_tx_rows": result["null_tx_rows"],
+                },
+                conn=c,
+            )
+            c.execute(
+                "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+                " ('conservation_last_ok', ?)",
+                (now,),
+            )
+            return {**result, "event": kind}
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - watch never breaks a poll tick
+        import logutil
+
+        logutil.log("economy_conservation_watch_failed", error=str(exc))
+        return {"ok": False, "event": None, "error": str(exc)}

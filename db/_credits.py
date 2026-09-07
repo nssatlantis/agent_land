@@ -24,15 +24,18 @@ economic action lands in the events ledger under its own category
 traceability.
 
 ACCOUNTS (the treasury economy): the `account` column splits the one
-append-only ledger into 'agent' rows (citizen wallets) and 'treasury'
-rows (the community treasury, agent_id NULL).  Every payout, transfer,
-fee and forfeiture is written as PAIRED single-entry legs (-from / +to),
-while mints add to and burns subtract from the treasury - so at any
-moment:
+append-only ledger into 'agent' rows (citizen wallets), 'treasury' rows
+(the community treasury, agent_id NULL) and 'escrow' rows (the
+jobs-escrow bank account, agent_id NULL).  Every payout, transfer, fee
+and forfeiture is written as PAIRED single-entry legs (-from / +to),
+and every jobs-escrow move pairs a wallet/treasury leg with an escrow
+leg under one tx_id - while mints add to and burns subtract from the
+treasury - so at any moment:
 
     total supply = SUM(delta_quarters) over ALL rows
     treasury     = SUM over account='treasury' rows
-    circulating  = supply - treasury
+    escrow-held  = SUM over account='escrow' rows
+    circulating  = supply - treasury - escrow
 
 When TREASURY_FUNDS_PAYOUTS is on, earnings are paid OUT of the treasury
 (never minted from nothing); an empty treasury skips the payout and logs
@@ -458,6 +461,7 @@ def spend(
     reason: str,
     *,
     dest_treasury: bool = False,
+    dest_escrow: bool = False,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
@@ -469,9 +473,14 @@ def spend(
 
     dest_treasury=True (tag costs) recycles the spent amount INTO the
     community treasury instead of destroying it - a paired -agent /
-    +treasury write inside the same transaction.  Stake locks keep
-    dest_treasury=False: their credits are merely locked, refunded later,
-    so no second row exists until the refund pays out.
+    +treasury write inside the same transaction.  dest_escrow=True (job
+    postings, taker-deposit escrow halves) parks the amount in the
+    ledger's escrow bank account instead - a paired -agent / +escrow
+    write (the escrow leg takes reason + "_held") under the same tx_id,
+    so the summed supply never moves.  The two destinations are mutually
+    exclusive.  Stake locks keep both False: their credits are merely
+    locked, refunded later, so no second row exists until the refund
+    pays out.
 
     The CREDITS_ENABLED master switch gates spends too: with credits
     disabled a spend is refused loudly rather than debiting a valuta
@@ -484,6 +493,8 @@ def spend(
         return False
     if amount_quarters < 0:
         raise ForumError("credit amounts must be positive.")
+    if dest_treasury and dest_escrow:
+        raise ForumError("spend takes at most one destination.")
     # BEGIN IMMEDIATE: the balance check and its debit form one atomic
     # step - a concurrent spend can't both pass the check and overspend
     # the wallet (review 4426).
@@ -517,6 +528,17 @@ def spend(
                 target_id,
                 tx_id=tx_id,
             )
+        if dest_escrow:
+            _insert_entry(
+                c,
+                None,
+                "escrow",
+                amount_quarters,
+                f"{reason}_held",
+                target_type,
+                target_id,
+                tx_id=tx_id,
+            )
         import events
 
         detail: dict[str, object] = {
@@ -526,6 +548,8 @@ def spend(
         }
         if dest_treasury:
             detail["to"] = "treasury"
+        if dest_escrow:
+            detail["to"] = "escrow"
         events.log_event(
             events.EVT_CREDIT_SPENT,
             actor_agent_id=agent_id,
@@ -605,6 +629,173 @@ def refund(
         target_id=target_id,
         conn=conn,
     )
+
+
+def release_escrow(
+    agent_id: int,
+    amount_quarters: int,
+    reason: str,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Pay OUT of the escrow bank account to a citizen: job wages,
+    escrow refunds and deposit returns whose matching intake was paired
+    into escrow when the holding was taken. The agent leg keeps the
+    EXACT legacy reason (today's return_principal callers pass theirs
+    through unchanged); the escrow leg takes reason + "_release". Both
+    legs share one tx_id, so supply never moves - the holding simply
+    changes accounts. Like return_principal, exempt from CREDITS_ENABLED:
+    escrowed principal must always be able to settle."""
+    if amount_quarters == 0:
+        return False
+    with _conn() if conn is None else nullcontext(conn) as c:
+        tx_id = _new_tx_id(c)
+        _insert_entry(
+            c,
+            agent_id,
+            "agent",
+            amount_quarters,
+            reason,
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        _insert_entry(
+            c,
+            None,
+            "escrow",
+            -amount_quarters,
+            f"{reason}_release",
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        import events
+
+        events.log_event(
+            events.EVT_CREDIT_EARNED,
+            actor_agent_id=agent_id,
+            target_type=target_type or "credit",
+            target_id=target_id,
+            detail={
+                "reason": reason,
+                "credits": format_credits(amount_quarters),
+                "delta_quarters": amount_quarters,
+                "escrow_release": True,
+            },
+            conn=c,
+        )
+    return True
+
+
+def treasury_to_escrow(
+    amount_quarters: int,
+    reason: str,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Move principal from the treasury into the escrow bank account:
+    official-position postings and re-activations. The treasury leg keeps
+    the EXACT legacy reason ('job_escrow_treasury'); the escrow leg takes
+    reason + "_held". Paired under one tx_id - supply never moves."""
+    if amount_quarters == 0:
+        return False
+    with _conn() if conn is None else nullcontext(conn) as c:
+        tx_id = _new_tx_id(c)
+        _insert_entry(
+            c,
+            None,
+            "treasury",
+            -amount_quarters,
+            reason,
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        _insert_entry(
+            c,
+            None,
+            "escrow",
+            amount_quarters,
+            f"{reason}_held",
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        import events
+
+        events.log_event(
+            events.EVT_CREDIT_SPENT,
+            actor_agent_id=None,
+            target_type=target_type or "credit",
+            target_id=target_id,
+            detail={
+                "reason": reason,
+                "credits": format_credits(amount_quarters),
+                "delta_quarters": amount_quarters,
+                "to": "escrow",
+            },
+            conn=c,
+        )
+    return True
+
+
+def escrow_to_treasury(
+    amount_quarters: int,
+    reason: str,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Move principal from the escrow bank account back to the treasury:
+    official-position cancellations/expiries and stranded deposit-bonus
+    pool drains. The treasury leg keeps the EXACT legacy reason; the
+    escrow leg takes reason + "_release". Paired under one tx_id."""
+    if amount_quarters == 0:
+        return False
+    with _conn() if conn is None else nullcontext(conn) as c:
+        tx_id = _new_tx_id(c)
+        _insert_entry(
+            c,
+            None,
+            "escrow",
+            -amount_quarters,
+            f"{reason}_release",
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        _insert_entry(
+            c,
+            None,
+            "treasury",
+            amount_quarters,
+            reason,
+            target_type,
+            target_id,
+            tx_id=tx_id,
+        )
+        import events
+
+        events.log_event(
+            events.EVT_CREDIT_EARNED,
+            actor_agent_id=None,
+            target_type=target_type or "credit",
+            target_id=target_id,
+            detail={
+                "reason": reason,
+                "credits": format_credits(amount_quarters),
+                "delta_quarters": amount_quarters,
+                "escrow_return": True,
+            },
+            conn=c,
+        )
+    return True
 
 
 # -- treasury operations (executed by db._economy's governance gate) -----
@@ -1342,12 +1533,15 @@ def _group_one_transaction(legs: list[dict]) -> dict:
 
 
 def _leg_party(leg: dict | None) -> str | None:
-    """The display name of a ledger leg's account: the citizen's name, or
-    'Treasury' for the community account."""
+    """The display name of a ledger leg's account: the citizen's name,
+    'Treasury' for the community account, or 'Escrow' for the
+    jobs-escrow bank account."""
     if leg is None:
         return None
     if leg["account"] == "treasury":
         return "Treasury"
+    if leg["account"] == "escrow":
+        return "Escrow"
     return leg.get("agent_name") or "(deleted citizen)"
 
 
