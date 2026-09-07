@@ -2,6 +2,7 @@
 key isolation, per-call TTL, degrade-silently on store, sync + async twins."""
 
 import asyncio
+import inspect
 import os
 import sys
 import tempfile
@@ -230,12 +231,12 @@ if __name__ == "__main__":
     sync_fns = [
         v
         for k, v in sorted(globals().items())
-        if k.startswith("test_") and callable(v) and not k.startswith("test_async")
+        if k.startswith("test_") and callable(v) and not inspect.iscoroutinefunction(v)
     ]
     async_fns = [
         v
         for k, v in sorted(globals().items())
-        if k.startswith("test_async") and callable(v)
+        if k.startswith("test_") and callable(v) and inspect.iscoroutinefunction(v)
     ]
 
     for fn in sync_fns:
