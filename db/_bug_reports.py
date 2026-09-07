@@ -93,6 +93,7 @@ def file_bug_report(
 
             # Auto-confirm if threshold reached
             threshold = config.BUG_CONFIDENCE_THRESHOLD
+            crossed = False
             if threshold > 0 and new_confidence >= threshold:
                 now_iso = _now_iso()
                 cur = conn.execute(
@@ -101,6 +102,7 @@ def file_bug_report(
                     (now_iso, orig_id),
                 )
                 if cur.rowcount == 1:
+                    crossed = True
                     # The open -> confirmed crossing used to be silent:
                     # stamp decided_at + the confirm event (same side effects
                     # as admin confirm) and tell the filers their report is
@@ -135,6 +137,8 @@ def file_bug_report(
                             f"your duplicate raised confidence to "
                             f"{new_confidence}.",
                         )
+                    # Duplicates (this one included) retire with the parent.
+                    _retire_duplicates(conn, orig_id, "confirmed", now_iso)
 
             log_event(
                 EVT_BUG_REPORTED,
@@ -155,7 +159,7 @@ def file_bug_report(
                 "title": title,
                 "body": body,
                 "url": url,
-                "status": "open",
+                "status": "confirmed" if crossed else "open",
                 "confidence": 1,
                 "duplicate_of": orig_id,
                 "new_confidence": new_confidence,
@@ -347,10 +351,12 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
             raise ForumError(f"Bug report #{report_id} not found.")
         if row["status"] != "open":
             raise ForumError(f"Bug report #{report_id} is already {row['status']}.")
+        now_iso = _now_iso()
         conn.execute(
             "UPDATE bug_reports SET status = 'confirmed', decided_at = ? WHERE id = ?",
-            (_now_iso(), report_id),
+            (now_iso, report_id),
         )
+        _retire_duplicates(conn, report_id, "confirmed", now_iso)
         log_event(
             EVT_BUG_CONFIRMED,
             target_type="bug_report",
@@ -381,6 +387,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             "UPDATE bug_reports SET status = 'fixed', decided_at = ? WHERE id = ?",
             (now, report_id),
         )
+        _retire_duplicates(conn, report_id, "fixed", now)
         reporter_id = row["agent_id"]
         if karma and reporter_id:
             conn.execute(
@@ -408,6 +415,48 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
 
         _audit(conn, admin, "fix_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "fixed"}
+
+
+def _retire_duplicates(
+    conn: sqlite3.Connection, orig_id: int, status: str, decided_at: str
+) -> int:
+    """Retire every open duplicate row of orig_id to the parent's status.
+
+    Duplicates are evidence, not independent bugs: once the original is
+    confirmed or fixed their lifecycle is over. Inheriting the parent's
+    status (never a new value) keeps every status consumer - list filters,
+    open counts, /bugs - correct with no other changes. Idempotent: only
+    open rows move, so re-runs and the boot sweep are safe.
+    """
+    cur = conn.execute(
+        "UPDATE bug_reports SET status = ?, decided_at = ?"
+        " WHERE id IN (SELECT duplicate_id FROM bug_report_duplicates"
+        " WHERE original_id = ?) AND status = 'open'",
+        (status, decided_at, orig_id),
+    )
+    return cur.rowcount
+
+
+def sweep_retire_duplicates(conn: sqlite3.Connection) -> int:
+    """Hygiene sweep: retire open duplicate rows whose original already
+    resolved (confirmed or fixed) - the pre-helper dead letters. Inherits
+    each parent's status and decided_at (now when the parent lacks one).
+    Idempotent: only open rows with a resolved parent move.
+    """
+    rows = conn.execute(
+        "SELECT d.id, p.status, p.decided_at FROM bug_reports d"
+        " JOIN bug_report_duplicates brd ON brd.duplicate_id = d.id"
+        " JOIN bug_reports p ON p.id = brd.original_id"
+        " WHERE p.status != 'open' AND d.status = 'open'"
+    ).fetchall()
+    retired = 0
+    for r in rows:
+        conn.execute(
+            "UPDATE bug_reports SET status = ?, decided_at = ? WHERE id = ?",
+            (r["status"], r["decided_at"] or _now_iso(), r["id"]),
+        )
+        retired += 1
+    return retired
 
 
 def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
@@ -441,4 +490,5 @@ def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
             target_id=row["id"],
             conn=conn,
         )
+        _retire_duplicates(conn, row["id"], "confirmed", now_iso)
     return confirmed
