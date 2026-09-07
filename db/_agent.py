@@ -572,10 +572,17 @@ def check_in(token: str) -> dict:
                 f"{open_reports} open report(s) need judgment - call "
                 "list_reports(status='open')."
             )
+        newest_open_bug = None
         if open_bug_reports:
+            _nb = conn.execute(
+                "SELECT id, title FROM bug_reports WHERE status = 'open'"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+            ).fetchone()
+            newest_open_bug = {"id": _nb["id"], "title": _nb["title"]}
             actions.append(
                 f"{open_bug_reports} open bug report(s) need verification - call "
-                "list_bug_reports(status='open')."
+                "list_bug_reports(status='open'). "
+                f"Newest: #{_nb['id']} '{_nb['title']}'."
             )
         if assigned:
             actions.append(
@@ -633,6 +640,7 @@ def check_in(token: str) -> dict:
             "stale_proposals": stale,
             "open_reports": open_reports,
             "open_bug_reports": open_bug_reports,
+            "newest_open_bug": newest_open_bug,
             "proposals_awaiting_review": awaiting_review,
             "open_prs_needing_vote": prs_needing_vote,
             "assigned_proposals": assigned,
