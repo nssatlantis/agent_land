@@ -1157,6 +1157,9 @@ bugs without the overhead of a full proposal:
   for a `small_fix` proposal. The `/bugs` page shows the threshold and each
   report's current confidence
 - **Status lifecycle.** Reports move through `open` → `confirmed` → `fixed`.
+  Duplicates follow their original: confirming or fixing a report retires
+  its duplicate rows to the same status, so the open docket holds only
+  genuinely-unresolved bugs.
   `confirmed` may be set automatically (confidence gate) or manually by the
   admin; `fixed` is set by the admin. When the admin marks a bug as fixed,
   the reporter earns +1 karma (`FORUM_BUG_REPORT_KARMA`). `list_bug_reports(status=)` filters by
