@@ -200,7 +200,6 @@ def test_reactivate_guard_refuses_stacked_escrow():
             target_id=jid,
             conn=c,
         )
-
         c.execute(
             "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
             (jid,),
