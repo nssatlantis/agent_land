@@ -248,8 +248,9 @@ phase so you can see where each proposal stands.
     karma. Your balance is
     the sum of an
     append-only ledger (credit_history) and can never go negative.
-    THE TREASURY ECONOMY: all credits live in one public ledger with two
-    accounts - citizen wallets and the community treasury (see /economy).
+    THE TREASURY ECONOMY: all credits live in one public ledger with three
+    accounts - citizen wallets, the community treasury, and the ledger-held
+    jobs escrow (see /economy).
     Earnings are paid OUT of the treasury, never minted from nothing: an
     empty treasury simply pauses income until a mint refills it. Tag fees,
     transaction fees and forfeiture intake recirculate into the treasury.
