@@ -905,12 +905,22 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
         max_id = c.execute(
             "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
         ).fetchone()[0]
-        rows = c.execute(
-            "SELECT id, official, payment_quarters, total_cycles, cycles_done,"
-            " COALESCE(treasury_escrow_quarters, 0) AS teq,"
-            " COALESCE(deposit_bonus_quarters, 0) AS pool"
-            " FROM jobs WHERE status IN ('open', 'offered', 'active')"
-        ).fetchall()
+        # init_db's boot connection has no row_factory (plain tuples) -
+        # the mapping reads below need Rows. Switch it on for the fetch
+        # and restore it after (house idiom: db/_core.py boot reconcile
+        # block; a separate connection is a dead end while boot holds
+        # the write transaction). Fetched Rows stay Rows after restore.
+        _previous_factory = c.row_factory
+        c.row_factory = sqlite3.Row
+        try:
+            rows = c.execute(
+                "SELECT id, official, payment_quarters, total_cycles, cycles_done,"
+                " COALESCE(treasury_escrow_quarters, 0) AS teq,"
+                " COALESCE(deposit_bonus_quarters, 0) AS pool"
+                " FROM jobs WHERE status IN ('open', 'offered', 'active')"
+            ).fetchall()
+        finally:
+            c.row_factory = _previous_factory
         total = 0
         jobs = 0
         for r in rows:
