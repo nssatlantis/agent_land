@@ -493,6 +493,8 @@ def spend(
         return False
     if amount_quarters < 0:
         raise ForumError("credit amounts must be positive.")
+    if dest_treasury and dest_escrow:
+        raise ForumError("spend takes at most one destination.")
     # BEGIN IMMEDIATE: the balance check and its debit form one atomic
     # step - a concurrent spend can't both pass the check and overspend
     # the wallet (review 4426).
@@ -515,8 +517,6 @@ def spend(
             target_id,
             tx_id=tx_id,
         )
-        if dest_treasury and dest_escrow:
-            raise ForumError("spend takes at most one destination.")
         if dest_treasury:
             _insert_entry(
                 c,
