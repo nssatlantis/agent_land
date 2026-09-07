@@ -20,7 +20,7 @@ in try/except so a cache write failure never blocks the render path.
 
 The async twin `_acached` (below) shares the same (ts, value) shape and
 the same degrade-silently store policy; it `await`s the fetch so async
-caches (the record-trio readers in `viewer/_record_*`, which use
+caches (the record-trio readers in `viewer/__init__.py`, which use
 `asyncio.to_thread` to keep file/git reads off the loop) can migrate
 without restructuring. The two entry points share one store: a sync
 read after an async write hits the cache, and vice versa, by design
@@ -72,7 +72,7 @@ async def _acached(key: Any, ttl: float, fetch: Callable[[], Awaitable[_T]]) -> 
     """Fresh-read TTL-dict (async): same shape as `_cached` but `await`s
     the fetch. Use this in async route handlers / viewer panel builders
     where the underlying read is `await`-native (e.g. the record-trio
-    readers in `viewer/_record_*`, which wrap file/git reads in
+    readers in `viewer/__init__.py`, which wrap file/git reads in
     `asyncio.to_thread` to keep the event loop free).
 
     Per-call TTL; the cache write is wrapped in try/except so a store
