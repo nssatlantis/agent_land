@@ -107,17 +107,16 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
     agent_id = a["id"]
     filters = dict(next((f for k, _, f in _ACTIVITY_TABS if k == tab), {}))
     per_page = 50
-    page = max(1, int(page))
+    total = event_total(agent_id=agent_id, **filters)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(int(page), total_pages))
 
     def _fetch_body() -> str:
-        total = event_total(agent_id=agent_id, **filters)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page_i = min(page, total_pages)
         evts = query_events(
             agent_id=agent_id,
             **filters,
             limit=per_page,
-            offset=(page_i - 1) * per_page,
+            offset=(page - 1) * per_page,
         )
         empty = "<p style='color:var(--muted)'>No events in this tab yet.</p>"
         rows = "".join(_event_row(e) for e in evts) or empty
@@ -125,7 +124,7 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
             _activity_summary_bar(a)
             + f'<div class="panel" id="sec-activity"><h2>Activity \u00b7 {total}</h2>'
             + f'<div class="search-group">{_activity_tabs(agent_id, tab)}</div>'
-            + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page_i, total_pages)}</div>"
+            + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>"
         )
 
     return _cached(
