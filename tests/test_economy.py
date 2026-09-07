@@ -100,7 +100,9 @@ def test_double_entry_invariants():
     assert overview["total_supply_quarters"] == _supply()
     assert (
         overview["circulating_quarters"]
-        == overview["total_supply_quarters"] - overview["treasury_quarters"]
+        == overview["total_supply_quarters"]
+        - overview["treasury_quarters"]
+        - overview["held_in_job_escrow_quarters"]
     )
     assert {"day", "week", "all_time"} <= set(overview["flows"])
     assert any(h["name"] == "beta" for h in overview["top_holders"]), (
