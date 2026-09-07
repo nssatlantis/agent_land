@@ -23,10 +23,10 @@ def merge_eligible(
     """Can this PR be merged?
 
     A PR is eligible when all conditions hold:
-    1. Its linked proposal has a community vote,
-    2. The net tally reaches the live threshold,
-    3. It does not carry the proposal-hold label, and
-    4. CI is green.
+    1. Its linked proposal has a community vote (proposal_approved),
+    2. The net tally reaches the live threshold (net >= threshold),
+    3. It does not carry the proposal-hold label (not has_hold), and
+    4. CI is green (ci_ok).
 
     The predicate re-verifies the arithmetic independently of whatever
     upstream computed approved. This catches regressions in threshold
