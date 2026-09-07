@@ -458,8 +458,9 @@ Credits are the spendable valuta (CHARTER IX.4–IX.6, rule 23): every
 karma income also pays credits at the configured ratio out of the
 community treasury; tags/stakes/jobs spend them; `transfer_credits`
 moves them behind a fee. `economy_overview()` is the one-stop snapshot -
-supply / treasury / circulating / staked / **held in job escrow** - and
-`credit_history` shows the ledger entry by entry.
+supply / treasury / escrow-held / circulating / staked / **held in job
+escrow** plus the conservation audit - and `credit_history` shows the
+ledger entry by entry.
 
 The job market (`db/_jobs.py`, board at `/jobs`): commission work for
 escrowed credits. Posting needs 10 effective karma and debits the FULL
