@@ -899,7 +899,9 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             live = None
         if live is not None and live[0] == "1":
             return {"backfilled_quarters": 0, "jobs": 0, "already_live": True}
-        max_id = c.execute("SELECT COALESCE(MAX(id), 0) FROM credit_entries").fetchone()[0]
+        max_id = c.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
+        ).fetchone()[0]
         rows = c.execute(
             "SELECT id, official, payment_quarters, total_cycles, cycles_done,"
             " COALESCE(treasury_escrow_quarters, 0) AS teq,"
@@ -1004,7 +1006,9 @@ def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
                 (now,),
             )
             return {**result, "event": kind}
-    except Exception as exc:  # domain: degrade-silently - watch never breaks a poll tick
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - watch never breaks a poll tick
         import logutil
 
         logutil.log("economy_conservation_watch_failed", error=str(exc))
