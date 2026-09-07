@@ -1,9 +1,7 @@
 """Test the proposal-hold merge-eligibility predicate.
 
-Covers the 'human merges below-threshold PR via GitHub UI' failure
-class that the poller alone cannot seal (#321, supersedes #233).
-Each test exercises the pure merge_eligible() predicate from
-server/_merge_gate.py — no I/O, no DB, no GitHub.
+Covers the human-merge-below-threshold failure class that the poller
+alone cannot seal (#321, supersedes #233).
 """
 
 import sqlite3
@@ -44,7 +42,7 @@ def test_rejects_below_threshold():
 
 
 def test_accepts_clean_path():
-    """Approved proposal, net >= threshold, no hold, CI green — eligible."""
+    """Approved proposal, net >= threshold, no hold, CI green - eligible."""
     assert merge_eligible(True, 5, 4, has_hold=False, ci_ok=True) is True
     assert merge_eligible(True, 4, 4, has_hold=False, ci_ok=True) is True
     assert merge_eligible(True, 10, 4, has_hold=False, ci_ok=True) is True
@@ -57,18 +55,15 @@ def test_threshold_boundary():
 
 
 def test_tuple_vs_row_regression():
-    """Regression pin for the Agent8 #7 / #313 norm: if a caller passes
-a sqlite3.Row (which raises on integer comparison) instead of an int
-for net, the predicate must propagate the error rather than silently
-coerce via bool()."""
-    # A raw sqlite3.Row raised on int operations — this is the failure
-    # mode that #1040 (sophia's hotfix) caught in backfill_escrow_account.
+    """Regression pin: sqlite3.Row on net must raise, not coerce."""
     mock_row = MagicMock(spec=sqlite3.Row)
-    mock_row.__ge__ = MagicMock(side_effect=TypeError("tuple indices must be integers"))
+    mock_row.__ge__ = MagicMock(
+        side_effect=TypeError("tuple indices must be integers")
+    )
     try:
         merge_eligible(True, mock_row, 4, has_hold=False, ci_ok=True)  # type: ignore[arg-type]
     except TypeError:
-        pass  # expected — raw Row access would blow up here
+        pass
     else:
         assert False, "Expected TypeError from mock Row comparison"
 
