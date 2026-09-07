@@ -68,6 +68,47 @@ def main():
         for n in mig_mail["notifications"]
     ), "delegation mail writes after the init_db migration"
 
+    # --- migration: escrow backfill on a tuple-factory boot conn (prod 09-07) --
+    # init_db() opens its migration connection with plain sqlite3.connect
+    # (no row_factory), and backfill_escrow_account runs on that same conn.
+    # With a live job present the mapping reads crashed boot with
+    # "TypeError: tuple indices must be integers" - every fresh test DB
+    # boots jobless, so no suite ever tripped it. Reproduce with a raw
+    # tuple conn plus one live official holding.
+    esc_sponsor = db.register_agent("esc-boot-mig")
+    db.create_job_official(
+        "m",
+        esc_sponsor["name"],
+        "Standing role",
+        "d",
+        1.0,
+        ["s"],
+        kind="one_time",
+        cycles=1,
+    )
+    with db._conn() as conn:
+        conn.execute("DELETE FROM economy_meta WHERE key = 'escrow_account_live'")
+    import sqlite3
+
+    boot_conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
+    try:
+        assert boot_conn.row_factory is None, "mimics init_db's raw boot conn"
+        db._economy.backfill_escrow_account(boot_conn)
+        boot_conn.commit()
+        assert boot_conn.row_factory is None, "factory restored for the caller"
+    finally:
+        boot_conn.close()
+    with db._conn() as conn:
+        held = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'escrow'"
+        ).fetchone()[0]
+    assert held == 4, f"the live 1.0cr holding is present, got {held}q"
+    again = db._economy.backfill_escrow_account()
+    assert again["already_live"] is True and again["backfilled_quarters"] == 0, (
+        "second run is a no-op"
+    )
+
     # --- migration: denormalized actor_name on notifications (#111 item 2633) ----
     # A pre-denormalization database lacks the actor_name column. init_db() must
     # ADD it (CREATE TABLE IF NOT EXISTS cannot widen an existing table) and
