@@ -811,13 +811,16 @@ def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
     recomputed = _live_escrow_holdings(c)
     # Rule A: per-tx zero-sum over post-cutover escrow-touching txs -
     # every escrow move is paired legs under one tx_id, so each such tx
-    # must net to zero. A '*_backfill' repair leg is single-sided BY
-    # DESIGN (it re-creates principal a pre-cutover debit destroyed) and
-    # is exempt when every leg of its tx is a backfill leg.
+    # must net to zero across ALL its legs (summing escrow legs alone
+    # can never be zero: every helper writes exactly one escrow leg per
+    # tx). A '*_backfill' repair leg is single-sided BY DESIGN (it
+    # re-creates principal a pre-cutover debit destroyed) and is exempt
+    # when every leg of its tx is a backfill leg.
     tx_sums = c.execute(
         "SELECT tx_id, COALESCE(SUM(delta_quarters), 0) AS s"
-        " FROM credit_entries WHERE account = 'escrow' AND id > ?"
-        " AND tx_id IS NOT NULL GROUP BY tx_id",
+        " FROM credit_entries WHERE tx_id IN (SELECT tx_id FROM credit_entries"
+        " WHERE account = 'escrow' AND id > ? AND tx_id IS NOT NULL)"
+        " GROUP BY tx_id",
         (cutover,),
     ).fetchall()
     tx_violations = [r["tx_id"] for r in tx_sums if r["s"] != 0]
