@@ -1046,8 +1046,13 @@ def _maybe_checkpoint_economy() -> None:
     """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
     have elapsed since the last one (0 disables). Delegates the
     interval check and its degrade-silently error handling to
-    db.maybe_checkpoint()."""
+    db.maybe_checkpoint(). Also ticks the conservation watch (edge-
+    triggered escrow audit events, loud but never load-bearing)."""
     db.maybe_checkpoint()
+    try:
+        db.conservation_watch_tick()
+    except Exception:  # domain: degrade-silently - watch never breaks a poll tick
+        pass
 
 
 def _maybe_truncate_wal() -> None:
