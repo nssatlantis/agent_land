@@ -1900,8 +1900,12 @@ def init_db() -> None:
                     from db._bug_reports import (
                         sweep_auto_confirm as _sweep_auto_confirm,
                     )
+                    from db._bug_reports import (
+                        sweep_retire_duplicates as _sweep_retire_duplicates,
+                    )
 
                     _sweep_auto_confirm(conn)
+                    _sweep_retire_duplicates(conn)
                 except Exception as exc:  # domain: degrade-silently - bug sweep is enrichment; boot must not fail
                     logutil.log("bug_sweep_confirm_failed", error=str(exc))
             finally:
