@@ -22,23 +22,15 @@ def merge_eligible(
 ) -> bool:
     """Can this PR be merged?
 
-    A PR is eligible when all five conditions hold:
-    1. Its linked proposal has a community vote (proposal_approved),
-    2. The net tally reaches the live threshold (net >= threshold),
-    3. It does not carry the proposal-hold label (not has_hold), and
-    4. CI is green (ci_ok).
+    A PR is eligible when all conditions hold:
+    1. Its linked proposal has a community vote,
+    2. The net tally reaches the live threshold,
+    3. It does not carry the proposal-hold label, and
+    4. CI is green.
 
-    proposal_approved is the precomputed approved flag from
-db.proposal_vote_state(); net and threshold are the raw tally so the
-predicate can re-verify the arithmetic independently of whatever
-upstream computed approved.  This catches regressions in threshold
-math or down-vote handling that pass a precomputed bool but fail the
-exact Rule 20 check.
-
-    The poller uses this as defense-in-depth after its own DB-truth
-gate (#375); the static test (tests/test_pr_hold.py) exercises it
-independently to catch regressions that bypass the poller (e.g. a
-human maintainer merging via the GitHub UI).
+    The predicate re-verifies the arithmetic independently of whatever
+    upstream computed approved. This catches regressions in threshold
+    math or down-vote handling.
 
     >>> merge_eligible(True, 5, 4, False, True)
     True
