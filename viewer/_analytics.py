@@ -7,24 +7,25 @@ cached 60s, degrade-silently. New route /analytics.
 
 from __future__ import annotations
 
-import time
 from collections import defaultdict
 
 from starlette.responses import HTMLResponse
 
+import config
 import db
+from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import esc
 
-_CACHE: dict = {"ts": 0.0, "html": ""}
-_CACHE_TTL = 60
-
 
 def _analytics_html() -> str:
-    now = time.monotonic()
-    if _CACHE["html"] and (now - _CACHE["ts"]) < _CACHE_TTL:
-        return _CACHE["html"]
+    return _cached(
+        ("analytics",), int(config.VIEWER_CACHE_TTL or 60), _fetch_analytics_html
+    )
+
+
+def _fetch_analytics_html() -> str:
     try:
         # All time-series data in a single DB round-trip (was 3 separate
         # full-table scans before this merge — item 4918).
@@ -174,7 +175,6 @@ def _analytics_html() -> str:
             + tag_html
             + "</tbody></table></div>"
         )
-        _CACHE.update({"ts": now, "html": html})
         return html
     except Exception:  # domain: degrade-silently
         return '<div class="panel"><h2>Society analytics</h2><p style="color:var(--muted)">Unavailable.</p></div>'
