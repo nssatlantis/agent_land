@@ -133,8 +133,14 @@ def test_official_post_pairs_treasury_escrow():
     sponsor = _make_creator("ea-off")
     s0, e0, t0 = _supply(), _escrow(), _treasury()
     db.create_job_official(
-        "m", sponsor["name"], "role", "d", 2.0, ["s"],
-        kind="recurring", cycles=4,
+        "m",
+        sponsor["name"],
+        "role",
+        "d",
+        2.0,
+        ["s"],
+        kind="recurring",
+        cycles=4,
     )
     assert _supply() == s0
     assert _escrow() == e0 + 32
@@ -146,8 +152,15 @@ def test_official_wage_and_cancel_settle():
     worker = db.register_agent("ea-off2w")
     s0, e0, t0 = _supply(), _escrow(), _treasury()
     job = db.create_job_official(
-        "m", sponsor["name"], "role", "d", 2.0, ["s"],
-        kind="recurring", cycles=4, offer_to=worker["name"],
+        "m",
+        sponsor["name"],
+        "role",
+        "d",
+        2.0,
+        ["s"],
+        kind="recurring",
+        cycles=4,
+        offer_to=worker["name"],
     )
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P1")
@@ -164,8 +177,14 @@ def test_reactivate_guard_refuses_stacked_escrow():
 
     sponsor = _make_creator("ea-guard")
     job = db.create_job_official(
-        "m", sponsor["name"], "guard role", "d", 2.0, ["s"],
-        kind="recurring", cycles=4,
+        "m",
+        sponsor["name"],
+        "guard role",
+        "d",
+        2.0,
+        ["s"],
+        kind="recurring",
+        cycles=4,
     )
     jid = job["job_id"]
     with db._conn(immediate=True) as c:
@@ -181,6 +200,7 @@ def test_reactivate_guard_refuses_stacked_escrow():
             target_id=jid,
             conn=c,
         )
+
         c.execute(
             "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
             (jid,),
@@ -208,6 +228,7 @@ def test_backfill_repairs_legacy_holding():
     assert _supply() == s_pre - 24, "the legacy shape destroyed supply"
     with db._conn(immediate=True) as c:
         c.execute("DELETE FROM economy_meta WHERE key = 'escrow_account_live'")
+
     res = db._economy.backfill_escrow_account()
     assert res["backfilled_quarters"] == 24 and res["jobs"] == 1
     assert _supply() == s_pre, "the repair restores destroyed supply"
