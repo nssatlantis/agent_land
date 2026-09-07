@@ -64,6 +64,115 @@ from viewer._utils import _rows  # noqa: E402
 AGENTS, _ = setup()
 
 
+def test_agents_official_ids_cache_reuse():
+    """The 60s official-holder cache uses the shared ("agents",
+    "official_ids") key and skips the second DB query on a repeat
+    hit (315:4958)."""
+    import unittest.mock as _mock
+
+    import viewer._cache as _cache_mod
+    from viewer import _agents as _agents_mod
+
+    conn = _mock.MagicMock()
+    conn.__enter__.return_value = conn
+    conn.execute.return_value.fetchall.return_value = [
+        {"worker_agent_id": 1},
+        {"worker_agent_id": 2},
+    ]
+    saved = dict(_cache_mod._CACHE)
+    _cache_mod._CACHE.clear()
+    try:
+        with _mock.patch.object(_agents_mod.db, "_conn", return_value=conn):
+            first = _agents_mod._official_holder_ids()
+            second = _agents_mod._official_holder_ids()
+        assert first == {1, 2}
+        assert second == {1, 2}
+        assert ("agents", "official_ids") in _cache_mod._CACHE
+        assert conn.execute.call_count == 1, "hit must not re-run the SELECT"
+    finally:
+        _cache_mod._CACHE.clear()
+        _cache_mod._CACHE.update(saved)
+
+
+def test_agents_official_ids_degrades_quietly():
+    """A DB error returns None once and caches it, so the next call
+    does not re-query (315:4958)."""
+    import unittest.mock as _mock
+
+    import viewer._cache as _cache_mod
+    from viewer import _agents as _agents_mod
+
+    class _Boom:
+        def __enter__(self):
+            raise RuntimeError("db down")
+
+        def __exit__(self, *exc):
+            return False
+
+    saved = dict(_cache_mod._CACHE)
+    _cache_mod._CACHE.clear()
+    try:
+        with _mock.patch.object(_agents_mod.db, "_conn", return_value=_Boom()):
+            assert _agents_mod._official_holder_ids() is None
+            assert _agents_mod._official_holder_ids() is None
+        assert ("agents", "official_ids") in _cache_mod._CACHE
+        assert _cache_mod._CACHE[("agents", "official_ids")][1] is None
+    finally:
+        _cache_mod._CACHE.clear()
+        _cache_mod._CACHE.update(saved)
+
+
+def test_agents_voting_pattern_cached_per_agent():
+    """Voting-pattern strips cache per agent under ("agents", "voting",
+    id); a repeat hit reuses the cached strip and a fresh agent misses
+    fresh (315:4958)."""
+    import unittest.mock as _mock
+
+    import viewer._cache as _cache_mod
+    from viewer import _agents as _agents_mod
+
+    rows_a = [
+        {"value": 1, "c": 3},
+        {"value": -1, "c": 1},
+        {"value": 0, "c": 5},
+    ]
+    rows_b = []
+    calls = {"n": 0}
+
+    def _rows_for(aid):
+        calls["n"] += 1
+        return rows_a if aid == 7 else rows_b
+
+    conn = _mock.MagicMock()
+    conn.__enter__.return_value = conn
+
+    def _execute(sql, params=None):
+        if "GROUP BY value" in sql:
+            out = _mock.MagicMock()
+            out.fetchall.return_value = _rows_for(params[0] if params else 0)
+            return out
+        out = _mock.MagicMock()
+        out.fetchall.return_value = []
+        return out
+
+    conn.execute.side_effect = _execute
+    saved = dict(_cache_mod._CACHE)
+    _cache_mod._CACHE.clear()
+    try:
+        with _mock.patch.object(_agents_mod.db, "_conn", return_value=conn):
+            html7a = _agents_mod._voting_pattern_html(7)
+            html7b = _agents_mod._voting_pattern_html(7)
+            html8a = _agents_mod._voting_pattern_html(8)
+        assert ("agents", "voting", 7) in _cache_mod._CACHE
+        assert ("agents", "voting", 8) in _cache_mod._CACHE
+        assert html7a == html7b, "repeat hit reuses the cached strip"
+        assert "No votes yet." in html8a, "empty agent gets the default"
+        assert calls["n"] == 2, "two fetches (agents 7 and 8), not four"
+    finally:
+        _cache_mod._CACHE.clear()
+        _cache_mod._CACHE.update(saved)
+
+
 def test_ci_chip_success():
     html = _ci_chip({"state": "success", "failures": []})
     assert "vc-ok" in html
