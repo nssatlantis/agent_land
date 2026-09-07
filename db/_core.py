@@ -1524,6 +1524,68 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
             " ON credit_entries(account, id) WHERE account = 'treasury'"
         )
+        # The escrow bank account (proposal #319): widen the account
+        # CHECK with 'escrow' on databases that predate it. CREATE TABLE
+        # IF NOT EXISTS cannot widen a constraint and SQLite has no ALTER
+        # for CHECKs - standard table-rebuild reusing the schema file's
+        # own DDL, the same shape as the proposal_stakes 'abandoned'
+        # widening below. Idempotent via the stored DDL; fresh databases
+        # already carry 'escrow' and skip. The escrow partial index and
+        # economy_meta live here too (an existing database may lack the
+        # column/table when the schema DDL runs).
+        stored_credits = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'credit_entries'"
+        ).fetchone()
+        if stored_credits is not None and "'escrow'" not in stored_credits[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS credit_entries")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS credit_entries",
+                "CREATE TABLE credit_entries_new",
+            )
+            old_cols = [r[1] for r in conn.execute("PRAGMA table_info(credit_entries)")]
+            keep = [
+                c
+                for c in (
+                    "id",
+                    "agent_id",
+                    "delta_quarters",
+                    "reason",
+                    "target_type",
+                    "target_id",
+                    "account",
+                    "tx_id",
+                    "created_at",
+                )
+                if c in old_cols
+            ]
+            cols = ", ".join(keep)
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n" + new_ddl + "\n"
+                f"INSERT INTO credit_entries_new ({cols})"
+                f" SELECT {cols} FROM credit_entries;\n"
+                "DROP TABLE credit_entries;\n"
+                "ALTER TABLE credit_entries_new RENAME TO credit_entries;\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"
+            " ON credit_entries(account) WHERE account = 'escrow'"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS economy_meta"
+            " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        # First boot with the bank account: repair pre-cutover
+        # single-sided escrow debits (deferred import - db._economy reads
+        # db._core, so a top-level import would cycle).
+        from db._economy import backfill_escrow_account
+
+        backfill_escrow_account(conn)
         # The completion-sweep partial index (schema.sql): safe to
         # create here on every boot - plain additive index.
         conn.execute(
