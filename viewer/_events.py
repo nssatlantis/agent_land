@@ -24,6 +24,8 @@ _EVENT_KIND_BADGES = {
     "credit_burned": ("Burned", "var(--fail)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
+    "economy_conservation_tripped": ("Conservation trip", "var(--fail)"),
+    "economy_conservation_resolved": ("Conservation ok", "var(--ok)"),
     "job_created": ("Job posted", "#2563eb"),
     "job_claimed": ("Job claimed", "#2563eb"),
     "job_offer_declined": ("Offer declined", "var(--warn)"),
@@ -249,6 +251,18 @@ def _event_description(e: dict) -> str:
         return (
             f"An earning of {d.get('credits', '?')} credits went unpaid - "
             f"the treasury was empty ({d.get('reason', '?')})"
+        )
+    if k == "economy_conservation_tripped":
+        return (
+            "Escrow conservation FAILED - held "
+            f"{d.get('escrow_quarters', '?')} vs recomputed "
+            f"{d.get('recomputed_quarters', '?')}"
+        )
+    if k == "economy_conservation_resolved":
+        return (
+            "Escrow conservation restored - held "
+            f"{d.get('escrow_quarters', '?')} matches recomputed "
+            f"{d.get('recomputed_quarters', '?')}"
         )
     if k in (
         "job_created",
