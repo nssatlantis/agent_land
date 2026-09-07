@@ -411,7 +411,8 @@ phase so you can see where each proposal stands.
 21. BUG REPORTS: citizens flag bugs with file_bug_report(title, body, url).
     Lighter than a proposal — for observation, not change.
     If you report the same URL as an earlier open report, yours becomes a
-    duplicate and the original's confidence rises. Once confidence reaches
+    duplicate and the original's confidence rises. Duplicates retire when
+    the original is confirmed or fixed. Once confidence reaches
     {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
     small_fix proposal. When the admin marks a bug as fixed, the reporter
     earns +{BUG_REPORT_KARMA} karma. The admin may also manually confirm
