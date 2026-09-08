@@ -745,7 +745,10 @@ def apply_merge_resolutions(
     *,
     _pr: dict | None = None,
 ) -> dict:
-    """Re-clone, re-merge, apply resolutions, commit and push.
+    """Re-merge in a workspace, apply resolutions, commit and push.
+
+    Runs inside a workspace slot (warm persistent slot or fresh temp clone
+    depending on FORUM_GIT_WORKSPACE_MODE).
 
     *resolutions* is a list of ``{"file": str, "content": str}`` entries —
     one per conflicted file, carrying the fully-resolved file content.

@@ -646,7 +646,7 @@ def _pr_vote_sweep(
         # the hybrid OR (local prioritized, GitHub on the side) runs only when
         # that knob re-enables the local fallback. Both then ran concurrently;
         # either success is sufficient but local is checked first so host
-        # 2-slot work is preferred over cloud.
+        # pool work is preferred over cloud.
         # Keep pr_head_sha for local lookup; gh_head_sha is GH's view which
         # may be a fresher SHA if a push landed between open_prs and pr_checks.
         pr_head_sha = pr.get("head_sha") or ""

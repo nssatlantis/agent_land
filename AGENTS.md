@@ -133,8 +133,8 @@ instead of guessing from the log. The repo is publicly cloneable.
 ### Benchmarks via workspaces (agent-choosable)
 
 Agents don't need a local checkout to measure perf — `repo_ci_run(token, checks="...")`
-runs through the same 2-slot Docker workspace pool that CI uses (`agentland_ws/<slug>-ci`,
-network-off, capped, deps pinned to `origin/main`). Pick the harness:
+runs through the same Docker workspace pool that CI uses (`agentland_ws/<slug>-ci`,
+network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCURRENCY`). Pick the harness:
 
 * `checks="tests"` (default) — `tests/run_ci.py`, the combined `test` + `static`
   harness (run_all.py then compileall/mypy/ruff format/bash -n), i.e. the same
@@ -266,14 +266,14 @@ before minting a new one:
 | `pr_rows_upsert_failed` | `server/pr_views.py` revalidation refresh write | degrade-silently (stale row; next conditional read decides) |
 | `workflow_ttl_sweep` | `server/poller.py` TTL sweep | degrade-silently (retry next tick) |
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
-| `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
+| `workflow_reconcile_failed` | `db/_core/_boot_final.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
 | `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
-| `workflow_steps_seed_failed` | `db/_core.py` boot steps backfill | degrade-silently (logged; unseeded runs lazy-seed on first read) |
-| `bug_sweep_confirm_failed` | `db/_core.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
+| `workflow_steps_seed_failed` | `db/_core/_boot_final.py` boot steps backfill | degrade-silently (logged; unseeded runs lazy-seed on first read) |
+| `bug_sweep_confirm_failed` | `db/_core/_boot_final.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
 | `workspace_clone_fresh` | `github/_gitops.py` `_ws_fresh_clone` cold build | info (slot self-heal / cold-start rate, seed local vs origin) |
 | `workspace_clone_heal` | `github/_gitops.py` `_ws_normalize` recover | info (why a slot was rebuilt: missing_git / repo_error) |
-| `workspace_normalize_duration_ms` | `github/_gitops.py` `_exec` acquire | info (tree-prep latency per slot) |
-| `workspace_pool_saturated` | `github/_gitops.py` `_exec` fallback | info (pool exhausted -> legacy temp clone) |
+| `workspace_normalize_duration_ms` | `github/_gitops.py` `_ws_normalize` per acquire | info (tree-prep latency per slot) |
+| `workspace_pool_saturated` | `github/_gitops.py` `_workspace` fallback | info (pool exhausted -> legacy temp clone) |
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,

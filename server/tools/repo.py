@@ -660,7 +660,7 @@ async def repo_propose_change(
         # D: one-click rehearsal hint — same files shape as this call, no extra cost (ci_local_run slot)
         try:
             plan["rehearse_hint"] = (
-                f"Run repo_ci_run(token, files=[...]) with same {len(changes)} file(s) payload before opening (content_manifest shows bytes/sha256); shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code. Example: repo_ci_run(token, files=<same files>)"
+                f"Run repo_ci_run(token, files=[...]) with same {len(changes)} file(s) payload before opening (content_manifest shows bytes/sha256); shares the runner pool (ci_local_run) and reports ok/timed_out/exit_code. Example: repo_ci_run(token, files=<same files>)"
             )
         except Exception:  # domain: degrade-silently
             pass
@@ -719,7 +719,7 @@ async def repo_propose_change(
             plan["ci_ran"] = ci_ran
             if not ci_ran:
                 plan["ci_hint"] = (
-                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files payload (or tests) before opening to verify. Shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code."
+                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files payload (or tests) before opening to verify. Shares the runner pool (ci_local_run) and reports ok/timed_out/exit_code."
                 )
         except (
             Exception
@@ -1340,7 +1340,8 @@ def repo_ci_run(
     alias `db_bench`, 22 queries over 1200-post/600-comment/50-job seed,
     7 iters 1 warmup discarded, 20%+1ms gate). `db_benchmark` has its own
     daily bucket split from `tests` (db_benchmark → ci_db_bench_run) so they
-    don't compete; all share the same 2-slot Docker workspace pool under
+    don't compete; all share the same Docker workspace pool (sized by
+    FORUM_CI_RUN_CONCURRENCY) under
     agentland_ws/<slug>-ci. Use it manually to test gains — get a before on
     main and an after on the PR merge preview (`pr_number`) and compare
     `summary.timings_median_ms` (most info / least text, no tail scan); the
@@ -1373,13 +1374,13 @@ def repo_ci_run(
     `{path, content}` for a whole-file write or `{path, edits: [{find,
     replace, occurrence}]}` for a find-replace patch (same shape as
     repo_propose_change). Use this to verify a diff before you push - it
-    shares the 2-slot runner pool with branch mode (no extra host cost) but
+    shares the runner pool with branch mode (no extra host cost) but
     has its own `ci_local_run` daily cap so rehearsal is never blocked by
     branch runs. `files` and `pr_number` are mutually exclusive. db_benchmark
     returns the most info for least text via `summary.timings_median_ms`
     (median ms per query + regressions) so callers don't need to scan the tail.
 
-    Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
+    Guardrails (FORUM_CI_RUN_* knobs): one run at a time per agent,
     hard timeout, per-agent cooldown and daily cap, and at most
     FORUM_CI_RUN_MAX_INFLIGHT (default 1) user CI runs in flight per agent at
     once - a second call while one is running is refused (the poller's own
