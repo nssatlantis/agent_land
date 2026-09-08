@@ -196,7 +196,10 @@ def _inflight_snapshot() -> list[dict]:
 
 
 def ledger_kind_for(
-    checks: str, pr_number: int | None = None, files: list[dict] | None = None
+    checks: str,
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> str:
     """The events-ledger kind a run_checks(...) with these args would log -
     the single source for run_checks itself and for the user-facing handoff
@@ -206,7 +209,7 @@ def ledger_kind_for(
     if entry is None:
         valid = ", ".join(sorted(_CHECKS))
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
-    if files is not None:
+    if files is not None or tree is not None:
         return events.EVT_CI_LOCAL_RUN
     if pr_number is not None:
         return events.EVT_CI_BRANCH_RUN
@@ -220,6 +223,7 @@ def run_checks_with_deadline(
     checks: str,
     pr_number: int | None = None,
     files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> tuple[dict | None, bool, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
@@ -234,7 +238,7 @@ def run_checks_with_deadline(
     single-flight registry (FORUM_CI_RUN_MAX_INFLIGHT) is claimed here for
     the caller; the poller fallback path never reaches this wrapper."""
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    kind = ledger_kind_for(checks, pr_number, files)
+    kind = ledger_kind_for(checks, pr_number, files, tree)
     token = uuid.uuid4().hex
     _inflight_claim(agent_id, kind, checks, started_at, token)
     result_holder: list[dict] = []
@@ -244,7 +248,14 @@ def run_checks_with_deadline(
     def _worker() -> None:
         try:
             result_holder.append(
-                run_checks(agent_id, name, checks, pr_number=pr_number, files=files)
+                run_checks(
+                    agent_id,
+                    name,
+                    checks,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                )
             )
         except Exception as exc:
             # domain: fail-loudly - captured for the caller, not swallowed;
@@ -271,6 +282,7 @@ def run_checks(
     checks: str,
     pr_number: int | None = None,
     files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -280,12 +292,20 @@ def run_checks(
     # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
     # Shares the runner pool with branch/native, but has its own daily cap (ci_local_run) so a
     # branch-mode budget exhaustion never blocks rehearsal, per user direction.
-    local_mode = files is not None
+    local_mode = files is not None or tree is not None
     branch_mode = pr_number is not None
-    if local_mode and branch_mode:
+    if tree is not None and branch_mode:
+        raise db.ForumError(
+            "repo_ci_run takes either pr_number or tree, not both "
+            "(named trees are main-based, like files overlays)."
+        )
+    if files is not None and branch_mode:
         raise db.ForumError("repo_ci_run takes either pr_number or files, not both.")
+    if tree is not None:
+        # Fail fast on a bad name before any slot or budget is taken.
+        tree = _trees_mod._validate_tree_name(tree)
     if local_mode:
-        if not isinstance(files, list) or not files:
+        if files is not None and (not isinstance(files, list) or not files):
             raise db.ForumError("files must be a non-empty list for local rehearsal.")
         if not config.CI_RUN_BRANCH_ENABLED:
             raise db.ForumError("branch-mode CI runs are disabled on this server")
@@ -330,13 +350,20 @@ def run_checks(
         raise
     try:
         if local_mode:
-            assert files is not None
-            try:
-                tree, head_sha, merge_info = _trees_mod._prepare_local_tree(
-                    files, slot=slot
+            assert files is not None or tree is not None
+            tree_name = tree
+            if tree_name is not None:
+                tree, head_sha, merge_info = _trees_mod._prepare_named_tree(
+                    agent_id, tree_name, files or []
                 )
-            except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
-                tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
+            else:
+                assert files is not None
+                try:
+                    tree, head_sha, merge_info = _trees_mod._prepare_local_tree(
+                        files, slot=slot
+                    )
+                except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                    tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main â€” same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
@@ -461,6 +488,10 @@ def run_checks(
             result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
             result["local"] = True
+            if merge_info.get("tree") is not None:
+                result["tree"] = merge_info.get("tree")
+                result["tree_warm"] = bool(merge_info.get("tree_warm"))
+                result["delta_count"] = merge_info.get("delta_count", 0)
         elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
@@ -495,6 +526,10 @@ def run_checks(
         if local_mode:
             detail["local"] = True
             detail["base_sha"] = result.get("base_sha")
+            if merge_info.get("tree") is not None:
+                detail["tree"] = merge_info.get("tree")
+                detail["tree_warm"] = bool(merge_info.get("tree_warm"))
+                detail["delta_count"] = merge_info.get("delta_count", 0)
         elif branch_mode:
             detail["pr_number"] = pr_number
         detail = _ci_detail_with_output(detail, pieces)
