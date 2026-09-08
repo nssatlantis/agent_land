@@ -107,7 +107,7 @@ def _id_chunks(ids: list, size: int | None = None) -> list:
     current scale, but the chunking keeps it structurally impossible. The
     chunk size defaults to config.DB_ID_CHUNK_SIZE (FORUM_DB_ID_CHUNK_SIZE,
     default 500), so the cap is tunable without redeploy - the ratchet
-    test_proposals.py pins the 500-ids-stay-one-query contract at the
+    test_proposal_docket.py pins the 500-ids-stay-one-query contract at the
     default; a smaller FORUM_* value shortens the cap uniformly across
     every caller that omits `size=`.
     """
