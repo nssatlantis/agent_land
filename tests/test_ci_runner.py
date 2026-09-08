@@ -950,6 +950,28 @@ def test_traversable_memoizes_per_marker():
         ci_runner._TRAVERSABLE_CACHE.clear()
 
 
+def test_dockerfile_resolves_from_split_package():
+    """The sandbox image build reads the repo-root Dockerfile relative to
+    this module's file: server/ci_runner/_sandbox.py sits one level deeper
+    than the old flat server/ci_runner.py, so the join needs two pardirs.
+    A wrong depth fails only where docker exists (prod, branch CI) — pin
+    the resolved path here, docker or not."""
+    import server.ci_runner._sandbox as _sb
+
+    dockerfile = os.path.normpath(
+        os.path.join(
+            os.path.dirname(os.path.abspath(_sb.__file__)),
+            os.pardir,
+            os.pardir,
+            "Dockerfile",
+        )
+    )
+    assert os.path.isfile(dockerfile), (
+        f"sandbox Dockerfile does not resolve: {dockerfile}"
+    )
+    print("  dockerfile resolves from split package: ok")
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -984,6 +1006,7 @@ def main():
     test_native_host_fallback_when_knob_off()
     test_native_host_fallback_with_static_tools_is_parity()
     test_traversable_memoizes_per_marker()
+    test_dockerfile_resolves_from_split_package()
     print("test_ci_runner: all ok")
 
 
