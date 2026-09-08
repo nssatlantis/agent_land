@@ -112,11 +112,11 @@ class _GitFixture:
 
     def patch_runner(self):
         self._saved = (
-            (ci_runner, "_runner_dir", ci_runner._runner_dir),
+            (ci_runner._trees, "_runner_dir", ci_runner._trees._runner_dir),
             (ci_runner.github._gitops, "_repo_url", ci_runner.github._gitops._repo_url),
             (ci_runner.github, "base_branch", ci_runner.github.base_branch),
         )
-        ci_runner._runner_dir = lambda: str(self.tree_dir)
+        ci_runner._trees._runner_dir = lambda: str(self.tree_dir)
         ci_runner.github._gitops._repo_url = lambda with_token=False: str(self.bare)
         ci_runner.github.base_branch = lambda: "main"
 
@@ -129,9 +129,9 @@ def _patched_execution(stub_script: str):
     holder = {"image_calls": 0}
     rev_holder = {"rev": None}
     saved = (
-        ci_runner._ensure_image,
-        ci_runner._sandbox_argv,
-        ci_runner._docker_available,
+        ci_runner._sandbox._ensure_image,
+        ci_runner._sandbox._sandbox_argv,
+        ci_runner._sandbox._docker_available,
     )
 
     def fake_image(tree, rev):
@@ -142,15 +142,15 @@ def _patched_execution(stub_script: str):
     def fake_argv(tree, image_tag, script_rel):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
-    ci_runner._ensure_image = fake_image
-    ci_runner._sandbox_argv = fake_argv
-    ci_runner._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = fake_image
+    ci_runner._sandbox._sandbox_argv = fake_argv
+    ci_runner._sandbox._docker_available = lambda: True
 
     def restore():
         (
-            ci_runner._ensure_image,
-            ci_runner._sandbox_argv,
-            ci_runner._docker_available,
+            ci_runner._sandbox._ensure_image,
+            ci_runner._sandbox._sandbox_argv,
+            ci_runner._sandbox._docker_available,
         ) = saved
 
     return restore, holder, rev_holder
@@ -188,7 +188,7 @@ def test_pr_requirements_never_reach_the_build():
     try:
         result = ci_runner.run_checks(actor, "t", "tests", pr_number=7)
         assert result["ok"] is True and holder["image_calls"] == 1
-        tree = Path(ci_runner._runner_dir())
+        tree = Path(ci_runner._trees._runner_dir())
         merged_reqs = (tree / "requirements.txt").read_text()
         assert "attacker-pkg==6.6.6" in merged_reqs, (
             "fixture sanity: merge tree carries the PR's deps"
@@ -202,7 +202,7 @@ def test_pr_requirements_never_reach_the_build():
 
 
 def _docker_present() -> bool:
-    return ci_runner._docker_available()
+    return ci_runner._sandbox._docker_available()
 
 
 def test_hostile_payload_contained():
@@ -245,7 +245,7 @@ def test_hostile_payload_contained():
         print(json.dumps({"leaked": sorted(leaked), "net": net}))
         sys.exit(0)
     """)
-    saved_prepare = ci_runner._prepare_pr_tree
+    saved_prepare = ci_runner._trees._prepare_pr_tree
 
     def seeded_prepare(pr_number):
         tree, sha, info = saved_prepare(pr_number)
@@ -253,7 +253,7 @@ def test_hostile_payload_contained():
         script.write_text(payload)
         return tree, sha, info
 
-    ci_runner._prepare_pr_tree = seeded_prepare
+    ci_runner._trees._prepare_pr_tree = seeded_prepare
     try:
         result = ci_runner.run_checks(actor, "t", "tests", pr_number=7)
         assert result["ok"] is True, result["output_tail"]
@@ -261,7 +261,7 @@ def test_hostile_payload_contained():
         assert report["leaked"] == [], f"secrets reached the sandbox: {report}"
         assert report["net"] is False, "network egress was possible!"
     finally:
-        ci_runner._prepare_pr_tree = saved_prepare
+        ci_runner._trees._prepare_pr_tree = saved_prepare
         fx.unpatch()
 
 

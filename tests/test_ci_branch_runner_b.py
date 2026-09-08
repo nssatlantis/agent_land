@@ -121,11 +121,11 @@ class _GitFixture:
 
     def patch_runner(self):
         self._saved = (
-            (ci_runner, "_runner_dir", ci_runner._runner_dir),
+            (ci_runner._trees, "_runner_dir", ci_runner._trees._runner_dir),
             (ci_runner.github._gitops, "_repo_url", ci_runner.github._gitops._repo_url),
             (ci_runner.github, "base_branch", ci_runner.github.base_branch),
         )
-        ci_runner._runner_dir = lambda: str(self.tree_dir)
+        ci_runner._trees._runner_dir = lambda: str(self.tree_dir)
         ci_runner.github._gitops._repo_url = lambda with_token=False: str(self.bare)
         ci_runner.github.base_branch = lambda: "main"
 
@@ -142,12 +142,12 @@ def test_gate_bucket_is_branch_kind():
     _shadow("CI_RUN_COOLDOWN_SECONDS", 300)
     fx = _GitFixture(conflicting=False)
     fx.patch_runner()
-    saved_avail = ci_runner._docker_available
-    ci_runner._docker_available = lambda: True
-    saved_img = ci_runner._ensure_image
-    ci_runner._ensure_image = lambda tree, rev: "fake:tag"
-    saved_argv = ci_runner._sandbox_argv
-    ci_runner._sandbox_argv = lambda tree, image_tag, script_rel: (
+    saved_avail = ci_runner._sandbox._docker_available
+    ci_runner._sandbox._docker_available = lambda: True
+    saved_img = ci_runner._sandbox._ensure_image
+    ci_runner._sandbox._ensure_image = lambda tree, rev: "fake:tag"
+    saved_argv = ci_runner._sandbox._sandbox_argv
+    ci_runner._sandbox._sandbox_argv = lambda tree, image_tag, script_rel: (
         [sys.executable, "-c", "print('hi')"],
         "c1",
     )
@@ -158,9 +158,9 @@ def test_gate_bucket_is_branch_kind():
         assert "cooldown" in str(exc)
     finally:
         _restore_cfg()
-        ci_runner._docker_available = saved_avail
-        ci_runner._ensure_image = saved_img
-        ci_runner._sandbox_argv = saved_argv
+        ci_runner._sandbox._docker_available = saved_avail
+        ci_runner._sandbox._ensure_image = saved_img
+        ci_runner._sandbox._sandbox_argv = saved_argv
         fx.unpatch()
 
 
@@ -171,7 +171,9 @@ def test_sandbox_argv_shape():
     _shadow("CI_RUN_SANDBOX_PIDS", 64)
     _shadow("CI_RUN_SANDBOX_TMP_SIZE_MB", 32)
     try:
-        argv, name = ci_runner._sandbox_argv("/tree", "img:abc", "tests/run_all.py")
+        argv, name = ci_runner._sandbox._sandbox_argv(
+            "/tree", "img:abc", "tests/run_all.py"
+        )
         text = json.dumps(argv)
         assert "--network" in argv and "none" in argv
         assert "--read-only" in argv
@@ -289,9 +291,9 @@ def _patched_execution(stub_script: str):
     holder = {"image_calls": 0}
     rev_holder = {"rev": None}
     saved = (
-        ci_runner._ensure_image,
-        ci_runner._sandbox_argv,
-        ci_runner._docker_available,
+        ci_runner._sandbox._ensure_image,
+        ci_runner._sandbox._sandbox_argv,
+        ci_runner._sandbox._docker_available,
     )
 
     def fake_image(tree, rev):
@@ -302,15 +304,15 @@ def _patched_execution(stub_script: str):
     def fake_argv(tree, image_tag, script_rel):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
-    ci_runner._ensure_image = fake_image
-    ci_runner._sandbox_argv = fake_argv
-    ci_runner._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = fake_image
+    ci_runner._sandbox._sandbox_argv = fake_argv
+    ci_runner._sandbox._docker_available = lambda: True
 
     def restore():
         (
-            ci_runner._ensure_image,
-            ci_runner._sandbox_argv,
-            ci_runner._docker_available,
+            ci_runner._sandbox._ensure_image,
+            ci_runner._sandbox._sandbox_argv,
+            ci_runner._sandbox._docker_available,
         ) = saved
 
     return restore, holder, rev_holder
