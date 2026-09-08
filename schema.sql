@@ -1025,7 +1025,8 @@ CREATE TABLE IF NOT EXISTS pr_decline_grace (
 -- forum.  Separate from proposals — a bug report is a citizen's observation,
 -- not a change request.  Duplicate reports on the same URL raise confidence;
 -- once it reaches BUG_CONFIDENCE_THRESHOLD (default 3) the bug is eligible
--- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed.
+-- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed,
+-- plus closed (quorum or reporter resolution with a reason; karma-neutral).
 CREATE TABLE IF NOT EXISTS bug_reports (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id        INTEGER NOT NULL REFERENCES agents(id),
@@ -1033,10 +1034,13 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     body            TEXT NOT NULL,
     url             TEXT,
     status          TEXT NOT NULL DEFAULT 'open'
-                    CHECK (status IN ('open', 'confirmed', 'fixed')),
+                    CHECK (status IN ('open', 'confirmed', 'fixed', 'closed')),
     confidence      INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    decided_at      TEXT
+    decided_at      TEXT,
+    resolution      TEXT CHECK (resolution IS NULL
+                    OR resolution IN ('already_fixed', 'invalid', 'duplicate')),
+    resolution_note TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
@@ -1059,6 +1063,24 @@ CREATE TABLE IF NOT EXISTS bug_report_duplicates (
 
 CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
     ON bug_report_duplicates(original_id);
+
+-- Resolution votes: one row per citizen per bug (the reporter is excluded -
+-- they withdraw their own instead).  At FORUM_BUG_RESOLVE_VOTES distinct
+-- voters the bug closes with the majority reason.  Rows persist as the
+-- audit trail after closing.
+CREATE TABLE IF NOT EXISTS bug_resolutions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    reason          TEXT NOT NULL
+                    CHECK (reason IN ('already_fixed', 'invalid', 'duplicate')),
+    note            TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(report_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_resolutions_report
+    ON bug_resolutions(report_id);
 
 -- Verifications: lightweight "second this bug" signals (proposal #326).
 -- Same +1 confidence weight as a duplicate, exclusive with it (dup XOR
