@@ -530,9 +530,9 @@ def _render_ci_dashboard(request) -> str:
         f'<form method="post" action="/admin/ci/clear-pending">{_csrf_field(request)}<button type="submit">Clear pending queue</button></form>'
         f'<form method="post" action="/admin/ci/prune-images">{_csrf_field(request)}<button type="submit">Prune stale images</button></form>'
         f'<form method="post" action="/admin/ci/restart-ticker">{_csrf_field(request)}<button type="submit">Restart ticker</button></form>'
-        f'<form method="post" action="/admin/ci/gc-workspaces">{_csrf_field(request)}<button type="submit">GC workspaces (prune now)</button></form>'
+        f'<form method="post" action="/admin/ci/gc-workspaces">{_csrf_field(request)}<button type="submit">GC CI trees (prune now)</button></form>'
         "</div>"
-        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees.</p>'
+        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees only (git-workspace slots are scrubbed on every acquire instead).</p>'
         "</div>"
     )
 

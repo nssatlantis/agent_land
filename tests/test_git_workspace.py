@@ -13,7 +13,7 @@ calls. These tests pin the contract with local bare remotes (no network):
 - a corrupted slot directory self-heals via fresh clone;
 - the default temp mode keeps the legacy clone-per-call contract.
 - pool-use counters (acquires, full fetches, fetch skips, temp fallbacks,
-  saturations, fresh clones) feed the /status snapshot, so pool demand is
+  saturations, fresh clones) feed the /admin/ci snapshot, so pool demand is
   visible without host-log access;
 """
 
