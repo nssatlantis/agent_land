@@ -379,13 +379,7 @@ def run_checks(
             env = _child_env(tmp_root)
         elif branch_mode:
             assert pr_number is not None
-            try:
-                tree, head_sha, merge_info = _trees_mod._prepare_pr_tree(
-                    pr_number, slot=slot
-                )
-            except TypeError:  # domain:degrade-silently - fallback for tests that monkeypatch with no slot arg
-                # Fallback for tests that monkeypatch _prepare_pr_tree with no slot arg
-                tree, head_sha, merge_info = _trees_mod._prepare_pr_tree(pr_number)
+            tree, head_sha, merge_info = _trees_mod._prepare_br_tree(pr_number)
             if merge_info["conflict"]:
                 duration = round(time.monotonic() - started, 2)
                 payload = {
@@ -497,6 +491,7 @@ def run_checks(
             result["pr_number"] = pr_number
             result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
+            result["tree_warm"] = bool(merge_info.get("tree_warm"))
         result["sandboxed"] = sandboxed
         result.update(pieces)
         if mode == "native" and checks == "tests":
@@ -532,6 +527,7 @@ def run_checks(
                 detail["delta_count"] = merge_info.get("delta_count", 0)
         elif branch_mode:
             detail["pr_number"] = pr_number
+            detail["tree_warm"] = bool(merge_info.get("tree_warm"))
         detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
@@ -658,9 +654,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         raise
     try:
         try:
-            tree, head_sha, merge_info = _trees_mod._prepare_pr_tree(
-                pr_number, slot=slot
-            )
+            tree, head_sha, merge_info = _trees_mod._prepare_br_tree(pr_number)
         except TypeError:  # domain:degrade-silently - fallback for tests that monkeypatch with no slot arg
             tree, head_sha, merge_info = _trees_mod._prepare_pr_tree(pr_number)
         if merge_info["conflict"]:
@@ -723,6 +717,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             "pr_number": pr_number,
             "base_sha": (merge_info.get("base") or head_sha),
             "merge_conflict": False,
+            "tree_warm": bool(merge_info.get("tree_warm")),
         }
         result.update(pieces)
         result["head_sha"] = head_sha
@@ -735,6 +730,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             "duration_seconds": pieces["duration_seconds"],
             "head_sha": head_sha,
             "pr_number": pr_number,
+            "tree_warm": bool(merge_info.get("tree_warm")),
             "poller_triggered": True,
         }
         detail = _ci_detail_with_output(detail, pieces)
