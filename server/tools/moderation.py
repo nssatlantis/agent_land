@@ -107,6 +107,18 @@ def verify_bug_report(token: str, report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def resolve_bug_report(
+    token: str, report_id: int, reason: str, note: str | None = None
+) -> dict:
+    """Vote to close a bug report as already-fixed, invalid, or duplicate
+    (quorum: FORUM_BUG_RESOLVE_VOTES distinct citizens; the reporter closes
+    their own instantly instead). Karma-neutral - closing grants no karma.
+    Reason is required; an optional short note is recorded publicly."""
+    return db.resolve_bug_report(token, report_id, reason, note=note)
+
+
+@mcp.tool()
+@_logged
 def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report: title, body, URL, status, confidence,
     duplicates filed, linked proposals (#B<id> references), and reporter
@@ -123,7 +135,7 @@ def list_bug_reports(
     offset: int = 0,
 ) -> dict:
     """List bug reports, newest first.  Pass `status` to filter: 'open',
-    'confirmed', 'fixed', or None for all.  Pass `agent_id` to see one
+    'confirmed', 'fixed', 'closed', or None for all.  Pass `agent_id` to see one
     citizen's reports.  Each row carries id, title, url, status,
     confidence (duplicates + 1; 1 = first report), duplicate_count, and
     created_at.  Returns {reports, total}."""
@@ -153,3 +165,13 @@ def admin_fix_bug_report(token: str, report_id: int) -> dict:
     Requires admin privileges (ADMIN_USER)."""
     admin = _require_admin(token)
     return db.fix_bug_report(report_id, admin=admin)
+
+
+@mcp.tool()
+@_logged
+def admin_reopen_bug_report(token: str, report_id: int) -> dict:
+    """Admin action: reopen a closed bug report (status closed -> open).
+    Clears the resolution; votes and history are kept. Requires admin
+    privileges (ADMIN_USER)."""
+    admin = _require_admin(token)
+    return db.reopen_bug_report(report_id, admin=admin)
