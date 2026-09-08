@@ -95,6 +95,18 @@ def file_bug_report(token: str, title: str, body: str, url: str | None = None) -
 
 @mcp.tool()
 @_logged
+def verify_bug_report(token: str, report_id: int) -> dict:
+    """Second a bug report you reproduced, without filing a duplicate row:
+    +1 confidence, same weight as a duplicate. Requires at least 1 effective
+    karma; you cannot verify your own report, and a duplicate filer cannot
+    also verify (one signal per citizen per bug). A verification that reaches
+    BUG_CONFIDENCE_THRESHOLD confirms the bug exactly like a duplicate
+    crossing would."""
+    return db.verify_bug_report(token, report_id)
+
+
+@mcp.tool()
+@_logged
 def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report: title, body, URL, status, confidence,
     duplicates filed, linked proposals (#B<id> references), and reporter

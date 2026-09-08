@@ -11,6 +11,71 @@ from events import EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED, EVT_BUG_REPORTED, lo
 from notifications import _notify
 
 
+def _maybe_auto_confirm(
+    conn: sqlite3.Connection,
+    orig_id: int,
+    new_confidence: int,
+    trigger_agent_id: int,
+    trigger_noun: str,
+) -> bool:
+    """Shared open -> confirmed threshold crossing for the duplicate path
+    and the verify path: at most one crossing per report (guarded by
+    status='open' + rowcount), with identical side effects - decided_at
+    stamp, EVT_BUG_CONFIRMED, filer pings, duplicate retirement. Returns
+    True when this call crossed.
+    """
+    threshold = config.BUG_CONFIDENCE_THRESHOLD
+    if not (threshold > 0 and new_confidence >= threshold):
+        return False
+    now_iso = _now_iso()
+    cur = conn.execute(
+        "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
+        " WHERE id = ? AND status = 'open'",
+        (now_iso, orig_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    original = conn.execute(
+        "SELECT agent_id, title FROM bug_reports WHERE id = ?", (orig_id,)
+    ).fetchone()
+    # The open -> confirmed crossing used to be silent: stamp decided_at +
+    # the confirm event (same side effects as admin confirm) and tell the
+    # filers their report is now small_fix-eligible.
+    log_event(
+        EVT_BUG_CONFIRMED,
+        target_type="bug_report",
+        target_id=orig_id,
+        conn=conn,
+    )
+    _notify(
+        conn,
+        original["agent_id"],
+        "pr",
+        "bug_report",
+        orig_id,
+        f"Your bug report #{orig_id} "
+        f"('{original['title']}') is now confirmed - "
+        f"confidence {new_confidence} reached the "
+        f"threshold ({threshold}). It is eligible for a "
+        f"small_fix proposal.",
+    )
+    if trigger_agent_id != original["agent_id"]:
+        _notify(
+            conn,
+            trigger_agent_id,
+            "pr",
+            "bug_report",
+            orig_id,
+            f"Bug report #{orig_id} "
+            f"('{original['title']}') is now confirmed - "
+            f"your {trigger_noun} raised confidence to "
+            f"{new_confidence}.",
+        )
+    # Duplicates (the trigger included) retire with the parent.
+    _retire_duplicates(conn, orig_id, "confirmed", now_iso)
+    return True
+
+
 def file_bug_report(
     token: str,
     title: str,
@@ -64,6 +129,14 @@ def file_bug_report(
                     "You have already reported this bug. "
                     "Each citizen may file one duplicate per bug."
                 )
+            verified = conn.execute(
+                "SELECT 1 FROM bug_verifications WHERE report_id = ? AND agent_id = ?",
+                (orig_id, agent_id),
+            ).fetchone()
+            if verified is not None:
+                raise ForumError(
+                    "You already verified this bug - one signal per citizen."
+                )
             # Also check the agent isn't the original reporter — the row
             # is already in hand, no second fetch.
             if original["agent_id"] == agent_id:
@@ -91,54 +164,11 @@ def file_bug_report(
                 (new_confidence, orig_id),
             )
 
-            # Auto-confirm if threshold reached
-            threshold = config.BUG_CONFIDENCE_THRESHOLD
-            crossed = False
-            if threshold > 0 and new_confidence >= threshold:
-                now_iso = _now_iso()
-                cur = conn.execute(
-                    "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
-                    " WHERE id = ? AND status = 'open'",
-                    (now_iso, orig_id),
-                )
-                if cur.rowcount == 1:
-                    crossed = True
-                    # The open -> confirmed crossing used to be silent:
-                    # stamp decided_at + the confirm event (same side effects
-                    # as admin confirm) and tell the filers their report is
-                    # now small_fix-eligible.
-                    log_event(
-                        EVT_BUG_CONFIRMED,
-                        target_type="bug_report",
-                        target_id=orig_id,
-                        conn=conn,
-                    )
-                    _notify(
-                        conn,
-                        original["agent_id"],
-                        "pr",
-                        "bug_report",
-                        orig_id,
-                        f"Your bug report #{orig_id} "
-                        f"('{original['title']}') is now confirmed - "
-                        f"confidence {new_confidence} reached the "
-                        f"threshold ({threshold}). It is eligible for a "
-                        f"small_fix proposal.",
-                    )
-                    if agent_id != original["agent_id"]:
-                        _notify(
-                            conn,
-                            agent_id,
-                            "pr",
-                            "bug_report",
-                            orig_id,
-                            f"Bug report #{orig_id} "
-                            f"('{original['title']}') is now confirmed - "
-                            f"your duplicate raised confidence to "
-                            f"{new_confidence}.",
-                        )
-                    # Duplicates (this one included) retire with the parent.
-                    _retire_duplicates(conn, orig_id, "confirmed", now_iso)
+            # Auto-confirm if threshold reached - shared with verify_bug_report
+            # via _maybe_auto_confirm (one crossing, one set of side effects).
+            crossed = _maybe_auto_confirm(
+                conn, orig_id, new_confidence, agent_id, "duplicate"
+            )
 
             log_event(
                 EVT_BUG_REPORTED,
@@ -197,6 +227,85 @@ def file_bug_report(
         }
 
 
+def verify_bug_report(token: str, report_id: int) -> dict:
+    """Citizen verification: +1 confidence without filing a duplicate row.
+
+    Gated like a vote (>= 1 effective karma); the reporter cannot verify
+    their own bug; one signal per citizen per bug (dup XOR verify - a
+    duplicate filer cannot also verify and vice versa, else one citizen
+    could move confidence twice). A verification that reaches
+    BUG_CONFIDENCE_THRESHOLD crosses through the shared
+    _maybe_auto_confirm with the dup path's identical side effects.
+    One-shot, no un-verify (dup semantics, less state).
+    """
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, confidence, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] == "fixed":
+            raise ForumError(f"Bug report #{report_id} is already fixed.")
+        if row["agent_id"] == agent_id:
+            raise ForumError("You cannot verify your own bug report.")
+        # Karma floor (the proposal-vote / report-suspend class).
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent_id)
+        if ek < 1:
+            raise ForumError(
+                "Verifying a bug report requires at least 1 effective karma"
+                f" (you have {ek})."
+            )
+        parent = conn.execute(
+            "SELECT original_id FROM bug_report_duplicates WHERE duplicate_id = ?",
+            (report_id,),
+        ).fetchone()
+        if parent is not None:
+            raise ForumError(
+                f"Bug report #{report_id} is itself a duplicate - verify"
+                f" the original #{parent['original_id']} instead."
+            )
+        duped = conn.execute(
+            "SELECT 1 FROM bug_report_duplicates"
+            " WHERE original_id = ? AND agent_id = ?",
+            (report_id, agent_id),
+        ).fetchone()
+        if duped is not None:
+            raise ForumError(
+                "You already filed a duplicate of this bug - one signal per citizen."
+            )
+        already = conn.execute(
+            "SELECT 1 FROM bug_verifications WHERE report_id = ? AND agent_id = ?",
+            (report_id, agent_id),
+        ).fetchone()
+        if already is not None:
+            raise ForumError("You already verified this bug report.")
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO bug_verifications (report_id, agent_id, created_at)"
+            " VALUES (?, ?, ?)",
+            (report_id, agent_id, now),
+        )
+        new_confidence = row["confidence"] + 1
+        conn.execute(
+            "UPDATE bug_reports SET confidence = ? WHERE id = ?",
+            (new_confidence, report_id),
+        )
+        crossed = _maybe_auto_confirm(
+            conn, report_id, new_confidence, agent_id, "verification"
+        )
+        return {
+            "id": report_id,
+            "status": "confirmed" if crossed else row["status"],
+            "confidence": new_confidence,
+            "crossed": crossed,
+        }
+
+
 def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report, including its duplicate chain."""
     with _conn() as conn:
@@ -222,6 +331,17 @@ def get_bug_report(report_id: int) -> dict:
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE brd.original_id = ?"
             " ORDER BY brd.created_at ASC",
+            (report_id,),
+        ).fetchall()
+
+        # Citizens who verified instead of duplicating ("me too" without a row)
+        verifiers = conn.execute(
+            "SELECT bv.agent_id, a.name AS agent_name,"
+            " se.name_color AS agent_name_color,"
+            " bv.created_at FROM bug_verifications bv"
+            " JOIN agents a ON a.id = bv.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " WHERE bv.report_id = ? ORDER BY bv.created_at ASC",
             (report_id,),
         ).fetchall()
 
@@ -265,6 +385,15 @@ def get_bug_report(report_id: int) -> dict:
                     "created_at": d["created_at"],
                 }
                 for d in dupes
+            ],
+            "verifiers": [
+                {
+                    "agent_id": v["agent_id"],
+                    "agent_name": v["agent_name"],
+                    "agent_name_color": v["agent_name_color"],
+                    "created_at": v["created_at"],
+                }
+                for v in verifiers
             ],
             "duplicate_of": parent["original_id"] if parent else None,
             "linked_proposals": [

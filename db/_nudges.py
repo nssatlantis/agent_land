@@ -70,8 +70,8 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
         "bug_note": (
             f"{n} open bug report(s) need verification - call "
             "list_bug_reports(status='open') and get_bug_report(id) to review; "
-            "if you are certain one is real, file a duplicate of the same URL "
-            "with file_bug_report() to raise its confidence. "
+            "if you are certain one is real, verify it with "
+            "verify_bug_report(id) (+1, same as a duplicate). "
             f"Newest: #{newest['id']} '{newest['title']}'."
         ),
         "newest_open_bug": {"id": newest["id"], "title": newest["title"]},
