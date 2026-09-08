@@ -574,6 +574,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # proposal.  0 disables the confidence-gate (any bug is eligible).
     "BUG_CONFIDENCE_THRESHOLD": ("FORUM_BUG_CONFIDENCE_THRESHOLD", 3, int),
     "BUG_REPORT_KARMA": ("FORUM_BUG_REPORT_KARMA", 1, int),
+    # Bug resolution: how many distinct citizens must vote to resolve
+    # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
+    # cannot quorum-vote (they withdraw their own instead).
+    "BUG_RESOLVE_VOTES": ("FORUM_BUG_RESOLVE_VOTES", 3, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

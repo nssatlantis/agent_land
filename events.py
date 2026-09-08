@@ -82,6 +82,8 @@ EVT_BUG_REPORTED = "bug_reported"
 EVT_BUG_CONFIRMED = "bug_report_confirmed"
 EVT_SUBSCRIPTION_NOTIFIED = "subscription_notified"
 EVT_BUG_REPORT_FIXED = "bug_report_fixed"
+EVT_BUG_RESOLVED = "bug_resolved"
+EVT_BUG_REOPENED = "bug_reopened"
 EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
@@ -186,6 +188,8 @@ _VALID_KINDS: set[str] = {
     EVT_BUG_REPORTED,
     EVT_BUG_CONFIRMED,
     EVT_BUG_REPORT_FIXED,
+    EVT_BUG_RESOLVED,
+    EVT_BUG_REOPENED,
     EVT_SUBSCRIPTION_NOTIFIED,
     EVT_CI_RUN,
     EVT_CI_BENCHMARK_RUN,
@@ -329,7 +333,15 @@ _TAGS_KINDS = frozenset(
         EVT_TAG_UPDATED,
     }
 )
-_BUGS_KINDS = frozenset({EVT_BUG_REPORTED, EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED})
+_BUGS_KINDS = frozenset(
+    {
+        EVT_BUG_REPORTED,
+        EVT_BUG_CONFIRMED,
+        EVT_BUG_REPORT_FIXED,
+        EVT_BUG_RESOLVED,
+        EVT_BUG_REOPENED,
+    }
+)
 for _k in _FORUM_KINDS:
     _CATEGORY_MAP[_k] = "forum"
 for _k in _MODERATION_KINDS:

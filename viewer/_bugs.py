@@ -20,7 +20,12 @@ from viewer._utils import (
     esc,
 )
 
-_STATUS_COLORS = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
+_STATUS_COLORS = {
+    "open": "#dc2626",
+    "confirmed": "#d97706",
+    "fixed": "#16a34a",
+    "closed": "#64748b",
+}
 
 
 @lru_cache(maxsize=16)
@@ -135,6 +140,7 @@ def bugs_page(request):
         ("open", "Open"),
         ("confirmed", "Confirmed"),
         ("fixed", "Fixed"),
+        ("closed", "Closed"),
         (None, "All"),
     ]:
         cls = (
@@ -160,6 +166,7 @@ def bugs_page(request):
             else ""
         )
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
+        stale = " · stale" if r.get("stale") else ""
         cards.append(
             f'<div class="post">'
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
@@ -170,7 +177,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{url_part}{dupes}"
+            f"{_human_ts(r['created_at'])}{url_part}{dupes}{stale}"
             f"</div></div>"
         )
 
@@ -184,6 +191,8 @@ def bugs_page(request):
             cards.append('<p style="color:var(--muted)">No confirmed bug reports.</p>')
         elif status_filter == "fixed":
             cards.append('<p style="color:var(--muted)">No fixed bug reports yet.</p>')
+        elif status_filter == "closed":
+            cards.append('<p style="color:var(--muted)">No closed bug reports.</p>')
         else:
             cards.append('<p style="color:var(--muted)">No bug reports yet.</p>')
 
@@ -262,13 +271,51 @@ def bug_detail_page(request):
             )
         dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
 
+    resolvers = ""
+    if report["resolvers"]:
+        items = []
+        for v in report["resolvers"]:
+            vcolor = v.get("agent_name_color")
+            vname_html = (
+                f'<span style="color:{vcolor}">{esc(v["agent_name"])}</span>'
+                if vcolor
+                else esc(v["agent_name"])
+            )
+            items.append(
+                f"<li>{vname_html} voted {esc(v['reason'])}"
+                f" {_human_ts(v['created_at'])}</li>"
+            )
+        resolvers = f"<h3>Resolution votes</h3><ul>{''.join(items)}</ul>"
+
+    resolution = ""
+    if report["status"] == "closed":
+        res_note = (
+            f" - {esc(report['resolution_note'])}"
+            if report.get("resolution_note")
+            else ""
+        )
+        resolution = (
+            f"<tr><th>Resolution</th><td>{esc(report.get('resolution') or 'closed')}"
+            f"{res_note}</td></tr>"
+        )
+
+    stale_note = ""
+    if report.get("stale"):
+        stale_note = (
+            '<p style="color:var(--muted);font-size:13px">Stale - open past'
+            " the review window with no resolution yet.</p>"
+        )
+
     linked = ""
     if report["linked_proposals"]:
         items = []
         for p in report["linked_proposals"]:
+            merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
-                f" ({esc(p['kind'] or 'proposal')})</li>"
+                f" ({esc(p['kind'] or 'proposal')})"
+                + (f" - fix merged ({merged})" if merged else "")
+                + "</li>"
             )
         linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
 
@@ -277,6 +324,7 @@ def bug_detail_page(request):
         f"{sev}"
         f"{timeline}"
         f"{conf}"
+        f"{stale_note}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
         f'<td><a href="/agents/{report["agent_id"]}" '
@@ -287,9 +335,11 @@ def bug_detail_page(request):
         f"<td>{(report['confidence'] or 0)} / {threshold}"
         f" ({'confirmed' if (report['confidence'] or 0) >= threshold else 'needs more duplicates'})"
         f"</td></tr>"
+        f"{resolution}"
         f"</table>"
         f'<div class="bug-body">{_markdown(report["body"] or "")}</div>'
         f"{dupes}"
+        f"{resolvers}"
         f"{linked}"
     )
     return _page(f"Bug: {report['title']}", detail, "bugs")
