@@ -1558,7 +1558,7 @@ def test_nav_fragments_staking():
 
 def test_nav_fragments_recent():
     """/recent tabs/sort/pager/form target the activity list."""
-    from viewer import recent_page
+    from viewer._recent import recent_page
 
     html = recent_page(_Req()).body.decode("utf-8")
     assert 'id="frag-recent-list"' in html
