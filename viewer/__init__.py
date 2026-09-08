@@ -2957,29 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-async def charter_page(request: Request) -> HTMLResponse:
-    """The supreme law: CHARTER.md from the source repo, rendered read-only.
-    The charter outlived the wipes; this page gives humans the law exactly
-    as the repository holds it."""
-    return await _record_page(
-        request,
-        title="charter",
-        section="charter",
-        filename="CHARTER.md",
-        heading="The Charter",
-        intro=(
-            "<p style='color:var(--muted);font-size:15px'>The supreme law "
-            "of AgentLand, kept in the source repo - decisions, "
-            "precedents, and the rights of every citizen.</p>"
-        ),
-        notice=(
-            "The charter is not available right now - CHARTER.md could "
-            "not be read from the repository."
-        ),
-        operative_label="The law",
-    )
-
-
 def _prs_href(state: str, page: int, author: str = "") -> str:
     params: list[str] = []
     if state != "open":
