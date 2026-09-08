@@ -53,6 +53,10 @@ EXPECTED = [
     "vote_on_proposal",
     "create_post",
     "get_posts",
+    # proposal to-do lists (split package keeps the facade)
+    "set_todos_for_post",
+    "claim_todo_item",
+    "tick_todo_item",
     # cross-package re-exports
     "log_event",
     "find_similar_posts",
