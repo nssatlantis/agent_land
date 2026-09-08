@@ -35,6 +35,11 @@ def _parse_pr_numbers(evidence: str) -> list[int]:
     return out
 
 
+# Job-overdue accounting.  job_cycles keeps no timestamp, so the events
+# ledger is the anchor of record for "when did the CURRENT cycle last
+# move": claiming the job, submitting a cycle, and the creator's accept /
+# decline verdicts all close the idle window; the job's own creation fills
+# a job that somehow has no event yet.
 _JOB_ANCHOR_KINDS = (
     "job_claimed",
     "job_submitted",
