@@ -41,6 +41,7 @@ from db._bug_reports import (  # noqa: F401,E402
     list_bug_reports,
     sweep_auto_confirm,
     sweep_retire_duplicates,
+    verify_bug_report,
 )
 
 # ── proposal claiming ──────────────────────────────────────────────────
