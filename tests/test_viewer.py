@@ -17,22 +17,25 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402
-from viewer import (  # noqa: E402
-    _economy_body,
-    _frag_path,
-    _jobs_body,
-    _staking_body,
-    economy_page,
-    fragments,
-    jobs_page,
-    staking_page,
-)
 from viewer import _layout as _layout_mod  # noqa: E402
 from viewer import _status as _status_mod  # noqa: E402
+from viewer import (  # noqa: E402
+    fragments,
+)
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._citizens_helpers import _profile_cards  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
 from viewer._feed_helpers import _collaborators_panel  # noqa: E402
+from viewer._layout import _frag_path  # noqa: E402
+from viewer._money import (  # noqa: E402
+    _economy_body,
+    _jobs_body,
+    _staking_body,
+    credits_global_page,
+    economy_page,
+    jobs_page,
+    staking_page,
+)
 from viewer._pr_helpers import (
     _ci_chip,
     _open_pr_cell,
@@ -1532,7 +1535,6 @@ def test_nav_fragments_tags():
 
 def test_nav_fragments_credits():
     """/credits tabs/pager target the ledger (sec-credits-ledger)."""
-    from viewer import credits_global_page
 
     html = credits_global_page(_Req()).body.decode("utf-8")
     assert 'id="sec-credits-ledger"' in html
@@ -1549,7 +1551,7 @@ def test_nav_fragments_jobs_params():
 
 def test_nav_fragments_staking():
     """/staking tabs/pager target the stakes list (stake-list)."""
-    from viewer import staking_page
+    from viewer._money import staking_page
 
     html = staking_page(_Req()).body.decode("utf-8")
     assert 'id="stake-list"' in html
