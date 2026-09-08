@@ -61,7 +61,6 @@ from viewer._api import (
     api_recent,
 )
 from viewer._bugs import bug_detail_page, bugs_page
-from viewer._cache import _acached
 from viewer._ci import ci_page
 from viewer._citizens_helpers import _citizen_table, _profile_cards
 from viewer._collaborative import _collaborative_panels, collaborative_page
@@ -98,6 +97,7 @@ from viewer._pr_helpers import (
 )
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._pulse import _pulse_panels, pulse_page
+from viewer._records import charter_page, citizens_page, history_page
 from viewer._render_helpers import (
     _TODO_PAGE_SIZE,
     _TODO_TALL_CAP,
@@ -130,13 +130,9 @@ from viewer._static import static_style_css
 from viewer._tree import lineage_page
 from viewer._utils import (
     _abs,
-    _heading_sections,
     _human_ts,
     _markdown,
     _parse_iso,
-    _recent_changes_html,
-    _split_changes,
-    _toc_nav,
     _truncate,
     _ts_or_dash,
     esc,
@@ -2961,18 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-def _read_record_md(filename: str) -> str | None:
-    """A record file from the repo working tree, or None when it is missing
-    or unreadable. Record files are checked in, so this never touches the
-    network - it just reads what the deployment has checked out."""
-    try:
-        return (Path(db.REPO_DIR) / filename).read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        return None
-
-
 async def _record_md(filename: str) -> str | None:
     """A record file, cached briefly so the page stays cheap under
     auto-refresh. Returns None when the file cannot be read, and the page
@@ -3021,7 +3005,7 @@ def _read_record_stamp(filename: str) -> str:
         return ""
 
 
-async def _record_stamp(filename: str) -> str:
+async def _record_stamp_KEPT(filename: str) -> str:
     """The record page's 'last commit' line, on the same short TTL as
     _record_md so auto-refresh stays cheap. Runs in a worker thread (this
     loop also serves the MCP endpoint)."""
