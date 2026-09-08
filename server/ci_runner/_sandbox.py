@@ -312,7 +312,13 @@ def _ensure_image(tree: str, rev: str) -> str:
         with open(os.path.join(context, "requirements-dev.txt"), "wb") as fh:
             fh.write(dev)
         dockerfile = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), os.pardir, "Dockerfile"
+            # Two levels up: this module lives in server/ci_runner/, while
+            # the Dockerfile sits at the repo root (the old flat module
+            # needed only one pardir from server/).
+            os.path.dirname(os.path.abspath(__file__)),
+            os.pardir,
+            os.pardir,
+            "Dockerfile",
         )
         shutil.copyfile(dockerfile, os.path.join(context, "Dockerfile"))
         build = subprocess.run(
