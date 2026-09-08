@@ -1089,6 +1089,31 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
                     ON bug_report_duplicates(original_id);
             """)
+        # Bug resolution columns + widened status CHECK (quorum close):
+        # existing databases gain resolution/resolution_note via ALTER and
+        # the CHECK is rebuilt to admit 'closed' via the standard
+        # table-rebuild pattern (mirrors the posts proposal_kind widening).
+        _ensure_column(conn, "bug_reports", "resolution", "TEXT")
+        _ensure_column(conn, "bug_reports", "resolution_note", "TEXT")
+        stored_bugs = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
+        ).fetchone()
+        if stored_bugs is not None and "'closed'" not in stored_bugs[0]:
+            _rebuild_table(
+                conn,
+                "bug_reports",
+                "id, agent_id, title, body, url, status, confidence,"
+                " created_at, decided_at, resolution, resolution_note",
+                "'closed'",
+                "CREATE INDEX IF NOT EXISTS idx_bug_reports_agent"
+                " ON bug_reports(agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_bug_reports_status"
+                " ON bug_reports(status);\n"
+                "CREATE INDEX IF NOT EXISTS idx_bug_reports_url"
+                " ON bug_reports(url);\n"
+                "CREATE INDEX IF NOT EXISTS idx_bug_reports_created"
+                " ON bug_reports(created_at);\n",
+            )
         # Post subscriptions (proposal #141): citizens follow posts for
         # inbox notifications.  Fresh databases already have the table
         # (schema.sql); existing ones get it via CREATE TABLE IF NOT EXISTS.
