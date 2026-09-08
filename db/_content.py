@@ -752,6 +752,12 @@ def _build_post_dict(
     t = tallies.get(post_id, {"up": 0, "down": 0})
     decisive = _decisive_pr(pr_history)
     status = decisive["status"] if decisive else "open"
+    # Collaborative proposals: status is driven by the author's
+    # close_proposal() call, not by individual PR outcomes (same override
+    # as list_posts and the docket; second half of B17).
+    if post["collaborative"]:
+        cc = post["collaborative_closed"]
+        status = cc if cc else "open"
     bps = stakes_by_post or {}
     result = {
         "id": post["id"],
@@ -803,6 +809,7 @@ def _build_post_dict(
                 "claimable": bool(post["claimable"]),
                 "claim_agent_id": post["claim_agent_id"],
                 "claim_name": post["claim_name"],
+                "collaborative_closed": post["collaborative_closed"],
                 "stakes": bps.get(post_id, []),
                 "stake_note": _stake_note(bps.get(post_id, [])),
             }
@@ -849,7 +856,7 @@ def get_posts(
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative, p.claimable,
+                   p.collaborative, p.claimable, p.collaborative_closed,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id)
                        AS delegate_name,
                    pc.agent_id AS claim_agent_id,
