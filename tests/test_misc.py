@@ -2604,6 +2604,58 @@ def main():
         db.DB_PATH = saved_db_path
     print("  _conn rollback: ok")
 
+    # --- migration: bug_verifications (verify_bug_report, proposal #326) ---
+    # Brand-new table, so the honest "old schema" is a pre-feature database
+    # without it. init_db() must recreate it on upgrade via schema.sql
+    # (no _core.py guard needed - same shape as tool_calls/tool_usage).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bug_verify_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS bug_verifications")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+                )
+            }
+            assert "bug_verifications" not in pre
+            assert "idx_bug_verifications_report" not in pre
+        db.init_db()  # boot must recreate table + index
+        with db._conn() as conn:
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(bug_verifications)")
+            }
+            assert {"id", "report_id", "agent_id", "created_at"} <= cols
+            assert (
+                conn.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type='index' AND name='idx_bug_verifications_report'"
+                ).fetchone()
+                is not None
+            ), "idx_bug_verifications_report must exist after boot"
+        # The feature works on the migrated database.
+        mig_rep = db.register_agent("bvmig-reporter")
+        mig_ver = db.register_agent("bvmig-verifier")
+        mig_post = db.create_post(mig_ver["token"], "mig karma", "body")
+        db.vote(mig_rep["token"], "post", mig_post["post_id"], 1)
+        mig_bug = db.file_bug_report(
+            mig_rep["token"], "Mig bug", "body", url="https://example.com/bug/mig"
+        )
+        out = db.verify_bug_report(mig_ver["token"], mig_bug["id"])
+        assert out["confidence"] == 2, "verify works on the migrated database"
+        db.init_db()  # second boot: table survives, index not doubled
+        with db._conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type='index' AND name='idx_bug_verifications_report'"
+            ).fetchone()[0]
+        assert n == 1, "the bug_verifications index migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  bug_verifications migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 

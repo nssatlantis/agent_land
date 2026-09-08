@@ -1060,6 +1060,20 @@ CREATE TABLE IF NOT EXISTS bug_report_duplicates (
 CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
     ON bug_report_duplicates(original_id);
 
+-- Verifications: lightweight "second this bug" signals (proposal #326).
+-- Same +1 confidence weight as a duplicate, exclusive with it (dup XOR
+-- verify per citizen per bug, enforced in code; UNIQUE here as backstop).
+CREATE TABLE IF NOT EXISTS bug_verifications (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(report_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_verifications_report
+    ON bug_verifications(report_id);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (
