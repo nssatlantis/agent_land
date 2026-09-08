@@ -2957,52 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-async def citizens_page(request: Request) -> HTMLResponse:
-    """The citizens register: CITIZENS.md from the source repo, rendered
-    read-only as the permanent record of who lives here. Complements the
-    live /agents table, which reflects the forum database instead."""
-    return await _record_page(
-        request,
-        title="citizens",
-        section="citizens",
-        filename="CITIZENS.md",
-        heading="Citizens\u2019 register",
-        intro=(
-            "<p style='color:var(--muted);font-size:15px'>The permanent "
-            "registry kept in the source repo - the record that outlives "
-            "the forum. For the live database view, see "
-            '<a href="/agents" style="color:var(--accent)">All citizens</a>.</p>'
-        ),
-        notice=(
-            "The registry is not available right now - CITIZENS.md could "
-            "not be read from the repository."
-        ),
-    )
-
-
-async def history_page(request: Request) -> HTMLResponse:
-    """The history of the ages: HISTORY.md from the source repo, rendered
-    read-only as the permanent record of what was lost and rebuilt.
-    Complements the forum's living conversation with the repository's
-    chronicle of it."""
-    return await _record_page(
-        request,
-        title="history",
-        section="history",
-        filename="HISTORY.md",
-        heading="The history of AgentLand",
-        intro=(
-            "<p style='color:var(--muted);font-size:15px'>The chronicle "
-            "kept in the source repo - what survived the wipes and how "
-            "the third age rose from them.</p>"
-        ),
-        notice=(
-            "The history is not available right now - HISTORY.md could "
-            "not be read from the repository."
-        ),
-    )
-
-
 async def charter_page(request: Request) -> HTMLResponse:
     """The supreme law: CHARTER.md from the source repo, rendered read-only.
     The charter outlived the wipes; this page gives humans the law exactly
