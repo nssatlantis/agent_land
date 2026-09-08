@@ -63,13 +63,13 @@ class _StubTree:
         script = self.dir / rel
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(textwrap.dedent(body), encoding="utf-8")
-        self._orig = ci_runner._prepare_tree
+        self._orig = ci_runner._trees._prepare_tree
         self._saved_native = config.CI_RUN_NATIVE_SANDBOX
         config.CI_RUN_NATIVE_SANDBOX = 0
-        ci_runner._prepare_tree = lambda: (str(self.dir), "deadbeefcafe")
+        ci_runner._trees._prepare_tree = lambda: (str(self.dir), "deadbeefcafe")
 
     def cleanup(self):
-        ci_runner._prepare_tree = self._orig
+        ci_runner._trees._prepare_tree = self._orig
         config.CI_RUN_NATIVE_SANDBOX = self._saved_native
 
 
@@ -477,7 +477,7 @@ def test_handoff_slow_run_returns_running_and_completes():
 
     uid = _uid()
     try:
-        with _mock.patch.object(ci_runner, "run_checks", side_effect=_slow):
+        with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_slow):
             result, handed_off, started_at = ci_runner.run_checks_with_deadline(
                 0, uid, "t", "tests", files=[{"path": "x.py", "content": "y"}]
             )
@@ -510,7 +510,7 @@ def test_handoff_error_propagates_within_deadline():
 
     uid = _uid()
     try:
-        with _mock.patch.object(ci_runner, "run_checks", side_effect=_raise):
+        with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_raise):
             try:
                 ci_runner.run_checks_with_deadline(15, uid, "t", "tests")
                 raise AssertionError("expected ForumError")
@@ -543,7 +543,7 @@ def test_single_flight_refuses_concurrent_second_run():
     uid = _uid()
     thread = threading.Thread(target=_call)
     try:
-        with _mock.patch.object(ci_runner, "run_checks", side_effect=_slow):
+        with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_slow):
             thread.start()
             assert started.wait(5)
             assert ci_runner._inflight_occupied(uid) is True
@@ -698,22 +698,22 @@ def test_gc_sweep_survives_timeout_exception():
         sys.exit(0)
     """,
     )
-    saved_prepare = ci_runner._prepare_tree
-    real_git = ci_runner._git
+    saved_prepare = ci_runner._trees._prepare_tree
+    real_git = ci_runner._trees._git
 
     def raising_git(tree, *args):
         if args and args[0] == "gc":
             raise subprocess.TimeoutExpired(cmd="git gc", timeout=180)
         return real_git(tree, *args)
 
-    ci_runner._prepare_tree = lambda: (str(stub.dir), "f" * 40)
-    ci_runner._git = raising_git
+    ci_runner._trees._prepare_tree = lambda: (str(stub.dir), "f" * 40)
+    ci_runner._trees._git = raising_git
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["ok"] is True, "gc failure must not fail the run"
     finally:
-        ci_runner._prepare_tree = saved_prepare
-        ci_runner._git = real_git
+        ci_runner._trees._prepare_tree = saved_prepare
+        ci_runner._trees._git = real_git
         stub.cleanup()
 
 
@@ -797,24 +797,24 @@ def test_native_sandbox_routes_through_docker():
         encoding="utf-8",
     )
     saved = {
-        "_prepare_tree": ci_runner._prepare_tree,
-        "_ensure_image": ci_runner._ensure_image,
-        "_sandbox_argv": ci_runner._sandbox_argv,
-        "_docker_available": ci_runner._docker_available,
-        "_ensure_tree_traversable": ci_runner._ensure_tree_traversable,
-        "_register_active": ci_runner._register_active,
+        "_prepare_tree": ci_runner._trees._prepare_tree,
+        "_ensure_image": ci_runner._sandbox._ensure_image,
+        "_sandbox_argv": ci_runner._sandbox._sandbox_argv,
+        "_docker_available": ci_runner._sandbox._docker_available,
+        "_ensure_tree_traversable": ci_runner._sandbox._ensure_tree_traversable,
+        "_register_active": ci_runner._slots._register_active,
     }
-    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
-    ci_runner._docker_available = lambda: True
-    ci_runner._ensure_image = lambda tree_, rev: (
+    ci_runner._trees._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._sandbox._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = lambda tree_, rev: (
         holder.update(image_calls=holder["image_calls"] + 1, rev=rev) or "fake:tag"
     )
-    ci_runner._sandbox_argv = lambda tree_, image_tag, script_rel: (
+    ci_runner._sandbox._sandbox_argv = lambda tree_, image_tag, script_rel: (
         [sys.executable, "-c", "print('ok')"],
         "agentland-ci-native",
     )
-    ci_runner._ensure_tree_traversable = lambda tree_, _marker=None: None
-    ci_runner._register_active = lambda *a, **k: None
+    ci_runner._sandbox._ensure_tree_traversable = lambda tree_, _marker=None: None
+    ci_runner._slots._register_active = lambda *a, **k: None
     _shadow("CI_RUN_NATIVE_SANDBOX", 1)
     _shadow("CI_RUN_BRANCH_ENABLED", 1)
     try:
@@ -826,8 +826,12 @@ def test_native_sandbox_routes_through_docker():
         assert "host_fallback_static_skipped" not in result
     finally:
         _restore()
-        for name, fn in saved.items():
-            setattr(ci_runner, name, fn)
+        ci_runner._trees._prepare_tree = saved["_prepare_tree"]
+        ci_runner._sandbox._ensure_image = saved["_ensure_image"]
+        ci_runner._sandbox._sandbox_argv = saved["_sandbox_argv"]
+        ci_runner._sandbox._docker_available = saved["_docker_available"]
+        ci_runner._sandbox._ensure_tree_traversable = saved["_ensure_tree_traversable"]
+        ci_runner._slots._register_active = saved["_register_active"]
         _shutil_rmtree(tree)
 
 
@@ -847,13 +851,13 @@ def test_native_host_fallback_when_knob_off():
         encoding="utf-8",
     )
     saved = {
-        "prepare": ci_runner._prepare_tree,
-        "image": ci_runner._ensure_image,
-        "docker": ci_runner._docker_available,
+        "prepare": ci_runner._trees._prepare_tree,
+        "image": ci_runner._sandbox._ensure_image,
+        "docker": ci_runner._sandbox._docker_available,
     }
-    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
-    ci_runner._docker_available = lambda: True
-    ci_runner._ensure_image = lambda tree_, rev: (
+    ci_runner._trees._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._sandbox._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = lambda tree_, rev: (
         holder.__setitem__("image_calls", holder["image_calls"] + 1) or "fake:tag"
     )
     _shadow("CI_RUN_NATIVE_SANDBOX", 0)
@@ -887,13 +891,13 @@ def test_native_host_fallback_with_static_tools_is_parity():
         encoding="utf-8",
     )
     saved = {
-        "prepare": ci_runner._prepare_tree,
-        "image": ci_runner._ensure_image,
-        "docker": ci_runner._docker_available,
+        "prepare": ci_runner._trees._prepare_tree,
+        "image": ci_runner._sandbox._ensure_image,
+        "docker": ci_runner._sandbox._docker_available,
     }
-    ci_runner._prepare_tree = lambda: (str(tree), "refreshed1234")
-    ci_runner._docker_available = lambda: True
-    ci_runner._ensure_image = lambda tree_, rev: (
+    ci_runner._trees._prepare_tree = lambda: (str(tree), "refreshed1234")
+    ci_runner._sandbox._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = lambda tree_, rev: (
         holder.__setitem__("image_calls", holder["image_calls"] + 1) or "fake:tag"
     )
     _shadow("CI_RUN_NATIVE_SANDBOX", 0)
@@ -946,6 +950,28 @@ def test_traversable_memoizes_per_marker():
         ci_runner._TRAVERSABLE_CACHE.clear()
 
 
+def test_dockerfile_resolves_from_split_package():
+    """The sandbox image build reads the repo-root Dockerfile relative to
+    this module's file: server/ci_runner/_sandbox.py sits one level deeper
+    than the old flat server/ci_runner.py, so the join needs two pardirs.
+    A wrong depth fails only where docker exists (prod, branch CI) — pin
+    the resolved path here, docker or not."""
+    import server.ci_runner._sandbox as _sb
+
+    dockerfile = os.path.normpath(
+        os.path.join(
+            os.path.dirname(os.path.abspath(_sb.__file__)),
+            os.pardir,
+            os.pardir,
+            "Dockerfile",
+        )
+    )
+    assert os.path.isfile(dockerfile), (
+        f"sandbox Dockerfile does not resolve: {dockerfile}"
+    )
+    print("  dockerfile resolves from split package: ok")
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -980,6 +1006,7 @@ def main():
     test_native_host_fallback_when_knob_off()
     test_native_host_fallback_with_static_tools_is_parity()
     test_traversable_memoizes_per_marker()
+    test_dockerfile_resolves_from_split_package()
     print("test_ci_runner: all ok")
 
 
