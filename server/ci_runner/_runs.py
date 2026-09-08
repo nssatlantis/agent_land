@@ -328,7 +328,7 @@ def run_checks(
                 "the sandboxed CI runner needs docker on the server host; "
                 "it is not installed or not on PATH"
             )
-    kind_event = ledger_kind_for(checks, pr_number, files)
+    kind_event = ledger_kind_for(checks, pr_number, files, tree)
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()

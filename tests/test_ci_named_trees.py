@@ -230,6 +230,70 @@ def main():
         assert ci_runner.ledger_kind_for("tests", None, None, "t") == "ci_local_run"
         assert ci_runner.ledger_kind_for("tests") == "ci_run"
         print("  tool wiring: ok")
+
+        # 11. tree-only runs gate + audit on ci_local_run, never ci_run.
+        import events as _events  # noqa: E402
+
+        _bucketeer = db.register_agent("tree-bucketeer")
+        _bid = _bucketeer["agent_id"]
+        _old_cap = config.CI_RUN_DAILY_CAP
+        _old_cd = config.CI_RUN_COOLDOWN_SECONDS
+        config.CI_RUN_DAILY_CAP = 1
+        config.CI_RUN_COOLDOWN_SECONDS = 0
+        _scratch = tempfile.mkdtemp(prefix="agentland_tree_bucket_")
+        _real_prepare = trees._prepare_named_tree
+        _sb = (
+            ci_runner._sandbox._ensure_image,
+            ci_runner._sandbox._sandbox_argv,
+            ci_runner._sandbox._docker_available,
+        )
+        ci_runner._sandbox._docker_available = lambda: True
+        ci_runner._sandbox._ensure_image = lambda t, rev: "fake:tag"
+        ci_runner._sandbox._sandbox_argv = lambda t, tag, rel: (
+            [sys.executable, "-c", "pass"],
+            "test",
+        )
+        trees._prepare_named_tree = lambda _aid, _name, _changes: (
+            _scratch,
+            "b" * 40,
+            {
+                "conflict": False,
+                "base": "b" * 40,
+                "local": True,
+                "tree": _name,
+                "tree_warm": True,
+                "delta_count": 0,
+            },
+        )
+        try:
+            # A native ci_run in the ledger must NOT spend the tree budget.
+            _events.log_event(
+                "ci_run",
+                actor_agent_id=_bid,
+                actor_name=_bucketeer["name"],
+                detail={"checks": "tests", "mode": "native", "ok": True},
+            )
+            _r = ci_runner.run_checks(_bid, "t", "tests", tree="bucket")
+            assert _r["ok"] is True, "tree-only run passes beside a spent ci_run"
+            _locals = _events.query_events(agent_id=_bid, kind="ci_local_run", limit=5)
+            assert any(r.get("detail", {}).get("tree") == "bucket" for r in _locals), (
+                "tree run audited under ci_local_run"
+            )
+            # ...and the tree run itself spent the rehearsal bucket.
+            _msg2 = _expect_error(
+                ci_runner.run_checks, _bid, "t", "tests", tree="bucket"
+            )
+            assert "cap reached" in _msg2, f"second tree run capped: {_msg2}"
+        finally:
+            trees._prepare_named_tree = _real_prepare
+            (
+                ci_runner._sandbox._ensure_image,
+                ci_runner._sandbox._sandbox_argv,
+                ci_runner._sandbox._docker_available,
+            ) = _sb
+            config.CI_RUN_DAILY_CAP = _old_cap
+            config.CI_RUN_COOLDOWN_SECONDS = _old_cd
+        print("  tree-only budget bucket: ok")
     finally:
         trees._git = real_git
         trees._ensure_clone = real_clone
