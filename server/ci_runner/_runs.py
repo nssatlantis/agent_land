@@ -21,7 +21,8 @@ import server.ci_runner._trees as _trees_mod
 # checks value -> (native event kind, suite script path relative to the tree)
 # agents may choose which harness to run; each kind has its own daily bucket
 # when split (ci_benchmark_run vs ci_db_bench_run) so benchmarks don't
-# compete for quota. All three still share the 2-slot workspace pool.
+# compete for quota. All three still share the same workspace pool (slots
+# sized by CI_RUN_CONCURRENCY).
 # The "tests" harness is the combined test + static runner (tests/run_ci.py):
 # it executes run_all.py then the GitHub `static` job's checks (compileall,
 # mypy, ruff check, ruff format, bash -n), so a green repo_ci_run covers the
@@ -330,7 +331,7 @@ def run_checks(
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
     script_rel = entry[1]
     # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
-    # Shares the 2-slot runner pool with branch/native, but has its own daily cap (ci_local_run) so a
+    # Shares the runner pool with branch/native, but has its own daily cap (ci_local_run) so a
     # branch-mode budget exhaustion never blocks rehearsal, per user direction.
     local_mode = files is not None
     branch_mode = pr_number is not None

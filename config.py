@@ -611,8 +611,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Server-side CI runner (repo_ci_run): agents choose a harness â€”
     # tests (tests/run_ci.py, the combined test+static harness),
     # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) â€”
-    # against origin/main natively or a PR merge via the 2-slot
-    # Docker workspace pool. Kill switch, hard timeout, per-agent cooldown
+    # against origin/main natively or a PR merge via the Docker
+    # workspace pool (slots sized by CI_RUN_CONCURRENCY). Kill switch, hard timeout, per-agent cooldown
     # and daily cap per harness kind (db_benchmark is split so it doesn't
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
