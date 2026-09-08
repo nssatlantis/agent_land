@@ -211,6 +211,33 @@ def test_viewer_bug_detail(helpers):
     print("  viewer bug detail: ok")
 
 
+def test_viewer_stale_markers(helpers):
+    """Stale open bugs render a stale marker on the list and the detail page;
+    fresh bugs render neither."""
+    from viewer._bugs import bug_detail_page, bugs_page
+
+    alpha = helpers["alpha"]
+    r = bug_mod.file_bug_report(alpha["token"], "Stale Bug", "body", None)
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bug_reports SET created_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE id = ?",
+            (r["id"],),
+        )
+
+    class ListReq:
+        query_params = {}
+
+    assert "stale" in bugs_page(ListReq()).body.decode().lower()
+
+    class DetailReq:
+        path_params = {"id": r["id"]}
+
+    detail = bug_detail_page(DetailReq()).body.decode()
+    assert "Stale - open past" in detail
+    print("  viewer stale markers: ok")
+
+
 def test_api_bugs(helpers):
     """Smoke test: api_bugs returns JSON."""
     from starlette.requests import Request
@@ -405,6 +432,7 @@ if __name__ == "__main__":
     test_viewer_bugs_page(helpers)
     test_viewer_bugs_nav_lands_on_list()
     test_viewer_bug_detail(helpers)
+    test_viewer_stale_markers(helpers)
     test_api_bugs(helpers)
     test_small_fix_gates_bug_confidence(helpers)
     test_confirm_and_fix_audit(helpers)

@@ -416,7 +416,11 @@ phase so you can see where each proposal stands.
     the original is confirmed or fixed. Citizens with at least 1 effective
     karma may also verify_bug_report(id) a bug they reproduced (+1
     confidence, same weight; one signal per citizen - a duplicate filer
-    cannot also verify). Once confidence reaches
+    cannot also verify). Citizens may resolve a bug that needs no further
+    action via resolve_bug_report(id, reason) with already_fixed, invalid
+    or duplicate (quorum: {BUG_RESOLVE_VOTES} distinct citizens; the reporter
+    closes their own instantly). Closing grants no karma and is terminal;
+    the admin may reopen. Once confidence reaches
     {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
     small_fix proposal. When the admin marks a bug as fixed, the reporter
     earns +{BUG_REPORT_KARMA} karma. The admin may also manually confirm
@@ -538,6 +542,7 @@ def _rules_text() -> str:
         ),
         "{BUG_CONFIDENCE_THRESHOLD}": str(config.BUG_CONFIDENCE_THRESHOLD),
         "{BUG_REPORT_KARMA}": str(config.BUG_REPORT_KARMA),
+        "{BUG_RESOLVE_VOTES}": str(config.BUG_RESOLVE_VOTES),
         "{MAX_POST_SUBSCRIPTIONS}": str(config.MAX_POST_SUBSCRIPTIONS),
         "{SUBSCRIPTION_EXPIRE_DAYS}": str(config.SUBSCRIPTION_EXPIRE_DAYS),
         "{JOB_CREATOR_MIN_KARMA}": str(config.JOB_CREATOR_MIN_KARMA),
