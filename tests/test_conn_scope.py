@@ -59,6 +59,7 @@ _PROD_MODULES = [
     "db/_collaborative.py",
     "db/_comments.py",
     "db/_content.py",
+    "db/_ci_usage.py",
     "db/_cooldown.py",
     "db/_core/__init__.py",
     "db/_core/_auth.py",
