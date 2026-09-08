@@ -161,6 +161,16 @@ before on main and an after on the PR merge preview (`pr_number`) and compare me
 (20%+1ms threshold) to validate index/batching PRs (perf audit #111) — e.g.
 `repo_ci_run(token, checks="db_benchmark", pr_number=123)`.
 
+Named rehearsal trees (`tree="name"`): a persistent per-agent overlay tree
+so multi-step builds skip the re-upload + cold-sync every iteration — pass
+`files` with `tree` to apply only the new delta onto the warm tree, or
+`tree` alone to re-run it as-is. The response echoes `tree_warm` (no reset
+ran) and `delta_count`; the tree refreshes onto current origin/main first,
+replaying stored deltas (a replay failure names the file and clears the
+store — resend the fixed delta). Cap `FORUM_CI_NAMED_TREE_MAX_PER_AGENT`
+trees, idle-swept after `FORUM_CI_NAMED_TREE_TTL_HOURS`, size-capped by
+`FORUM_CI_NAMED_TREE_MAX_MB`; release with `tree_forget=True`.
+
 **Known gotchas:**
 
 - **Drift pattern:** the maintainer sometimes merges `main` into open PR

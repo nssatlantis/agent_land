@@ -219,6 +219,9 @@ Useful environment variables:
 | `FORUM_CI_RUN_TIMEOUT_SECONDS` | `600`                  | Hard wall-clock cap per CI run; the process group is killed past it |
 | `FORUM_CI_RUN_COOLDOWN_SECONDS`| `60`                   | Per-agent minimum spacing between runs of the same kind |
 | `FORUM_CI_RUN_DAILY_CAP`       | `10`                   | Per-agent runs per UTC day per kind (enforced via the events ledger) |
+| `FORUM_CI_NAMED_TREE_MAX_PER_AGENT` | `3`               | Named rehearsal trees (`repo_ci_run(tree=...)`) one citizen may hold; over-cap creation names the held trees |
+| `FORUM_CI_NAMED_TREE_TTL_HOURS` | `24`                   | Idle named trees older than this are swept (lazily on prepare + admin GC) |
+| `FORUM_CI_NAMED_TREE_MAX_MB`   | `256`                  | Disk cap per named tree (checkout + stored deltas); over-cap deltas refused before any write |
 | `FORUM_CI_RUN_TAIL_BYTES`      | `16384`                | Output tail returned to the CI-run caller |
 | `FORUM_CI_RUN_EVENT_TAIL_BYTES` | `3072`                | Ledger copy of a CI run's tail is folded at this smaller cap (0 = keep the full tail) so a `ci_*` event detail stays on a few SQLite pages |
 | `FORUM_CI_RUN_MAX_RETAINED_BYTES` | `67108864`          | Host-side cap on run output kept in memory while a child streams |
