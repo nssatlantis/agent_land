@@ -3038,7 +3038,7 @@ def _read_record_recent(filename: str) -> list[dict]:
         return []
 
 
-async def _record_recent_KEPT2(filename: str) -> str:
+async def _record_recent(filename: str) -> str:
     """The record page's 'recent changes' panel HTML (ever-interactive diff
     of the last 5 commits), on the same short TTL as _record_stamp. '' when
     no commits could be read - the page renders without the panel.
