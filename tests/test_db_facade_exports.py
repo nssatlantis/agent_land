@@ -19,13 +19,30 @@ import db
 # re-export from db/__init__.py; a gutted facade drops most of them,
 # so the test fails before merge.
 EXPECTED = [
-    # core infrastructure
+    # core infrastructure (full db/_core surface after the package split)
     "ForumError",
     "_conn",
     "_now_iso",
     "_parse_iso",
+    "_since_bound",
+    "_id_chunks",
+    "_require_agent_by_token",
+    "_require_active_agent",
+    "require_active_agent",
+    "require_active",
+    "require_min_karma",
+    "active_citizens",
+    "_humanize_interval",
+    "_account_status_for",
+    "database_location_note",
+    "earliest_record_iso",
     "init_db",
     "now",
+    "DATA_DIR",
+    "DB_PATH",
+    "SCHEMA_PATH",
+    "REPO_DIR",
+    "REPLY_SEPARATOR",
     # karma / scoring
     "effective_karma",
     "effective_karma_many",
