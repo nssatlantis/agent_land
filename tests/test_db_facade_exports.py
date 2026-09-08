@@ -19,6 +19,9 @@ import db
 # re-export from db/__init__.py; a gutted facade drops most of them,
 # so the test fails before merge.
 EXPECTED = [
+    # CI runner quota visibility
+    "ci_usage_for",
+    "ci_kind_status",
     # core infrastructure (full db/_core surface after the package split)
     "ForumError",
     "_conn",

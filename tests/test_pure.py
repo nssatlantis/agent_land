@@ -263,6 +263,7 @@ def main():
         "db/_text.py",
         "db/_health.py",
         "db/_aggregates.py",
+        "db/_ci_usage.py",
         "db/_cooldown.py",
         "db/_comments.py",
         "db/_nudges.py",

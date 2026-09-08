@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import config
 import db
@@ -60,10 +60,6 @@ _ENV_KEEP = {
 }
 
 
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
     """Fold a finished run's output into its ci_* ledger detail so a red
     run is diagnosable from the events ledger even when the caller's MCP
@@ -110,71 +106,22 @@ def _child_env(tmp_root: str) -> dict:
 def _gate(kind_event: str, agent_id: int) -> None:
     if not config.CI_RUN_ENABLED:
         raise db.ForumError("the server-side CI runner is disabled")
-    now = datetime.now(timezone.utc)
-    cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    # Store-bought +1s ride on top of the base daily cap (db._store,
-    # deferred: the gate has no sqlite conn of its own, so the helper
-    # opens a short read). Cooldown, inflight and concurrency are
-    # unchanged — only the daily count is for sale.
-    from db._store import effective_ci_cap
-
-    cap = effective_ci_cap(agent_id)
-    # single query for both gates — halves DB latency (was 2× query_events)
-    if cooldown > 0 or cap > 0:
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        # cap+1 rows cover both windows; single round-trip vs 2
-        limit = (cap + 1) if cap > 0 else 1
-        # earliest since that covers both windows
-        if cap > 0 and cooldown > 0:
-            since_dt = min(midnight, now - timedelta(seconds=cooldown))
-            since = _iso(since_dt)
-        elif cooldown > 0:
-            since = _iso(now - timedelta(seconds=cooldown))
-        else:
-            since = _iso(midnight)
-        rows = events.query_events(
-            agent_id=agent_id,
-            kind=kind_event,
-            since=since,
-            limit=limit,
+    # Store-bought +1s ride on top of the base daily cap (db._store).
+    # Cooldown, inflight and concurrency are unchanged — only the daily
+    # count is for sale. Windows read through db.ci_kind_status, the same
+    # helper behind the ci_usage quota readout, so gate and readout can
+    # never skew.
+    st = db.ci_kind_status(agent_id, kind_event)
+    # cooldown: most recent within window (rows are newest-first)
+    if st["cooldown_wait_s"] > 0:
+        raise db.ForumError(
+            f"CI run cooldown: try again in about {st['cooldown_wait_s']} seconds"
         )
-        # cooldown: most recent within window (rows are newest-first)
-        if cooldown > 0 and rows:
-            try:
-                ts = datetime.strptime(
-                    rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-                ).replace(tzinfo=timezone.utc)
-            except Exception:  # domain: degrade-silently - unparseable timestamp means no cooldown applied
-                ts = None
-            if ts is not None and ts >= now - timedelta(seconds=cooldown):
-                elapsed = now - ts
-                wait = int(
-                    timedelta(seconds=cooldown).total_seconds()
-                    - elapsed.total_seconds()
-                )
-                raise db.ForumError(
-                    f"CI run cooldown: try again in about {max(wait, 1)} seconds"
-                )
-        # daily cap: count today's rows (filter to midnight)
-        if cap > 0:
-            midnight_iso = _iso(midnight)
-            todays = [r for r in rows if r["created_at"] >= midnight_iso]
-            if len(todays) >= cap:
-                raise db.ForumError(
-                    f"daily CI run cap reached ({cap} per day); try again tomorrow"
-                )
-            # undercount check: if we hit limit but some rows were before midnight, fetch precise
-            if len(rows) == limit and len(todays) < cap:
-                todays_precise = events.query_events(
-                    agent_id=agent_id,
-                    kind=kind_event,
-                    since=_iso(midnight),
-                    limit=cap + 1,
-                )
-                if len(todays_precise) >= cap:
-                    raise db.ForumError(
-                        f"daily CI run cap reached ({cap} per day); try again tomorrow"
-                    )
+    # daily cap: count today's rows (filter to midnight)
+    if st["cap"] > 0 and st["used_today"] >= st["cap"]:
+        raise db.ForumError(
+            f"daily CI run cap reached ({st['cap']} per day); try again tomorrow"
+        )
 
 
 def _inflight_occupied(agent_id: int) -> bool:

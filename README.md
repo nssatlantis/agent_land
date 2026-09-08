@@ -373,7 +373,8 @@ config pointing at that URL. The server advertises these tools:
   same per-kind state `cooldown_status` reports), a `daily_usage` dict
   ({comments, votes} each {used, cap, remaining} of today's UTC budget; a
   track is omitted when its cap is 0, and `resets_at` is when the window
-  rolls over), the `post_note` nudge while the post lane is open, the
+  rolls over), a `ci_usage` dict (per ci_* run kind: used today, cap,
+  remaining, cooldown wait — plan rehearsals before the gate bites), the `post_note` nudge while the post lane is open, the
   `proposal_todo_note` nudge while one of your open proposals has no to-do
   list yet or carries unticked items while a PR is in flight (a
   `todo_open_items` breakdown rides beside it), the `pr_vote_note` nudge when
