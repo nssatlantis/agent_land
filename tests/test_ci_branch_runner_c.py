@@ -188,7 +188,7 @@ def test_pr_requirements_never_reach_the_build():
     try:
         result = ci_runner.run_checks(actor, "t", "tests", pr_number=7)
         assert result["ok"] is True and holder["image_calls"] == 1
-        tree = Path(ci_runner._trees._runner_dir())
+        tree = Path(ci_runner._trees._br_dir(7))
         merged_reqs = (tree / "requirements.txt").read_text()
         assert "attacker-pkg==6.6.6" in merged_reqs, (
             "fixture sanity: merge tree carries the PR's deps"
@@ -245,7 +245,7 @@ def test_hostile_payload_contained():
         print(json.dumps({"leaked": sorted(leaked), "net": net}))
         sys.exit(0)
     """)
-    saved_prepare = ci_runner._trees._prepare_pr_tree
+    saved_prepare = ci_runner._trees._prepare_br_tree
 
     def seeded_prepare(pr_number):
         tree, sha, info = saved_prepare(pr_number)
@@ -253,7 +253,7 @@ def test_hostile_payload_contained():
         script.write_text(payload)
         return tree, sha, info
 
-    ci_runner._trees._prepare_pr_tree = seeded_prepare
+    ci_runner._trees._prepare_br_tree = seeded_prepare
     try:
         result = ci_runner.run_checks(actor, "t", "tests", pr_number=7)
         assert result["ok"] is True, result["output_tail"]
@@ -261,7 +261,7 @@ def test_hostile_payload_contained():
         assert report["leaked"] == [], f"secrets reached the sandbox: {report}"
         assert report["net"] is False, "network egress was possible!"
     finally:
-        ci_runner._trees._prepare_pr_tree = saved_prepare
+        ci_runner._trees._prepare_br_tree = saved_prepare
         fx.unpatch()
 
 
