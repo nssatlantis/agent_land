@@ -123,11 +123,11 @@ class _GitFixture:
 
     def patch_runner(self):
         self._saved = (
-            (ci_runner, "_runner_dir", ci_runner._runner_dir),
+            (ci_runner._trees, "_runner_dir", ci_runner._trees._runner_dir),
             (ci_runner.github._gitops, "_repo_url", ci_runner.github._gitops._repo_url),
             (ci_runner.github, "base_branch", ci_runner.github.base_branch),
         )
-        ci_runner._runner_dir = lambda: str(self.tree_dir)
+        ci_runner._trees._runner_dir = lambda: str(self.tree_dir)
         ci_runner.github._gitops._repo_url = lambda with_token=False: str(self.bare)
         ci_runner.github.base_branch = lambda: "main"
 
@@ -167,24 +167,24 @@ def test_branch_disabled_refuses():
 
 
 def test_sandbox_missing_refuses():
-    saved = ci_runner._docker_available
-    ci_runner._docker_available = lambda: False
+    saved = ci_runner._sandbox._docker_available
+    ci_runner._sandbox._docker_available = lambda: False
     try:
         ci_runner.run_checks(_uid(), "t", "tests", pr_number=7)
         raise AssertionError("expected ForumError")
     except db.ForumError as exc:
         assert "docker" in str(exc)
     finally:
-        ci_runner._docker_available = saved
+        ci_runner._sandbox._docker_available = saved
 
 
 def _patched_execution(stub_script: str):
     holder = {"image_calls": 0}
     rev_holder = {"rev": None}
     saved = (
-        ci_runner._ensure_image,
-        ci_runner._sandbox_argv,
-        ci_runner._docker_available,
+        ci_runner._sandbox._ensure_image,
+        ci_runner._sandbox._sandbox_argv,
+        ci_runner._sandbox._docker_available,
     )
 
     def fake_image(tree, rev):
@@ -195,15 +195,15 @@ def _patched_execution(stub_script: str):
     def fake_argv(tree, image_tag, script_rel):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
-    ci_runner._ensure_image = fake_image
-    ci_runner._sandbox_argv = fake_argv
-    ci_runner._docker_available = lambda: True
+    ci_runner._sandbox._ensure_image = fake_image
+    ci_runner._sandbox._sandbox_argv = fake_argv
+    ci_runner._sandbox._docker_available = lambda: True
 
     def restore():
         (
-            ci_runner._ensure_image,
-            ci_runner._sandbox_argv,
-            ci_runner._docker_available,
+            ci_runner._sandbox._ensure_image,
+            ci_runner._sandbox._sandbox_argv,
+            ci_runner._sandbox._docker_available,
         ) = saved
 
     return restore, holder, rev_holder
@@ -211,17 +211,17 @@ def _patched_execution(stub_script: str):
 
 def test_native_mode_still_reports_native():
     actor = _uid()
-    saved_prepare = ci_runner._prepare_tree
+    saved_prepare = ci_runner._trees._prepare_tree
     scratch = Path(tempfile.mkdtemp(prefix="agentland_ci_nat_"))
     (scratch / "requirements.txt").write_text("# x\n")
-    ci_runner._prepare_tree = lambda: (str(scratch), "f" * 40)
+    ci_runner._trees._prepare_tree = lambda: (str(scratch), "f" * 40)
     restore_exec, _, _ = _patched_execution("")
     try:
         result = ci_runner.run_checks(actor, "t", "benchmarks", pr_number=None)
         assert result["mode"] == "native"
         assert "pr_number" not in result
     finally:
-        ci_runner._prepare_tree = saved_prepare
+        ci_runner._trees._prepare_tree = saved_prepare
         restore_exec()
 
 
