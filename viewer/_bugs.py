@@ -310,9 +310,12 @@ def bug_detail_page(request):
     if report["linked_proposals"]:
         items = []
         for p in report["linked_proposals"]:
+            merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
-                f" ({esc(p['kind'] or 'proposal')})</li>"
+                f" ({esc(p['kind'] or 'proposal')})"
+                + (f" - fix merged ({merged})" if merged else "")
+                + "</li>"
             )
         linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
 

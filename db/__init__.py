@@ -39,6 +39,7 @@ from db._bug_reports import (  # noqa: F401,E402
     fix_bug_report,
     get_bug_report,
     list_bug_reports,
+    notify_bug_fix_landed,
     reopen_bug_report,
     resolve_bug_report,
     sweep_auto_confirm,
