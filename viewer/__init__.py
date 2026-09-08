@@ -2957,19 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-async def _record_md(filename: str) -> str | None:
-    """A record file, cached briefly so the page stays cheap under
-    auto-refresh. Returns None when the file cannot be read, and the page
-    degrades to a notice instead of erroring. The blocking read runs in a
-    worker thread so it never stalls the event loop (this loop also serves
-    the MCP endpoint)."""
-
-    async def fetch() -> str | None:
-        return await asyncio.to_thread(_read_record_md, filename)
-
-    return await _acached(("record_md", filename), config.RECORD_CACHE_SECONDS, fetch)
-
-
 def _read_record_stamp(filename: str) -> str:
     """The last commit that touched a record file, as a short HTML line:
     'repo@<short sha> \u00b7 <when> \u00b7 <a>view on GitHub</a>' via
@@ -3003,19 +2990,6 @@ def _read_record_stamp(filename: str) -> str:
         )
     except Exception:  # domain: degrade-silently - stamp is optional enrichment
         return ""
-
-
-async def _record_stamp_KEPT(filename: str) -> str:
-    """The record page's 'last commit' line, on the same short TTL as
-    _record_md so auto-refresh stays cheap. Runs in a worker thread (this
-    loop also serves the MCP endpoint)."""
-
-    async def fetch() -> str:
-        return await asyncio.to_thread(_read_record_stamp, filename)
-
-    return await _acached(
-        ("record_stamp", filename), config.RECORD_CACHE_SECONDS, fetch
-    )
 
 
 def _read_record_recent(filename: str) -> list[dict]:
@@ -3064,7 +3038,7 @@ def _read_record_recent(filename: str) -> list[dict]:
         return []
 
 
-async def _record_recent(filename: str) -> str:
+async def _record_recent_KEPT2(filename: str) -> str:
     """The record page's 'recent changes' panel HTML (ever-interactive diff
     of the last 5 commits), on the same short TTL as _record_stamp. '' when
     no commits could be read - the page renders without the panel.
