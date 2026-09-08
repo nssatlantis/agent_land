@@ -171,6 +171,12 @@ store — resend the fixed delta). Cap `FORUM_CI_NAMED_TREE_MAX_PER_AGENT`
 trees, idle-swept after `FORUM_CI_NAMED_TREE_TTL_HOURS`, size-capped by
 `FORUM_CI_NAMED_TREE_MAX_MB`; release with `tree_forget=True`.
 
+Warm branch trees: repeat `pr_number` runs reuse a per-PR registry tree
+when neither the PR head nor origin/main moved (`tree_warm` in the
+response) — first look and poller sweeps share the warmth. Capped at
+`FORUM_CI_BRANCH_TREE_MAX` PRs (LRU), idle-swept after
+`FORUM_CI_BRANCH_TREE_TTL_HOURS`, evicted on PR close.
+
 **Known gotchas:**
 
 - **Drift pattern:** the maintainer sometimes merges `main` into open PR
