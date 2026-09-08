@@ -2656,6 +2656,101 @@ def main():
         db.DB_PATH = saved_db_path
     print("  bug_verifications migration: ok")
 
+    # --- migration: bug_reports resolution columns + closed CHECK -------
+    # A pre-resolution database has a narrow status CHECK and no resolution
+    # columns.  init_db() must ALTER in the columns and rebuild the CHECK
+    # to admit 'closed', preserving every row with NULL resolutions, and
+    # the resolve feature must work on the migrated database.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bug_resolve_migration.db")
+        with db._conn() as conn:
+            conn.executescript("""
+                CREATE TABLE agents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    model TEXT,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    last_seen_at TEXT,
+                    suspended_until TEXT
+                );
+                CREATE TABLE bug_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    url TEXT,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'confirmed', 'fixed')),
+                    confidence INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    decided_at TEXT
+                );
+                CREATE TABLE bug_report_duplicates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_id INTEGER NOT NULL REFERENCES bug_reports(id),
+                    duplicate_id INTEGER NOT NULL REFERENCES bug_reports(id),
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(original_id, duplicate_id),
+                    UNIQUE(duplicate_id)
+                );
+                INSERT INTO agents (name, token) VALUES ('migrep', 'tok1');
+                INSERT INTO agents (name, token) VALUES ('migvoter', 'tok2');
+                INSERT INTO bug_reports (agent_id, title, body, status, confidence)
+                    VALUES (1, 'open bug', 'b', 'open', 1);
+                INSERT INTO bug_reports (agent_id, title, body, status, confidence, decided_at)
+                    VALUES (1, 'fixed bug', 'b', 'fixed', 3, '2026-01-01T00:00:00.000Z');
+                INSERT INTO bug_reports (agent_id, title, body, status, confidence)
+                    VALUES (2, 'open dup', 'b', 'open', 1);
+                INSERT INTO bug_report_duplicates (original_id, duplicate_id, agent_id)
+                    VALUES (1, 3, 2);
+            """)
+        db.init_db()  # must widen the CHECK and add resolution columns
+        with db._conn() as conn:
+            check_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='bug_reports'"
+            ).fetchone()["sql"]
+            assert "'closed'" in check_sql, "init_db widens status CHECK to 'closed'"
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(bug_reports)")}
+            assert {"resolution", "resolution_note"} <= cols
+            rows = {
+                r["id"]: (r["status"], r["resolution"])
+                for r in conn.execute("SELECT id, status, resolution FROM bug_reports")
+            }
+            assert rows == {1: ("open", None), 2: ("fixed", None), 3: ("open", None)}
+            for idx in (
+                "idx_bug_reports_agent",
+                "idx_bug_reports_status",
+                "idx_bug_reports_url",
+                "idx_bug_reports_created",
+            ):
+                assert (
+                    conn.execute(
+                        "SELECT name FROM sqlite_master"
+                        f" WHERE type='index' AND name='{idx}'"
+                    ).fetchone()
+                    is not None
+                ), f"{idx} survives the CHECK rebuild"
+            link = conn.execute(
+                "SELECT COUNT(*) FROM bug_report_duplicates"
+            ).fetchone()[0]
+            assert link == 1, "dup links survive the rebuild"
+        # The feature works on the migrated database (reporter withdraw needs
+        # no karma, so no karma seeding required here).
+        out = db.resolve_bug_report("tok1", 1, "invalid", "stale report")
+        assert out["closed"] is True and out["resolution"] == "invalid"
+        db.init_db()  # second boot: idempotent, rows keep their resolution
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT status, resolution FROM bug_reports WHERE id = 1"
+            ).fetchone()
+        assert (again["status"], again["resolution"]) == ("closed", "invalid")
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  bug_reports resolution migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
