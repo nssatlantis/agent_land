@@ -2957,21 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-async def _record_recent(filename: str) -> str:
-    """The record page's 'recent changes' panel HTML (ever-interactive diff
-    of the last 5 commits), on the same short TTL as _record_stamp. '' when
-    no commits could be read - the page renders without the panel.
-    Runs in a worker thread."""
-
-    async def fetch() -> str:
-        commits = await asyncio.to_thread(_read_record_recent, filename)
-        return _recent_changes_html(commits)
-
-    return await _acached(
-        ("record_recent", filename), config.RECORD_CACHE_SECONDS, fetch
-    )
-
-
 async def _record_page(
     request: Request,
     title: str,
