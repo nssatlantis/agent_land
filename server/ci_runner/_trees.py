@@ -312,6 +312,40 @@ def _prepare_local_tree(
 # reset on restart only in the sense that locks are re-created on demand.
 # Execution still borrows a CI slot per run - only *storage* persists.
 
+# Removal helper shared by the sweep/forget/ownership paths (mirrors the
+# branch-tree registry in the D2 PR): rename-aside-then-delete, because
+# Windows AV locks on fresh clones silently defeat plain rmtree - the name
+# frees instantly while a leftover converges on later sweeps.
+
+
+def _rm_readonly(func, path, _exc):
+    """shutil.rmtree onerror handler: Windows marks .git objects read-only."""
+    try:
+        os.chmod(path, 0o777)
+    except OSError:  # domain: degrade-silently - best-effort permission fix
+        pass
+    try:
+        func(path)
+    except FileNotFoundError:  # domain: degrade-silently - already-vanished paths
+        pass
+
+
+def _rmtree(path: str) -> None:
+    shutil.rmtree(path, ignore_errors=True, onerror=_rm_readonly)
+
+
+def _retire_dir(tree: str) -> None:
+    """Remove a named tree robustly (see above)."""
+    aside = f"{tree}.evicted-{int(time.time())}"
+    try:
+        if os.path.isdir(aside):
+            _rmtree(aside)
+        os.rename(tree, aside)
+    except OSError:  # domain: degrade-silently - retry on a later sweep
+        return
+    _rmtree(aside)
+
+
 _TREE_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
 _NAMED_LOCKS: dict[tuple[int, str], threading.Lock] = {}
 _NAMED_LOCKS_GUARD = threading.Lock()
@@ -411,7 +445,7 @@ def _sweep_idle_named_trees() -> int:
             ):  # domain: degrade-silently - bad stamp sweeps nothing
                 idle = 0
             if idle > ttl:
-                shutil.rmtree(tree, ignore_errors=True)
+                _retire_dir(tree)
                 swept += 1
     return swept
 
@@ -456,9 +490,10 @@ def _prepare_named_tree(
     tree/tree_warm/delta_count keys. Warm hit (same base as the manifest,
     no reset) when origin/main hasn't moved; on a base move the stored
     deltas replay onto the new main, and a replay failure raises
-    ForumError naming the file (the tree is left at clean new main with
-    the stored deltas cleared, so the next call starts clean - the agent
-    resends the fixed delta from their own payloads).
+    ForumError naming the file and delta index (the tree momentarily holds
+    blobs 0..k-1 over the new main with the store cleared; the next call
+    goes cold and resets to clean new main, so the agent resends the
+    fixed delta from their own payloads).
     """
     name = _validate_tree_name(name)
     agent_id = int(agent_id)
@@ -494,20 +529,24 @@ def _prepare_named_tree(
             # Namespaced per agent, so a mismatch means tampering or a
             # restored backup from another host - rebuild rather than serve
             # another citizen's overlay.
-            shutil.rmtree(tree, ignore_errors=True)
+            _retire_dir(tree)
             _ensure_clone(tree)
             manifest = None
         try:
             max_mb = float(config.CI_NAMED_TREE_MAX_MB)
         except Exception:  # domain: degrade-silently - bad knob means default
             max_mb = 256.0
-        incoming = sum(len(c.get("content") or "") for c in changes) / (1024 * 1024)
-        if _named_tree_size_mb(tree) + incoming > max_mb:
-            raise db.ForumError(
-                f"named tree '{name}' would exceed {max_mb:g} MB "
-                f"(FORUM_CI_NAMED_TREE_MAX_MB); release it with "
-                "tree_forget=True and start a smaller one."
-            )
+        incoming = 0.0
+        if changes:
+            # Size-walk only when there is something to write: a no-change
+            # warm re-run skips the walk entirely.
+            incoming = sum(len(c.get("content") or "") for c in changes) / (1024 * 1024)
+            if _named_tree_size_mb(tree) + incoming > max_mb:
+                raise db.ForumError(
+                    f"named tree '{name}' would exceed {max_mb:g} MB "
+                    f"(FORUM_CI_NAMED_TREE_MAX_MB); release it with "
+                    "tree_forget=True and start a smaller one."
+                )
         base = github.base_branch()
         fetch = _git(tree, "fetch", "--force", "origin", base)
         if fetch.returncode != 0:
@@ -523,7 +562,7 @@ def _prepare_named_tree(
         if not warm:
             reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
             if reset.returncode != 0:
-                shutil.rmtree(tree, ignore_errors=True)
+                _retire_dir(tree)
                 raise db.ForumError(
                     f"named tree '{name}' could not reset to origin/{base}; "
                     "it will be recloned on the next run"
@@ -578,18 +617,19 @@ def _prepare_named_tree(
 
 
 def _clear_deltas(tree: str) -> None:
-    shutil.rmtree(os.path.join(tree, ".ci-deltas"), ignore_errors=True)
+    _retire_dir(os.path.join(tree, ".ci-deltas"))
 
 
 def forget_named_tree(agent_id: int, name: str) -> bool:
-    """Release one named tree. Returns True when something was removed."""
+    """Release one named tree. True when the name was freed (a locked
+    leftover converges on later sweeps); False when nothing was held."""
     name = _validate_tree_name(name)
     tree = _named_dir(int(agent_id), name)
     with _named_lock(int(agent_id), name):
         if not os.path.isdir(tree):
             return False
-        shutil.rmtree(tree, ignore_errors=True)
-        return True
+        _retire_dir(tree)
+        return not os.path.isdir(tree)
 
 
 def list_named_trees(agent_id: int) -> list[dict]:
