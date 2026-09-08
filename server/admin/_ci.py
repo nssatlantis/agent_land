@@ -165,7 +165,7 @@ def _ci_dashboard_snapshot() -> dict:
     except Exception as exc:  # domain: degrade-silently - dashboard best-effort
         snap["ci"] = {"error": str(exc)}
 
-    # In-flight user CI runs (single-flight registry)
+    # In-flight user CI runs
 
     try:
         import server.ci_runner as cr
@@ -237,6 +237,16 @@ def _ci_dashboard_snapshot() -> dict:
 
     except Exception as exc:  # domain: degrade-silently
         snap["ws"] = {"error": str(exc)}
+
+    # Warm branch trees (repo_ci_run(pr_number=...) registry)
+
+    try:
+        import server.ci_runner._trees as _br_trees
+
+        snap["br_trees"] = _br_trees.list_br_trees()
+    except Exception as exc:  # domain: degrade-silently
+        snap["br_trees"] = []
+        snap["br_trees_error"] = str(exc)
 
     # Named rehearsal trees (repo_ci_run(tree=...))
 
@@ -478,6 +488,40 @@ def _render_ci_dashboard(request) -> str:
         + "</div>"
     )
 
+    _br_rows_html = ""
+    for _b in snap.get("br_trees", []):
+        try:
+            _b_age_h = (time.time() - float(_b.get("updated_at", 0))) / 3600
+            _b_age = f"{_b_age_h:.1f}h"
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - dashboard best-effort, unknown age
+            _b_age = "?"
+        _br_rows_html += (
+            f"<tr><td>#{esc(str(_b.get('pr_number')))}</td>"
+            f"<td>{esc(str(_b.get('pr_sha')))}</td>"
+            f"<td>{esc(str(_b.get('base_sha')))}</td>"
+            f"<td>{esc(str(_b.get('hits')))}</td>"
+            f"<td>{esc(_b_age)}</td></tr>"
+        )
+    if not _br_rows_html:
+        _br_rows_html = '<tr><td colspan=5 style="color:var(--muted)">no warm branch trees held</td></tr>'
+
+    br_trees_html = (
+        '<div class="panel"><h2>Warm Branch Trees (repo_ci_run pr_number=...)</h2>'
+        f'<p style="color:var(--muted)">cap {esc(str(config.CI_BRANCH_TREE_MAX))} PRs, LRU-evicted past it, idle-swept after {esc(str(config.CI_BRANCH_TREE_TTL_HOURS))}h, evicted on PR close</p>'
+        '<div class="table-wrap"><table><tr><th>pr</th><th>head</th><th>base</th><th>warm hits</th><th>idle</th></tr>'
+        + _br_rows_html
+        + "</table></div>"
+        + (
+            "<p style=color:var(--muted)>" + esc(snap["br_trees_error"]) + "</p>"
+            if "br_trees_error" in snap
+            else ""
+        )
+        + "</div>"
+    )
+
     # In-flight user CI runs
 
     inflight_rows = ""
@@ -594,7 +638,7 @@ def _render_ci_dashboard(request) -> str:
         f'<form method="post" action="/admin/ci/restart-ticker">{_csrf_field(request)}<button type="submit">Restart ticker</button></form>'
         f'<form method="post" action="/admin/ci/gc-workspaces">{_csrf_field(request)}<button type="submit">GC trees (prune + sweep now)</button></form>'
         "</div>"
-        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees and sweeps idle named rehearsal trees (git-workspace slots are scrubbed on every acquire instead).</p>'
+        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees and sweeps idle named rehearsal trees and branch trees (git-workspace slots are scrubbed on every acquire instead).</p>'
         "</div>"
     )
 
@@ -611,6 +655,7 @@ def _render_ci_dashboard(request) -> str:
         + inflight_html
         + ws_html
         + named_trees_html
+        + br_trees_html
         + ticker_html
         + recent_html
         + images_html
@@ -780,10 +825,14 @@ async def ci_gc_workspaces(request):
                 gc_count += 1
 
         swept = cr._trees._sweep_idle_named_trees()
+        try:
+            swept_br = cr._trees._sweep_idle_br_trees()
+        except Exception:  # domain: degrade-silently - sweep never breaks GC
+            swept_br = 0
 
         return _flash(
             request,
-            f"ran git gc on {gc_count}/{desired} CI trees; swept {swept} idle named trees.",
+            f"ran git gc on {gc_count}/{desired} CI trees; swept {swept} idle named trees and {swept_br} idle branch trees.",
         )
 
     except Exception as exc:  # domain: degrade-silently

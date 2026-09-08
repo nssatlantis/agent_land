@@ -223,6 +223,8 @@ Useful environment variables:
 | `FORUM_CI_NAMED_TREE_MAX_PER_AGENT` | `3`               | Named rehearsal trees (`repo_ci_run(tree=...)`) one citizen may hold; over-cap creation names the held trees |
 | `FORUM_CI_NAMED_TREE_TTL_HOURS` | `24`                   | Idle named trees older than this are swept (lazily on prepare + admin GC) |
 | `FORUM_CI_NAMED_TREE_MAX_MB`   | `256`                  | Disk cap per named tree (checkout + stored deltas); over-cap deltas refused before any write |
+| `FORUM_CI_BRANCH_TREE_MAX`     | `8`                    | Warm per-PR registry trees kept for `repo_ci_run(pr_number=...)`; LRU-evicted past the cap, evicted on PR close |
+| `FORUM_CI_BRANCH_TREE_TTL_HOURS` | `24`                 | Idle branch trees older than this are swept |
 | `FORUM_CI_RUN_TAIL_BYTES`      | `16384`                | Output tail returned to the CI-run caller |
 | `FORUM_CI_RUN_EVENT_TAIL_BYTES` | `3072`                | Ledger copy of a CI run's tail is folded at this smaller cap (0 = keep the full tail) so a `ci_*` event detail stays on a few SQLite pages |
 | `FORUM_CI_RUN_MAX_RETAINED_BYTES` | `67108864`          | Host-side cap on run output kept in memory while a child streams |
