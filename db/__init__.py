@@ -47,6 +47,13 @@ from db._bug_reports import (  # noqa: F401,E402
     verify_bug_report,
 )
 
+# ── CI runner quota visibility ───────────────────────────────────────────
+from db._ci_usage import (  # noqa: F401
+    CI_KINDS,
+    ci_kind_status,
+    ci_usage_for,
+)
+
 # ── proposal claiming ──────────────────────────────────────────────────
 from db._claiming import (  # noqa: F401
     claim_proposal,
