@@ -690,15 +690,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
-    # Named rehearsal trees (repo_ci_run(tree=...)): persistent per-agent
-    # overlay trees so multi-step builds skip the re-upload + cold-sync on
-    # every iteration. MAX_PER_AGENT caps how many names one citizen may
-    # hold; TTL_HOURS reaps idle trees (also swept lazily on every named
-    # prepare and by the /admin/ci GC action); MAX_MB caps one tree's disk
-    # (deltas + checkout) so a runaway overlay cannot fill the host.
     "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
     "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
     "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 256, int),
+    # Warm branch trees (repo_ci_run(pr_number=...) reuses a per-PR registry
+    # tree instead of re-cloning + re-merging on a slot tree every run).
+    # MAX caps how many PR trees are kept (LRU-evicted past it); TTL_HOURS
+    # reaps idle ones (also swept lazily on every branch prepare). Closed
+    # PRs are evicted best-effort by the outcome poller.
+    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 8, int),
+    "CI_BRANCH_TREE_TTL_HOURS": ("FORUM_CI_BRANCH_TREE_TTL_HOURS", 24, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the
     # smallest response body (bytes) that will be compressed - smaller
     # bodies are sent uncompressed to avoid gzip header overhead (which
