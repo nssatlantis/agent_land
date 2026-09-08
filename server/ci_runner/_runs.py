@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import config
 import db
@@ -21,7 +21,8 @@ import server.ci_runner._trees as _trees_mod
 # checks value -> (native event kind, suite script path relative to the tree)
 # agents may choose which harness to run; each kind has its own daily bucket
 # when split (ci_benchmark_run vs ci_db_bench_run) so benchmarks don't
-# compete for quota. All three still share the 2-slot workspace pool.
+# compete for quota. All three still share the same workspace pool (slots
+# sized by CI_RUN_CONCURRENCY).
 # The "tests" harness is the combined test + static runner (tests/run_ci.py):
 # it executes run_all.py then the GitHub `static` job's checks (compileall,
 # mypy, ruff check, ruff format, bash -n), so a green repo_ci_run covers the
@@ -57,10 +58,6 @@ _ENV_KEEP = {
     # can persist baseline when explicitly requested; default is read-only.
     "BENCH_WRITE_BASELINE",
 }
-
-
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
@@ -109,71 +106,22 @@ def _child_env(tmp_root: str) -> dict:
 def _gate(kind_event: str, agent_id: int) -> None:
     if not config.CI_RUN_ENABLED:
         raise db.ForumError("the server-side CI runner is disabled")
-    now = datetime.now(timezone.utc)
-    cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    # Store-bought +1s ride on top of the base daily cap (db._store,
-    # deferred: the gate has no sqlite conn of its own, so the helper
-    # opens a short read). Cooldown, inflight and concurrency are
-    # unchanged — only the daily count is for sale.
-    from db._store import effective_ci_cap
-
-    cap = effective_ci_cap(agent_id)
-    # single query for both gates — halves DB latency (was 2× query_events)
-    if cooldown > 0 or cap > 0:
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        # cap+1 rows cover both windows; single round-trip vs 2
-        limit = (cap + 1) if cap > 0 else 1
-        # earliest since that covers both windows
-        if cap > 0 and cooldown > 0:
-            since_dt = min(midnight, now - timedelta(seconds=cooldown))
-            since = _iso(since_dt)
-        elif cooldown > 0:
-            since = _iso(now - timedelta(seconds=cooldown))
-        else:
-            since = _iso(midnight)
-        rows = events.query_events(
-            agent_id=agent_id,
-            kind=kind_event,
-            since=since,
-            limit=limit,
+    # Store-bought +1s ride on top of the base daily cap (db._store).
+    # Cooldown, inflight and concurrency are unchanged — only the daily
+    # count is for sale. Windows read through db.ci_kind_status, the same
+    # helper behind the ci_usage quota readout, so gate and readout can
+    # never skew.
+    st = db.ci_kind_status(agent_id, kind_event)
+    # cooldown: most recent within window (rows are newest-first)
+    if st["cooldown_wait_s"] > 0:
+        raise db.ForumError(
+            f"CI run cooldown: try again in about {st['cooldown_wait_s']} seconds"
         )
-        # cooldown: most recent within window (rows are newest-first)
-        if cooldown > 0 and rows:
-            try:
-                ts = datetime.strptime(
-                    rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-                ).replace(tzinfo=timezone.utc)
-            except Exception:  # domain: degrade-silently - unparseable timestamp means no cooldown applied
-                ts = None
-            if ts is not None and ts >= now - timedelta(seconds=cooldown):
-                elapsed = now - ts
-                wait = int(
-                    timedelta(seconds=cooldown).total_seconds()
-                    - elapsed.total_seconds()
-                )
-                raise db.ForumError(
-                    f"CI run cooldown: try again in about {max(wait, 1)} seconds"
-                )
-        # daily cap: count today's rows (filter to midnight)
-        if cap > 0:
-            midnight_iso = _iso(midnight)
-            todays = [r for r in rows if r["created_at"] >= midnight_iso]
-            if len(todays) >= cap:
-                raise db.ForumError(
-                    f"daily CI run cap reached ({cap} per day); try again tomorrow"
-                )
-            # undercount check: if we hit limit but some rows were before midnight, fetch precise
-            if len(rows) == limit and len(todays) < cap:
-                todays_precise = events.query_events(
-                    agent_id=agent_id,
-                    kind=kind_event,
-                    since=_iso(midnight),
-                    limit=cap + 1,
-                )
-                if len(todays_precise) >= cap:
-                    raise db.ForumError(
-                        f"daily CI run cap reached ({cap} per day); try again tomorrow"
-                    )
+    # daily cap: count today's rows (filter to midnight)
+    if st["cap"] > 0 and st["used_today"] >= st["cap"]:
+        raise db.ForumError(
+            f"daily CI run cap reached ({st['cap']} per day); try again tomorrow"
+        )
 
 
 def _inflight_occupied(agent_id: int) -> bool:
@@ -248,7 +196,10 @@ def _inflight_snapshot() -> list[dict]:
 
 
 def ledger_kind_for(
-    checks: str, pr_number: int | None = None, files: list[dict] | None = None
+    checks: str,
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> str:
     """The events-ledger kind a run_checks(...) with these args would log -
     the single source for run_checks itself and for the user-facing handoff
@@ -258,7 +209,7 @@ def ledger_kind_for(
     if entry is None:
         valid = ", ".join(sorted(_CHECKS))
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
-    if files is not None:
+    if files is not None or tree is not None:
         return events.EVT_CI_LOCAL_RUN
     if pr_number is not None:
         return events.EVT_CI_BRANCH_RUN
@@ -272,6 +223,7 @@ def run_checks_with_deadline(
     checks: str,
     pr_number: int | None = None,
     files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> tuple[dict | None, bool, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
@@ -286,7 +238,7 @@ def run_checks_with_deadline(
     single-flight registry (FORUM_CI_RUN_MAX_INFLIGHT) is claimed here for
     the caller; the poller fallback path never reaches this wrapper."""
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    kind = ledger_kind_for(checks, pr_number, files)
+    kind = ledger_kind_for(checks, pr_number, files, tree)
     token = uuid.uuid4().hex
     _inflight_claim(agent_id, kind, checks, started_at, token)
     result_holder: list[dict] = []
@@ -296,7 +248,14 @@ def run_checks_with_deadline(
     def _worker() -> None:
         try:
             result_holder.append(
-                run_checks(agent_id, name, checks, pr_number=pr_number, files=files)
+                run_checks(
+                    agent_id,
+                    name,
+                    checks,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                )
             )
         except Exception as exc:
             # domain: fail-loudly - captured for the caller, not swallowed;
@@ -323,6 +282,7 @@ def run_checks(
     checks: str,
     pr_number: int | None = None,
     files: list[dict] | None = None,
+    tree: str | None = None,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -330,14 +290,22 @@ def run_checks(
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
     script_rel = entry[1]
     # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
-    # Shares the 2-slot runner pool with branch/native, but has its own daily cap (ci_local_run) so a
+    # Shares the runner pool with branch/native, but has its own daily cap (ci_local_run) so a
     # branch-mode budget exhaustion never blocks rehearsal, per user direction.
-    local_mode = files is not None
+    local_mode = files is not None or tree is not None
     branch_mode = pr_number is not None
-    if local_mode and branch_mode:
+    if tree is not None and branch_mode:
+        raise db.ForumError(
+            "repo_ci_run takes either pr_number or tree, not both "
+            "(named trees are main-based, like files overlays)."
+        )
+    if files is not None and branch_mode:
         raise db.ForumError("repo_ci_run takes either pr_number or files, not both.")
+    if tree is not None:
+        # Fail fast on a bad name before any slot or budget is taken.
+        tree = _trees_mod._validate_tree_name(tree)
     if local_mode:
-        if not isinstance(files, list) or not files:
+        if files is not None and (not isinstance(files, list) or not files):
             raise db.ForumError("files must be a non-empty list for local rehearsal.")
         if not config.CI_RUN_BRANCH_ENABLED:
             raise db.ForumError("branch-mode CI runs are disabled on this server")
@@ -360,7 +328,7 @@ def run_checks(
                 "the sandboxed CI runner needs docker on the server host; "
                 "it is not installed or not on PATH"
             )
-    kind_event = ledger_kind_for(checks, pr_number, files)
+    kind_event = ledger_kind_for(checks, pr_number, files, tree)
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
@@ -382,13 +350,20 @@ def run_checks(
         raise
     try:
         if local_mode:
-            assert files is not None
-            try:
-                tree, head_sha, merge_info = _trees_mod._prepare_local_tree(
-                    files, slot=slot
+            assert files is not None or tree is not None
+            tree_name = tree
+            if tree_name is not None:
+                tree, head_sha, merge_info = _trees_mod._prepare_named_tree(
+                    agent_id, tree_name, files or []
                 )
-            except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
-                tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
+            else:
+                assert files is not None
+                try:
+                    tree, head_sha, merge_info = _trees_mod._prepare_local_tree(
+                        files, slot=slot
+                    )
+                except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                    tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main â€” same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
@@ -513,6 +488,10 @@ def run_checks(
             result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
             result["local"] = True
+            if merge_info.get("tree") is not None:
+                result["tree"] = merge_info.get("tree")
+                result["tree_warm"] = bool(merge_info.get("tree_warm"))
+                result["delta_count"] = merge_info.get("delta_count", 0)
         elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
@@ -547,6 +526,10 @@ def run_checks(
         if local_mode:
             detail["local"] = True
             detail["base_sha"] = result.get("base_sha")
+            if merge_info.get("tree") is not None:
+                detail["tree"] = merge_info.get("tree")
+                detail["tree_warm"] = bool(merge_info.get("tree_warm"))
+                detail["delta_count"] = merge_info.get("delta_count", 0)
         elif branch_mode:
             detail["pr_number"] = pr_number
         detail = _ci_detail_with_output(detail, pieces)

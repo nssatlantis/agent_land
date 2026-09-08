@@ -619,8 +619,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Server-side CI runner (repo_ci_run): agents choose a harness â€”
     # tests (tests/run_ci.py, the combined test+static harness),
     # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) â€”
-    # against origin/main natively or a PR merge via the 2-slot
-    # Docker workspace pool. Kill switch, hard timeout, per-agent cooldown
+    # against origin/main natively or a PR merge via the Docker
+    # workspace pool (slots sized by CI_RUN_CONCURRENCY). Kill switch, hard timeout, per-agent cooldown
     # and daily cap per harness kind (db_benchmark is split so it doesn't
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
@@ -690,6 +690,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
+    # Named rehearsal trees (repo_ci_run(tree=...)): persistent per-agent
+    # overlay trees so multi-step builds skip the re-upload + cold-sync on
+    # every iteration. MAX_PER_AGENT caps how many names one citizen may
+    # hold; TTL_HOURS reaps idle trees (also swept lazily on every named
+    # prepare and by the /admin/ci GC action); MAX_MB caps one tree's disk
+    # (deltas + checkout) so a runaway overlay cannot fill the host.
+    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
+    "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
+    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 256, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the
     # smallest response body (bytes) that will be compressed - smaller
     # bodies are sent uncompressed to avoid gzip header overhead (which

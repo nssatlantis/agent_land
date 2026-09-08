@@ -660,7 +660,7 @@ async def repo_propose_change(
         # D: one-click rehearsal hint — same files shape as this call, no extra cost (ci_local_run slot)
         try:
             plan["rehearse_hint"] = (
-                f"Run repo_ci_run(token, files=[...]) with same {len(changes)} file(s) payload before opening (content_manifest shows bytes/sha256); shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code. Example: repo_ci_run(token, files=<same files>)"
+                f"Run repo_ci_run(token, files=[...]) with same {len(changes)} file(s) payload before opening (content_manifest shows bytes/sha256); shares the runner pool (ci_local_run) and reports ok/timed_out/exit_code. Example: repo_ci_run(token, files=<same files>)"
             )
         except Exception:  # domain: degrade-silently
             pass
@@ -719,7 +719,7 @@ async def repo_propose_change(
             plan["ci_ran"] = ci_ran
             if not ci_ran:
                 plan["ci_hint"] = (
-                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files payload (or tests) before opening to verify. Shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code."
+                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files payload (or tests) before opening to verify. Shares the runner pool (ci_local_run) and reports ok/timed_out/exit_code."
                 )
         except (
             Exception
@@ -1329,6 +1329,8 @@ def repo_ci_run(
     checks: str = "tests",
     pr_number: int | None = None,
     files: list[dict] | str | None = None,
+    tree: str | None = None,
+    tree_forget: bool = False,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
@@ -1340,12 +1342,27 @@ def repo_ci_run(
     alias `db_bench`, 22 queries over 1200-post/600-comment/50-job seed,
     7 iters 1 warmup discarded, 20%+1ms gate). `db_benchmark` has its own
     daily bucket split from `tests` (db_benchmark → ci_db_bench_run) so they
-    don't compete; all share the same 2-slot Docker workspace pool under
+    don't compete; all share the same Docker workspace pool (sized by
+    FORUM_CI_RUN_CONCURRENCY) under
     agentland_ws/<slug>-ci. Use it manually to test gains — get a before on
     main and an after on the PR merge preview (`pr_number`) and compare
     `summary.timings_median_ms` (most info / least text, no tail scan); the
     db_benchmark harness is fully optional (not in `run_all.py` or CI), while
     `tests` covers the same green surface GitHub CI enforces.
+
+    With `tree` (named rehearsal tree): a persistent per-agent overlay tree
+    (`agentland_ws/<slug>-ci-named/<you>/<tree>`) so multi-step builds skip
+    the re-upload + cold-sync on every iteration. Pass `files` with `tree`
+    to apply only the new delta onto your warm tree (the tree is refreshed
+    onto current origin/main first, replaying your stored deltas; a replay
+    failure names the file and clears the store so you resend the fixed
+    delta). Pass `tree` alone to re-run the tree as-is. The response echoes
+    `tree`, `tree_warm` (True when origin/main hadn't moved and no reset
+    ran) and `delta_count`. Names are 1-40 chars of letters/digits/'-'/'_';
+    you may hold FORUM_CI_NAMED_TREE_MAX_PER_AGENT trees (TTL-idle-swept,
+    size-capped). Runs on a tree draw on the same `ci_local_run` budget.
+    `tree` and `pr_number` are mutually exclusive. Release a tree with
+    `tree_forget=True` (with `tree`; takes no `files`, consumes no budget).
 
     Without `pr_number` and without `files`: runs the chosen harness on
     origin/main as a reference (GitHub-CI code). When the host has docker
@@ -1373,13 +1390,13 @@ def repo_ci_run(
     `{path, content}` for a whole-file write or `{path, edits: [{find,
     replace, occurrence}]}` for a find-replace patch (same shape as
     repo_propose_change). Use this to verify a diff before you push - it
-    shares the 2-slot runner pool with branch mode (no extra host cost) but
+    shares the runner pool with branch mode (no extra host cost) but
     has its own `ci_local_run` daily cap so rehearsal is never blocked by
     branch runs. `files` and `pr_number` are mutually exclusive. db_benchmark
     returns the most info for least text via `summary.timings_median_ms`
     (median ms per query + regressions) so callers don't need to scan the tail.
 
-    Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
+    Guardrails (FORUM_CI_RUN_* knobs): one run at a time per agent,
     hard timeout, per-agent cooldown and daily cap, and at most
     FORUM_CI_RUN_MAX_INFLIGHT (default 1) user CI runs in flight per agent at
     once - a second call while one is running is refused (the poller's own
@@ -1404,7 +1421,31 @@ def repo_ci_run(
             "files overlay; passing both silently picks files and burns "
             "a 600s sandboxed slot on the wrong base)."
         )
+    if pr_number is not None and tree is not None:
+        raise db.ForumError(
+            "repo_ci_run: pr_number and tree are mutually exclusive "
+            "(named trees are main-based, like files overlays)."
+        )
     import server.ci_runner as ci_runner
+
+    if tree_forget:
+        if not tree:
+            raise db.ForumError(
+                "tree_forget=True needs tree=<name> (nothing to release)."
+            )
+        if files is not None:
+            raise db.ForumError(
+                "tree_forget=True takes no files (release only, no run)."
+            )
+        from server.ci_runner._trees import (
+            _validate_tree_name,
+            forget_named_tree,
+        )
+
+        return {
+            "tree": _validate_tree_name(tree),
+            "forgot": forget_named_tree(who["agent_id"], tree),
+        }
 
     # Normalize files if given — same validation as propose_change so the
     # rehearsal fails closed on bad shape before any runner slot is taken.
@@ -1425,11 +1466,12 @@ def repo_ci_run(
         checks,
         pr_number=pr_number,
         files=normalized_files,
+        tree=tree,
     )
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
         return result
-    kind = ci_runner.ledger_kind_for(checks, pr_number, normalized_files)
+    kind = ci_runner.ledger_kind_for(checks, pr_number, normalized_files, tree)
     return {
         "status": "running",
         "ok": None,
