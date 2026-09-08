@@ -2957,52 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-def _read_record_recent(filename: str) -> list[dict]:
-    """The last 5 commits that touched a record file, newest first, each
-    {short, iso, subject, patch} where patch is that commit's unified diff
-    of the file, truncated. [] when git is absent or anything fails - the
-    recent-changes panel is optional enrichment. Each 'git show' is scoped
-    to the single file and runs with timeout like _read_record_stamp."""
-    try:
-        import subprocess
-
-        result = subprocess.run(
-            ["git", "log", "-5", "--format=%cI%x00%h%x00%s", "--", filename],
-            cwd=str(db.REPO_DIR),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return []
-        commits: list[dict] = []
-        for line in result.stdout.splitlines():
-            if not line:
-                continue
-            parts = line.split("\x00")
-            if len(parts) != 3:
-                continue
-            iso, short, subject = parts
-            show = subprocess.run(
-                ["git", "show", "--format=", short, "--", filename],
-                cwd=str(db.REPO_DIR),
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            patch = show.stdout if show.returncode == 0 else ""
-            if "\nnew file mode " in patch and "\n--- /dev/null\n" in patch:
-                continue
-            if len(patch) > 4000:
-                patch = patch[:4000] + "\n\u2026 (patch truncated)"
-            commits.append(
-                {"short": short, "iso": iso, "subject": subject, "patch": patch}
-            )
-        return commits
-    except Exception:  # domain: degrade-silently - recent-changes panel is optional
-        return []
-
-
 async def _record_recent(filename: str) -> str:
     """The record page's 'recent changes' panel HTML (ever-interactive diff
     of the last 5 commits), on the same short TTL as _record_stamp. '' when
