@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 import config
 import db
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from events import EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED, EVT_BUG_REPORTED, log_event
+from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
+from events import (
+    EVT_BUG_CONFIRMED,
+    EVT_BUG_REOPENED,
+    EVT_BUG_REPORT_FIXED,
+    EVT_BUG_REPORTED,
+    EVT_BUG_RESOLVED,
+    log_event,
+)
 from notifications import _notify
 
 
@@ -107,8 +115,8 @@ def file_bug_report(
         # Check for an existing open report with the same URL
         if url:
             original = conn.execute(
-                "SELECT id, confidence, title, agent_id FROM bug_reports"
-                " WHERE url = ? AND status != 'fixed'"
+                "SELECT id, confidence, title, agent_id, status FROM bug_reports"
+                " WHERE url = ? AND status IN ('open', 'confirmed')"
                 " ORDER BY created_at ASC LIMIT 1",
                 (url,),
             ).fetchone()
@@ -169,6 +177,14 @@ def file_bug_report(
             crossed = _maybe_auto_confirm(
                 conn, orig_id, new_confidence, agent_id, "duplicate"
             )
+            # A duplicate of an already-resolved parent inherits its status
+            # at once instead of sitting open (B2 hygiene).
+            parent_status = "confirmed" if crossed else original["status"]
+            if parent_status != "open":
+                conn.execute(
+                    "UPDATE bug_reports SET status = ?, decided_at = ? WHERE id = ?",
+                    (parent_status, _now_iso(), dup_id),
+                )
 
             log_event(
                 EVT_BUG_REPORTED,
@@ -189,7 +205,7 @@ def file_bug_report(
                 "title": title,
                 "body": body,
                 "url": url,
-                "status": "confirmed" if crossed else "open",
+                "status": parent_status,
                 "confidence": 1,
                 "duplicate_of": orig_id,
                 "new_confidence": new_confidence,
@@ -249,6 +265,8 @@ def verify_bug_report(token: str, report_id: int) -> dict:
             raise ForumError(f"Bug report #{report_id} not found.")
         if row["status"] == "fixed":
             raise ForumError(f"Bug report #{report_id} is already fixed.")
+        if row["status"] == "closed":
+            raise ForumError(f"Bug report #{report_id} is already closed.")
         if row["agent_id"] == agent_id:
             raise ForumError("You cannot verify your own bug report.")
         # Karma floor (the proposal-vote / report-suspend class).
@@ -345,6 +363,17 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
+        # Citizens who voted to resolve (already-fixed / invalid / duplicate)
+        resolvers = conn.execute(
+            "SELECT br.agent_id, a.name AS agent_name,"
+            " se.name_color AS agent_name_color, br.reason,"
+            " br.created_at FROM bug_resolutions br"
+            " JOIN agents a ON a.id = br.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " WHERE br.report_id = ? ORDER BY br.created_at ASC",
+            (report_id,),
+        ).fetchall()
+
         # What this report is a duplicate of (if any)
         parent = conn.execute(
             "SELECT brd.original_id"
@@ -396,6 +425,19 @@ def get_bug_report(report_id: int) -> dict:
                 for v in verifiers
             ],
             "duplicate_of": parent["original_id"] if parent else None,
+            "resolution": row["resolution"],
+            "resolution_note": row["resolution_note"],
+            "resolvers": [
+                {
+                    "agent_id": v["agent_id"],
+                    "agent_name": v["agent_name"],
+                    "agent_name_color": v["agent_name_color"],
+                    "reason": v["reason"],
+                    "created_at": v["created_at"],
+                }
+                for v in resolvers
+            ],
+            "stale": _bug_stale(row["status"], row["created_at"]),
             "linked_proposals": [
                 {"id": p["id"], "title": p["title"], "kind": p["proposal_kind"]}
                 for p in linked
@@ -463,6 +505,7 @@ def list_bug_reports(
                     "confidence": r["confidence"],
                     "duplicate_count": dupe_counts.get(r["id"], 0),
                     "created_at": r["created_at"],
+                    "stale": _bug_stale(r["status"], r["created_at"]),
                 }
                 for r in rows
             ],
@@ -474,7 +517,8 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
     """Admin action: confirm a bug report (set status to 'confirmed')."""
     with _conn(immediate=True) as conn:
         row = conn.execute(
-            "SELECT id, status FROM bug_reports WHERE id = ?", (report_id,)
+            "SELECT id, status, agent_id, title FROM bug_reports WHERE id = ?",
+            (report_id,),
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
@@ -486,6 +530,15 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
             (now_iso, report_id),
         )
         _retire_duplicates(conn, report_id, "confirmed", now_iso)
+        _notify(
+            conn,
+            row["agent_id"],
+            "pr",
+            "bug_report",
+            report_id,
+            f"Your bug report #{report_id} ('{row['title']}') was confirmed"
+            " by the admin - it is eligible for a small_fix proposal.",
+        )
         log_event(
             EVT_BUG_CONFIRMED,
             target_type="bug_report",
@@ -504,13 +557,18 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
     karma = config.BUG_REPORT_KARMA
     with _conn(immediate=True) as conn:
         row = conn.execute(
-            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            "SELECT id, status, agent_id, resolution FROM bug_reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
         if row["status"] == "fixed":
             raise ForumError(f"Bug report #{report_id} is already fixed.")
+        if row["status"] == "closed":
+            raise ForumError(
+                f"Bug report #{report_id} is already closed"
+                f" ({row['resolution']}) - reopen it first."
+            )
         now = _now_iso()
         conn.execute(
             "UPDATE bug_reports SET status = 'fixed', decided_at = ? WHERE id = ?",
@@ -546,37 +604,215 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
         return {"id": report_id, "status": "fixed"}
 
 
+BUG_RESOLUTIONS = ("already_fixed", "invalid", "duplicate")
+BUG_RESOLVE_NOTE_MAX_LEN = 500
+
+
+def _bug_stale(status: str, created_at: str) -> bool:
+    """Whether an open bug has lingered past REPORT_STALE_DAYS (display-only,
+    mirrors reports._report_stale; the quorum close below is the disposal
+    path - nothing auto-resolves)."""
+    if status != "open":
+        return False
+    delta = datetime.now(timezone.utc) - _parse_iso(created_at)
+    return max(0, delta.days) >= config.REPORT_STALE_DAYS
+
+
+def _close_bug(conn, report_id, resolution, note):
+    """Shared terminal close for reporter withdraw and quorum resolve:
+    stamps decided_at/resolution and retires duplicates. Karma-neutral -
+    unlike admin fix, closing grants no karma. Caller notifies + logs."""
+    now_iso = _now_iso()
+    conn.execute(
+        "UPDATE bug_reports SET status = 'closed', decided_at = ?,"
+        " resolution = ?, resolution_note = ? WHERE id = ?",
+        (now_iso, resolution, note, report_id),
+    )
+    _retire_duplicates(conn, report_id, "closed", now_iso)
+    return now_iso
+
+
+def resolve_bug_report(token, report_id, reason, note=None):
+    """Citizen quorum close of a bug report (already-fixed / invalid /
+    duplicate): FORUM_BUG_RESOLVE_VOTES distinct citizens (reporter
+    excluded) close it with the majority reason (tie goes to the earliest
+    reason); the reporter closes their own instantly (withdraw, reason
+    still required). Karma-neutral. Terminal: verify, dup and fix refuse
+    closed bugs afterwards (reopen first)."""
+    if reason not in BUG_RESOLUTIONS:
+        raise ForumError("reason must be one of already_fixed, invalid, duplicate.")
+    note = (note or "").strip() or None
+    if note is not None and len(note) > BUG_RESOLVE_NOTE_MAX_LEN:
+        raise ForumError(
+            f"note must be {BUG_RESOLVE_NOTE_MAX_LEN} characters or fewer."
+        )
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] == "fixed":
+            raise ForumError(
+                f"Bug report #{report_id} is already fixed - nothing to resolve."
+            )
+        if row["status"] == "closed":
+            raise ForumError(f"Bug report #{report_id} is already closed.")
+        # Reporter withdraw: their own row closes instantly, no quorum.
+        if row["agent_id"] == agent_id:
+            _close_bug(conn, report_id, reason, note)
+            log_event(
+                EVT_BUG_RESOLVED,
+                actor_agent_id=agent_id,
+                target_type="bug_report",
+                target_id=report_id,
+                detail={"resolution": reason, "withdrawn": True},
+                conn=conn,
+            )
+            return {
+                "id": report_id,
+                "status": "closed",
+                "resolution": reason,
+                "resolve_votes": 1,
+                "closed": True,
+            }
+        # Karma floor (the proposal-vote / report-suspend class).
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent_id)
+        if ek < 1:
+            raise ForumError(
+                "Resolving a bug report requires at least 1 effective karma"
+                f" (you have {ek})."
+            )
+        conn.execute(
+            "INSERT INTO bug_resolutions (report_id, agent_id, reason, note, created_at)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (report_id, agent_id)"
+            " DO UPDATE SET reason = excluded.reason, note = excluded.note,"
+            " created_at = excluded.created_at",
+            (report_id, agent_id, reason, note, _now_iso()),
+        )
+        total = conn.execute(
+            "SELECT COUNT(DISTINCT agent_id) FROM bug_resolutions WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()[0]
+        closed = total >= config.BUG_RESOLVE_VOTES
+        winning = None
+        if closed:
+            winning = conn.execute(
+                "SELECT reason FROM bug_resolutions WHERE report_id = ?"
+                " GROUP BY reason ORDER BY COUNT(*) DESC, MIN(created_at) ASC",
+                (report_id,),
+            ).fetchone()["reason"]
+            top_note = conn.execute(
+                "SELECT note FROM bug_resolutions WHERE report_id = ? AND reason = ?"
+                " ORDER BY created_at ASC LIMIT 1",
+                (report_id, winning),
+            ).fetchone()[0]
+            _close_bug(conn, report_id, winning, top_note)
+            _notify(
+                conn,
+                row["agent_id"],
+                "moderation",
+                "bug_report",
+                report_id,
+                f"Your bug report #{report_id} was closed by the community"
+                f" ({winning}).",
+            )
+            log_event(
+                EVT_BUG_RESOLVED,
+                target_type="bug_report",
+                target_id=report_id,
+                detail={"resolution": winning, "voters": total},
+                conn=conn,
+            )
+        return {
+            "id": report_id,
+            "status": "closed" if closed else row["status"],
+            "resolution": winning,
+            "resolve_votes": total,
+            "closed": closed,
+        }
+
+
+def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
+    """Admin action: reopen a quorum/reporter-closed bug (status back to
+    open, resolution cleared). Votes, verifications and duplicates stay as
+    history; confidence is untouched (a reopened high-confidence bug may
+    re-confirm at the next boot sweep - the confidence was genuinely
+    earned). The reporter is told."""
+    with _conn(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] != "closed":
+            raise ForumError(f"Bug report #{report_id} is {row['status']}, not closed.")
+        conn.execute(
+            "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
+            " resolution = NULL, resolution_note = NULL WHERE id = ?",
+            (report_id,),
+        )
+        log_event(
+            EVT_BUG_REOPENED,
+            target_type="bug_report",
+            target_id=report_id,
+            conn=conn,
+        )
+        _notify(
+            conn,
+            row["agent_id"],
+            "moderation",
+            "bug_report",
+            report_id,
+            f"Your bug report #{report_id} was reopened by the admin.",
+        )
+        from moderation import _audit
+
+        _audit(conn, admin, "reopen_bug_report", "bug_report", report_id)
+        return {"id": report_id, "status": "open"}
+
+
 def _retire_duplicates(
     conn: sqlite3.Connection, orig_id: int, status: str, decided_at: str
 ) -> int:
-    """Retire every open duplicate row of orig_id to the parent's status.
+    """Retire every live duplicate row of orig_id to the parent's status.
 
     Duplicates are evidence, not independent bugs: once the original is
     confirmed or fixed their lifecycle is over. Inheriting the parent's
     status (never a new value) keeps every status consumer - list filters,
     open counts, /bugs - correct with no other changes. Idempotent: only
-    open rows move, so re-runs and the boot sweep are safe.
+    open/confirmed rows move (terminal fixed/closed rows are never
+    rewritten), so re-runs and the boot sweep are safe.
     """
     cur = conn.execute(
         "UPDATE bug_reports SET status = ?, decided_at = ?"
         " WHERE id IN (SELECT duplicate_id FROM bug_report_duplicates"
-        " WHERE original_id = ?) AND status = 'open'",
+        " WHERE original_id = ?) AND status IN ('open', 'confirmed')",
         (status, decided_at, orig_id),
     )
     return cur.rowcount
 
 
 def sweep_retire_duplicates(conn: sqlite3.Connection) -> int:
-    """Hygiene sweep: retire open duplicate rows whose original already
+    """Hygiene sweep: retire live duplicate rows whose original already
     resolved (confirmed or fixed) - the pre-helper dead letters. Inherits
     each parent's status and decided_at (now when the parent lacks one).
-    Idempotent: only open rows with a resolved parent move.
+    Idempotent: only rows still lagging their parent move (open/confirmed
+    rows already matching the parent, with a stamp, are left alone).
     """
     rows = conn.execute(
         "SELECT d.id, p.status, p.decided_at FROM bug_reports d"
         " JOIN bug_report_duplicates brd ON brd.duplicate_id = d.id"
         " JOIN bug_reports p ON p.id = brd.original_id"
-        " WHERE p.status != 'open' AND d.status = 'open'"
+        " WHERE p.status != 'open' AND d.status IN ('open', 'confirmed')"
+        " AND (d.status != p.status OR d.decided_at IS NULL)"
     ).fetchall()
     retired = 0
     for r in rows:
