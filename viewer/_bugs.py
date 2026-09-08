@@ -166,6 +166,7 @@ def bugs_page(request):
             else ""
         )
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
+        stale = " · stale" if r.get("stale") else ""
         cards.append(
             f'<div class="post">'
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
@@ -176,7 +177,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{url_part}{dupes}"
+            f"{_human_ts(r['created_at'])}{url_part}{dupes}{stale}"
             f"</div></div>"
         )
 
@@ -298,6 +299,13 @@ def bug_detail_page(request):
             f"{res_note}</td></tr>"
         )
 
+    stale_note = ""
+    if report.get("stale"):
+        stale_note = (
+            '<p style="color:var(--muted);font-size:13px">Stale - open past'
+            " the review window with no resolution yet.</p>"
+        )
+
     linked = ""
     if report["linked_proposals"]:
         items = []
@@ -313,6 +321,7 @@ def bug_detail_page(request):
         f"{sev}"
         f"{timeline}"
         f"{conf}"
+        f"{stale_note}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
         f'<td><a href="/agents/{report["agent_id"]}" '
