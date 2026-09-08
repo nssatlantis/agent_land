@@ -1513,7 +1513,7 @@ def test_record_page_stamp_present():
 
 def test_nav_fragments_posts():
     """Same-page /posts navigation lands back on the list (frag-posts-list)."""
-    from viewer import _posts_href, posts_page
+    from viewer._posts import _posts_href, posts_page
 
     assert _posts_href("all", "newest", "2") == "/posts?page=2#frag-posts-list"
     assert _posts_href("none", "top") == "/posts?kind=none&sort=top#frag-posts-list"
@@ -1525,7 +1525,7 @@ def test_nav_fragments_posts():
 
 def test_nav_fragments_tags():
     """/tags sort/filter/search/pager target the table (sec-tags)."""
-    from viewer import tags_page
+    from viewer._posts import tags_page
 
     html = tags_page(_Req()).body.decode("utf-8")
     assert 'id="sec-tags"' in html
