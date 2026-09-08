@@ -335,7 +335,7 @@ def _rmtree(path: str) -> None:
 
 
 def _retire_dir(tree: str) -> None:
-    """Remove a named tree robustly (see above)."""
+    """Remove a registry tree robustly (see above)."""
     aside = f"{tree}.evicted-{int(time.time())}"
     try:
         if os.path.isdir(aside):
@@ -655,3 +655,285 @@ def list_named_trees(agent_id: int) -> list[dict]:
             }
         )
     return out
+
+
+# --- warm branch trees (repo_ci_run(pr_number=...)) --------------------------
+# Per-PR registry trees so repeat branch runs (citizen rehearsals + the
+# poller's own sweep) skip the re-clone + re-merge when neither the PR head
+# nor origin/main moved. Shared across citizens (same bytes for everyone;
+# execution mounts read-only), keyed by PR number. LRU-capped
+# (CI_BRANCH_TREE_MAX), TTL-swept (CI_BRANCH_TREE_TTL_HOURS), and evicted
+# best-effort when the outcome poller records a PR closed. Every acquire
+# revalidates the manifest against fresh fetches, so a stale tree can only
+# cost a rebuild, never a wrong run. Same single-process invariant as the
+# slot pools (locks in memory, trees on disk under DATA_DIR).
+
+_BR_LOCKS: dict[int, threading.Lock] = {}
+_BR_LOCKS_GUARD = threading.Lock()
+
+
+def _br_root() -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci-br")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _br_dir(pr_number: int) -> str:
+    return os.path.join(_br_root(), str(int(pr_number)))
+
+
+def _br_lock(pr_number: int) -> threading.Lock:
+    key = int(pr_number)
+    with _BR_LOCKS_GUARD:
+        lock = _BR_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BR_LOCKS[key] = lock
+        return lock
+
+
+def _read_br_manifest(tree: str) -> dict | None:
+    try:
+        with open(os.path.join(tree, ".ci-br.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        if not isinstance(manifest, dict):
+            return None
+        return manifest
+    except Exception:  # domain: degrade-silently - corrupt manifest reads as cold
+        return None
+
+
+def _write_br_manifest(tree: str, manifest: dict) -> None:
+    tmp = os.path.join(tree, ".ci-br.json.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        json.dump(manifest, fh)
+    os.replace(tmp, os.path.join(tree, ".ci-br.json"))
+
+
+def _sweep_idle_br_trees() -> int:
+    """Remove branch trees idle past CI_BRANCH_TREE_TTL_HOURS. Returns count."""
+    try:
+        ttl = float(config.CI_BRANCH_TREE_TTL_HOURS) * 3600
+    except Exception:  # domain: degrade-silently - bad knob means no sweep
+        return 0
+    if ttl <= 0:
+        return 0
+    try:
+        names = os.listdir(_br_root())
+    except OSError:  # domain: degrade-silently - nothing to sweep
+        return 0
+    now = time.time()
+    swept = 0
+    for name in names:
+        tree = os.path.join(_br_root(), name)
+        if not os.path.isdir(tree):
+            continue
+        manifest = _read_br_manifest(tree)
+        try:
+            idle = now - float((manifest or {}).get("updated_at", 0))
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - bad stamp sweeps nothing
+            idle = 0
+        if idle > ttl:
+            _retire_dir(tree)
+            swept += 1
+    return swept
+
+
+def _evict_lru_br_tree() -> None:
+    """Drop the least-recently-used branch tree past CI_BRANCH_TREE_MAX."""
+    try:
+        cap = max(1, int(config.CI_BRANCH_TREE_MAX))
+    except Exception:  # domain: degrade-silently - bad knob means 1
+        cap = 1
+    try:
+        names = [
+            n
+            for n in os.listdir(_br_root())
+            if os.path.isdir(os.path.join(_br_root(), n))
+        ]
+    except OSError:  # domain: degrade-silently - nothing to evict
+        return
+    if len(names) < cap:
+        return
+    oldest: str | None = None
+    oldest_at = float("inf")
+    for name in names:
+        manifest = _read_br_manifest(os.path.join(_br_root(), name))
+        try:
+            at = float((manifest or {}).get("updated_at", 0))
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - bad stamp sorts oldest
+            at = 0
+        if at < oldest_at:
+            oldest_at = at
+            oldest = name
+    if oldest is not None:
+        _retire_dir(os.path.join(_br_root(), oldest))
+
+
+def evict_br_tree(pr_number: int) -> bool:
+    """Release one PR's branch tree (outcome-poller hook). Never raises."""
+    try:
+        tree = _br_dir(int(pr_number))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - bad input evicts nothing
+        return False
+    with _br_lock(int(pr_number)):
+        if not os.path.isdir(tree):
+            return False
+        _retire_dir(tree)
+        return True
+
+
+def list_br_trees() -> list[dict]:
+    """Registry inventory for the dashboard (newest use first)."""
+    try:
+        names = os.listdir(_br_root())
+    except OSError:  # domain: degrade-silently - no registry yet
+        return []
+    out = []
+    for name in sorted(names):
+        tree = os.path.join(_br_root(), name)
+        if not os.path.isdir(tree):
+            continue
+        manifest = _read_br_manifest(tree) or {}
+        try:
+            pr_number = int(name)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - retired leftovers skipped
+            continue
+        out.append(
+            {
+                "pr_number": pr_number,
+                "pr_sha": (manifest.get("pr_sha") or "")[:12],
+                "base_sha": (manifest.get("base_sha") or "")[:12],
+                "merge_sha": (manifest.get("merge_sha") or "")[:12],
+                "updated_at": manifest.get("updated_at", 0),
+                "hits": manifest.get("hits", 0),
+            }
+        )
+    return sorted(out, key=lambda r: r["updated_at"], reverse=True)
+
+
+def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
+    """Merge origin/main into the PR head inside the PR's registry tree.
+
+    Same merge/conflict contract as _prepare_pr_tree (conflict reported
+    file-by-file, no execution), but warm: when the manifest's
+    (pr_sha, base_sha) still match fresh fetches, no reset/merge runs and
+    the recorded merge commit is reused. Returns (tree, sha, merge_info)
+    with tree_warm True on a hit.
+    """
+    pr_number = int(pr_number)
+    with _br_lock(pr_number):
+        try:
+            _sweep_idle_br_trees()
+        except Exception:  # domain: degrade-silently - sweep never blocks a run
+            pass
+        tree = _br_dir(pr_number)
+        if not os.path.isdir(os.path.join(tree, ".git")):
+            _evict_lru_br_tree()
+        _ensure_clone(tree)
+        base = github.base_branch()
+        pr_fetch = _git(tree, "fetch", "--force", "origin", f"pull/{pr_number}/head")
+        if pr_fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not fetch the head of pull request #{pr_number} "
+                "(unknown PR, or its branch was deleted?): "
+                f"{(pr_fetch.stderr or pr_fetch.stdout).strip()[-300:]}"
+            )
+        pr_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        base_fetch = _git(tree, "fetch", "--force", "origin", base)
+        if base_fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not refresh branch tree #{pr_number} from origin/{base}: "
+                f"{(base_fetch.stderr or base_fetch.stdout).strip()[-300:]}"
+            )
+        base_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        manifest = _read_br_manifest(tree)
+        if (
+            manifest is not None
+            and manifest.get("pr_sha") == pr_sha
+            and manifest.get("base_sha") == base_sha
+            and manifest.get("merge_sha")
+        ):
+            _write_br_manifest(
+                tree,
+                {
+                    "pr_sha": pr_sha,
+                    "base_sha": base_sha,
+                    "merge_sha": manifest["merge_sha"],
+                    "updated_at": time.time(),
+                    "hits": int(manifest.get("hits", 0)) + 1,
+                },
+            )
+            return (
+                tree,
+                manifest["merge_sha"],
+                {
+                    "conflict": False,
+                    "base": base_sha,
+                    "tree_warm": True,
+                },
+            )
+        checkout = _git(tree, "checkout", "--detach", base_sha)
+        if checkout.returncode != 0:
+            raise db.ForumError(
+                f"branch tree #{pr_number} could not check out main for the "
+                f"merge preview: {checkout.stderr.strip()[-300:]}"
+            )
+        merge = _git(tree, "merge", "--no-edit", pr_sha)
+        if merge.returncode != 0:
+            conflicted = [
+                line.strip()
+                for line in _git(
+                    tree, "diff", "--name-only", "--diff-filter=U"
+                ).stdout.splitlines()
+                if line.strip()
+            ]
+            abort = _git(tree, "merge", "--abort")
+            if abort.returncode != 0:
+                # domain: degrade-silently - the next prepare's checkout
+                # heals any half-merged state; nothing serves stale content
+                # meanwhile (a conflict never executes).
+                pass
+            return (
+                tree,
+                base_sha,
+                {
+                    "conflict": True,
+                    "files": conflicted,
+                    "tree_warm": False,
+                },
+            )
+        head = _git(tree, "rev-parse", "HEAD")
+        merge_sha = head.stdout.strip()
+        _write_br_manifest(
+            tree,
+            {
+                "pr_sha": pr_sha,
+                "base_sha": base_sha,
+                "merge_sha": merge_sha,
+                "updated_at": time.time(),
+                "hits": 0,
+            },
+        )
+        return (
+            tree,
+            merge_sha,
+            {
+                "conflict": False,
+                "base": base_sha,
+                "tree_warm": False,
+            },
+        )
