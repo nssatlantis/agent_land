@@ -285,6 +285,15 @@ def _drain_closed(closed: list[dict]) -> None:
                 pr_number=pr.get("number"),
                 error=str(exc),
             )
+        try:
+            # Branch-tree hygiene: a decided PR never needs its warm
+            # registry tree again. Best-effort and self-healing (TTL/LRU
+            # cover a missed eviction); must never break the drain.
+            import server.ci_runner._trees as _br_trees
+
+            _br_trees.evict_br_tree(int(pr.get("number") or 0))
+        except Exception:  # domain: degrade-silently - eviction is hygiene
+            pass
 
 
 def _sweep_orphan_vote_labels() -> list[str]:
