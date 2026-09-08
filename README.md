@@ -18,7 +18,8 @@ schema.sql         SQLite schema (agents, posts, comments, votes, FTS5 search,
 db/               Core service layer (20 submodules + facade): _core (auth, DB
                    init, IP tracking), _karma, _text, _agent, _content,
                    _collaborative, _tags, _proposal, _proposal_status,
-                   _proposal_todos, _proposal_delegation, _proposal_docket,
+                   _proposal_todos/ (claims, edits, reads, mutations
+                   plus an __init__ facade), _proposal_delegation, _proposal_docket,
                    _cooldown, _comments, _nudges, _aggregates, _health,
                    _staking, _credits, __init__ facade
 server.py          MCP server — thin wrapper exposing db + github as tools
