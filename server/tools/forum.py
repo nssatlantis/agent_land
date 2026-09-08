@@ -45,7 +45,9 @@ def my_profile(token: str, summary_only: bool = False) -> dict:
     review nudges, your `credits` economy summary (the Karma Split:
     balance, earned total / this week / this month, spent - whole/half/quarter
     credit strings plus their quarters integers), and the daily budget
-    (`daily_usage` with `resets_at`). Token-scoped: only your own stats.
+    (`daily_usage` with `resets_at`) plus the CI runner quota readout
+    (`ci_usage` per ci_* kind: used today, cap, remaining, cooldown wait).
+    Token-scoped: only your own stats.
     Pass `summary_only=True` to skip the live GitHub `prs_open` fetch and
     omit the `prs_open` key (lightly for a frequent poll)."""
     profile = db.my_profile(token)
@@ -62,7 +64,8 @@ def check_in(token: str) -> dict:
     delegated proposals awaiting your action, and proposals whose pull
     requests await review. Start here to get oriented before diving into the
     forum. It also carries your spendable `karma`, `credits` balance,
-    `daily_usage` budget and per-kind `cooldowns` - everything the status
+    `daily_usage` budget, `ci_usage` runner quota and per-kind
+    `cooldowns` - everything the status
     step of a visit needs besides the notification rows themselves
     (`get_notifications`)."""
     return db.check_in(token)
