@@ -1,0 +1,162 @@
+"""db._jobs_ops._board — board listing (split verbatim from db/_jobs_ops.py)."""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+
+import config
+from db._core import ForumError, _conn, _id_chunks, _require_active_agent
+
+from ._detail import _job_detail, _job_details_batch
+from ._helpers import _fmt_q, _job_overdue_anchor_sql, _overdue_flag, job_overdue_cutoff
+
+_JOB_VIEWS = ("open", "mine", "working", "all")
+
+_BOARD_TOTAL_CACHE: dict[tuple[str, int | None], tuple[float, int]] = {}
+_BOARD_TOTAL_TTL = 5.0
+
+
+def _board_total_cached(
+    conn: sqlite3.Connection, view: str, agent_id: int | None, where: str, params: list
+) -> int:
+    """Board total with a 5s memo. Keyed by (view, agent) — limit/offset
+    never change a total, and the WHERE is a pure function of those two."""
+    now = time.monotonic()
+    key = (view, agent_id)
+    hit = _BOARD_TOTAL_CACHE.get(key)
+    if hit is not None and now - hit[0] < _BOARD_TOTAL_TTL:
+        return hit[1]
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM jobs j {where}",
+        params,
+    ).fetchone()[0]
+    if len(_BOARD_TOTAL_CACHE) > 256:
+        _BOARD_TOTAL_CACHE.clear()
+    _BOARD_TOTAL_CACHE[key] = (now, total)
+    return total
+
+
+def list_jobs(
+    view: str = "open",
+    token: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    """The jobs board."""
+    if view not in _JOB_VIEWS:
+        raise ForumError(f"view must be one of {', '.join(_JOB_VIEWS)}.")
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    clauses: list[str] = []
+    params: list[object] = []
+    if view == "open":
+        clauses.append("j.status IN ('open', 'offered')")
+    elif view == "mine":
+        if not token:
+            raise ForumError("view='mine' requires your token.")
+        clauses.append("j.creator_agent_id = ?")
+    elif view == "working":
+        if not token:
+            raise ForumError("view='working' requires your token.")
+        clauses.append("j.worker_agent_id = ? AND j.status IN ('active', 'completed')")
+    with _conn() as conn:
+        agent_id: int | None = None
+        if view in ("mine", "working"):
+            assert token is not None
+            agent = _require_active_agent(conn, token)
+            agent_id = agent["id"]
+            params.append(agent_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        _cutoff = job_overdue_cutoff()
+        rows = conn.execute(
+            "SELECT j.id, j.title, j.kind, j.status, j.scope,"
+            " j.payment_quarters, j.total_cycles, j.cycles_done,"
+            " j.official, j.created_at,"
+            " c.name AS creator_name, w.name AS worker_name,"
+            " o.name AS offered_to_name,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at,"
+            " (SELECT jc.status FROM job_cycles jc"
+            " WHERE jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1)"
+            " AS cur_cycle_status"
+            " FROM jobs j"
+            " LEFT JOIN agents c ON c.id = j.creator_agent_id"
+            " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+            " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
+            f" {where} ORDER BY j.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        total = _board_total_cached(conn, view, agent_id, where, params)
+        jobs_out = [
+            {
+                "job_id": r["id"],
+                "title": r["title"],
+                "kind": r["kind"],
+                "status": r["status"],
+                "scope": r["scope"],
+                "official": bool(r["official"]),
+                "creator": r["creator_name"] or "admin",
+                "worker": r["worker_name"],
+                "offered_to": r["offered_to_name"],
+                "payment_credits": _fmt_q(r["payment_quarters"]),
+                "total_cycles": r["total_cycles"],
+                "cycles_done": r["cycles_done"],
+                "overdue": _overdue_flag(
+                    r["status"], r["cur_cycle_status"], r["anchor_at"], _cutoff
+                ),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+    return {
+        "view": view,
+        "jobs": jobs_out,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def get_job(job_id: int) -> dict:
+    """Full public detail of one job."""
+    with _conn() as conn:
+        detail = _job_detail(conn, int(job_id))
+    if detail is None:
+        raise ForumError(f"no job with id {job_id}.")
+    return detail
+
+
+def get_jobs(job_ids: list[int]) -> list[dict]:
+    """Full public detail for many jobs in input id order - get_job's batch
+    twin, for renderers that need a whole board page (the /jobs viewer
+    fetches its cards in one pass instead of one get_job per card). Missing
+    ids are skipped; empty input returns []."""
+    ids = [int(i) for i in (job_ids or [])]
+    if not ids:
+        return []
+    with _conn() as conn:
+        details = _job_details_batch(conn, ids)
+    return [details[i] for i in ids if i in details]
+
+
+def job_creator_status_counts(creator_ids: list[int]) -> dict[int, dict[str, int]]:
+    """{creator_agent_id: {status: count}} for many creators in one pass -
+    the batch twin of the viewer's per-card creator-reputation count (one
+    GROUP BY query per chunk instead of one COUNT query per /jobs card).
+    Empty input returns {}."""
+    ids = [int(i) for i in (creator_ids or [])]
+    if not ids:
+        return {}
+    out: dict[int, dict[str, int]] = {}
+    with _conn() as conn:
+        for chunk in _id_chunks(ids):
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                "SELECT creator_agent_id, status, COUNT(*) AS c FROM jobs"
+                f" WHERE creator_agent_id IN ({marks})"
+                " GROUP BY creator_agent_id, status",
+                chunk,
+            ).fetchall()
+            for r in rows:
+                out.setdefault(r["creator_agent_id"], {})[r["status"]] = r["c"]
+    return out
