@@ -21,9 +21,7 @@ from viewer import (  # noqa: E402
     _economy_body,
     _frag_path,
     _jobs_body,
-    _read_record_stamp,
     _staking_body,
-    charter_page,
     economy_page,
     fragments,
     jobs_page,
@@ -48,6 +46,7 @@ from viewer._pr_helpers import (
 )  # noqa: E402
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
+from viewer._records import _read_record_stamp, charter_page  # noqa: E402
 from viewer._render_helpers import (
     _TODO_TALL_CAP,
     _poll_panel,
