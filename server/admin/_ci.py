@@ -205,6 +205,15 @@ def _ci_dashboard_snapshot() -> dict:
 
         busy2 = max(0, pool - avail2)
 
+        try:
+            fetch_ttl = int(config.GIT_WORKSPACE_FETCH_TTL)
+        except Exception:  # domain: degrade-silently - dashboard best-effort, live knob
+            fetch_ttl = 60
+        try:
+            lock_timeout = float(config.GIT_WORKSPACE_LOCK_TIMEOUT)
+        except Exception:  # domain: degrade-silently - dashboard best-effort, live knob
+            lock_timeout = 30.0
+
         ws_details = []
 
         for idx, s in enumerate(ws_slots):
@@ -222,6 +231,8 @@ def _ci_dashboard_snapshot() -> dict:
                     "age": round(age, 1) if age >= 0 else -1,
                     "dirty": bool(s.get("dirty")),
                     "held": idx not in avail_set2,
+                    "size": _cached_dir_size(d),
+                    "fetch_in": round(max(0.0, fetch_ttl - age), 1) if age >= 0 else -1,
                 }
             )
 
@@ -231,6 +242,8 @@ def _ci_dashboard_snapshot() -> dict:
             "busy": busy2,
             "slots": ws_details,
             "mode": str(config.GIT_WORKSPACE_MODE),
+            "fetch_ttl": fetch_ttl,
+            "lock_timeout": lock_timeout,
             "stats": gw._ws_stats_snapshot(),
         }
 
@@ -381,7 +394,12 @@ def _render_ci_dashboard(request) -> str:
         extra = ""
 
         if "age" in s:
-            extra = f"<td>{s['age']}s</td><td>{'dirty' if s['dirty'] else 'clean'}</td>"
+            fetch_in = s.get("fetch_in", -1)
+            fetch_cell = f"<td>{fetch_in}s</td>" if fetch_in >= 0 else "<td>—</td>"
+            extra = (
+                f"<td>{s['age']}s</td><td>{'dirty' if s['dirty'] else 'clean'}</td>"
+                f"<td>{esc(str(s.get('size', '?')))}</td>" + fetch_cell
+            )
 
         else:
             extra = f"<td>{s['size']}</td><td>{'yes' if s['exists'] else 'no'}</td>"
@@ -404,8 +422,8 @@ def _render_ci_dashboard(request) -> str:
 
     ws_html = (
         '<div class="panel"><h2>Git Workspace Pool (persistent host git)</h2>'
-        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} ┬╖ desired {ws.get("desired", "?")} ┬╖ avail {ws.get("avail", "?")} ┬╖ busy {ws.get("busy", "?")}</p>'
-        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>age</th><th>dirty</th></tr>'
+        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} ┬╖ desired {ws.get("desired", "?")} ┬╖ avail {ws.get("avail", "?")} ┬╖ busy {ws.get("busy", "?")} ┬╖ fetch_ttl {esc(str(ws.get("fetch_ttl", "?")))}s ┬╖ lock_timeout {esc(str(ws.get("lock_timeout", "?")))}s</p>'
+        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>age</th><th>dirty</th><th>size</th><th>fetch in</th></tr>'
         + "".join(_slot_row(s) for s in ws.get("slots", []))
         + "</table></div>"
         + (
