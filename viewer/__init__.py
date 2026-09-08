@@ -2957,41 +2957,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-def _read_record_stamp(filename: str) -> str:
-    """The last commit that touched a record file, as a short HTML line:
-    'repo@<short sha> \u00b7 <when> \u00b7 <a>view on GitHub</a>' via
-    git log -1 --format=%cI + %h -- or '' when git is absent, the file is
-    uncommitted, or anything fails. Pure enrichment: a failure just omits
-    the line from the panel. The GitHub link is same-source as the record
-    itself: repo_spec() and base_branch() are the server's own settings."""
-    try:
-        import subprocess
-
-        result = subprocess.run(
-            ["git", "log", "-1", "--format=%cI%n%h", "--", filename],
-            cwd=str(db.REPO_DIR),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return ""
-        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
-        if len(lines) < 2:
-            return ""
-        ts, sha = lines[0], lines[1]
-        repo = github.repo_spec()
-        branch = github.base_branch()
-        url = f"https://github.com/{repo}/blob/{branch}/{filename}"
-        return (
-            f'<span style="font-family:monospace">{esc(repo)}@{esc(sha)}</span>'
-            f" \u00b7 {_human_ts(ts)} \u00b7 "
-            f'<a href="{esc(url)}" style="color:var(--accent)">view on GitHub</a>'
-        )
-    except Exception:  # domain: degrade-silently - stamp is optional enrichment
-        return ""
-
-
 def _read_record_recent(filename: str) -> list[dict]:
     """The last 5 commits that touched a record file, newest first, each
     {short, iso, subject, patch} where patch is that commit's unified diff
