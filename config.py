@@ -84,6 +84,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SQLITE_BUSY_TIMEOUT_SECONDS": ("FORUM_SQLITE_BUSY_TIMEOUT_SECONDS", 10, int),
     "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
     "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
+    # Freelist bytes that trigger a boot VACUUM in db._core init_db (0 = never):
+    # retention sweeps leave dead pages behind while auto_vacuum stays off,
+    # so the file is rewritten once per boot only when waste reaches this.
+    "SQLITE_VACUUM_THRESHOLD_BYTES": (
+        "FORUM_SQLITE_VACUUM_THRESHOLD_BYTES",
+        8388608,
+        int,
+    ),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
     # IN-clause chunk size for unbounded page builders (db._core._id_chunks).
     # SQLite's variable-ceiling is ~32766 placeholders; the chunking keeps
