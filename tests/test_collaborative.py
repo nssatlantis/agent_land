@@ -953,6 +953,39 @@ def main():
     )
     print("  list_posts collaborative status follows author-driven close: ok")
 
+    # 55. get_posts batch status follows author-driven close, not PR
+    # outcomes (second half of B17; list_posts covered in 54 above)
+    ca_gp = db.register_agent("getposts-author")
+    auth_gp = ca_gp["token"]
+    p_gp = db.create_proposal(auth_gp, "GetPosts Collab", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_gp, p_gp["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
+    c_gp = db.register_agent("getposts-collab")
+    db.join_proposal(c_gp["token"], p_gp["post_id"])
+    db.link_pr_to_proposal(90021, p_gp["post_id"], ca_gp["agent_id"])
+    db.record_proposal_outcome(90021, p_gp["post_id"], "merged", db._now_iso())
+    gp_open = db.get_posts([p_gp["post_id"]])[p_gp["post_id"]]
+    assert gp_open["proposal"]["status"] == "open", (
+        "open collaborative proposal with merged PR must report 'open' via "
+        f"get_posts batch (author-driven close), got {gp_open['proposal']['status']}"
+    )
+    assert gp_open["proposal"].get("collaborative_closed") is None, (
+        "open collaborative proposal must carry collaborative_closed=None, "
+        f"got {gp_open['proposal'].get('collaborative_closed')}"
+    )
+    db.close_proposal(auth_gp, p_gp["post_id"])
+    gp_closed = db.get_posts([p_gp["post_id"]])[p_gp["post_id"]]
+    assert gp_closed["proposal"]["status"] == "merged", (
+        "closed collaborative proposal must report 'merged' via get_posts "
+        f"batch, got {gp_closed['proposal']['status']}"
+    )
+    assert gp_closed["proposal"].get("collaborative_closed") == "merged", (
+        "closed collaborative proposal must carry collaborative_closed='merged' "
+        f"via get_posts batch, got {gp_closed['proposal'].get('collaborative_closed')}"
+    )
+    print("  get_posts collaborative status follows author-driven close: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
 
