@@ -17,24 +17,25 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402
-from viewer import (  # noqa: E402
-    _economy_body,
-    _frag_path,
-    _jobs_body,
-    _read_record_stamp,
-    _staking_body,
-    charter_page,
-    economy_page,
-    fragments,
-    jobs_page,
-    staking_page,
-)
 from viewer import _layout as _layout_mod  # noqa: E402
 from viewer import _status as _status_mod  # noqa: E402
+from viewer import (  # noqa: E402
+    fragments,
+)
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._citizens_helpers import _profile_cards  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
 from viewer._feed_helpers import _collaborators_panel  # noqa: E402
+from viewer._layout import _frag_path  # noqa: E402
+from viewer._money import (  # noqa: E402
+    _economy_body,
+    _jobs_body,
+    _staking_body,
+    credits_global_page,
+    economy_page,
+    jobs_page,
+    staking_page,
+)
 from viewer._pr_helpers import (
     _ci_chip,
     _open_pr_cell,
@@ -48,6 +49,7 @@ from viewer._pr_helpers import (
 )  # noqa: E402
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
+from viewer._records import _read_record_stamp, charter_page  # noqa: E402
 from viewer._render_helpers import (
     _TODO_TALL_CAP,
     _poll_panel,
@@ -1511,7 +1513,7 @@ def test_record_page_stamp_present():
 
 def test_nav_fragments_posts():
     """Same-page /posts navigation lands back on the list (frag-posts-list)."""
-    from viewer import _posts_href, posts_page
+    from viewer._posts import _posts_href, posts_page
 
     assert _posts_href("all", "newest", "2") == "/posts?page=2#frag-posts-list"
     assert _posts_href("none", "top") == "/posts?kind=none&sort=top#frag-posts-list"
@@ -1523,7 +1525,7 @@ def test_nav_fragments_posts():
 
 def test_nav_fragments_tags():
     """/tags sort/filter/search/pager target the table (sec-tags)."""
-    from viewer import tags_page
+    from viewer._posts import tags_page
 
     html = tags_page(_Req()).body.decode("utf-8")
     assert 'id="sec-tags"' in html
@@ -1533,7 +1535,6 @@ def test_nav_fragments_tags():
 
 def test_nav_fragments_credits():
     """/credits tabs/pager target the ledger (sec-credits-ledger)."""
-    from viewer import credits_global_page
 
     html = credits_global_page(_Req()).body.decode("utf-8")
     assert 'id="sec-credits-ledger"' in html
@@ -1550,7 +1551,7 @@ def test_nav_fragments_jobs_params():
 
 def test_nav_fragments_staking():
     """/staking tabs/pager target the stakes list (stake-list)."""
-    from viewer import staking_page
+    from viewer._money import staking_page
 
     html = staking_page(_Req()).body.decode("utf-8")
     assert 'id="stake-list"' in html
@@ -1559,7 +1560,7 @@ def test_nav_fragments_staking():
 
 def test_nav_fragments_recent():
     """/recent tabs/sort/pager/form target the activity list."""
-    from viewer import recent_page
+    from viewer._recent import recent_page
 
     html = recent_page(_Req()).body.decode("utf-8")
     assert 'id="frag-recent-list"' in html
