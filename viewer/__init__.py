@@ -2992,7 +2992,7 @@ def _read_record_stamp(filename: str) -> str:
         return ""
 
 
-def _read_record_recent(filename: str) -> list[dict]:
+def _read_record_recent_KEPT3(filename: str) -> list[dict]:
     """The last 5 commits that touched a record file, newest first, each
     {short, iso, subject, patch} where patch is that commit's unified diff
     of the file, truncated. [] when git is absent or anything fails - the
