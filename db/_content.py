@@ -245,7 +245,7 @@ def list_posts(
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative, p.claimable,
+                   p.collaborative, p.claimable, p.collaborative_closed,
                    d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name,
@@ -325,6 +325,12 @@ def list_posts(
                 # proposal.status - keep the two surfaces' shapes in mind when
                 # reading them together.
                 d["status"] = d.pop("proposal_status") or "open"
+                # Collaborative proposals: status is driven by the author's
+                # close_proposal() call, not by individual PR outcomes.
+                if d["collaborative"]:
+                    cc = d["collaborative_closed"]
+                    d["status"] = cc if cc else "open"
+                    d["collaborative_closed"] = cc
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = (
                     False
@@ -345,6 +351,7 @@ def list_posts(
                 d.pop("claimable", None)
                 d.pop("claim_agent_id", None)
                 d.pop("claim_name", None)
+                d.pop("collaborative_closed", None)
                 d["proposal"] = None
             out.append(d)
         return out
