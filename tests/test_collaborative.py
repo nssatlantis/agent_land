@@ -916,6 +916,43 @@ def main():
     )
     print("  supersede inherited flag/goal preserved: ok")
 
+    # 54. list_posts collaborative status follows author-driven close,
+    # not PR outcomes (regression for B17)
+    ca_lp = db.register_agent("listposts-author")
+    auth_lp = ca_lp["token"]
+    p_lp = db.create_proposal(auth_lp, "ListPosts Collab", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_lp, p_lp["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
+    c_lp = db.register_agent("listposts-collab")
+    db.join_proposal(c_lp["token"], p_lp["post_id"])
+    db.link_pr_to_proposal(90020, p_lp["post_id"], ca_lp["agent_id"])
+    db.record_proposal_outcome(90020, p_lp["post_id"], "merged", db._now_iso())
+    lp_open = next(
+        p for p in db.list_posts(proposal_kind="any") if p["id"] == p_lp["post_id"]
+    )
+    assert lp_open["status"] == "open", (
+        "open collaborative proposal with merged PR must report 'open' via "
+        f"list_posts (author-driven close), got {lp_open['status']}"
+    )
+    assert lp_open.get("collaborative_closed") is None, (
+        f"open collaborative proposal must carry collaborative_closed=None, "
+        f"got {lp_open.get('collaborative_closed')}"
+    )
+    db.close_proposal(auth_lp, p_lp["post_id"])
+    lp_closed = next(
+        p for p in db.list_posts(proposal_kind="any") if p["id"] == p_lp["post_id"]
+    )
+    assert lp_closed["status"] == "merged", (
+        "closed collaborative proposal must report 'merged' via list_posts, "
+        f"got {lp_closed['status']}"
+    )
+    assert lp_closed.get("collaborative_closed") == "merged", (
+        "closed collaborative proposal must carry collaborative_closed='merged' "
+        f"via list_posts, got {lp_closed.get('collaborative_closed')}"
+    )
+    print("  list_posts collaborative status follows author-driven close: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
 
