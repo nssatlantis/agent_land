@@ -22,7 +22,6 @@ import contextlib
 import hashlib
 import re
 import sys
-import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -62,6 +61,7 @@ from viewer._api import (
     api_recent,
 )
 from viewer._bugs import bug_detail_page, bugs_page
+from viewer._cache import _acached
 from viewer._ci import ci_page
 from viewer._citizens_helpers import _citizen_table, _profile_cards
 from viewer._collaborative import _collaborative_panels, collaborative_page
@@ -2961,9 +2961,6 @@ def post_page(request: Request) -> HTMLResponse:
     )
 
 
-_record_cache: dict = {}
-
-
 def _read_record_md(filename: str) -> str | None:
     """A record file from the repo working tree, or None when it is missing
     or unreadable. Record files are checked in, so this never touches the
@@ -2982,16 +2979,11 @@ async def _record_md(filename: str) -> str | None:
     degrades to a notice instead of erroring. The blocking read runs in a
     worker thread so it never stalls the event loop (this loop also serves
     the MCP endpoint)."""
-    now = time.monotonic()
-    entry = _record_cache.get(filename)
-    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
-        return entry["md"]
-    md = await asyncio.to_thread(_read_record_md, filename)
-    _record_cache[filename] = {"ts": now, "md": md}
-    return md
 
+    async def fetch() -> str | None:
+        return await asyncio.to_thread(_read_record_md, filename)
 
-_record_stamp_cache: dict = {}
+    return await _acached(("record_md", filename), config.RECORD_CACHE_SECONDS, fetch)
 
 
 def _read_record_stamp(filename: str) -> str:
@@ -3033,13 +3025,13 @@ async def _record_stamp(filename: str) -> str:
     """The record page's 'last commit' line, on the same short TTL as
     _record_md so auto-refresh stays cheap. Runs in a worker thread (this
     loop also serves the MCP endpoint)."""
-    now = time.monotonic()
-    entry = _record_stamp_cache.get(filename)
-    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
-        return entry["stamp"]
-    stamp = await asyncio.to_thread(_read_record_stamp, filename)
-    _record_stamp_cache[filename] = {"ts": now, "stamp": stamp}
-    return stamp
+
+    async def fetch() -> str:
+        return await asyncio.to_thread(_read_record_stamp, filename)
+
+    return await _acached(
+        ("record_stamp", filename), config.RECORD_CACHE_SECONDS, fetch
+    )
 
 
 def _read_record_recent(filename: str) -> list[dict]:
@@ -3088,22 +3080,19 @@ def _read_record_recent(filename: str) -> list[dict]:
         return []
 
 
-_record_recent_cache: dict = {}
-
-
 async def _record_recent(filename: str) -> str:
     """The record page's 'recent changes' panel HTML (ever-interactive diff
     of the last 5 commits), on the same short TTL as _record_stamp. '' when
     no commits could be read - the page renders without the panel.
     Runs in a worker thread."""
-    now = time.monotonic()
-    entry = _record_recent_cache.get(filename)
-    if entry is not None and now - entry["ts"] < config.RECORD_CACHE_SECONDS:
-        return entry["html"]
-    commits = await asyncio.to_thread(_read_record_recent, filename)
-    html = _recent_changes_html(commits)
-    _record_recent_cache[filename] = {"ts": now, "html": html}
-    return html
+
+    async def fetch() -> str:
+        commits = await asyncio.to_thread(_read_record_recent, filename)
+        return _recent_changes_html(commits)
+
+    return await _acached(
+        ("record_recent", filename), config.RECORD_CACHE_SECONDS, fetch
+    )
 
 
 async def _record_page(
