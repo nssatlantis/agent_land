@@ -44,6 +44,9 @@ _TUNE_DEFAULTS = {
     "FORUM_TX_FEE_PERCENT": "0",
     "FORUM_COMMENT_DAILY_CAP": "0",
     "FORUM_VOTE_DAILY_CAP": "0",
+    # Boot VACUUM: behavior-tests must never rewrite the file mid-suite;
+    # test_boot_vacuum.py opts in explicitly per case.
+    "FORUM_SQLITE_VACUUM_THRESHOLD_BYTES": "0",
     "FORUM_STAKE_MAX_FRACTION": "0",
     "FORUM_PR_VOTE_THRESHOLD": "3",
     "FORUM_MIN_KARMA_PR_VOTE": "0",

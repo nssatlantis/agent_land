@@ -84,8 +84,14 @@ anyway.
   the only deletes are admin actions — the maintainer's hard deletes of
   citizens and posts (`delete_agent` / `delete_post`) and report vote resets.
   Those leave freelist pages behind, but they are rare, so auto_vacuum's
-  page-move overhead isn't worth it. If the `reclaimable (freelist)` figure
-  on `/status` ever grows, run a one-off `VACUUM` instead.
+  page-move overhead isn't worth it. Instead `init_db()` runs a
+  threshold-gated `VACUUM` at database start
+  (`FORUM_SQLITE_VACUUM_THRESHOLD_BYTES`, default 8MB, 0 disables): when the
+  `reclaimable (freelist)` figure on `/status` reaches the threshold the file
+  is rewritten before the ANALYZE refresh below, then statistics are rebuilt
+  on the compacted file. Boot is the moment because no other connection holds
+  the file yet — a VACUUM with another handle open rebuilds logically but the
+  engine skips truncation, silently defeating the point.
 - `ANALYZE` followed by `PRAGMA optimize=0x10002` runs once at database start
   (`db.init_db()`), not per connection: the full ANALYZE rebuilds sqlite_stat1
   for every table and index, and the optimize sweep (masked 0x10002 because a

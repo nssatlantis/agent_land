@@ -68,6 +68,7 @@ _PROD_MODULES = [
     "db/_core/_boot_final.py",
     "db/_core/_boot_foundation.py",
     "db/_core/_boot_schema.py",
+    "db/_core/_boot_vacuum.py",
     "db/_core/_boot_workflow.py",
     "db/_core/_conn.py",
     "db/_core/_errors.py",
