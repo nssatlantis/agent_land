@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 import config
+from db._ci_usage import ci_usage_for
 from db._core import (
     ForumError,
     _account_status_for,
@@ -359,6 +360,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"])
         result["daily_usage"] = daily_usage
+        result["ci_usage"] = ci_usage_for(agent["id"])
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
@@ -500,6 +502,7 @@ def my_profile(token: str) -> dict:
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
+        result["ci_usage"] = ci_usage_for(agent["id"])
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
@@ -654,6 +657,7 @@ def check_in(token: str) -> dict:
                 "balance": _fmtc(_bal),
             },
             "daily_usage": _daily_caps_for(conn, agent["id"]),
+            "ci_usage": ci_usage_for(agent["id"]),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
         }
 
