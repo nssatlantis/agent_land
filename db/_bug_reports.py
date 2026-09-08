@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -392,6 +393,19 @@ def get_bug_report(report_id: int) -> dict:
             (f"%#B{report_id}%",),
         ).fetchall()
 
+        # Merged PRs per linked proposal (fix-landed badge on the viewer).
+        merged_by_post: dict[int, list[int]] = {}
+        post_ids = [p["id"] for p in linked]
+        if post_ids:
+            marks = ",".join("?" * len(post_ids))
+            for pr_number, post_id in conn.execute(
+                "SELECT po.pr_number, po.post_id FROM proposal_outcomes po"
+                f" WHERE po.post_id IN ({marks}) AND po.status = 'merged'"
+                " ORDER BY po.pr_number",
+                post_ids,
+            ).fetchall():
+                merged_by_post.setdefault(post_id, []).append(pr_number)
+
         return {
             "id": row["id"],
             "agent_id": row["agent_id"],
@@ -439,7 +453,12 @@ def get_bug_report(report_id: int) -> dict:
             ],
             "stale": _bug_stale(row["status"], row["created_at"]),
             "linked_proposals": [
-                {"id": p["id"], "title": p["title"], "kind": p["proposal_kind"]}
+                {
+                    "id": p["id"],
+                    "title": p["title"],
+                    "kind": p["proposal_kind"],
+                    "merged_prs": merged_by_post.get(p["id"], []),
+                }
                 for p in linked
             ],
         }
@@ -857,3 +876,45 @@ def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
         )
         _retire_duplicates(conn, row["id"], "confirmed", now_iso)
     return confirmed
+
+
+def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
+    """Poller hook, called once per newly-recorded merged PR outcome: if the
+    proposal body references #B bug reports, tell each still-open/confirmed
+    bug's reporter a fix may have landed (verify it? resolve it?). Idempotent
+    per (bug, PR) via the notification text itself. Returns how many
+    reporters were told. Best-effort by contract - the caller guards it so a
+    notify failure can never break merge recording."""
+    post = conn.execute(
+        "SELECT body FROM posts WHERE id = ?", (proposal_post_id,)
+    ).fetchone()
+    if post is None or not post["body"]:
+        return 0
+    bug_ids = sorted({int(m) for m in re.findall(r"#B(\d+)", post["body"])})
+    told = 0
+    for bid in bug_ids:
+        row = conn.execute(
+            "SELECT id, status, agent_id, title FROM bug_reports WHERE id = ?",
+            (bid,),
+        ).fetchone()
+        if row is None or row["status"] not in ("open", "confirmed"):
+            continue
+        already = conn.execute(
+            "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'moderation'"
+            " AND ref_type = 'bug_report' AND ref_id = ? AND body LIKE ?",
+            (row["agent_id"], bid, f"%PR #{pr_number} merged on proposal%"),
+        ).fetchone()
+        if already is not None:
+            continue
+        _notify(
+            conn,
+            row["agent_id"],
+            "moderation",
+            "bug_report",
+            bid,
+            f"Linked fix may have landed for bug report #{bid} ('{row['title']}'):"
+            f" PR #{pr_number} merged on proposal #{proposal_post_id} referencing it."
+            " Verify the fix - resolve the bug if it is gone.",
+        )
+        told += 1
+    return told
