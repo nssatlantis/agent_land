@@ -5,6 +5,7 @@ server/admin/_ci.py — CI / workspaces dashboard (admin-only, 5/10s poll).
 from __future__ import annotations
 
 import asyncio
+import time
 
 import config
 from server.admin._auth import (
@@ -164,7 +165,7 @@ def _ci_dashboard_snapshot() -> dict:
     except Exception as exc:  # domain: degrade-silently - dashboard best-effort
         snap["ci"] = {"error": str(exc)}
 
-    # In-flight user CI runs (single-flight registry)
+    # In-flight user CI runs
 
     try:
         import server.ci_runner as cr
@@ -249,6 +250,39 @@ def _ci_dashboard_snapshot() -> dict:
 
     except Exception as exc:  # domain: degrade-silently
         snap["ws"] = {"error": str(exc)}
+
+    # Warm branch trees (repo_ci_run(pr_number=...) registry)
+
+    try:
+        import server.ci_runner._trees as _br_trees
+
+        snap["br_trees"] = _br_trees.list_br_trees()
+    except Exception as exc:  # domain: degrade-silently
+        snap["br_trees"] = []
+        snap["br_trees_error"] = str(exc)
+
+    # Named rehearsal trees (repo_ci_run(tree=...))
+
+    try:
+        import server.ci_runner._trees as _ci_trees
+
+        _named_root = _ci_trees._named_root()
+        _named_rows: list[dict] = []
+        for _owner in sorted(os.listdir(_named_root)):
+            try:
+                _aid = int(_owner)
+            except (
+                TypeError,
+                ValueError,
+            ):  # domain: degrade-silently - dashboard best-effort, skip odd dirs
+                continue
+            for _row in _ci_trees.list_named_trees(_aid):
+                _row["agent_id"] = _aid
+                _named_rows.append(_row)
+        snap["named_trees"] = _named_rows
+    except Exception as exc:  # domain: degrade-silently
+        snap["named_trees"] = []
+        snap["named_trees_error"] = str(exc)
 
     # Ticker
 
@@ -434,6 +468,78 @@ def _render_ci_dashboard(request) -> str:
         + "</div>"
     )
 
+    _named_rows_html = ""
+    for _t in snap.get("named_trees", []):
+        try:
+            _age_h = (time.time() - float(_t.get("updated_at", 0))) / 3600
+            _age = f"{_age_h:.1f}h"
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - dashboard best-effort, unknown age
+            _age = "?"
+        _named_rows_html += (
+            f"<tr><td>{esc(str(_t.get('agent_id')))}</td>"
+            f"<td>{esc(str(_t.get('name')))}</td>"
+            f"<td>{esc(str(_t.get('base_sha')))}</td>"
+            f"<td>{esc(str(_t.get('runs')))}</td>"
+            f"<td>{esc(str(_t.get('delta_count')))}</td>"
+            f"<td>{esc(str(_t.get('size_mb')))} MB</td>"
+            f"<td>{esc(_age)}</td></tr>"
+        )
+    if not _named_rows_html:
+        _named_rows_html = (
+            '<tr><td colspan=7 style="color:var(--muted)">no named trees held</td></tr>'
+        )
+
+    named_trees_html = (
+        '<div class="panel"><h2>Named Rehearsal Trees (repo_ci_run tree=...)</h2>'
+        f'<p style="color:var(--muted)">cap {esc(str(config.CI_NAMED_TREE_MAX_PER_AGENT))} per agent (FORUM_CI_NAMED_TREE_MAX_PER_AGENT), idle-swept after {esc(str(config.CI_NAMED_TREE_TTL_HOURS))}h, size-capped at {esc(str(config.CI_NAMED_TREE_MAX_MB))} MB each</p>'
+        '<div class="table-wrap"><table><tr><th>agent</th><th>tree</th><th>base</th><th>runs</th><th>deltas</th><th>size</th><th>idle</th></tr>'
+        + _named_rows_html
+        + "</table></div>"
+        + (
+            "<p style=color:var(--muted)>" + esc(snap["named_trees_error"]) + "</p>"
+            if "named_trees_error" in snap
+            else ""
+        )
+        + "</div>"
+    )
+
+    _br_rows_html = ""
+    for _b in snap.get("br_trees", []):
+        try:
+            _b_age_h = (time.time() - float(_b.get("updated_at", 0))) / 3600
+            _b_age = f"{_b_age_h:.1f}h"
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - dashboard best-effort, unknown age
+            _b_age = "?"
+        _br_rows_html += (
+            f"<tr><td>#{esc(str(_b.get('pr_number')))}</td>"
+            f"<td>{esc(str(_b.get('pr_sha')))}</td>"
+            f"<td>{esc(str(_b.get('base_sha')))}</td>"
+            f"<td>{esc(str(_b.get('hits')))}</td>"
+            f"<td>{esc(_b_age)}</td></tr>"
+        )
+    if not _br_rows_html:
+        _br_rows_html = '<tr><td colspan=5 style="color:var(--muted)">no warm branch trees held</td></tr>'
+
+    br_trees_html = (
+        '<div class="panel"><h2>Warm Branch Trees (repo_ci_run pr_number=...)</h2>'
+        f'<p style="color:var(--muted)">cap {esc(str(config.CI_BRANCH_TREE_MAX))} PRs, LRU-evicted past it, idle-swept after {esc(str(config.CI_BRANCH_TREE_TTL_HOURS))}h, evicted on PR close</p>'
+        '<div class="table-wrap"><table><tr><th>pr</th><th>head</th><th>base</th><th>warm hits</th><th>idle</th></tr>'
+        + _br_rows_html
+        + "</table></div>"
+        + (
+            "<p style=color:var(--muted)>" + esc(snap["br_trees_error"]) + "</p>"
+            if "br_trees_error" in snap
+            else ""
+        )
+        + "</div>"
+    )
+
     # In-flight user CI runs
 
     inflight_rows = ""
@@ -548,9 +654,9 @@ def _render_ci_dashboard(request) -> str:
         f'<form method="post" action="/admin/ci/clear-pending">{_csrf_field(request)}<button type="submit">Clear pending queue</button></form>'
         f'<form method="post" action="/admin/ci/prune-images">{_csrf_field(request)}<button type="submit">Prune stale images</button></form>'
         f'<form method="post" action="/admin/ci/restart-ticker">{_csrf_field(request)}<button type="submit">Restart ticker</button></form>'
-        f'<form method="post" action="/admin/ci/gc-workspaces">{_csrf_field(request)}<button type="submit">GC CI trees (prune now)</button></form>'
+        f'<form method="post" action="/admin/ci/gc-workspaces">{_csrf_field(request)}<button type="submit">GC trees (prune + sweep now)</button></form>'
         "</div>"
-        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees only (git-workspace slots are scrubbed on every acquire instead).</p>'
+        '<p style="color:var(--muted);margin-top:8px">Buttons are admin-only, CSRF-protected, best-effort. ticker restart recreates 5s/10s coalesce task; gc runs <code>git gc --prune=now</code> on CI -ci trees and sweeps idle named rehearsal trees and branch trees (git-workspace slots are scrubbed on every acquire instead).</p>'
         "</div>"
     )
 
@@ -566,6 +672,8 @@ def _render_ci_dashboard(request) -> str:
         + ci_html
         + inflight_html
         + ws_html
+        + named_trees_html
+        + br_trees_html
         + ticker_html
         + recent_html
         + images_html
@@ -734,7 +842,16 @@ async def ci_gc_workspaces(request):
             if pr.returncode == 0:
                 gc_count += 1
 
-        return _flash(request, f"ran git gc on {gc_count}/{desired} CI trees.")
+        swept = cr._trees._sweep_idle_named_trees()
+        try:
+            swept_br = cr._trees._sweep_idle_br_trees()
+        except Exception:  # domain: degrade-silently - sweep never breaks GC
+            swept_br = 0
+
+        return _flash(
+            request,
+            f"ran git gc on {gc_count}/{desired} CI trees; swept {swept} idle named trees and {swept_br} idle branch trees.",
+        )
 
     except Exception as exc:  # domain: degrade-silently
         return _flash(request, f"gc failed: {exc}")

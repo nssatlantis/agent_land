@@ -469,7 +469,7 @@ def test_handoff_slow_run_returns_running_and_completes():
     release = threading.Event()
     done_mark: list = []
 
-    def _slow(agent_id, name, checks, pr_number=None, files=None):
+    def _slow(agent_id, name, checks, pr_number=None, files=None, tree=None):
         started.set()
         assert release.wait(15)
         done_mark.append(checks)
@@ -505,7 +505,7 @@ def test_handoff_error_propagates_within_deadline():
     (run_checks audits its own early failures) and the claim is released."""
     import unittest.mock as _mock
 
-    def _raise(agent_id, name, checks, pr_number=None, files=None):
+    def _raise(agent_id, name, checks, pr_number=None, files=None, tree=None):
         raise db.ForumError("something went wrong while rehearsing")
 
     uid = _uid()
@@ -531,7 +531,7 @@ def test_single_flight_refuses_concurrent_second_run():
     holder: dict = {}
     done_mark: list = []
 
-    def _slow(agent_id, name, checks, pr_number=None, files=None):
+    def _slow(agent_id, name, checks, pr_number=None, files=None, tree=None):
         started.set()
         assert release.wait(15)
         done_mark.append(checks)

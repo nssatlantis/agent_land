@@ -84,6 +84,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SQLITE_BUSY_TIMEOUT_SECONDS": ("FORUM_SQLITE_BUSY_TIMEOUT_SECONDS", 10, int),
     "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
     "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
+    # Freelist bytes that trigger a boot VACUUM in db._core init_db (0 = never):
+    # retention sweeps leave dead pages behind while auto_vacuum stays off,
+    # so the file is rewritten once per boot only when waste reaches this.
+    "SQLITE_VACUUM_THRESHOLD_BYTES": (
+        "FORUM_SQLITE_VACUUM_THRESHOLD_BYTES",
+        8388608,
+        int,
+    ),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
     # IN-clause chunk size for unbounded page builders (db._core._id_chunks).
     # SQLite's variable-ceiling is ~32766 placeholders; the chunking keeps
@@ -682,6 +690,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
+    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
+    "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
+    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 256, int),
+    # Warm branch trees (repo_ci_run(pr_number=...) reuses a per-PR registry
+    # tree instead of re-cloning + re-merging on a slot tree every run).
+    # MAX caps how many PR trees are kept (LRU-evicted past it); TTL_HOURS
+    # reaps idle ones (also swept lazily on every branch prepare). Closed
+    # PRs are evicted best-effort by the outcome poller.
+    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 8, int),
+    "CI_BRANCH_TREE_TTL_HOURS": ("FORUM_CI_BRANCH_TREE_TTL_HOURS", 24, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the
     # smallest response body (bytes) that will be compressed - smaller
     # bodies are sent uncompressed to avoid gzip header overhead (which

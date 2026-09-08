@@ -161,6 +161,22 @@ before on main and an after on the PR merge preview (`pr_number`) and compare me
 (20%+1ms threshold) to validate index/batching PRs (perf audit #111) — e.g.
 `repo_ci_run(token, checks="db_benchmark", pr_number=123)`.
 
+Named rehearsal trees (`tree="name"`): a persistent per-agent overlay tree
+so multi-step builds skip the re-upload + cold-sync every iteration — pass
+`files` with `tree` to apply only the new delta onto the warm tree, or
+`tree` alone to re-run it as-is. The response echoes `tree_warm` (no reset
+ran) and `delta_count`; the tree refreshes onto current origin/main first,
+replaying stored deltas (a replay failure names the file and clears the
+store — resend the fixed delta). Cap `FORUM_CI_NAMED_TREE_MAX_PER_AGENT`
+trees, idle-swept after `FORUM_CI_NAMED_TREE_TTL_HOURS`, size-capped by
+`FORUM_CI_NAMED_TREE_MAX_MB`; release with `tree_forget=True`.
+
+Warm branch trees: repeat `pr_number` runs reuse a per-PR registry tree
+when neither the PR head nor origin/main moved (`tree_warm` in the
+response) — first look and poller sweeps share the warmth. Capped at
+`FORUM_CI_BRANCH_TREE_MAX` PRs (LRU), idle-swept after
+`FORUM_CI_BRANCH_TREE_TTL_HOURS`, evicted on PR close.
+
 **Known gotchas:**
 
 - **Drift pattern:** the maintainer sometimes merges `main` into open PR
@@ -275,6 +291,7 @@ before minting a new one:
 | `workspace_normalize_duration_ms` | `github/_gitops.py` `_ws_normalize` per acquire | info (tree-prep latency per slot) |
 | `workspace_pool_saturated` | `github/_gitops.py` `_workspace` fallback | info (pool exhausted -> legacy temp clone) |
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
+| `db_vacuum_boot`, `db_vacuum_boot_failed` | `db/_core/_boot_vacuum.py` `maybe_vacuum` | degrade-silently (logged; boot continues on the unvacuumed file) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 
 import config
 import db
@@ -298,3 +301,639 @@ def _prepare_local_tree(
     ).hexdigest()[:12]
     head_sha = f"{main_sha[:12]}+local-{overlay_hash}"
     return tree, head_sha, {"conflict": False, "base": main_sha, "local": True}
+
+
+# --- named rehearsal trees (repo_ci_run(tree=...)) ---------------------------
+# Persistent per-agent overlay trees so multi-step builds skip the re-upload
+# + cold-sync on every iteration: the first call clones + applies the delta,
+# later calls apply only the new delta onto the warm tree (skipping the
+# reset when origin/main hasn't moved). Same single-process invariant as
+# the slot pools: locks and manifests are in-memory/on-disk under DATA_DIR,
+# reset on restart only in the sense that locks are re-created on demand.
+# Execution still borrows a CI slot per run - only *storage* persists.
+
+# Removal helper shared by the sweep/forget/ownership paths (mirrors the
+# branch-tree registry in the D2 PR): rename-aside-then-delete, because
+# Windows AV locks on fresh clones silently defeat plain rmtree - the name
+# frees instantly while a leftover converges on later sweeps.
+
+
+def _rm_readonly(func, path, _exc):
+    """shutil.rmtree onerror handler: Windows marks .git objects read-only."""
+    try:
+        os.chmod(path, 0o777)
+    except OSError:  # domain: degrade-silently - best-effort permission fix
+        pass
+    try:
+        func(path)
+    except FileNotFoundError:  # domain: degrade-silently - already-vanished paths
+        pass
+
+
+def _rmtree(path: str) -> None:
+    shutil.rmtree(path, ignore_errors=True, onerror=_rm_readonly)
+
+
+def _retire_dir(tree: str) -> None:
+    """Remove a registry tree robustly (see above)."""
+    aside = f"{tree}.evicted-{int(time.time())}"
+    try:
+        if os.path.isdir(aside):
+            _rmtree(aside)
+        os.rename(tree, aside)
+    except OSError:  # domain: degrade-silently - retry on a later sweep
+        return
+    _rmtree(aside)
+
+
+_TREE_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
+_NAMED_LOCKS: dict[tuple[int, str], threading.Lock] = {}
+_NAMED_LOCKS_GUARD = threading.Lock()
+
+
+def _validate_tree_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not _TREE_NAME_RE.fullmatch(name):
+        raise db.ForumError("tree must be 1-40 chars of letters, digits, '-' or '_'.")
+    return name
+
+
+def _named_root() -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci-named")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _named_dir(agent_id: int, name: str) -> str:
+    return os.path.join(_named_root(), str(int(agent_id)), name)
+
+
+def _named_lock(agent_id: int, name: str) -> threading.Lock:
+    key = (int(agent_id), name)
+    with _NAMED_LOCKS_GUARD:
+        lock = _NAMED_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _NAMED_LOCKS[key] = lock
+        return lock
+
+
+def _read_manifest(tree: str) -> dict | None:
+    try:
+        with open(os.path.join(tree, ".ci-tree.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        if not isinstance(manifest, dict):
+            return None
+        return manifest
+    except Exception:  # domain: degrade-silently - corrupt manifest reads as fresh
+        return None
+
+
+def _write_manifest(tree: str, manifest: dict) -> None:
+    tmp = os.path.join(tree, ".ci-tree.json.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        json.dump(manifest, fh)
+    os.replace(tmp, os.path.join(tree, ".ci-tree.json"))
+
+
+def _named_tree_size_mb(tree: str) -> float:
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(tree):
+        for fn in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, fn))
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+    return total / (1024 * 1024)
+
+
+def _sweep_idle_named_trees() -> int:
+    """Remove named trees idle past CI_NAMED_TREE_TTL_HOURS. Returns count."""
+    try:
+        ttl = float(config.CI_NAMED_TREE_TTL_HOURS) * 3600
+    except Exception:  # domain: degrade-silently - bad knob means no sweep
+        return 0
+    if ttl <= 0:
+        return 0
+    root = _named_root()
+    now = time.time()
+    swept = 0
+    try:
+        owners = os.listdir(root)
+    except OSError:  # domain: degrade-silently - nothing to sweep
+        return 0
+    for owner in owners:
+        owner_dir = os.path.join(root, owner)
+        if not os.path.isdir(owner_dir):
+            continue
+        try:
+            names = os.listdir(owner_dir)
+        except OSError:  # domain: degrade-silently - racing GC, skip owner
+            continue
+        for name in names:
+            tree = os.path.join(owner_dir, name)
+            if not os.path.isdir(tree):
+                continue
+            manifest = _read_manifest(tree)
+            updated = (manifest or {}).get("updated_at", 0)
+            try:
+                idle = now - float(updated)
+            except (
+                TypeError,
+                ValueError,
+            ):  # domain: degrade-silently - bad stamp sweeps nothing
+                idle = 0
+            if idle > ttl:
+                _retire_dir(tree)
+                swept += 1
+    return swept
+
+
+def _stored_deltas(tree: str) -> list[list[dict]]:
+    """Previously applied delta blobs, oldest first (for base-move replay)."""
+    deltas: list[list[dict]] = []
+    store = os.path.join(tree, ".ci-deltas")
+    try:
+        files = sorted(os.listdir(store))
+    except OSError:  # domain: degrade-silently - no store yet
+        return []
+    for fn in files:
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(store, fn), encoding="utf-8") as fh:
+                blob = json.load(fh)
+            if isinstance(blob, list):
+                deltas.append(blob)
+        except Exception:  # domain: degrade-silently - corrupt blob stops replay
+            break
+    return deltas
+
+
+def _store_delta(tree: str, changes: list[dict]) -> None:
+    store = os.path.join(tree, ".ci-deltas")
+    os.makedirs(store, exist_ok=True)
+    idx = len([fn for fn in os.listdir(store) if fn.endswith(".json")])
+    with open(
+        os.path.join(store, f"{idx:04d}.json"), "w", encoding="utf-8", newline=""
+    ) as fh:
+        json.dump(changes, fh)
+
+
+def _prepare_named_tree(
+    agent_id: int, name: str, changes: list[dict]
+) -> tuple[str, str, dict]:
+    """Refresh (or reuse) agent `name`'s named tree, overlay `changes`.
+
+    Returns (tree, head_sha, merge_info) like _prepare_local_tree, plus
+    tree/tree_warm/delta_count keys. Warm hit (same base as the manifest,
+    no reset) when origin/main hasn't moved; on a base move the stored
+    deltas replay onto the new main, and a replay failure raises
+    ForumError naming the file and delta index (the tree momentarily holds
+    blobs 0..k-1 over the new main with the store cleared; the next call
+    goes cold and resets to clean new main, so the agent resends the
+    fixed delta from their own payloads).
+    """
+    name = _validate_tree_name(name)
+    agent_id = int(agent_id)
+    with _named_lock(agent_id, name):
+        try:
+            _sweep_idle_named_trees()
+        except Exception:  # domain: degrade-silently - sweep never blocks a run
+            pass
+        tree = _named_dir(agent_id, name)
+        is_new = not os.path.isdir(os.path.join(tree, ".git"))
+        if is_new:
+            try:
+                owned = [
+                    d
+                    for d in os.listdir(os.path.join(_named_root(), str(agent_id)))
+                    if os.path.isdir(os.path.join(_named_root(), str(agent_id), d))
+                ]
+            except OSError:  # domain: degrade-silently - fresh owner dir
+                owned = []
+            try:
+                cap = max(1, int(config.CI_NAMED_TREE_MAX_PER_AGENT))
+            except Exception:  # domain: degrade-silently - bad knob means 1
+                cap = 1
+            if len(owned) >= cap:
+                raise db.ForumError(
+                    f"you already hold {len(owned)} named trees (cap "
+                    f"{cap}, FORUM_CI_NAMED_TREE_MAX_PER_AGENT); release one "
+                    f"with tree_forget=True ({', '.join(sorted(owned))})."
+                )
+        _ensure_clone(tree)
+        manifest = _read_manifest(tree)
+        if manifest is not None and int(manifest.get("agent_id", -1)) != agent_id:
+            # Namespaced per agent, so a mismatch means tampering or a
+            # restored backup from another host - rebuild rather than serve
+            # another citizen's overlay.
+            _retire_dir(tree)
+            _ensure_clone(tree)
+            manifest = None
+        try:
+            max_mb = float(config.CI_NAMED_TREE_MAX_MB)
+        except Exception:  # domain: degrade-silently - bad knob means default
+            max_mb = 256.0
+        incoming = 0.0
+        if changes:
+            # Size-walk only when there is something to write: a no-change
+            # warm re-run skips the walk entirely.
+            incoming = sum(len(c.get("content") or "") for c in changes) / (1024 * 1024)
+            if _named_tree_size_mb(tree) + incoming > max_mb:
+                raise db.ForumError(
+                    f"named tree '{name}' would exceed {max_mb:g} MB "
+                    f"(FORUM_CI_NAMED_TREE_MAX_MB); release it with "
+                    "tree_forget=True and start a smaller one."
+                )
+        base = github.base_branch()
+        fetch = _git(tree, "fetch", "--force", "origin", base)
+        if fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not refresh named tree '{name}' from origin/{base}: "
+                f"{(fetch.stderr or fetch.stdout).strip()[-300:]}"
+            )
+        main_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        warm = (
+            manifest is not None and manifest.get("base_sha") == main_sha and not is_new
+        )
+        stored = [] if warm else _stored_deltas(tree)
+        if not warm:
+            reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
+            if reset.returncode != 0:
+                _retire_dir(tree)
+                raise db.ForumError(
+                    f"named tree '{name}' could not reset to origin/{base}; "
+                    "it will be recloned on the next run"
+                )
+            _git(tree, "clean", "-xdf")
+            # Replay stored deltas onto the new base, then the new delta.
+            replayed: list[list[dict]] = []
+            for blob in stored:
+                try:
+                    _apply_local_changes(tree, blob)
+                except db.ForumError as exc:  # domain: fail-loudly - replay failure surfaces naming the file; the store is cleared so the next call starts clean
+                    _clear_deltas(tree)
+                    raise db.ForumError(
+                        f"named tree '{name}' moved to a new origin/{base} "
+                        f"and stored delta #{len(replayed)} no longer applies "
+                        f"({exc}); stored deltas were cleared - resend the "
+                        "fixed delta."
+                    ) from None
+                replayed.append(blob)
+            for blob in replayed:
+                _store_delta(tree, blob)
+        if changes:
+            _apply_local_changes(tree, changes)
+            _store_delta(tree, changes)
+        delta_count = len(_stored_deltas(tree))
+        overlay_hash = hashlib.sha256(
+            f"{name}|{delta_count}|{main_sha}".encode()
+        ).hexdigest()[:12]
+        head_sha = f"{main_sha[:12]}+tree-{name}-{overlay_hash}"
+        _write_manifest(
+            tree,
+            {
+                "agent_id": agent_id,
+                "base_sha": main_sha,
+                "updated_at": time.time(),
+                "runs": int((manifest or {}).get("runs", 0)) + 1,
+                "delta_count": delta_count,
+            },
+        )
+        return (
+            tree,
+            head_sha,
+            {
+                "conflict": False,
+                "base": main_sha,
+                "local": True,
+                "tree": name,
+                "tree_warm": warm,
+                "delta_count": delta_count,
+            },
+        )
+
+
+def _clear_deltas(tree: str) -> None:
+    _retire_dir(os.path.join(tree, ".ci-deltas"))
+
+
+def forget_named_tree(agent_id: int, name: str) -> bool:
+    """Release one named tree. True when the name was freed (a locked
+    leftover converges on later sweeps); False when nothing was held."""
+    name = _validate_tree_name(name)
+    tree = _named_dir(int(agent_id), name)
+    with _named_lock(int(agent_id), name):
+        if not os.path.isdir(tree):
+            return False
+        _retire_dir(tree)
+        return not os.path.isdir(tree)
+
+
+def list_named_trees(agent_id: int) -> list[dict]:
+    """Owner-visible inventory of one agent's named trees (for the dashboard)."""
+    try:
+        names = os.listdir(os.path.join(_named_root(), str(int(agent_id))))
+    except OSError:  # domain: degrade-silently - no trees yet
+        return []
+    out = []
+    for name in sorted(names):
+        tree = os.path.join(_named_root(), str(int(agent_id)), name)
+        if not os.path.isdir(tree):
+            continue
+        manifest = _read_manifest(tree) or {}
+        out.append(
+            {
+                "name": name,
+                "base_sha": (manifest.get("base_sha") or "")[:12],
+                "updated_at": manifest.get("updated_at", 0),
+                "runs": manifest.get("runs", 0),
+                "delta_count": manifest.get("delta_count", 0),
+                "size_mb": round(_named_tree_size_mb(tree), 1),
+            }
+        )
+    return out
+
+
+# --- warm branch trees (repo_ci_run(pr_number=...)) --------------------------
+# Per-PR registry trees so repeat branch runs (citizen rehearsals + the
+# poller's own sweep) skip the re-clone + re-merge when neither the PR head
+# nor origin/main moved. Shared across citizens (same bytes for everyone;
+# execution mounts read-only), keyed by PR number. LRU-capped
+# (CI_BRANCH_TREE_MAX), TTL-swept (CI_BRANCH_TREE_TTL_HOURS), and evicted
+# best-effort when the outcome poller records a PR closed. Every acquire
+# revalidates the manifest against fresh fetches, so a stale tree can only
+# cost a rebuild, never a wrong run. Same single-process invariant as the
+# slot pools (locks in memory, trees on disk under DATA_DIR).
+
+_BR_LOCKS: dict[int, threading.Lock] = {}
+_BR_LOCKS_GUARD = threading.Lock()
+
+
+def _br_root() -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci-br")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _br_dir(pr_number: int) -> str:
+    return os.path.join(_br_root(), str(int(pr_number)))
+
+
+def _br_lock(pr_number: int) -> threading.Lock:
+    key = int(pr_number)
+    with _BR_LOCKS_GUARD:
+        lock = _BR_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _BR_LOCKS[key] = lock
+        return lock
+
+
+def _read_br_manifest(tree: str) -> dict | None:
+    try:
+        with open(os.path.join(tree, ".ci-br.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        if not isinstance(manifest, dict):
+            return None
+        return manifest
+    except Exception:  # domain: degrade-silently - corrupt manifest reads as cold
+        return None
+
+
+def _write_br_manifest(tree: str, manifest: dict) -> None:
+    tmp = os.path.join(tree, ".ci-br.json.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        json.dump(manifest, fh)
+    os.replace(tmp, os.path.join(tree, ".ci-br.json"))
+
+
+def _sweep_idle_br_trees() -> int:
+    """Remove branch trees idle past CI_BRANCH_TREE_TTL_HOURS. Returns count."""
+    try:
+        ttl = float(config.CI_BRANCH_TREE_TTL_HOURS) * 3600
+    except Exception:  # domain: degrade-silently - bad knob means no sweep
+        return 0
+    if ttl <= 0:
+        return 0
+    try:
+        names = os.listdir(_br_root())
+    except OSError:  # domain: degrade-silently - nothing to sweep
+        return 0
+    now = time.time()
+    swept = 0
+    for name in names:
+        tree = os.path.join(_br_root(), name)
+        if not os.path.isdir(tree):
+            continue
+        manifest = _read_br_manifest(tree)
+        try:
+            idle = now - float((manifest or {}).get("updated_at", 0))
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - bad stamp sweeps nothing
+            idle = 0
+        if idle > ttl:
+            _retire_dir(tree)
+            swept += 1
+    return swept
+
+
+def _evict_lru_br_tree() -> None:
+    """Drop the least-recently-used branch tree past CI_BRANCH_TREE_MAX."""
+    try:
+        cap = max(1, int(config.CI_BRANCH_TREE_MAX))
+    except Exception:  # domain: degrade-silently - bad knob means 1
+        cap = 1
+    try:
+        names = [
+            n
+            for n in os.listdir(_br_root())
+            if os.path.isdir(os.path.join(_br_root(), n))
+        ]
+    except OSError:  # domain: degrade-silently - nothing to evict
+        return
+    if len(names) < cap:
+        return
+    oldest: str | None = None
+    oldest_at = float("inf")
+    for name in names:
+        manifest = _read_br_manifest(os.path.join(_br_root(), name))
+        try:
+            at = float((manifest or {}).get("updated_at", 0))
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - bad stamp sorts oldest
+            at = 0
+        if at < oldest_at:
+            oldest_at = at
+            oldest = name
+    if oldest is not None:
+        _retire_dir(os.path.join(_br_root(), oldest))
+
+
+def evict_br_tree(pr_number: int) -> bool:
+    """Release one PR's branch tree (outcome-poller hook). Never raises."""
+    try:
+        tree = _br_dir(int(pr_number))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - bad input evicts nothing
+        return False
+    with _br_lock(int(pr_number)):
+        if not os.path.isdir(tree):
+            return False
+        _retire_dir(tree)
+        return True
+
+
+def list_br_trees() -> list[dict]:
+    """Registry inventory for the dashboard (newest use first)."""
+    try:
+        names = os.listdir(_br_root())
+    except OSError:  # domain: degrade-silently - no registry yet
+        return []
+    out = []
+    for name in sorted(names):
+        tree = os.path.join(_br_root(), name)
+        if not os.path.isdir(tree):
+            continue
+        manifest = _read_br_manifest(tree) or {}
+        try:
+            pr_number = int(name)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - retired leftovers skipped
+            continue
+        out.append(
+            {
+                "pr_number": pr_number,
+                "pr_sha": (manifest.get("pr_sha") or "")[:12],
+                "base_sha": (manifest.get("base_sha") or "")[:12],
+                "merge_sha": (manifest.get("merge_sha") or "")[:12],
+                "updated_at": manifest.get("updated_at", 0),
+                "hits": manifest.get("hits", 0),
+            }
+        )
+    return sorted(out, key=lambda r: r["updated_at"], reverse=True)
+
+
+def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
+    """Merge origin/main into the PR head inside the PR's registry tree.
+
+    Same merge/conflict contract as _prepare_pr_tree (conflict reported
+    file-by-file, no execution), but warm: when the manifest's
+    (pr_sha, base_sha) still match fresh fetches, no reset/merge runs and
+    the recorded merge commit is reused. Returns (tree, sha, merge_info)
+    with tree_warm True on a hit.
+    """
+    pr_number = int(pr_number)
+    with _br_lock(pr_number):
+        try:
+            _sweep_idle_br_trees()
+        except Exception:  # domain: degrade-silently - sweep never blocks a run
+            pass
+        tree = _br_dir(pr_number)
+        if not os.path.isdir(os.path.join(tree, ".git")):
+            _evict_lru_br_tree()
+        _ensure_clone(tree)
+        base = github.base_branch()
+        pr_fetch = _git(tree, "fetch", "--force", "origin", f"pull/{pr_number}/head")
+        if pr_fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not fetch the head of pull request #{pr_number} "
+                "(unknown PR, or its branch was deleted?): "
+                f"{(pr_fetch.stderr or pr_fetch.stdout).strip()[-300:]}"
+            )
+        pr_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        base_fetch = _git(tree, "fetch", "--force", "origin", base)
+        if base_fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not refresh branch tree #{pr_number} from origin/{base}: "
+                f"{(base_fetch.stderr or base_fetch.stdout).strip()[-300:]}"
+            )
+        base_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        manifest = _read_br_manifest(tree)
+        if (
+            manifest is not None
+            and manifest.get("pr_sha") == pr_sha
+            and manifest.get("base_sha") == base_sha
+            and manifest.get("merge_sha")
+        ):
+            _write_br_manifest(
+                tree,
+                {
+                    "pr_sha": pr_sha,
+                    "base_sha": base_sha,
+                    "merge_sha": manifest["merge_sha"],
+                    "updated_at": time.time(),
+                    "hits": int(manifest.get("hits", 0)) + 1,
+                },
+            )
+            return (
+                tree,
+                manifest["merge_sha"],
+                {
+                    "conflict": False,
+                    "base": base_sha,
+                    "tree_warm": True,
+                },
+            )
+        checkout = _git(tree, "checkout", "--detach", base_sha)
+        if checkout.returncode != 0:
+            raise db.ForumError(
+                f"branch tree #{pr_number} could not check out main for the "
+                f"merge preview: {checkout.stderr.strip()[-300:]}"
+            )
+        merge = _git(tree, "merge", "--no-edit", pr_sha)
+        if merge.returncode != 0:
+            conflicted = [
+                line.strip()
+                for line in _git(
+                    tree, "diff", "--name-only", "--diff-filter=U"
+                ).stdout.splitlines()
+                if line.strip()
+            ]
+            abort = _git(tree, "merge", "--abort")
+            if abort.returncode != 0:
+                # domain: degrade-silently - the next prepare's checkout
+                # heals any half-merged state; nothing serves stale content
+                # meanwhile (a conflict never executes).
+                pass
+            return (
+                tree,
+                base_sha,
+                {
+                    "conflict": True,
+                    "files": conflicted,
+                    "tree_warm": False,
+                },
+            )
+        head = _git(tree, "rev-parse", "HEAD")
+        merge_sha = head.stdout.strip()
+        _write_br_manifest(
+            tree,
+            {
+                "pr_sha": pr_sha,
+                "base_sha": base_sha,
+                "merge_sha": merge_sha,
+                "updated_at": time.time(),
+                "hits": 0,
+            },
+        )
+        return (
+            tree,
+            merge_sha,
+            {
+                "conflict": False,
+                "base": base_sha,
+                "tree_warm": False,
+            },
+        )
