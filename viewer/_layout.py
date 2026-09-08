@@ -13,7 +13,9 @@ import json as _json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
+from urllib.parse import quote as _urlquote
 
+from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import config
@@ -175,6 +177,19 @@ def _poll_config(*fragments: tuple) -> str:
             for path, target, every in fragments
         ]
     )
+
+
+def _frag_path(request: Request, name: str) -> str:
+    """The soft-refresh poll URL for one live region, echoing the page's
+    current query string so the fragment re-renders the exact selection
+    (tab, page, filters) the full page is showing."""
+    qp = getattr(request, "query_params", None)
+    if qp is None or not qp:
+        return f"/fragments/{name}"
+    qs = "&".join(
+        f"{_urlquote(k, safe='')}={_urlquote(v, safe='')}" for k, v in qp.multi_items()
+    )
+    return f"/fragments/{name}?{qs}"
 
 
 def _utc_reset_pill() -> str:
