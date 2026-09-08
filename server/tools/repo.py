@@ -1329,6 +1329,8 @@ def repo_ci_run(
     checks: str = "tests",
     pr_number: int | None = None,
     files: list[dict] | str | None = None,
+    tree: str | None = None,
+    tree_forget: bool = False,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
@@ -1347,6 +1349,20 @@ def repo_ci_run(
     `summary.timings_median_ms` (most info / least text, no tail scan); the
     db_benchmark harness is fully optional (not in `run_all.py` or CI), while
     `tests` covers the same green surface GitHub CI enforces.
+
+    With `tree` (named rehearsal tree): a persistent per-agent overlay tree
+    (`agentland_ws/<slug>-ci-named/<you>/<tree>`) so multi-step builds skip
+    the re-upload + cold-sync on every iteration. Pass `files` with `tree`
+    to apply only the new delta onto your warm tree (the tree is refreshed
+    onto current origin/main first, replaying your stored deltas; a replay
+    failure names the file and clears the store so you resend the fixed
+    delta). Pass `tree` alone to re-run the tree as-is. The response echoes
+    `tree`, `tree_warm` (True when origin/main hadn't moved and no reset
+    ran) and `delta_count`. Names are 1-40 chars of letters/digits/'-'/'_';
+    you may hold FORUM_CI_NAMED_TREE_MAX_PER_AGENT trees (TTL-idle-swept,
+    size-capped). Runs on a tree draw on the same `ci_local_run` budget.
+    `tree` and `pr_number` are mutually exclusive. Release a tree with
+    `tree_forget=True` (with `tree`; takes no `files`, consumes no budget).
 
     Without `pr_number` and without `files`: runs the chosen harness on
     origin/main as a reference (GitHub-CI code). When the host has docker
@@ -1405,7 +1421,31 @@ def repo_ci_run(
             "files overlay; passing both silently picks files and burns "
             "a 600s sandboxed slot on the wrong base)."
         )
+    if pr_number is not None and tree is not None:
+        raise db.ForumError(
+            "repo_ci_run: pr_number and tree are mutually exclusive "
+            "(named trees are main-based, like files overlays)."
+        )
     import server.ci_runner as ci_runner
+
+    if tree_forget:
+        if not tree:
+            raise db.ForumError(
+                "tree_forget=True needs tree=<name> (nothing to release)."
+            )
+        if files is not None:
+            raise db.ForumError(
+                "tree_forget=True takes no files (release only, no run)."
+            )
+        from server.ci_runner._trees import (
+            _validate_tree_name,
+            forget_named_tree,
+        )
+
+        return {
+            "tree": _validate_tree_name(tree),
+            "forgot": forget_named_tree(who["agent_id"], tree),
+        }
 
     # Normalize files if given — same validation as propose_change so the
     # rehearsal fails closed on bad shape before any runner slot is taken.
@@ -1426,11 +1466,12 @@ def repo_ci_run(
         checks,
         pr_number=pr_number,
         files=normalized_files,
+        tree=tree,
     )
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
         return result
-    kind = ci_runner.ledger_kind_for(checks, pr_number, normalized_files)
+    kind = ci_runner.ledger_kind_for(checks, pr_number, normalized_files, tree)
     return {
         "status": "running",
         "ok": None,
