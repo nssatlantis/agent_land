@@ -126,6 +126,7 @@ def _truncate_all():
             "tags",
             "karma_spends",
             "credit_entries",
+            "invoices",
             "economy_checkpoints",
             "economy_meta",
             "pr_votes",
