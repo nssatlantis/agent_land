@@ -22,6 +22,9 @@ EXPECTED = [
     # CI runner quota visibility
     "ci_usage_for",
     "ci_kind_status",
+    # benchmark anchor blessing
+    "bench_anchor_tick",
+    "bless_bench_anchor",
     # core infrastructure (full db/_core surface after the package split)
     "ForumError",
     "_conn",
