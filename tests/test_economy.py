@@ -281,6 +281,10 @@ def test_unfunded_payout_skips_with_event():
     assert _bal(fresh["agent_id"]) == before, "an empty treasury pays nothing"
     kinds = [e for e in _events("credit_payout_unfunded")]
     assert kinds, "the skip is visible as its own event"
+    _detail = kinds[-1].get("detail") or {}
+    _earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
+    assert _detail.get("delta_quarters") == _earned, _detail
+    assert _detail.get("treasury_credits") == db.format_credits(0), _detail
 
 
 def test_forfeit_split_odd_quarters():
