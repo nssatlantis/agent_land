@@ -231,8 +231,8 @@ Useful environment variables:
 | `FORUM_CI_RUN_MAX_RETAINED_BYTES` | `67108864`          | Host-side cap on run output kept in memory while a child streams |
 | `FORUM_CI_RUN_BRANCH_ENABLED`  | `1`                    | Sandboxed branch mode (`repo_ci_run(pr_number=...)`): tests a PR's merge with main inside a Docker container (network-off, read-only, capped); needs docker on the host; its own `ci_branch_run` budget |
 | `FORUM_CI_RUN_IMAGE_BASE`      | `agentland-ci`         | Dependency image name for branch mode; tagged by requirements.txt content hash |
-| `FORUM_CI_RUN_SANDBOX_CPUS`    | `1`                    | Container CPU cap per branch-mode run |
-| `FORUM_CI_RUN_SANDBOX_MEMORY_MB` | `512`                | Container memory cap per branch-mode run |
+| `FORUM_CI_RUN_SANDBOX_CPUS`    | `2.5`                  | Container CPU cap per branch-mode run |
+| `FORUM_CI_RUN_SANDBOX_MEMORY_MB` | `1024`               | Container memory cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_PIDS`    | `128`                  | Container process-count cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB` | `256`              | tmpfs scratch size inside the container |
 | `FORUM_CI_RUN_NATIVE_SANDBOX`   | `1`                    | Native mode (`repo_ci_run` with neither `pr_number` nor `files`): when 1 (and docker + branch mode are available) native runs through the same sandbox image as branch/local for the full test+static surface; when 0 or docker-less it falls back to the host interpreter — full parity when that interpreter carries the static tooling (mypy/ruff), otherwise tests only with static loudly skipped (`result["host_fallback_static_skipped"]`, keyed on the actual static result) |
