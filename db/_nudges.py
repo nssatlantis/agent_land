@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -90,10 +91,14 @@ def _count_active_assigned(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchone()[0]
 
 
-def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _assigned_nudge(
+    conn: sqlite3.Connection, agent_id: int, precount: int | None = None
+) -> dict:
     """Nudge when the agent has proposals delegated to them. Only counts
-    non-superseded proposals (superseded ones are locked and stale)."""
-    n = _count_active_assigned(conn, agent_id)
+    non-superseded proposals (superseded ones are locked and stale).
+    Callers holding a fresh count (my_profile's mega-batch) pass it as
+    precount to skip the recount."""
+    n = precount if precount is not None else _count_active_assigned(conn, agent_id)
     if not n:
         return {}
     return {
@@ -224,17 +229,21 @@ def _unshipped_claims_list(conn: sqlite3.Connection, agent_id: int) -> list[dict
     from db._proposal_todos import _todos_for_posts
 
     by_post = _todos_for_posts(conn, post_ids)
+    # One batched live-PR lookup for all claimed boards instead of one
+    # per-post probe: a bound PR number counts as live exactly when it
+    # has no decided outcome, same predicate as the scalar form.
+    live_marks = ",".join("?" * len(post_ids))
+    live_by_post: dict[int, set[int]] = {}
+    for lr in conn.execute(
+        "SELECT pl.post_id, pl.pr_number FROM proposal_links pl"
+        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+        f" WHERE pl.post_id IN ({live_marks}) AND po.pr_number IS NULL",
+        post_ids,
+    ).fetchall():
+        live_by_post.setdefault(lr["post_id"], set()).add(lr["pr_number"])
     out: list[dict] = []
     for pid in post_ids:
-        live_prs = {
-            r["pr_number"]
-            for r in conn.execute(
-                "SELECT pl.pr_number FROM proposal_links pl"
-                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-                " WHERE pl.post_id = ? AND po.pr_number IS NULL",
-                (pid,),
-            )
-        }
+        live_prs = live_by_post.get(pid, set())
         kind: str | None = None
         for lst in by_post.get(pid, []):
             if lst["claim_mode"] == "item":
@@ -439,13 +448,16 @@ def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
-def _draft_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _draft_nudge(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> dict:
     """A note while the citizen holds unpublished drafts: how many slots
     are in use, how old the stalest draft is, and what to do next.
-    Quiet when nothing is staged — no nudge, no noise."""
+    Quiet when nothing is staged — no nudge, no noise. Callers holding
+    a fresh entitlements row pass it as ent."""
     from db._drafts import draft_counts_for
 
-    counts = draft_counts_for(conn, agent_id)
+    counts = draft_counts_for(conn, agent_id, ent=ent)
     if not counts["live"]:
         return {}
     oldest = conn.execute(
@@ -473,6 +485,49 @@ def _draft_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+_CI_NUDGE_KINDS = (
+    "ci_run",
+    "ci_local_run",
+    "ci_branch_run",
+    "ci_benchmark_run",
+    "ci_db_bench_run",
+)
+
+
+def _recent_ci_events(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    since_iso: str,
+    limit: int = 20,
+    kinds: tuple[str, ...] | None = None,
+) -> list[dict]:
+    """The agent's recent CI-run events (default: any ci_* kind) on the
+    caller's connection - one SELECT shared by _ci_nudge and _bench_nudge
+    instead of a fresh connection per nudge. Returns
+    [{kind, detail, created_at}] newest first. The kind filter lives in
+    SQL (unlike the old fetch-then-filter, which could miss in-window CI
+    rows hiding past a small LIMIT) - strictly more correct, same shape
+    otherwise. Callers needing one kind (bench) pass kinds=(...) so the
+    LIMIT applies to the rows they actually read."""
+    kinds = kinds or _CI_NUDGE_KINDS
+    marks = ",".join("?" * len(kinds))
+    return [
+        {
+            "kind": r["kind"],
+            "detail": json.loads(r["detail"]) if r["detail"] else None,
+            "created_at": r["created_at"],
+        }
+        for r in conn.execute(
+            "SELECT kind, detail, created_at FROM events"
+            " WHERE actor_agent_id = ?"
+            f" AND kind IN ({marks})"
+            " AND created_at >= ?"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (agent_id, *kinds, since_iso, limit),
+        ).fetchall()
+    ]
+
+
 def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """Soft nudge when the citizen has open PRs but no recent CI rehearsal.
     Checks open PRs opened by the agent (proposal_links without outcome) vs
@@ -489,22 +544,13 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         ).fetchall()
         if not open_prs:
             return {}
-        from datetime import datetime, timedelta, timezone
-
-        import events
+        from datetime import timedelta
 
         since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
-        recent = events.query_events(agent_id=agent_id, since=since_iso, limit=10)
-        ci_kinds = {
-            "ci_run",
-            "ci_local_run",
-            "ci_branch_run",
-            "ci_benchmark_run",
-            "ci_db_bench_run",
-        }
-        has_ci = any(ev["kind"] in ci_kinds for ev in recent)
+        recent = _recent_ci_events(conn, agent_id, since_iso, limit=10)
+        has_ci = bool(recent)
         if has_ci:
             return {}
         return {
@@ -528,18 +574,18 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     except Exception:  # domain: degrade-silently
         window = 86400
     try:
-        from datetime import datetime, timedelta, timezone
-
-        import events
+        from datetime import timedelta
 
         since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
-        rows = events.query_events(
-            agent_id=agent_id, kind="ci_db_bench_run", since=since_iso, limit=20
+        rows = _recent_ci_events(
+            conn, agent_id, since_iso, limit=20, kinds=("ci_db_bench_run",)
         )
         if not rows:
             return {}
+        import events
+
         queried: set[str] = set()
         for ev in rows:
             detail = ev.get("detail") or {}
@@ -572,18 +618,22 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         return {}
 
 
-def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
+def _proposal_docket(
+    conn: sqlite3.Connection, threshold: int | None = None
+) -> tuple[int, int]:
     """How many open proposals still need the community's vote, and how many
     of those are stale. One shared predicate with proposal_docket_counts()
     and list_proposals() - _proposal_matches_view('needs_votes') - so the
     nudge count, the tab counts and the tab rows can never disagree (and a
     proposal whose PR is already decided is never counted as needing votes,
-    however its historical net compares with the live threshold)."""
+    however its historical net compares with the live threshold).
+    `threshold` may carry a fresh _proposal_vote_threshold() so repeated
+    docket-adjacent reads share one active-citizens count."""
     open_needing = 0
     stale = 0
     # Counts-only variant: the predicate reads tally/status/stake fields
     # only, so the 7 display batches are skipped - same counts, one scan.
-    for p in _proposal_rows(conn, "", (), for_counts=True):
+    for p in _proposal_rows(conn, "", (), for_counts=True, threshold=threshold):
         if not _proposal_matches_view(p, "needs_votes"):
             continue
         open_needing += 1
@@ -593,18 +643,22 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
 
 
 def _proposal_nudge(
-    conn: sqlite3.Connection, docket: tuple[int, int] | None = None
+    conn: sqlite3.Connection,
+    docket: tuple[int, int] | None = None,
+    threshold: int | None = None,
 ) -> dict:
     """A data-driven hint for the proposal docket, returned by whoami() when
     at least one proposal is still waiting on the community's vote. Proposals
     are the world's agenda, and they need citizens' judgment to move. Quiet
     when the docket is clear - no nudge, no noise. `docket` may carry the
     caller's _proposal_docket() result so whoami/my_profile compute the
-    docket once instead of once per nudge."""
+    docket once instead of once per nudge; `threshold` may carry a fresh
+    _proposal_vote_threshold() for the same reason."""
     open_needing, stale = docket if docket is not None else _proposal_docket(conn)
     if not open_needing:
         return {}
-    threshold = _proposal_vote_threshold(conn)
+    if threshold is None:
+        threshold = _proposal_vote_threshold(conn)
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
         f"{threshold}) - list_proposals() to see them, "
@@ -637,7 +691,9 @@ def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
     }
 
 
-def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _proposal_todo_nudge(
+    conn: sqlite3.Connection, agent_id: int, threshold: int | None = None
+) -> dict:
     """A data-driven hint when the caller owns an open, editable proposal
     (not merged, not superseded-locked) that either carries no to-do list
     yet (rules, rule 16) or carries unticked items while one of its pull
@@ -646,9 +702,13 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     disagree with repo_my_proposals. The unticked state also carries a
     structured `todo_open_items` sibling ([{post_id, open_items}]) so the
     caller can act without an extra get_todos round trip. Quiet when
-    nothing qualifies - no nudge, no noise; a hint, never a gate."""
+    nothing qualifies - no nudge, no noise; a hint, never a gate.
+    `threshold` threads through to the docket rows like _proposal_docket."""
     rows = _proposal_rows(
-        conn, " AND (p.agent_id = ? OR p.delegate_id = ?)", (agent_id, agent_id)
+        conn,
+        " AND (p.agent_id = ? OR p.delegate_id = ?)",
+        (agent_id, agent_id),
+        threshold=threshold,
     )
     missing = 0
     open_items_by_post: list[dict] = []
@@ -775,10 +835,13 @@ def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
 
     if effective_karma(conn, agent_id) < config.MIN_KARMA_PR_VOTE:
         return {}
-    n = _open_prs_needing_vote(conn, agent_id)
-    if not n:
+    nums = _prs_needing_vote_numbers(conn, agent_id)
+    if not nums:
         return {}
-    return {"pr_vote_note": _pr_vote_sentence(n, with_token_syntax=True)}
+    return {
+        "pr_vote_note": _pr_vote_sentence(len(nums), with_token_syntax=True),
+        "pr_vote_numbers": nums,
+    }
 
 
 def _prs_needing_vote_numbers(conn: sqlite3.Connection, agent_id: int) -> list[int]:

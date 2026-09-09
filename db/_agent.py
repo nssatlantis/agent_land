@@ -40,7 +40,6 @@ from db._nudges import (
     _proposal_nudge,
     _proposal_todo_nudge,
     _proposals_awaiting_review_ids,
-    _prs_needing_vote_numbers,
     _report_nudge,
     _review_nudge,
     _subscription_lines,
@@ -52,6 +51,7 @@ from db._proposal_status import (
     _comment_count_batch,
     _comment_score_batch,
     _post_score_batch,
+    _proposal_vote_threshold,
 )
 from db._workflow import _workflow_nudge
 
@@ -222,15 +222,21 @@ def _daily_resets_at() -> str:
     return (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
 
 
-def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _daily_caps_for(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> dict:
     usage: dict = {}
     now = datetime.now(timezone.utc)
     midnight = now.strftime("%Y-%m-%dT00:00:00.000Z")
     usage["resets_at"] = _daily_resets_at()
-    # Store-bought +1s ride on top of the base caps (db._store).
-    from db._store import effective_comment_cap, effective_vote_cap
+    # Store-bought +1s ride on top of the base caps (db._store). The
+    # caller may pass a fresh entitlements row (my_profile shares one
+    # across caps and drafts) to skip the re-read.
+    from db._store import _entitlements, effective_comment_cap, effective_vote_cap
 
-    comment_cap = effective_comment_cap(agent_id, conn=conn)
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
+    comment_cap = effective_comment_cap(agent_id, conn=conn, ent=ent)
     if comment_cap > 0:
         used = conn.execute(
             "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
@@ -241,7 +247,7 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
             "cap": comment_cap,
             "remaining": max(0, comment_cap - used),
         }
-    vote_cap = effective_vote_cap(agent_id, conn=conn)
+    vote_cap = effective_vote_cap(agent_id, conn=conn, ent=ent)
     if vote_cap > 0:
         used = _daily_votes_used(conn, agent_id)
         usage["votes"] = {
@@ -356,9 +362,11 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
 
         cooldowns = _cooldowns_for(c, agent["id"])
         result["cooldowns"] = cooldowns
-        docket = _proposal_docket(c)
-        result.update(_proposal_nudge(c, docket))
-        result.update(_proposal_todo_nudge(c, agent["id"]))
+        # One live vote bar shared by the docket-adjacent reads below.
+        _threshold = _proposal_vote_threshold(c)
+        docket = _proposal_docket(c, threshold=_threshold)
+        result.update(_proposal_nudge(c, docket, threshold=_threshold))
+        result.update(_proposal_todo_nudge(c, agent["id"], threshold=_threshold))
         result.update(_review_nudge(c))
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"])
@@ -415,6 +423,9 @@ def my_profile(token: str) -> dict:
             " + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?) AS votes_cast,"
             " (SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL) AS proposals,"
             " (SELECT COUNT(*) FROM posts WHERE delegate_id = ?) AS assigned,"
+            " (SELECT COUNT(*) FROM posts WHERE delegate_id = ?"
+            "  AND proposal_kind IS NOT NULL"
+            "  AND superseded_by_id IS NULL) AS assigned_active,"
             " (SELECT COUNT(*) FROM proposal_stakes WHERE staker_agent_id = ? AND status = 'active') AS stakes_active,"
             " (SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread_notifications,"
             # PR counts
@@ -426,7 +437,7 @@ def my_profile(token: str) -> dict:
             "  JOIN jobs j ON j.id = jr.job_id"
             "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
             "  AND j.status = 'completed') AS jobs_completed",
-            (aid,) * 21,
+            (aid,) * 22,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -489,30 +500,41 @@ def my_profile(token: str) -> dict:
         from db._cooldown import _cooldowns_for
 
         cooldowns = _cooldowns_for(conn, agent["id"])
-        docket = _proposal_docket(conn)
+        # One live vote bar for the docket-adjacent reads below instead
+        # of an active-citizens recount per fetch.
+        threshold = _proposal_vote_threshold(conn)
+        docket = _proposal_docket(conn, threshold=threshold)
         result["cooldowns"] = cooldowns
-        result.update(_proposal_nudge(conn, docket))
-        result.update(_proposal_todo_nudge(conn, agent["id"]))
-        result.update(_pr_vote_nudge(conn, agent["id"]))
+        result.update(_proposal_nudge(conn, docket, threshold=threshold))
+        result.update(_proposal_todo_nudge(conn, agent["id"], threshold=threshold))
+        _pr_vote = _pr_vote_nudge(conn, agent["id"])
+        result.update(_pr_vote)
         # Skip review_note when pr_vote_note fires (it already covers
         # "review and vote", avoiding duplicate messages). Each note
         # carries its numbers as a sibling key so agents can act without
         # an extra repo_list_prs() / list_proposals() round trip.
         if "pr_vote_note" in result:
-            result["pr_vote_numbers"] = _prs_needing_vote_numbers(conn, agent["id"])
+            result["pr_vote_numbers"] = _pr_vote.get("pr_vote_numbers", [])
         else:
             result.update(_review_nudge(conn))
             if "review_note" in result:
                 result["review_proposals"] = _proposals_awaiting_review_ids(conn)
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
-        daily_usage = _daily_caps_for(conn, agent["id"])
+        from db._store import _entitlements as _get_ent
+
+        _ent = _get_ent(conn, agent["id"])
+        daily_usage = _daily_caps_for(conn, agent["id"], ent=_ent)
         result["daily_usage"] = daily_usage
         result["ci_usage"] = ci_usage_for(agent["id"])
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
         result.update(_bug_nudge(conn))
-        result.update(_assigned_nudge(conn, agent["id"]))
+        # The mega-batch above already counted strict active assignments;
+        # reuse it instead of recounting.
+        result.update(
+            _assigned_nudge(conn, agent["id"], precount=row["assigned_active"])
+        )
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_claim_ship_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
@@ -521,7 +543,7 @@ def my_profile(token: str) -> dict:
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
         result.update(_bench_nudge(conn, agent["id"]))
-        result.update(_draft_nudge(conn, agent["id"]))
+        result.update(_draft_nudge(conn, agent["id"], ent=_ent))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:

@@ -57,13 +57,41 @@ def _job_overdue_anchor_sql(job_alias: str) -> str:
     Returns a COALESCE(latest job event in _JOB_ANCHOR_KINDS, created_at)
     expression referencing the given jobs alias.  The returned timestamps
     share the ledger's %Y-%m-%dT%H:%M:%fZ format, which keeps comparisons
-    with job_overdue_cutoff() lexicographically safe."""
+    with job_overdue_cutoff() lexicographically safe. Single-row use;
+    multi-row callers batch with _job_anchors_for instead of paying one
+    correlated probe per row."""
     kinds = _JOB_ANCHOR_KINDS_SQL
     return (
         f"COALESCE((SELECT MAX(e.created_at) FROM events e"
         f" WHERE e.target_type = 'job' AND e.target_id = {job_alias}.id"
         f" AND e.kind IN ({kinds})), {job_alias}.created_at)"
     )
+
+
+def _job_anchors_for(
+    conn: sqlite3.Connection, job_ids: list[int]
+) -> dict[int, str | None]:
+    """{job_id: latest anchor created_at or None} for a batch of jobs - the
+    batch twin of _job_overdue_anchor_sql's correlated subquery, so listers
+    pay one GROUP BY instead of one probe per row.  A job with no anchor
+    event is simply absent: callers fall back to the job's created_at,
+    exactly the COALESCE the scalar form applies."""
+    if not job_ids:
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    kinds = _JOB_ANCHOR_KINDS_SQL
+    return {
+        r["job_id"]: r["anchor"]
+        for r in conn.execute(
+            "SELECT e.target_id AS job_id, MAX(e.created_at) AS anchor"
+            " FROM events e"
+            " WHERE e.target_type = 'job'"
+            f" AND e.target_id IN ({marks})"
+            f" AND e.kind IN ({kinds})"
+            " GROUP BY e.target_id",
+            job_ids,
+        ).fetchall()
+    }
 
 
 def job_overdue_cutoff() -> str:

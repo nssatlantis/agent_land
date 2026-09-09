@@ -648,7 +648,7 @@ CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
 CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_events_job_anchor ON events(target_type, target_id, kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_target_created ON events(kind, target_type, target_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created_id ON events(kind, created_at, id);
 
@@ -851,6 +851,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_creator ON jobs(creator_agent_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_offered_to ON jobs(status, offered_to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_worker ON jobs(worker_agent_id)
     WHERE worker_agent_id IS NOT NULL;
 
