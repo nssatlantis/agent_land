@@ -1320,7 +1320,9 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     name_color     TEXT,
     notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
     draft_slots    INTEGER NOT NULL DEFAULT 0,
-    bio            TEXT
+    bio            TEXT,
+    post_skips     INTEGER NOT NULL DEFAULT 0,
+    post_skip_used_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS personal_notes (
