@@ -2787,10 +2787,14 @@ def main():
             assert nullable["issuer_agent_id"] == 0, (
                 "issuer_agent_id must be nullable for Treasury bills"
             )
+            assert nullable["created_by_agent_id"] == 1, (
+                "created_by_agent_id must be NOT NULL (every notify path addresses it)"
+            )
             for idx in (
                 "idx_invoices_payer",
                 "idx_invoices_issuer",
                 "idx_invoices_created_by",
+                "idx_invoices_sweep",
             ):
                 assert (
                     conn.execute(
