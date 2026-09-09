@@ -141,7 +141,9 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
   green surface GitHub CI's two jobs enforce
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
   over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
-  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`)
+  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`). Waits for an idle pool
+  first (FORUM_BENCH_QUIET_ONLY, bounded wait, then proceeds labeled; `quiet=False` skips);
+  live downscales skip a running bench and any overlap flips `contended`.
 
 A bare `repo_ci_run(token, checks="tests")` with neither `pr_number` nor `files` is a
 reference run on `origin/main`. When the host has docker it runs through the same sandbox

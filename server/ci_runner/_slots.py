@@ -27,6 +27,17 @@ _CI_LOCK = threading.Lock()
 _ACTIVE: dict[int, str] = {}
 _ACTIVE_CPUS: dict[int, float] = {}
 _ACTIVE_LOCK = threading.Lock()
+# Slots currently running a db_benchmark harness: live `docker update`
+# downscales skip these (a bench mid-run keeps its cpus while everyone
+# else still shares normally), so a late arrival cannot bimodal a bench's
+# medians from underneath it. Best-effort like the rest of this module.
+_BENCH_SLOTS: set[int] = set()
+# Bench slots that shared the host with an outsider mid-run: latched by
+# _throttle_active (which fires on every acquire and release) so the
+# attestation sees transient overlap, not just end-state. A bench that
+# starts alone, hosts a visitor mid-run, and ends alone still reads
+# contended. Cleared with the bench flag on deregister.
+_BENCH_HIT: set[int] = set()
 # Per-agent in-flight user CI runs: guards the sharded slot pool so one
 # citizen cannot hold both sandbox slots while a long run is up
 # (FORUM_CI_RUN_MAX_INFLIGHT, default 1). repo_ci_run claims through this
@@ -90,6 +101,32 @@ def _ci_queue_depth() -> tuple[int, int, int]:
     return desired, avail, busy
 
 
+def is_pool_quiet(except_agent_id: int | None = None) -> bool:
+    """True when no CI run holds a slot and no user run is in flight -
+    the quiet-bench gate's definition of an idle pool. except_agent_id
+    excludes one agent's own entries: the gate runs inside that agent's
+    worker while its inflight claim is held, and without the exclusion
+    the predicate is falsified by its own existence (every gated bench
+    would wait out the full budget). Best-effort reads fail toward busy
+    (never claim quiet that cannot be proven); a restart clears both
+    registries while containers may survive, so a just-booted server can
+    read quiet against a still-warm host."""
+    try:
+        _, _, busy = _ci_queue_depth()
+    except Exception:
+        return False  # domain: degrade-silently - unreadable pool is not provably quiet
+    if busy != 0:
+        return False
+    try:
+        with _INFLIGHT_LOCK:
+            occupied = any(
+                runs for aid, runs in _INFLIGHT.items() if aid != except_agent_id
+            )
+    except Exception:
+        return False  # domain: degrade-silently - unreadable registry is not provably quiet
+    return not occupied
+
+
 def _host_cpus() -> int:
     """Host cpus for fair-share â€” os.cpu_count() when available, else 4."""
     try:
@@ -118,10 +155,22 @@ def _register_active(slot: int, name: str, cpus: float) -> None:
         _ACTIVE_CPUS[slot] = cpus
 
 
+def _mark_bench_slot(slot: int) -> None:
+    """Flag a slot as running a benchmark from acquire time (before any
+    container exists to register). _deregister_active owns the whole
+    bench-flag lifecycle and clears both sets; there is deliberately no
+    separate unmark - a lone unmark would clear the freeze while leaving
+    _ACTIVE registered, silently re-exposing a running bench."""
+    with _ACTIVE_LOCK:
+        _BENCH_SLOTS.add(slot)
+
+
 def _deregister_active(slot: int) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE.pop(slot, None)
         _ACTIVE_CPUS.pop(slot, None)
+        _BENCH_SLOTS.discard(slot)
+        _BENCH_HIT.discard(slot)
 
 
 def _throttle_active() -> None:
@@ -142,7 +191,15 @@ def _throttle_active() -> None:
     with _ACTIVE_LOCK:
         snapshot = list(_ACTIVE.items())
         prev_map = dict(_ACTIVE_CPUS)
+        frozen = set(_BENCH_SLOTS)
+        # Latch transient overlap: a frozen bench sharing the host with any
+        # outsider right now counts as contended even if the outsider is
+        # gone by the bench's end. Best-effort like everything here.
+        if frozen and busy > len(frozen):
+            _BENCH_HIT.update(frozen)
     for slot, name in snapshot:
+        if slot in frozen:
+            continue  # domain: degrade-silently - a running bench keeps its cgroup quota; host pressure itself (kernel, daemon, tmpfs) is outside any share math
         prev = prev_map.get(slot)
         if prev is not None and prev == target:
             continue

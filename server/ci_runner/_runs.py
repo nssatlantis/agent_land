@@ -36,6 +36,14 @@ _CHECKS: dict[str, tuple[str, str]] = {
     "db_bench": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
 }
 
+# Harnesses whose medians must measure code, not contention: the quiet
+# gate and the load attestation below apply to exactly these.
+_BENCH_CHECKS = frozenset({"db_benchmark", "db_bench"})
+
+# Quiet-wait poll interval: short enough to catch a freed pool promptly,
+# long enough to never show up as load itself.
+_QUIET_POLL_SECONDS = 5.0
+
 # Only these variables (matched case-insensitively) pass into native child
 # test processes.  Everything else - tokens above all - stays sealed out.
 _ENV_KEEP = {
@@ -195,6 +203,33 @@ def _inflight_snapshot() -> list[dict]:
     return sorted(rows, key=lambda r: r["started_at"], reverse=True)
 
 
+def _wait_for_quiet(
+    timeout_s: float, except_agent_id: int | None = None
+) -> tuple[bool, float]:
+    """Poll is_pool_quiet() until the pool idles or the timeout lapses.
+
+    Returns (became_quiet, waited_seconds). Check-first so an idle pool
+    costs nothing; sleeps only while busy. On the user path this runs
+    inside the worker thread while the caller's inflight claim is held -
+    a same-agent second call is refused for the duration (naming the
+    in-flight run), and the 50s handoff covers a wait that outlasts the
+    read timeout; both are bounded by timeout_s, never indefinite. A
+    timeout is not an error: the caller proceeds with quiet_wait_expired
+    marked, because a labeled number beats no number."""
+    start = time.monotonic()
+    if _slots_mod.is_pool_quiet(except_agent_id):
+        return True, 0.0
+    deadline = start + max(0.0, timeout_s)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_QUIET_POLL_SECONDS, remaining))
+        if _slots_mod.is_pool_quiet(except_agent_id):
+            return True, round(time.monotonic() - start, 2)
+    return False, round(time.monotonic() - start, 2)
+
+
 def ledger_kind_for(
     checks: str,
     pr_number: int | None = None,
@@ -216,6 +251,26 @@ def ledger_kind_for(
     return entry[0]
 
 
+def _bench_quiet_wait() -> float:
+    """Bounded quiet-wait for benchmarks: 0 disables the gate back to
+    today's take-a-slot-immediately behavior."""
+    try:
+        if not int(config.BENCH_QUIET_ONLY):
+            return 0.0
+        return max(0.0, float(config.BENCH_QUIET_WAIT_SECONDS))
+    except (
+        Exception
+    ):  # domain: degrade-silently - unreadable knobs disable the wait, never the run
+        return 0.0
+
+
+def _should_gate_bench(checks: str, quiet: bool | None, local_mode: bool) -> bool:
+    """Tri-state gate policy, factored for tests: None (default) gates
+    benches but keeps local files/tree rehearsal interactive; True
+    force-gates even local; False skips the wait entirely."""
+    return checks in _BENCH_CHECKS and (quiet or (quiet is None and not local_mode))
+
+
 def run_checks_with_deadline(
     soft_seconds: int,
     agent_id: int,
@@ -224,6 +279,7 @@ def run_checks_with_deadline(
     pr_number: int | None = None,
     files: list[dict] | None = None,
     tree: str | None = None,
+    quiet: bool | None = None,
 ) -> tuple[dict | None, bool, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
@@ -255,6 +311,7 @@ def run_checks_with_deadline(
                     pr_number=pr_number,
                     files=files,
                     tree=tree,
+                    quiet=quiet,
                 )
             )
         except Exception as exc:
@@ -283,6 +340,7 @@ def run_checks(
     pr_number: int | None = None,
     files: list[dict] | None = None,
     tree: str | None = None,
+    quiet: bool | None = None,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -330,6 +388,21 @@ def run_checks(
             )
     kind_event = ledger_kind_for(checks, pr_number, files, tree)
     _gate(kind_event, agent_id)
+    # Quiet-bench: a benchmark waits for an idle pool before taking its
+    # slot (local files/tree rehearsal is exempt - an edit-measure loop
+    # must stay interactive; pass quiet=True explicitly to gate it too).
+    # Bounded wait, then proceed labeled; never blocks other runs.
+    is_bench = checks in _BENCH_CHECKS
+    quiet_wait_expired = False
+    quiet_wait_s = 0.0
+    # Tri-state quiet (see _should_gate_bench): None gates benches but
+    # keeps local rehearsal interactive; True force-gates; False skips.
+    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
+    _quiet_budget = _bench_quiet_wait()
+    if _gate_bench and _quiet_budget > 0:
+        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
+        quiet_wait_expired = not became_quiet
+    bench_attest: dict = {}
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
     sandboxed = False  # native host-fallback default; branch/local set True
@@ -348,6 +421,19 @@ def run_checks(
     ):  # domain: fail-loudly - busy error propagates after tmp cleanup
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
+    if is_bench:
+        # Freeze this slot out of live downscales for the run's duration;
+        # _deregister_active clears the flag on every exit path.
+        try:
+            _slots_mod._mark_bench_slot(slot)
+        except Exception:
+            pass  # domain: degrade-silently - freeze is best-effort
+        try:
+            bench_attest["bench_busy_start"] = _slots_mod._ci_queue_depth()[2]
+            bench_attest["bench_host_cpus"] = _slots_mod._host_cpus()
+            bench_attest["bench_cpus_start"] = _slots_mod._effective_cpus()
+        except Exception:
+            pass  # domain: degrade-silently - attestation never breaks the run
     try:
         if local_mode:
             assert files is not None or tree is not None
@@ -397,6 +483,13 @@ def run_checks(
                     "output_tail": "",
                     "output_truncated": False,
                 }
+                if is_bench:
+                    # No measurement happened, but callers branching on the
+                    # flags must not KeyError: a conflict is not a quiet run.
+                    payload["quiet"] = False
+                    payload["contended"] = True
+                    payload["quiet_wait_s"] = quiet_wait_s
+                    payload["quiet_wait_expired"] = quiet_wait_expired
                 try:
                     events.log_event(
                         kind_event,
@@ -409,6 +502,16 @@ def run_checks(
                             "pr_number": pr_number,
                             "head_sha": head_sha,
                             "duration_seconds": duration,
+                            **(
+                                {
+                                    "quiet": False,
+                                    "contended": True,
+                                    "quiet_wait_s": quiet_wait_s,
+                                    "quiet_wait_expired": quiet_wait_expired,
+                                }
+                                if is_bench
+                                else {}
+                            ),
                         },
                     )
                 except Exception:
@@ -508,6 +611,41 @@ def run_checks(
             if static_result == "skipped":
                 result["host_fallback_static_skipped"] = True
         result["head_sha"] = head_sha
+        if is_bench:
+            try:
+                bench_attest["bench_busy_end"] = _slots_mod._ci_queue_depth()[2]
+                bench_attest["bench_cpus_end"] = _slots_mod._effective_cpus()
+            except Exception:
+                pass  # domain: degrade-silently - attestation never breaks the run
+            # Contended when others overlapped the run (present at the end)
+            # or the quiet wait already gave up: the medians arrive labeled.
+            end_busy = bench_attest.get("bench_busy_end")
+            start_busy = bench_attest.get("bench_busy_start")
+            # Quiet means no other run overlapped: busy counts our own
+            # slot, so 1 is the alone value; <= tolerates queue anomalies
+            # (shrink races, retired tokens) that fuzz the depth by one.
+            bench_attest["quiet"] = not quiet_wait_expired and (
+                isinstance(start_busy, int) and start_busy <= 1
+            )
+            try:
+                with _slots_mod._ACTIVE_LOCK:
+                    hit = slot in _slots_mod._BENCH_HIT
+            except Exception:
+                hit = False  # domain: degrade-silently - latch read best-effort
+            # Missing data fails toward dirty, never clean: an unreadable
+            # end-state must not pass a contended==False filter (mirrors
+            # is_pool_quiet's fail-toward-busy rule). The latch catches
+            # transient mid-run overlap the endpoints miss.
+            bench_attest["contended"] = (
+                quiet_wait_expired
+                or hit
+                or not isinstance(end_busy, int)
+                or end_busy > 1
+            )
+            bench_attest["quiet_wait_s"] = quiet_wait_s
+            bench_attest["quiet_wait_expired"] = quiet_wait_expired
+            result["quiet"] = bench_attest["quiet"]
+            result["contended"] = bench_attest["contended"]
         detail = {
             "checks": checks,
             "mode": result["mode"],
@@ -528,6 +666,10 @@ def run_checks(
         elif branch_mode:
             detail["pr_number"] = pr_number
             detail["tree_warm"] = bool(merge_info.get("tree_warm"))
+        if is_bench:
+            # Load attestation rides the bench ledger detail so a later
+            # reader can tell quiet from contended without re-running.
+            detail["bench_load"] = bench_attest
         detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
