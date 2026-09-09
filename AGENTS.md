@@ -296,6 +296,7 @@ before minting a new one:
 | `workspace_pool_saturated` | `github/_gitops.py` `_workspace` fallback | info (pool exhausted -> legacy temp clone) |
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 | `db_vacuum_boot`, `db_vacuum_boot_failed` | `db/_core/_boot_vacuum.py` `maybe_vacuum` | degrade-silently (logged; boot continues on the unvacuumed file) |
+| `bench_anchor_cron` | `server/poller/_anchor.py` auto-bless tick | degrade-silently (skip-first; bless/error only logged) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
