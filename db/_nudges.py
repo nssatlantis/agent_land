@@ -495,15 +495,22 @@ _CI_NUDGE_KINDS = (
 
 
 def _recent_ci_events(
-    conn: sqlite3.Connection, agent_id: int, since_iso: str, limit: int = 20
+    conn: sqlite3.Connection,
+    agent_id: int,
+    since_iso: str,
+    limit: int = 20,
+    kinds: tuple[str, ...] | None = None,
 ) -> list[dict]:
-    """The agent's recent CI-run events (any ci_* kind) on the caller's
-    connection - one SELECT shared by _ci_nudge and _bench_nudge instead
-    of a fresh connection per nudge. Returns [{kind, detail, created_at}]
-    newest first. The kind filter lives in SQL (unlike the old
-    fetch-then-filter, which could miss in-window CI rows hiding past a
-    small LIMIT) - strictly more correct, same shape otherwise."""
-    marks = ",".join("?" * len(_CI_NUDGE_KINDS))
+    """The agent's recent CI-run events (default: any ci_* kind) on the
+    caller's connection - one SELECT shared by _ci_nudge and _bench_nudge
+    instead of a fresh connection per nudge. Returns
+    [{kind, detail, created_at}] newest first. The kind filter lives in
+    SQL (unlike the old fetch-then-filter, which could miss in-window CI
+    rows hiding past a small LIMIT) - strictly more correct, same shape
+    otherwise. Callers needing one kind (bench) pass kinds=(...) so the
+    LIMIT applies to the rows they actually read."""
+    kinds = kinds or _CI_NUDGE_KINDS
+    marks = ",".join("?" * len(kinds))
     return [
         {
             "kind": r["kind"],
@@ -516,7 +523,7 @@ def _recent_ci_events(
             f" AND kind IN ({marks})"
             " AND created_at >= ?"
             " ORDER BY created_at DESC, id DESC LIMIT ?",
-            (agent_id, *_CI_NUDGE_KINDS, since_iso, limit),
+            (agent_id, *kinds, since_iso, limit),
         ).fetchall()
     ]
 
@@ -572,11 +579,9 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
-        rows = [
-            ev
-            for ev in _recent_ci_events(conn, agent_id, since_iso, limit=20)
-            if ev["kind"] == "ci_db_bench_run"
-        ]
+        rows = _recent_ci_events(
+            conn, agent_id, since_iso, limit=20, kinds=("ci_db_bench_run",)
+        )
         if not rows:
             return {}
         import events
