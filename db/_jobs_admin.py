@@ -15,8 +15,8 @@ from db._jobs_ops import (
     _apply_review,
     _cycle_is_overdue,
     _fmt_q,
+    _job_anchors_for,
     _job_detail,
-    _job_overdue_anchor_sql,
     _overdue_windows_elapsed,
     _remaining_escrow,
     job_overdue_cutoff,
@@ -749,22 +749,13 @@ def _outstanding_actions(
     for r in offers:
         out.append(f"#{r['id']} '{r['title']}': accept/decline your offer")
     todo = conn.execute(
-        "SELECT j.id, j.title, jc.cycle_no, jc.status,"
-        f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+        "SELECT j.id, j.title, j.created_at, jc.cycle_no, jc.status FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.worker_agent_id = ? AND j.status = 'active'"
         " AND jc.status IN ('awaiting', 'declined')"
         " ORDER BY j.id",
         (agent_id,),
     ).fetchall()
-    for r in todo:
-        phrase = (
-            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
-            "your work - submit_job()"
-        )
-        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
-            phrase += " (overdue)"
-        out.append(phrase)
     review = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -773,22 +764,37 @@ def _outstanding_actions(
         " ORDER BY j.id",
         (agent_id,),
     ).fetchall()
-    for r in review:
-        out.append(
-            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
-            "your review_job() verdict"
-        )
     stale = conn.execute(
-        "SELECT j.id, j.title, jc.cycle_no, jc.status,"
-        f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+        "SELECT j.id, j.title, j.created_at, jc.cycle_no, jc.status FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.creator_agent_id = ? AND j.status = 'active'"
         " AND jc.status IN ('awaiting', 'declined')"
         " ORDER BY j.id",
         (agent_id,),
     ).fetchall()
+    # One batched anchor lookup for both lists instead of a correlated
+    # events probe per row; missing anchors fall back to created_at,
+    # exactly the COALESCE the scalar form applies.
+    anchors = _job_anchors_for(conn, [r["id"] for r in todo] + [r["id"] for r in stale])
+    for r in todo:
+        phrase = (
+            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
+            "your work - submit_job()"
+        )
+        if _cycle_is_overdue(
+            r["status"], anchors.get(r["id"], r["created_at"]), _cutoff
+        ):
+            phrase += " (overdue)"
+        out.append(phrase)
+    for r in review:
+        out.append(
+            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
+            "your review_job() verdict"
+        )
     for r in stale:
-        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
+        if _cycle_is_overdue(
+            r["status"], anchors.get(r["id"], r["created_at"]), _cutoff
+        ):
             out.append(
                 f"#{r['id']} '{r['title']}': worker hasn't submitted cycle"
                 f" {r['cycle_no']} (overdue)"
@@ -1002,17 +1008,21 @@ def sweep_overdue_job_cycles() -> int:
     with _conn() as conn:
         active = conn.execute(
             "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id, j.official,"
-            " jc.cycle_no, jc.status, jc.overdue_notified_at,"
-            f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+            " j.created_at, jc.cycle_no, jc.status, jc.overdue_notified_at"
+            " FROM jobs j"
             " JOIN job_cycles jc ON jc.job_id = j.id"
             " AND jc.cycle_no = j.cycles_done + 1"
             " WHERE j.status = 'active'"
             " AND jc.status IN ('awaiting', 'declined')",
         ).fetchall()
+        anchors = _job_anchors_for(conn, [r["id"] for r in active])
         for r in active:
-            if not _cycle_is_overdue(r["status"], r["anchor_at"], cutoff):
+            # Batched anchor with the scalar COALESCE fallback (created_at
+            # when the job has no anchor event yet).
+            anchor_at = anchors.get(r["id"], r["created_at"])
+            if not _cycle_is_overdue(r["status"], anchor_at, cutoff):
                 continue
-            windows = _overdue_windows_elapsed(r["anchor_at"], cutoff)
+            windows = _overdue_windows_elapsed(anchor_at, cutoff)
             # Official positions are never released - a standing role
             # stays active; the overdue marking + nudges still fire.
             if release_after > 0 and windows >= release_after and not r["official"]:

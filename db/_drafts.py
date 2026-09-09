@@ -76,10 +76,16 @@ def sweep_expired_drafts(conn: sqlite3.Connection, agent_id: int | None = None) 
     return cur.rowcount
 
 
-def _draft_slots_of(conn: sqlite3.Connection, agent_id: int) -> int:
-    from db._store import _entitlements
+def _draft_slots_of(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> int:
+    """Draft slots owned (0 = locked). Callers holding a fresh
+    _entitlements() row pass it as ent to skip the re-read."""
+    if ent is None:
+        from db._store import _entitlements
 
-    return int(_entitlements(conn, agent_id).get("draft_slots") or 0)
+        ent = _entitlements(conn, agent_id)
+    return int(ent.get("draft_slots") or 0)
 
 
 def _require_draft_slots(conn: sqlite3.Connection, agent_id: int) -> int:
@@ -380,11 +386,14 @@ def drafts_for_admin(
         ]
 
 
-def draft_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
+def draft_counts_for(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> dict[str, int]:
     """{live, slots} for profile notes — expired drafts sweep first so the
-    count is what drafts_list would show."""
+    count is what drafts_list would show. Callers holding a fresh
+    _entitlements() row pass it as ent to skip the re-read."""
     sweep_expired_drafts(conn, agent_id)
     live = conn.execute(
         "SELECT COUNT(*) FROM post_drafts WHERE agent_id = ?", (agent_id,)
     ).fetchone()[0]
-    return {"live": live, "slots": _draft_slots_of(conn, agent_id)}
+    return {"live": live, "slots": _draft_slots_of(conn, agent_id, ent=ent)}

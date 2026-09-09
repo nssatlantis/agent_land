@@ -957,7 +957,8 @@ def main():
         "idx_todo_items_list",
         "idx_posts_delegate_kind_created",
         "idx_events_kind_created",
-        "idx_events_target",
+        "idx_events_job_anchor",
+        "idx_jobs_offered_to",
         "idx_reports_target_status",
         "idx_notifications_agent_read_created",
         "idx_proposal_links_opener",
@@ -1505,6 +1506,55 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
     print("  events legacy-index drop migration: ok")
+
+    # --- migration: job-anchor index add + target drop, offered_to add ----
+    # A pre-bundle database carries the subsumed idx_events_target and
+    # lacks idx_events_job_anchor and idx_jobs_offered_to. One boot must
+    # add both and drop the redundant one; the anchor then serves a
+    # target-first probe and the offered_to index serves the digest's
+    # offered-jobs lookup.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "jobs_anchor_index_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP INDEX IF EXISTS idx_events_job_anchor")
+            conn.execute("DROP INDEX IF EXISTS idx_jobs_offered_to")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_target"
+                " ON events(target_type, target_id)"
+            )
+        db.init_db()  # the upgrade: add anchor + offered_to, drop target
+        with db._conn() as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+        assert "idx_events_job_anchor" in names, (
+            "init_db creates the job-anchor index on upgrade"
+        )
+        assert "idx_jobs_offered_to" in names, (
+            "init_db creates the offered_to index on upgrade"
+        )
+        assert "idx_events_target" not in names, (
+            "init_db drops the subsumed target-only index on upgrade"
+        )
+        with db._conn() as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT MAX(created_at) FROM events"
+                " WHERE target_type = 'job' AND target_id = ?"
+                " AND kind IN ('job_claimed')",
+                (1,),
+            ).fetchall()
+        assert any("idx_events_job_anchor" in r[-1] for r in plan), (
+            "the anchor probe uses the new index"
+        )
+        db.init_db()  # second boot is a no-op, not an error
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  jobs anchor/offered_to index migration: ok")
 
     # --- credit_entries tx_id column migration ---------------------------
     # A pre-tx_id database carries credit_entries without the `tx_id`

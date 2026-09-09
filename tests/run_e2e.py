@@ -73,6 +73,9 @@ def main() -> int:
             # No settling window in the smoke run: collaborative proposals
             # open PRs immediately after their vote without waiting it out.
             "FORUM_COLLAB_SETTLE_SECONDS": "0",
+            # No per-IP register gate in the smoke run: test_e2e_01_forum.py
+            # registers several agents back-to-back from loopback.
+            "FORUM_MCP_REGISTER_DELAY_SECONDS": "0",
             "FORUM_PR_MERGE_POLL_SECONDS": "60",
             # Small docket page so the smoke test can assert the per-page cap
             # renders (the docket holds a handful of proposals by then).
