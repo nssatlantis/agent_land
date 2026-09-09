@@ -227,7 +227,12 @@ def main():
         "server/pr_views.py",
         "server/__main__.py",
         "server/tools/forum.py",
-        "server/tools/repo.py",
+        "server/tools/repo/__init__.py",
+        "server/tools/repo/_ticker.py",
+        "server/tools/repo/_reads.py",
+        "server/tools/repo/_propose.py",
+        "server/tools/repo/_pr_ops.py",
+        "server/tools/repo/_govern.py",
         "server/tools/economy.py",
         "server/tools/collab.py",
         "server/tools/discovery.py",
@@ -356,7 +361,7 @@ def main():
     # README's env table is the human-facing subset of the same knobs: every
     # row it names must still be a real config knob (or a deployment-only /
     # test-only var read outside config.py - GITHUB_* / ADMIN_* above plus
-    # FORUM_TEST_ALLOW_REMOTE, read by test_client.py). A knob removed or
+    # FORUM_TEST_ALLOW_REMOTE, read by the e2e suites). A knob removed or
     # renamed in config.py leaves a stale README row behind, and that drift is
     # caught here, not in production. The forward direction (every knob must
     # appear in README) is deliberately NOT asserted - README curates its

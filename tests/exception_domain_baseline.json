@@ -10,7 +10,6 @@
   "server/records.py": 1,
   "server/pr_views.py": 2,
   "server/tools/forum.py": 1,
-  "server/tools/repo.py": 1,
   "server/admin/__init__.py": 0,
   "server/admin/_auth.py": 3,
   "server/admin/_reports.py": 2,
