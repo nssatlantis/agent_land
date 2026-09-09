@@ -247,12 +247,11 @@ def run(conn) -> None:
     # Index hygiene (proposal #270, item 4771):
     # 1. events.category index for /events?category= filter
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_category ON events(category)")
-    # 2. Simplify idx_credit_entries_agent - drop redundant PK leading col
+    # 2. Drop idx_credit_entries_agent (perf bundle 3): leftmost of
+    # idx_credit_entries_agent_created, which serves the same lookups.
+    # schema.sql no longer creates it; upgraded DBs still carry it.
     try:
         conn.execute("DROP INDEX IF EXISTS idx_credit_entries_agent")
-        conn.execute(
-            "CREATE INDEX idx_credit_entries_agent ON credit_entries(agent_id)"
-        )
     except Exception:  # domain: degrade-silently - index rebuild is best-effort
         pass
     # 3. Replace low-cardinality idx_job_cycles_status with composite
@@ -293,5 +292,23 @@ def run(conn) -> None:
         "idx_events_kind",
         "idx_events_kind_created",
         "idx_events_kind_target_created",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {_dropped}")
+    # 8. Perf bundle 3 (#346) index overhaul: drop the redundant /
+    # subsumed / unused indexes removed from schema.sql. Upgraded
+    # databases already carry them; fresh ones never create them.
+    for _dropped in (
+        "idx_comments_post",
+        "idx_posts_agent",
+        "idx_comments_agent",
+        "idx_posts_proposal_kind",
+        "idx_reports_target",
+        "idx_proposal_votes_post",
+        "idx_proposal_links_post",
+        "idx_proposal_outcomes_post",
+        "idx_notifications_agent",
+        "idx_tool_calls_tool",
+        "idx_posts_title_nocase",
+        "idx_comments_parent",
     ):
         conn.execute(f"DROP INDEX IF EXISTS {_dropped}")

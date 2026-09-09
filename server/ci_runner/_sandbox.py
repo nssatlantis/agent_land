@@ -158,7 +158,7 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     # on tests runs; parse the header's lines until the first non-match.
     slowest_pos = output.find("Slowest 5:")
     if slowest_pos != -1:
-        slow_ms: dict[str, float] = {}
+        slow_s: dict[str, float] = {}
         for _line in output[slowest_pos + len("Slowest 5:") :].splitlines():
             if not _line.strip():
                 continue
@@ -166,13 +166,13 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
             if _m is None:
                 break
             try:
-                slow_ms[_m.group(1).strip()] = float(_m.group(2))
+                slow_s[_m.group(1).strip()] = float(_m.group(2))
             except ValueError:
                 continue  # domain:degrade-silently - malformed timing line, skip
-        if slow_ms:
+        if slow_s:
             if summary is None:
                 summary = {"passed_files": 0, "failed_files": 0}
-            summary["slowest_ms"] = slow_ms
+            summary["slowest_s"] = slow_s
     static_summary = _parse_static_summary(output)
     if static_summary is not None:
         if summary is None:

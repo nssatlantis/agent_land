@@ -18,7 +18,16 @@ Regression tracking: maintains benchmark_baseline.json to detect
 read-only, so the baseline is only written when BENCH_WRITE_BASELINE=1
 or --write-baseline is passed — agents should get before & after by
 running on main and on the PR merge preview and comparing
-summary.timings_median_ms (most info / least text).
+summary.timings_median_ms (most info / least text). After verified
+performance work, bless a fresh baseline with --reset-baseline (refuses
+on query ERRORs; provenance stamped in _meta).
+
+Quiet scheduling: repo_ci_run holds a db_benchmark run until the pool
+is idle (no slot held, no user run in flight), bounded by
+FORUM_BENCH_QUIET_WAIT_SECONDS, then proceeds labeled on timeout;
+live `docker update` downscales skip the running bench, and any overlap
+flips contended with start/end load in the ledger detail. quiet=false
+skips the wait for quick-and-dirty numbers.
 """
 
 import argparse
@@ -176,7 +185,72 @@ def _save_baseline(baseline: dict) -> bool:
         _BASELINE_FILE.write_text(json.dumps(baseline, indent=2))
         return True
     except OSError as e:
-        # domain:degrade-silently - read-only workspaces must still report
+        # domain: degrade-silently - read-only workspaces must still report
+        # timings; a failed persist warns instead of killing the run.
+        print(f"  WARNING: baseline not written ({e})")
+        return False
+
+
+def _baseline_meta(reset: bool) -> dict:
+    """Provenance stamp for a persisted baseline: when, on what host,
+    from which commit, and whether it replaced the file or merged in."""
+    import datetime
+    import platform
+
+    meta = {
+        "note": "host-coupled medians; refresh on the canonical host",
+        "date": datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    }
+    if reset:
+        meta["reset"] = True
+    try:
+        meta["host"] = platform.node() or "unknown"
+    except Exception:
+        meta["host"] = "unknown"  # domain: degrade-silently - provenance only
+    try:
+        import subprocess
+
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=Path(__file__).parent.parent,
+        )
+        if rev.returncode == 0 and rev.stdout.strip():
+            meta["commit"] = rev.stdout.strip()
+    except Exception:
+        pass  # domain: degrade-silently - provenance only
+    return meta
+
+
+def _build_baseline(
+    old: dict, new: dict[str, float], reset: bool
+) -> tuple[dict, list[str]]:
+    """Fold a run's medians into a persistable baseline. Update mode merges
+    (old keys survive unless the query is gone); reset mode discards the
+    old file entirely and blesses only this run. Returns (baseline, ghosts)
+    where ghosts are update-mode keys pruned as renamed/removed. Pure -
+    pinned by tests/test_benchmark_flags.py."""
+    if reset:
+        return {**new, "_meta": _baseline_meta(True)}, []
+    merged = dict(old)
+    merged.update(new)
+    ghosts = [k for k in merged.keys() if k not in new and k != "_meta"]
+    for k in ghosts:
+        merged.pop(k, None)
+    merged["_meta"] = _baseline_meta(False)
+    return merged, ghosts
+
+
+def _save_baseline(baseline: dict) -> bool:
+    try:
+        _BASELINE_FILE.write_text(json.dumps(baseline, indent=2))
+        return True
+    except OSError as e:
+        # domain: degrade-silently - read-only workspaces must still report
         # timings; a failed persist warns instead of killing the run.
         print(f"  WARNING: baseline not written ({e})")
         return False
@@ -996,40 +1070,30 @@ def _seed():
 # Full current index set (schema.sql + db/_core.py migrations) — no duplicates, no stale alias
 _perf_indexes = (
     "idx_agents_name_nocase",
-    "idx_comments_post",
     "idx_comments_post_created",
-    "idx_comments_parent",
     "idx_comments_post_parent_created",
     "idx_votes_target",
     "idx_posts_created",
-    "idx_posts_agent",
-    "idx_comments_agent",
     "idx_comments_created",
     "idx_votes_created",
     "idx_posts_agent_created",
     "idx_comments_agent_created",
     "idx_votes_agent_created",
-    "idx_posts_proposal_kind",
     "idx_posts_proposal_kind_created",
     "idx_posts_delegate_kind_created",
     "idx_pr_merges_agent",
     "idx_pr_record_agent",
     "idx_reports_status",
     "idx_reports_reporter",
-    "idx_reports_target",
     "idx_reports_target_status",
     "idx_report_votes_target_action",
-    "idx_proposal_votes_post",
     "idx_proposal_votes_post_value",
     "idx_proposal_votes_voter_created",
-    "idx_proposal_links_post",
     "idx_proposal_links_opener",
-    "idx_proposal_outcomes_post",
     "idx_proposal_links_post_pr",
     "idx_proposal_outcomes_post_pr",
     "idx_proposal_edits_post",
     "idx_post_edits_post",
-    "idx_notifications_agent",
     "idx_notifications_agent_read_created",
     "idx_notifications_unread",
     "idx_notifications_read_created",
@@ -1060,9 +1124,10 @@ _perf_indexes = (
     "idx_job_cycles_job_status",
     "idx_job_rewards_agent",
     "idx_job_penalties_agent",
-    "idx_credit_entries_agent",
     "idx_credit_entries_agent_created",
     "idx_credit_entries_treasury",
+    "idx_credit_entries_agent_account",
+    "idx_credit_entries_treasury_flows",
     "idx_pr_votes_pr",
     "idx_pr_votes_voter",
     "idx_bug_reports_agent",
@@ -1201,6 +1266,15 @@ def main():
         "--write-baseline",
         action="store_true",
         help="persist baseline (default only when BENCH_WRITE_BASELINE=1)",
+    )
+    parser.add_argument(
+        "--reset-baseline",
+        action="store_true",
+        help="replace the baseline file with this run's medians (+ provenance)"
+        " instead of merging into it - bless a fresh baseline after verified"
+        " performance work. Refuses when any query ERRORed (incomplete data)."
+        " Regressions vs the old file only warn: legitimately faster seeds"
+        " move medians both ways.",
     )
     parser.add_argument(
         "--check-only",
@@ -1579,6 +1653,7 @@ def main():
     random.Random(_SEED).shuffle(queries)
 
     regressions = 0
+    errors = 0
     for label, fn in queries:
         try:
             lo, med, hi, sd = _time_query(fn)
@@ -1592,6 +1667,7 @@ def main():
             )
         except Exception as e:
             print(f"  {label:30s} ERROR: {e}")
+            errors += 1
             all_ok = False
 
     print()
@@ -1601,27 +1677,37 @@ def main():
         )
         all_ok = False
 
-    # Persist baseline only when explicitly requested (workspaces are ro)
+    # Persist baseline only when explicitly requested (workspaces are ro).
+    # --reset-baseline replaces the file with this run (bless a fresh one
+    # after verified performance work); it refuses on query ERRORs since
+    # a partial run cannot bless anything, while regressions vs the old
+    # file only warn - legitimately faster seeds move medians both ways.
     should_write = args.write_baseline or os.environ.get(
         "BENCH_WRITE_BASELINE", "0"
     ) in ("1", "true", "True")
-    if should_write:
-        import datetime
-
-        baseline.update(new_baseline)
+    if args.reset_baseline and errors > 0:
+        print(
+            f"  REFUSED --reset-baseline with {errors} query ERROR(s): "
+            "fix the run first, a partial run cannot bless a baseline"
+        )
+        all_ok = False
+    elif should_write or args.reset_baseline:
+        if regressions > 0:
+            print(
+                f"  note: blessing with {regressions} regression flag(s) vs "
+                "the old file - confirm they are seed-explained, not real"
+            )
+        baseline, ghosts = _build_baseline(
+            baseline, new_baseline, reset=args.reset_baseline
+        )
         # Renames must not silently drop history: report pruned ghosts loudly.
-        ghosts = [k for k in baseline.keys() if k not in new_baseline and k != "_meta"]
         for k in ghosts:
             print(f"  pruning renamed/removed baseline key: {k}")
-            baseline.pop(k, None)
-        baseline["_meta"] = {
-            "note": "host-coupled medians; refresh on the canonical host",
-            "date": datetime.datetime.now(datetime.timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            ),
-        }
         if _save_baseline(baseline):
-            print(f"Baseline updated at {_BASELINE_FILE}")
+            print(
+                f"Baseline {'replaced' if args.reset_baseline else 'updated'}"
+                f" at {_BASELINE_FILE}"
+            )
     else:
         print(
             "Baseline not written (pass --write-baseline or BENCH_WRITE_BASELINE=1 to persist)"

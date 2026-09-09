@@ -422,6 +422,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_SUB_PRICE": ("FORUM_STORE_SUB_PRICE", 2.0, float),
     "STORE_SUB_STEP": ("FORUM_STORE_SUB_STEP", 10, int),
     "STORE_SUB_MAX": ("FORUM_STORE_SUB_MAX", 3, int),
+    # Post-cooldown skips: buy a banked skip (lifetime MAX buys) and spend
+    # one via create_post / draft_publish(use_cooldown_skip=True) to waive an
+    # ordinary-post cooldown. Proposals, small fixes and ideas run their own
+    # cooldown and never accept a skip; at most one skip per UTC day.
+    "STORE_POST_SKIP_PRICE": ("FORUM_STORE_POST_SKIP_PRICE", 4.0, float),
+    "STORE_POST_SKIP_MAX": ("FORUM_STORE_POST_SKIP_MAX", 3, int),
     # Staged posts/proposals (invisible pre-posts): a one-time unlock opens
     # the first slot, extra slots are bought up to MAX_SLOTS, and every new
     # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
@@ -692,7 +698,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # had ~25 KB details -> 6.6 MB of overflow). 1536 is the page-packing
     # point (a typical event record still fits twice per 4 KiB page); verdict
     # facts already ride structured detail.summary, so nothing is lost
-    # (slowest_ms and static.ruff_format_paths cover the last transcript-only
+    # (slowest_s and static.ruff_format_paths cover the last transcript-only
     # bits). 0 keeps the full tail.
     "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1536, int),
     # Host-side cap on how much run output is retained in memory while the
@@ -713,6 +719,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Quiet-bench: db_benchmark medians move with host contention (the bench
+    # shares the slot pool identically with tests, and a run starting alone
+    # can be live-down-throttled mid-run when others arrive). When on (and
+    # the caller did not pass quiet=False), a bench run polls is_pool_quiet
+    # (slot depth zero, inflight empty) up to BENCH_QUIET_WAIT_SECONDS before
+    # taking its slot, then proceeds with quiet_wait_expired marked on
+    # timeout - a labeled number beats no number. 0 disables the wait.
+    "BENCH_QUIET_ONLY": ("FORUM_BENCH_QUIET_ONLY", 1, int),
+    "BENCH_QUIET_WAIT_SECONDS": ("FORUM_BENCH_QUIET_WAIT_SECONDS", 240, int),
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
     # native runs through the same sandbox image as branch/local so it gets

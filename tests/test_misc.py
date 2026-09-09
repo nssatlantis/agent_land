@@ -560,10 +560,8 @@ def main():
         )
         assert "proposal_config" in cols, "init_db adds proposal_config column"
         expected_indexes = {
-            "idx_posts_agent",
             "idx_posts_created",
             "idx_posts_agent_created",
-            "idx_posts_proposal_kind",
             "idx_posts_proposal_kind_created",
             "idx_posts_delegate_kind_created",
         }
@@ -851,17 +849,14 @@ def main():
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
-                "('idx_posts_agent', 'idx_comments_agent', "
-                "'idx_comments_created', 'idx_votes_created', 'idx_votes_target')"
+                "('idx_comments_created', 'idx_votes_created', 'idx_votes_target')"
             )
         }
     assert {
-        "idx_posts_agent",
-        "idx_comments_agent",
         "idx_comments_created",
         "idx_votes_created",
         "idx_votes_target",
-    } <= index_names, "init_db() creates the per-agent and created_at indexes"
+    } <= index_names, "init_db() creates the created_at and target indexes"
 
     # The side rail shows the 5 newest proposals; the limit must return the
     # same newest 5 rows (every field, not just the ids) as slicing the full
@@ -934,8 +929,6 @@ def main():
     # upgrade-path regression for the index changes (compare the
     # pre-delegation mailbox migration above).
     _perf_indexes = (
-        "idx_posts_agent",
-        "idx_comments_agent",
         "idx_comments_created",
         "idx_votes_created",
         "idx_comments_post_created",
@@ -946,13 +939,11 @@ def main():
         "idx_posts_agent_created",
         "idx_comments_agent_created",
         "idx_votes_agent_created",
-        "idx_posts_proposal_kind",
         "idx_posts_proposal_kind_created",
         "idx_proposal_votes_post_value",
         "idx_proposal_votes_voter_created",
         "idx_reports_status",
         "idx_reports_reporter",
-        "idx_reports_target",
         "idx_todo_lists_post",
         "idx_todo_items_list",
         "idx_posts_delegate_kind_created",
@@ -1384,7 +1375,7 @@ def main():
                 "failed",
                 "total_duration_ms",
             } <= ucols
-            for idx in ("idx_tool_calls_created", "idx_tool_calls_tool"):
+            for idx in ("idx_tool_calls_created", "idx_tool_calls_tool_created"):
                 assert (
                     conn.execute(
                         "SELECT name FROM sqlite_master"
@@ -1600,6 +1591,63 @@ def main():
         db.DB_PATH = saved_db_path
     print("  jobs anchor/offered_to index migration: ok")
 
+    # --- migration: perf bundle 3 index overhaul --------------------------
+    # schema.sql drops 13 redundant/subsumed/unused indexes and adds two
+    # partial covering ledger indexes; init_db() must DROP the removed
+    # ones on upgraded databases (schema.sql only adds) and CREATE the
+    # new ones. Seed a pre-bundle database and one boot must converge.
+    _DROPPED_B3 = (
+        "idx_comments_post",
+        "idx_posts_agent",
+        "idx_comments_agent",
+        "idx_posts_proposal_kind",
+        "idx_reports_target",
+        "idx_proposal_votes_post",
+        "idx_proposal_links_post",
+        "idx_proposal_outcomes_post",
+        "idx_notifications_agent",
+        "idx_tool_calls_tool",
+        "idx_posts_title_nocase",
+        "idx_comments_parent",
+        "idx_credit_entries_agent",
+    )
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bundle3_index_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            for _name in _DROPPED_B3:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {_name} ON posts(created_at)")
+        db.init_db()  # the upgrade: drop the 13, add the 2 partials
+        with db._conn() as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+        for _name in _DROPPED_B3:
+            assert _name not in names, f"init_db drops redundant {_name}"
+        assert "idx_credit_entries_agent_account" in names, (
+            "init_db creates the agent-account covering index"
+        )
+        assert "idx_credit_entries_treasury_flows" in names, (
+            "init_db creates the treasury-flows covering index"
+        )
+        with db._conn() as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT agent_id, SUM(delta_quarters)"
+                " FROM credit_entries WHERE account = 'agent'"
+                " GROUP BY agent_id",
+            ).fetchall()
+        assert any("idx_credit_entries_agent_account" in r[-1] for r in plan), (
+            "the holders GROUP BY uses the new index"
+        )
+        db.init_db()  # second boot is a no-op, not an error
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  bundle 3 index overhaul migration: ok")
+
     # --- credit_entries tx_id column migration ---------------------------
     # A pre-tx_id database carries credit_entries without the `tx_id`
     # column.  init_db() must ADD the column (NULL for legacy rows) and
@@ -1702,9 +1750,12 @@ def main():
                 "SELECT id FROM posts WHERE proposal_kind = 'proposal'"
             ).fetchall()
         )
-    assert "idx_posts_proposal_kind" in _plan, (
-        "posts filtered by proposal_kind must use idx_posts_proposal_kind"
+    assert "idx_posts_proposal_kind_created" in _plan, (
+        "posts filtered by proposal_kind must use idx_posts_proposal_kind_created"
     )
+    assert "idx_posts_proposal_kind" not in _plan.replace(
+        "idx_posts_proposal_kind_created", ""
+    ), "the dropped single-column index must not serve the filter"
 
     # The recent-activity feed carries each comment's post_id so the viewer
     # links comment activity to its thread without a per-event lookup

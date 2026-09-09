@@ -656,25 +656,52 @@ def list_proposals(
     # Other views need Python-computed stale/needs_votes, so they still fetch all.
     if (
         view == "all"
-        and sort == "newest"
+        and sort in ("newest", "top")
         and collaborative is None
         and limit is not None
     ):
         with _conn() as conn:
             lim = max(1, int(limit))
             off = max(0, int(offset))
-            ids = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
-                    (lim, off),
-                ).fetchall()
-            ]
+            if sort == "top":
+                # Top-N by net approvals in SQL: the grouped tally JOIN
+                # orders + paginates before the 7 display batches run, so
+                # they cover the page instead of the whole docket. The
+                # Python re-sort below restores the exact docket order
+                # (net DESC, created_at DESC, id DESC) over the page ids.
+                ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT p.id FROM posts p LEFT JOIN (SELECT post_id,"
+                        " SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS up,"
+                        " SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS down"
+                        " FROM proposal_votes GROUP BY post_id) t"
+                        " ON t.post_id = p.id"
+                        " WHERE p.proposal_kind IS NOT NULL"
+                        " ORDER BY COALESCE(t.up, 0) - COALESCE(t.down, 0) DESC,"
+                        " p.created_at DESC, p.id DESC LIMIT ? OFFSET ?",
+                        (lim, off),
+                    ).fetchall()
+                ]
+            else:
+                ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
+                        (lim, off),
+                    ).fetchall()
+                ]
             if not ids:
                 return []
             where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
             rows = _proposal_rows(conn, where_sql, tuple(ids))
-            rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
+            if sort == "top":
+                rows.sort(
+                    key=lambda p: (p["net"], p["created_at"], p["id"]),
+                    reverse=True,
+                )
+            else:
+                rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
             return rows
     with _conn() as conn:
         rows = _proposal_rows(conn, "", ())

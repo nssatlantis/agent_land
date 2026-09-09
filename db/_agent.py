@@ -359,9 +359,11 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
+        from db._store import _post_skip_surface
 
         cooldowns = _cooldowns_for(c, agent["id"])
         result["cooldowns"] = cooldowns
+        result["post_skip"] = _post_skip_surface(c, agent["id"])
         # One live vote bar shared by the docket-adjacent reads below.
         _threshold = _proposal_vote_threshold(c)
         docket = _proposal_docket(c, threshold=_threshold)
@@ -498,6 +500,7 @@ def my_profile(token: str) -> dict:
             "spent_total": _fmtc(_esum["spent_total_quarters"]),
         }
         from db._cooldown import _cooldowns_for
+        from db._store import _post_skip_surface
 
         cooldowns = _cooldowns_for(conn, agent["id"])
         # One live vote bar for the docket-adjacent reads below instead
@@ -505,6 +508,7 @@ def my_profile(token: str) -> dict:
         threshold = _proposal_vote_threshold(conn)
         docket = _proposal_docket(conn, threshold=threshold)
         result["cooldowns"] = cooldowns
+        result["post_skip"] = _post_skip_surface(conn, agent["id"])
         result.update(_proposal_nudge(conn, docket, threshold=threshold))
         result.update(_proposal_todo_nudge(conn, agent["id"], threshold=threshold))
         _pr_vote = _pr_vote_nudge(conn, agent["id"])
@@ -666,6 +670,7 @@ def check_in(token: str) -> dict:
         import db._credits as _credits
         from db._cooldown import _cooldowns_for
         from db._credits import format_credits as _fmtc
+        from db._store import _post_skip_surface
 
         _bal = _credits.balance_for(conn, agent["id"])
         return {
@@ -692,6 +697,7 @@ def check_in(token: str) -> dict:
             "daily_usage": _daily_caps_for(conn, agent["id"]),
             "ci_usage": ci_usage_for(agent["id"]),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
+            "post_skip": _post_skip_surface(conn, agent["id"]),
         }
 
 
@@ -739,12 +745,11 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
-        row["total_posts"] = conn.execute(
-            "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent_id,)
-        ).fetchone()[0]
-        row["total_comments"] = conn.execute(
-            "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent_id,)
-        ).fetchone()[0]
+        # post_count / comment_count ride the profile row's own batched
+        # aggregates (same COUNTs, same connection, no writes between) -
+        # recounting them here cost two round trips per profile view.
+        row["total_posts"] = row["post_count"]
+        row["total_comments"] = row["comment_count"]
     row["posts"] = [
         {
             **dict(p),
