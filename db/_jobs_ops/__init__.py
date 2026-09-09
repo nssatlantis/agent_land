@@ -61,6 +61,7 @@ from ._helpers import (  # noqa: F401
     _all_prs_merged,
     _cycle_is_overdue,
     _fmt_q,
+    _job_anchors_for,
     _job_overdue_anchor_sql,
     _overdue_flag,
     _overdue_windows_elapsed,
