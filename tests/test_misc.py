@@ -956,7 +956,6 @@ def main():
         "idx_todo_lists_post",
         "idx_todo_items_list",
         "idx_posts_delegate_kind_created",
-        "idx_events_kind_created",
         "idx_events_job_anchor",
         "idx_jobs_offered_to",
         "idx_reports_target_status",
@@ -1498,14 +1497,59 @@ def main():
         assert "idx_events_kind_target" not in names, (
             "init_db drops the redundant 3-col events index"
         )
-        assert "idx_events_kind_target_created" in names, (
-            "init_db keeps the covering events index"
+        assert "idx_events_kind_target_created" not in names, (
+            "the events index prune also stops declaring the old covering index"
+        )
+        assert "idx_events_kind_created_id" in names, (
+            "init_db keeps the events query index"
         )
         # Idempotent second boot: the drop is a no-op on an already-clean DB.
         db.init_db()
     finally:
         db.DB_PATH = saved_db_path
     print("  events legacy-index drop migration: ok")
+
+    # --- migration: events index prune (down to the lean 4-index set) ------
+    # schema.sql stopped declaring idx_events_kind / idx_events_kind_created
+    # / idx_events_kind_target_created (all redundant with the covering
+    # idx_events_kind_created_id), but an upgraded database still carries them
+    # until boot drops them. Seed all three and require one init_db() to
+    # remove them while keeping the covering index.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "events_index_prune_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            for create in (
+                "CREATE INDEX idx_events_kind ON events(kind)",
+                "CREATE INDEX idx_events_kind_created ON events(kind, created_at)",
+                "CREATE INDEX idx_events_kind_target_created"
+                " ON events(kind, target_type, target_id, created_at)",
+            ):
+                conn.execute(create)
+        db.init_db()  # the upgrade: prune to the lean set
+        with db._conn() as conn:
+            names = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    " AND name LIKE 'idx_events_%'"
+                )
+            }
+        for dropped in (
+            "idx_events_kind",
+            "idx_events_kind_created",
+            "idx_events_kind_target_created",
+        ):
+            assert dropped not in names, f"init_db drops {dropped}"
+        assert "idx_events_kind_created_id" in names, (
+            "init_db keeps the covering events index"
+        )
+        # Idempotent second boot: the drops are no-ops on an already-clean DB.
+        db.init_db()
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  events index-prune migration: ok")
 
     # --- migration: job-anchor index add + target drop, offered_to add ----
     # A pre-bundle database carries the subsumed idx_events_target and
