@@ -141,7 +141,8 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
   green surface GitHub CI's two jobs enforce
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
   over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
-  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`). Waits for an idle pool
+  volume, noise-aware 20%+2σ gate vs the blessed anchor, injected per run).
+  Waits for an idle pool
   first (FORUM_BENCH_QUIET_ONLY, bounded wait, then proceeds labeled; `quiet=False` skips);
   live downscales skip a running bench and any overlap flips `contended`.
 
