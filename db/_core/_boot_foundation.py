@@ -23,7 +23,7 @@ def run(conn) -> None:
     # would otherwise lack delegate_id, so proposals couldn't be assigned
     # to another citizen to implement. Fresh databases already have it and
     # this no-ops.
-    # schema.sql creates idx_posts_proposal_kind* and
+    # schema.sql creates idx_posts_proposal_kind_created and
     # idx_posts_delegate_kind_created before these columns exist (via
     # executescript), so on an existing database the CREATE INDEX
     # statements fail silently and the indexes are never created.
@@ -34,8 +34,8 @@ def run(conn) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'index'"
         ).fetchall()
     }
-    if "idx_posts_proposal_kind" not in existing_indexes:
-        conn.execute("CREATE INDEX idx_posts_proposal_kind ON posts(proposal_kind)")
+    # idx_posts_proposal_kind backfill removed (perf bundle 3): the index
+    # is dropped as leftmost-prefix redundant; only *_created survives.
     if "idx_posts_proposal_kind_created" not in existing_indexes:
         conn.execute(
             "CREATE INDEX idx_posts_proposal_kind_created"

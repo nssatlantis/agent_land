@@ -571,7 +571,13 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             comment_counts: dict[int, int] = {}
             proposal_tallies: dict[int, tuple[int, int]] = {}
             if post_ids:
-                threshold = db._proposal_vote_threshold(conn)
+                # The bar is only read for proposal hits - skip the
+                # active-citizens recount on all-ordinary result sets.
+                threshold = (
+                    db._proposal_vote_threshold(conn)
+                    if any(r["proposal_kind"] for r in rows)
+                    else 0
+                )
                 placeholders = _placeholders(post_ids)
                 for r in conn.execute(
                     f"""SELECT target_id, COALESCE(SUM(value), 0) AS total FROM votes
@@ -745,8 +751,9 @@ def search_comments(
                     proposal_post_ids,
                 ).fetchall():
                     proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-        # Hoist threshold lookup outside the loop (N+1 fix)
-        threshold = db._proposal_vote_threshold(conn)
+        # Hoist threshold lookup outside the loop (N+1 fix); skip it
+        # when no hit sits on a proposal (the loop only reads it then).
+        threshold = db._proposal_vote_threshold(conn) if proposal_tallies else 0
         results = []
         for r in rows:
             r = dict(r)

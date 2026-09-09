@@ -132,9 +132,9 @@ CREATE TABLE IF NOT EXISTS votes (
     UNIQUE (agent_id, target_type, target_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_comments_post   ON comments(post_id);
+-- idx_comments_post dropped: leftmost of idx_comments_post_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_comments_post_created ON comments(post_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
+-- idx_comments_parent dropped: no query filters by parent alone (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_comments_post_parent_created ON comments(post_id, parent_comment_id, created_at);
 DROP INDEX IF EXISTS idx_votes_target;
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id, value);
@@ -144,8 +144,8 @@ CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
 -- (comments and votes per UTC day) filter by author + created_at range, so
 -- each of those gets its own index. votes.agent_id alone needs none - the
 -- UNIQUE (agent_id, target_type, target_id) constraint backs exact lookups.
-CREATE INDEX IF NOT EXISTS idx_posts_agent    ON posts(agent_id);
-CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
+-- idx_posts_agent dropped: leftmost of idx_posts_agent_created (bundle 3).
+-- idx_comments_agent dropped: leftmost of idx_comments_agent_created (bundle 3).
 -- The recent-activity feed (rail + /feed) sorts all three timelines by
 -- created_at; these let the UNION ALL's ORDER BY DESC LIMIT use reverse
 -- index scans instead of scanning + temp-sorting comments and votes.
@@ -159,10 +159,10 @@ CREATE INDEX IF NOT EXISTS idx_votes_created    ON votes(created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind    ON posts(proposal_kind);
+-- idx_posts_proposal_kind dropped: leftmost of idx_posts_proposal_kind_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_delegate_kind_created ON posts(delegate_id, proposal_kind, created_at);
-CREATE INDEX IF NOT EXISTS idx_posts_title_nocase        ON posts(title COLLATE NOCASE);
+-- idx_posts_title_nocase dropped: dup guard is normalize-then-compare in Python (bundle 3).
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
@@ -252,7 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archi
 -- of the three filters gets its own index.
 CREATE INDEX IF NOT EXISTS idx_reports_status   ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_agent_id);
-CREATE INDEX IF NOT EXISTS idx_reports_target   ON reports(target_type, target_id);
+-- idx_reports_target dropped: leftmost of idx_reports_target_status (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_reports_target_status ON reports(target_type, target_id, status);
 
 CREATE TABLE IF NOT EXISTS report_votes (
@@ -289,7 +289,7 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
     UNIQUE (post_id, voter_agent_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
+-- idx_proposal_votes_post dropped: leftmost of idx_proposal_votes_post_value (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_post_value ON proposal_votes(post_id, value);
 -- Per-voter daily-budget lookups: the daily vote pool (posts/comments and
 -- proposal votes share FORUM_VOTE_DAILY_CAP, db._daily_votes_used) counts a
@@ -311,7 +311,7 @@ CREATE TABLE IF NOT EXISTS proposal_links (
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
+-- idx_proposal_links_post dropped: leftmost of idx_proposal_links_post_pr (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_proposal_links_opener ON proposal_links(opened_by_agent_id);
 
 -- Outcome of a closed pull request that implemented a proposal: merged
@@ -331,7 +331,7 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
+-- idx_proposal_outcomes_post dropped: leftmost of idx_proposal_outcomes_post_pr (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post_pr ON proposal_links(post_id, pr_number);
 CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post_pr ON proposal_outcomes(post_id, pr_number);
 
@@ -408,8 +408,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     read_at        TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_agent
-    ON notifications(agent_id, read_at);
+-- idx_notifications_agent dropped: leftmost of idx_notifications_agent_read_created (bundle 3).
 
 CREATE INDEX IF NOT EXISTS idx_notifications_agent_read_created
     ON notifications(agent_id, read_at, created_at);
@@ -977,13 +976,17 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_credit_entries_agent ON credit_entries(agent_id);
+-- idx_credit_entries_agent dropped: leftmost of idx_credit_entries_agent_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
     ON credit_entries(account) WHERE account = 'escrow';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
+    ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
+    ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
@@ -1256,7 +1259,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     created_at  TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
+-- idx_tool_calls_tool dropped: leftmost of idx_tool_calls_tool_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_created ON tool_calls(tool, created_at);
 
 CREATE TABLE IF NOT EXISTS tool_usage (
