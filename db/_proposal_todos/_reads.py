@@ -62,10 +62,17 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
         list_ids,
     ).fetchall()
+    from ._flags import _flags_for_items
+
+    flag_map = _flags_for_items(conn, [it["id"] for it in items])
     by_list: dict[int, list[dict]] = {}
     for it in items:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
         entry["pr_number"] = it["pr_number"]
+        flags = flag_map.get(it["id"], [])
+        entry["flag_count"] = len(flags)
+        if flags:
+            entry["flag_reasons"] = flags
         if mode != 1 and it["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = it["claimed_by_name"]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
@@ -131,6 +138,9 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             f" ORDER BY ti.list_id, ti.position, ti.id",
             [r["id"] for r in lists],
         ).fetchall()
+        from ._flags import _flags_for_items
+
+        flag_map = _flags_for_items(conn, [it["id"] for it in items])
         by_list: dict[int, list[dict]] = {}
         modes_by_list: dict[int, int] = {
             r["id"]: modes.get(r["post_id"], 0) for r in lists
@@ -138,6 +148,10 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         for it in items:
             entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
             entry["pr_number"] = it["pr_number"]
+            flags = flag_map.get(it["id"], [])
+            entry["flag_count"] = len(flags)
+            if flags:
+                entry["flag_reasons"] = flags
             if (
                 modes_by_list.get(it["list_id"]) != 1
                 and it["claimed_by_agent_id"] is not None
@@ -477,10 +491,17 @@ def get_todos_list(
             f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
             (list_id, limit, offset),
         ).fetchall()
+        from ._flags import _flags_for_items
+
+        flag_map = _flags_for_items(conn, [it["id"] for it in item_rows])
     items: list[dict] = []
     for it in item_rows:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
         entry["pr_number"] = it["pr_number"]
+        flags = flag_map.get(it["id"], [])
+        entry["flag_count"] = len(flags)
+        if flags:
+            entry["flag_reasons"] = flags
         if mode != 1 and it["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = it["claimed_by_name"]
             entry["claimed_by_color"] = it["claimed_by_name_color"]
