@@ -43,7 +43,11 @@ def _first_failure(checks: dict) -> str:
     return str(first).strip()
 
 
-def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[int]:
+def _ci_failure_sweep(
+    open_prs: list[dict],
+    checks_fn=github.pr_checks,
+    checks_cache: dict[int, dict] | None = None,
+) -> list[int]:
     """Nudge each open PR's citizen owner once per new failing head commit.
 
     CI state lives on GitHub, so the mailbox would never learn about it on
@@ -58,7 +62,11 @@ def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[
     and a state row is written only when the observation actually changes -
     an unchanged sweep performs no write, and no connection is ever held
     open across the checks call. `checks_fn` is injectable so tests need
-    no GitHub. Returns the pr numbers nudged."""
+    no GitHub. `checks_cache` is an optional shared per-tick dict: numbers
+    already present are reused and fresh results are stored back, so the
+    poller's three checks consumers fan out one pool per tick instead of
+    three (None keeps today's standalone behavior). Returns the pr
+    numbers nudged."""
     openers = db.linked_pr_openers()
     owners = {
         pr["number"]: (openers.get(pr["number"]) or pr.get("citizen"))
@@ -77,13 +85,18 @@ def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[
             state = {r["pr_number"]: (r["head_sha"], r["red_notified"]) for r in rows}
     checks_results: dict[int, dict] = {}
     owned_prs = [pr for pr in open_prs if owners.get(pr["number"])]
-    if owned_prs:
-        with ThreadPoolExecutor(max_workers=min(8, len(owned_prs))) as pool:
+    if checks_cache is not None:
+        for pr in owned_prs:
+            if pr["number"] in checks_cache:
+                checks_results[pr["number"]] = checks_cache[pr["number"]]
+    missing = [pr for pr in owned_prs if pr["number"] not in checks_results]
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
             futures = {
                 pool.submit(
                     checks_fn, pr["number"], _head_sha=pr.get("head_sha") or None
                 ): pr["number"]
-                for pr in owned_prs
+                for pr in missing
             }
             for future in as_completed(futures):
                 pr_num = futures[future]
@@ -93,6 +106,8 @@ def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[
                     logutil.log(
                         "ci_check_batch_error", pr_number=pr_num, error=str(exc)
                     )  # per-PR GitHub failure must not block others
+    if checks_cache is not None:
+        checks_cache.update(checks_results)
     notified: list[int] = []
     for pr in open_prs:
         opener = owners.get(pr["number"])
@@ -180,11 +195,34 @@ def sweep_pr_comments(
             ).fetchall()
             seen = {r["pr_number"]: r["last_comment_id"] for r in rows}
     notified: list[int] = []
-    for pr, opener in (
-        (p, owners[p["number"]]) for p in open_prs if owners.get(p["number"])
-    ):
+    targets = [(p, owners[p["number"]]) for p in open_prs if owners.get(p["number"])]
+    # Fetch phase, pooled: one GitHub round trip per owned PR runs
+    # concurrently (was strictly sequential). Watermark/process phase
+    # below stays sequential so exactly-once accounting is unchanged;
+    # a failed fetch is logged here and skipped there (already logged,
+    # never retried in the same tick).
+    fetched: dict[int, list] = {}
+    if targets:
+        with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+            futures = {
+                pool.submit(comments_fn, pr["number"]): pr["number"]
+                for pr, _ in targets
+            }
+            for fut in as_completed(futures):
+                num = futures[fut]
+                try:
+                    fetched[num] = fut.result() or []
+                except Exception as exc:  # domain: degrade-silently - one PR's comment fetch failing must not block the batch
+                    logutil.log(
+                        "pr_comments_sweep_failed",
+                        pr_number=num,
+                        error=str(exc),
+                    )
+    for pr, opener in targets:
+        if pr["number"] not in fetched:
+            continue  # fetch failed above; retried on the next sweep
         try:
-            comments = comments_fn(pr["number"])
+            comments = fetched[pr["number"]]
             if not comments:
                 continue
             max_id = max(c["id"] for c in comments)
@@ -254,7 +292,9 @@ def sweep_pr_comments(
 
 
 def _workflow_ci_green_sweep(
-    open_prs: list[dict], checks_fn=github.pr_checks
+    open_prs: list[dict],
+    checks_fn=github.pr_checks,
+    checks_cache: dict[int, dict] | None = None,
 ) -> list[int]:
     """Auto-complete bound open workflow runs whose in-flight PR is CI-green
     (per-PR lifecycle, part 2 — status 'completed', notified as kind
@@ -269,7 +309,9 @@ def _workflow_ci_green_sweep(
     bad check fetch or db write never blocks the rest of the batch, and the
     sweep is idempotent (completed runs are not 'open', so a retry finds
     nothing and re-notifies nobody). `checks_fn` is injectable so tests need
-    no GitHub. Returns the pr numbers completed."""
+    no GitHub. `checks_cache` shares one per-tick fetch pool with the other
+    checks consumers (see _ci_failure_sweep); None keeps standalone
+    behavior. Returns the pr numbers completed."""
     try:
         if int(config.WORKFLOW_CLOSE_ON_CI_GREEN) <= 0:
             return []
@@ -284,16 +326,26 @@ def _workflow_ci_green_sweep(
     if not bound_prs:
         return []
     checks_results: dict[int, dict] = {}
-    with ThreadPoolExecutor(max_workers=min(8, len(bound_prs))) as pool:
-        futures = {pool.submit(checks_fn, num): num for num in bound_prs}
-        for future in as_completed(futures):
-            pr_num = futures[future]
-            try:
-                checks_results[pr_num] = future.result()
-            except Exception as exc:  # domain: degrade-silently - one PR's check fetch failing must not block the batch
-                logutil.log(
-                    "ci_check_batch_error", pr_number=pr_num, error=str(exc)
-                )  # per-PR GitHub failure must not block others
+    missing = [
+        num for num in bound_prs if checks_cache is None or num not in checks_cache
+    ]
+    if checks_cache is not None:
+        for num in bound_prs:
+            if num in checks_cache:
+                checks_results[num] = checks_cache[num]
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+            futures = {pool.submit(checks_fn, num): num for num in missing}
+            for future in as_completed(futures):
+                pr_num = futures[future]
+                try:
+                    checks_results[pr_num] = future.result()
+                except Exception as exc:  # domain: degrade-silently - one PR's check fetch failing must not block the batch
+                    logutil.log(
+                        "ci_check_batch_error", pr_number=pr_num, error=str(exc)
+                    )  # per-PR GitHub failure must not block others
+    if checks_cache is not None:
+        checks_cache.update(checks_results)
     green = [
         num
         for num in bound_prs
@@ -364,7 +416,9 @@ async def _ci_failure_poller() -> None:
 
     Merged with the vote poller (proposal #111 audit item 2375):
     fetches open_prs once per interval and passes it to the CI-failure,
-    workflow CI-green and vote sweeps, halving GitHub API traffic.
+    workflow CI-green and vote sweeps, halving GitHub API traffic. One
+    shared checks_cache dict rides the same three calls so overlapping
+    PR sets fetch tiered checks once per tick instead of three times.
     Fast 30s poll for CI (local-first) + debounced direct trigger from
     repo_propose_change/repo_update_pr (15s coalesce) ensures host runs
     once for the final head while GitHub runs every intermediate."""
@@ -377,9 +431,16 @@ async def _ci_failure_poller() -> None:
         )
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
-            await asyncio.to_thread(_ci_failure_sweep, open_prs)
-            await asyncio.to_thread(_workflow_ci_green_sweep, open_prs)
-            sweep_actions = await asyncio.to_thread(_pr_vote_sweep, open_prs)
+            checks_cache: dict[int, dict] = {}
+            await asyncio.to_thread(
+                _ci_failure_sweep, open_prs, checks_cache=checks_cache
+            )
+            await asyncio.to_thread(
+                _workflow_ci_green_sweep, open_prs, checks_cache=checks_cache
+            )
+            sweep_actions = await asyncio.to_thread(
+                _pr_vote_sweep, open_prs, checks_cache=checks_cache
+            )
             await asyncio.to_thread(sweep_pr_comments, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
             await asyncio.to_thread(_maybe_checkpoint_economy)

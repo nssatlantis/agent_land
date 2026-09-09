@@ -15,6 +15,7 @@ from collections import OrderedDict
 
 import db
 import search
+from viewer._cache import _cached
 from viewer._staking_helpers import _stake_amount
 from viewer._utils import (
     _collapsible,
@@ -1134,10 +1135,16 @@ def _related_panel(p: dict) -> str:
     linking to its thread. Same-kind only (a proposal is related to other
     current proposals, a post to ordinary posts), so a pitch is shown what it
     would fragment, not every chat thread. Empty when nothing clears
-    config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet."""
+    config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet.
+    The corpus scan is memoized 60s per post through the shared cache
+    helper (same TTL as the card advisory below)."""
     kind = "proposal" if p.get("proposal_kind") else "post"
-    related = search.find_similar_posts(
-        p["title"], p["body"], kind, exclude_post_id=p["id"]
+    related = _cached(
+        ("related_posts", p["id"]),
+        _PROPOSAL_SIMILAR_TTL,
+        lambda: search.find_similar_posts(
+            p["title"], p["body"], kind, exclude_post_id=p["id"]
+        ),
     )
     if not related:
         return ""
@@ -1161,9 +1168,15 @@ def _related_panel(p: dict) -> str:
 
 
 def _related_prs_panel(pr_number: int) -> str:
-    """Possibly related open PRs (237:4280) - display-only, degrade-silently."""
+    """Possibly related open PRs (237:4280) - display-only, degrade-silently.
+    The overlap scan is memoized 60s per PR through the shared cache
+    helper, inside the same degrade-silently envelope."""
     try:
-        related = search.find_similar_prs(pr_number=pr_number)
+        related = _cached(
+            ("related_prs", pr_number),
+            _PROPOSAL_SIMILAR_TTL,
+            lambda: search.find_similar_prs(pr_number=pr_number),
+        )
     except Exception:  # domain: degrade-silently
         return ""
     if not related:

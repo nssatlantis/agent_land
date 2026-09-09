@@ -215,6 +215,25 @@ def main():
         "the pager counts only posts carrying the tag"
     )
     assert db.post_tag_count("nope") == 0, "an unknown tag counts 0"
+    # kind-filtered counts agree with the lister on every kind, so the
+    # /posts?tag=&kind= pager can trust the single COUNT (all tagged
+    # fixtures here are ordinary posts).
+    for _kind, _want in (
+        (None, 1),
+        ("all", 1),
+        ("none", 1),
+        ("proposal", 0),
+        ("small_fix", 0),
+    ):
+        assert db.post_tag_count("alpha", _kind) == _want, (_kind, _want)
+    for _kind, _want in ((None, 1), ("none", 1), ("proposal", 0)):
+        _kw = {} if _kind is None else {"proposal_kind": _kind}
+        assert len(db.list_posts(tag="alpha", limit=100, **_kw)) == _want, (
+            f"count matches the lister for kind={_kind}",
+        )
+    assert "proposal_kind must be" in expect_error(
+        db.post_tag_count, "alpha", "bogus"
+    ), "an unknown kind is refused like list_posts"
 
     # --- adoption metadata on list_tags (small fix #196) -------------------
     # A second applier on another author's post: beta now has two

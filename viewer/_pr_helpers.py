@@ -10,6 +10,7 @@ HTML builders - no route handlers.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -435,17 +436,19 @@ def _prs_votes_cell(
     return base
 
 
-def _prs_hold_chip(r: dict, state: str) -> str:
+def _prs_hold_chip(r: dict, state: str, pid_map: dict[int, int] | None = None) -> str:
     """An amber 'hold' chip for an open PR waiting on its linked
     proposal's community vote - the #PR375 proposal-hold flow, where PR
     voting and outside review stay locked until the vote clears. Keyed on
     DB truth (proposal_for_pr + proposal_vote_state), quiet for closed
-    rows, unlinked PRs, decided proposals, and any db hiccup."""
+    rows, unlinked PRs, decided proposals, and any db hiccup. `pid_map`
+    is a pre-fetched {pr_number: post_id} batch (one query per render);
+    without it the chip falls back to a per-row lookup."""
     if state != "open":
         return ""
     try:
         num = int(r.get("number") or 0)
-        pid = db.proposal_for_pr(num)
+        pid = pid_map.get(num) if pid_map is not None else db.proposal_for_pr(num)
         if not pid or db.proposal_vote_state(pid).get("approved"):
             return ""
     except Exception:
@@ -524,6 +527,25 @@ def _prs_rows_html(
         )  # domain: degrade-silently handled per-row fallback
     except Exception:  # domain: degrade-silently - fall back to per-row fetch
         _tallies = {}
+    # batch hold-chip proposal links once for the whole table — unlinked
+    # rows then cost zero queries (vote_state runs only for linked PRs)
+    _pid_map: dict[int, int] | None = None
+    if state == "open":
+        try:
+            _pid_map = db.linked_pr_proposals()
+        except Exception:  # domain: degrade-silently - per-row fallback below
+            _pid_map = None
+    # batch title linkify: one comment-free get_posts for every distinct
+    # #P42 ref on the page instead of a full get_post per match
+    try:
+        _ref_pids = sorted(
+            {int(m) for r in rows for m in re.findall(r"#P(\d+)", r.get("title") or "")}
+        )
+        _title_map: dict = (
+            db.get_posts(_ref_pids, include_comments=False) if _ref_pids else {}
+        )
+    except Exception:  # domain: degrade-silently - linkify falls back per row
+        _title_map = {}
     trs = []
     ts_field = "updated_at" if state != "open" else "created_at"
     for r in rows:
@@ -531,12 +553,13 @@ def _prs_rows_html(
         title = esc(r.get("title") or "")
         # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
         try:
-            import re
 
             def _ref_repl(m):
                 pid = m.group(1)
                 try:
-                    p = db.get_post(int(pid))
+                    p = _title_map.get(int(pid))
+                    if not isinstance(p, dict):
+                        return esc(m.group(0))
                     pt = esc(p.get("title") or pid)
                     return (
                         f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
@@ -576,7 +599,7 @@ def _prs_rows_html(
             f"<td>{_prs_citizen_cell(r)}</td>"
             f"<td>{votes_cell}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
-            f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state)}</td>"
+            f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state, _pid_map)}</td>"
             f"<td>{ci_html}</td>"
             "</tr>"
         )

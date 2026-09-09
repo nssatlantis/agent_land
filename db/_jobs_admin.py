@@ -811,6 +811,13 @@ def send_job_digests() -> int:
         "%Y-%m-%dT%H:%M:%S.%f"
     )[:-3] + "Z"
     with _conn() as conn:
+        if (
+            conn.execute(
+                "SELECT 1 FROM jobs WHERE status IN ('offered', 'active') LIMIT 1"
+            ).fetchone()
+            is None
+        ):
+            return 0
         agents = conn.execute(
             "SELECT id, banned, suspended_until FROM agents"
             " WHERE NOT banned AND (suspended_until IS NULL"
@@ -818,9 +825,6 @@ def send_job_digests() -> int:
         ).fetchall()
         for ag in agents:
             try:
-                actions = _outstanding_actions(conn, ag["id"])
-                if not actions:
-                    continue
                 newest = conn.execute(
                     "SELECT created_at FROM notifications"
                     " WHERE agent_id = ? AND kind = 'jobs'"
@@ -831,6 +835,9 @@ def send_job_digests() -> int:
                 if newest is not None:
                     if _parse_iso(newest[0]) > _parse_iso(day_ago):
                         continue
+                actions = _outstanding_actions(conn, ag["id"])
+                if not actions:
+                    continue
                 body = (
                     "Job digest - the market waits on you: "
                     + "; ".join(actions[:5])

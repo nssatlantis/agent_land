@@ -19,6 +19,7 @@ from starlette.responses import HTMLResponse
 import config
 import db
 import github
+from viewer._cache import _acached
 from viewer._feed_helpers import _crumb, _pager, _with_rail
 from viewer._layout import _page
 from viewer._pr_helpers import (
@@ -194,7 +195,18 @@ async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
 
     async def _one(n: int):
         async with _sem:
-            return await asyncio.to_thread(github.pr_checks, n)
+            # Shared-helper TTL: repeat /prs hits within PR_CACHE_SECONDS
+            # reuse the tiered builder instead of re-fanning GitHub.
+            # Failures still resolve None (chip dropped), never cached
+            # as an exception - _acached only stores returned values.
+            try:
+                return await _acached(
+                    ("pr_checks", n),
+                    config.PR_CACHE_SECONDS,
+                    lambda: asyncio.to_thread(github.pr_checks, n),
+                )
+            except Exception:
+                return None
 
     results = await asyncio.gather(
         *[_one(n) for n in nums],
