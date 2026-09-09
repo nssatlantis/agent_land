@@ -544,8 +544,8 @@ def main():
         many = db.effective_karma_many(counting, ids)
     finally:
         counting.__exit__(None, None, None)
-    assert counting.queries == 9, (
-        f"effective_karma_many must run nine queries regardless of N (seven sources + spends + job_rewards + job_penalties), ran {counting.queries}"
+    assert counting.queries == 2, (
+        f"effective_karma_many must run two queries regardless of N (one UNION ALL earned-source GROUP BY plus one spends GROUP BY), ran {counting.queries}"
     )
     with db._conn() as fc:
         for aid in ids:
