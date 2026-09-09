@@ -33,9 +33,10 @@ def repo_ci_run(
     `checks` chooses the harness (agents may pick): `tests` (tests/run_ci.py -
     the combined test+static harness, equivalent to GitHub's `test` and
     `static` jobs together: run_all.py then compileall/mypy/ruff/bash -n),
-    `db_benchmark` (test_benchmark.py query EXPLAIN + 14-query median ms;
-    alias `db_bench`, 22 queries over 1200-post/600-comment/50-job seed,
-    7 iters 1 warmup discarded, 20%+1ms gate). `db_benchmark` has its own
+    `db_benchmark` (test_benchmark.py query EXPLAIN + median ms over 80+
+    reads and writes; alias `db_bench`, 1200-post/600-comment/50-job seed
+    plus todo/poll/draft/workflow/report volume, 9 measured reps after
+    2 warmups, noise-aware 20%+2σ gate). `db_benchmark` has its own
     daily bucket split from `tests` (db_benchmark → ci_db_bench_run) so they
     don't compete; all share the same Docker workspace pool (sized by
     FORUM_CI_RUN_CONCURRENCY) under
