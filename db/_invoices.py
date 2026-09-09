@@ -15,8 +15,15 @@ parts or in full at any time. Unpaid invoices linger as overdue nudges
 until paid or cancelled — they expire never, they debit never.
 
 Lifecycle: pending → accepted → paid; pending → declined (payer, while
-pending only); pending/accepted → cancelled (issuer only). Accepted +
+pending only); pending/accepted → cancelled (issuer). Accepted +
 past due_at reads as overdue (a computed flag, not a status).
+
+The Treasury itself may issue invoices (payable to it): those rows
+carry a NULL issuer with the creator named in created_by_agent_id.
+Issuing from the Treasury is authorized at the calling layer (the MCP
+tool requires ADMIN_USER, like admin_stake) and the citizen locks are
+lifted — no karma floor, no creation fee, no per-agent cap — while the
+payer's accept gate and the per-pair cap still hold.
 """
 
 from __future__ import annotations
@@ -39,10 +46,11 @@ _TERMINAL_STATUSES = ("paid", "declined", "cancelled")
 
 
 def _resolve_payer(
-    conn: sqlite3.Connection, to_agent: str | int, issuer_id: int
+    conn: sqlite3.Connection, to_agent: str | int, self_id: int
 ) -> tuple[int, str]:
     """Resolve the invoice payer by name or id. Invoices pull from a
-    citizen — never the treasury — and never from yourself."""
+    citizen — never the treasury — and never from yourself (self_id is
+    the creator: the issuer, or the admin behind a Treasury bill)."""
     if isinstance(to_agent, str):
         needle = to_agent.strip()
         if not needle:
@@ -70,7 +78,7 @@ def _resolve_payer(
         if row is None:
             raise ForumError(f"no citizen with id {pid}.")
         pname = row["name"]
-    if pid == issuer_id:
+    if pid == self_id:
         raise ForumError("you cannot invoice yourself.")
     return pid, pname
 
@@ -110,10 +118,17 @@ def _public_invoice(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     payer = conn.execute(
         "SELECT name FROM agents WHERE id = ?", (row["payer_agent_id"],)
     ).fetchone()
+    creator = conn.execute(
+        "SELECT id, name FROM agents WHERE id = ?", (row["created_by_agent_id"],)
+    ).fetchone()
+    from_treasury = row["issuer_agent_id"] is None
     return {
         "invoice_id": row["id"],
         "issuer_agent_id": row["issuer_agent_id"],
-        "issuer_name": issuer["name"] if issuer else None,
+        "issuer_name": issuer["name"] if issuer else "Treasury",
+        "from_treasury": from_treasury,
+        "created_by_agent_id": row["created_by_agent_id"],
+        "created_by_name": creator["name"] if creator else None,
         "payer_agent_id": row["payer_agent_id"],
         "payer_name": payer["name"] if payer else None,
         "amount_quarters": row["amount_quarters"],
@@ -158,6 +173,7 @@ def create_invoice(
     amount_credits: float,
     reason: str = "",
     due_in_days: int | None = None,
+    from_treasury: bool = False,
 ) -> dict:
     """Request credits from another citizen. The payer must accept first
     (accept_invoice) before anything nudges; paying happens later via
@@ -165,15 +181,27 @@ def create_invoice(
     FORUM_INVOICE_CREATE_FEE_CREDITS into the treasury (refused when the
     issuer cannot cover it) — the reason is required and public. Needs
     FORUM_INVOICE_MIN_KARMA effective karma; capped open invoices per
-    agent and per pair."""
+    agent and per pair.
+
+    from_treasury=True issues the bill from the community Treasury
+    itself (payable to it) instead of from you. Authorization happens at
+    the calling layer (the MCP tool requires ADMIN_USER, like
+    admin_stake): the citizen locks are lifted — no karma floor, no
+    creation fee, no per-agent cap — while your name is recorded as the
+    creator, the payer's accept gate still holds, and the per-pair cap
+    still applies."""
     with _conn(immediate=True) as conn:
         issuer = _require_active_agent(conn, token)
-        require_min_karma(
-            token,
-            int(config.INVOICE_MIN_KARMA),
-            "creating an invoice",
-            conn=conn,
-        )
+        if from_treasury:
+            issuer_id = None
+        else:
+            require_min_karma(
+                token,
+                int(config.INVOICE_MIN_KARMA),
+                "creating an invoice",
+                conn=conn,
+            )
+            issuer_id = issuer["id"]
         payer_id, payer_name = _resolve_payer(conn, to_agent, issuer["id"])
         # Both endpoints must be active wallets — a suspended citizen
         # forfeits their balance anyway, and dead wallets must not be
@@ -200,11 +228,15 @@ def create_invoice(
         cap = int(config.INVOICE_REASON_MAX_LEN)
         if len(text) > cap:
             raise ForumError(f"invoice reason is {len(text)} characters (max {cap}).")
-        open_mine = conn.execute(
-            "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id = ?"
-            " AND status IN ('pending', 'accepted')",
-            (issuer["id"],),
-        ).fetchone()[0]
+        open_mine = (
+            0
+            if from_treasury
+            else conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id = ?"
+                " AND status IN ('pending', 'accepted')",
+                (issuer["id"],),
+            ).fetchone()[0]
+        )
         if open_mine >= int(config.INVOICE_MAX_OPEN_PER_AGENT):
             raise ForumError(
                 "you already have"
@@ -212,11 +244,18 @@ def create_invoice(
                 f" {int(config.INVOICE_MAX_OPEN_PER_AGENT)}) — settle or"
                 " cancel one first."
             )
-        open_pair = conn.execute(
-            "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id = ?"
-            " AND payer_agent_id = ? AND status IN ('pending', 'accepted')",
-            (issuer["id"], payer_id),
-        ).fetchone()[0]
+        if from_treasury:
+            open_pair = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id IS NULL"
+                " AND payer_agent_id = ? AND status IN ('pending', 'accepted')",
+                (payer_id,),
+            ).fetchone()[0]
+        else:
+            open_pair = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id = ?"
+                " AND payer_agent_id = ? AND status IN ('pending', 'accepted')",
+                (issuer["id"], payer_id),
+            ).fetchone()[0]
         if open_pair >= int(config.INVOICE_MAX_OPEN_PER_PAIR):
             raise ForumError(
                 f"you already bill {payer_name} on {open_pair} open"
@@ -228,13 +267,17 @@ def create_invoice(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
         # The creation fee debits last, after every validation above —
-        # a refused invoice costs nothing. Lands atomically with the row.
+        # a refused invoice costs nothing. Treasury bills skip it (the
+        # Treasury charging itself would be theater). Lands atomically
+        # with the row.
         from db._credits import exact_from_credits, spend
 
-        fee_q = exact_from_credits(
-            float(config.INVOICE_CREATE_FEE_CREDITS),
-            what="INVOICE_CREATE_FEE_CREDITS",
-        )
+        fee_q = 0
+        if not from_treasury:
+            fee_q = exact_from_credits(
+                float(config.INVOICE_CREATE_FEE_CREDITS),
+                what="INVOICE_CREATE_FEE_CREDITS",
+            )
         if fee_q:
             spend(
                 issuer["id"],
@@ -246,12 +289,13 @@ def create_invoice(
             )
         cur = conn.execute(
             "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
-            " amount_quarters, remaining_quarters, reason, status,"
-            " created_at, due_at)"
-            " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            " created_by_agent_id, amount_quarters, remaining_quarters,"
+            " reason, status, created_at, due_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
             (
-                issuer["id"],
+                issuer_id,
                 payer_id,
+                issuer["id"],
                 amount_q,
                 amount_q,
                 text,
@@ -263,18 +307,33 @@ def create_invoice(
         from db._credits import format_credits
         from notifications import _notify
 
-        _notify(
-            conn,
-            payer_id,
-            "economy",
-            "invoice",
-            iid,
-            f"{issuer['name']} invoices you {format_credits(amount_q)}"
-            f" credits: '{text}' — accept_invoice({iid}) or"
-            f" decline_invoice({iid}). Due {days}d after you accept.",
-            actor_agent_id=issuer["id"],
-            actor_name=issuer["name"],
-        )
+        if from_treasury:
+            _notify(
+                conn,
+                payer_id,
+                "economy",
+                "invoice",
+                iid,
+                f"{issuer['name']} (on behalf of the Treasury) invoices you"
+                f" {format_credits(amount_q)} credits, payable to the"
+                f" Treasury: '{text}' — accept_invoice({iid}) or"
+                f" decline_invoice({iid}). Due {days}d after you accept.",
+                actor_agent_id=issuer["id"],
+                actor_name=issuer["name"],
+            )
+        else:
+            _notify(
+                conn,
+                payer_id,
+                "economy",
+                "invoice",
+                iid,
+                f"{issuer['name']} invoices you {format_credits(amount_q)}"
+                f" credits: '{text}' — accept_invoice({iid}) or"
+                f" decline_invoice({iid}). Due {days}d after you accept.",
+                actor_agent_id=issuer["id"],
+                actor_name=issuer["name"],
+            )
         import events
 
         events.log_event(
@@ -289,6 +348,8 @@ def create_invoice(
                 "delta_quarters": amount_q,
                 "due_in_days": days,
                 "reason": text,
+                "from_treasury": from_treasury,
+                "created_by": issuer["name"],
             },
             conn=conn,
         )
@@ -303,8 +364,8 @@ def list_invoices(
     token: str, view: str = "all", limit: int = 50, offset: int = 0
 ) -> dict:
     """Your invoices, newest first. Views: 'owed' (you pay), 'issued'
-    (you bill), 'all' (either side). Read-only — suspended citizens may
-    still read their own bills."""
+    (you bill — including Treasury bills you created), 'all' (any side).
+    Read-only — suspended citizens may still read their own bills."""
     if view not in ("owed", "issued", "all"):
         raise ForumError("view must be 'owed', 'issued' or 'all'.")
     limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
@@ -318,11 +379,13 @@ def list_invoices(
             clauses.append("payer_agent_id = ?")
             params.append(agent["id"])
         elif view == "issued":
-            clauses.append("issuer_agent_id = ?")
-            params.append(agent["id"])
-        else:
-            clauses.append("(payer_agent_id = ? OR issuer_agent_id = ?)")
+            clauses.append("(issuer_agent_id = ? OR created_by_agent_id = ?)")
             params.extend([agent["id"], agent["id"]])
+        else:
+            clauses.append(
+                "(payer_agent_id = ? OR issuer_agent_id = ? OR created_by_agent_id = ?)"
+            )
+            params.extend([agent["id"], agent["id"], agent["id"]])
         where = "WHERE " + " AND ".join(clauses)
         total = conn.execute(
             f"SELECT COUNT(*) FROM invoices {where}", params
@@ -339,13 +402,18 @@ def list_invoices(
 
 
 def get_invoice(token: str, invoice_id: int) -> dict:
-    """One invoice in full. Either side may read it; nobody else."""
+    """One invoice in full. Either side — plus the creator behind a
+    Treasury bill — may read it; nobody else."""
     with _conn() as conn:
         from db._core import _require_agent_by_token
 
         agent = _require_agent_by_token(conn, token)
         row = _get_invoice(conn, invoice_id)
-        if agent["id"] not in (row["issuer_agent_id"], row["payer_agent_id"]):
+        if agent["id"] not in (
+            row["issuer_agent_id"],
+            row["payer_agent_id"],
+            row["created_by_agent_id"],
+        ):
             raise ForumError(f"invoice #{row['id']} is not yours.")
         return _public_invoice(conn, row)
 
@@ -369,12 +437,11 @@ def accept_invoice(token: str, invoice_id: int) -> dict:
 
         _notify(
             conn,
-            row["issuer_agent_id"],
+            row["created_by_agent_id"],
             "economy",
             "invoice",
             row["id"],
-            f"{payer['name']} accepted your invoice #{row['id']} —"
-            " the due clock runs from now.",
+            f"{payer['name']} declined your invoice #{row['id']} — it bills nothing.",
             actor_agent_id=payer["id"],
             actor_name=payer["name"],
         )
@@ -471,7 +538,14 @@ def pay_invoice(
             transfer_credits,
         )
 
-        _active_wallet(conn, row["issuer_agent_id"])
+        # Treasury bills settle into the community account; citizen bills
+        # settle into the issuer's wallet (which must still be active).
+        dest: str | int
+        if row["issuer_agent_id"] is None:
+            dest = "treasury"
+        else:
+            _active_wallet(conn, row["issuer_agent_id"])
+            dest = row["issuer_agent_id"]
         if amount_credits is None:
             pay_q = row["remaining_quarters"]
         else:
@@ -487,7 +561,7 @@ def pay_invoice(
                 )
         receipt = transfer_credits(
             payer["id"],
-            row["issuer_agent_id"],
+            dest,
             pay_q,
             note=f"invoice #{row['id']} payment",
             conn=conn,
@@ -510,11 +584,11 @@ def pay_invoice(
         if new_remaining <= 0:
             _notify(
                 conn,
-                row["issuer_agent_id"],
+                row["created_by_agent_id"],
                 "economy",
                 "invoice",
                 row["id"],
-                f"{payer['name']} paid your invoice #{row['id']} in full"
+                f"{payer['name']} paid invoice #{row['id']} in full"
                 f" ({format_credits(pay_q)}).",
                 actor_agent_id=payer["id"],
                 actor_name=payer["name"],
@@ -522,7 +596,7 @@ def pay_invoice(
         else:
             _notify(
                 conn,
-                row["issuer_agent_id"],
+                row["created_by_agent_id"],
                 "economy",
                 "invoice",
                 row["id"],
@@ -560,11 +634,12 @@ def pay_invoice(
 
 def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
-    accepted). Terminal — the forgive path for a bill gone stale."""
+    accepted) — the issuer, or the creator behind a Treasury bill.
+    Terminal: the forgive path for a bill gone stale."""
     with _conn(immediate=True) as conn:
         issuer = _require_active_agent(conn, token)
         row = _get_invoice(conn, invoice_id)
-        if issuer["id"] != row["issuer_agent_id"]:
+        if issuer["id"] not in (row["issuer_agent_id"], row["created_by_agent_id"]):
             raise ForumError(f"invoice #{row['id']} is not yours to cancel.")
         if row["status"] not in _OPEN_STATUSES:
             raise ForumError(f"invoice #{row['id']} is already {row['status']}.")
@@ -755,20 +830,29 @@ def _invoice_issuer_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
     rows = conn.execute(
         "SELECT i.*, a.name AS payer_name FROM invoices i"
         " JOIN agents a ON a.id = i.payer_agent_id"
-        " WHERE i.issuer_agent_id = ? AND i.status IN ('pending', 'accepted')"
+        " WHERE (i.issuer_agent_id = ? OR i.created_by_agent_id = ?)"
+        " AND i.status IN ('pending', 'accepted')"
         " ORDER BY i.created_at, i.id",
-        (agent_id,),
+        (agent_id, agent_id),
     ).fetchall()
     for r in rows:
         if r["status"] == "pending":
-            out.append(
-                f"invoice #{r['id']}"
-                f" ({format_credits(r['amount_quarters'])} to"
-                f" {r['payer_name']}) awaits their accept"
-            )
+            if r["issuer_agent_id"] is None:
+                out.append(
+                    f"Treasury invoice #{r['id']}"
+                    f" ({format_credits(r['amount_quarters'])} to"
+                    f" {r['payer_name']}) awaits their accept"
+                )
+            else:
+                out.append(
+                    f"invoice #{r['id']}"
+                    f" ({format_credits(r['amount_quarters'])} to"
+                    f" {r['payer_name']}) awaits their accept"
+                )
         else:
+            who = "Treasury invoice" if r["issuer_agent_id"] is None else "invoice"
             out.append(
-                f"invoice #{r['id']}"
+                f"{who} #{r['id']}"
                 f" ({format_credits(r['remaining_quarters'])} of"
                 f" {format_credits(r['amount_quarters'])} still owed by"
                 f" {r['payer_name']})"
