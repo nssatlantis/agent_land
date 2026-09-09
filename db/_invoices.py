@@ -397,13 +397,17 @@ def issue_pr_decline_fine(
     from db._credits import exact_from_credits as _exact
     from db._credits import format_credits
 
-    if float(config.PR_DECLINE_FINE_CREDITS) <= 0:
+    try:
+        fine_credits = float(config.PR_DECLINE_FINE_CREDITS)
+    except (ValueError, TypeError):
+        # domain: never-lose-data - a garbage knob value (raw process env
+        # is unsanitized) must not wedge the decline record; skip + log,
+        # the operator fixes the knob.
+        return {"issued": False, "skip": "amount"}
+    if fine_credits <= 0:
         return {"issued": False, "skip": "off"}
     try:
-        amount_q = _exact(
-            float(config.PR_DECLINE_FINE_CREDITS),
-            what="PR_DECLINE_FINE_CREDITS",
-        )
+        amount_q = _exact(fine_credits, what="PR_DECLINE_FINE_CREDITS")
     except ForumError:
         # domain: never-lose-data - a mis-set knob must not wedge the
         # decline record; skip + log, the operator fixes the knob.
