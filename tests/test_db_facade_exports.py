@@ -25,6 +25,7 @@ EXPECTED = [
     # benchmark anchor blessing
     "bench_anchor_tick",
     "bless_bench_anchor",
+    "bench_history",
     # core infrastructure (full db/_core surface after the package split)
     "ForumError",
     "_conn",
