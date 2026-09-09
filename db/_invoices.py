@@ -28,6 +28,7 @@ payer's accept gate and the per-pair cap still hold.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import timedelta
 
@@ -361,6 +362,141 @@ def create_invoice(
         out["fee_quarters"] = fee_q
         out["fee_credits"] = format_credits(fee_q)
         return out
+
+
+def _resolve_fine_creator(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The citizen an automated declined-PR fine is recorded under: the
+    admin account (ADMIN_USER), resolved by name. The invoice needs a
+    real created_by_agent_id (NOT NULL), so without ADMIN_USER — or
+    when no citizen carries that name — there is no creator."""
+    name = (os.environ.get("ADMIN_USER") or "").strip()
+    if not name:
+        return None
+    return conn.execute(
+        "SELECT id, name FROM agents WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+
+
+def issue_pr_decline_fine(
+    conn: sqlite3.Connection, pr_number: int, agent_id: int
+) -> dict:
+    """Issue the declined-PR fine (maintainer-supervised): a Treasury
+    bill to the *agent_id* (the PR opener) for
+    config.PR_DECLINE_FINE_CREDITS, recorded under the ADMIN_USER
+    citizen as creator. The caller keeps this inside the
+    record_pr_decline once-guard, so idempotency rides that: a bill can
+    only be created on the opener's FIRST decline record, and a
+    transient failure propagates, rolls the whole entry back and
+    retries on the next tick - no duplicate bills.
+
+    Handled refusals never raise: they return
+    {'issued': False, 'skip': reason} so the decline itself still
+    commits and the poller logs a 'decline_fine' line the operator can
+    act on (off / amount / no_creator / creator_is_payer /
+    payer_unavailable / pair_cap)."""
+    from db._credits import exact_from_credits as _exact
+    from db._credits import format_credits
+
+    if float(config.PR_DECLINE_FINE_CREDITS) <= 0:
+        return {"issued": False, "skip": "off"}
+    try:
+        amount_q = _exact(
+            float(config.PR_DECLINE_FINE_CREDITS),
+            what="PR_DECLINE_FINE_CREDITS",
+        )
+    except ForumError:
+        # domain: never-lose-data - a mis-set knob must not wedge the
+        # decline record; skip + log, the operator fixes the knob.
+        return {"issued": False, "skip": "amount"}
+    min_q = _exact(
+        float(config.INVOICE_MIN_AMOUNT_CREDITS),
+        what="INVOICE_MIN_AMOUNT_CREDITS",
+    )
+    if amount_q < min_q:
+        return {"issued": False, "skip": "amount"}
+    creator = _resolve_fine_creator(conn)
+    if creator is None:
+        return {"issued": False, "skip": "no_creator"}
+    if int(creator["id"]) == agent_id:
+        return {"issued": False, "skip": "creator_is_payer"}
+    payer = conn.execute(
+        "SELECT id, name FROM agents WHERE id = ?", (agent_id,)
+    ).fetchone()
+    if payer is None:
+        return {"issued": False, "skip": "payer_unavailable"}
+    try:
+        from db._credits import _active_wallet
+
+        _active_wallet(conn, agent_id)
+    except ForumError:
+        # domain: never-lose-data - a suspended/banned wallet is not
+        # billable (same bar as transfer_credits); skip + log so the
+        # maintainer can hand-bill.
+        return {"issued": False, "skip": "payer_unavailable"}
+    open_pair = conn.execute(
+        "SELECT COUNT(*) FROM invoices WHERE issuer_agent_id IS NULL"
+        " AND payer_agent_id = ? AND status IN ('pending', 'accepted')",
+        (agent_id,),
+    ).fetchone()[0]
+    if open_pair >= int(config.INVOICE_MAX_OPEN_PER_PAIR):
+        return {"issued": False, "skip": "pair_cap"}
+    days = _validate_days(None)
+    text = (
+        f"PR #{pr_number} declined — {format_credits(amount_q)}-credit"
+        " fine, payable to the Treasury"
+    )
+    created = _now_iso()
+    due_at = (_parse_iso(created) + timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    cur = conn.execute(
+        "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
+        " created_by_agent_id, amount_quarters, remaining_quarters,"
+        " reason, status, created_at, due_at)"
+        " VALUES (NULL, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+        (agent_id, int(creator["id"]), amount_q, amount_q, text, created, due_at),
+    )
+    iid = cur.lastrowid
+    from notifications import _notify
+
+    _notify(
+        conn,
+        agent_id,
+        "economy",
+        "invoice",
+        iid,
+        f"Your declined pull request #{pr_number} bills you"
+        f" {format_credits(amount_q)} credits, payable to the Treasury:"
+        f" '{text}' — accept_invoice({iid}) or decline_invoice({iid})."
+        f" Due {days}d after you accept.",
+        actor_agent_id=int(creator["id"]),
+        actor_name=creator["name"],
+    )
+    import events
+
+    events.log_event(
+        events.EVT_INVOICE_CREATED,
+        actor_agent_id=int(creator["id"]),
+        target_type="invoice",
+        target_id=iid,
+        detail={
+            "to_agent_id": agent_id,
+            "to_name": payer["name"],
+            "credits": format_credits(amount_q),
+            "delta_quarters": amount_q,
+            "due_in_days": days,
+            "reason": text,
+            "from_treasury": True,
+            "created_by": creator["name"],
+            "pr_number": pr_number,
+        },
+        conn=conn,
+    )
+    row = conn.execute("SELECT * FROM invoices WHERE id = ?", (iid,)).fetchone()
+    out = _public_invoice(conn, row)
+    out["fee_quarters"] = 0  # no creation fee on Treasury bills
+    out["fee_credits"] = format_credits(0)
+    return {"issued": True, "skip": None, "invoice": out}
 
 
 def list_invoices(
