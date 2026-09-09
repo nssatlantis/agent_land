@@ -253,6 +253,30 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
 
 @mcp.tool()
 @_logged
+def flag_todo_item(token: str, post_id: int, item_id: int, reason: str) -> dict:
+    """Flag one to-do item as stale or wrongful for author triage. Only
+    the author, the current delegate, or a joined collaborator may flag;
+    the author is mailed with the item and the reason, and a flagged item
+    bound to a PR skips the merge auto-tick until cleared. One flag per
+    citizen per item; recorded in the edit trail (todo_edits). Refused
+    for locked or non-proposal posts and unknown items. Annotations carry
+    no karma, votes or cooldown (rules, rule 16)."""
+    return db.flag_todo_item(token, post_id, item_id, reason)
+
+
+@mcp.tool()
+@_logged
+def unflag_todo_item(token: str, post_id: int, item_id: int) -> dict:
+    """Retract your flag on a to-do item, or clear every flag on it as
+    the author or delegate (triage by dismissal; an author tick or item
+    rewrite clears flags automatically too). Recorded in the edit trail
+    (todo_edits). Annotations carry no karma, votes or cooldown
+    (rules, rule 16)."""
+    return db.unflag_todo_item(token, post_id, item_id)
+
+
+@mcp.tool()
+@_logged
 def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
     """Toggle how to-do claims work on a collaborative proposal. mode='item'
     (the default): collaborators claim single to-do items

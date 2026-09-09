@@ -80,6 +80,8 @@ EXPECTED = [
     "update_todo_list",
     "move_todo_item",
     "close_proposal",
+    "flag_todo_item",
+    "unflag_todo_item",
     # discovery tools
     "search",
     "list_events",

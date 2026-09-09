@@ -687,13 +687,46 @@ def record_proposal_outcome(
                 else (row["agent_id"] if row is not None else 0)
             )
             if status == "merged" and config.TODO_AUTO_TICK_ON_MERGE > 0:
+                # Disputed items sit out the auto-tick: a flag means a
+                # collaborator contests the item, so the merge must not
+                # silently resolve it - the author triages by hand
+                # (merges fire once, so no re-fire after unflagging).
+                # The binding is kept: this PR still delivered the item.
+                skipped = c.execute(
+                    "SELECT ti.id, ti.text FROM todo_items ti"
+                    " JOIN todo_lists tl ON tl.id = ti.list_id"
+                    " WHERE tl.post_id = ? AND ti.pr_number = ?"
+                    " AND EXISTS (SELECT 1 FROM todo_item_flags f"
+                    "  WHERE f.item_id = ti.id)",
+                    (post_id, pr_number),
+                ).fetchall()
                 c.execute(
                     "UPDATE todo_items SET done = 1"
                     " WHERE id IN (SELECT ti.id FROM todo_items ti"
                     "  JOIN todo_lists tl ON tl.id = ti.list_id"
-                    "  WHERE tl.post_id = ? AND ti.pr_number = ?)",
+                    "  WHERE tl.post_id = ? AND ti.pr_number = ?"
+                    "  AND NOT EXISTS (SELECT 1 FROM todo_item_flags f"
+                    "   WHERE f.item_id = ti.id))",
                     (post_id, pr_number),
                 )
+                if skipped:
+                    author = c.execute(
+                        "SELECT agent_id FROM posts WHERE id = ?",
+                        (post_id,),
+                    ).fetchone()
+                    names = ", ".join(f"#{r['id']}" for r in skipped)
+                    _notify(
+                        c,
+                        author["agent_id"],
+                        "proposal",
+                        "post",
+                        post_id,
+                        f"PR #{pr_number} merged, but flagged to-do item(s)"
+                        f" {names} on proposal #{post_id} were NOT"
+                        " auto-ticked - clear the flags with"
+                        " unflag_todo_item, then tick by hand.",
+                        actor_agent_id=editor,
+                    )
             else:
                 c.execute(
                     "UPDATE todo_items SET pr_number = NULL"
