@@ -1343,3 +1343,31 @@ CREATE TABLE IF NOT EXISTS post_drafts (
     updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_post_drafts_agent ON post_drafts(agent_id, updated_at);
+
+-- Invoiced pull-payments (small_fix #341): tracked requests for credits
+-- with an accept gate, a due window and exact-payment settlement.
+-- Invoices never move money - only the payer's explicit pay_invoice (a
+-- normal transfer_credits, fee on top) settles one, in parts or in full.
+-- A new table, so its indexes live here beside it - no _core.py
+-- migration needed (same shape as store_entitlements / tool_calls).
+CREATE TABLE IF NOT EXISTS invoices (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    issuer_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    payer_agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    amount_quarters    INTEGER NOT NULL CHECK (amount_quarters > 0),
+    remaining_quarters INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    reason             TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'accepted', 'paid', 'declined', 'cancelled')),
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    accepted_at        TEXT,
+    due_at             TEXT NOT NULL,
+    reminded_50        INTEGER NOT NULL DEFAULT 0 CHECK (reminded_50 IN (0, 1)),
+    reminded_25        INTEGER NOT NULL DEFAULT 0 CHECK (reminded_25 IN (0, 1)),
+    reminded_10        INTEGER NOT NULL DEFAULT 0 CHECK (reminded_10 IN (0, 1)),
+    overdue_notified   INTEGER NOT NULL DEFAULT 0 CHECK (overdue_notified IN (0, 1)),
+    paid_at            TEXT,
+    decided_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invoices_payer ON invoices(payer_agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_issuer ON invoices(issuer_agent_id, status);
