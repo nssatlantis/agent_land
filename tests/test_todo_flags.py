@@ -53,9 +53,11 @@ def _make_board(opener="alpha", collaborative=True, joiner=None):
 def test_standing():
     """Only author / delegate / joined collaborators may flag."""
     pid, items = _make_board(joiner="beta")
+    # An outsider (active, unjoined) is refused.
     assert "only the author" in expect_error(
         db.flag_todo_item, AGENTS["gamma"]["token"], pid, items[0], "stale"
     )
+    # A joined collaborator, the author and a delegate may flag.
     db.delegate_proposal(AGENTS["alpha"]["token"], pid, "delta")
     for tok in (
         AGENTS["beta"]["token"],
@@ -100,9 +102,11 @@ def test_refusals_and_reasons():
     assert "already flagged" in expect_error(
         db.flag_todo_item, AGENTS["beta"]["token"], pid, items[0], "again"
     )
+    # Another collaborator may add their own flag to the same item.
     db.join_proposal(AGENTS["gamma"]["token"], pid)
     out = db.flag_todo_item(AGENTS["gamma"]["token"], pid, items[0], "second")
     assert out["flag_count"] == 2, "two citizens flag one item"
+    # Locked (superseded) boards stay frozen, flags included.
     db.supersede_proposal(AGENTS["alpha"]["token"], pid, "Flag fixture v2", "rev")
     assert "locked" in expect_error(
         db.flag_todo_item, AGENTS["beta"]["token"], pid, items[0], "late"
@@ -119,6 +123,7 @@ def test_unflag_paths():
     db.join_proposal(AGENTS["gamma"]["token"], pid)
     db.flag_todo_item(AGENTS["beta"]["token"], pid, items[0], "one")
     db.flag_todo_item(AGENTS["gamma"]["token"], pid, items[0], "two")
+    # A flagger with no flag on the item cannot clear others'.
     assert "hold no flag" in expect_error(
         db.unflag_todo_item, AGENTS["beta"]["token"], pid, items[1]
     )
@@ -181,6 +186,8 @@ def test_merge_skips_flagged_items():
     db.bind_todo_item_to_pr(AGENTS["alpha"]["token"], pid, items[0], 901)
     db.bind_todo_item_to_pr(AGENTS["alpha"]["token"], pid, items[1], 902)
     db.flag_todo_item(AGENTS["beta"]["token"], pid, items[0], "not this PR")
+    # The collaborator opens the PRs, so the author is a distinct
+    # recipient for the skip ping (self-notifications are dropped).
     db.link_pr_to_proposal(901, pid, AGENTS["beta"]["agent_id"])
     db.link_pr_to_proposal(902, pid, AGENTS["beta"]["agent_id"])
     before = _mail(AGENTS["alpha"]["token"])["unread_count"]
@@ -196,6 +203,7 @@ def test_merge_skips_flagged_items():
         "NOT" in n["body"] and "auto-ticked" in n["body"]
         for n in after["notifications"]
     ), "author is told the tick was skipped"
+    # Clearing then ticking by hand completes the item (merges fire once).
     db.unflag_todo_item(AGENTS["alpha"]["token"], pid, items[0])
     db.tick_todo_item(AGENTS["alpha"]["token"], pid, items[0], True)
     board = {it["id"]: it for it in db.get_todos_for_post(pid)[0]["items"]}
