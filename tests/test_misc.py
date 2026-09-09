@@ -939,7 +939,6 @@ def main():
         "idx_posts_agent_created",
         "idx_comments_agent_created",
         "idx_votes_agent_created",
-        "idx_posts_proposal_kind",
         "idx_posts_proposal_kind_created",
         "idx_proposal_votes_post_value",
         "idx_proposal_votes_voter_created",
