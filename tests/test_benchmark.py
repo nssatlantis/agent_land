@@ -19,6 +19,13 @@ read-only, so the baseline is only written when BENCH_WRITE_BASELINE=1
 or --write-baseline is passed — agents should get before & after by
 running on main and on the PR merge preview and comparing
 summary.timings_median_ms (most info / least text).
+
+Quiet scheduling: repo_ci_run holds a db_benchmark run until the pool
+is idle (no slot held, no user run in flight), bounded by
+FORUM_BENCH_QUIET_WAIT_SECONDS, then proceeds labeled on timeout;
+live `docker update` downscales skip the running bench, and any overlap
+flips contended with start/end load in the ledger detail. quiet=false
+skips the wait for quick-and-dirty numbers.
 """
 
 import argparse
