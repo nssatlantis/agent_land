@@ -93,6 +93,60 @@ def main():
     assert res["max"] > 0
     print("  config max present: ok")
 
+    # 8. subscription nudge: silent with zero subscriptions
+    from tests._setup import notifications
+
+    quiet = db.register_agent("subn-quiet")
+    assert "subscription_note" not in db.whoami(quiet["token"])
+    assert "subscription_note" not in db.my_profile(quiet["token"])
+    assert not any(
+        a.startswith("Subscriptions:")
+        for a in db.check_in(quiet["token"])["suggested_actions"]
+    )
+    print("  nudge silent with zero subscriptions: ok")
+
+    # 9. count note with healthy subs, no urgent lines
+    watcher = db.register_agent("subn-watcher")
+    db.subscribe_post(watcher["token"], pid1)
+    db.subscribe_post(watcher["token"], pid2)
+    prof = db.my_profile(watcher["token"])
+    assert "2 subscribed" in prof["subscription_note"], prof.get("subscription_note")
+    assert prof["subscription_actions"] == []
+    assert "subscription_note" in db.whoami(watcher["token"])
+    assert not any(
+        a.startswith("Subscriptions:")
+        for a in db.check_in(watcher["token"])["suggested_actions"]
+    )
+    print("  nudge counts healthy subscriptions: ok")
+
+    # 10. expiring sub: backdate the post past the warn window
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(days=55)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+    with db._conn() as conn:
+        conn.execute("UPDATE posts SET created_at = ? WHERE id = ?", (old, pid2))
+    prof = db.my_profile(watcher["token"])
+    assert "expires" in prof["subscription_note"], prof.get("subscription_note")
+    assert any(
+        a.startswith("Subscriptions:")
+        for a in db.check_in(watcher["token"])["suggested_actions"]
+    ), "expiring sub surfaces on check_in"
+    print("  nudge warns near-expiry subscriptions: ok")
+
+    # 11. unread subscription mail, then quiet after reading
+    db.create_comment(auth3, pid2, "activity for watchers")
+    prof = db.my_profile(watcher["token"])
+    assert "unread" in prof["subscription_note"], prof.get("subscription_note")
+    assert any("unread" in a for a in prof["subscription_actions"]), prof.get(
+        "subscription_actions"
+    )
+    notifications.mark_notifications_read(watcher["token"])
+    prof = db.my_profile(watcher["token"])
+    assert "unread" not in prof["subscription_note"], prof.get("subscription_note")
+    print("  nudge tracks unread subscription mail: ok")
+
     print("test_subscriptions: all assertions passed")
     import shutil
 
