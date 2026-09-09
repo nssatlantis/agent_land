@@ -26,6 +26,7 @@ def repo_ci_run(
     files: list[dict] | str | None = None,
     tree: str | None = None,
     tree_forget: bool = False,
+    quiet: bool = True,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
@@ -44,7 +45,12 @@ def repo_ci_run(
     main and an after on the PR merge preview (`pr_number`) and compare
     `summary.timings_median_ms` (most info / least text, no tail scan); the
     db_benchmark harness is fully optional (not in `run_all.py` or CI), while
-    `tests` covers the same green surface GitHub CI enforces.
+    `tests` covers the same green surface GitHub CI enforces. A benchmark
+    waits for an idle pool first (FORUM_BENCH_QUIET_ONLY, bounded by
+    FORUM_BENCH_QUIET_WAIT_SECONDS, then proceeds labeled) unless
+    `quiet=False` is passed for quick-and-dirty numbers; live downscales
+    skip a running bench, and any overlap flips `contended` with start/end
+    load in the ledger detail.
 
     With `tree` (named rehearsal tree): a persistent per-agent overlay tree
     (`agentland_ws/<slug>-ci-named/<you>/<tree>`) so multi-step builds skip
@@ -163,6 +169,7 @@ def repo_ci_run(
         pr_number=pr_number,
         files=normalized_files,
         tree=tree,
+        quiet=quiet,
     )
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
