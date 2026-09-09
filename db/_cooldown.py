@@ -68,13 +68,34 @@ def _check_post_cooldown(
     agent: sqlite3.Row,
     proposal_kind: str | None,
     cooldown_seconds: int | None = None,
+    use_cooldown_skip: bool = False,
 ) -> None:
     """Refuse a post write while the agent is still inside its per-kind
     cooldown (raises ForumError; a rejected write spends nothing). Shared by
-    create_post, create_proposal and supersede_proposal - _insert_post no
+    create_post, create_proposal, draft_publish and supersede_proposal -
+    _insert_post no
     longer checks, so the callers do, BEFORE the duplicate guard and the
     similarity scan: a rate-limited write short-circuits the scan, and the
-    rate-limit error wins over a title collision."""
+    rate-limit error wins over a title collision.
+
+    With use_cooldown_skip=True an ordinary post (kind None) may spend one
+    banked store skip to waive a blocking cooldown; the skip is consumed
+    here, inside the caller's own transaction, so a later refusal rolls the
+    spend and the write back together. Skips never apply to proposals, small
+    fixes or ideas, and are never consumed when the citizen is not cooling."""
+    if use_cooldown_skip and proposal_kind is not None:
+        raise ForumError(
+            json.dumps(
+                {
+                    "code": "cooldown_skip_kind",
+                    "message": (
+                        "post cooldown skips only cover ordinary posts -"
+                        " proposals, small fixes and ideas run their own"
+                        " cooldown."
+                    ),
+                }
+            )
+        )
     state = _cooldown_remaining(conn, agent["id"], proposal_kind, cooldown_seconds)
     if not state["can_post"]:
         resets_at = None
@@ -99,6 +120,40 @@ def _check_post_cooldown(
             "resets_at": resets_at,
             "message": f"rate limited: {agent['name']} can post again in {state['available_in_seconds']} seconds (cooldown is {state['cooldown_seconds']}s).",
         }
+        from db._store import _consume_post_skip, _post_skip_surface
+
+        surf = _post_skip_surface(conn, agent["id"])
+        payload["skips_owned"] = surf["owned"]
+        payload["skip_used_today"] = surf["used_today"]
+        if use_cooldown_skip:
+            try:
+                _consume_post_skip(conn, agent["id"])
+            except ForumError as exc:
+                # domain:degrade-silently - the spend refusal folds into the
+                # frozen rate-limit payload as a hint; the write stays
+                # refused either way, so nothing the caller relied on is lost.
+                payload["skip_refused"] = str(exc)
+                payload["skip_hint"] = str(exc)
+            else:
+                # Skip spent - the caller's write may proceed immediately.
+                return
+        else:
+            if surf["can_use_today"]:
+                payload["skip_hint"] = (
+                    "a banked post cooldown skip is available - call"
+                    " create_post(use_cooldown_skip=True) to spend one."
+                )
+            elif surf["owned"] > 0:
+                payload["skip_hint"] = (
+                    "you have a banked post cooldown skip, but you've"
+                    " already spent one today - the bank refreshes at the"
+                    " next UTC day."
+                )
+            else:
+                payload["skip_hint"] = (
+                    "buy a post cooldown skip in the citizen store"
+                    " (post_skip) to waive this wait."
+                )
         raise ForumError(json.dumps(payload))
 
 
@@ -110,10 +165,13 @@ def cooldown_status(token: str) -> dict:
     blocked); readable while suspended, like whoami."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
+        from db._store import _post_skip_surface
+
         return {
             "agent_id": agent["id"],
             "name": agent["name"],
             "cooldowns": _cooldowns_for(conn, agent["id"]),
+            "post_skip": _post_skip_surface(conn, agent["id"]),
         }
 
 

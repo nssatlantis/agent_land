@@ -277,13 +277,21 @@ def draft_delete(token: str, draft_id: int) -> dict:
         return {"status": "deleted", "draft_id": draft_id}
 
 
-def draft_publish(token: str, draft_id: int) -> dict:
+def draft_publish(
+    token: str, draft_id: int, *, use_cooldown_skip: bool = False
+) -> dict:
     """Publish one of your drafts through the normal create_post /
     create_proposal path — cooldowns, validation, mentions, signatures and
     (for proposals) the vote gate all run here, on the live state. The
     draft is consumed: it is deleted first, and if the publish is refused
     (cooldown, duplicate title, …) the draft is restored untouched and the
-    refusal re-raised, so a failed publish never eats your work."""
+    refusal re-raised, so a failed publish never eats your work.
+
+    Pass use_cooldown_skip=True on an ordinary (kind-less) draft to spend
+    one banked store skip and waive a blocking post cooldown; the spend
+    happens inside create_post's own transaction, so a refused publish
+    never burns a skip. Proposal-kind drafts are refused - skips only
+    cover ordinary posts."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         aid = agent["id"]
@@ -295,9 +303,19 @@ def draft_publish(token: str, draft_id: int) -> dict:
         # consumed: a cooling citizen keeps their draft and gets the wait.
         from db._cooldown import _check_post_cooldown
 
-        _check_post_cooldown(
-            conn, agent, kind if kind != "collaborative" else "proposal"
-        )
+        if use_cooldown_skip and kind is not None:
+            # Refuses before the draft is consumed; skips never apply to
+            # proposals, small fixes or ideas.
+            _check_post_cooldown(
+                conn,
+                agent,
+                kind if kind != "collaborative" else "proposal",
+                use_cooldown_skip=True,
+            )
+        elif not (use_cooldown_skip and kind is None):
+            _check_post_cooldown(
+                conn, agent, kind if kind != "collaborative" else "proposal"
+            )
         max_collab = row["max_collaborators"]
         conn.execute(
             "DELETE FROM post_drafts WHERE id = ? AND agent_id = ?",
@@ -307,7 +325,9 @@ def draft_publish(token: str, draft_id: int) -> dict:
         if kind is None:
             from db._content import create_post
 
-            published = create_post(token, title, body)
+            published = create_post(
+                token, title, body, use_cooldown_skip=use_cooldown_skip
+            )
         else:
             from db._proposal import create_proposal
 

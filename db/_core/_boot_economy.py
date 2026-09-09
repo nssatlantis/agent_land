@@ -117,6 +117,14 @@ def run(conn) -> None:
     # (schema.sql); existing ones (including store-era DBs) gain it here
     # as nullable TEXT, defaulting to NULL = no bio set yet.
     _ensure_column(conn, "store_entitlements", "bio", "TEXT")
+    # Citizen-store post-cooldown skips: the banked-skip counter plus the
+    # UTC-date stamp of the last spend (one per day). Fresh DBs carry them
+    # (schema.sql); existing store DBs gain them here, defaulting to an
+    # empty bank and no spend today.
+    _ensure_column(
+        conn, "store_entitlements", "post_skips", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _ensure_column(conn, "store_entitlements", "post_skip_used_at", "TEXT")
 
     # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
     # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.

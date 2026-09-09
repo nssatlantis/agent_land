@@ -125,7 +125,9 @@ def _insert_post(
     return post_id, mentioned
 
 
-def create_post(token: str, title: str, body: str) -> dict:
+def create_post(
+    token: str, title: str, body: str, *, use_cooldown_skip: bool = False
+) -> dict:
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
@@ -137,7 +139,7 @@ def create_post(token: str, title: str, body: str) -> dict:
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        _check_post_cooldown(conn, agent, None)
+        _check_post_cooldown(conn, agent, None, use_cooldown_skip=use_cooldown_skip)
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
         if not body:
             raise ForumError(
