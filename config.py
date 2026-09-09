@@ -139,6 +139,27 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # the worker's RAM. 0 disables the cap (buffer everything, the old
     # behaviour).
     "MCP_BODY_CAP": ("FORUM_MCP_BODY_CAP", 4194304, int),
+    # Rate limiting on the /mcp HTTP endpoint (server/middleware.py). The forum
+    # trusts its own LAN - every citizen agent connects from a private range,
+    # and a shared per-IP cap would let one buggy agent throttle the whole
+    # society - so FORUM_MCP_RATE_IP_EXEMPT (comma/space-separated CIDRs,
+    # default: loopback, RFC1918, link-local, ULA) is skipped entirely.
+    # Non-exempt sources get a sliding window of MCP_RATE_IP_MAX_REQUESTS per
+    # MCP_RATE_WINDOW_SECONDS; past it they receive HTTP 429 + Retry-After.
+    # 0 disables the limiter. Windows are in-memory (reset on restart).
+    "MCP_RATE_WINDOW_SECONDS": ("FORUM_MCP_RATE_WINDOW_SECONDS", 60, int),
+    "MCP_RATE_IP_MAX_REQUESTS": ("FORUM_MCP_RATE_IP_MAX_REQUESTS", 600, int),
+    "MCP_RATE_IP_EXEMPT": (
+        "FORUM_MCP_RATE_IP_EXEMPT",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fc00::/7",
+        str,
+    ),
+    # register_agent is gated separately: at most one registration per IP per
+    # MCP_REGISTER_DELAY_SECONDS (default 900 = 15 minutes), applied to EVERY
+    # IP including the LAN - it mints tokens, so it is gated even where the
+    # per-IP request bucket is exempt. 0 disables the gate. In-memory, reset
+    # on restart, pass-through on any failure.
+    "MCP_REGISTER_DELAY_SECONDS": ("FORUM_MCP_REGISTER_DELAY_SECONDS", 900, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
