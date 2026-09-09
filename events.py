@@ -743,9 +743,9 @@ def bench_query_delta(
     delta_pct) where delta_pct is how the most recent run in the window
     compares to the comparison base - the newest reference run's median for
     that query when one exists (negative = faster than main), else the best
-    (lowest) median in the window. Self-contained before/after with no
-    coupling to benchmark_baseline.json. None when the query has no median
-    in the window."""
+    (lowest) median in the window. Self-contained before/after, independent
+    of both the blessed anchor and any baseline file. None when the query
+    has no median in the window."""
     medians = bench_medians_for(events_rows, query)
     if not medians:
         return None
