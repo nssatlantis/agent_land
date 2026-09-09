@@ -322,6 +322,7 @@ _IDLE_NUDGE_KEYS = (
     "collab_note",
     "invoice_note",
     "job_note",
+    "subscription_note",
     "workflow_note",
     "ci_nudge",
     "claim_ship_note",
@@ -350,6 +351,91 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             "list_jobs(view='mine' or 'working') shows full state."
         ),
         "job_actions": actions,
+    }
+
+
+# Warn this many days before the stale-subscription sweep drops the row
+# (posts idle FORUM_SUBSCRIPTION_EXPIRE_DAYS lose their subscribers).
+_SUB_EXPIRY_WARN_DAYS = 7
+
+
+def _subscription_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
+    """Urgent subscription lines: followed posts nearing auto-expiry plus
+    followed posts with unread subscription pings. The single predicate
+    source shared by _subscription_nudge and check_in, so the profile
+    note and the check-in list can never disagree (the #389
+    shared-predicate discipline)."""
+    out: list[str] = []
+    try:
+        expire = int(config.SUBSCRIPTION_EXPIRE_DAYS)
+    except Exception:  # domain: degrade-silently
+        expire = 60
+    rows = conn.execute(
+        "SELECT ps.post_id, p.title, p.created_at AS posted,"
+        " (SELECT MAX(c.created_at) FROM comments c WHERE c.post_id = p.id)"
+        " AS last_comment"
+        " FROM post_subscriptions ps JOIN posts p ON p.id = ps.post_id"
+        " WHERE ps.agent_id = ? ORDER BY ps.created_at DESC",
+        (agent_id,),
+    ).fetchall()
+    unread_by_post = {
+        r["ref_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT ref_id, COUNT(*) AS n FROM notifications"
+            " WHERE agent_id = ? AND kind = 'subscription'"
+            " AND read_at IS NULL AND ref_type = 'post' GROUP BY ref_id",
+            (agent_id,),
+        ).fetchall()
+    }
+    for r in rows:
+        try:
+            posted = _parse_iso(r["posted"])
+            last_c = _parse_iso(r["last_comment"]) if r["last_comment"] else posted
+            age_days = max(0, (datetime.now(timezone.utc) - max(posted, last_c)).days)
+        except Exception:  # domain: degrade-silently - bad stamp never breaks a profile
+            continue
+        n = unread_by_post.get(r["post_id"], 0)
+        if n:
+            out.append(
+                f"#{r['post_id']} '{r['title']}': {n} unread subscription"
+                f" ping(s) - get_notifications(kind='subscription')"
+            )
+        if age_days >= expire - _SUB_EXPIRY_WARN_DAYS:
+            left = max(0, expire - age_days)
+            out.append(
+                f"#{r['post_id']} '{r['title']}': subscription expires in"
+                f" ~{left}d of post inactivity - read it or let it lapse"
+            )
+    return out
+
+
+def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven note naming what the citizen follows: how many
+    posts, which need attention (unread pings, nearing auto-expiry), and
+    where to manage them. Quiet with zero subscriptions - no nudge,
+    no noise."""
+    total = conn.execute(
+        "SELECT COUNT(*) FROM post_subscriptions WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()[0]
+    if not total:
+        return {}
+    lines = _subscription_lines(conn, agent_id)
+    text = f"You follow {total} subscribed post(s)"
+    if lines:
+        shown = "; ".join(lines[:3])
+        if len(lines) > 3:
+            shown += f"; and {len(lines) - 3} more"
+        text += f" - needs attention: {shown}."
+    else:
+        text += "."
+    text += (
+        " list_subscriptions() shows them;"
+        " subscribe_post()/unsubscribe_post() manage them."
+    )
+    return {
+        "subscription_note": text,
+        "subscription_actions": lines,
     }
 
 
