@@ -1100,12 +1100,9 @@ _perf_indexes = (
     "idx_todo_lists_post",
     "idx_todo_items_list",
     "idx_todo_edits_post",
-    "idx_events_kind",
     "idx_events_actor",
     "idx_events_created",
-    "idx_events_kind_created",
     "idx_events_job_anchor",
-    "idx_events_kind_target_created",
     "idx_events_kind_created_id",
     "idx_proposal_collaborators_proposal",
     "idx_proposal_collaborators_agent",
@@ -1211,9 +1208,9 @@ def _check_explain_credits_treasury() -> bool:
 def _check_explain_events() -> bool:
     sql = "SELECT id FROM events WHERE kind = 'post_created' ORDER BY created_at DESC LIMIT 50"
     plan = _explain(sql)
-    return (
-        "idx_events_kind_created_id" in plan or "idx_events_kind_created" in plan
-    ) and "SCAN TABLE events" not in plan
+    # Only idx_events_kind_created_id remains after the events index prune;
+    # the planner must still pick it rather than falling back to a scan.
+    return "idx_events_kind_created_id" in plan and "SCAN TABLE events" not in plan
 
 
 def _check_explain_economy() -> bool:
@@ -1322,7 +1319,7 @@ def main():
             "EXPLAIN credits treasury: uses partial index",
             _check_explain_credits_treasury,
         ),
-        ("EXPLAIN events: uses idx_events_kind", _check_explain_events),
+        ("EXPLAIN events: uses idx_events_kind_created_id", _check_explain_events),
         ("EXPLAIN economy flow: grouped treasury scan", _check_explain_economy),
     ]
     if sample_post:

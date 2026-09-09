@@ -110,7 +110,7 @@ def _main() -> int:
         )
         return 2
 
-    cap = getattr(_config, "CI_RUN_EVENT_TAIL_BYTES", 3072) or 0
+    cap = getattr(_config, "CI_RUN_EVENT_TAIL_BYTES", 1536) or 0
     if not cap:
         print(
             "FORUM_CI_RUN_EVENT_TAIL_BYTES is 0 (keep full tails) - nothing to trim.",

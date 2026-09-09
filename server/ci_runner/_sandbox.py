@@ -44,6 +44,12 @@ _STATIC_SUMMARY_RE = re.compile(
     re.M,
 )
 
+# ruff format --check prints per-file hunk headers ("unformatted: File would
+# be reformatted" then " --> path:line:col") before the diff; the diff is the
+# long part that a tight event-tail cap trims, so the affected paths are the
+# one static-failure bit worth promoting into the summary.
+_RUFF_FORMAT_HUNK_RE = re.compile(r"^[ \t]*-->[ \t]+(.+?):\d+:\d+[ \t]*$", re.M)
+
 
 def _parse_static_summary(output: str) -> dict | None:
     """Parse the combined harness's static-checks marker (tests/run_ci.py).
@@ -60,6 +66,14 @@ def _parse_static_summary(output: str) -> dict | None:
         result = "skipped"
     else:
         result = "unknown"
+    ruff_format_paths: list[str] = []
+    region = output.split("STATIC SUMMARY:", 1)[0]
+    if "--- static checks ---" in region:
+        region = region.split("--- static checks ---", 1)[1]
+    for _m in _RUFF_FORMAT_HUNK_RE.finditer(region):
+        _path = _m.group(1).strip()
+        if _path not in ruff_format_paths:
+            ruff_format_paths.append(_path)
     return {
         "result": result,
         "compileall": m.group(1),
@@ -67,6 +81,7 @@ def _parse_static_summary(output: str) -> dict | None:
         "ruff_check_errors": int(m.group(3)),
         "ruff_format_files": int(m.group(4)),
         "bash_n": m.group(5),
+        "ruff_format_paths": ruff_format_paths,
     }
 
 
@@ -137,6 +152,27 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         except Exception:
             # domain:degrade-silently - bench summary parse is advisory; tail still carries raw
             pass
+    # tests/run_all.py's "Slowest 5:" block: the per-file wall times are the
+    # one transcript-only part a tight event-tail cap could trim on a long
+    # run, so surface them structured (module name -> seconds). Only present
+    # on tests runs; parse the header's lines until the first non-match.
+    slowest_pos = output.find("Slowest 5:")
+    if slowest_pos != -1:
+        slow_s: dict[str, float] = {}
+        for _line in output[slowest_pos + len("Slowest 5:") :].splitlines():
+            if not _line.strip():
+                continue
+            _m = re.match(r"^\s*([^:\n]+):\s*([\d.]+)s\s*$", _line)
+            if _m is None:
+                break
+            try:
+                slow_s[_m.group(1).strip()] = float(_m.group(2))
+            except ValueError:
+                continue  # domain:degrade-silently - malformed timing line, skip
+        if slow_s:
+            if summary is None:
+                summary = {"passed_files": 0, "failed_files": 0}
+            summary["slowest_s"] = slow_s
     static_summary = _parse_static_summary(output)
     if static_summary is not None:
         if summary is None:

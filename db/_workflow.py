@@ -42,7 +42,7 @@ from pathlib import Path
 import config
 import logutil
 from db._core import REPO_DIR, ForumError, _id_chunks, _now_iso, _parse_iso
-from events import EVT_WORKFLOW_CLOSED, EVT_WORKFLOW_STARTED, log_event
+from events import EVT_WORKFLOW_CLOSED, log_event
 
 _WORKFLOW_CREATE_PR_PATH = "workflows/create-pr.md"
 """The one enforced workflow. Other workflows/*.md files exist (advisory,
@@ -604,24 +604,6 @@ def start_workflow(
     if rid is None:
         raise ForumError("could not read the new workflow run id")
     _seed_run_steps(conn, rid, workflow_path)
-    try:
-        detail: dict = {
-            "workflow_path": workflow_path,
-            "workflow_sha": sha,
-            "run_id": rid,
-        }
-        if pr_number is not None:
-            detail["pr_number"] = pr_number
-        log_event(
-            EVT_WORKFLOW_STARTED,
-            actor_agent_id=agent_id,
-            target_type="post",
-            target_id=proposal_id,
-            detail=detail,
-            conn=conn,
-        )
-    except Exception:  # domain: degrade-silently - event is enrichment
-        pass
     return rid
 
 
