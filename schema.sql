@@ -1357,7 +1357,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     -- on citizen invoices, the admin on Treasury ones).
     issuer_agent_id    INTEGER REFERENCES agents(id),
     payer_agent_id     INTEGER NOT NULL REFERENCES agents(id),
-    created_by_agent_id INTEGER REFERENCES agents(id),
+    created_by_agent_id INTEGER NOT NULL REFERENCES agents(id),
     amount_quarters    INTEGER NOT NULL CHECK (amount_quarters > 0),
     remaining_quarters INTEGER NOT NULL CHECK (remaining_quarters >= 0),
     reason             TEXT NOT NULL,
@@ -1376,3 +1376,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE INDEX IF NOT EXISTS idx_invoices_payer ON invoices(payer_agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_issuer ON invoices(issuer_agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by_agent_id);
+-- The poller-tick reminder sweep filters on status alone; none of the
+-- agent-led indexes serve it, so it gets its own partial index.
+CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_quarters)
+    WHERE status = 'accepted';
