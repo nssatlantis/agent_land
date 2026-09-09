@@ -660,6 +660,11 @@ def economy_overview() -> dict:
                 " SUM(e.delta_quarters) AS bal"
                 " FROM credit_entries e JOIN agents a ON a.id = e.agent_id"
                 " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+                # Treasury/escrow rows carry agent_id NULL (schema.sql
+                # ACCOUNTS) and the JOIN already drops them - stating it
+                # turns the full-ledger GROUP BY into an index-served
+                # slice over the agent account only. Same rows, same sums.
+                " WHERE e.account = 'agent'"
                 " GROUP BY e.agent_id HAVING bal != 0"
                 " ORDER BY bal DESC LIMIT 10"
             ).fetchall()

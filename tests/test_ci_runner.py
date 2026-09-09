@@ -81,7 +81,7 @@ def test_knob_defaults():
     assert config.CI_RUN_COOLDOWN_SECONDS == 60
     assert config.CI_RUN_DAILY_CAP == 10
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
-    assert config.CI_RUN_EVENT_TAIL_BYTES == 3072
+    assert config.CI_RUN_EVENT_TAIL_BYTES == 1536
 
 
 def test_unknown_checks_rejected():
@@ -469,7 +469,9 @@ def test_handoff_slow_run_returns_running_and_completes():
     release = threading.Event()
     done_mark: list = []
 
-    def _slow(agent_id, name, checks, pr_number=None, files=None, tree=None):
+    def _slow(
+        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+    ):
         started.set()
         assert release.wait(15)
         done_mark.append(checks)
@@ -505,7 +507,9 @@ def test_handoff_error_propagates_within_deadline():
     (run_checks audits its own early failures) and the claim is released."""
     import unittest.mock as _mock
 
-    def _raise(agent_id, name, checks, pr_number=None, files=None, tree=None):
+    def _raise(
+        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+    ):
         raise db.ForumError("something went wrong while rehearsing")
 
     uid = _uid()
@@ -531,7 +535,9 @@ def test_single_flight_refuses_concurrent_second_run():
     holder: dict = {}
     done_mark: list = []
 
-    def _slow(agent_id, name, checks, pr_number=None, files=None, tree=None):
+    def _slow(
+        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+    ):
         started.set()
         assert release.wait(15)
         done_mark.append(checks)
@@ -755,6 +761,246 @@ def test_parse_summary_db_benchmark_errors_surfaced():
     assert "query_b" in failed
 
 
+def test_bench_quiet_knob_defaults():
+    assert config.BENCH_QUIET_ONLY == 1
+    assert config.BENCH_QUIET_WAIT_SECONDS == 240
+
+
+def test_is_pool_quiet_tracks_slots():
+    """is_pool_quiet is False while any slot is held and returns to its
+    prior value on release - verified relative, never assuming idle."""
+    slots = ci_runner._slots
+    before = slots.is_pool_quiet()
+    assert isinstance(before, bool)
+    held = []
+    try:
+        for _ in range(8):
+            try:
+                held.append(slots._ci_acquire_slot(reserve=False, timeout=1))
+            except Exception:
+                break
+        assert held, "could not acquire even one slot"
+        assert slots.is_pool_quiet() is False
+    finally:
+        for idx in held:
+            slots._ci_release_slot(idx)
+    assert slots.is_pool_quiet() == before
+
+
+def test_wait_for_quiet_zero_timeout_is_instant():
+    """Zero timeout never sleeps: returns the live answer with ~0 waited."""
+    slots = ci_runner._slots
+    became, waited = ci_runner._runs._wait_for_quiet(0)
+    assert became == slots.is_pool_quiet()
+    assert waited == 0.0
+
+
+def test_wait_for_quiet_unblocks_on_release():
+    """A waiter with budget returns True once the pool drains; a waiter
+    with no budget against a held pool returns False fast."""
+    slots = ci_runner._slots
+    if not slots.is_pool_quiet():
+        became, _ = ci_runner._runs._wait_for_quiet(0.05)
+        assert became is False
+        return
+    idx = slots._ci_acquire_slot(reserve=False, timeout=1)
+    released = [False]
+    try:
+        became, _ = ci_runner._runs._wait_for_quiet(0.05)
+        assert became is False
+
+        def _release_soon() -> None:
+            time.sleep(0.2)
+            slots._ci_release_slot(idx)
+            released[0] = True
+
+        threading.Thread(target=_release_soon, daemon=True).start()
+        became2, waited2 = ci_runner._runs._wait_for_quiet(5)
+        assert became2 is True
+        assert waited2 >= 0.1
+    finally:
+        # The releaser thread already returned the token when the waiter
+        # saw quiet; releasing twice would inflate the pool past desired
+        # and fuzz every later depth read in this process.
+        if not released[0]:
+            try:
+                slots._ci_release_slot(idx)
+            except Exception:
+                pass
+
+
+def test_bench_slot_freeze_membership():
+    """Mark owns the freeze set; deregister always clears it (there is
+    deliberately no separate unmark - it could clear the freeze while
+    leaving _ACTIVE registered)."""
+    slots = ci_runner._slots
+    slots._mark_bench_slot(997)
+    assert 997 in slots._BENCH_SLOTS
+    slots._register_active(997, "bench-container", 2.5)
+    assert 997 in slots._BENCH_SLOTS
+    slots._deregister_active(997)
+    assert 997 not in slots._BENCH_SLOTS
+    assert 997 not in slots._ACTIVE
+
+
+def test_bench_run_carries_quiet_attestation():
+    """End-to-end through run_checks with a stub bench script: the result
+    carries quiet/contended and the ledger detail carries bench_load."""
+    stub = _StubTree(
+        "db_benchmark",
+        """
+        print("[Timing - 9 measured reps, min / median / max / stdev ms]")
+        print("  q                         1.00 /   2.00 /   3.00")
+        print("All checks passed.")
+    """,
+    )
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "db_benchmark")
+        assert result["quiet"] is True
+        assert result["contended"] is False
+        assert result["summary"]["timings_median_ms"] == {"q": 2.0}
+        rows = events.query_events(kind="ci_db_bench_run", limit=5) or []
+        mine = [e for e in rows if (e.get("detail") or {}).get("bench_load")]
+        assert mine, "bench ledger detail must carry bench_load attestation"
+        load = mine[0]["detail"]["bench_load"]
+        assert load["bench_busy_start"] == 1
+        assert load["contended"] is False
+    finally:
+        stub.cleanup()
+
+
+def test_gate_policy_truth_table():
+    """Tri-state quiet policy: None gates benches except local rehearsal,
+    True force-gates even local, False never gates, non-bench never."""
+    gate = ci_runner._runs._should_gate_bench
+    assert gate("db_benchmark", None, False) is True
+    assert gate("db_bench", None, False) is True
+    assert gate("db_benchmark", None, True) is False
+    assert gate("db_benchmark", True, True) is True
+    assert gate("db_benchmark", True, False) is True
+    assert gate("db_benchmark", False, False) is False
+    assert gate("db_benchmark", False, True) is False
+    assert gate("tests", None, False) is False
+    assert gate("tests", True, False) is False
+
+
+def test_wrapper_bench_idle_pool_is_fast_and_quiet():
+    """Blocker-1 pin: through run_checks_with_deadline (which holds the
+    caller's inflight claim), an idle-pool bench must NOT wait out the
+    budget - the gate excludes the caller's own entries. Fails before
+    the except_agent_id fix (full-budget wait, expired+contended)."""
+    _shadow("BENCH_QUIET_WAIT_SECONDS", 5)
+    stub = _StubTree(
+        "db_benchmark",
+        """
+        print("[Timing - 9 measured reps]")
+        print("  q                         1.00 /   2.00 /   3.00")
+        print("All checks passed.")
+    """,
+    )
+    try:
+        start = time.monotonic()
+        result, handed_off, _ = ci_runner.run_checks_with_deadline(
+            60, _uid(), "t", "db_benchmark"
+        )
+        elapsed = time.monotonic() - start
+        assert handed_off is False
+        assert result["quiet"] is True
+        assert result["contended"] is False
+        assert elapsed < 5, f"gated bench waited {elapsed:.1f}s on an idle pool"
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_bench_held_pool_expires_labeled():
+    """A pool held for the whole budget proceeds labeled expired+contended,
+    never hangs past budget+slot-wait."""
+    slots = ci_runner._slots
+    _shadow("BENCH_QUIET_WAIT_SECONDS", 1)
+    stub = _StubTree(
+        "db_benchmark",
+        """
+        print("[Timing - 9 measured reps]")
+        print("  q                         1.00 /   2.00 /   3.00")
+        print("All checks passed.")
+    """,
+    )
+    desired = max(1, int(config.CI_RUN_CONCURRENCY))
+    held = []
+    try:
+        for _ in range(desired - 1):
+            held.append(slots._ci_acquire_slot(reserve=False, timeout=5))
+        assert len(held) == desired - 1
+        result = ci_runner.run_checks(_uid(), "t", "db_benchmark")
+        assert result["quiet"] is False
+        assert result["contended"] is True
+    finally:
+        _restore()
+        stub.cleanup()
+        for idx in held:
+            try:
+                slots._ci_release_slot(idx)
+            except Exception:
+                pass
+
+
+def test_inflight_alone_is_not_quiet():
+    """An inflight registry entry alone (no slot held) still fails quiet -
+    the gate sees user runs, not just tokens."""
+    runs = ci_runner._runs
+    uid = _uid()
+    try:
+        runs._inflight_claim(uid, "ci_run", "tests", "2030-01-01T00:00:00Z", "x")
+        assert runs._slots_mod.is_pool_quiet() is False
+        assert runs._slots_mod.is_pool_quiet(uid) is True
+    finally:
+        runs._inflight_release(uid, "x")
+    assert runs._slots_mod.is_pool_quiet() is True
+
+
+def test_throttle_skips_frozen_bench_container():
+    """_throttle_active never issues docker update for a frozen bench
+    container while still re-targeting the others."""
+    import unittest.mock as _mock
+
+    slots = ci_runner._slots
+    seen: list = []
+    real_run = slots.subprocess.run
+
+    def _rec(*args, **kwargs):
+        seen.append(args[0])
+        fake = _mock.Mock()
+        fake.returncode = 0
+        return fake
+
+    held = []
+    try:
+        held.append(slots._ci_acquire_slot(reserve=False, timeout=5))
+        held.append(slots._ci_acquire_slot(reserve=False, timeout=5))
+        slots._register_active(991, "bench-c", 2.5)
+        slots._register_active(992, "other-c", 0.5)
+        slots._mark_bench_slot(991)
+        slots.subprocess.run = _rec
+        try:
+            slots._throttle_active()
+        finally:
+            slots.subprocess.run = real_run
+        targeted = [c[c.index("--cpus") + 2] for c in seen if "--cpus" in c]
+        assert targeted, "expected at least one docker update call"
+        assert "bench-c" not in targeted
+        assert "other-c" in targeted
+        assert 991 in slots._BENCH_HIT
+    finally:
+        slots._deregister_active(991)
+        slots._deregister_active(992)
+        for idx in held:
+            try:
+                slots._ci_release_slot(idx)
+            except Exception:
+                pass
+
+
 def test_run_ci_static_summary_parsed():
     """'tests' harness (tests/run_ci.py) prints the tests' summary lines then a
     STATIC SUMMARY/RESULT marker; _parse_summary must fold the static block into
@@ -769,6 +1015,9 @@ def test_run_ci_static_summary_parsed():
         print("mypy: 3 errors")
         print("ruff check: 1 errors")
         print("ruff format: 2 files would be reformatted")
+        print("unformatted: File would be reformatted")
+        print(" --> db/_fixme.py:3:8")
+        print(" --> server/_other.py:10:2")
         print("STATIC SUMMARY: compileall=ok mypy=3 ruff_check=1 ruff_format=2 bash_n=ok")
         print("STATIC RESULT: FAIL")
         sys.exit(1)
@@ -786,6 +1035,7 @@ def test_run_ci_static_summary_parsed():
             "ruff_check_errors": 1,
             "ruff_format_files": 2,
             "bash_n": "ok",
+            "ruff_format_paths": ["db/_fixme.py", "server/_other.py"],
         }
         assert result["summary"]["passed_files"] == 2
         assert result["summary"]["failed_files"] == 0
@@ -798,6 +1048,60 @@ def test_parse_static_summary_absent_when_not_static():
     summary, _ = ci_runner._parse_summary("all 1 test files passed\n")
     assert summary == {"passed_files": 1, "failed_files": 0}
     assert "static" not in summary
+
+
+def test_parse_summary_slowest_s():
+    """run_all.py's 'Slowest 5:' block must surface as summary.slowest_s so
+    the per-file wall times survive a tight event-tail cap (the block sits at
+    the very end of a long run's output). The block's values are seconds,
+    not milliseconds - named _s to keep the unit honest."""
+    output = (
+        "all 2 test files passed\n"
+        "\n"
+        "Slowest 5:\n"
+        "  test_misc: 41.31s\n"
+        "  test_reports: 0.42s\n"
+        "  test_00100_name: 1.05s\n"
+        "Total wall (parallel 4 workers): 43.40s sum, max 41.31s\n"
+    )
+    summary, _ = ci_runner._parse_summary(output)
+    assert summary is not None
+    assert summary["passed_files"] == 2
+    assert summary["slowest_s"] == {
+        "test_misc": 41.31,
+        "test_reports": 0.42,
+        "test_00100_name": 1.05,
+    }
+
+
+def test_parse_static_summary_ruff_format_paths():
+    """Static failures must surface the files ruff format --check would
+    reformat (from its ' --> path:line:col' hunk headers), deduped in
+    appearance order, so a multi-file static diff stays diagnosable past the
+    event-tail cap."""
+    output = (
+        "all 1 test files passed\n"
+        "--- static checks ---\n"
+        "compileall: ok\n"
+        "mypy: 0 errors\n"
+        "ruff check: 0 errors\n"
+        "unformatted: File would be reformatted\n"
+        " --> db/_fixme.py:3:8\n"
+        "  |\n"
+        "1 + x = 1\n"
+        "unformatted: File would be reformatted\n"
+        " --> server/_other.py:17:1\n"
+        "unformatted: File would be reformatted\n"
+        " --> db/_fixme.py:44:5\n"
+        "ruff format: 3 files would be reformatted\n"
+        "STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=3 bash_n=ok\n"
+        "STATIC RESULT: FAIL\n"
+    )
+    summary, _ = ci_runner._parse_summary(output)
+    assert summary is not None
+    static = summary["static"]
+    assert static["ruff_format_files"] == 3
+    assert static["ruff_format_paths"] == ["db/_fixme.py", "server/_other.py"]
 
 
 def test_native_sandbox_routes_through_docker():
@@ -999,8 +1303,22 @@ def main():
     test_success_run_parses_summary_and_logs_event()
     test_failing_run_lists_failed_files()
     test_parse_summary_db_benchmark_median_parsed()
+    test_parse_summary_db_benchmark_errors_surfaced()
+    test_bench_quiet_knob_defaults()
+    test_is_pool_quiet_tracks_slots()
+    test_wait_for_quiet_zero_timeout_is_instant()
+    test_wait_for_quiet_unblocks_on_release()
+    test_bench_slot_freeze_membership()
+    test_gate_policy_truth_table()
+    test_wrapper_bench_idle_pool_is_fast_and_quiet()
+    test_bench_held_pool_expires_labeled()
+    test_inflight_alone_is_not_quiet()
+    test_throttle_skips_frozen_bench_container()
+    test_bench_run_carries_quiet_attestation()
     test_run_ci_static_summary_parsed()
     test_parse_static_summary_absent_when_not_static()
+    test_parse_summary_slowest_s()
+    test_parse_static_summary_ruff_format_paths()
     test_timeout_kills_and_reports()
     test_child_env_is_sanitized()
     test_cooldown_gate()
