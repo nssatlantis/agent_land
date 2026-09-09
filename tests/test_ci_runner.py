@@ -81,7 +81,7 @@ def test_knob_defaults():
     assert config.CI_RUN_COOLDOWN_SECONDS == 60
     assert config.CI_RUN_DAILY_CAP == 10
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
-    assert config.CI_RUN_EVENT_TAIL_BYTES == 3072
+    assert config.CI_RUN_EVENT_TAIL_BYTES == 1536
 
 
 def test_unknown_checks_rejected():
@@ -769,6 +769,9 @@ def test_run_ci_static_summary_parsed():
         print("mypy: 3 errors")
         print("ruff check: 1 errors")
         print("ruff format: 2 files would be reformatted")
+        print("unformatted: File would be reformatted")
+        print(" --> db/_fixme.py:3:8")
+        print(" --> server/_other.py:10:2")
         print("STATIC SUMMARY: compileall=ok mypy=3 ruff_check=1 ruff_format=2 bash_n=ok")
         print("STATIC RESULT: FAIL")
         sys.exit(1)
@@ -786,6 +789,7 @@ def test_run_ci_static_summary_parsed():
             "ruff_check_errors": 1,
             "ruff_format_files": 2,
             "bash_n": "ok",
+            "ruff_format_paths": ["db/_fixme.py", "server/_other.py"],
         }
         assert result["summary"]["passed_files"] == 2
         assert result["summary"]["failed_files"] == 0
@@ -798,6 +802,59 @@ def test_parse_static_summary_absent_when_not_static():
     summary, _ = ci_runner._parse_summary("all 1 test files passed\n")
     assert summary == {"passed_files": 1, "failed_files": 0}
     assert "static" not in summary
+
+
+def test_parse_summary_slowest_ms():
+    """run_all.py's 'Slowest 5:' block must surface as summary.slowest_ms so
+    the per-file wall times survive a tight event-tail cap (the block sits at
+    the very end of a long run's output)."""
+    output = (
+        "all 2 test files passed\n"
+        "\n"
+        "Slowest 5:\n"
+        "  test_misc: 41.31s\n"
+        "  test_reports: 0.42s\n"
+        "  test_00100_name: 1.05s\n"
+        "Total wall (parallel 4 workers): 43.40s sum, max 41.31s\n"
+    )
+    summary, _ = ci_runner._parse_summary(output)
+    assert summary is not None
+    assert summary["passed_files"] == 2
+    assert summary["slowest_ms"] == {
+        "test_misc": 41.31,
+        "test_reports": 0.42,
+        "test_00100_name": 1.05,
+    }
+
+
+def test_parse_static_summary_ruff_format_paths():
+    """Static failures must surface the files ruff format --check would
+    reformat (from its ' --> path:line:col' hunk headers), deduped in
+    appearance order, so a multi-file static diff stays diagnosable past the
+    event-tail cap."""
+    output = (
+        "all 1 test files passed\n"
+        "--- static checks ---\n"
+        "compileall: ok\n"
+        "mypy: 0 errors\n"
+        "ruff check: 0 errors\n"
+        "unformatted: File would be reformatted\n"
+        " --> db/_fixme.py:3:8\n"
+        "  |\n"
+        "1 + x = 1\n"
+        "unformatted: File would be reformatted\n"
+        " --> server/_other.py:17:1\n"
+        "unformatted: File would be reformatted\n"
+        " --> db/_fixme.py:44:5\n"
+        "ruff format: 3 files would be reformatted\n"
+        "STATIC SUMMARY: compileall=ok mypy=0 ruff_check=0 ruff_format=3 bash_n=ok\n"
+        "STATIC RESULT: FAIL\n"
+    )
+    summary, _ = ci_runner._parse_summary(output)
+    assert summary is not None
+    static = summary["static"]
+    assert static["ruff_format_files"] == 3
+    assert static["ruff_format_paths"] == ["db/_fixme.py", "server/_other.py"]
 
 
 def test_native_sandbox_routes_through_docker():
@@ -1001,6 +1058,8 @@ def main():
     test_parse_summary_db_benchmark_median_parsed()
     test_run_ci_static_summary_parsed()
     test_parse_static_summary_absent_when_not_static()
+    test_parse_summary_slowest_ms()
+    test_parse_static_summary_ruff_format_paths()
     test_timeout_kills_and_reports()
     test_child_env_is_sanitized()
     test_cooldown_gate()
