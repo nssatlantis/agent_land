@@ -3,8 +3,10 @@
 The nudge surfaces a citizen's most recent db_benchmark run's numbers on
 whoami / my_profile / check_in — the discoverability fix, since only the raw
 repo_ci_run return and the /ci?mode=bench page show them today. It reuses
-events.bench_query_delta (the same window-relative median math the Benchmarks
-tab renders), so the check-in and the page can never disagree. Pure
+events.bench_query_delta / bench_comparison_for (the same median comparison
+the Benchmarks tab renders - reference-relative when a native origin/main
+reference run is in the window, best-in-window fallback otherwise), so the
+check-in and the page can never disagree. Pure
 annotation: quiet for agents with no bench run, degrade-silently on errors.
 """
 
@@ -37,18 +39,21 @@ def main():
             "_bench_nudge returns {} when the agent has no bench run"
         )
 
-    # seed two db_benchmark runs for the agent (newest first in the ledger).
+    # seed a native reference run on origin/main, then a branch run that
+    # regresses list_proposals (newest first in the ledger).
     subject = db.register_agent("bench-subject")
-    meds_a = {"list_posts": 3.4, "list_proposals": 8.0, "my_profile": 11.0}
-    meds_b = {"list_posts": 3.4, "list_proposals": 21.5, "my_profile": 29.3}
-    for meds, regr in [(meds_a, 0), (meds_b, 2)]:
+    meds_ref = {"list_posts": 3.4, "list_proposals": 8.0, "my_profile": 11.0}
+    meds_branch = {"list_posts": 3.4, "list_proposals": 21.5, "my_profile": 29.3}
+    for meds, regr, extra in [
+        (meds_ref, 0, {"mode": "native"}),
+        (meds_branch, 2, {"mode": "branch", "pr_number": 100}),
+    ]:
         events.log_event(
             events.EVT_CI_DB_BENCH_RUN,
             actor_agent_id=subject["agent_id"],
             actor_name=subject["name"],
             detail={
                 "checks": "db_benchmark",
-                "mode": "native",
                 "ok": regr == 0,
                 "exit_code": 0 if regr == 0 else 1,
                 "duration_seconds": 20.0,
@@ -58,16 +63,17 @@ def main():
                     "regressions": regr,
                     "timings_median_ms": meds,
                 },
+                **extra,
             },
         )
 
     who = db.whoami(subject["token"])
     assert "bench_nudge" in who, "bench nudge fires once the agent has a bench run"
     note = who["bench_nudge"]
-    # Newest run (list_proposals 21.5) vs best-in-window (8.0) = +169%.
+    # Newest run (list_proposals 21.5) vs the reference run's 8.0 = +169%.
     assert "db_bench" in note, "nudge names the db_benchmark harness"
     assert "list_proposals" in note, "nudge names the worst regressing query"
-    assert "best-in-window" in note, "nudge is window-relative, not baseline"
+    assert "vs main reference" in note, "nudge is reference-relative, not baseline"
     assert "regressing" in note, "nudge flags the count of regressing queries"
     assert "/ci?mode=bench" in note, "nudge points at the Benchmarks tab"
 
