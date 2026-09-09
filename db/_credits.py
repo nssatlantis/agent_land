@@ -245,7 +245,8 @@ def _grant_positive(
     import events
 
     if config.TREASURY_FUNDS_PAYOUTS:
-        if treasury_balance(c) < delta_quarters:
+        treasury_quarters = treasury_balance(c)
+        if treasury_quarters < delta_quarters:
             events.log_event(
                 events.EVT_CREDIT_PAYOUT_UNFUNDED,
                 actor_agent_id=None,
@@ -255,7 +256,7 @@ def _grant_positive(
                     "reason": reason,
                     "credits": format_credits(delta_quarters),
                     "delta_quarters": delta_quarters,
-                    "treasury_credits": format_credits(treasury_balance(c)),
+                    "treasury_credits": format_credits(treasury_quarters),
                 },
                 conn=c,
             )
