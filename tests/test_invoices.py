@@ -47,10 +47,12 @@ def _backdate(invoice_id: int, accepted_days_ago: float, window_days: float) -> 
 
 def test_create_get_list():
     issuer, payer = AGENTS["beta"], AGENTS["gamma"]
+    _fund(issuer["agent_id"], 40)
     inv = db.create_invoice(
         issuer["token"], payer["name"], 2.0, "fronted tag fees", due_in_days=7
     )
     assert inv["status"] == "pending", inv
+    assert inv["fee_quarters"] == 1, inv  # 0.25cr creation fee receipt
     assert inv["remaining_quarters"] == 8, inv
     assert inv["overdue"] is False, inv
     got = db.get_invoice(issuer["token"], inv["invoice_id"])
@@ -103,11 +105,20 @@ def test_create_validation():
         db.create_invoice, AGENTS["fresh"]["token"], payer["name"], 1.0, "begging"
     )
     assert "karma" in poor, poor
+    # Creation fee: a citizen with karma but no credits is refused.
+    broke = db.register_agent("inv-broke")
+    seed_post = db.create_post(broke["token"], "broke karma", "body")
+    db.vote(issuer["token"], "post", seed_post["post_id"], 1)
+    skint = expect_error(
+        db.create_invoice, broke["token"], payer["name"], 1.0, "cannot afford"
+    )
+    assert "insufficient credits" in skint, skint
 
 
 def test_caps():
     issuer = AGENTS["beta"]
-    for name in ("inv-cap-a", "inv-cap-b", "inv-cap-c", "inv-cap-d", "inv-cap-e"):
+    _fund(issuer["agent_id"], 40)
+    for name in ("inv-cap-a", "inv-cap-b", "inv-cap-c", "inv-cap-d"):
         try:
             db.register_agent(name)
         except Exception:  # name already taken on a rerun — reuse it
@@ -119,14 +130,14 @@ def test_caps():
     db.cancel_invoice(issuer["token"], a["invoice_id"])
     c = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "three retries")
     assert c["status"] == "pending", c
-    # Per-agent cap is 5: issuer now holds b, c + 3 more to distinct payers.
+    # Per-agent cap is 4: issuer now holds b, c + 2 more to distinct payers.
     extras = [
         db.create_invoice(issuer["token"], name, 1.0, f"cap {name}")
-        for name in ("inv-cap-b", "inv-cap-c", "inv-cap-d")
+        for name in ("inv-cap-b", "inv-cap-c")
     ]
-    assert len(extras) == 3, extras
+    assert len(extras) == 2, extras
     full = expect_error(
-        db.create_invoice, issuer["token"], "inv-cap-e", 1.0, "over the cap"
+        db.create_invoice, issuer["token"], "inv-cap-d", 1.0, "over the cap"
     )
     assert "open invoice" in full, full
     for inv in (b, c, *extras):
@@ -135,6 +146,7 @@ def test_caps():
 
 def test_accept_decline():
     issuer, payer = AGENTS["delta"], AGENTS["epsilon"]
+    _fund(issuer["agent_id"], 40)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.5, "review work")
     # Nobody may pay or conclude before acceptance.
     pre = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 1.0)
@@ -161,6 +173,7 @@ def test_accept_decline():
 
 def test_pay_full_and_partial():
     issuer, payer = AGENTS["zeta"], AGENTS["eta"]
+    _fund(issuer["agent_id"], 40)
     _fund(payer["agent_id"], 40)
     inv = db.create_invoice(issuer["token"], payer["name"], 2.0, "editing pass")
     db.accept_invoice(payer["token"], inv["invoice_id"])
@@ -189,6 +202,7 @@ def test_pay_full_and_partial():
 
 def test_payer_pays_fee():
     issuer, payer = AGENTS["theta"], AGENTS["beta"]
+    _fund(issuer["agent_id"], 40)
     _fund(payer["agent_id"], 40)
     old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
     os.environ["FORUM_TX_FEE_PERCENT"] = "10"
@@ -219,6 +233,7 @@ def test_payer_pays_fee():
 
 def test_cancel_and_privacy():
     issuer, payer, third = AGENTS["gamma"], AGENTS["delta"], AGENTS["epsilon"]
+    _fund(issuer["agent_id"], 40)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "stale ask")
     snoopy = expect_error(db.get_invoice, third["token"], inv["invoice_id"])
     assert "not yours" in snoopy, snoopy
@@ -233,6 +248,7 @@ def test_cancel_and_privacy():
 
 def test_no_auto_debit():
     issuer, payer = AGENTS["eta"], AGENTS["zeta"]
+    _fund(issuer["agent_id"], 40)
     _fund(payer["agent_id"], 40)
     import db._credits as _cr
 
@@ -240,15 +256,21 @@ def test_no_auto_debit():
         b0 = _cr.balance_for(conn, payer["agent_id"])
         i0 = _cr.balance_for(conn, issuer["agent_id"])
     inv = db.create_invoice(issuer["token"], payer["name"], 3.0, "big ask")
+    assert inv["fee_quarters"] == 1, inv  # the creation fee is the only move
+    with db._conn() as conn:
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 1
+        assert _cr.balance_for(conn, payer["agent_id"]) == b0
     db.accept_invoice(payer["token"], inv["invoice_id"])
     with db._conn() as conn:
+        # Accepting moves nothing — only creation (fee) and paying move money.
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 1
     db.cancel_invoice(issuer["token"], inv["invoice_id"])
 
 
 def test_reminders_and_overdue():
     issuer, payer = AGENTS["alpha"], AGENTS["beta"]
+    _fund(issuer["agent_id"], 40)
     _fund(payer["agent_id"], 40)
     # alpha has no karma from setup; earn it with one upvote on its post.
     seed = db.create_post(issuer["token"], "karma seed", "body")
@@ -297,6 +319,7 @@ def test_nudges_and_events():
     import events
 
     issuer, payer = AGENTS["gamma"], AGENTS["theta"]
+    _fund(issuer["agent_id"], 40)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "nudge probe")
     prof = db.my_profile(payer["token"])
     assert "invoice_note" in prof and "accept" in prof["invoice_note"], prof.get(
