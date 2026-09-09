@@ -1184,10 +1184,16 @@ def _check_explain_search_posts() -> bool:
 
 
 def _check_explain_jobs() -> bool:
-    # Real: the board's open view is IN ('open','offered'), not = 'open'
+    # Real: the board's open view is IN ('open','offered'), not = 'open'.
+    # Either status-led index serves it: the single-column idx_jobs_status
+    # or the #1093 composite idx_jobs_offered_to (planners disagree across
+    # SQLite versions - same complexity class, covering + sort either way).
+    # Pin "no full scan" instead of one index name; EXPLAIN prints
+    # "SCAN jobs", never "SCAN TABLE jobs".
     sql = "SELECT id FROM jobs WHERE status IN ('open', 'offered') ORDER BY id DESC LIMIT 20"
     plan = _explain(sql)
-    return "idx_jobs_status" in plan and "SCAN TABLE jobs" not in plan
+    ok_index = "idx_jobs_status" in plan or "idx_jobs_offered_to" in plan
+    return ok_index and "SCAN jobs" not in plan
 
 
 def _check_explain_credits_treasury() -> bool:
