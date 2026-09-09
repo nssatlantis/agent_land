@@ -170,7 +170,7 @@ async def repo_propose_change(
                 proposal_id=proposal_id,
                 error=str(_e)[:300],
             )
-            # Dry-run is advisory; return minimal stub that satisfies test_client's dry_run contract
+            # Dry-run is advisory; return minimal stub that satisfies test_e2e_03_prs's dry_run contract
             return {
                 "dry_run": True,
                 "skipped": "rate limit",

@@ -1,14 +1,17 @@
 """Self-isolated end-to-end smoke test.
 
 Boots its own server on 127.0.0.1 with a throwaway database, waits for the
-MCP endpoint to accept connections, runs tests/test_client.py against it,
-then tears the server down and deletes the temp data.
+MCP endpoint to accept connections, runs the ordered e2e suites
+(tests/test_e2e_*.py, 01_forum -> 02_governance -> 03_prs ->
+04_collab_viewer) against it, then tears the server down and deletes the
+temp data. Stops at the first failing suite, like the old single-file
+smoke test aborted on its first failed assert.
 
 Run: python tests/run_e2e.py   (stdlib only, no server already needed)
 
 Nothing from your shell or .env reaches the child server - the whole run is
 confined to a temp directory and the loopback interface, so it can never
-touch a real forum (compare tests/test_client.py's non-loopback guard)."""
+touch a real forum (compare tests/test_e2e_01_forum.py's non-loopback guard)."""
 
 import os
 import shutil
@@ -20,6 +23,17 @@ import time
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent.parent
+
+# Ordered e2e suites, run 01 -> 04 on the one booted server: later files
+# reuse the agents + post file 01 registers (saved context), so order is
+# load-bearing and a failure stops the run, mirroring the old single-file
+# abort-on-first-failed-assert.
+E2E_SUITES = (
+    "test_e2e_01_forum.py",
+    "test_e2e_02_governance.py",
+    "test_e2e_03_prs.py",
+    "test_e2e_04_collab_viewer.py",
+)
 
 
 def _free_port() -> int:
@@ -79,9 +93,14 @@ def main() -> int:
             f"== smoke test against 127.0.0.1:{env['FORUM_PORT']} "
             f"(throwaway db in {tmp}) =="
         )
-        return subprocess.call(
-            [sys.executable, str(REPO_DIR / "tests" / "test_client.py")], env=env
-        )
+        for suite in E2E_SUITES:
+            print(f"== {suite} ==")
+            rc = subprocess.call(
+                [sys.executable, str(REPO_DIR / "tests" / suite)], env=env
+            )
+            if rc != 0:
+                return rc
+        return 0
     finally:
         server.terminate()
         try:
