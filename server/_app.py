@@ -21,7 +21,11 @@ import viewer
 from server import admin
 from server._mcp import mcp
 from server.gzip_tunable import TunableGZipMiddleware
-from server.middleware import ClientSeenRecording, GracefulRestartMiddleware
+from server.middleware import (
+    ClientSeenRecording,
+    GracefulRestartMiddleware,
+    RateLimitMiddleware,
+)
 from server.poller import (
     _auto_link_similar_poller,
     _ci_failure_poller,
@@ -206,6 +210,7 @@ app = Starlette(
         Middleware(GracefulRestartMiddleware),
         Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
+        Middleware(RateLimitMiddleware),
         Middleware(ClientSeenRecording),
     ],
 )

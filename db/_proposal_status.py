@@ -162,7 +162,6 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
             f"""
             SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
                    pl.opened_by_agent_id, a.name AS opened_by_name,
-                   se.name_color AS opened_by_name_color,
                    COALESCE(po.happened_at, pl.created_at) AS happened_at
             FROM (SELECT post_id, pr_number FROM proposal_links
                   WHERE post_id IN ({marks})
@@ -171,7 +170,6 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
             LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
             LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
             LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
             GROUP BY x.post_id, x.pr_number
             ORDER BY x.post_id ASC, x.pr_number ASC
             """,
