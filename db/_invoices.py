@@ -717,6 +717,7 @@ def pay_invoice(
             pay_q,
             note=f"invoice #{row['id']} payment",
             conn=conn,
+            notify_recipient=False,
         )
         new_remaining = row["remaining_quarters"] - pay_q
         if new_remaining <= 0:

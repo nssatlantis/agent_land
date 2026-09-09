@@ -245,7 +245,8 @@ def _grant_positive(
     import events
 
     if config.TREASURY_FUNDS_PAYOUTS:
-        if treasury_balance(c) < delta_quarters:
+        treasury_quarters = treasury_balance(c)
+        if treasury_quarters < delta_quarters:
             events.log_event(
                 events.EVT_CREDIT_PAYOUT_UNFUNDED,
                 actor_agent_id=None,
@@ -255,7 +256,7 @@ def _grant_positive(
                     "reason": reason,
                     "credits": format_credits(delta_quarters),
                     "delta_quarters": delta_quarters,
-                    "treasury_credits": format_credits(treasury_balance(c)),
+                    "treasury_credits": format_credits(treasury_quarters),
                 },
                 conn=c,
             )
@@ -937,6 +938,7 @@ def transfer_credits(
     note: str = "",
     *,
     conn: sqlite3.Connection | None = None,
+    notify_recipient: bool = True,
 ) -> dict:
     """Move credits between wallets: citizen-to-citizen or citizen-to-
     treasury (recipient='treasury' when no citizen owns that name - the
@@ -946,7 +948,9 @@ def transfer_credits(
     amount.  One transaction, paired ledger rows, ONE credit_transferred
     event.  Both endpoints must be active citizens; self-transfers and
     non-positive amounts are refused; the sender's balance must cover
-    amount + fee."""
+    amount + fee.  Direct calls mail the recipient; internal settlements
+    pass notify_recipient=False and mail under their own kind instead
+    (pay_invoice's invoice-paid mail would otherwise double-ping)."""
     if not config.CREDITS_ENABLED:
         raise ForumError("credits are disabled on this forum.")
     if amount_quarters <= 0:
@@ -1065,6 +1069,29 @@ def transfer_credits(
             detail=detail,
             conn=c,
         )
+        if notify_recipient and recipient_row is not None:
+            # Direct wallet transfer (the MCP path): tell the recipient
+            # their balance grew. Internal settlements suppress this and
+            # mail under their own kind instead - notably pay_invoice,
+            # whose invoice-paid mail would otherwise double-ping the
+            # issuer for one money movement.
+            from notifications import _notify
+
+            body = (
+                f"{sender['name']} sent you {format_credits(amount_quarters)} credits."
+            )
+            if note:
+                body += f" Note: '{note}'."
+            _notify(
+                c,
+                recipient_row["id"],
+                "economy",
+                "agent",
+                sender_id,
+                body,
+                actor_agent_id=sender_id,
+                actor_name=sender["name"],
+            )
         new_sender = balance_for(c, sender_id)
         return {
             "sent_quarters": amount_quarters,

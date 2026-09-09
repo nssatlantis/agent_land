@@ -40,14 +40,20 @@ def _collaborative_digest_sweep() -> None:
     from db._nudges import _collab_work_list
 
     with db._conn() as conn:
+        if (
+            conn.execute(
+                "SELECT 1 FROM posts WHERE collaborative = 1"
+                " AND collaborative_closed IS NULL"
+                " AND superseded_by_id IS NULL LIMIT 1"
+            ).fetchone()
+            is None
+        ):
+            return
         agents = conn.execute(
             "SELECT id, name FROM agents",
         ).fetchall()
         for ag in agents:
             try:
-                items = _collab_work_list(conn, ag["id"])
-                if not items:
-                    continue
                 newest_digest = conn.execute(
                     "SELECT created_at FROM notifications"
                     " WHERE agent_id = ? AND kind = 'collab_digest'"
@@ -59,6 +65,9 @@ def _collaborative_digest_sweep() -> None:
                     now = _parse_iso(_now_iso())
                     if now - last < timedelta(hours=24):
                         continue
+                items = _collab_work_list(conn, ag["id"])
+                if not items:
+                    continue
                 summaries = []
                 for it in items[:3]:
                     progress = f"{it['merged']} PRs merged"

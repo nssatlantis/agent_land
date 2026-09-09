@@ -1048,6 +1048,20 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     f"Your PR #{pr_number} earned a stake reward of "
                     f"{_fmt_amount(lk['amount'], currency)} {currency}.",
                 )
+                if (
+                    lk["staker_agent_id"] is not None
+                    and lk["staker_agent_id"] != lk["agent_id"]
+                ):
+                    _notify(
+                        c,
+                        lk["staker_agent_id"],
+                        "proposal",
+                        "stake_paid",
+                        lk["stake_id"],
+                        f"Your stake #{lk['stake_id']} paid "
+                        f"{_fmt_amount(lk['amount'], currency)} {currency} "
+                        f"to the opener of PR #{pr_number}.",
+                    )
             paid += 1
 
             # Check completion inside the loop - after decrementing

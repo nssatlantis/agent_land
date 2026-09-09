@@ -874,6 +874,23 @@ def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
             target_id=row["id"],
             conn=conn,
         )
+        reporter = conn.execute(
+            "SELECT agent_id, title, confidence FROM bug_reports WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+        if reporter is not None:
+            _notify(
+                conn,
+                reporter["agent_id"],
+                "pr",
+                "bug_report",
+                row["id"],
+                f"Your bug report #{row['id']} "
+                f"('{reporter['title']}') is now confirmed - "
+                f"confidence {reporter['confidence']} reached the "
+                f"threshold ({threshold}). It is eligible for a "
+                f"small_fix proposal.",
+            )
         _retire_duplicates(conn, row["id"], "confirmed", now_iso)
     return confirmed
 
