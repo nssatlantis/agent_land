@@ -736,26 +736,6 @@ def bench_comparison_for(
     return bench_window_bests(events_rows), _BENCH_WINDOW_LABEL
 
 
-def bench_query_delta(
-    events_rows: list[dict], query: str
-) -> tuple[float, float, int] | None:
-    """The comparison for one query: (base_median_ms, latest_median_ms,
-    delta_pct) where delta_pct is how the most recent run in the window
-    compares to the comparison base - the newest reference run's median for
-    that query when one exists (negative = faster than main), else the best
-    (lowest) median in the window. Self-contained before/after, independent
-    of both the blessed anchor and any baseline file. None when the query
-    has no median in the window."""
-    medians = bench_medians_for(events_rows, query)
-    if not medians:
-        return None
-    base = bench_comparison_for(events_rows)[0].get(query)
-    if base is None:
-        base = min(medians)
-    latest = medians[0]  # newest-first: first row is the most recent run
-    return base, latest, bench_pct(latest, base)
-
-
 def bench_window_bests(events_rows: list[dict]) -> dict[str, float]:
     """Best (lowest) median per benchmark query across a window of
     ci_db_bench_run events, the fallback comparison base used when no
@@ -921,3 +901,41 @@ def bench_anchor_aging(
     if not native:
         return False, "no native runs to compare"
     return False, "anchor fresh"
+
+
+def bench_anchor_base_for(
+    events_rows: list[dict],
+) -> tuple[dict[str, float], str, dict | None]:
+    """(base map, label, anchor-or-None): the single source the Benchmarks
+    tab and the nudge share. Anchor medians when blessed ("vs anchor",
+    backfilled per query from the reference map for queries the anchor did
+    not measure); otherwise the reference/window-best fallback via
+    bench_comparison_for with its labels intact."""
+    anchor = bench_anchor_for()
+    if anchor and anchor.get("medians"):
+        base = dict(anchor["medians"])
+        for q, best in bench_window_bests(events_rows).items():
+            base.setdefault(q, best)
+        return base, _BENCH_ANCHOR_LABEL, anchor
+    base, label = bench_comparison_for(events_rows)
+    return base, label, None
+
+
+def bench_native_series(
+    events_rows: list[dict], limit: int = 7
+) -> dict[str, list[float]]:
+    """Newest-first per-query median series over native runs only (last
+    `limit` points each), for trend display. Empty when no native run
+    carries medians."""
+    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    names: set[str] = set()
+    for ev in native:
+        meds = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY)
+        if isinstance(meds, dict):
+            names.update(str(q) for q in meds)
+    out: dict[str, list[float]] = {}
+    for q in names:
+        series = bench_medians_for(native, q)[: max(1, limit)]
+        if series:
+            out[q] = series
+    return out
