@@ -64,6 +64,7 @@ EXPECTED = [
     "decline_invoice",
     "pay_invoice",
     "cancel_invoice",
+    "issue_pr_decline_fine",
     # jobs board
     "create_job",
     "admin_review_job_as",
