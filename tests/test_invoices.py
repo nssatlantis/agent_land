@@ -315,6 +315,110 @@ def test_reminders_and_overdue():
     assert "invoice_note" not in db.my_profile(payer["token"])
 
 
+def test_treasury_issue_and_pay():
+    # The creator needs no karma and no balance: the citizen locks are
+    # lifted for Treasury bills (fresh has neither).
+    creator, payer = AGENTS["fresh"], AGENTS["gamma"]
+    _fund(payer["agent_id"], 40)
+    import db._credits as _cr
+
+    with db._conn() as conn:
+        t0 = _cr.treasury_balance(conn)
+        b0 = _cr.balance_for(conn, payer["agent_id"])
+        c0 = _cr.balance_for(conn, creator["agent_id"])
+    inv = db.create_invoice(
+        creator["token"], payer["name"], 2.0, "treasury reclaim", from_treasury=True
+    )
+    assert inv["from_treasury"] is True, inv
+    assert inv["issuer_agent_id"] is None, inv
+    assert inv["issuer_name"] == "Treasury", inv
+    assert inv["created_by_name"] == creator["name"], inv
+    assert inv["fee_quarters"] == 0, inv  # no creation fee on Treasury bills
+    with db._conn() as conn:
+        assert _cr.balance_for(conn, creator["agent_id"]) == c0  # nothing spent
+    # The creator (neither issuer nor payer) may still read it.
+    assert (
+        db.get_invoice(creator["token"], inv["invoice_id"])["invoice_id"]
+        == inv["invoice_id"]
+    )
+    assert any(
+        i["invoice_id"] == inv["invoice_id"]
+        for i in db.list_invoices(creator["token"], view="issued")["invoices"]
+    )
+    db.accept_invoice(payer["token"], inv["invoice_id"])
+    out = db.pay_invoice(payer["token"], inv["invoice_id"])
+    assert out["status"] == "paid", out
+    with db._conn() as conn:
+        # Fee-free test env: the Treasury gains exactly 8q from the payer.
+        assert _cr.treasury_balance(conn) == t0 + 8
+        assert _cr.balance_for(conn, payer["agent_id"]) == b0 - 8
+    # Nudges name the Treasury on both sides.
+    assert "invoice_note" not in db.my_profile(payer["token"])
+
+
+def test_treasury_guards():
+    creator, payer = AGENTS["delta"], AGENTS["epsilon"]
+    _fund(creator["agent_id"], 40)
+    inward = expect_error(
+        db.create_invoice,
+        creator["token"],
+        creator["name"],
+        1.0,
+        "self bill",
+        from_treasury=True,
+    )
+    assert "yourself" in inward, inward
+    first = db.create_invoice(
+        creator["token"], payer["name"], 1.0, "t-bill one", from_treasury=True
+    )
+    second = db.create_invoice(
+        creator["token"], payer["name"], 1.0, "t-bill two", from_treasury=True
+    )
+    # The per-pair cap still holds for Treasury bills.
+    capped = expect_error(
+        db.create_invoice,
+        creator["token"],
+        payer["name"],
+        1.0,
+        "t-bill three",
+        from_treasury=True,
+    )
+    assert "already bill" in capped, capped
+    # Cancel belongs to the creator, not to bystanders.
+    stranger = expect_error(
+        db.cancel_invoice, AGENTS["zeta"]["token"], first["invoice_id"]
+    )
+    assert "not yours to cancel" in stranger, stranger
+    db.cancel_invoice(creator["token"], first["invoice_id"])
+    db.cancel_invoice(creator["token"], second["invoice_id"])
+    # The MCP tool gates Treasury issuance on ADMIN_USER.
+    import server.tools.economy as economy_tools
+
+    refused = expect_error(
+        economy_tools.create_invoice,
+        creator["token"],
+        payer["name"],
+        1.0,
+        "gate probe",
+        None,
+        True,
+    )
+    assert "Admin privileges" in refused, refused
+    old_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = creator["name"]
+    try:
+        allowed = economy_tools.create_invoice(
+            creator["token"], payer["name"], 1.0, "gate pass", None, True
+        )
+        assert allowed["from_treasury"] is True, allowed
+        db.cancel_invoice(creator["token"], allowed["invoice_id"])
+    finally:
+        if old_admin is None:
+            os.environ.pop("ADMIN_USER", None)
+        else:
+            os.environ["ADMIN_USER"] = old_admin
+
+
 def test_nudges_and_events():
     import events
 
@@ -350,6 +454,8 @@ if __name__ == "__main__":
         test_cancel_and_privacy,
         test_no_auto_debit,
         test_reminders_and_overdue,
+        test_treasury_issue_and_pay,
+        test_treasury_guards,
         test_nudges_and_events,
     ]:
         fn()
