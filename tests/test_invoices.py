@@ -419,6 +419,22 @@ def test_treasury_guards():
             os.environ["ADMIN_USER"] = old_admin
 
 
+def test_treasury_decline_notifies_creator():
+    # Regression: decline_invoice must ping created_by, never the NULL
+    # issuer — a declined Treasury bill notifies its creator.
+    creator, payer = AGENTS["zeta"], AGENTS["eta"]
+    inv = db.create_invoice(
+        creator["token"], payer["name"], 1.0, "t-decline", from_treasury=True
+    )
+    db.decline_invoice(payer["token"], inv["invoice_id"])
+    mails = [
+        n
+        for n in _mail(creator["token"], kind="economy")["notifications"]
+        if n["ref_id"] == inv["invoice_id"]
+    ]
+    assert any("declined" in m["body"] for m in mails), mails
+
+
 def test_nudges_and_events():
     import events
 
@@ -456,6 +472,7 @@ if __name__ == "__main__":
         test_reminders_and_overdue,
         test_treasury_issue_and_pay,
         test_treasury_guards,
+        test_treasury_decline_notifies_creator,
         test_nudges_and_events,
     ]:
         fn()
