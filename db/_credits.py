@@ -937,6 +937,7 @@ def transfer_credits(
     note: str = "",
     *,
     conn: sqlite3.Connection | None = None,
+    notify_recipient: bool = True,
 ) -> dict:
     """Move credits between wallets: citizen-to-citizen or citizen-to-
     treasury (recipient='treasury' when no citizen owns that name - the
@@ -946,7 +947,9 @@ def transfer_credits(
     amount.  One transaction, paired ledger rows, ONE credit_transferred
     event.  Both endpoints must be active citizens; self-transfers and
     non-positive amounts are refused; the sender's balance must cover
-    amount + fee."""
+    amount + fee.  Direct calls mail the recipient; internal settlements
+    pass notify_recipient=False and mail under their own kind instead
+    (pay_invoice's invoice-paid mail would otherwise double-ping)."""
     if not config.CREDITS_ENABLED:
         raise ForumError("credits are disabled on this forum.")
     if amount_quarters <= 0:
@@ -1065,12 +1068,12 @@ def transfer_credits(
             detail=detail,
             conn=c,
         )
-        if conn is None and recipient_row is not None:
+        if notify_recipient and recipient_row is not None:
             # Direct wallet transfer (the MCP path): tell the recipient
-            # their balance grew. Internal settlements pass their own
-            # conn and mail under their own kind instead - notably
-            # pay_invoice, whose invoice-paid mail would otherwise
-            # double-ping the issuer for one money movement.
+            # their balance grew. Internal settlements suppress this and
+            # mail under their own kind instead - notably pay_invoice,
+            # whose invoice-paid mail would otherwise double-ping the
+            # issuer for one money movement.
             from notifications import _notify
 
             body = (
