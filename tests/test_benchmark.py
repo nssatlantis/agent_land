@@ -1147,8 +1147,25 @@ def _no_full_scan(plan: str, table: str) -> bool:
     # "SCAN <table> USING COVERING INDEX ..." scans the narrow index, not
     # the table - live probe on SQLite 3.50.4 shows this shape for the
     # treasury SUMs and the posts ORDER BY, so only the bare form fails.
-    # Exact per-line match, so SEARCH lines can never false-fire.
-    return not any(line.strip() == f"SCAN {table}" for line in plan.splitlines())
+    # Exact per-line match, so SEARCH lines can never false-fire. The legacy
+    # "SCAN TABLE <table>" form is matched too, so the pin can never go
+    # vacuous-green on an older SQLite the way the old guards did on modern.
+    return not any(
+        line.strip() in (f"SCAN {table}", f"SCAN TABLE {table}")
+        for line in plan.splitlines()
+    )
+
+
+def _selftest_no_full_scan() -> None:
+    # Pure-function pin for the helper above: no DB needed, runs on every
+    # invocation before seeding so a discrimination regression fails fast.
+    assert not _no_full_scan("SCAN jobs", "jobs")
+    assert not _no_full_scan("SCAN TABLE jobs", "jobs")
+    assert not _no_full_scan("SEARCH x\nSCAN jobs", "jobs")
+    assert _no_full_scan("SEARCH jobs USING COVERING INDEX idx (status=?)", "jobs")
+    assert _no_full_scan("SCAN jobs USING COVERING INDEX idx", "jobs")
+    assert _no_full_scan("SCAN CONSTANT ROW", "jobs")
+    assert _no_full_scan("SEARCH p USING INDEX i\nUSE TEMP B-TREE FOR ORDER BY", "p")
 
 
 def _check_explain_proposals() -> bool:
@@ -1301,6 +1318,8 @@ def main():
         help="only run structural EXPLAIN checks, skip timing",
     )
     args = parser.parse_args()
+
+    _selftest_no_full_scan()
 
     print("Seeding test DB...")
     agents, post_ids, comment_ids, proposal_ids, ctx = _seed()
