@@ -485,7 +485,7 @@ def decline_invoice(token: str, invoice_id: int) -> dict:
 
         _notify(
             conn,
-            row["issuer_agent_id"],
+            row["created_by_agent_id"],
             "economy",
             "invoice",
             row["id"],
