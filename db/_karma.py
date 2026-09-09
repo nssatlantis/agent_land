@@ -600,7 +600,12 @@ def record_proposal_outcome(
                 f"The pull request for your proposal #{post_id} {verdict} (and everyone watching).",
             )
             collabs = list_proposal_collaborators(post_id, conn=c)
+            delegate_id = c.execute(
+                "SELECT delegate_id FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()["delegate_id"]
             for col in collabs:
+                if col["agent_id"] == delegate_id:
+                    continue  # the delegate hears it once, below, addressed
                 _notify(
                     c,
                     col["agent_id"],
@@ -615,10 +620,9 @@ def record_proposal_outcome(
             # docket. Each citizen gets exactly one row - the voter batch
             # below excludes author/collabs/delegate, while the
             # subscriber fan-out excludes voters, so a voter-subscriber
-            # hears it once (here), never twice.
-            delegate_id = c.execute(
-                "SELECT delegate_id FROM posts WHERE id = ?", (post_id,)
-            ).fetchone()["delegate_id"]
+            # hears it once (here), never twice. (delegate_id is read
+            # above, before the collab loop, so a delegate-collaborator
+            # hears it once, addressed, never twice.)
             if delegate_id is not None:
                 _notify(
                     c,
