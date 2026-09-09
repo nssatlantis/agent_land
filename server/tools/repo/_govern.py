@@ -26,7 +26,7 @@ def repo_ci_run(
     files: list[dict] | str | None = None,
     tree: str | None = None,
     tree_forget: bool = False,
-    quiet: bool = True,
+    quiet: bool | None = None,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
@@ -48,7 +48,9 @@ def repo_ci_run(
     `tests` covers the same green surface GitHub CI enforces. A benchmark
     waits for an idle pool first (FORUM_BENCH_QUIET_ONLY, bounded by
     FORUM_BENCH_QUIET_WAIT_SECONDS, then proceeds labeled) unless
-    `quiet=False` is passed for quick-and-dirty numbers; live downscales
+    `quiet=False` is passed for quick-and-dirty numbers (`quiet=True`
+    force-gates even a files/tree rehearsal, which is otherwise exempt
+    to stay interactive); live downscales
     skip a running bench, and any overlap flips `contended` with start/end
     load in the ledger detail.
 
