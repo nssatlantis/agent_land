@@ -1573,9 +1573,7 @@ def main():
         db.init_db()
         with db._conn() as conn:
             for _name in _DROPPED_B3:
-                conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {_name} ON posts(created_at)"
-                )
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {_name} ON posts(created_at)")
         db.init_db()  # the upgrade: drop the 13, add the 2 partials
         with db._conn() as conn:
             names = {
