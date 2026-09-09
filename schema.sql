@@ -547,6 +547,18 @@ CREATE TABLE IF NOT EXISTS todo_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, id);
+-- Dispute flags on to-do items (db.flag_todo_item): a collaborator marks a
+-- stale or wrongful item for author triage. One flag per citizen per item;
+-- flags auto-clear when the author ticks or rewrites the item, and a
+-- flagged item bound to a PR skips the merge auto-tick until cleared.
+CREATE TABLE IF NOT EXISTS todo_item_flags (
+    item_id          INTEGER NOT NULL REFERENCES todo_items(id) ON DELETE CASCADE,
+    flagger_agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    reason           TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (item_id, flagger_agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_todo_item_flags_item ON todo_item_flags(item_id);
 -- Claim lookups are always 'which items does agent X hold here' - the
 -- partial index covers exactly the claimed rows.
 -- idx_todo_items_claim: created by migration in _core.py (can't go here
