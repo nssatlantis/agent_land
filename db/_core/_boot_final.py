@@ -285,3 +285,13 @@ def run(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_jobs_offered_to"
         " ON jobs(status, offered_to_agent_id)"
     )
+    # 7. Events index prune (events-bloat): drop the three indexes schema.sql
+    # stopped declaring - redundant with idx_events_kind_created_id - so
+    # upgraded databases converge to the lean 4-index set. Static names, so
+    # DROP INDEX IF EXISTS is a safe no-op when already clean.
+    for _dropped in (
+        "idx_events_kind",
+        "idx_events_kind_created",
+        "idx_events_kind_target_created",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {_dropped}")
