@@ -539,7 +539,7 @@ def _fts_match_sql(terms: list[str]) -> str:
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
 
-def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+P1
     """Full-text search over post titles and bodies (SQLite FTS5). Returns the
     same shape as list_posts() plus a `snippet` of the match."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
@@ -566,60 +566,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 """,
                 (match_sql, limit, offset),
             ).fetchall()
-            post_ids = [r["id"] for r in rows]
-            scores: dict[int, int] = {}
-            comment_counts: dict[int, int] = {}
-            proposal_tallies: dict[int, tuple[int, int]] = {}
-            if post_ids:
-                # The bar is only read for proposal hits - skip the
-                # active-citizens recount on all-ordinary result sets.
-                threshold = (
-                    db._proposal_vote_threshold(conn)
-                    if any(r["proposal_kind"] for r in rows)
-                    else 0
-                )
-                placeholders = _placeholders(post_ids)
-                for r in conn.execute(
-                    f"""SELECT target_id, COALESCE(SUM(value), 0) AS total FROM votes
-                       WHERE target_type='post' AND target_id IN ({placeholders})
-                       GROUP BY target_id""",
-                    post_ids,
-                ).fetchall():
-                    scores[r["target_id"]] = r["total"]
-                for r in conn.execute(
-                    f"""SELECT post_id, COUNT(*) AS cnt FROM comments
-                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
-                    post_ids,
-                ).fetchall():
-                    comment_counts[r["post_id"]] = r["cnt"]
-                for r in conn.execute(
-                    f"""SELECT post_id,
-                          SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
-                          SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
-                       FROM proposal_votes
-                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
-                    post_ids,
-                ).fetchall():
-                    proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-            results = []
-            for r in rows:
-                r = dict(r)
-                pid = r["id"]
-                r["score"] = scores.get(pid, 0)
-                r["comment_count"] = comment_counts.get(pid, 0)
-                if r["proposal_kind"]:
-                    up, down = proposal_tallies.get(pid, (0, 0))
-                    r["proposal"] = db._proposal_tally(
-                        up,
-                        down,
-                        small_fix=(r["proposal_kind"] == "small_fix"),
-                        threshold=threshold,
-                    )
-                else:
-                    r["proposal"] = None
-                r["snippet"] = _bounded_snippet(r.pop("highlighted"))
-                results.append(r)
-            return results
+            return _finish_post_search(conn, rows)
         except (
             sqlite3.OperationalError
         ):  # domain: degrade-silently - FTS miss yields no results
@@ -682,9 +629,7 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def search_comments(
-    query: str, limit: int | None = None, offset: int = 0
-) -> list[dict]:
+P3
     """Full-text search over comment bodies (SQLite FTS5), mirroring
     search_posts: results are ranked by relevance (bm25). Returns the comment
     with its author and the post it lives on, so the viewer can link straight
@@ -716,63 +661,7 @@ def search_comments(
             sqlite3.OperationalError
         ):  # domain: degrade-silently - FTS miss yields no results
             return []
-        comment_ids = [r["id"] for r in rows]
-        scores: dict[int, int] = {}
-        if comment_ids:
-            placeholders = _placeholders(comment_ids)
-            for r in conn.execute(
-                f"""SELECT target_id, COALESCE(SUM(value), 0) AS total
-                   FROM votes
-                   WHERE target_type='comment' AND target_id IN ({placeholders})
-                   GROUP BY target_id""",
-                comment_ids,
-            ).fetchall():
-                scores[r["target_id"]] = r["total"]
-        # Batch fetch proposal tallies for comments on proposal posts
-        post_ids = list({r["post_id"] for r in rows})
-        proposal_tallies: dict[int, tuple[int, int]] = {}
-        if post_ids:
-            placeholders = _placeholders(post_ids)
-            proposal_kinds: dict[int, str | None] = {}
-            for r in conn.execute(
-                f"SELECT id, proposal_kind FROM posts WHERE id IN ({placeholders})",
-                post_ids,
-            ).fetchall():
-                proposal_kinds[r["id"]] = r["proposal_kind"]
-            proposal_post_ids = [pid for pid, kind in proposal_kinds.items() if kind]
-            if proposal_post_ids:
-                placeholders = _placeholders(proposal_post_ids)
-                for r in conn.execute(
-                    f"""SELECT post_id,
-                          SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
-                          SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
-                       FROM proposal_votes
-                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
-                    proposal_post_ids,
-                ).fetchall():
-                    proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-        # Hoist threshold lookup outside the loop (N+1 fix); skip it
-        # when no hit sits on a proposal (the loop only reads it then).
-        threshold = db._proposal_vote_threshold(conn) if proposal_tallies else 0
-        results = []
-        for r in rows:
-            r = dict(r)
-            pid = r["id"]
-            r["score"] = scores.get(pid, 0)
-            # Include proposal tally if comment is on a proposal post
-            post_id = r["post_id"]
-            if post_id in proposal_tallies:
-                up, down = proposal_tallies[post_id]
-                r["proposal"] = db._proposal_tally(
-                    up,
-                    down,
-                    small_fix=(proposal_kinds.get(post_id) == "small_fix"),
-                    threshold=threshold,
-                )
-            # Omit proposal key for non-proposal posts (match search_posts semantics)
-            r["snippet"] = _bounded_snippet(r.pop("highlighted"))
-            results.append(r)
-        return results
+        return _finish_comment_search(conn, rows)
 
 
 def search(
