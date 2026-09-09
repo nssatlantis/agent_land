@@ -63,6 +63,7 @@ from server.tools.collab import (  # noqa: F401
     create_todo_list,
     delete_todo_item,
     delete_todo_list,
+    flag_todo_item,
     get_todos,
     join_proposal,
     leave_proposal,
@@ -74,6 +75,7 @@ from server.tools.collab import (  # noqa: F401
     tick_todo_item,
     unclaim_todo_item,
     unclaim_todo_list,
+    unflag_todo_item,
     update_todo_item,
     update_todo_list,
 )
