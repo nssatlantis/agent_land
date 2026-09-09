@@ -50,8 +50,13 @@ def test_transfer_mails_recipient():
     mails = _bodies(recip["token"], kind="economy")
     assert any("sent you 1" in m and "tip" in m for m in mails), mails
     # Treasury intake mails nobody (and crashes nothing).
-    out2 = db.transfer(sender["token"], "treasury", 1.0, note="tit he")
+    before = _bodies(sender["token"], kind="economy")
+    out2 = db.transfer(sender["token"], "treasury", 1.0, note="tithe")
     assert out2["to_treasury"] is True, out2
+    after = _bodies(sender["token"], kind="economy")
+    assert not any("sent you" in m for m in after if m not in before), (
+        "treasury intake must not mail"
+    )
 
 
 def test_pay_invoice_sends_no_transfer_mail():
@@ -160,25 +165,52 @@ def test_verdict_mails_delegate_and_voters_once():
     assert any(
         "you voted on" in m for m in _bodies(AGENTS["delta"]["token"], kind="proposal")
     ), "voters must hear the verdict"
-    zeta_mails = [
+    zeta_rows = [
         n
-        for n in _mail(AGENTS["zeta"]["token"], kind="proposal")["notifications"]
-        if n["ref_id"] == pid
+        for n in _mail(AGENTS["zeta"]["token"])["notifications"]
+        if n["ref_id"] == pid and n["kind"] in ("proposal", "subscription")
     ]
-    assert len(zeta_mails) == 1, (
-        f"voter-subscriber must get exactly one verdict row, got {zeta_mails}"
+    assert len(zeta_rows) == 1, (
+        f"voter-subscriber must get exactly one verdict row, got {zeta_rows}"
     )
+    assert zeta_rows[0]["kind"] == "proposal", (
+        f"the single row is the voter mail, got {zeta_rows}"
+    )
+    # A delegate who is also a collaborator hears it once, addressed.
+    prop2 = db.create_proposal(
+        AGENTS["beta"]["token"], "Verdict collab", "b", collaborative=True
+    )
+    pid2 = prop2["post_id"]
+    db.create_todo_list(AGENTS["beta"]["token"], pid2, "work", [{"text": "x"}])
+    db.join_proposal(AGENTS["gamma"]["token"], pid2)
+    db.delegate_proposal(AGENTS["beta"]["token"], pid2, "gamma")
+    assert (
+        db.record_proposal_outcome(42422, pid2, "merged", "2026-01-01T00:00:00.000Z")
+        is True
+    )
+    gamma_rows = [
+        n
+        for n in _mail(AGENTS["gamma"]["token"])["notifications"]
+        if n["ref_id"] == pid2 and n["kind"] in ("proposal", "subscription")
+    ]
+    assert len(gamma_rows) == 1, (
+        f"delegate-collaborator must get exactly one verdict row, got {gamma_rows}"
+    )
+    assert "assigned to you" in gamma_rows[0]["body"], gamma_rows
 
 
 def test_whoami_carries_invoice_nudge():
     issuer, payer = AGENTS["eta"], AGENTS["theta"]
     _fund(issuer["agent_id"])
     _fund(payer["agent_id"])
+    idle = db.register_agent("gap-idle")
+    assert "invoice_note" not in db.whoami(idle["token"])
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "gap nudge")
     db.accept_invoice(payer["token"], inv["invoice_id"])
     assert "invoice_note" in db.whoami(payer["token"])
     assert "invoice_note" in db.whoami(issuer["token"])
     db.pay_invoice(payer["token"], inv["invoice_id"])
+    assert "invoice_note" not in db.whoami(payer["token"])
 
 
 def test_deposit_line_and_columns():
