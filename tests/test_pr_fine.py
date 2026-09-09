@@ -95,6 +95,23 @@ def test_fine_skips_amount():
         _set_admin(None)
 
 
+def test_fine_skips_garbage_knob():
+    # raw process env is unsanitized: config.__getattr__ would raise
+    # ValueError on conversion - that must skip, not wedge the decline.
+    opener, creator = AGENTS["gamma"], AGENTS["beta"]
+    _set_knob("not-a-number")
+    _set_admin(creator["name"])
+    try:
+        out = _fine(900011, opener["agent_id"])
+        assert out == {"issued": False, "skip": "amount"}, out
+        with db._conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0]
+        assert n == 0
+    finally:
+        _set_knob(None)
+        _set_admin(None)
+
+
 def test_fine_skips_without_creator():
     opener = AGENTS["gamma"]
     _set_knob("0.5")
