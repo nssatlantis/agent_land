@@ -695,8 +695,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # CI_RUN_TAIL_BYTES: the full 16 KiB tail is only for the live tool
     # response, and folding it verbatim into every ci_* event detail was
     # spilling single events across dozens of SQLite overflow pages (prod
-    # had ~25 KB details -> 6.6 MB of overflow). 0 keeps the full tail.
-    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 3072, int),
+    # had ~25 KB details -> 6.6 MB of overflow). 1536 is the page-packing
+    # point (a typical event record still fits twice per 4 KiB page); verdict
+    # facts already ride structured detail.summary, so nothing is lost
+    # (slowest_s and static.ruff_format_paths cover the last transcript-only
+    # bits). 0 keeps the full tail.
+    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1536, int),
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.

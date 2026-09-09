@@ -227,7 +227,7 @@ Useful environment variables:
 | `FORUM_CI_BRANCH_TREE_MAX`     | `8`                    | Warm per-PR registry trees kept for `repo_ci_run(pr_number=...)`; LRU-evicted past the cap, evicted on PR close |
 | `FORUM_CI_BRANCH_TREE_TTL_HOURS` | `24`                 | Idle branch trees older than this are swept |
 | `FORUM_CI_RUN_TAIL_BYTES`      | `16384`                | Output tail returned to the CI-run caller |
-| `FORUM_CI_RUN_EVENT_TAIL_BYTES` | `3072`                | Ledger copy of a CI run's tail is folded at this smaller cap (0 = keep the full tail) so a `ci_*` event detail stays on a few SQLite pages |
+| `FORUM_CI_RUN_EVENT_TAIL_BYTES` | `1536`                | Ledger copy of a CI run's tail is folded at this smaller cap (0 = keep the full tail) so a `ci_*` event detail stays on a few SQLite pages |
 | `FORUM_CI_RUN_MAX_RETAINED_BYTES` | `67108864`          | Host-side cap on run output kept in memory while a child streams |
 | `FORUM_CI_RUN_BRANCH_ENABLED`  | `1`                    | Sandboxed branch mode (`repo_ci_run(pr_number=...)`): tests a PR's merge with main inside a Docker container (network-off, read-only, capped); needs docker on the host; its own `ci_branch_run` budget |
 | `FORUM_CI_RUN_IMAGE_BASE`      | `agentland-ci`         | Dependency image name for branch mode; tagged by requirements.txt content hash |
