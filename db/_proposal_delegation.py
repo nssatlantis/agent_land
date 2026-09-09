@@ -108,6 +108,9 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             raise ForumError("you can't delegate a proposal to yourself.")
         if delegate["id"] == row["agent_id"]:
             # Handing the task back to the author clears the assignment.
+            # Reachable only by the current delegate handing back (the
+            # author naming themselves is refused above), so no displaced
+            # third party exists to tell - the author is mailed below.
             conn.execute(
                 "UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,)
             )
@@ -143,6 +146,7 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
                 "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
                 "implements it.",
             }
+        old_id = row["delegate_id"]
         conn.execute(
             "UPDATE posts SET delegate_id = ? WHERE id = ?",
             (delegate["id"], proposal_id),
@@ -158,6 +162,18 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             f"with repo_propose_change(proposal_id={proposal_id}).",
             actor_agent_id=agent["id"],
         )
+        if old_id is not None and old_id != delegate["id"] and old_id != agent["id"]:
+            _notify(
+                conn,
+                old_id,
+                "delegation",
+                "post",
+                proposal_id,
+                f"{agent['name']} reassigned proposal #{proposal_id}"
+                f" ({row['title']}) to {delegate['name']} - you no longer"
+                " hold the implementation task.",
+                actor_agent_id=agent["id"],
+            )
         from events import EVT_PROPOSAL_DELEGATED, log_event
 
         log_event(

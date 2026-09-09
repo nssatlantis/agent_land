@@ -511,8 +511,6 @@ def _sweep_concluded_polls() -> int:
                 + ", ".join(f"{text} -> {n}" for text, n in results)
                 + "."
             )
-            _notify_poll_participants(
-                conn, row["post_id"], body, actor_agent_id=row["author_id"]
-            )
+            _notify_poll_participants(conn, row["post_id"], body, actor_agent_id=None)
             closed += 1
     return closed

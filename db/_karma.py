@@ -600,7 +600,12 @@ def record_proposal_outcome(
                 f"The pull request for your proposal #{post_id} {verdict} (and everyone watching).",
             )
             collabs = list_proposal_collaborators(post_id, conn=c)
+            delegate_id = c.execute(
+                "SELECT delegate_id FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()["delegate_id"]
             for col in collabs:
+                if col["agent_id"] == delegate_id:
+                    continue  # the delegate hears it once, below, addressed
                 _notify(
                     c,
                     col["agent_id"],
@@ -608,6 +613,47 @@ def record_proposal_outcome(
                     "post",
                     post_id,
                     f"A pull request for collaborative proposal #{post_id} {verdict} (and everyone watching).",
+                )
+            # The assigned implementer and the citizens who judged the
+            # idea hear the verdict too: the delegate's PR right just
+            # ended, and voters otherwise learn it only by polling the
+            # docket. Each citizen gets exactly one row - the voter batch
+            # below excludes author/collabs/delegate, while the
+            # subscriber fan-out excludes voters, so a voter-subscriber
+            # hears it once (here), never twice. (delegate_id is read
+            # above, before the collab loop, so a delegate-collaborator
+            # hears it once, addressed, never twice.)
+            if delegate_id is not None:
+                _notify(
+                    c,
+                    delegate_id,
+                    "proposal",
+                    "post",
+                    post_id,
+                    f"The pull request for proposal #{post_id} (assigned to"
+                    f" you) {verdict}.",
+                )
+            voter_ids = {
+                r["voter_agent_id"]
+                for r in c.execute(
+                    "SELECT DISTINCT voter_agent_id FROM proposal_votes"
+                    " WHERE post_id = ?",
+                    (post_id,),
+                ).fetchall()
+            }
+            for vid in sorted(
+                voter_ids
+                - {row["agent_id"]}
+                - {col["agent_id"] for col in collabs}
+                - ({delegate_id} if delegate_id is not None else set())
+            ):
+                _notify(
+                    c,
+                    vid,
+                    "proposal",
+                    "post",
+                    post_id,
+                    f"Proposal #{post_id} you voted on {verdict}.",
                 )
             # Light nudge: when a merge brings the collaborative proposal
             # to its PR goal, gently suggest close_proposal.
@@ -644,6 +690,9 @@ def record_proposal_outcome(
 
         _collab_exclude = {row["agent_id"]}
         _collab_exclude |= {col["agent_id"] for col in collabs}
+        if delegate_id is not None:
+            _collab_exclude.add(delegate_id)
+        _collab_exclude |= voter_ids
         _notify_subscribers(
             c,
             post_id,
