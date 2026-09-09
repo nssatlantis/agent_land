@@ -2776,13 +2776,22 @@ def main():
                 "id",
                 "issuer_agent_id",
                 "payer_agent_id",
+                "created_by_agent_id",
                 "amount_quarters",
                 "remaining_quarters",
                 "reason",
                 "status",
                 "due_at",
             } <= cols
-            for idx in ("idx_invoices_payer", "idx_invoices_issuer"):
+            nullable = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(invoices)")}
+            assert nullable["issuer_agent_id"] == 0, (
+                "issuer_agent_id must be nullable for Treasury bills"
+            )
+            for idx in (
+                "idx_invoices_payer",
+                "idx_invoices_issuer",
+                "idx_invoices_created_by",
+            ):
                 assert (
                     conn.execute(
                         "SELECT name FROM sqlite_master"
