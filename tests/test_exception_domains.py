@@ -77,6 +77,7 @@ FILE_LIST = (
     "db/_karma.py",
     "db/_text.py",
     "db/_health.py",
+    "db/_invoices.py",
     "db/_aggregates.py",
     "db/_ci_usage.py",
     "db/_cooldown.py",
