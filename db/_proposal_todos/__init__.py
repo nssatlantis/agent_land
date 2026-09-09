@@ -2,7 +2,8 @@
 
 Split package (moved verbatim from db/_proposal_todos.py): _claims holds the
 claim lifecycle, _edits the todo_edits compact engine, _reads the board
-readers, _mutations the board writers. This facade re-exports every name so
+readers, _mutations the board writers, _flags the dispute flags. This facade
+re-exports every name so
 all existing importers (db/__init__, sibling modules, deploy scripts, tests)
 keep working unchanged.
 """
@@ -40,6 +41,12 @@ from ._edits import (  # noqa: F401
     _todo_edits_batch,
     _todo_edits_for,
     _trim_snapshot,
+)
+from ._flags import (  # noqa: F401
+    _clear_item_flags,
+    _flags_for_items,
+    flag_todo_item,
+    unflag_todo_item,
 )
 from ._mutations import (  # noqa: F401
     _check_todo_write_access,
