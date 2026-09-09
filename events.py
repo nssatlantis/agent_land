@@ -922,20 +922,25 @@ def bench_anchor_base_for(
 
 
 def bench_native_series(
-    events_rows: list[dict], limit: int = 7
+    events_rows: list[dict], limit: int = 7, native_only: bool = True
 ) -> dict[str, list[float]]:
-    """Newest-first per-query median series over native runs only (last
-    `limit` points each), for trend display. Empty when no native run
-    carries medians."""
-    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    """Newest-first per-query median series (last `limit` points each), for
+    trend display. Native origin/main runs only by default; native_only=False
+    includes branch and local runs (agent tooling overviews). Empty when no
+    covered run carries medians."""
+    pool = (
+        [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+        if native_only
+        else list(events_rows)
+    )
     names: set[str] = set()
-    for ev in native:
+    for ev in pool:
         meds = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY)
         if isinstance(meds, dict):
             names.update(str(q) for q in meds)
     out: dict[str, list[float]] = {}
     for q in names:
-        series = bench_medians_for(native, q)[: max(1, limit)]
+        series = bench_medians_for(pool, q)[: max(1, limit)]
         if series:
             out[q] = series
     return out
