@@ -496,6 +496,15 @@ async def _pr_outcome_poller() -> None:
             # housekeeping; a failed pass retries on the next poll tick.
             pass  # the job sweep must never stall the poller
         try:
+            # Invoices (small_fix #341): fire the 50/25/10% due-window
+            # reminders plus the one-time overdue ping for accepted,
+            # unpaid invoices. Flag-guarded and idempotent inside.
+            db._invoices.sweep_invoice_reminders()
+        except (
+            Exception
+        ):  # domain: degrade-silently - reminders are advisory; retry next tick
+            pass  # the invoice sweep must never stall the poller
+        try:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper
             # takes a conn, and the job sweep just above sets the precedent.
