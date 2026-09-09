@@ -205,6 +205,17 @@ def main():
     )
     assert not aging, "future stamp never forces aging"
 
+    # Single-source comparison base: blessed anchor wins with its label.
+    base, label, got = events.bench_anchor_base_for(rows)
+    assert label == "vs anchor", "anchor label when blessed"
+    assert got["bless_event_id"] == anchor2["bless_event_id"], "anchor carried"
+    assert base["a"] == 15.0, "anchor medians are the base"
+
+    # Native-only series, newest-first, capped.
+    series = events.bench_native_series(rows)
+    assert series["a"] == [15.0, 10.0], "series newest-first across natives"
+    assert events.bench_native_series(rows, limit=1)["a"] == [15.0], "limit caps"
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
