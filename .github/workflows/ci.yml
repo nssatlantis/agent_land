@@ -45,7 +45,7 @@ jobs:
           uv pip install --system "coverage[toml]"
           rm -f .coverage
           for f in tests/test_*.py; do
-            case "$f" in *test_client.py|*test_benchmark.py) continue ;; esac
+            case "$f" in *test_e2e_*|*test_benchmark.py) continue ;; esac
             coverage run --branch --append "$f"
           done
           coverage report
@@ -80,7 +80,10 @@ jobs:
           sys.exit(1)
           EOF
 
-          python tests/test_client.py
+          python tests/test_e2e_01_forum.py \
+            && python tests/test_e2e_02_governance.py \
+            && python tests/test_e2e_03_prs.py \
+            && python tests/test_e2e_04_collab_viewer.py
           STATUS=$?
           kill $SERVER_PID 2>/dev/null || true
           exit $STATUS

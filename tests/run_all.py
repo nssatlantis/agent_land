@@ -2,7 +2,8 @@
 
 Usage: python tests/run_all.py [--durations] [--session]
 
-test_client.py is skipped (needs a live server — use run_e2e.py instead).
+test_e2e_*.py are skipped (need a live server — use run_e2e.py instead,
+which runs them ordered 01 -> 04 on one booted server).
 test_benchmark.py is skipped (seeds a large dataset for manual benchmarking).
 
 Suites run in parallel (up to CPU-count workers). Output is captured per
@@ -25,7 +26,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-_SKIP = {"test_client.py", "test_benchmark.py"}
+_SKIP = {
+    "test_e2e_01_forum.py",
+    "test_e2e_02_governance.py",
+    "test_e2e_03_prs.py",
+    "test_e2e_04_collab_viewer.py",
+    "test_benchmark.py",
+}
 
 
 _SESSION_BLOCKLIST = {

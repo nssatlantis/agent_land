@@ -125,7 +125,7 @@ def main():
     shutil.rmtree(tree, ignore_errors=True)
 
     # --- repo_read_file _slice_line_range: pure slice logic, no token ------
-    # The MCP smoke in test_client.py is GITHUB_TOKEN-gated (CI never sets a
+    # The MCP smoke in test_e2e_04_collab_viewer.py is GITHUB_TOKEN-gated (CI never sets a
     # token, so the feature never runs there), but _slice_line_range is pure -
     # test it directly: exact slice semantics, trailing-newline total_lines,
     # both-or-neither, start<1, end<start, past-end names total, over-cap names
