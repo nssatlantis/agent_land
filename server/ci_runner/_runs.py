@@ -203,7 +203,9 @@ def _inflight_snapshot() -> list[dict]:
     return sorted(rows, key=lambda r: r["started_at"], reverse=True)
 
 
-def _wait_for_quiet(timeout_s: float) -> tuple[bool, float]:
+def _wait_for_quiet(
+    timeout_s: float, except_agent_id: int | None = None
+) -> tuple[bool, float]:
     """Poll is_pool_quiet() until the pool idles or the timeout lapses.
 
     Returns (became_quiet, waited_seconds). Check-first so an idle pool
@@ -215,7 +217,7 @@ def _wait_for_quiet(timeout_s: float) -> tuple[bool, float]:
     timeout is not an error: the caller proceeds with quiet_wait_expired
     marked, because a labeled number beats no number."""
     start = time.monotonic()
-    if _slots_mod.is_pool_quiet():
+    if _slots_mod.is_pool_quiet(except_agent_id):
         return True, 0.0
     deadline = start + max(0.0, timeout_s)
     while True:
@@ -223,7 +225,7 @@ def _wait_for_quiet(timeout_s: float) -> tuple[bool, float]:
         if remaining <= 0:
             break
         time.sleep(min(_QUIET_POLL_SECONDS, remaining))
-        if _slots_mod.is_pool_quiet():
+        if _slots_mod.is_pool_quiet(except_agent_id):
             return True, round(time.monotonic() - start, 2)
     return False, round(time.monotonic() - start, 2)
 
@@ -262,6 +264,13 @@ def _bench_quiet_wait() -> float:
         return 0.0
 
 
+def _should_gate_bench(checks: str, quiet: bool | None, local_mode: bool) -> bool:
+    """Tri-state gate policy, factored for tests: None (default) gates
+    benches but keeps local files/tree rehearsal interactive; True
+    force-gates even local; False skips the wait entirely."""
+    return checks in _BENCH_CHECKS and (quiet or (quiet is None and not local_mode))
+
+
 def run_checks_with_deadline(
     soft_seconds: int,
     agent_id: int,
@@ -270,7 +279,7 @@ def run_checks_with_deadline(
     pr_number: int | None = None,
     files: list[dict] | None = None,
     tree: str | None = None,
-    quiet: bool = True,
+    quiet: bool | None = None,
 ) -> tuple[dict | None, bool, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
@@ -331,7 +340,7 @@ def run_checks(
     pr_number: int | None = None,
     files: list[dict] | None = None,
     tree: str | None = None,
-    quiet: bool = True,
+    quiet: bool | None = None,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -386,9 +395,12 @@ def run_checks(
     is_bench = checks in _BENCH_CHECKS
     quiet_wait_expired = False
     quiet_wait_s = 0.0
+    # Tri-state quiet (see _should_gate_bench): None gates benches but
+    # keeps local rehearsal interactive; True force-gates; False skips.
+    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
     _quiet_budget = _bench_quiet_wait()
-    if is_bench and quiet and not local_mode and _quiet_budget > 0:
-        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget)
+    if _gate_bench and _quiet_budget > 0:
+        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
         quiet_wait_expired = not became_quiet
     bench_attest: dict = {}
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
@@ -471,6 +483,13 @@ def run_checks(
                     "output_tail": "",
                     "output_truncated": False,
                 }
+                if is_bench:
+                    # No measurement happened, but callers branching on the
+                    # flags must not KeyError: a conflict is not a quiet run.
+                    payload["quiet"] = False
+                    payload["contended"] = True
+                    payload["quiet_wait_s"] = quiet_wait_s
+                    payload["quiet_wait_expired"] = quiet_wait_expired
                 try:
                     events.log_event(
                         kind_event,
@@ -483,6 +502,16 @@ def run_checks(
                             "pr_number": pr_number,
                             "head_sha": head_sha,
                             "duration_seconds": duration,
+                            **(
+                                {
+                                    "quiet": False,
+                                    "contended": True,
+                                    "quiet_wait_s": quiet_wait_s,
+                                    "quiet_wait_expired": quiet_wait_expired,
+                                }
+                                if is_bench
+                                else {}
+                            ),
                         },
                     )
                 except Exception:
@@ -598,8 +627,20 @@ def run_checks(
             bench_attest["quiet"] = not quiet_wait_expired and (
                 isinstance(start_busy, int) and start_busy <= 1
             )
-            bench_attest["contended"] = quiet_wait_expired or (
-                isinstance(end_busy, int) and end_busy > 1
+            try:
+                with _slots_mod._ACTIVE_LOCK:
+                    hit = slot in _slots_mod._BENCH_HIT
+            except Exception:
+                hit = False  # domain: degrade-silently - latch read best-effort
+            # Missing data fails toward dirty, never clean: an unreadable
+            # end-state must not pass a contended==False filter (mirrors
+            # is_pool_quiet's fail-toward-busy rule). The latch catches
+            # transient mid-run overlap the endpoints miss.
+            bench_attest["contended"] = (
+                quiet_wait_expired
+                or hit
+                or not isinstance(end_busy, int)
+                or end_busy > 1
             )
             bench_attest["quiet_wait_s"] = quiet_wait_s
             bench_attest["quiet_wait_expired"] = quiet_wait_expired
