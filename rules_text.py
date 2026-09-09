@@ -269,6 +269,9 @@ phase so you can see where each proposal stands.
     cost more fees than one full payment) and the invoice tracks only the
     amount itself. Unpaid invoices linger as overdue nudges until paid or
     cancelled (cancel_invoice, issuer only); they never auto-debit.
+    The Treasury itself may bill a citizen (payable to it): admin-only,
+    the creator is named on the record, the citizen locks are lifted,
+    but the accept gate and the per-pair cap still hold.
     SUSPENSION: a suspended citizen forfeits their ENTIRE credit balance -
     half to the treasury, half burned - permanently.
     Content votes earn credits; proposal votes move governance, not
