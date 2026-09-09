@@ -156,6 +156,21 @@ def test_accept_decline():
     out = db.accept_invoice(payer["token"], inv["invoice_id"])
     assert out["status"] == "accepted", out
     assert out["accepted_at"] is not None, out
+    # The accept mail must say accepted (not declined), and the full
+    # 7-day window must restart at acceptance.
+    acc_mails = [
+        n
+        for n in _mail(issuer["token"], kind="economy")["notifications"]
+        if n["ref_id"] == inv["invoice_id"]
+    ]
+    assert any("accepted" in m["body"] for m in acc_mails), acc_mails
+    assert not any("declined" in m["body"] for m in acc_mails), acc_mails
+    from db._core import _parse_iso
+
+    window = (
+        _parse_iso(out["due_at"]) - _parse_iso(out["accepted_at"])
+    ).total_seconds()
+    assert 604700 < window < 604900, window
     twice = expect_error(db.accept_invoice, payer["token"], inv["invoice_id"])
     assert "already accepted" in twice, twice
     nodec = expect_error(db.decline_invoice, payer["token"], inv["invoice_id"])
@@ -169,6 +184,81 @@ def test_accept_decline():
     assert "declined" in gone, gone
     gone2 = expect_error(db.accept_invoice, payer["token"], inv2["invoice_id"])
     assert "already declined" in gone2, gone2
+
+
+def test_late_accept_restarts_window():
+    # Accepting days after creation still yields a full window (the due
+    # date anchors at acceptance, never at creation).
+    issuer, payer = AGENTS["zeta"], AGENTS["theta"]
+    _fund(issuer["agent_id"], 40)
+    inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "slow accept")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE invoices SET created_at = ?, due_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00.000Z", "2026-01-08T00:00:00.000Z", inv["invoice_id"]),
+        )
+    out = db.accept_invoice(payer["token"], inv["invoice_id"])
+    assert out["days_left"] == 7, out
+    db.cancel_invoice(issuer["token"], inv["invoice_id"])
+
+
+def test_reminder_jump_collapses():
+    # A 60%-to-5% jump between ticks notifies once (lowest threshold)
+    # while setting every crossed flag.
+    issuer, payer = AGENTS["eta"], AGENTS["delta"]
+    _fund(issuer["agent_id"], 40)
+    _fund(payer["agent_id"], 40)
+    inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "jump bill")
+    db.accept_invoice(payer["token"], inv["invoice_id"])
+    _backdate(inv["invoice_id"], 9.5, 10.0)
+    assert db.sweep_invoice_reminders() == {"reminded": 1, "overdue": 0}
+    mails = [
+        n
+        for n in _mail(payer["token"], kind="economy")["notifications"]
+        if n["ref_id"] == inv["invoice_id"] and "window" in n["body"]
+    ]
+    assert len(mails) == 1 and "10%" in mails[0]["body"], mails
+    with db._conn() as conn:
+        flags = conn.execute(
+            "SELECT reminded_50, reminded_25, reminded_10 FROM invoices WHERE id = ?",
+            (inv["invoice_id"],),
+        ).fetchone()
+    assert tuple(flags) == (1, 1, 1), tuple(flags)
+    db.pay_invoice(payer["token"], inv["invoice_id"])
+
+
+def test_pay_amount_validation():
+    issuer, payer = AGENTS["theta"], AGENTS["zeta"]
+    _fund(issuer["agent_id"], 40)
+    _fund(payer["agent_id"], 40)
+    inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "validation")
+    db.accept_invoice(payer["token"], inv["invoice_id"])
+    zero = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 0.0)
+    assert "positive" in zero, zero
+    neg = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], -1.0)
+    assert "positive" in neg, neg
+    db.pay_invoice(payer["token"], inv["invoice_id"])
+
+
+def test_treasury_per_agent_lift():
+    # Treasury bills skip the per-agent cap: more than 4 open to
+    # distinct payers is fine (the per-pair cap still holds).
+    creator = AGENTS["epsilon"]
+    names = [f"inv-lift-{c}" for c in "abcde"]
+    for name in names:
+        try:
+            db.register_agent(name)
+        except Exception:  # name already taken on a rerun — reuse it
+            pass
+    bills = [
+        db.create_invoice(
+            creator["token"], name, 0.5, f"lift {name}", from_treasury=True
+        )
+        for name in names
+    ]
+    assert all(b["status"] == "pending" for b in bills), bills
+    for b in bills:
+        db.cancel_invoice(creator["token"], b["invoice_id"])
 
 
 def test_pay_full_and_partial():
@@ -470,6 +560,10 @@ if __name__ == "__main__":
         test_cancel_and_privacy,
         test_no_auto_debit,
         test_reminders_and_overdue,
+        test_late_accept_restarts_window,
+        test_reminder_jump_collapses,
+        test_pay_amount_validation,
+        test_treasury_per_agent_lift,
         test_treasury_issue_and_pay,
         test_treasury_guards,
         test_treasury_decline_notifies_creator,
