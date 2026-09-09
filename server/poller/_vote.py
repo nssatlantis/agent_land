@@ -273,6 +273,7 @@ def _ensure_local_branch_ok(
 
 def _pr_vote_sweep(
     open_prs: list[dict] | None = None,
+    checks_cache: dict[int, dict] | None = None,
 ) -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
@@ -315,6 +316,11 @@ def _pr_vote_sweep(
     ``github.open_prs()``.  When provided the sweep skips its own fetch,
     saving one GitHub API call (the caller and the CI-failure sweep share
     the same list).
+
+    ``checks_cache`` is an optional shared per-tick dict of tiered-checks
+    results: numbers already present are reused and fresh fetches are
+    stored back, so the poller's three checks consumers share one fetch
+    pool per tick (None keeps standalone behavior).
 
     Returns a list of actions taken (for logging)."""
 
@@ -376,21 +382,31 @@ def _pr_vote_sweep(
     # supersede_proposal refuses while any PR is in flight, so the parent
     # can only lock after the PR was closed by hand (karma-neutral).
     # Runs before the small-fix merge filter below so holds on regular
-    # (non-small-fix) proposals are lifted too.
+    # (non-small-fix) proposals are lifted too. Hold membership is one
+    # batched read: two IN queries on a single connection for the whole
+    # candidate list, not two connections per candidate.
+    _hold_numbers = [pr["number"] for pr, _, _ in candidates]
+    _marks = ",".join("?" * len(_hold_numbers))
+    with db._conn() as conn:
+        applied = {
+            r[0]
+            for r in conn.execute(
+                "SELECT target_id FROM events WHERE kind = ?"
+                f" AND target_type = 'pr' AND target_id IN ({_marks})",
+                (EVT_PR_HOLD_APPLIED, *_hold_numbers),
+            ).fetchall()
+        }
+        released = {
+            r[0]
+            for r in conn.execute(
+                "SELECT target_id FROM events WHERE kind = ?"
+                f" AND target_type = 'pr' AND target_id IN ({_marks})",
+                (EVT_PR_HOLD_RELEASED, *_hold_numbers),
+            ).fetchall()
+        }
     for pr, opener, proposal_post_id in list(candidates):
         number = pr["number"]
-        with db._conn() as conn:
-            applied_row = conn.execute(
-                "SELECT 1 FROM events WHERE kind = ? AND"
-                " target_type = 'pr' AND target_id = ? LIMIT 1",
-                (EVT_PR_HOLD_APPLIED, number),
-            ).fetchone()
-            released_row = conn.execute(
-                "SELECT 1 FROM events WHERE kind = ? AND"
-                " target_type = 'pr' AND target_id = ? LIMIT 1",
-                (EVT_PR_HOLD_RELEASED, number),
-            ).fetchone()
-        if applied_row is None or released_row is not None:
+        if number not in applied or number in released:
             continue  # never held, or already released
         try:
             state = db.proposal_vote_state(proposal_post_id)
@@ -554,19 +570,32 @@ def _pr_vote_sweep(
         # pool below run only when that knob re-enables it, and then only for
         # PRs where GH is not success and only after GH has been awaited
         # (keeping the hybrid OR-gate without the one-double-per-head overlap).
-        gh_pool_size = min(8, len(candidates))
-        with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
-            gh_futures = {
-                gh_pool.submit(github.pr_checks, pr["number"]): pr["number"]
-                for pr, _, _ in candidates
-            }
-            for fut in as_completed(gh_futures):
-                num = gh_futures[fut]
-                try:
-                    gh_results[num] = fut.result()
-                except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
-                    gh_errors[num] = exc
-                    logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
+        # Numbers already in the shared per-tick cache are reused; only
+        # misses fan out a pool.
+        if checks_cache is not None:
+            for pr, _, _ in candidates:
+                if pr["number"] in checks_cache:
+                    gh_results[pr["number"]] = checks_cache[pr["number"]]
+        missing = [
+            pr["number"] for pr, _, _ in candidates if pr["number"] not in gh_results
+        ]
+        if missing:
+            gh_pool_size = min(8, len(missing))
+            with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
+                gh_futures = {
+                    gh_pool.submit(github.pr_checks, num): num for num in missing
+                }
+                for fut in as_completed(gh_futures):
+                    num = gh_futures[fut]
+                    try:
+                        gh_results[num] = fut.result()
+                    except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
+                        gh_errors[num] = exc
+                        logutil.log(
+                            "ci_check_batch_error", pr_number=num, error=str(exc)
+                        )
+        if checks_cache is not None:
+            checks_cache.update(gh_results)
         # Local fallback: only for candidates where GH is not success.
         # Dedup via pending_locals (already excludes pending_prs + ledger cache)
         # plus a second filter after GH: skip locals where GH already success.
