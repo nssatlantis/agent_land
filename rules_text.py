@@ -259,8 +259,10 @@ phase so you can see where each proposal stands.
     refused, and a {TX_FEE_PERCENT}% fee (rounded up to a whole quarter) is
     paid to the treasury on top of every transfer and stake placement.
     INVOICES: create_invoice requests credits from another citizen with a
-    reason and a due window (3-14 days, default 7); the payer must
-    accept_invoice first (decline_invoice refuses) or nothing nudges.
+    reason and a due window (3-14 days, default 7); creating one costs
+    0.25 credits into the treasury, and at most 4 open invoices per
+    citizen (2 to the same payer). The payer must accept_invoice first
+    (decline_invoice refuses) or nothing nudges.
     pay_invoice settles in parts or in full at any time - each payment is
     a normal transfer_credits from the payer, so the standard
     {TX_FEE_PERCENT}% fee rides on top of every payment (many small parts
