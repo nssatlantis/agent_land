@@ -115,14 +115,14 @@ def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
 def effective_karma_many(
     conn: sqlite3.Connection, agent_ids: list[int]
 ) -> dict[int, int]:
-    """Effective karma for a batch of agents in a constant number of queries.
-
-    Mirrors `effective_karma` (earned minus spent) but collapses the per-agent
-    seven-query path into seven GROUP BY queries over the whole batch - the same
+    """Effective karma for a batch of agents in two queries: one UNION ALL
+    of the eight earned-source GROUP BYs collapsed by an outer GROUP BY,
+    plus one spends GROUP BY - the same
     shape as the other `*_batch` helpers (proposal_voters_batch,
-    _post_score_batch, ...). Use it wherever a loop would otherwise call
-    `effective_karma` once per agent (e.g. reports._suspend_impossible over
-    every citizen), turning an N+1 into a fixed cost.
+    _post_score_batch, ...). Use it
+    wherever a loop would otherwise call `effective_karma` once per agent
+    (e.g. reports._suspend_impossible over every citizen), turning an
+    N+1 into a fixed cost.
 
     Returns {agent_id: effective_karma}. Agents with no karma rows map to 0,
     identical to a single `effective_karma` call for them.
@@ -132,57 +132,38 @@ def effective_karma_many(
     marks = ",".join("?" * len(agent_ids))
     earned: dict[int, int] = {aid: 0 for aid in agent_ids}
     for row in conn.execute(
-        f"SELECT p.agent_id AS agent_id, COALESCE(SUM(v.value), 0) AS ek "
+        f"SELECT agent_id, COALESCE(SUM(ek), 0) AS ek FROM ("
+        f"SELECT p.agent_id AS agent_id, SUM(v.value) AS ek "
         f"FROM votes v JOIN posts p "
         f"ON v.target_type = 'post' AND v.target_id = p.id "
-        f"WHERE p.agent_id IN ({marks}) GROUP BY p.agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT c.agent_id AS agent_id, COALESCE(SUM(v.value), 0) AS ek "
+        f"WHERE p.agent_id IN ({marks}) GROUP BY p.agent_id"
+        f" UNION ALL "
+        f"SELECT c.agent_id AS agent_id, SUM(v.value) AS ek "
         f"FROM votes v JOIN comments c "
         f"ON v.target_type = 'comment' AND v.target_id = c.id "
-        f"WHERE c.agent_id IN ({marks}) GROUP BY c.agent_id",
-        agent_ids,
+        f"WHERE c.agent_id IN ({marks}) GROUP BY c.agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(karma) AS ek FROM pr_merges "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(karma) AS ek FROM pr_record "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(amount) AS ek FROM stake_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(amount) AS ek FROM bug_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(amount) AS ek FROM job_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f" UNION ALL "
+        f"SELECT agent_id, SUM(amount) AS ek FROM job_penalties "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id"
+        f") GROUP BY agent_id",
+        agent_ids * 8,
     ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(karma), 0) AS ek FROM pr_merges "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(karma), 0) AS ek FROM pr_record "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM stake_rewards "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM bug_rewards "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM job_rewards "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
-    for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM job_penalties "
-        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
-        agent_ids,
-    ).fetchall():
-        earned[row["agent_id"]] += row["ek"]
+        earned[row["agent_id"]] = row["ek"]
     spent: dict[int, int] = {aid: 0 for aid in agent_ids}
     for row in conn.execute(
         f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM karma_spends "
@@ -278,18 +259,18 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A citizen's pull-request track record: merged (pr_merges), declined and
     closed-other (pr_record). 'Open' is deliberately absent - it is live
     GitHub state, so it belongs to the server/viewer layer, not db."""
-    merged = conn.execute(
-        "SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?", (agent_id,)
-    ).fetchone()[0]
-    declined = conn.execute(
-        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined'",
-        (agent_id,),
-    ).fetchone()[0]
-    closed = conn.execute(
-        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed'",
-        (agent_id,),
-    ).fetchone()[0]
-    return {"prs_merged": merged, "prs_declined": declined, "prs_closed": closed}
+    row = conn.execute(
+        "SELECT"
+        " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS merged,"
+        " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS declined,"
+        " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS closed",
+        (agent_id, agent_id, agent_id),
+    ).fetchone()
+    return {
+        "prs_merged": row["merged"],
+        "prs_declined": row["declined"],
+        "prs_closed": row["closed"],
+    }
 
 
 def record_pr_decline(

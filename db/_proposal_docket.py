@@ -138,7 +138,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
         LEFT JOIN agents ca ON ca.id = pc.agent_id
         LEFT JOIN store_entitlements seca ON seca.agent_id = ca.id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
-        ORDER BY p.created_at DESC
+        ORDER BY p.created_at DESC, p.id ASC
         """
 
 
@@ -182,7 +182,9 @@ def _proposal_rows(
     # reads them, and the tally/status/stake fields it does read are all
     # fetched above.
     if not for_counts:
-        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
+        all_pr_nums = sorted(
+            {pr["pr_number"] for prs in prs_by_post.values() for pr in prs}
+        )
         pr_vote_tallies = (
             _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         )
@@ -669,7 +671,10 @@ def list_proposals(
             return rows
     with _conn() as conn:
         rows = _proposal_rows(conn, "", ())
-    rows = [p for p in rows if _proposal_matches_view(p, view)]
+    # view=="all" matches everything (_proposal_matches_view returns True),
+    # so skip the O(N) pass; the comprehensions below preserve SQL order.
+    if view != "all":
+        rows = [p for p in rows if _proposal_matches_view(p, view)]
     if collaborative is not None:
         val = collaborative.lower()
         if val in ("any", "all"):
@@ -682,8 +687,10 @@ def list_proposals(
             key=lambda p: (p["net"], p["created_at"], p["id"]),
             reverse=True,
         )
-    else:
-        rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
+    # sort=="newest" needs no Python re-sort: the base SELECT already
+    # orders by created_at DESC, id ASC - exactly what the old
+    # (created_at, -id)/reverse=True key produced - and every filter
+    # above preserves that order.
     offset = max(0, int(offset))
     if limit is not None:
         return rows[offset : offset + max(1, int(limit))]
