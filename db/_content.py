@@ -29,11 +29,9 @@ from db._proposal_status import (
     _proposal_edits_batch,
     _proposal_edits_for,
     _proposal_locked_error,
-    _proposal_opener_sql,
     _proposal_pr_history,
     _proposal_pr_history_map,
     _proposal_stale,
-    _proposal_status_for,
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_tally_for,
@@ -225,6 +223,9 @@ def list_posts(
         if sort == "newest"
         else "ORDER BY COALESCE(vn.net, 0) DESC, p.created_at DESC, p.id DESC"
     )
+    # Top-sort pages already join each row's net votes (score_join above);
+    # select it once so the page need not re-aggregate the same GROUP BY.
+    net_select = ", COALESCE(vn.net, 0) AS net" if sort == "top" else ""
     with _conn() as conn:
         if tag is not None:
             tag_row = conn.execute(
@@ -249,7 +250,7 @@ def list_posts(
                    d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name,
-                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
+                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview{net_select}
             FROM posts p JOIN agents a ON a.id = p.agent_id
             LEFT JOIN agents d ON d.id = p.delegate_id
             LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
@@ -264,7 +265,9 @@ def list_posts(
             params,
         ).fetchall()
         ids = [r["id"] for r in rows]
-        scores = _post_score_batch(conn, ids)
+        # Top-sort already selected each row's net (net_select above) -
+        # re-running the same GROUP BY would aggregate twice per page.
+        scores = {} if sort == "top" else _post_score_batch(conn, ids)
         comment_counts = _comment_count_batch(conn, ids)
         activities = _last_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, ids)
@@ -279,7 +282,7 @@ def list_posts(
         out = []
         for r in rows:
             d = dict(r)
-            d["score"] = scores.get(d["id"], 0)
+            d["score"] = d.pop("net", 0) if sort == "top" else scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
             d["poll"] = polls_by_post.get(d["id"])
@@ -456,19 +459,15 @@ def get_post(
                    p.supersedes_id, p.superseded_by_id, p.version,
                    p.collaborative, p.claimable,
                    p.collaborative_closed, p.pr_goal,
-                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
-                   ca.name AS claim_name,
-                   {opener_sql} AS opened_by_agent_id,
-                   {opener_name_sql} AS opened_by_name
+                   ca.name AS claim_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN agents d ON d.id = p.delegate_id
             LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
             LEFT JOIN agents ca ON ca.id = pc.agent_id
             WHERE p.id = ?
-            """.format(
-                opener_sql=_proposal_opener_sql("p"),
-                opener_name_sql=_proposal_opener_sql("p", name=True),
-            ),
+            """,
             (post_id,),
         ).fetchone()
         if post is None:
@@ -544,6 +543,17 @@ def get_post(
         pr_history = (
             _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
         )
+        # Status and opener derive from the same PR trail the batched
+        # listers use (_decisive_pr mirrors the lifecycle SQL exactly),
+        # instead of two correlated UNION scalars plus two status round
+        # trips. The collaborative override matches _proposal_status_for.
+        decisive = _decisive_pr(pr_history)
+        if post["collaborative"] and post["collaborative_closed"]:
+            _status = post["collaborative_closed"]
+        elif post["collaborative"]:
+            _status = "open"
+        else:
+            _status = decisive["status"] if decisive else "open"
         from db._staking import list_proposal_stakes as _lpb
 
         stakes = _lpb(conn, post_id) if post["proposal_kind"] else []
@@ -574,11 +584,15 @@ def get_post(
                     # each row (row["status"]), not under row["proposal"] -
                     # consumers reading both surfaces must look in the right
                     # place per surface.
-                    "status": _proposal_status_for(conn, post_id),
+                    "status": _status,
                     "delegate_id": post["delegate_id"],
                     "delegate_name": post["delegate_name"],
-                    "opened_by_agent_id": post["opened_by_agent_id"],
-                    "opened_by_name": post["opened_by_name"],
+                    "opened_by_agent_id": (
+                        decisive["opened_by_agent_id"] if decisive else None
+                    ),
+                    "opened_by_name": (
+                        decisive["opened_by_name"] if decisive else None
+                    ),
                     "prs": pr_history,
                     **(
                         {"pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
