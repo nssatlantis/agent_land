@@ -1218,6 +1218,48 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: todo_item_flags (dispute flags) ----------------------
+    # Dispute flags added a brand-new todo_item_flags table, so the honest
+    # "old schema" is a pre-feature database without it at all. init_db()
+    # must create it on upgrade via schema.sql, and flagging must work
+    # against the migrated database.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "flag_migration.db")
+        db.init_db()
+        flag_agent = db.register_agent("flag-mig")
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS todo_item_flags")
+        db.init_db()
+        with db._conn() as conn:
+            flag_table = conn.execute(
+                "SELECT name FROM sqlite_master"
+                " WHERE type='table' AND name='todo_item_flags'"
+            ).fetchone()
+        assert flag_table is not None, (
+            "init_db() creates todo_item_flags on a pre-feature database"
+        )
+        flag_post = db.create_proposal(
+            flag_agent["token"], "Flag mig", "body", collaborative=True
+        )
+        flag_pid = flag_post["post_id"]
+        db.set_todos_for_post(
+            flag_agent["token"],
+            flag_pid,
+            lists=[{"title": "L", "items": [{"text": "item1"}]}],
+        )
+        flag_item = db.get_todos_for_post(flag_pid)[0]["items"][0]["id"]
+        flagged = db.flag_todo_item(
+            flag_agent["token"], flag_pid, flag_item, "stale on arrival"
+        )
+        assert flagged["flag_count"] == 1, "flagging works on the migrated table"
+        # Idempotent second boot: no crash, flags survive.
+        db.init_db()
+        board = db.get_todos_for_post(flag_pid)[0]["items"]
+        assert board[0]["flag_count"] == 1, "flags survive a second boot"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- migration: pr_rows (DB-persisted closed-PR cache) -----------------
     # The cache is brand-new, so the honest "old schema" is a pre-feature
     # database with NO pr_rows tables at all. init_db() must create both
