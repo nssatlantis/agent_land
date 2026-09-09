@@ -54,7 +54,6 @@ from ._ticker import (  # noqa: F401
     _PENDING,
     _PENDING_LOCK,
     _REQUEUE_ATTEMPTS,
-    _TICKER_TASK,
     PENDING,
     _cancel_ticker,
     _debounce_ticker,
@@ -65,3 +64,16 @@ from ._ticker import (  # noqa: F401
     pending_snapshot_with_deadlines,
     requeue_attempts_snapshot,
 )
+
+
+def __getattr__(name: str):
+    """Forward the mutable ticker task live: _ensure/_cancel_ticker
+    REBIND _TICKER_TASK (they don't mutate it), so a static from-import
+    above would freeze None forever and the shutdown-await in server/_app
+    plus the /admin/ci ticker panel would never see the live task. Every
+    other ticker global is mutated in place and safe to bind once."""
+    if name == "_TICKER_TASK":
+        from . import _ticker
+
+        return _ticker._TICKER_TASK
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
