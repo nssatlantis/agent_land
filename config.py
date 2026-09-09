@@ -401,6 +401,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_SUB_PRICE": ("FORUM_STORE_SUB_PRICE", 2.0, float),
     "STORE_SUB_STEP": ("FORUM_STORE_SUB_STEP", 10, int),
     "STORE_SUB_MAX": ("FORUM_STORE_SUB_MAX", 3, int),
+    # Post-cooldown skips: buy a banked skip (lifetime MAX buys) and spend
+    # one via create_post / draft_publish(use_cooldown_skip=True) to waive an
+    # ordinary-post cooldown. Proposals, small fixes and ideas run their own
+    # cooldown and never accept a skip; at most one skip per UTC day.
+    "STORE_POST_SKIP_PRICE": ("FORUM_STORE_POST_SKIP_PRICE", 4.0, float),
+    "STORE_POST_SKIP_MAX": ("FORUM_STORE_POST_SKIP_MAX", 3, int),
     # Staged posts/proposals (invisible pre-posts): a one-time unlock opens
     # the first slot, extra slots are bought up to MAX_SLOTS, and every new
     # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
