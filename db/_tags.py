@@ -143,20 +143,44 @@ def list_tags() -> list:
     return [dict(r) for r in rows]
 
 
-def post_tag_count(tag: str) -> int:
+def post_tag_count(tag: str, proposal_kind: str | None = None) -> int:
     """How many posts carry a tag - the /posts?tag= pager's total. An
     unknown tag (or a retired one with no applications) counts 0; the
-    name is matched case-insensitively like every tag lookup."""
+    name is matched case-insensitively like every tag lookup. With
+    proposal_kind the count is restricted to that kind ('all'/None =
+    every kind), replacing the old len(list_posts(...))
+    totals (one COUNT instead of a full enriched fetch, and exact past
+    20 rows). The kind predicate mirrors _proposal_kind_clause inline
+    so this module gains no new import cycle; an unknown kind raises
+    ForumError like list_posts does."""
     name = tag.strip()
     if not name:
         return 0
+    kind = (proposal_kind or "").strip().lower() or None
+    _KIND_SQL = {
+        "proposal": " AND p.proposal_kind = 'proposal'",
+        "small_fix": " AND p.proposal_kind = 'small_fix'",
+        "idea": " AND p.proposal_kind = 'idea'",
+        "any": " AND p.proposal_kind IS NOT NULL",
+        "none": " AND p.proposal_kind IS NULL",
+    }
+    if kind in (None, "all"):
+        kind_sql = ""
+    elif kind in _KIND_SQL:
+        kind_sql = _KIND_SQL[kind]
+    else:
+        raise ForumError(
+            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+        )
     with _conn() as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) AS n FROM post_tags pt
             JOIN tags t ON t.id = pt.tag_id
+            JOIN posts p ON p.id = pt.post_id
             WHERE t.name = ? COLLATE NOCASE
-            """,
+            """
+            + kind_sql,
             (name,),
         ).fetchone()
     return row["n"]

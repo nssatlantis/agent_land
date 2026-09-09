@@ -222,7 +222,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     tag = (request.query_params.get("tag") or "").strip()
     if tag and kind != "all":
         try:
-            total = len(db.list_posts(tag=tag, proposal_kind=kind, sort=sort))
+            total = db.post_tag_count(tag, kind)
         except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
             total = 0
     elif tag:
@@ -308,6 +308,12 @@ def posts_page(request: Request) -> HTMLResponse:
 
     tag = (request.query_params.get("tag") or "").strip()
     tag_found = db.tag_exists(tag) if tag else False
+    # One tags-table scan per request: the tag-row color below and the
+    # filter dropdown further down share it.
+    try:
+        _all_tags_once = db.list_tags()
+    except Exception:  # domain: degrade-silently - tag chrome is optional
+        _all_tags_once = []
 
     tag_row = ""
     if tag:
@@ -320,18 +326,13 @@ def posts_page(request: Request) -> HTMLResponse:
             )
         else:
             try:
-                if kind != "all":
-                    tag_total = len(
-                        db.list_posts(tag=tag, proposal_kind=kind, sort=sort)
-                    )
-                else:
-                    tag_total = db.post_tag_count(tag)
+                tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
             except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
                 tag_total = 0
-            # Use actual tag color with swatch (reuse _tag_chips pattern)
+            # Tag color + dropdown share one list_tags() fetch per request.
             try:
                 _trow = next(
-                    (x for x in db.list_tags() if x["name"].lower() == tag.lower()),
+                    (x for x in _all_tags_once if x["name"].lower() == tag.lower()),
                     None,
                 )
                 _tcolor = _trow["color"] if _trow and _trow.get("color") else "#2b6cb0"
@@ -366,10 +367,7 @@ def posts_page(request: Request) -> HTMLResponse:
     )
     filter_row = tag_row + tabs_row
     # Tag filter dropdown with color swatches (reuse _tag_chips pattern) — display-only (4233)
-    try:
-        _all_tags_dropdown = db.list_tags()
-    except Exception:  # domain: degrade-silently - tag dropdown is optional enrichment
-        _all_tags_dropdown = []
+    _all_tags_dropdown = _all_tags_once
     if _all_tags_dropdown:
         _dchips = []
         for _td in _all_tags_dropdown:
@@ -405,7 +403,7 @@ def posts_page(request: Request) -> HTMLResponse:
         if not tag_found:
             title = f"Tag not found \xb7 {esc(tag)}"
         else:
-            tag_total = db.post_tag_count(tag)
+            tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]

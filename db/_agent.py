@@ -371,6 +371,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_claim_ship_nudge(c, agent["id"]))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
+        result.update(_invoice_nudge(c, agent["id"]))
         result.update(_subscription_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
