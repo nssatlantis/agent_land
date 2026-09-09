@@ -2793,6 +2793,10 @@ def main():
         # The feature works on the migrated database.
         mig_issuer = db.register_agent("invmig-issuer")
         mig_payer = db.register_agent("invmig-payer")
+        import db._credits as _cr
+
+        with db._conn() as conn:
+            assert _cr.grant(mig_issuer["agent_id"], 4, "invmig_seed", conn=conn)
         seed_post = db.create_post(mig_issuer["token"], "mig karma", "body")
         db.vote(mig_payer["token"], "post", seed_post["post_id"], 1)
         mig_inv = db.create_invoice(
