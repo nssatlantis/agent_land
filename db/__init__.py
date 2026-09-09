@@ -194,6 +194,7 @@ from db._invoices import (  # noqa: F401
     create_invoice,
     decline_invoice,
     get_invoice,
+    issue_pr_decline_fine,
     list_invoices,
     pay_invoice,
     sweep_invoice_reminders,

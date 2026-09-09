@@ -237,6 +237,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SUSPEND_DAYS": ("FORUM_SUSPEND_DAYS", 14, int),
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
     "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -2, int),
+    # Declined-PR fine (db._invoices.issue_pr_decline_fine): the poller
+    # bills the PR opener a Treasury invoice of this many credits on the
+    # FIRST explicit decline record, recorded under the ADMIN_USER
+    # citizen. Quarter-denominated (a whole/half/quarter value); 0 turns
+    # the bill off - the PR_DECLINE_KARMA penalty is the real teeth.
+    "PR_DECLINE_FINE_CREDITS": ("FORUM_PR_DECLINE_FINE_CREDITS", 0.5, float),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
     "CI_POLL_SECONDS": ("FORUM_CI_POLL_SECONDS", 300, int),
     # The proposal vote gate (db._proposal_vote_threshold, proposal #92):
