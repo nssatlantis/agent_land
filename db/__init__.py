@@ -54,6 +54,12 @@ from db._ci_usage import (  # noqa: F401
     ci_usage_for,
 )
 
+# ── benchmark anchor blessing ──────────────────────────────────────────
+from db._bench_anchor import (  # noqa: F401
+    bench_anchor_tick,
+    bless_bench_anchor,
+)
+
 # ── proposal claiming ──────────────────────────────────────────────────
 from db._claiming import (  # noqa: F401
     claim_proposal,
