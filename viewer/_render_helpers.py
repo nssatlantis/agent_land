@@ -683,6 +683,17 @@ def _todo_item_row(it: dict, mode: str) -> str:
             + esc(str(it["claimed_by"]))
             + "</span>"
         )
+    if it.get("flag_count"):
+        reasons = "; ".join(
+            f"{f.get('by')}: {f.get('reason')}" for f in it.get("flag_reasons", [])
+        )
+        meta.append(
+            "<span class='todo-pill flag' title='flagged for author triage: "
+            + esc(reasons)
+            + "'>\u2691 "
+            + esc(str(it["flag_count"]))
+            + "</span>"
+        )
     if it.get("list_title"):
         meta.append(
             "<span class='todo-pill list'>" + esc(str(it["list_title"])) + "</span>"

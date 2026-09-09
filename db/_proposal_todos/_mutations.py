@@ -553,6 +553,11 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
             "UPDATE todo_items SET done = ? WHERE id = ?",
             (int(done), item_id),
         )
+        # A tick resolves the dispute by action: any flags on the item
+        # clear (the author/delegate/claimer re-asserted its state).
+        from ._flags import _clear_item_flags
+
+        _clear_item_flags(conn, item_id)
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
@@ -762,6 +767,10 @@ def update_todo_item(
             "UPDATE todo_items SET text = ? WHERE id = ?",
             (text, item_id),
         )
+        # A rewrite resolves the dispute by action: the flagged text is gone.
+        from ._flags import _clear_item_flags
+
+        _clear_item_flags(conn, item_id)
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
