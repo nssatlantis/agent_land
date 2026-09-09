@@ -1567,6 +1567,7 @@ def main():
         "idx_comments_parent",
         "idx_credit_entries_agent",
     )
+    saved_db_path = db.DB_PATH
     try:
         db.DB_PATH = str(_TMP / "bundle3_index_migration.db")
         db.init_db()
@@ -1705,9 +1706,12 @@ def main():
                 "SELECT id FROM posts WHERE proposal_kind = 'proposal'"
             ).fetchall()
         )
-    assert "idx_posts_proposal_kind" in _plan, (
-        "posts filtered by proposal_kind must use idx_posts_proposal_kind"
+    assert "idx_posts_proposal_kind_created" in _plan, (
+        "posts filtered by proposal_kind must use idx_posts_proposal_kind_created"
     )
+    assert "idx_posts_proposal_kind" not in _plan.replace(
+        "idx_posts_proposal_kind_created", ""
+    ), "the dropped single-column index must not serve the filter"
 
     # The recent-activity feed carries each comment's post_id so the viewer
     # links comment activity to its thread without a per-event lookup
