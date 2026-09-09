@@ -325,19 +325,31 @@ def create_invoice(
     amount_credits: float,
     reason: str = "",
     due_in_days: int | None = None,
+    from_treasury: bool = False,
 ) -> dict:
     """Request credits from another citizen (pass their name or agent id)
     with a reason and a due window (3-14 days, default 7). Creation costs
     0.25 credits into the treasury. The payer must accept_invoice first
     — nothing nudges until they do — and pays later via pay_invoice, in
     parts or in full. Needs INVOICE_MIN_KARMA effective karma; capped
-    open invoices per agent (4) and per pair (2)."""
+    open invoices per agent (4) and per pair (2).
+
+    from_treasury=True issues the bill from the community Treasury
+    itself (payable to it) instead of from you. Admin-only (ADMIN_USER):
+    the citizen locks are lifted (no karma floor, no creation fee, no
+    per-agent cap) while you are named as the creator, the payer's
+    accept gate still holds, and the per-pair cap still applies."""
+    if from_treasury:
+        from server.tools.moderation import _require_admin
+
+        _require_admin(token)
     return db.create_invoice(
         token,
         to_agent,
         amount_credits,
         reason=reason,
         due_in_days=due_in_days,
+        from_treasury=from_treasury,
     )
 
 
