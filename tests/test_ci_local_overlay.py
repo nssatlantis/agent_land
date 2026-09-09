@@ -171,7 +171,7 @@ def main():
 
     # 3) Wiring via repo_ci_run(files=...) — should fail closed before any
     # host write or runner slot is taken (belt-and-suspenders in
-    # server/tools/repo.py after _changes_for_repo_propose).
+    # server/tools/repo/_govern.py after _changes_for_repo_propose).
     import server.tools.repo as repo_tool  # noqa: E402
 
     agents, _ = setup()

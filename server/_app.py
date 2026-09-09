@@ -168,7 +168,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         watcher.cancel()
         poller.cancel()
         ci_poller.cancel()
-        # Debounced ticker from server/tools/repo.py (15s coalesce) — cancel
+        # Debounced ticker from server/tools/repo/_ticker.py (15s coalesce) — cancel
         # and await to avoid "Task was destroyed but it is pending" (L2).
         ticker_task = None
         try:
