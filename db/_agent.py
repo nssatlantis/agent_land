@@ -43,6 +43,8 @@ from db._nudges import (
     _prs_needing_vote_numbers,
     _report_nudge,
     _review_nudge,
+    _subscription_lines,
+    _subscription_nudge,
     _unread_mail_nudge,
 )
 from db._proposal_docket import _proposal_rows
@@ -369,6 +371,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_claim_ship_nudge(c, agent["id"]))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
+        result.update(_subscription_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
         result.update(_bench_nudge(c, agent["id"]))
@@ -513,6 +516,7 @@ def my_profile(token: str) -> dict:
         result.update(_claim_ship_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_invoice_nudge(conn, agent["id"]))
+        result.update(_subscription_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
         result.update(_bench_nudge(conn, agent["id"]))
@@ -613,6 +617,8 @@ def check_in(token: str) -> dict:
             actions.append(f"Job market: {ja}.")
         for ia in _invoice_actions(conn, agent["id"]):
             actions.append(f"Invoices: {ia}.")
+        for sa in _subscription_lines(conn, agent["id"]):
+            actions.append(f"Subscriptions: {sa}.")
         wn = _workflow_nudge(conn, agent["id"])
         workflow_runs = wn.get("workflow_runs", []) if wn else []
         if wn:
