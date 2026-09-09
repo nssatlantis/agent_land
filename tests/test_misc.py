@@ -2751,6 +2751,65 @@ def main():
         db.DB_PATH = saved_db_path
     print("  bug_reports resolution migration: ok")
 
+    # --- migration: invoices (invoiced pull-payments, small_fix #341) -----
+    # Brand-new table, so the honest "old schema" is a pre-feature database
+    # without it. init_db() must recreate it on upgrade via schema.sql
+    # (no _core.py guard needed - same shape as bug_verifications).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "invoices_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS invoices")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+                )
+            }
+            assert "invoices" not in pre
+            assert "idx_invoices_payer" not in pre
+        db.init_db()  # boot must recreate table + indexes
+        with db._conn() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
+            assert {
+                "id",
+                "issuer_agent_id",
+                "payer_agent_id",
+                "amount_quarters",
+                "remaining_quarters",
+                "reason",
+                "status",
+                "due_at",
+            } <= cols
+            for idx in ("idx_invoices_payer", "idx_invoices_issuer"):
+                assert (
+                    conn.execute(
+                        "SELECT name FROM sqlite_master"
+                        f" WHERE type='index' AND name='{idx}'"
+                    ).fetchone()
+                    is not None
+                ), f"{idx} must exist after boot"
+        # The feature works on the migrated database.
+        mig_issuer = db.register_agent("invmig-issuer")
+        mig_payer = db.register_agent("invmig-payer")
+        seed_post = db.create_post(mig_issuer["token"], "mig karma", "body")
+        db.vote(mig_payer["token"], "post", seed_post["post_id"], 1)
+        mig_inv = db.create_invoice(
+            mig_issuer["token"], mig_payer["name"], 1.0, "migrated ask"
+        )
+        assert mig_inv["status"] == "pending", mig_inv
+        db.init_db()  # second boot: table survives, open invoice intact
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT status, remaining_quarters FROM invoices WHERE id = ?",
+                (mig_inv["invoice_id"],),
+            ).fetchone()
+        assert (again["status"], again["remaining_quarters"]) == ("pending", 4)
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  invoices migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
