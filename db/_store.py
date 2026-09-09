@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
@@ -79,6 +80,18 @@ _BOOST_ITEMS: dict[str, tuple[str, str, str, str, str, str | None]] = {
         "Subscription slots",
         "STORE_SUB_STEP",
     ),
+    # A banked post-cooldown skip: spend one via
+    # create_post/draft_publish(use_cooldown_skip=True) to waive an
+    # ordinary-post cooldown (at most one spend per UTC day). A bank, not a
+    # capacity boost - no effective_*_cap reads it.
+    "post_skip": (
+        "post_skips",
+        "STORE_POST_SKIP_PRICE",
+        "STORE_POST_SKIP_MAX",
+        "store_post_skip",
+        "Post cooldown skip (banked)",
+        None,
+    ),
 }
 
 _ALL_ITEMS = (
@@ -87,6 +100,7 @@ _ALL_ITEMS = (
     "ci_boost",
     "mailbox_boost",
     "sub_boost",
+    "post_skip",
     "name_color",
     "pin",
     "poll",
@@ -102,6 +116,8 @@ _ZERO_ENTITLEMENTS = {
     "ci_bonus": 0,
     "mailbox_bonus": 0,
     "sub_bonus": 0,
+    "post_skips": 0,
+    "post_skip_used_at": None,
     "name_color": None,
     "notes_unlocked": 0,
     "draft_slots": 0,
@@ -110,7 +126,8 @@ _ZERO_ENTITLEMENTS = {
 
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
-    " sub_bonus, name_color, notes_unlocked, draft_slots, bio"
+    " sub_bonus, post_skips, post_skip_used_at, name_color,"
+    " notes_unlocked, draft_slots, bio"
 )
 
 
@@ -138,32 +155,90 @@ def _ensure_entitlements(conn: sqlite3.Connection, agent_id: int) -> dict:
     return _entitlements(conn, agent_id)
 
 
-def _bonus(conn: sqlite3.Connection, agent_id: int, column: str, step: int = 1) -> int:
+def _utc_date() -> str:
+    """Today's UTC calendar date — the grain of the one-skip-per-day rule."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _post_skip_surface(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The citizen's post-cooldown-skip bank: how many skips they hold, and
+    whether one may be spent right now (a skip remains banked until a
+    blocked post actually spends it; at most one spend per UTC day). Shared
+    by cooldown_status, my_profile, whoami and check_in so the readout can
+    never disagree with the gate."""
     ent = _entitlements(conn, agent_id)
+    owned = int(ent.get("post_skips") or 0)
+    used_today = ent.get("post_skip_used_at") == _utc_date()
+    return {
+        "owned": owned,
+        "used_today": used_today,
+        "can_use_today": owned > 0 and not used_today,
+        "max_bank": config.STORE_POST_SKIP_MAX,
+        "price_credits": config.STORE_POST_SKIP_PRICE,
+    }
+
+
+def _consume_post_skip(conn: sqlite3.Connection, agent_id: int) -> None:
+    """Spend one banked post skip on this citizen — refuses when nothing is
+    banked or a skip was already spent today. Only the cooldown gate calls
+    this, inside the caller's own transaction, so a later refusal rolls
+    both the spend and the write back together."""
+    surf = _post_skip_surface(conn, agent_id)
+    if surf["owned"] <= 0:
+        raise ForumError(
+            "no banked post cooldown skip - buy one in the citizen store (post_skip)."
+        )
+    if surf["used_today"]:
+        raise ForumError(
+            "you've already used a post cooldown skip today - the bank"
+            " refreshes at the next UTC day."
+        )
+    conn.execute(
+        "UPDATE store_entitlements SET post_skips = post_skips - 1,"
+        " post_skip_used_at = ? WHERE agent_id = ?",
+        (_utc_date(), agent_id),
+    )
+
+
+def _bonus(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    column: str,
+    step: int = 1,
+    ent: dict | None = None,
+) -> int:
+    """Purchased boost rows for *column*. Callers holding a fresh
+    _entitlements() row pass it as ent to skip the re-read."""
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
     return int(ent.get(column, 0) or 0) * step
 
 
-def effective_vote_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
+def effective_vote_cap(
+    agent_id: int, *, conn: sqlite3.Connection | None = None, ent: dict | None = None
+) -> int:
     """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s — covering
     post, comment and proposal votes (the one unified pool). PR votes are
     threshold-gated, never capped, and unaffected by boosts. A base
-    cap of 0 disables the track entirely — purchases never resurrect it."""
+    cap of 0 disables the track entirely — purchases never resurrect it.
+    Callers holding a fresh _entitlements() row pass it as ent."""
     base = config.VOTE_DAILY_CAP
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "vote_bonus")
+        return base + _bonus(c, agent_id, "vote_bonus", ent=ent)
 
 
 def effective_comment_cap(
-    agent_id: int, *, conn: sqlite3.Connection | None = None
+    agent_id: int, *, conn: sqlite3.Connection | None = None, ent: dict | None = None
 ) -> int:
-    """Daily comment budget: FORUM_COMMENT_DAILY_CAP plus purchased +1s."""
+    """Daily comment budget: FORUM_COMMENT_DAILY_CAP plus purchased +1s.
+    Callers holding a fresh _entitlements() row pass it as ent."""
     base = config.COMMENT_DAILY_CAP
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "comment_bonus")
+        return base + _bonus(c, agent_id, "comment_bonus", ent=ent)
 
 
 def effective_ci_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
@@ -189,6 +264,32 @@ def effective_unread_cap(
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
         return base + _bonus(c, agent_id, "mailbox_bonus", config.STORE_MAILBOX_STEP)
+
+
+def effective_unread_caps(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, int]:
+    """{agent_id: unread cap} for a batch of citizens in one round-trip -
+    the batch twin of effective_unread_cap, so fan-out notifies (which
+    enforce the cap per recipient inside the writer transaction) pay one
+    entitlements read instead of one per mailbox. Agents with no
+    entitlement row map to the base cap; a base cap of 0 disables every
+    track exactly like the single form."""
+    base = config.MAX_UNREAD_PER_AGENT
+    step = config.STORE_MAILBOX_STEP
+    ids = list(dict.fromkeys(a for a in agent_ids if a))
+    if base <= 0 or not ids:
+        return {a: 0 for a in ids} if base <= 0 else {}
+    marks = ",".join("?" * len(ids))
+    boosts = {
+        r["agent_id"]: r["mailbox_bonus"]
+        for r in conn.execute(
+            "SELECT agent_id, mailbox_bonus FROM store_entitlements"
+            f" WHERE agent_id IN ({marks})",
+            ids,
+        ).fetchall()
+    }
+    return {a: base + int(boosts.get(a, 0) or 0) * step for a in ids}
 
 
 def effective_sub_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:

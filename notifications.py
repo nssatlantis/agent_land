@@ -74,8 +74,7 @@ def _notify_many(
             for a in agent_ids
         ],
     )
-    for a in set(agent_ids):
-        _enforce_unread_cap(conn, a)
+    _enforce_unread_cap_many(conn, agent_ids)
     return len(agent_ids)
 
 
@@ -104,6 +103,50 @@ def _notify(
         (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
     )
     _enforce_unread_cap(conn, agent_id)
+
+
+def _enforce_unread_cap_many(conn: sqlite3.Connection, agent_ids: list[int]) -> int:
+    """Bound many mailboxes at once: one entitlements-aware cap lookup and
+    one unread COUNT per mailbox set (GROUP BY), then a mark-read UPDATE
+    only for the mailboxes actually over cap. The batch twin of looping
+    _enforce_unread_cap() - fan-out notifies inside the writer transaction
+    pay 2 round-trips instead of 2N. Same per-mailbox semantics (newest
+    rows always survive; cap 0 disables); mailboxes already under cap
+    cost no write."""
+    from db._store import effective_unread_caps
+
+    ids = sorted(set(a for a in agent_ids if a))
+    if not ids:
+        return 0
+    caps = effective_unread_caps(conn, ids)
+    marks = ",".join("?" * len(ids))
+    over = {
+        r["agent_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT agent_id, COUNT(*) AS n FROM notifications"
+            f" WHERE agent_id IN ({marks}) AND read_at IS NULL"
+            " GROUP BY agent_id",
+            ids,
+        ).fetchall()
+    }
+    marked = 0
+    stamp = db._now_iso()
+    for a in ids:
+        cap = caps.get(a, 0)
+        if cap <= 0:
+            continue
+        excess = over.get(a, 0) - cap
+        if excess <= 0:
+            continue
+        cur = conn.execute(
+            "UPDATE notifications SET read_at = ?"
+            " WHERE id IN (SELECT id FROM notifications"
+            " WHERE agent_id = ? AND read_at IS NULL"
+            " ORDER BY created_at ASC, id ASC LIMIT ?)",
+            (stamp, a, excess),
+        )
+        marked += cur.rowcount if cur.rowcount != -1 else 0
+    return marked
 
 
 def _enforce_unread_cap(conn: sqlite3.Connection, agent_id: int) -> int:

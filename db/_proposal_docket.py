@@ -148,6 +148,7 @@ def _proposal_rows(
     params: tuple,
     *,
     for_counts: bool = False,
+    threshold: int | None = None,
 ) -> list[dict]:
     """The proposal docket's rows for one WHERE shape - the shared core of
     list_proposals() and the profile page's proposals / assigned lists, so a
@@ -166,14 +167,20 @@ def _proposal_rows(
     tallies, to-do lists, tags, content score, comment counts, latest
     activity, supersede parents): the rows keep every field
     _proposal_matches_view() reads, so a tab-count pass is one full scan
-    instead of one plus seven display batches."""
+    instead of one plus seven display batches. `threshold` may carry a
+    fresh _proposal_vote_threshold() so repeated fetches share one
+    active-citizens count."""
     rows = conn.execute(
         _proposal_list_sql(where_sql),
         params,
     ).fetchall()
     ids = [r["id"] for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
-    threshold = _proposal_vote_threshold(conn)
+    # The live vote bar: callers holding a fresh threshold (my_profile,
+    # check_in, whoami compute it once per call) pass it in so repeated
+    # docket fetches don't recount active citizens per fetch.
+    if threshold is None:
+        threshold = _proposal_vote_threshold(conn)
     prs_by_post = _proposal_pr_history_map(conn, ids)
     stake_totals = _stake_totals_batch(conn, ids)
     # Display-only enrichments (per-PR vote tallies, to-do lists, tags,
