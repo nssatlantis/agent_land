@@ -17,6 +17,7 @@ from db._core import (
     _require_active_agent,
     _require_agent_by_token,
 )
+from db._invoices import _invoice_actions, _invoice_nudge
 from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_karma
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
@@ -511,6 +512,7 @@ def my_profile(token: str) -> dict:
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_claim_ship_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
+        result.update(_invoice_nudge(conn, agent["id"]))
         result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
         result.update(_bench_nudge(conn, agent["id"]))
@@ -609,6 +611,8 @@ def check_in(token: str) -> dict:
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
+        for ia in _invoice_actions(conn, agent["id"]):
+            actions.append(f"Invoices: {ia}.")
         wn = _workflow_nudge(conn, agent["id"])
         workflow_runs = wn.get("workflow_runs", []) if wn else []
         if wn:

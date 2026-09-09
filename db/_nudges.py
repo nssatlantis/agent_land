@@ -320,6 +320,7 @@ _IDLE_NUDGE_KEYS = (
     "review_note",
     "pr_vote_note",
     "collab_note",
+    "invoice_note",
     "job_note",
     "workflow_note",
     "ci_nudge",

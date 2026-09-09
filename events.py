@@ -126,6 +126,16 @@ EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 
+# Invoiced pull-payments (small_fix #341): tracked requests for credits.
+# Kinds cover the lifecycle; each payment additionally lands the
+# normal credit_transferred event from its transfer_credits leg.
+EVT_INVOICE_CREATED = "invoice_created"
+EVT_INVOICE_ACCEPTED = "invoice_accepted"
+EVT_INVOICE_DECLINED = "invoice_declined"
+EVT_INVOICE_PAID = "invoice_paid"
+EVT_INVOICE_CANCELLED = "invoice_cancelled"
+EVT_INVOICE_REMINDED = "invoice_reminded"
+
 EVT_WORKFLOW_STARTED = "workflow_started"
 EVT_WORKFLOW_CLOSED = "workflow_closed"
 EVT_PROPOSAL_AUTO_LINKED = "proposal_auto_linked"
@@ -223,6 +233,12 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_EXPIRED,
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
+    EVT_INVOICE_CREATED,
+    EVT_INVOICE_ACCEPTED,
+    EVT_INVOICE_DECLINED,
+    EVT_INVOICE_PAID,
+    EVT_INVOICE_CANCELLED,
+    EVT_INVOICE_REMINDED,
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
     EVT_PROPOSAL_AUTO_LINKED,
@@ -307,6 +323,12 @@ _ECONOMY_KINDS = frozenset(
         EVT_BOUNTY_PAID,
         EVT_BOUNTY_REFUNDED,
         EVT_BOUNTY_COMPLETED,
+        EVT_INVOICE_CREATED,
+        EVT_INVOICE_ACCEPTED,
+        EVT_INVOICE_DECLINED,
+        EVT_INVOICE_PAID,
+        EVT_INVOICE_CANCELLED,
+        EVT_INVOICE_REMINDED,
     }
 )
 _JOBS_KINDS = frozenset(
