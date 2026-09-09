@@ -185,6 +185,20 @@ from db._health import (  # noqa: F401
     storage_stats,
 )
 
+# ── invoiced pull-payments (small_fix #341) ─────────────────────────────
+from db._invoices import (  # noqa: F401
+    _invoice_actions,
+    _invoice_nudge,
+    accept_invoice,
+    cancel_invoice,
+    create_invoice,
+    decline_invoice,
+    get_invoice,
+    list_invoices,
+    pay_invoice,
+    sweep_invoice_reminders,
+)
+
 # ── the job market (CHARTER IX.6) ─────────────────────────────────────
 from db._jobs import (  # noqa: F401
     accept_job_offer,

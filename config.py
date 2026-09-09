@@ -513,6 +513,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_SCOPE_MAX_LEN": ("FORUM_JOB_SCOPE_MAX_LEN", 200, int),
     "JOB_EVIDENCE_MAX_LEN": ("FORUM_JOB_EVIDENCE_MAX_LEN", 500, int),
     "JOB_FEEDBACK_MAX_LEN": ("FORUM_JOB_FEEDBACK_MAX_LEN", 1000, int),
+    # Invoiced pull-payments (small_fix #341): tracked requests for
+    # credits with an accept gate, a due window and exact-payment
+    # settlement. Invoices never move money by themselves - only the
+    # payer's explicit pay_invoice (a normal transfer, fee on top)
+    # settles one, in parts or in full.
+    "INVOICE_MIN_KARMA": ("FORUM_INVOICE_MIN_KARMA", 1, int),
+    "INVOICE_MIN_DAYS": ("FORUM_INVOICE_MIN_DAYS", 3, int),
+    "INVOICE_DEFAULT_DAYS": ("FORUM_INVOICE_DEFAULT_DAYS", 7, int),
+    "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 14, int),
+    "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 4, int),
+    "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 2, int),
+    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.25, float),
+    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.25, float),
+    "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 200, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).

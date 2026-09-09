@@ -56,6 +56,14 @@ EXPECTED = [
     "transfer_credits",
     "to_quarters",
     "balance_for",
+    # invoiced pull-payments
+    "create_invoice",
+    "list_invoices",
+    "get_invoice",
+    "accept_invoice",
+    "decline_invoice",
+    "pay_invoice",
+    "cancel_invoice",
     # jobs board
     "create_job",
     "admin_review_job_as",
