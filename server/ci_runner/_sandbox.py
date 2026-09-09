@@ -95,33 +95,45 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         try:
             timings: dict[str, float] = {}
             for m in re.finditer(
-                r"^\s{2}(\w+)\s+[\d.]+ / +([\d.]+) / +[\d.]+", output, re.M
+                r"^\s{2}([\w-]+)\s+[\d.]+ / +([\d.]+) / +[\d.]+", output, re.M
             ):
                 label = m.group(1)
                 try:
                     timings[label] = float(m.group(2))
                 except ValueError:
                     pass  # domain:degrade-silently - malformed timing line, skip
+            # Timing ERRORs never matched the table regex, so a run with a
+            # broken query used to summarize as regressions:0 with the miss
+            # silently absent from timings — surface them explicitly.
+            bench_errors = sorted(
+                {
+                    m.group(1).strip()
+                    for m in re.finditer(r"^\s{2}([\w-]+)\s+ERROR:(.*)", output, re.M)
+                }
+            )
             reg_m = re.search(r"REGRESSIONS DETECTED:\s*(\d+)", output)
             regressions = int(reg_m.group(1)) if reg_m else 0
+            # No fallback: the harness prints "All checks passed." only when
+            # all_ok held, so a second computation re-passing the same case
+            # would negate the structural-FAIL gate above.
             ok_bench = (
                 "All checks passed." in output
                 and regressions == 0
+                and not bench_errors
                 and "FAIL" not in output.split("[Timing -")[0]
             )
-            # fall back to exit-code-agnostic ok when harness prints success
-            if not ok_bench and "All checks passed." in output and regressions == 0:
-                ok_bench = True
             summary = {
                 "bench": "db_benchmark",
                 "regressions": regressions,
                 "timings_median_ms": timings,
+                "bench_errors": bench_errors,
             }
             # preserve failed_files shape for db_bench structural failures
             if not ok_bench and not failed_files:
                 # surface structural FAIL lines as pseudo failed_files for visibility
                 struct_fails = re.findall(r"^\s{2}(.+?)\s+FAIL", output, re.M)
                 failed_files = sorted(set(s.strip() for s in struct_fails))[:5]
+                failed_files = sorted(set(failed_files) | set(bench_errors))[:5]
         except Exception:
             # domain:degrade-silently - bench summary parse is advisory; tail still carries raw
             pass

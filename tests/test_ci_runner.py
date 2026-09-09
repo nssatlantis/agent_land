@@ -736,6 +736,25 @@ def test_parse_summary_db_benchmark_median_parsed():
     assert summary["timings_median_ms"]["query_b"] == 123.45
 
 
+def test_parse_summary_db_benchmark_errors_surfaced():
+    """Regression: a db_benchmark timing ERROR used to vanish from the summary
+    (the table regex never matched ERROR lines), reporting regressions:0 with
+    the miss silently absent. Errors must land in bench_errors + failed_files."""
+    output = (
+        "[Timing - 9 measured reps after 2 warmups, min / median / max / stdev ms]\n"
+        "  query_a                         12.34 /  45.67 /  89.01 ± 0.52\n"
+        "  query_b                         ERROR: something broke\n"
+        "  my-query                        1.00 /  2.00 /  3.00 ± 0.10\n"
+    )
+    summary, failed = ci_runner._parse_summary(output)
+    assert summary is not None, "db_benchmark block should parse"
+    assert summary["timings_median_ms"]["query_a"] == 45.67
+    assert summary["timings_median_ms"]["my-query"] == 2.00, "dashed labels must parse"
+    assert "query_b" not in summary["timings_median_ms"]
+    assert summary["bench_errors"] == ["query_b"]
+    assert "query_b" in failed
+
+
 def test_run_ci_static_summary_parsed():
     """'tests' harness (tests/run_ci.py) prints the tests' summary lines then a
     STATIC SUMMARY/RESULT marker; _parse_summary must fold the static block into
