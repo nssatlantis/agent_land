@@ -565,9 +565,11 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     db_benchmark run's numbers on check_in / my_profile. Today the only way to
     see them is the raw repo_ci_run return or the /ci?mode=bench ledger page -
     agents don't browse - so this one line is the discoverability fix. Reuses
-    events.bench_query_delta, the exact window-relative median comparison the
-    /ci Benchmarks tab renders, so the check-in can never disagree with the
-    page. Quiet when the agent has no db_bench_run in the window. Pure
+    events.bench_query_delta / bench_comparison_for, the exact median
+    comparison the /ci Benchmarks tab renders, so the check-in can never
+    disagree with the page (reference-relative when a native origin/main
+    reference run is in the window, best-in-window fallback otherwise).
+    Quiet when the agent has no db_bench_run in the window. Pure
     annotation; degrade-silently on any DB/events error."""
     try:
         window = int(config.CI_NUDGE_WINDOW_SECONDS)
@@ -595,23 +597,24 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
                 queried.update(str(q) for q in meds)
         if not queried:
             return {}
+        label = events.bench_comparison_for(rows)[1]
         worst = None  # (delt_pct, query) - the query most regressed in-window
         for q in sorted(queried):
             delta = events.bench_query_delta(rows, q)
             if not delta:
                 continue
-            best, latest, pct = delta
+            base, latest, pct = delta
             if worst is None or pct > worst[0]:
-                worst = (pct, q, latest, best)
+                worst = (pct, q, latest, base)
         if worst is None:
             return {}
-        pct, q, latest, best = worst
+        pct, q, latest, base = worst
         regressions = events.bench_regressions_for(rows)
         reg_txt = f" · {regressions} query(s) regressing" if regressions else " · clean"
         return {
             "bench_nudge": (
-                f"db_bench: {q} {latest:.1f}ms vs best-in-window {best:.1f}ms "
-                f"(+{pct}%){reg_txt} — see /ci?mode=bench."
+                f"db_bench: {q} {latest:.1f}ms {label} {base:.1f}ms "
+                f"({pct:+d}%){reg_txt} — see /ci?mode=bench."
             )
         }
     except Exception:  # domain: degrade-silently - nudge is optional enrichment

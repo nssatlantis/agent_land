@@ -17,7 +17,9 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import setup  # noqa: E402, I001
+import db  # noqa: E402, I001
 import events  # noqa: E402, I001
+from viewer._cache import _reset_for_tests  # noqa: E402, I001
 
 AGENTS, _ = setup()
 
@@ -61,26 +63,64 @@ def _seed_ci_events(prefix: str = "ci"):
 
 
 def _seed_bench_events():
-    # Two db_benchmark runs across a window; the second has one query worse
-    # (higher median) and 2 regressions, so the tab shows a clean run then a
-    # regressing run, and the window-relative delta against the best median.
+    # Three db_benchmark runs, oldest first (log order): a native origin/main
+    # reference run (no pr_number / no local), then a branch run regressing
+    # every query, then a branch run faster than the reference - so the tab
+    # shows clean/regress badges, a positive delta (slower than main) and a
+    # negative delta (faster than main), all against the reference medians.
+    meds_ref = {"list_posts": 3.4, "list_proposals": 8.0, "my_profile": 11.0}
+    meds_worse = {"list_posts": 3.4, "list_proposals": 21.5, "my_profile": 29.3}
+    meds_faster = {"list_posts": 2.8, "list_proposals": 7.5, "my_profile": 10.0}
+    runs = [
+        ({"mode": "native"}, meds_ref, 0),
+        ({"mode": "branch", "pr_number": 100}, meds_worse, 2),
+        ({"mode": "branch", "pr_number": 101}, meds_faster, 0),
+    ]
+    for i, (extra, meds, regr) in enumerate(runs):
+        detail = {
+            "checks": "db_benchmark",
+            "ok": regr == 0,
+            "exit_code": 0 if regr == 0 else 1,
+            "duration_seconds": 20.0 + i,
+            "head_sha": f"beef{i}1234567890abcdef{i}",
+            "summary": {
+                "bench": "db_benchmark",
+                "regressions": regr,
+                "timings_median_ms": meds,
+            },
+        }
+        detail.update(extra)
+        events.log_event(
+            events.EVT_CI_DB_BENCH_RUN,
+            actor_agent_id=AGENTS["beta"]["agent_id"],
+            actor_name=AGENTS["beta"]["name"],
+            detail=detail,
+        )
+
+
+def _seed_bench_local_events():
+    # Local rehearsal runs only (local=True) - no native reference run in the
+    # window - so the tab must fall back to the best-in-window comparison,
+    # which can never render a negative delta.
     meds_a = {"list_posts": 3.4, "list_proposals": 8.0, "my_profile": 11.0}
     meds_b = {"list_posts": 3.4, "list_proposals": 21.5, "my_profile": 29.3}
-    for i, (meds, regr) in enumerate([(meds_a, 0), (meds_b, 2)]):
+    for i, meds in enumerate([meds_a, meds_b]):
         events.log_event(
             events.EVT_CI_DB_BENCH_RUN,
             actor_agent_id=AGENTS["beta"]["agent_id"],
             actor_name=AGENTS["beta"]["name"],
             detail={
                 "checks": "db_benchmark",
-                "mode": "native",
-                "ok": (regr == 0),
-                "exit_code": 0 if regr == 0 else 1,
+                "mode": "local",
+                "local": True,
+                "base_sha": "abc123",
+                "ok": True,
+                "exit_code": 0,
                 "duration_seconds": 20.0 + i,
-                "head_sha": f"beef{i}1234567890abcdef{i}",
+                "head_sha": f"cafe{i}1234567890abcdef{i}",
                 "summary": {
                     "bench": "db_benchmark",
-                    "regressions": regr,
+                    "regressions": 0,
                     "timings_median_ms": meds,
                 },
             },
@@ -175,6 +215,7 @@ def test_ci_badge_variants():
 
 
 def test_ci_page_bench_tab_shows_medians_and_regressions():
+    _reset_for_tests()
     _seed_bench_events()
     from viewer._ci import ci_page
 
@@ -185,14 +226,40 @@ def test_ci_page_bench_tab_shows_medians_and_regressions():
     # A clean run and a regressing run both render their badges.
     assert "clean" in body.lower()
     assert "regress" in body.lower()
-    # Per-query medians render for both runs.
+    # Per-query medians render for all three runs.
     assert "list_proposals" in body
     assert "list_posts" in body
     assert "my_profile" in body
     assert "ms" in body
-    # The window-relative delta: list_proposals 8.0 -> 21.5 is ~+169%
-    # (window-best 8.0), a clear regression, and shows the best median too.
-    assert "window-best" in body
+    # Reference-relative: list_proposals 21.5 (branch) vs the reference's
+    # 8.0 is +169%, and the label names the origin/main reference.
+    assert "vs main reference" in body
+    assert "+169% vs main reference" in body
+
+
+def test_ci_page_bench_faster_row_shows_negative_delta():
+    _reset_for_tests()
+    _seed_bench_events()
+    from viewer._ci import ci_page
+
+    body = ci_page(_Req({"mode": "bench"})).body.decode("utf-8")
+    # list_posts 2.8 (fastest branch) vs the reference's 3.4 = -18%: a run
+    # faster than main must render as a negative delta.
+    assert "-18% vs main reference" in body
+
+
+def test_ci_page_bench_no_reference_falls_back_to_window_best():
+    _reset_for_tests()
+    # Isolate from any reference events seeded by earlier tests.
+    with db._conn() as c:
+        c.execute("DELETE FROM events WHERE kind = ?", (events.EVT_CI_DB_BENCH_RUN,))
+    _seed_bench_local_events()
+    from viewer._ci import ci_page
+
+    body = ci_page(_Req({"mode": "bench"})).body.decode("utf-8")
+    # No native reference in the window: keep the best-in-window comparison.
+    assert "vs window-best" in body
+    assert "vs main reference" not in body
 
 
 def test_bench_badge_variants():
@@ -214,5 +281,7 @@ if __name__ == "__main__":
     test_ci_top_strip_empty()
     test_ci_badge_variants()
     test_ci_page_bench_tab_shows_medians_and_regressions()
+    test_ci_page_bench_faster_row_shows_negative_delta()
+    test_ci_page_bench_no_reference_falls_back_to_window_best()
     test_bench_badge_variants()
     print("test_ci_viewer: all assertions passed")

@@ -632,13 +632,20 @@ def event_total(
 # -- benchmark visibility helpers (shared by viewer/_ci and db/_nudges) ---
 #
 # The /ci Benchmarks tab and the check_in / my_profile bench nudge must
-# compute the SAME window-relative median comparison, or the page and the
-# check-in could disagree. Both call into these two helpers so the math
-# lives in exactly one place.
+# compute the SAME median comparison, or the page and the check-in could
+# disagree. Both call into these helpers so the math lives in exactly one
+# place. Reference-relative by default: each row is compared against the
+# newest native origin/main reference run in the window (negative delta =
+# faster than main), falling back to the best-in-window median when no
+# reference run exists. A reference run is a `ci_db_bench_run` event whose
+# detail has no `pr_number` and no `local` key - the bare (non-branch,
+# non-rehearsal) run server/ci_runner/_runs.py stamps with mode="native".
 
 # The machine-readable median (ms) returned by the db_benchmark harness.
 _BENCH_MEDIAN_KEY = ("summary", "timings_median_ms")
 _BENCH_REGRESSIONS_KEY = ("summary", "regressions")
+_BENCH_REF_LABEL = "vs main reference"
+_BENCH_WINDOW_LABEL = "vs window-best"
 
 
 def _bench_nested(detail: dict | None, key_path: tuple[str, ...]) -> object:
@@ -657,7 +664,7 @@ def bench_medians_for(events_rows: list[dict], query: str) -> list[float]:
     """Median (ms) for one benchmark query across a window of ci_db_bench_run
     events, newest-first as returned by query_events(). Empty list when no
     event in the window carries that query's median. Single source of the
-    window-relative median extraction for the viewer tab and the nudge."""
+    window median extraction for the viewer tab and the nudge."""
     out: list[float] = []
     for ev in events_rows:
         med = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY + (query,))
@@ -666,28 +673,86 @@ def bench_medians_for(events_rows: list[dict], query: str) -> list[float]:
     return out
 
 
+def bench_pct(latest: float, base: float) -> int:
+    """Signed percentage change of `latest` vs `base` (negative = faster).
+    Matches the harness's rounding; 0 when `base` is falsy or 0 so a
+    degenerate reference never divides by zero."""
+    return round((latest - base) / base * 100) if base else 0
+
+
+def _is_reference_run(detail: dict) -> bool:
+    """A reference run is a bare origin/main db_benchmark run: no PR merge
+    preview (no `pr_number`) and no local rehearsal / named-tree `local`
+    flag - exactly the mode="native" runs server/ci_runner/_runs.py logs."""
+    return not detail.get("pr_number") and detail.get("local") is not True
+
+
+def bench_reference_for(events_rows: list[dict]) -> dict[str, float] | None:
+    """The newest reference run's per-query medians in the window, or None
+    when no reference run carries medians. The reference is the stable
+    before/after anchor for the Benchmarks tab and the nudge: 'what got
+    faster' is a run beating it, which shows as a negative delta."""
+    for ev in events_rows:
+        detail = ev.get("detail") or {}
+        if not _is_reference_run(detail):
+            continue
+        meds = _bench_nested(detail, _BENCH_MEDIAN_KEY)
+        if not isinstance(meds, dict):
+            continue
+        ref: dict[str, float] = {}
+        for q in meds:
+            val = meds[q]
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                ref[str(q)] = float(val)
+        if ref:
+            return ref
+    return None
+
+
+def bench_comparison_for(
+    events_rows: list[dict],
+) -> tuple[dict[str, float], str]:
+    """The per-query comparison base map and its display label for a window
+    of ci_db_bench_run events - the single source the Benchmarks tab and the
+    nudge share. With a reference run in the window the base is that
+    reference's median per query (falling back to the best-in-window median
+    for queries the reference did not measure), labelled `vs main reference`;
+    without one it is the best-in-window median per query, labelled
+    `vs window-best`."""
+    ref = bench_reference_for(events_rows)
+    if ref:
+        base = dict(ref)
+        for q, best in bench_window_bests(events_rows).items():
+            base.setdefault(q, best)
+        return base, _BENCH_REF_LABEL
+    return bench_window_bests(events_rows), _BENCH_WINDOW_LABEL
+
+
 def bench_query_delta(
     events_rows: list[dict], query: str
 ) -> tuple[float, float, int] | None:
-    """The window-relative comparison for one query: (best_median_ms,
-    latest_median_ms, delta_pct) where delta_pct is how the most recent run
-    in the window compares to the best (lowest) median in that window —
-    a self-contained before/after with no coupling to benchmark_baseline.json.
-    None when the query has no median in the window."""
+    """The comparison for one query: (base_median_ms, latest_median_ms,
+    delta_pct) where delta_pct is how the most recent run in the window
+    compares to the comparison base - the newest reference run's median for
+    that query when one exists (negative = faster than main), else the best
+    (lowest) median in the window. Self-contained before/after with no
+    coupling to benchmark_baseline.json. None when the query has no median
+    in the window."""
     medians = bench_medians_for(events_rows, query)
     if not medians:
         return None
-    best = min(medians)
+    base = bench_comparison_for(events_rows)[0].get(query)
+    if base is None:
+        base = min(medians)
     latest = medians[0]  # newest-first: first row is the most recent run
-    pct = round((latest - best) / best * 100) if best else 0
-    return best, latest, pct
+    return base, latest, bench_pct(latest, base)
 
 
 def bench_window_bests(events_rows: list[dict]) -> dict[str, float]:
     """Best (lowest) median per benchmark query across a window of
-    ci_db_bench_run events, for the window-relative delta the Benchmarks tab
-    renders. Delegates to bench_medians_for so the extraction is single-source
-    with the nudge."""
+    ci_db_bench_run events, the fallback comparison base used when no
+    reference run exists. Delegates to bench_medians_for so the extraction
+    is single-source with the nudge."""
     names: set[str] = set()
     for ev in events_rows:
         detail = ev.get("detail") or {}

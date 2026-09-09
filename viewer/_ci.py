@@ -13,8 +13,9 @@ from starlette.responses import HTMLResponse
 
 import config
 from events import (
+    bench_comparison_for,
+    bench_pct,
     bench_regressions_for,
-    bench_window_bests,
     event_total,
     query_events,
 )
@@ -154,11 +155,13 @@ def _bench_badge(detail: dict) -> str:
     )
 
 
-def _bench_row(e: dict, bests: dict[str, float]) -> str:
+def _bench_row(e: dict, bests: dict[str, float], label: str) -> str:
     """One db_benchmark timeline row: when|mode|sha7|badge|duration plus a
-    collapsible per-query median table (median ms + window-relative Δ% vs the
-    best-in-window median). `bests` is the precomputed per-query best-in-window
-    map for the fetched window (shared math with events.bench_query_delta)."""
+    collapsible per-query median table (median ms + signed Δ% vs the shared
+    comparison base - the newest native origin/main reference run in the
+    window, falling back to the best-in-window median; negative = faster).
+    `bests` and `label` come from events.bench_comparison_for (same math as
+    the check-in nudge)."""
     detail = e.get("detail") or {}
     when = _human_ts(e["created_at"])
     checks = esc(str(detail.get("checks") or "db_benchmark"))
@@ -176,11 +179,8 @@ def _bench_row(e: dict, bests: dict[str, float]) -> str:
             latest = meds[q]
             if not isinstance(latest, (int, float)):
                 continue
-            best = bests.get(str(q))
-            if best:
-                pct = round((latest - best) / best * 100)
-            else:
-                pct = None
+            base = bests.get(str(q))
+            pct = bench_pct(latest, base) if base is not None else None
             delta = ""
             if pct is not None:
                 col = (
@@ -188,9 +188,9 @@ def _bench_row(e: dict, bests: dict[str, float]) -> str:
                     if pct <= 0
                     else ("var(--warn)" if pct < 20 else "var(--fail)")
                 )
-                delta = f' <span style="color:{col}">{pct:+d}% vs window-best</span>'
+                delta = f' <span style="color:{col}">{pct:+d}% {label}</span>'
             else:
-                delta = ' <span style="color:var(--muted)">no window ref</span>'
+                delta = ' <span style="color:var(--muted)">no ref</span>'
             cells.append(
                 "<tr>"
                 f"<td style='text-align:left'>{esc(str(q))}</td>"
@@ -201,7 +201,7 @@ def _bench_row(e: dict, bests: dict[str, float]) -> str:
             '<div style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'
             '<table style="width:100%;border-collapse:collapse;font-size:13px">'
             "<caption style='text-align:left;color:var(--muted);font-size:12px;padding:2px 0'>"
-            f"median ms per query vs best in window ({len(meds)} queries)</caption>"
+            f"median ms per query {label} ({len(meds)} queries)</caption>"
             + "".join(cells)
             + "</table></div>"
         )
@@ -306,8 +306,12 @@ def ci_page(request: Request) -> HTMLResponse:
         pager = '<div class="pager">' + " \u00b7 ".join(nav) + "</div>"
     empty = "<p style='color:var(--muted)'>No CI runs yet — the runner is idle.</p>"
     if mode == "bench":
-        bench_bests = bench_window_bests(stats_evts or [])
-        rows_html = "".join(_bench_row(e, bench_bests) for e in evts) if evts else empty
+        bench_bests, bench_label = bench_comparison_for(stats_evts or [])
+        rows_html = (
+            "".join(_bench_row(e, bench_bests, bench_label) for e in evts)
+            if evts
+            else empty
+        )
     else:
         rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
@@ -317,7 +321,7 @@ def ci_page(request: Request) -> HTMLResponse:
     elif mode == "local":
         hint = "<p style='color:var(--muted);font-size:13px'>Local mode: <code>repo_ci_run(files=[...])</code> rehearsals — the pre-push overlay of your diff on <code>origin/main</code>, tested in the same Docker sandbox as branch runs (ledger kind <code>ci_local_run</code>).</p>"
     elif mode == "bench":
-        hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared window-relative to the best (lowest) median in this window; clean = <code>regressions==0</code>.</p>"
+        hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared against the newest native origin/main reference run in this window (falling back to the best-in-window median when no reference exists) — a negative delta means faster than main; clean = <code>regressions==0</code>.</p>"
     body = (
         '<div class="panel" id="sec-ci"><h2>Build health</h2><p style=\'color:var(--muted);font-size:15px\'>CI runs via the sandboxed runner — native (main), PR merges (branch), local rehearsal (files=) and db_benchmark medians. Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>'
         + tabs
