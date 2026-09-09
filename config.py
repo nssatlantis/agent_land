@@ -735,6 +735,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # drift heuristic inspired by the harness 20% threshold on 3+ queries,
     # deliberately not the full 20%+2σ gate).
     "BENCH_ANCHOR_MAX_AGE_DAYS": ("FORUM_BENCH_ANCHOR_MAX_AGE_DAYS", 7, int),
+    # Manual bless costs credits to the treasury (used-well assurance);
+    # the hourly cron re-confirms for free. CRON_HOURS floors how often a
+    # cron bless may land (the max-age rule dominates at defaults).
+    "BENCH_BLESS_COST_CREDITS": ("FORUM_BENCH_BLESS_COST_CREDITS", 1.0, float),
+    "BENCH_BLESS_CRON_HOURS": ("FORUM_BENCH_BLESS_CRON_HOURS", 24, int),
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
     # native runs through the same sandbox image as branch/local so it gets
