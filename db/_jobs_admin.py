@@ -764,11 +764,6 @@ def _outstanding_actions(
         " ORDER BY j.id",
         (agent_id,),
     ).fetchall()
-    for r in review:
-        out.append(
-            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
-            "your review_job() verdict"
-        )
     stale = conn.execute(
         "SELECT j.id, j.title, j.created_at, jc.cycle_no, jc.status FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
@@ -791,6 +786,11 @@ def _outstanding_actions(
         ):
             phrase += " (overdue)"
         out.append(phrase)
+    for r in review:
+        out.append(
+            f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
+            "your review_job() verdict"
+        )
     for r in stale:
         if _cycle_is_overdue(
             r["status"], anchors.get(r["id"], r["created_at"]), _cutoff
