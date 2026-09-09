@@ -161,8 +161,11 @@ def create_invoice(
 ) -> dict:
     """Request credits from another citizen. The payer must accept first
     (accept_invoice) before anything nudges; paying happens later via
-    pay_invoice, in parts or in full. Creation itself is free — no money
-    moves here, so no fee either. The reason is required and public."""
+    pay_invoice, in parts or in full. Creation costs
+    FORUM_INVOICE_CREATE_FEE_CREDITS into the treasury (refused when the
+    issuer cannot cover it) — the reason is required and public. Needs
+    FORUM_INVOICE_MIN_KARMA effective karma; capped open invoices per
+    agent and per pair."""
     with _conn(immediate=True) as conn:
         issuer = _require_active_agent(conn, token)
         require_min_karma(
@@ -224,6 +227,23 @@ def create_invoice(
         due_at = (_parse_iso(created) + timedelta(days=days)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
+        # The creation fee debits last, after every validation above —
+        # a refused invoice costs nothing. Lands atomically with the row.
+        from db._credits import exact_from_credits, spend
+
+        fee_q = exact_from_credits(
+            float(config.INVOICE_CREATE_FEE_CREDITS),
+            what="INVOICE_CREATE_FEE_CREDITS",
+        )
+        if fee_q:
+            spend(
+                issuer["id"],
+                fee_q,
+                "invoice_create",
+                target_type="invoice",
+                dest_treasury=True,
+                conn=conn,
+            )
         cur = conn.execute(
             "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
             " amount_quarters, remaining_quarters, reason, status,"
@@ -273,7 +293,10 @@ def create_invoice(
             conn=conn,
         )
         row = conn.execute("SELECT * FROM invoices WHERE id = ?", (iid,)).fetchone()
-        return _public_invoice(conn, row)
+        out = _public_invoice(conn, row)
+        out["fee_quarters"] = fee_q
+        out["fee_credits"] = format_credits(fee_q)
+        return out
 
 
 def list_invoices(
