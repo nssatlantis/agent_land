@@ -39,6 +39,9 @@ _TUNE_DEFAULTS = {
     "FORUM_TAG_CREATE_COST": "0",
     "FORUM_TAG_APPLY_COST": "0",
     "FORUM_TAG_MAX_PER_POST": "5",
+    # Declined-PR fine: zeroed by default (production bills 0.5);
+    # tests/test_pr_fine.py arms the knob explicitly per case.
+    "FORUM_PR_DECLINE_FINE_CREDITS": "0",
     # Treasury economy: behavior-tests run fee-free; test_economy arms
     # the fee explicitly where the rounding matters.
     "FORUM_TX_FEE_PERCENT": "0",
