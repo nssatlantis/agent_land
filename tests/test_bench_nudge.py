@@ -86,6 +86,26 @@ def main():
     ci = db.check_in(subject["token"])
     matching = [a for a in ci["suggested_actions"] if "db_bench" in a]
     assert matching, "check_in suggests the benchmark summary action"
+    assert "no anchor blessed" in note, "fallback names the missing anchor"
+
+    # With a bless in the window the nudge names the anchor, not the fallback.
+    run_rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=1)
+    assert run_rows, "seeded bench run is queryable"
+    events.log_event(
+        events.EVT_BENCH_ANCHOR_BLESSED,
+        actor_agent_id=subject["agent_id"],
+        actor_name=subject["name"],
+        detail={
+            "anchor_run_event_id": run_rows[0]["id"],
+            "blessed_by": subject["agent_id"],
+            "reason": "manual",
+            "medians": dict(meds_branch),
+        },
+    )
+    anchored = db.whoami(subject["token"])["bench_nudge"]
+    assert "vs anchor" in anchored, "nudge uses the anchor label when blessed"
+    assert "anchor ev" in anchored, "nudge names the blessing event"
+    assert "no anchor blessed" not in anchored, "fallback note gone once anchored"
 
     import shutil
 
