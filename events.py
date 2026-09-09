@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import statistics
 import time
+from datetime import datetime
 from typing import overload
 
 import config
@@ -89,6 +91,10 @@ EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
 EVT_CI_BRANCH_RUN = "ci_branch_run"
 EVT_CI_LOCAL_RUN = "ci_local_run"
+# Blessed benchmark anchor (single-anchor program, #367): blessing a
+# ci_db_bench_run as the comparison anchor logs here - run pointer +
+# denormalized medians + by/reason/at. Newest well-formed row wins.
+EVT_BENCH_ANCHOR_BLESSED = "bench_anchor_blessed"
 
 # The Karma Split: the credits economy and its staking flows log under
 # their own categories. Legacy bounty_* kinds remain valid for history.
@@ -206,6 +212,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_DB_BENCH_RUN,
     EVT_CI_BRANCH_RUN,
     EVT_CI_LOCAL_RUN,
+    EVT_BENCH_ANCHOR_BLESSED,
     EVT_CREDIT_EARNED,
     EVT_CREDIT_SPENT,
     EVT_STAKE_CREATED,
@@ -783,3 +790,104 @@ def bench_regressions_for(events_rows: list[dict]) -> int:
             # counts as 0 regressions rather than falling through to older.
             return 0
     return 0
+
+
+# -- blessed benchmark anchor (single-anchor program, proposal #367) -----
+#
+# Gate, tab, nudge and badges converge on one anchor: the newest
+# well-formed bench_anchor_blessed event. Blessing (manual tool + cron,
+# next PR) stores a pointer to the anchor run plus a denormalized medians
+# snapshot, so the anchor survives pruning of the run event itself.
+# Aging is computed lazily by readers - no sweep, no state change.
+
+_BENCH_ANCHOR_LABEL = "vs anchor"
+
+
+def _bench_anchor_valid(detail: dict | None) -> dict[str, float] | None:
+    """Validated medians snapshot from a bless record's detail, or None
+    when malformed (non-int run pointer or empty/non-numeric medians).
+    Malformed rows are skipped by the reader, never fatal
+    (domain: degrade-silently)."""
+    if not isinstance(detail, dict):
+        return None
+    if not isinstance(detail.get("anchor_run_event_id"), int):
+        return None
+    meds = detail.get("medians")
+    if not isinstance(meds, dict):
+        return None
+    out: dict[str, float] = {}
+    for q, val in meds.items():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            out[str(q)] = float(val)
+    return out or None
+
+
+def bench_anchor_for(limit: int = 10) -> dict | None:
+    """The active benchmark anchor: newest well-formed bench_anchor_blessed
+    event, or None when none exists. Returns {bless_event_id, blessed_at,
+    blessed_by, blessed_by_name, reason, anchor_run_event_id, medians}.
+    The anchor kind is separate from the bench runs it blesses, so this
+    queries the ledger itself; malformed rows are skipped. Newest wins,
+    so re-blessing is just blessing again."""
+    rows = query_events(kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit))
+    for ev in rows:
+        meds = _bench_anchor_valid(ev.get("detail"))
+        if meds is None:
+            continue
+        detail = ev.get("detail") or {}
+        return {
+            "bless_event_id": ev["id"],
+            "blessed_at": ev["created_at"],
+            "blessed_by": detail.get("blessed_by"),
+            "blessed_by_name": ev.get("actor_name"),
+            "reason": detail.get("reason"),
+            "anchor_run_event_id": detail.get("anchor_run_event_id"),
+            "medians": meds,
+        }
+    return None
+
+
+def bench_anchor_aging(
+    anchor: dict | None,
+    events_rows: list[dict],
+    *,
+    now_iso: str | None = None,
+) -> tuple[bool, str]:
+    """Whether the anchor is aging, plus the human reason. Aging when no
+    anchor is blessed, when the anchor is older than
+    BENCH_ANCHOR_MAX_AGE_DAYS, or when trailing native medians drifted
+    >20% vs the anchor on 3+ queries (mirrors the harness gate; the
+    3-query minimum avoids single-query flicker). Readers render the
+    reason beside the anchor; nothing here mutates. now_iso is a test
+    seam defaulting to now."""
+    if anchor is None:
+        return True, "no anchor blessed"
+    try:
+        max_age = int(config.BENCH_ANCHOR_MAX_AGE_DAYS)
+    except Exception:
+        max_age = 7  # domain: degrade-silently
+    try:
+        blessed = datetime.fromisoformat(
+            (anchor.get("blessed_at") or "").replace("Z", "+00:00")
+        )
+        now = datetime.fromisoformat((now_iso or db._now_iso()).replace("Z", "+00:00"))
+        age_days = (now - blessed).total_seconds() / 86400
+    except Exception:
+        age_days = (
+            0  # domain: degrade-silently - unparseable stamp never forces aging alone
+        )
+    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    drifted: list[str] = []
+    for q, base in (anchor.get("medians") or {}).items():
+        series = bench_medians_for(native, str(q))
+        if not series:
+            continue
+        if abs(bench_pct(statistics.median(series), float(base))) > 20:
+            drifted.append(str(q))
+    if len(drifted) >= 3:
+        return True, f"{len(drifted)} queries drifted >20% vs trailing native median"
+    if age_days > max_age:
+        return True, f"anchor {age_days:.0f}d old (>{max_age}d)"
+    if not native:
+        return False, "no native runs to compare"
+    return False, "anchor fresh"
