@@ -1142,6 +1142,32 @@ _perf_indexes = (
 )
 
 
+def _no_full_scan(plan: str, table: str) -> bool:
+    # A bare "SCAN <table>" line (no USING clause) is a full table scan.
+    # "SCAN <table> USING COVERING INDEX ..." scans the narrow index, not
+    # the table - live probe on SQLite 3.50.4 shows this shape for the
+    # treasury SUMs and the posts ORDER BY, so only the bare form fails.
+    # Exact per-line match, so SEARCH lines can never false-fire. The legacy
+    # "SCAN TABLE <table>" form is matched too, so the pin can never go
+    # vacuous-green on an older SQLite the way the old guards did on modern.
+    return not any(
+        line.strip() in (f"SCAN {table}", f"SCAN TABLE {table}")
+        for line in plan.splitlines()
+    )
+
+
+def _selftest_no_full_scan() -> None:
+    # Pure-function pin for the helper above: no DB needed, runs on every
+    # invocation before seeding so a discrimination regression fails fast.
+    assert not _no_full_scan("SCAN jobs", "jobs")
+    assert not _no_full_scan("SCAN TABLE jobs", "jobs")
+    assert not _no_full_scan("SEARCH x\nSCAN jobs", "jobs")
+    assert _no_full_scan("SEARCH jobs USING COVERING INDEX idx (status=?)", "jobs")
+    assert _no_full_scan("SCAN jobs USING COVERING INDEX idx", "jobs")
+    assert _no_full_scan("SCAN CONSTANT ROW", "jobs")
+    assert _no_full_scan("SEARCH p USING INDEX i\nUSE TEMP B-TREE FOR ORDER BY", "p")
+
+
 def _check_explain_proposals() -> bool:
     sql = _plsql()
     plan = _explain(sql)
@@ -1159,7 +1185,9 @@ def _check_explain_list_posts() -> bool:
     # no WHERE clause) — must serve ORDER BY from an index, never full scan
     sql = "SELECT p.id FROM posts p ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
     plan = _explain(sql)
-    return "SCAN TABLE posts" not in plan
+    # Probe-proven shape (3.50.4): SCAN p USING COVERING INDEX
+    # idx_posts_created - covering-index scan, not a table scan.
+    return _no_full_scan(plan, "p")
 
 
 def _check_explain_list_comments_flat(post_id: int) -> bool:
@@ -1189,19 +1217,21 @@ def _check_explain_jobs() -> bool:
     # or the #1093 composite idx_jobs_offered_to (planners disagree across
     # SQLite versions - same complexity class, covering + sort either way).
     # Pin "no full scan" instead of one index name; EXPLAIN prints
-    # "SCAN jobs", never "SCAN TABLE jobs".
+    # "SCAN jobs", never "SCAN TABLE jobs". Bare form only: a covering-index
+    # scan (same class 3.50.4 emits for sibling queries) must not fail.
     sql = "SELECT id FROM jobs WHERE status IN ('open', 'offered') ORDER BY id DESC LIMIT 20"
     plan = _explain(sql)
     ok_index = "idx_jobs_status" in plan or "idx_jobs_offered_to" in plan
-    return ok_index and "SCAN jobs" not in plan
+    return ok_index and _no_full_scan(plan, "jobs")
 
 
 def _check_explain_credits_treasury() -> bool:
     sql = "SELECT COALESCE(SUM(delta_quarters),0) FROM credit_entries WHERE account = 'treasury'"
     plan = _explain(sql)
-    return (
-        "idx_credit_entries_treasury" in plan
-        and "SCAN TABLE credit_entries" not in plan
+    # Probe-proven shape (3.50.4): SCAN credit_entries USING COVERING INDEX
+    # idx_credit_entries_treasury_flows - covering-index scan, not a table scan.
+    return "idx_credit_entries_treasury" in plan and _no_full_scan(
+        plan, "credit_entries"
     )
 
 
@@ -1210,16 +1240,16 @@ def _check_explain_events() -> bool:
     plan = _explain(sql)
     # Only idx_events_kind_created_id remains after the events index prune;
     # the planner must still pick it rather than falling back to a scan.
-    return "idx_events_kind_created_id" in plan and "SCAN TABLE events" not in plan
+    return "idx_events_kind_created_id" in plan and _no_full_scan(plan, "events")
 
 
 def _check_explain_economy() -> bool:
     # economy_overview's heaviest: treasury flow GROUP BY reason — must use partial index
     sql = "SELECT reason, SUM(delta_quarters) FROM credit_entries WHERE account = 'treasury' GROUP BY reason"
     plan = _explain(sql)
-    return (
-        "idx_credit_entries_treasury" in plan
-        and "SCAN TABLE credit_entries" not in plan
+    # Same covering-scan shape as the treasury probe above.
+    return "idx_credit_entries_treasury" in plan and _no_full_scan(
+        plan, "credit_entries"
     )
 
 
@@ -1232,7 +1262,7 @@ def _check_explain_notifications_unread(agent_id: int) -> bool:
     return (
         "idx_notifications_unread" in plan
         or "idx_notifications_agent_read_created" in plan
-    ) and "SCAN TABLE notifications" not in plan
+    ) and _no_full_scan(plan, "notifications")
 
 
 def _check_explain_pr_votes() -> bool:
@@ -1242,13 +1272,13 @@ def _check_explain_pr_votes() -> bool:
     plan = _explain(sql)
     return (
         "idx_pr_votes_pr" in plan or "sqlite_autoindex_pr_votes_1" in plan
-    ) and "SCAN TABLE pr_votes" not in plan
+    ) and _no_full_scan(plan, "pr_votes")
 
 
 def _check_explain_todo_items(list_id: int) -> bool:
     sql = f"SELECT id FROM todo_items WHERE list_id = {list_id}"
     plan = _explain(sql)
-    return "idx_todo_items_list" in plan and "SCAN TABLE todo_items" not in plan
+    return "idx_todo_items_list" in plan and _no_full_scan(plan, "todo_items")
 
 
 def _check_perf_indexes() -> tuple[bool, set[str]]:
@@ -1288,6 +1318,8 @@ def main():
         help="only run structural EXPLAIN checks, skip timing",
     )
     args = parser.parse_args()
+
+    _selftest_no_full_scan()
 
     print("Seeding test DB...")
     agents, post_ids, comment_ids, proposal_ids, ctx = _seed()
