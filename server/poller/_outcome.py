@@ -249,6 +249,21 @@ def _process_closed_pr(pr: dict) -> None:
                     detail=detail,
                     conn=conn,
                 )
+                # Declined-PR fine (maintainer-supervised): bill the
+                # opener a Treasury invoice on the FIRST decline record.
+                # Inside record_pr_decline's once-guard keeps it
+                # transaction-atomic — a transient failure rolls the
+                # whole entry back and retries next tick (no duplicate
+                # bills). Handled refusals never raise: they return a
+                # skip reason and the decline still commits.
+                fine = db.issue_pr_decline_fine(conn, pr["number"], agent_id)
+                if fine.get("skip"):
+                    logutil.log(
+                        "decline_fine",
+                        pr_number=pr["number"],
+                        agent_id=agent_id,
+                        reason=fine["skip"],
+                    )
             staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
