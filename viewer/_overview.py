@@ -17,6 +17,7 @@ import db
 import db._aggregates as aggregates
 import reports
 from viewer import _status as viewer_status
+from viewer._cache import _acached
 from viewer._citizens_helpers import _citizen_table
 from viewer._feed_helpers import _overview_cards, _recent_posts, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
@@ -64,7 +65,18 @@ def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
         return ""
 
 
+_OVERVIEW_TTL = 60.0
+
+
 async def render_overview() -> str:
+    """The / overview fragment, memoized 60s through the shared cache
+    helper: the page and its POLL_MS*2 soft-refresh fragment share one
+    entry, so repeat hits skip the ~8 backing scans (counts, docket,
+    reports, stakes, jobs, headline, leaderboard, recent posts)."""
+    return await _acached(("overview",), _OVERVIEW_TTL, _render_overview_uncached)
+
+
+async def _render_overview_uncached() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
