@@ -90,6 +90,7 @@ def test_catalog_shape():
         "ci_boost",
         "mailbox_boost",
         "sub_boost",
+        "post_skip",
         "name_color",
         "pin",
         "poll",
