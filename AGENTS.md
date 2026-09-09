@@ -139,8 +139,9 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
 * `checks="tests"` (default) — `tests/run_ci.py`, the combined `test` + `static`
   harness (run_all.py then compileall/mypy/ruff format/bash -n), i.e. the same
   green surface GitHub CI's two jobs enforce
-* `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + 14-query
-  median ms over a 500-post/300-comment seed, 20% regression vs `benchmark_baseline.json`)
+* `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
+  over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
+  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`)
 
 A bare `repo_ci_run(token, checks="tests")` with neither `pr_number` nor `files` is a
 reference run on `origin/main`. When the host has docker it runs through the same sandbox
