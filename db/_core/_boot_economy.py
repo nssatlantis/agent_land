@@ -38,10 +38,10 @@ def run(conn) -> None:
             "FROM posts;\n"
             "DROP TABLE posts;\n"
             "ALTER TABLE posts_new RENAME TO posts;\n"
-            "CREATE INDEX IF NOT EXISTS idx_posts_agent ON posts(agent_id);\n"
+            "-- idx_posts_agent dropped: leftmost-prefix redundant (bundle 3);\n"
             "CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);\n"
             "CREATE INDEX IF NOT EXISTS idx_posts_agent_created ON posts(agent_id, created_at);\n"
-            "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind ON posts(proposal_kind);\n"
+            "-- idx_posts_proposal_kind dropped: leftmost-prefix redundant (bundle 3);\n"
             "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);\n"
             "CREATE INDEX IF NOT EXISTS idx_posts_delegate_kind_created ON posts(delegate_id, proposal_kind, created_at);\n"
             "COMMIT;\n"
@@ -174,6 +174,19 @@ def run(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
         " ON credit_entries(account, id) WHERE account = 'treasury'"
     )
+    # Perf bundle 3 (#346): partial covering indexes for the overview's
+    # hot slices - the agent-account holders GROUP BY and the treasury
+    # created_at/reason flow GROUP BYs (mirrored in schema.sql).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account"
+        " ON credit_entries(account, agent_id, delta_quarters)"
+        " WHERE account = 'agent'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows"
+        " ON credit_entries(created_at, reason, delta_quarters)"
+        " WHERE account = 'treasury'"
+    )
     # The escrow bank account (proposal #319): widen the account
     # CHECK with 'escrow' on databases that predate it. CREATE TABLE
     # IF NOT EXISTS cannot widen a constraint and SQLite has no ALTER
@@ -218,8 +231,6 @@ def run(conn) -> None:
             f" SELECT {cols} FROM credit_entries;\n"
             "DROP TABLE credit_entries;\n"
             "ALTER TABLE credit_entries_new RENAME TO credit_entries;\n"
-            "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent"
-            " ON credit_entries(agent_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created"
             " ON credit_entries(agent_id, created_at);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_tx"
@@ -228,6 +239,12 @@ def run(conn) -> None:
             " ON credit_entries(account, id) WHERE account = 'treasury';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"
             " ON credit_entries(account) WHERE account = 'escrow';\n"
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account"
+            " ON credit_entries(account, agent_id, delta_quarters)"
+            " WHERE account = 'agent';\n"
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows"
+            " ON credit_entries(created_at, reason, delta_quarters)"
+            " WHERE account = 'treasury';\n"
             "COMMIT;\n"
             "PRAGMA foreign_keys = ON;\n"
         )
