@@ -96,13 +96,9 @@ _WRITE_REPS = 12  # pre-staged distinct write targets per write query
 # Deterministic seed — same DB shape every run (order shuffled per run, seed 1234)
 _SEED = 1234
 
-# Ensure no caps during seeding (benchmark is not production-like, just fast).
-# Assigned (not setdefault): an outer CI env must never thin the seed silently.
-os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
-os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
-os.environ["FORUM_TAG_CREATE_COST"] = "0"
-os.environ["FORUM_TAG_APPLY_COST"] = "0"
-os.environ["FORUM_TX_FEE_PERCENT"] = "0"
+# NOTE: no cap/fee zeroing here — tests._setup already setdefaults all five
+# (VOTE/COMMENT caps, TAG create+apply costs, TX fee) before this import.
+# Assigning them again would clobber an outer explicit env for no gain.
 
 # Baseline file for regression tracking
 _BASELINE_FILE = Path(__file__).parent / "benchmark_baseline.json"
@@ -388,24 +384,6 @@ def _seed():
             )
             conn.commit()
 
-    # Stakes — mix of karma and credits (small sizes fit vote-earned balances)
-    n_stakes = 0
-    for i in range(0, min(_STAKES, len(proposal_ids))):
-        staker = tokens[(i * 7) % len(tokens)]
-        try:
-            db.stake(
-                staker,
-                proposal_ids[i % len(proposal_ids)],
-                1,
-                1,
-                currency="karma" if i % 2 == 0 else "credits",
-            )
-            n_stakes += 1
-        except Exception:
-            pass
-    print(f"  stakes landed: {n_stakes}")
-    assert n_stakes >= _STAKES // 2, "stake seed collapsed"
-
     # Collaborative todos + collaborators: volume across many boards.
     # NOTE: lists must be created by the proposal AUTHOR (or delegate) —
     # indexing by loop counter silently targets the wrong agent and seeds
@@ -453,7 +431,10 @@ def _seed():
     print(f"  todo lists seeded: {n_todo_lists}")
     assert n_todo_lists >= _TODO_COLLABS, "todo seed collapsed (author mapping?)"
 
-    # Credit ledger — treasury + agent diversity (direct SQL to bypass karma/fee gates)
+    # Credit ledger — treasury + agent diversity (direct SQL to bypass karma/fee gates).
+    # Seeded BEFORE stakes: stake() checks balances, and currency="credits"
+    # stakes land zero on unfunded agents (the old order proved it: 50/50 split
+    # with the credits half invisible).
     with db._conn() as conn:
         # Use first agents as treasury-funded earners
         for i in range(_CREDIT_BATCH):
@@ -479,6 +460,31 @@ def _seed():
                 ),
             )
         conn.commit()
+
+    # Stakes — mix of karma and credits (small sizes fit vote-earned balances
+    # and the ledger top-up above); per-currency asserts, not a pooled one.
+    n_karma_stakes = 0
+    n_credits_stakes = 0
+    for i in range(0, min(_STAKES, len(proposal_ids))):
+        staker = tokens[(i * 7) % len(tokens)]
+        cur = "karma" if i % 2 == 0 else "credits"
+        try:
+            db.stake(
+                staker,
+                proposal_ids[i % len(proposal_ids)],
+                1,
+                1,
+                currency=cur,
+            )
+            if cur == "karma":
+                n_karma_stakes += 1
+            else:
+                n_credits_stakes += 1
+        except Exception:
+            pass
+    print(f"  stakes landed: {n_karma_stakes} karma / {n_credits_stakes} credits")
+    assert n_karma_stakes >= _STAKES // 4, "karma stake seed collapsed"
+    assert n_credits_stakes >= _STAKES // 4, "credits stake seed collapsed"
 
     # Jobs — with steps/cycles (direct SQL, avoids 10-karma floor).
     # States cover the board views (open/active/completed) plus offered
@@ -672,6 +678,7 @@ def _seed():
             db.subscribe_post(tokens[(i + 1) % len(tokens)], fat_post)
         except Exception:
             pass
+    fat_parent_id = fat_comment_ids[len(fat_comment_ids) // 2] if fat_comment_ids else 0
 
     # Fat board — one collaborative proposal with 3 full lists + claims
     fat_board = db.create_proposal(
@@ -887,16 +894,25 @@ def _seed():
         except Exception:
             pass
 
-    # Pre-staged distinct write targets (one use each → no intra-run dupes)
+    # Pre-staged distinct write targets (one use each → no intra-run dupes).
+    # Vote pairs stage one DISTINCT post per k (first-fit without a used-set
+    # collapses to post_ids[0] for every k — same-row contention, not a mix).
     write_comment_posts = [
         post_ids[(i * 13) % len(post_ids)] for i in range(_WRITE_REPS)
     ]
     write_vote_pairs: list[tuple[str, int]] = []
+    _used_vote_targets: set[int] = set()
     for k in range(_WRITE_REPS):
         vtok = tokens[(40 + k) % len(tokens)]
         vid = agents[all_names[(40 + k) % len(all_names)]]["agent_id"]
-        tgt = next(p for p in post_ids[::7] if author_of[p] != vid)
+        tgt = next(
+            p
+            for p in post_ids[k::7]
+            if author_of[p] != vid and p not in _used_vote_targets
+        )
+        _used_vote_targets.add(tgt)
         write_vote_pairs.append((vtok, tgt))
+    assert len(_used_vote_targets) == _WRITE_REPS, "vote write pool collapsed"
     write_stake_targets = [
         proposal_ids[(100 + k) % len(proposal_ids)] for k in range(_WRITE_REPS)
     ]
@@ -917,7 +933,20 @@ def _seed():
     write_verify_ids = bug_ids[3::6][: _WRITE_REPS - 2] + bug_ids[58:60]
     assert len(write_verify_ids) >= _WRITE_REPS, "verify write pool short"
     write_verify_toks = [tokens[(43 + k * 7) % len(tokens)] for k in range(_WRITE_REPS)]
-    write_poll_voters = [tokens[(44 + k) % len(tokens)] for k in range(_WRITE_REPS)]
+    # voting on your own poll is refused — exclude the author up front so a
+    # warmup can never abort the run on luck.
+    write_poll_voters: list[str] = []
+    if write_post_id is not None:
+        for k in range(200):
+            tok = tokens[(44 + k) % len(tokens)]
+            if (
+                agents[all_names[(44 + k) % len(all_names)]]["agent_id"]
+                != author_of[write_post_id]
+            ):
+                write_poll_voters.append(tok)
+            if len(write_poll_voters) >= _WRITE_REPS:
+                break
+        assert len(write_poll_voters) >= _WRITE_REPS, "poll voter pool short"
     write_report_pairs = [
         (tokens[(45 + k) % len(tokens)], post_ids[(700 + k) % len(post_ids)])
         for k in range(_WRITE_REPS)
@@ -942,6 +971,7 @@ def _seed():
         "bug_ids": bug_ids,
         "pr_numbers": pr_numbers,
         "fat_post": fat_post,
+        "fat_parent_id": fat_parent_id if fat_comment_ids else None,
         "fat_board": fat_board,
         "fat_board_list_id": fat_board_list_id,
         "poll_ids": poll_ids,
@@ -1062,10 +1092,11 @@ def _check_explain_agents() -> bool:
 
 
 def _check_explain_list_posts() -> bool:
-    # Real SQL the app executes: list_posts newest — must hit covering index, never full scan
-    sql = "SELECT p.id FROM posts p WHERE p.proposal_kind IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
+    # Real SQL the app executes: list_posts default (no kind filter carries
+    # no WHERE clause) — must serve ORDER BY from an index, never full scan
+    sql = "SELECT p.id FROM posts p ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
     plan = _explain(sql)
-    return "idx_posts_proposal_kind_created" in plan and "SCAN TABLE posts" not in plan
+    return "SCAN TABLE posts" not in plan
 
 
 def _check_explain_list_comments_flat(post_id: int) -> bool:
@@ -1075,13 +1106,12 @@ def _check_explain_list_comments_flat(post_id: int) -> bool:
     return "idx_comments_post_created" in plan
 
 
-def _check_explain_list_comments_threaded(post_id: int) -> bool:
-    sql = f"SELECT id FROM comments WHERE post_id = {post_id} AND parent_comment_id IS NULL ORDER BY created_at DESC LIMIT 50"
+def _check_explain_list_comments_threaded(post_id: int, parent_id: int) -> bool:
+    # Real: db._comments.list_comments threaded — parent_comment_id=None
+    # emits NO predicate (identical to flat); the threaded shape is = ?.
+    sql = f"SELECT id FROM comments WHERE post_id = {post_id} AND parent_comment_id = {parent_id} ORDER BY created_at DESC LIMIT 50"
     plan = _explain(sql)
-    return (
-        "idx_comments_post_parent_created" in plan
-        or "idx_comments_post_created" in plan
-    )
+    return "idx_comments_post_parent_created" in plan
 
 
 def _check_explain_search_posts() -> bool:
@@ -1091,7 +1121,8 @@ def _check_explain_search_posts() -> bool:
 
 
 def _check_explain_jobs() -> bool:
-    sql = "SELECT id FROM jobs WHERE status = 'open' ORDER BY id DESC LIMIT 20"
+    # Real: the board's open view is IN ('open','offered'), not = 'open'
+    sql = "SELECT id FROM jobs WHERE status IN ('open', 'offered') ORDER BY id DESC LIMIT 20"
     plan = _explain(sql)
     return "idx_jobs_status" in plan and "SCAN TABLE jobs" not in plan
 
@@ -1214,6 +1245,11 @@ def main():
         ("EXPLAIN economy flow: grouped treasury scan", _check_explain_economy),
     ]
     if sample_post:
+        _fat_parent = (
+            ctx["fat_parent_id"]
+            if ctx.get("fat_parent_id") is not None
+            else sample_post
+        )
         checks.extend(
             [
                 (
@@ -1221,8 +1257,10 @@ def main():
                     lambda: _check_explain_list_comments_flat(sample_post),
                 ),
                 (
-                    f"EXPLAIN list_comments threaded (post {sample_post}): uses idx_comments_post_parent_created",
-                    lambda: _check_explain_list_comments_threaded(sample_post),
+                    "EXPLAIN list_comments threaded: uses idx_comments_post_parent_created",
+                    lambda: _check_explain_list_comments_threaded(
+                        ctx["fat_post"], _fat_parent
+                    ),
                 ),
             ]
         )
@@ -1317,8 +1355,12 @@ def main():
         ("get_posts_batch", lambda: db.get_posts(post_ids=post_ids[:3])),
         ("list_comments_flat", lambda: db.list_comments(post_ids[0], limit=50)),
         (
+            # parent_comment_id=None emits NO predicate (identical to flat);
+            # the threaded shape needs a real parent id.
             "list_comments_threaded",
-            lambda: db.list_comments(post_ids[0], limit=50, parent_comment_id=None),
+            lambda: db.list_comments(
+                w["fat_post"], limit=50, parent_comment_id=w["fat_parent_id"]
+            ),
         ),
         (
             "agent_comments",
