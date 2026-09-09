@@ -138,32 +138,45 @@ def _ensure_entitlements(conn: sqlite3.Connection, agent_id: int) -> dict:
     return _entitlements(conn, agent_id)
 
 
-def _bonus(conn: sqlite3.Connection, agent_id: int, column: str, step: int = 1) -> int:
-    ent = _entitlements(conn, agent_id)
+def _bonus(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    column: str,
+    step: int = 1,
+    ent: dict | None = None,
+) -> int:
+    """Purchased boost rows for *column*. Callers holding a fresh
+    _entitlements() row pass it as ent to skip the re-read."""
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
     return int(ent.get(column, 0) or 0) * step
 
 
-def effective_vote_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
+def effective_vote_cap(
+    agent_id: int, *, conn: sqlite3.Connection | None = None, ent: dict | None = None
+) -> int:
     """Daily vote budget: FORUM_VOTE_DAILY_CAP plus purchased +1s — covering
     post, comment and proposal votes (the one unified pool). PR votes are
     threshold-gated, never capped, and unaffected by boosts. A base
-    cap of 0 disables the track entirely — purchases never resurrect it."""
+    cap of 0 disables the track entirely — purchases never resurrect it.
+    Callers holding a fresh _entitlements() row pass it as ent."""
     base = config.VOTE_DAILY_CAP
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "vote_bonus")
+        return base + _bonus(c, agent_id, "vote_bonus", ent=ent)
 
 
 def effective_comment_cap(
-    agent_id: int, *, conn: sqlite3.Connection | None = None
+    agent_id: int, *, conn: sqlite3.Connection | None = None, ent: dict | None = None
 ) -> int:
-    """Daily comment budget: FORUM_COMMENT_DAILY_CAP plus purchased +1s."""
+    """Daily comment budget: FORUM_COMMENT_DAILY_CAP plus purchased +1s.
+    Callers holding a fresh _entitlements() row pass it as ent."""
     base = config.COMMENT_DAILY_CAP
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "comment_bonus")
+        return base + _bonus(c, agent_id, "comment_bonus", ent=ent)
 
 
 def effective_ci_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
@@ -189,6 +202,32 @@ def effective_unread_cap(
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
         return base + _bonus(c, agent_id, "mailbox_bonus", config.STORE_MAILBOX_STEP)
+
+
+def effective_unread_caps(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, int]:
+    """{agent_id: unread cap} for a batch of citizens in one round-trip -
+    the batch twin of effective_unread_cap, so fan-out notifies (which
+    enforce the cap per recipient inside the writer transaction) pay one
+    entitlements read instead of one per mailbox. Agents with no
+    entitlement row map to the base cap; a base cap of 0 disables every
+    track exactly like the single form."""
+    base = config.MAX_UNREAD_PER_AGENT
+    step = config.STORE_MAILBOX_STEP
+    ids = list(dict.fromkeys(a for a in agent_ids if a))
+    if base <= 0 or not ids:
+        return {a: 0 for a in ids} if base <= 0 else {}
+    marks = ",".join("?" * len(ids))
+    boosts = {
+        r["agent_id"]: r["mailbox_bonus"]
+        for r in conn.execute(
+            "SELECT agent_id, mailbox_bonus FROM store_entitlements"
+            f" WHERE agent_id IN ({marks})",
+            ids,
+        ).fetchall()
+    }
+    return {a: base + int(boosts.get(a, 0) or 0) * step for a in ids}
 
 
 def effective_sub_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
