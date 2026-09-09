@@ -1352,8 +1352,12 @@ CREATE INDEX IF NOT EXISTS idx_post_drafts_agent ON post_drafts(agent_id, update
 -- migration needed (same shape as store_entitlements / tool_calls).
 CREATE TABLE IF NOT EXISTS invoices (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    issuer_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    -- NULL issuer = billed by the Treasury itself (payable to it);
+    -- created_by names the citizen row behind the bill (== issuer
+    -- on citizen invoices, the admin on Treasury ones).
+    issuer_agent_id    INTEGER REFERENCES agents(id),
     payer_agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    created_by_agent_id INTEGER REFERENCES agents(id),
     amount_quarters    INTEGER NOT NULL CHECK (amount_quarters > 0),
     remaining_quarters INTEGER NOT NULL CHECK (remaining_quarters >= 0),
     reason             TEXT NOT NULL,
@@ -1371,3 +1375,4 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_payer ON invoices(payer_agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_invoices_issuer ON invoices(issuer_agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by_agent_id);
