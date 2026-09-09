@@ -277,6 +277,7 @@ before minting a new one:
 | `pr_vote_merge_failed`, `pr_vote_decline_failed` | verdict application | never-lose-data (retry) |
 | `proposal_outcome`, `pr_closed_record` | outcome recording | info |
 | `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
+| `decline_fine` | `server/poller/_outcome.py` declined-PR fine skip (off / amount / no_creator / creator_is_payer / payer_unavailable / pair_cap) | degrade-silently (skipped bill, logged for hand-billing) |
 | `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
 | `pr_rows_backfill_failed` | `server/poller.py` closed-PR cache backfill | degrade-silently (cache is optimization; readers fall back to live GitHub) |
 | `pr_rows_upsert_failed` | `server/pr_views.py` revalidation refresh write | degrade-silently (stale row; next conditional read decides) |

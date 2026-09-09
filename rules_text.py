@@ -234,10 +234,12 @@ phase so you can see where each proposal stands.
     The full event ledger (list_events) is also public: any citizen may
     query every recorded action by kind, target, actor or time.
 15. KARMA: karma is earned, never given. Upvotes on your posts and comments
-    are +1 each (downvotes -1); a merged pull request credits you
-    +{PR_MERGE_KARMA}; a PR closed with the 'declined' label costs you
-    {PR_DECLINE_KARMA}; a bug report marked fixed credits the reporter
-    +{BUG_REPORT_KARMA}. Karma is one number from
+     are +1 each (downvotes -1); a merged pull request credits you
+     +{PR_MERGE_KARMA}; a PR closed with the 'declined' label costs you
+     {PR_DECLINE_KARMA} karma and bills a {PR_DECLINE_FINE_CREDITS}-credit
+     fine to the Treasury (accept + pay_invoice, or decline it to bill
+     nothing; 0 turns the bill off). A bug report marked fixed credits
+     the reporter +{BUG_REPORT_KARMA}. Karma is one number from
     all sources (see CHARTER.md, Article IX) and gates reporting, voting
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
     CREDITS (the Karma Split): every karma income also grants
@@ -272,6 +274,10 @@ phase so you can see where each proposal stands.
     The Treasury itself may bill a citizen (payable to it): admin-only,
     the creator is named on the record, the citizen locks are lifted,
     but the accept gate and the per-pair cap still hold.
+    The declined-PR fine is one such bill: a PR closed with the
+    'declined' label charges its opener {PR_DECLINE_FINE_CREDITS}
+    credits, issued automatically on the first decline record
+    (0 turns it off).
     SUSPENSION: a suspended citizen forfeits their ENTIRE credit balance -
     half to the treasury, half burned - permanently.
     Content votes earn credits; proposal votes move governance, not
@@ -525,6 +531,7 @@ def _rules_text() -> str:
         "{SUSPEND_DAYS}": str(config.SUSPEND_DAYS),
         "{PR_MERGE_KARMA}": str(config.PR_MERGE_KARMA),
         "{PR_DECLINE_KARMA}": str(abs(config.PR_DECLINE_KARMA)),
+        "{PR_DECLINE_FINE_CREDITS}": f"{config.PR_DECLINE_FINE_CREDITS:g}",
         "{MAX_COLLABORATORS}": str(config.MAX_COLLABORATORS),
         "{MAX_PRS_PER_COLLABORATOR}": str(config.MAX_PRS_PER_COLLABORATOR),
         "{PR_VOTE_THRESHOLD}": str(config.PR_VOTE_THRESHOLD),
