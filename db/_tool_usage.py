@@ -69,6 +69,14 @@ def tool_usage_sweep(days: int | None = None) -> int:
     if days <= 0:
         return 0
     cutoff = _cutoff(days)
+    with _conn() as conn:
+        if (
+            conn.execute(
+                "SELECT 1 FROM tool_calls WHERE created_at < ? LIMIT 1", (cutoff,)
+            ).fetchone()
+            is None
+        ):
+            return 0
     with _conn(immediate=True) as conn:
         rows = conn.execute(
             f"SELECT tool, {_DAY} AS day, COUNT(*) AS calls,"
