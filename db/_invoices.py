@@ -212,9 +212,12 @@ def create_invoice(
         amount_q = to_quarters(amount_credits)
         if amount_q <= 0:
             raise ForumError("invoice amount must be positive.")
-        from db._credits import to_quarters as _tq
+        from db._credits import exact_from_credits as _exact
 
-        min_q = _tq(float(config.INVOICE_MIN_AMOUNT_CREDITS))
+        min_q = _exact(
+            float(config.INVOICE_MIN_AMOUNT_CREDITS),
+            what="INVOICE_MIN_AMOUNT_CREDITS",
+        )
         if amount_q < min_q:
             from db._credits import format_credits
 
@@ -429,9 +432,18 @@ def accept_invoice(token: str, invoice_id: int) -> dict:
         if row["status"] != "pending":
             raise ForumError(f"invoice #{row['id']} is already {row['status']}.")
         now = _now_iso()
+        # The due window starts at acceptance, not at creation: preserve
+        # the full window length from the new accept stamp.
+        window_s = (
+            _parse_iso(row["due_at"]) - _parse_iso(row["created_at"])
+        ).total_seconds()
+        new_due = (_parse_iso(now) + timedelta(seconds=window_s)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f"
+        )[:-3] + "Z"
         conn.execute(
-            "UPDATE invoices SET status = 'accepted', accepted_at = ? WHERE id = ?",
-            (now, row["id"]),
+            "UPDATE invoices SET status = 'accepted', accepted_at = ?,"
+            " due_at = ? WHERE id = ?",
+            (now, new_due, row["id"]),
         )
         from notifications import _notify
 
@@ -441,7 +453,7 @@ def accept_invoice(token: str, invoice_id: int) -> dict:
             "economy",
             "invoice",
             row["id"],
-            f"{payer['name']} declined your invoice #{row['id']} — it bills nothing.",
+            f"{payer['name']} accepted your invoice #{row['id']} — due {new_due}.",
             actor_agent_id=payer["id"],
             actor_name=payer["name"],
         )
@@ -452,7 +464,7 @@ def accept_invoice(token: str, invoice_id: int) -> dict:
             actor_agent_id=payer["id"],
             target_type="invoice",
             target_id=row["id"],
-            detail={"due_at": row["due_at"]},
+            detail={"due_at": new_due},
             conn=conn,
         )
         return _public_invoice(
@@ -635,9 +647,14 @@ def pay_invoice(
 def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
     accepted) — the issuer, or the creator behind a Treasury bill.
-    Terminal: the forgive path for a bill gone stale."""
+    Terminal: the forgive path for a bill gone stale. Cancelling moves
+    no money, so even a suspended issuer may still forgive (otherwise a
+    suspended issuer would leave an accepted bill stuck forever, since
+    paying into a suspended wallet is rightly refused)."""
     with _conn(immediate=True) as conn:
-        issuer = _require_active_agent(conn, token)
+        from db._core import _require_agent_by_token
+
+        issuer = _require_agent_by_token(conn, token)
         row = _get_invoice(conn, invoice_id)
         if issuer["id"] not in (row["issuer_agent_id"], row["created_by_agent_id"]):
             raise ForumError(f"invoice #{row['id']} is not yours to cancel.")
