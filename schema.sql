@@ -644,12 +644,13 @@ CREATE TABLE IF NOT EXISTS events (
     created_at      TEXT    NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+-- Events is a write-heavy append ledger; keep the index set lean (4, down
+-- from 7). idx_events_kind / idx_events_kind_created / idx_events_kind_target_created
+-- were redundant with idx_events_kind_created_id's prefix. Upgraded databases
+-- drop them in db/_core/_boot_final.py's migration section.
 CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
-CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_job_anchor ON events(target_type, target_id, kind, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_kind_target_created ON events(kind, target_type, target_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created_id ON events(kind, created_at, id);
 
 -- Collaborative proposals: multiple citizens may each open a PR against the
