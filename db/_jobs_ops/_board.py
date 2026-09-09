@@ -9,7 +9,12 @@ import config
 from db._core import ForumError, _conn, _id_chunks, _require_active_agent
 
 from ._detail import _job_detail, _job_details_batch
-from ._helpers import _fmt_q, _job_overdue_anchor_sql, _overdue_flag, job_overdue_cutoff
+from ._helpers import (
+    _fmt_q,
+    _job_anchors_for,
+    _overdue_flag,
+    job_overdue_cutoff,
+)
 
 _JOB_VIEWS = ("open", "mine", "working", "all")
 
@@ -74,11 +79,7 @@ def list_jobs(
             " j.payment_quarters, j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
             " c.name AS creator_name, w.name AS worker_name,"
-            " o.name AS offered_to_name,"
-            f" {_job_overdue_anchor_sql('j')} AS anchor_at,"
-            " (SELECT jc.status FROM job_cycles jc"
-            " WHERE jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1)"
-            " AS cur_cycle_status"
+            " o.name AS offered_to_name"
             " FROM jobs j"
             " LEFT JOIN agents c ON c.id = j.creator_agent_id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
@@ -87,6 +88,19 @@ def list_jobs(
             (*params, limit, offset),
         ).fetchall()
         total = _board_total_cached(conn, view, agent_id, where, params)
+        # Batch the two per-row correlated probes (events anchor, current
+        # cycle status) over the page ids instead of paying 2N subqueries.
+        page_ids = [r["id"] for r in rows]
+        anchors = _job_anchors_for(conn, page_ids)
+        cur_by_job: dict[int, dict[int, str | None]] = {}
+        if page_ids:
+            marks = ",".join("?" * len(page_ids))
+            for cr in conn.execute(
+                "SELECT job_id, cycle_no, status FROM job_cycles"
+                f" WHERE job_id IN ({marks})",
+                page_ids,
+            ).fetchall():
+                cur_by_job.setdefault(cr["job_id"], {})[cr["cycle_no"]] = cr["status"]
         jobs_out = [
             {
                 "job_id": r["id"],
@@ -102,7 +116,10 @@ def list_jobs(
                 "total_cycles": r["total_cycles"],
                 "cycles_done": r["cycles_done"],
                 "overdue": _overdue_flag(
-                    r["status"], r["cur_cycle_status"], r["anchor_at"], _cutoff
+                    r["status"],
+                    cur_by_job.get(r["id"], {}).get(r["cycles_done"] + 1),
+                    anchors.get(r["id"], r["created_at"]),
+                    _cutoff,
                 ),
                 "created_at": r["created_at"],
             }

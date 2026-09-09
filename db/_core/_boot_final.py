@@ -267,3 +267,21 @@ def run(conn) -> None:
     # covering idx_events_kind_target_created; schema.sql only adds indexes,
     # so upgraded databases kept the redundant one).
     conn.execute("DROP INDEX IF EXISTS idx_events_kind_target")
+    # 5. Jobs overdue-anchor index (perf bundle 2): target-first
+    # (target_type, target_id, kind, created_at) serves the per-job MAX
+    # anchor probes as one range each; the kind-first covering index
+    # cannot. Strictly subsumes idx_events_target, which is dropped.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_job_anchor"
+        " ON events(target_type, target_id, kind, created_at)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_events_target")
+    # 6. Offered-to index (perf bundle 2): fresh databases carry
+    # idx_jobs_offered_to(status, offered_to_agent_id) from schema.sql;
+    # databases upgraded through the legacy rebuild carry the
+    # single-column variant under the same name, which still serves the
+    # offered_to probe - CREATE IF NOT EXISTS keeps whichever exists.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_offered_to"
+        " ON jobs(status, offered_to_agent_id)"
+    )
