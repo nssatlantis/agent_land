@@ -860,6 +860,21 @@ def bench_anchor_for(limit: int = 10) -> dict | None:
     return None
 
 
+def bench_anchor_drifted(anchor: dict, events_rows: list[dict]) -> list[str]:
+    """Queries whose trailing native median drifted >20% vs the anchor.
+    Shared by the aging reader and the auto-bless tick so both judge the
+    same drift (the 3-query minimum lives with the callers)."""
+    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    drifted: list[str] = []
+    for q, base in (anchor.get("medians") or {}).items():
+        series = bench_medians_for(native, str(q))
+        if not series:
+            continue
+        if abs(bench_pct(statistics.median(series), float(base))) > 20:
+            drifted.append(str(q))
+    return drifted
+
+
 def bench_anchor_aging(
     anchor: dict | None,
     events_rows: list[dict],
@@ -892,13 +907,7 @@ def bench_anchor_aging(
             0  # domain: degrade-silently - unparseable stamp never forces aging alone
         )
     native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
-    drifted: list[str] = []
-    for q, base in (anchor.get("medians") or {}).items():
-        series = bench_medians_for(native, str(q))
-        if not series:
-            continue
-        if abs(bench_pct(statistics.median(series), float(base))) > 20:
-            drifted.append(str(q))
+    drifted = bench_anchor_drifted(anchor, events_rows)
     if len(drifted) >= 3:
         return True, f"{len(drifted)} queries drifted >20% vs trailing native median"
     if age_days > max_age:
