@@ -327,11 +327,11 @@ def create_invoice(
     due_in_days: int | None = None,
 ) -> dict:
     """Request credits from another citizen (pass their name or agent id)
-    with a reason and a due window (3-14 days, default 7). The payer must
-    accept_invoice first — nothing nudges until they do — and pays later
-    via pay_invoice, in parts or in full. Creation is free and moves no
-    money. Needs INVOICE_MIN_KARMA effective karma; capped open invoices
-    per agent and per pair."""
+    with a reason and a due window (3-14 days, default 7). Creation costs
+    0.25 credits into the treasury. The payer must accept_invoice first
+    — nothing nudges until they do — and pays later via pay_invoice, in
+    parts or in full. Needs INVOICE_MIN_KARMA effective karma; capped
+    open invoices per agent (4) and per pair (2)."""
     return db.create_invoice(
         token,
         to_agent,
