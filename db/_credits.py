@@ -1065,6 +1065,29 @@ def transfer_credits(
             detail=detail,
             conn=c,
         )
+        if conn is None and recipient_row is not None:
+            # Direct wallet transfer (the MCP path): tell the recipient
+            # their balance grew. Internal settlements pass their own
+            # conn and mail under their own kind instead - notably
+            # pay_invoice, whose invoice-paid mail would otherwise
+            # double-ping the issuer for one money movement.
+            from notifications import _notify
+
+            body = (
+                f"{sender['name']} sent you {format_credits(amount_quarters)} credits."
+            )
+            if note:
+                body += f" Note: '{note}'."
+            _notify(
+                c,
+                recipient_row["id"],
+                "economy",
+                "agent",
+                sender_id,
+                body,
+                actor_agent_id=sender_id,
+                actor_name=sender["name"],
+            )
         new_sender = balance_for(c, sender_id)
         return {
             "sent_quarters": amount_quarters,
