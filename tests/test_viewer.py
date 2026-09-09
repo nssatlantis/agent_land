@@ -652,6 +652,42 @@ def test_prs_hold_chip_states():
     )
 
 
+def test_prs_rows_html_linkify_batch():
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        "Linkify batch board",
+        "b",
+    )
+    pid = prop["post_id"]
+    rows = [
+        {
+            "number": 9201,
+            "title": f"Fix #P{pid} now",
+            "head": "a",
+            "base": "main",
+            "html_url": "https://x/9201",
+            "created_at": "2026-08-23T00:00:00Z",
+            "citizen": {"name": "alpha", "agent_id": 1},
+            "state": "open",
+            "outcome": None,
+        },
+        {
+            "number": 9202,
+            "title": "Bogus #P999999 ref",
+            "head": "a",
+            "base": "main",
+            "html_url": "https://x/9202",
+            "created_at": "2026-08-23T00:00:00Z",
+            "citizen": {"name": "alpha", "agent_id": 1},
+            "state": "open",
+            "outcome": None,
+        },
+    ]
+    html = _prs_rows_html("open", rows)
+    assert f'href="/posts/{pid}"' in html, "a real #P ref linkifies to its post"
+    assert "#P999999" in html, "an unknown #P ref keeps its text"
+
+
 def test_todos_panel_shows_list_and_item_ids():
     # Ordinary post -> nothing rendered.
     assert _todos_panel({"todos_summary": {}}) == ""
@@ -1904,6 +1940,7 @@ if __name__ == "__main__":
     test_prs_rows_html_ci_from_map()
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
+    test_prs_rows_html_linkify_batch()
     test_todos_panel_shows_list_and_item_ids()
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()

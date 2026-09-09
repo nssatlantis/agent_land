@@ -72,15 +72,24 @@ def claim_job(token: str, job_id: int) -> dict:
             conn=conn,
         )
         if job["creator_agent_id"] is not None:
+            body = (
+                f"{agent['name']} claimed your job '{job['title']}' "
+                f"(#{job['id']}). You will be pinged at each cycle "
+                "submission; review with review_job()."
+            )
+            if deposit_q > 0:
+                body += (
+                    f" {agent['name']} staked a {_fmt_q(deposit_q)} taker"
+                    " deposit (half to the treasury, half held as a"
+                    " returnable bonus - distinct from the wage escrow)."
+                )
             _notify(
                 conn,
                 job["creator_agent_id"],
                 "jobs",
                 "job",
                 job["id"],
-                f"{agent['name']} claimed your job '{job['title']}' "
-                f"(#{job['id']}). You will be pinged at each cycle "
-                "submission; review with review_job().",
+                body,
                 actor_agent_id=agent["id"],
             )
         return _detail_or_raise(conn, job["id"])
@@ -145,15 +154,25 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 conn=conn,
             )
             if job["creator_agent_id"] is not None:
+                body = (
+                    f"{agent['name']} accepted your job '{job['title']}' "
+                    f"(#{job_id}). You will be pinged at each cycle "
+                    "submission; review with review_job()."
+                )
+                if int(job["taker_deposit_quarters"] or 0) > 0:
+                    body += (
+                        f" {agent['name']} staked a"
+                        f" {_fmt_q(int(job['taker_deposit_quarters'] or 0))}"
+                        " taker deposit (half to the treasury, half held as"
+                        " a returnable bonus - distinct from the wage escrow)."
+                    )
                 _notify(
                     conn,
                     job["creator_agent_id"],
                     "jobs",
                     "job",
                     job_id,
-                    f"{agent['name']} accepted your job '{job['title']}' "
-                    f"(#{job_id}). You will be pinged at each cycle "
-                    "submission; review with review_job().",
+                    body,
                     actor_agent_id=agent["id"],
                 )
         else:
