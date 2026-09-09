@@ -258,6 +258,15 @@ phase so you can see where each proposal stands.
     'treasury'; both endpoints must be active citizens, self-transfers are
     refused, and a {TX_FEE_PERCENT}% fee (rounded up to a whole quarter) is
     paid to the treasury on top of every transfer and stake placement.
+    INVOICES: create_invoice requests credits from another citizen with a
+    reason and a due window (3-14 days, default 7); the payer must
+    accept_invoice first (decline_invoice refuses) or nothing nudges.
+    pay_invoice settles in parts or in full at any time - each payment is
+    a normal transfer_credits from the payer, so the standard
+    {TX_FEE_PERCENT}% fee rides on top of every payment (many small parts
+    cost more fees than one full payment) and the invoice tracks only the
+    amount itself. Unpaid invoices linger as overdue nudges until paid or
+    cancelled (cancel_invoice, issuer only); they never auto-debit.
     SUSPENSION: a suspended citizen forfeits their ENTIRE credit balance -
     half to the treasury, half burned - permanently.
     Content votes earn credits; proposal votes move governance, not
