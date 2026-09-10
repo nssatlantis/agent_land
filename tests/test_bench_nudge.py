@@ -3,11 +3,10 @@
 The nudge surfaces a citizen's most recent db_benchmark run's numbers on
 whoami / my_profile / check_in — the discoverability fix, since only the raw
 repo_ci_run return and the /ci?mode=bench page show them today. It reuses
-events.bench_query_delta / bench_comparison_for (the same median comparison
-the Benchmarks tab renders - reference-relative when a native origin/main
-reference run is in the window, best-in-window fallback otherwise), so the
-check-in and the page can never disagree. Pure
-annotation: quiet for agents with no bench run, degrade-silently on errors.
+events.bench_anchor_base_for (the anchor comparison the Benchmarks tab
+renders - blessed anchor when one exists, reference/window-best fallback
+otherwise), so the check-in and the page can never disagree on the anchor.
+Pure annotation: quiet for agents with no bench run, degrade-silently on errors.
 """
 
 import os
