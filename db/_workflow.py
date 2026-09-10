@@ -1257,6 +1257,112 @@ def _open_run_rows_for_many(
     return out
 
 
+def _ghost_run_status_for_many(
+    conn: sqlite3.Connection, proposal_ids: list[int]
+) -> dict[int, str]:
+    """{proposal_id: 'closed'} for the no-PR ghost residue in a batch - two
+    DISTINCT-IN queries (linked pids; folded-run pids) instead of two probes
+    per proposal. A pid is a ghost iff it holds a folded run and no pull
+    request was ever linked; absent pids are healthy runs (None)."""
+    out: dict[int, str] = {}
+    if not proposal_ids:
+        return out
+    linked: set[int] = set()
+    folded: set[int] = set()
+    for chunk in _id_chunks(sorted(set(proposal_ids))):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT DISTINCT post_id FROM proposal_links WHERE post_id IN ({marks})",
+            chunk,
+        ).fetchall():
+            linked.add(int(r["post_id"]))
+        for r in conn.execute(
+            "SELECT DISTINCT proposal_id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id IN"
+            f" ({marks}) AND status != 'open'",
+            (_WORKFLOW_CREATE_PR_PATH, *chunk),
+        ).fetchall():
+            folded.add(int(r["proposal_id"]))
+    for pid in folded - linked:
+        out[pid] = "closed"
+    return out
+
+
+def _reconcile_decisions(
+    conn: sqlite3.Connection, proposal_ids: list[int]
+) -> dict[int, tuple[str, str]]:
+    """{proposal_id: (run_status, reason)} for a batch of open-run proposals -
+    one batched probe per stage instead of up to five statements per pid.
+    Precedence mirrors the per-pid path exactly (superseded gate, then
+    lifecycle status with NULL-status semantics, then ghost); a bulk-fetch
+    failure logs workflow_reconcile_probe_failed and skips the undecided
+    remainder of that stage (the sweep is idempotent + periodic, so a skip
+    self-heals, and the next pass retries the batch). _decided_run_status /
+    _ghost_run_status stay as the differential-test oracle for this helper;
+    prod sweeps call only this."""
+    from db._proposal_status import (
+        _proposal_status_for_many,
+        _superseded_by_many,
+    )
+
+    decisions: dict[int, tuple[str, str]] = {}
+    pids = list(proposal_ids)
+    try:
+        sup = _superseded_by_many(conn, pids)
+    except Exception as exc:  # domain:degrade-silently - skip, retry next pass
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=None,
+            probe="superseded_by_many",
+            error=str(exc),
+        )
+        sup = {}
+    rest: list[int] = []
+    for pid in pids:
+        if sup.get(pid) is not None:
+            decisions[pid] = ("closed", "proposal_decided")
+        else:
+            rest.append(pid)
+    try:
+        st = _proposal_status_for_many(conn, rest)
+    except Exception as exc:  # domain:degrade-silently - skip, retry next pass
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=None,
+            probe="proposal_status_many",
+            error=str(exc),
+        )
+        st = {}
+    rest2: list[int] = []
+    for pid in rest:
+        status = st.get(pid)
+        if status is None or status == "open":
+            rest2.append(pid)
+            continue
+        try:
+            _validate_run_status(status)
+        except (
+            ForumError
+        ):  # domain:degrade-silently - unjudgeable status must not block
+            rest2.append(pid)
+            continue
+        decisions[pid] = (status, "proposal_decided")
+    try:
+        gh = _ghost_run_status_for_many(conn, rest2)
+    except Exception as exc:  # domain:degrade-silently - skip, retry next pass
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=None,
+            probe="ghost_many",
+            error=str(exc),
+        )
+        gh = {}
+    for pid in rest2:
+        if gh.get(pid) is not None:
+            decisions[pid] = ("closed", "no_pr_linked")
+    return decisions
+
+
 def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     """Close open create-pr runs whose proposal is already decided.
 
@@ -1266,11 +1372,12 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     "skips merged" gate kept re-opening runs for those on every boot, and
     nothing closed them (close_workflow_for_pr only fires on poller-processed
     outcomes). This sweep heals that residue: for each distinct proposal with
-    an open create-pr run, `_decided_run_status` decides whether to close and
-    to what terminal state; decided proposals close all their open runs there
+    an open create-pr run, `_reconcile_decisions` decides whether to close
+    and to what terminal state (batched probes, same precedence as the old
+    per-pid path); decided proposals close all their open runs there
     and to that exact status. A still-'open' proposal whose run is a no-PR
     ghost (a folded run exists and no pull request was ever linked) is closed
-    to 'closed' via `_ghost_run_status` â€” the residue of the backfill's
+    to 'closed' via the ghost stage â€” the residue of the backfill's
     re-open loop. Idempotent: a second pass finds no open run on a decided
     proposal. The close event follows the proposal-decision family
     (target_type post, target_id proposal_id, like close_workflow_for_pr)
@@ -1279,14 +1386,8 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     """
     closed_total = 0
     decided: list[tuple[int, str, str]] = []
-    for pid in _open_run_proposal_ids(conn):
-        run_status = _decided_run_status(conn, pid)
-        reason = "proposal_decided"
-        if run_status is None:
-            run_status = _ghost_run_status(conn, pid)
-            reason = "no_pr_linked"
-        if run_status is None:
-            continue
+    decisions = _reconcile_decisions(conn, _open_run_proposal_ids(conn))
+    for pid, (run_status, reason) in decisions.items():
         decided.append((pid, run_status, reason))
     rows_by_pid = _open_run_rows_for_many(conn, [pid for pid, _, _ in decided])
     for pid, run_status, reason in decided:
@@ -1354,14 +1455,7 @@ def stale_open_run_count(conn: sqlite3.Connection) -> int:
     read: the admin page shows its 'close stale' button only when this is
     non-zero."""
     total = 0
-    stale_pids = []
-    for pid in _open_run_proposal_ids(conn):
-        if (
-            _decided_run_status(conn, pid) is None
-            and _ghost_run_status(conn, pid) is None
-        ):
-            continue
-        stale_pids.append(pid)
+    stale_pids = list(_reconcile_decisions(conn, _open_run_proposal_ids(conn)))
     for rows in _open_run_rows_for_many(conn, stale_pids).values():
         total += len(rows)
     return total
