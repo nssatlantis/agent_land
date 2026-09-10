@@ -216,6 +216,37 @@ def test_attach_to_superseded_refused(agents):
         )
 
 
+def test_attach_open_to_merged_refused(agents):
+    author = agents["gamma"]
+    pid = db.create_proposal(author["token"], "Done deal", "body", small_fix=True)[
+        "post_id"
+    ]
+    db.close_proposal(author["token"], pid)
+    with mock.patch.object(github, "_pr_raw", return_value=_fake_raw("open")):
+        err = expect_error(db.attach_pr_to_proposal, author["token"], 81012, pid)
+    assert "merged" in err, err
+    assert db.proposal_for_pr(81012) is None, "no live link on a merged proposal"
+
+
+def test_attach_outcome_residue_elsewhere_refused(agents):
+    """A PR with an outcome row but no link (poller residue when the opener
+    was unknown) must not attach elsewhere: both proposals would derive
+    merged-from-X."""
+    author = agents["delta"]
+    pid_a = db.create_proposal(
+        author["token"], "First home", "body", small_fix=True
+    )["post_id"]
+    pid_b = db.create_proposal(
+        author["token"], "Second home", "body", small_fix=True
+    )["post_id"]
+    db.record_proposal_outcome(81013, pid_a, "merged", _WHEN)
+    with mock.patch.object(github, "_pr_raw", return_value=_fake_raw("merged")):
+        err = expect_error(db.attach_pr_to_proposal, author["token"], 81013, pid_b)
+    assert "decides once" in err, err
+    assert db.proposal_for_pr(81013) is None
+    assert _docket()[pid_b]["status"] == "open"
+
+
 def main():
     agents, _ = setup()
     test_attach_open_pr_links_only(agents)
@@ -234,6 +265,10 @@ def main():
     print("  synthetic close + truthful attach compose: ok")
     test_attach_to_superseded_refused(agents)
     print("  superseded refused: ok")
+    test_attach_open_to_merged_refused(agents)
+    print("  open attach to merged refused: ok")
+    test_attach_outcome_residue_elsewhere_refused(agents)
+    print("  outcome residue elsewhere refused: ok")
     print("test_manual_attach: all assertions passed")
     import shutil
 
