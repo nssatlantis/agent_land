@@ -55,6 +55,21 @@ def close_proposal(token: str, post_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def attach_pr_to_proposal(token: str, pr_number: int, proposal_id: int) -> dict:
+    """Author-only manual repair: attach an existing pull request to one of
+    your proposals and record what GitHub says happened to it. For PRs
+    opened outside the forum (no 'Proposal: #N' stamp) that the automatic
+    backfills never tied: open PRs link only (the outcome poller attributes
+    the decision when it lands); merged PRs link and record the merge so a
+    stranded proposal closes with its real PR on record. Declined/closed
+    PRs are refused - attach only open or merged ones. Lifecycle-only,
+    never mints karma, credits, fines or stake effects. Refuses
+    non-proposals, ideas, locked, collaborative and others' proposals."""
+    return db.attach_pr_to_proposal(token, pr_number, proposal_id)
+
+
+@mcp.tool()
+@_logged
 def set_proposal_goal(token: str, post_id: int, pr_goal: int | None = None) -> dict:
     """Author-only: set or clear the PR goal for a collaborative proposal.
     The goal is a soft target for the number of PRs the author wants merged
