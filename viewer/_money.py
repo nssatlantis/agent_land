@@ -340,6 +340,18 @@ _JOB_STATUS_COLORS = {
 }
 
 
+def _job_age_badge(status: str, age: str) -> str | None:
+    """Job-card age badge. `age` is already-escaped _human_ts markup: pass it
+    raw - re-escaping renders the span as literal visible text."""
+    if status in ("open", "offered"):
+        return f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {age}</span>"
+    if status == "active":
+        return f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {age}</span>"
+    if status in ("cancelled", "expired"):
+        return f"<span style='color:var(--muted)'>{age}</span>"
+    return None
+
+
 def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     """One job rendered with its checklist and cycle state - the board is
     small enough that every card carries its full promise-vs-delivery
@@ -395,16 +407,9 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         created = job.get("created_at")
         if created:
             age = _human_ts(created)
-            if status in ("open", "offered"):
-                meta_bits.append(
-                    f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>"
-                )
-            elif status == "active":
-                meta_bits.append(
-                    f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>"
-                )
-            elif status in ("cancelled", "expired"):
-                meta_bits.append(f"<span style='color:var(--muted)'>{esc(age)}</span>")
+            badge = _job_age_badge(status, age)
+            if badge:
+                meta_bits.append(badge)
     except Exception:  # domain: degrade-silently - badge never blocks card render
         pass
     if job["official"]:
