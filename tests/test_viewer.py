@@ -1162,6 +1162,50 @@ def test_todos_panel_list_bar_and_sticky():
     assert "width:0%" in tall, "0/1 done bar"
 
 
+def test_docket_summary_strip():
+    """The docket's action board: five lifecycle cards from the free counts
+    map, each linking to its tab; hidden on an empty docket (generalized
+    from the retired /collaborative dashboard's strip, #388)."""
+    from viewer._proposals import _docket_summary
+
+    counts = {
+        "all": 9,
+        "needs_votes": 2,
+        "approved": 1,
+        "review": 3,
+        "stale": 1,
+        "merged": 4,
+    }
+    html = _docket_summary(counts, "newest")
+    for label, n in (
+        ("needs votes", 2),
+        ("approved", 1),
+        ("in review", 3),
+        ("stale", 1),
+        ("merged", 4),
+    ):
+        assert label in html and f">{n}</div>" in html, f"strip names {label}={n}"
+    assert "/proposals?view=review&sort=newest" in html, "cards link to their tabs"
+    assert _docket_summary({"all": 0}, "newest") == "", "empty docket hides the strip"
+    print("  docket summary strip ok")
+
+
+def test_collaborative_page_removed():
+    """The /collaborative dashboard is folded into /proposals: no route, no
+    fragment name, no nav entry (hard remove, #388). The collaborative
+    *proposal kind* (docket tab, cards, claims) is untouched."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+
+    assert not [r for r in ROUTES if getattr(r, "path", None) == "/collaborative"], (
+        "no /collaborative route"
+    )
+    assert all(href != "/collaborative" for href, _, _ in _NAV_ITEMS), (
+        "no /collaborative nav entry"
+    )
+    print("  collaborative page removed ok")
+
+
 def test_docket_card_shows_list_claim_summary():
     # A collaborative proposal running whole-list claiming renders a quiet
     # claims line on its docket card so reserved lists are visible without
@@ -1972,6 +2016,8 @@ if __name__ == "__main__":
     test_todos_panel_shows_list_and_item_ids()
     test_todos_panel_list_mode_shows_list_level_claims()
     test_docket_card_shows_list_claim_summary()
+    test_docket_summary_strip()
+    test_collaborative_page_removed()
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
