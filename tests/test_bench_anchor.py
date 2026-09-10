@@ -126,6 +126,85 @@ def main():
     aging, reason = events.bench_anchor_aging(old_anchor, flat_rows)
     assert aging and "old" in reason, f"stale anchor reads aging ({reason})"
 
+    # Review-hardening pins: adversarial bless rows never shadow good ones.
+    assert (
+        events._bench_anchor_valid(
+            {"anchor_run_event_id": 5, "medians": {"a": float("nan")}}
+        )
+        is None
+    ), "NaN medians do not validate"
+    assert (
+        events._bench_anchor_valid(
+            {"anchor_run_event_id": 5, "medians": {"a": float("inf")}}
+        )
+        is None
+    ), "inf medians do not validate"
+    assert (
+        events._bench_anchor_valid({"anchor_run_event_id": True, "medians": {"a": 1.0}})
+        is None
+    ), "bool run pointer does not validate"
+    # A NaN bless logged newest is paged past, not honored (NaN survives
+    # the ledger JSON round-trip, so the validator is the only guard).
+    events.log_event(
+        events.EVT_BENCH_ANCHOR_BLESSED,
+        actor_agent_id=blesser["agent_id"],
+        actor_name=blesser["name"],
+        detail={
+            "anchor_run_event_id": 999,
+            "blessed_by": None,
+            "reason": "cron",
+            "medians": {"a": float("nan")},
+        },
+    )
+    assert events.bench_anchor_for()["bless_event_id"] == anchor2["bless_event_id"], (
+        "NaN bless skipped"
+    )
+    # Eleven newer malformed rows cannot hide the well-formed anchor.
+    for _ in range(11):
+        events.log_event(
+            events.EVT_BENCH_ANCHOR_BLESSED,
+            actor_agent_id=blesser["agent_id"],
+            actor_name=blesser["name"],
+            detail={"anchor_run_event_id": 999},
+        )
+    assert events.bench_anchor_for()["bless_event_id"] == anchor2["bless_event_id"], (
+        "malformed flood paged past"
+    )
+    assert (
+        events.bench_anchor_for(limit=0)["bless_event_id"] == anchor2["bless_event_id"]
+    ), "limit clamps to >=1"
+
+    # Boundary pins on crafted rows (no ledger): exact-20% stays fresh
+    # under the strict >, 6d23h stays fresh, future stamps never force aging.
+    rows12 = [
+        {"detail": {"mode": "native", "summary": {"timings_median_ms": {"a": 12.0}}}},
+        {"detail": {"mode": "native", "summary": {"timings_median_ms": {"a": 12.0}}}},
+    ]
+    a10 = {"blessed_at": db._now_iso(), "medians": {"a": 10.0}}
+    aging, _ = events.bench_anchor_aging(a10, rows12)
+    assert not aging, "exact-20% drift stays fresh"
+    rows10 = [
+        {"detail": {"mode": "native", "summary": {"timings_median_ms": {"a": 10.0}}}},
+    ]
+    almost = (
+        (datetime.now(timezone.utc) - timedelta(days=6, hours=23))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    aging, _ = events.bench_anchor_aging(
+        {"blessed_at": almost, "medians": {"a": 10.0}}, rows10
+    )
+    assert not aging, "6d23h anchor stays fresh"
+    future = (
+        (datetime.now(timezone.utc) + timedelta(days=1))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    aging, _ = events.bench_anchor_aging(
+        {"blessed_at": future, "medians": {"a": 10.0}}, rows10
+    )
+    assert not aging, "future stamp never forces aging"
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
