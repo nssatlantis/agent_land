@@ -19,7 +19,8 @@ detects 20%+1ms regressions against them — agents get before & after by
 running on main and on the PR merge preview and comparing
 summary.timings_median_ms (most info / least text). With no anchor
 injected the run is timing-advisory (structural pins still enforced);
-bless anchor runs with the bless_bench_anchor tool, never by hand.
+bless anchor runs through the hourly heartbeat (or a store-bought blessed
+run), never by hand.
 
 Quiet scheduling: repo_ci_run holds a db_benchmark run until the pool
 is idle (no slot held, no user run in flight), bounded by

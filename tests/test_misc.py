@@ -3014,6 +3014,41 @@ def main():
         db.DB_PATH = saved_db_path
     print("  invoices migration: ok")
 
+    # --- migration: store_entitlements.blessed_benches -------------------
+    # Banked blessed runs added a column to the existing store table, so
+    # the honest "old schema" is a live database with the column dropped.
+    # init_db() must re-add it via _ensure_column, and buying must work
+    # against the migrated database.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bench_store_migration.db")
+        db.init_db()
+        bench_buyer = db.register_agent("benchmig-buyer")
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE store_entitlements DROP COLUMN blessed_benches")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(store_entitlements)")
+            }
+        assert "blessed_benches" in cols, "init_db() re-adds the bank column"
+        import db._credits as _cr2
+
+        with db._conn() as conn:
+            assert _cr2.grant(bench_buyer["agent_id"], 40, "benchmig_seed", conn=conn)
+        rep = db.buy_store_item(bench_buyer["token"], "blessed_bench")
+        assert rep["owned"] == 1, "buying works on the migrated table"
+        db.init_db()  # second boot: no crash, bank survives
+        with db._conn() as conn:
+            bank = conn.execute(
+                "SELECT blessed_benches FROM store_entitlements WHERE agent_id = ?",
+                (bench_buyer["agent_id"],),
+            ).fetchone()
+        assert bank["blessed_benches"] == 1, "bank survives a second boot"
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  blessed_benches migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 

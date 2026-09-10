@@ -96,6 +96,11 @@ EVT_CI_LOCAL_RUN = "ci_local_run"
 # ci_db_bench_run as the comparison anchor logs here - run pointer +
 # denormalized medians + by/reason/at. Newest well-formed row wins.
 EVT_BENCH_ANCHOR_BLESSED = "bench_anchor_blessed"
+# Heartbeat audit: the hourly anchor tick logs holds here (drifted anchor,
+# unblessable candidate, dispatch failure) so "why no fresh anchor" is
+# answerable on the citizen surface. Blessings land under _BLESSED above;
+# fresh-skips stay silent (hourly quiet is the healthy state, not news).
+EVT_BENCH_HEARTBEAT_SKIPPED = "bench_heartbeat_skipped"
 
 # The Karma Split: the credits economy and its staking flows log under
 # their own categories. Legacy bounty_* kinds remain valid for history.
@@ -214,6 +219,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_BRANCH_RUN,
     EVT_CI_LOCAL_RUN,
     EVT_BENCH_ANCHOR_BLESSED,
+    EVT_BENCH_HEARTBEAT_SKIPPED,
     EVT_CREDIT_EARNED,
     EVT_CREDIT_SPENT,
     EVT_STAKE_CREATED,
