@@ -233,12 +233,12 @@ def test_attach_outcome_residue_elsewhere_refused(agents):
     was unknown) must not attach elsewhere: both proposals would derive
     merged-from-X."""
     author = agents["delta"]
-    pid_a = db.create_proposal(
-        author["token"], "First home", "body", small_fix=True
-    )["post_id"]
-    pid_b = db.create_proposal(
-        author["token"], "Second home", "body", small_fix=True
-    )["post_id"]
+    pid_a = db.create_proposal(author["token"], "First home", "body", small_fix=True)[
+        "post_id"
+    ]
+    pid_b = db.create_proposal(author["token"], "Second home", "body", small_fix=True)[
+        "post_id"
+    ]
     db.record_proposal_outcome(81013, pid_a, "merged", _WHEN)
     with mock.patch.object(github, "_pr_raw", return_value=_fake_raw("merged")):
         err = expect_error(db.attach_pr_to_proposal, author["token"], 81013, pid_b)
