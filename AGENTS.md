@@ -141,7 +141,8 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
   green surface GitHub CI's two jobs enforce
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
   over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
-  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`). Waits for an idle pool
+  volume, noise-aware 20%+2σ gate vs the blessed anchor, injected per run).
+  Waits for an idle pool
   first (FORUM_BENCH_QUIET_ONLY, bounded wait, then proceeds labeled; `quiet=False` skips);
   live downscales skip a running bench and any overlap flips `contended`.
 
@@ -296,6 +297,7 @@ before minting a new one:
 | `workspace_pool_saturated` | `github/_gitops.py` `_workspace` fallback | info (pool exhausted -> legacy temp clone) |
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 | `db_vacuum_boot`, `db_vacuum_boot_failed` | `db/_core/_boot_vacuum.py` `maybe_vacuum` | degrade-silently (logged; boot continues on the unvacuumed file) |
+| `bench_anchor_cron` | `server/poller/_anchor.py` auto-bless tick | degrade-silently (skip-first; bless/error only logged) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

@@ -271,6 +271,83 @@ def test_bench_badge_variants():
     assert "clean" in _bench_badge({}).lower()
 
 
+def _reset_bench_ledger():
+    # Hermetic anchor tests: bless rows and bench runs accumulate in-file,
+    # so clear both kinds before and after (mirrors the no_reference DELETE).
+    with db._conn() as c:
+        c.execute(
+            "DELETE FROM events WHERE kind IN (?, ?)",
+            (events.EVT_CI_DB_BENCH_RUN, events.EVT_BENCH_ANCHOR_BLESSED),
+        )
+
+
+def _bless_ref_medians():
+    _seed_bench_events()
+    rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=10)
+    ref = [r for r in rows if "pr_number" not in (r.get("detail") or {})][0]
+    ref_meds = dict(ref["detail"]["summary"]["timings_median_ms"])
+    events.log_event(
+        events.EVT_BENCH_ANCHOR_BLESSED,
+        actor_agent_id=AGENTS["beta"]["agent_id"],
+        actor_name=AGENTS["beta"]["name"],
+        detail={
+            "anchor_run_event_id": ref["id"],
+            "blessed_by": AGENTS["beta"]["agent_id"],
+            "reason": "manual",
+            "medians": ref_meds,
+        },
+    )
+    return ref_meds
+
+
+def test_ci_page_bench_anchor_head_and_label():
+    _reset_for_tests()
+    _reset_bench_ledger()
+    _bless_ref_medians()
+    from viewer._ci import ci_page
+
+    body = ci_page(_Req({"mode": "bench"})).body.decode("utf-8")
+    assert "vs anchor" in body, "cells use the anchor label when blessed"
+    assert "Anchor: ev" in body, "header names the blessing event"
+    assert "trailing flat vs anchor" in body, "flat trailing summary renders"
+    _reset_bench_ledger()
+
+
+def test_ci_page_bench_anchor_drift_summary():
+    _reset_for_tests()
+    _reset_bench_ledger()
+    ref_meds = _bless_ref_medians()
+    # A second native run drifting all three queries: trailing medians move
+    # >20% on 3/3, so the header shows the drift list plus AGING.
+    drifted = {"list_posts": 2.0, "list_proposals": 21.5, "my_profile": 29.3}
+    assert ref_meds != drifted, "drift fixture differs from the anchor"
+    events.log_event(
+        events.EVT_CI_DB_BENCH_RUN,
+        actor_agent_id=AGENTS["beta"]["agent_id"],
+        actor_name=AGENTS["beta"]["name"],
+        detail={
+            "checks": "db_benchmark",
+            "mode": "native",
+            "ok": True,
+            "exit_code": 0,
+            "duration_seconds": 20.0,
+            "head_sha": "beef21234567890abcdef21234567890abcd",
+            "summary": {
+                "bench": "db_benchmark",
+                "regressions": 0,
+                "timings_median_ms": drifted,
+            },
+        },
+    )
+    from viewer._ci import ci_page
+
+    body = ci_page(_Req({"mode": "bench"})).body.decode("utf-8")
+    assert "trailing drift" in body, "drifted summary renders"
+    assert "list_proposals" in body, "drifted query named"
+    assert "AGING" in body, "3-query drift raises AGING"
+    _reset_bench_ledger()
+
+
 if __name__ == "__main__":
     test_ci_page_native_tab_and_top_strip()
     test_ci_page_branch_tab_filters()
@@ -283,5 +360,7 @@ if __name__ == "__main__":
     test_ci_page_bench_tab_shows_medians_and_regressions()
     test_ci_page_bench_faster_row_shows_negative_delta()
     test_ci_page_bench_no_reference_falls_back_to_window_best()
+    test_ci_page_bench_anchor_head_and_label()
+    test_ci_page_bench_anchor_drift_summary()
     test_bench_badge_variants()
     print("test_ci_viewer: all assertions passed")

@@ -630,6 +630,62 @@ def test_env_keep_carries_docker_daemon_config():
         assert var in ci_runner._ENV_KEEP
 
 
+def test_sandbox_argv_carries_extra_env():
+    """_sandbox_argv appends --env K=V pairs for extra_env (bench anchor
+    injection); a bare call carries no anchor lines."""
+    argv, _ = ci_runner._sandbox._sandbox_argv("/repo", "img:tag", "tests/x.py")
+    assert "BENCH_ANCHOR_MEDIANS" not in " ".join(argv), "no anchor by default"
+    argv2, _ = ci_runner._sandbox._sandbox_argv(
+        "/repo",
+        "img:tag",
+        "tests/x.py",
+        extra_env={"BENCH_ANCHOR_MEDIANS": '{"a":1.0}', "BENCH_ANCHOR_EVENT_ID": "7"},
+    )
+    flat = " ".join(argv2)
+    assert 'BENCH_ANCHOR_MEDIANS={"a":1.0}' in flat, "medians ride --env"
+    assert "BENCH_ANCHOR_EVENT_ID=7" in flat, "event id rides --env"
+
+
+def test_bench_anchor_env_resolves_blessed_anchor():
+    """_bench_anchor_env serializes the newest well-formed bless event for
+    the child env and returns its id (empty pair + None id otherwise)."""
+    from server.ci_runner import _runs as _runs_mod
+
+    events.log_event(
+        events.EVT_BENCH_ANCHOR_BLESSED,
+        detail={
+            "anchor_run_event_id": 4242,
+            "blessed_by": None,
+            "reason": "cron",
+            "medians": {"q": 3.5},
+        },
+    )
+    env, eid = _runs_mod._bench_anchor_env()
+    assert json.loads(env["BENCH_ANCHOR_MEDIANS"]) == {"q": 3.5}, "medians serialize"
+    assert env["BENCH_ANCHOR_EVENT_ID"] == str(eid), "event id echoes"
+    assert isinstance(eid, int), "bless event id returned"
+
+
+def test_bench_anchor_env_advisory_branches():
+    """No anchor (or an unreadable ledger) resolves to empty env + None id,
+    so advisory runs go uninjected instead of failing. Monkeypatched, not
+    DB state: this file shares one DB and other tests log real bless rows."""
+    from server.ci_runner import _runs as _runs_mod
+
+    real = events.bench_anchor_for
+    try:
+        events.bench_anchor_for = lambda limit=10: None  # noqa: E731
+        assert _runs_mod._bench_anchor_env() == ({}, None), "no anchor, no pairs"
+
+        def _boom(limit=10):
+            raise RuntimeError("ledger down")
+
+        events.bench_anchor_for = _boom
+        assert _runs_mod._bench_anchor_env() == ({}, None), "errors fail to empty"
+    finally:
+        events.bench_anchor_for = real
+
+
 def test_prune_filter_is_docker_glob_not_regex():
     """docker image ls --filter reference= takes a glob - re.escape would
     inject backslashes and silently match nothing."""
@@ -1132,9 +1188,11 @@ def test_native_sandbox_routes_through_docker():
     ci_runner._sandbox._ensure_image = lambda tree_, rev: (
         holder.update(image_calls=holder["image_calls"] + 1, rev=rev) or "fake:tag"
     )
-    ci_runner._sandbox._sandbox_argv = lambda tree_, image_tag, script_rel: (
-        [sys.executable, "-c", "print('ok')"],
-        "agentland-ci-native",
+    ci_runner._sandbox._sandbox_argv = (
+        lambda tree_, image_tag, script_rel, extra_env=None: (
+            [sys.executable, "-c", "print('ok')"],
+            "agentland-ci-native",
+        )
     )
     ci_runner._sandbox._ensure_tree_traversable = lambda tree_, _marker=None: None
     ci_runner._slots._register_active = lambda *a, **k: None
@@ -1335,6 +1393,9 @@ def main():
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()
     test_env_keep_carries_docker_daemon_config()
+    test_sandbox_argv_carries_extra_env()
+    test_bench_anchor_env_resolves_blessed_anchor()
+    test_bench_anchor_env_advisory_branches()
     test_prune_filter_is_docker_glob_not_regex()
     test_drain_bounded_and_tail_contiguous()
     test_gc_sweep_survives_timeout_exception()
