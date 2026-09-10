@@ -1685,6 +1685,16 @@ def test_nav_fragments_economy():
     assert "onsubmit=\"this.action='/economy#sec-ledger'\"" in html
 
 
+def test_economy_store_panel():
+    """The store is most of spend intake: its sink row renders in flows and
+    the Citizen-store panel names per-item sales (#391)."""
+    html = _economy_body(_Req())
+    assert "Citizen store" in html, "store panel renders"
+    assert "of which store in" in html, "sink row renders in flows"
+    assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
+    assert "tag, stake &amp; job fees in" not in html, "old label gone"
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2019,6 +2029,8 @@ if __name__ == "__main__":
     test_docket_card_shows_list_claim_summary()
     test_docket_summary_strip()
     test_collaborative_page_removed()
+    test_nav_fragments_economy()
+    test_economy_store_panel()
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()

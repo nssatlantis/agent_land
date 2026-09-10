@@ -79,6 +79,7 @@ EXPECTED = [
     "buy_store_item",
     "get_store_catalog",
     "refund_blessed_bench",
+    "store_stats",
     "effective_vote_cap",
     "draft_save",
     "draft_publish",
