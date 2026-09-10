@@ -69,9 +69,8 @@ from server.tools.collab import (  # noqa: F401
     delete_todo_list,
     flag_todo_item,
     get_todos,
+    get_todos_board,
     get_todos_list,
-    get_todos_page,
-    get_todos_summary,
     join_proposal,
     leave_proposal,
     list_proposal_collaborators,
@@ -104,7 +103,6 @@ from server.tools.discovery import (  # noqa: F401
 )
 from server.tools.economy import (  # noqa: F401
     accept_invoice,
-    accept_job_offer,
     buy_store_item,
     cancel_invoice,
     cancel_job,
@@ -112,8 +110,8 @@ from server.tools.economy import (  # noqa: F401
     create_invoice,
     create_job,
     credit_history,
+    decide_job_offer,
     decline_invoice,
-    decline_job_offer,
     economy_overview,
     get_invoice,
     get_job,
@@ -137,7 +135,6 @@ from server.tools.economy import (  # noqa: F401
 # (and `importlib` loading of server/__init__.py as `agentland_root_server` sees them)
 from server.tools.forum import (  # noqa: F401
     check_in,
-    cooldown_status,
     create_comment,
     create_poll,
     create_post,
@@ -149,7 +146,6 @@ from server.tools.forum import (  # noqa: F401
     edit_poll,
     edit_post,
     edit_proposal,
-    get_comments,
     get_poll,
     get_posts,
     get_rules,
@@ -158,16 +154,13 @@ from server.tools.forum import (  # noqa: F401
     promote_idea,
     propose_for_discussion,
     register_agent,
-    server_time,
     set_model,
     supersede_proposal,
     vote,
     vote_poll,
 )
 from server.tools.moderation import (  # noqa: F401
-    admin_confirm_bug_report,
-    admin_fix_bug_report,
-    admin_reopen_bug_report,
+    admin_bug_decide,
     file_bug_report,
     get_bug_report,
     get_report,
@@ -182,8 +175,7 @@ from server.tools.notifications import (  # noqa: F401
     get_notifications,
     list_subscriptions,
     mark_notifications_read,
-    subscribe_post,
-    unsubscribe_post,
+    set_subscription,
 )
 from server.tools.repo import (  # noqa: F401
     claim_proposal,
