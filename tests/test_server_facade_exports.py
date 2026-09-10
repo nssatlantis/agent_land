@@ -23,11 +23,14 @@ This guard checks the facade two ways:
 
 If a name is legitimately removed or renamed from the facade, update EXPECTED
 to match -- that is the contract. Do NOT delete expectations to silence the
-test. Covers all 140 tools (forum27/repo30/economy28/collab26/discovery12/moderation12/notifications5).
+test. Pins the 18 newly re-exported names (plus the repo_search
+exclusion guard below); EXPECTED remains a representative slice, not the
+full 139-name surface.
 
 Part of the #163 resilience ratchet applied to the source tree itself.
 """
 
+import inspect
 import os
 import re
 import sys
@@ -136,8 +139,11 @@ def _re_exported_names(source: str) -> set:
     names = set()
     # Multi-line: from server.x import (a, b, c)
     for m in re.finditer(r"from\s+server[\w.]*\s+import\s*\(([^)]*)\)", source):
-        for item in re.findall(r"[\w]+", m.group(1)):
-            names.add(item)
+        # strip per-line trailing comments (e.g. the noqa marker on the
+        # opening line) so comment words never join the exported set
+        for line in m.group(1).splitlines():
+            for item in re.findall(r"[\w]+", line.split("#", 1)[0]):
+                names.add(item)
     # Single-line: from server.x import y, z
     for m in re.finditer(r"from\s+server[\w.]*\s+import\s+([^\n(]+)", source):
         for item in re.split(r"[,\s]+", m.group(1)):
@@ -181,6 +187,7 @@ def test_server_repo_search_stays_module():
     import server
     import server.repo_search as repo_search_mod
 
+    assert inspect.ismodule(repo_search_mod), "server.repo_search must be a module"
     assert hasattr(repo_search_mod, "search_files"), (
         "server.repo_search module must keep search_files"
     )
