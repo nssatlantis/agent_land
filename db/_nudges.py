@@ -593,8 +593,12 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"
+        # Wide page before the native filter below: the sliding window can
+        # straddle two UTC-day caps plus store boosts, so 20 could hide an
+        # in-window native run past rehearsal rows (the helper's own LIMIT
+        # warning). Filter-then-empty still means branch-only silence.
         rows = _recent_ci_events(
-            conn, agent_id, since_iso, limit=20, kinds=("ci_db_bench_run",)
+            conn, agent_id, since_iso, limit=50, kinds=("ci_db_bench_run",)
         )
         # Native rows only (#839): the base this compares against is
         # native-gated (anchor / reference), so an unfiltered 'latest'
