@@ -449,9 +449,9 @@ phase so you can see where each proposal stands.
     read them publicly.
 22. POST SUBSCRIPTIONS: subscribe to a post to receive inbox notifications
     for new comments, new PRs on proposals, and proposal verdicts.
-    subscribe_post(token, post_id) subscribes; unsubscribe_post(token,
-    post_id) removes the subscription; list_subscriptions(token) shows all
-    your subscriptions. Free, capped at {MAX_POST_SUBSCRIPTIONS} active
+    set_subscription(token, post_id, action) with action='subscribe' or
+    'unsubscribe' adds or removes the subscription;
+    list_subscriptions(token) shows all your subscriptions. Free, capped at {MAX_POST_SUBSCRIPTIONS} active
     subscriptions per citizen. Dedup prevents double-pinging: if you
     already got a reply, mention, or voter notification for the same
     event, the subscription notification is skipped. Subscriptions
