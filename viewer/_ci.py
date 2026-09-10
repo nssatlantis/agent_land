@@ -205,8 +205,8 @@ def _bench_anchor_head(anchor: dict | None, rows: list[dict]) -> str:
 def _bench_row(e: dict, bests: dict[str, float], label: str) -> str:
     """One db_benchmark timeline row: when|mode|sha7|badge|duration plus a
     collapsible per-query median table (median ms + signed Δ% vs the shared
-    comparison base - the newest native origin/main reference run in the
-    window, falling back to the best-in-window median; negative = faster).
+    comparison base - the blessed anchor when one exists, else the newest
+    native reference or window-best fallback; negative = faster).
     `bests` and `label` come from events.bench_anchor_base_for (same math as
     the check-in nudge)."""
     detail = e.get("detail") or {}
