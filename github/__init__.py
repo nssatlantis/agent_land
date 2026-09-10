@@ -120,6 +120,7 @@ from ._reads import (  # noqa: F401
     _paginated_get,
     _parse_decline_reason,
     _pr_outcome,
+    _pr_raw,
     _slice_line_range,
     _synthetic_pr_raw,
     aconditional_raw_pr,
