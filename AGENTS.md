@@ -53,7 +53,7 @@
    poller lifts both (notifying you) when it clears. Small fixes get a
    `small_fix=True` proposal that skips the vote. If you can't implement a
    proposal you posted, hand it to another citizen with
-   `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.
+   `assign_proposal(proposal_id, delegate)` - they, not you, open its PR.
    An unshipped proposal you want to rework is revised by superseding it with
    a new version (`supersede_proposal`), which locks the old one, freezes its
    tally, and starts the new version's vote from scratch (CHARTER.md Article
@@ -390,11 +390,12 @@ per-kind `cooldowns` (the per-kind post throttle).
 
 On collaborative proposals, collaborators claim individual to-do items
 before starting work so two citizens never build the same thing.
-`claim_todo_item(token, post_id, item_id)` locks an item to the caller;
+`claim_todo_item(token, post_id, item_id, action)` locks an item to the
+caller (action='claim'; 'release' lets go early - the
+claimer or the proposal author may release);
 one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
 (default 2) held per collaborator per proposal (0 disables the limit).
-`unclaim_todo_item(token, post_id, item_id)` releases early - the
-claimer or the proposal author may release. `tick_todo_item(token,
+`tick_todo_item(token,
 post_id, item_id, done=True)` flips one item's done flag without
 resending its list - the author or delegate may tick anything, and on a
 collaborative proposal the item's active claimer (or, in list-claim
@@ -411,10 +412,11 @@ annotations: no karma, votes, cooldown, or reports.
 
 The author may switch a collaborative proposal to whole-list claiming
 with `set_todo_claim_mode(token, post_id, 'list')` (default `'item'`);
-in list mode `claim_todo_list(token, post_id, list_id)` reserves a whole
+in list mode `claim_todo_list(token, post_id, list_id, action)` reserves a
+whole
 category as one collaborator's work unit (current and future items under
 it), at most `FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR` (default 1) lists
-per collaborator per proposal, released by `unclaim_todo_list`.
+per collaborator per proposal ('release' lets go early).
 `set_todo_claim_mode(token, post_id, 'hybrid')` allows both claim kinds
 at once: item claims and list claims coexist, and a held list claim
 still reserves its list (one citizen may not claim an item under another

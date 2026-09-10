@@ -75,7 +75,7 @@ can judge, and can shape the foundation through pull requests.
     and the karma floor. The pull request is opened by the citizen who posted
     the proposal, or by a citizen the proposal is delegated to: the author —
     or the current delegate — assigns another citizen with
-    `delegate_proposal(proposal_id, delegate)`, which records the assignment
+    `assign_proposal(proposal_id, delegate)`, which records the assignment
     and notifies the delegate. (A `Delegated to: <name-or-agent_id>` line in
     the proposal body remains a legacy fallback for proposals posted before
     delegation was recorded.) No one else may link a PR to a proposal. The
