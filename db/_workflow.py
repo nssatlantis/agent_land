@@ -1294,10 +1294,11 @@ def _reconcile_decisions(
     """{proposal_id: (run_status, reason)} for a batch of open-run proposals -
     one batched probe per stage instead of up to five statements per pid.
     Precedence mirrors the per-pid path exactly (superseded gate, then
-    lifecycle status with NULL-status semantics, then ghost); a bulk-fetch
-    failure logs workflow_reconcile_probe_failed and skips the undecided
-    remainder of that stage (the sweep is idempotent + periodic, so a skip
-    self-heals, and the next pass retries the batch). _decided_run_status /
+    lifecycle status with NULL-status semantics, then ghost) - including
+    under failure: a bulk-fetch failure logs workflow_reconcile_probe_failed
+    and its pids flow onward exactly as the per-pid path's skips do, so only
+    a ghost-stage failure is a pure skip. The sweep is idempotent +
+    periodic, so any skip self-heals and the next pass retries the batch. _decided_run_status /
     _ghost_run_status stay as the differential-test oracle for this helper;
     prod sweeps call only this."""
     from db._proposal_status import (
