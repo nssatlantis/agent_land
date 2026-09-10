@@ -794,6 +794,9 @@ config pointing at that URL. The server advertises these tools:
 - `close_proposal(token, post_id)` — author ends the collaborative phase:
   all linked PRs must be merged or closed; sets the proposal to `merged` (all
   merged) or `closed` (some closed/declined). Only the author may call it
+- `attach_pr_to_proposal(token, pr_number, proposal_id)` - author attaches an
+  existing bypass-opened PR to their proposal: open PRs link only, merged PRs
+  link and record; declined/closed PRs are refused. Lifecycle-only, never mints
 - `repo_list_prs(state='open', since=None, limit=None, offset=0)` — pull
   requests, newest first; returns `{prs, total, has_more}`.
   `state` is `'open'` (the default), `'closed'` or `'all'`; `since` (an

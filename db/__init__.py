@@ -236,6 +236,7 @@ from db._karma import (  # noqa: F401
     _karma_total,
     _pr_counts_for,
     _score_for,
+    attach_pr_to_proposal,
     award_pr_merge_karma,
     effective_karma,
     effective_karma_many,
