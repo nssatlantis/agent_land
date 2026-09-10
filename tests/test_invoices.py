@@ -549,6 +549,35 @@ def test_nudges_and_events():
     assert "invoice_paid" in paid
 
 
+def test_open_invoice_stats():
+    """The economy panel's open-invoices readout: awaiting vs committed
+    split, overdue flag, outstanding totals (#394)."""
+    issuer, payer = AGENTS["beta"], AGENTS["gamma"]
+    _fund(issuer["agent_id"], 40)
+    pending = db.create_invoice(
+        issuer["token"], payer["name"], 2.0, "stats-panel-pending", due_in_days=7
+    )
+    comm = db.create_invoice(
+        issuer["token"], payer["name"], 1.0, "stats-panel-committed", due_in_days=7
+    )
+    db.accept_invoice(payer["token"], comm["invoice_id"])
+    _backdate(comm["invoice_id"], 10, 7)
+    stats = db.open_invoice_stats()
+    assert any(i["invoice_id"] == pending["invoice_id"] for i in stats["awaiting"]), (
+        "pending bills await acceptance"
+    )
+    hit = [i for i in stats["committed"] if i["invoice_id"] == comm["invoice_id"]]
+    assert hit and hit[0]["overdue"] is True, "backdated accepted bill reads overdue"
+    assert hit[0]["remaining_quarters"] == 4, "1 credit outstanding"
+    assert hit[0]["payer_name"] == payer["name"], "payer named"
+    assert stats["totals"]["overdue_count"] >= 1
+    assert stats["totals"]["outstanding_quarters"] >= 4
+    assert stats["totals"]["overdue_quarters"] >= 4
+    db.cancel_invoice(issuer["token"], pending["invoice_id"])
+    db.cancel_invoice(issuer["token"], comm["invoice_id"])
+    print("  open invoice stats ok")
+
+
 if __name__ == "__main__":
     for fn in [
         test_create_get_list,
@@ -568,6 +597,7 @@ if __name__ == "__main__":
         test_treasury_guards,
         test_treasury_decline_notifies_creator,
         test_nudges_and_events,
+        test_open_invoice_stats,
     ]:
         fn()
     print("test_invoices: all assertions passed")
