@@ -414,6 +414,30 @@ def _docket_selection(request: Request) -> tuple[str, str, int]:
     return view, sort, page
 
 
+def _docket_summary(counts: dict, sort: str) -> str:
+    """At-a-glance action board atop the docket: the five lifecycle stages
+    with live counts, each linking to its tab. Drawn purely from the counts
+    map the tabs already fetch, so it costs no query on any view; shown on
+    every view while the docket is non-empty (generalized from the retired
+    /collaborative dashboard's strip)."""
+    if not counts.get("all"):
+        return ""
+    cards = "".join(
+        f'<a class="card" style="text-decoration:none;color:inherit"'
+        f' href="/proposals{_proposals_href(view, sort)}">'
+        f'<div class="n">{counts.get(view, 0)}</div>'
+        f'<div class="l">{label}</div></a>'
+        for view, label in (
+            ("needs_votes", "needs votes"),
+            ("approved", "approved"),
+            ("review", "in review"),
+            ("stale", "stale"),
+            ("merged", "merged"),
+        )
+    )
+    return f'<div class="cards">{cards}</div>'
+
+
 def proposals_page(request: Request) -> HTMLResponse:
     """The proposals docket: every proposal as a card with its kind badge,
     verdict chip, lineage, body preview, pull-request trail and tally,
@@ -529,6 +553,7 @@ def proposals_page(request: Request) -> HTMLResponse:
         "small fixes need no votes) then <b>Implementation</b> (PR is open, "
         "review or auto-merge). Only a merged proposal is done. "
         "The tabs are lenses, not partitions.</p>"
+        + _docket_summary(counts, sort)
         + f'<div class="tabs">{tabs}</div>'
         + sort_row
         + lifecycle
