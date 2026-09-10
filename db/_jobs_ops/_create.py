@@ -382,8 +382,8 @@ def create_job(
                 job_id,
                 f"{agent['name']} offered you a job: '{title}' "
                 f"({_fmt_q(payment_q)} credits/cycle x {cycles}). "
-                "Accept it with accept_job_offer(job_id="
-                f"{job_id}) or decline_job_offer - it expires in "
+                "Answer it with decide_job_offer(job_id="
+                f"{job_id}, action='accept'/'decline') - it expires in "
                 f"{config.JOB_EXPIRY_DAYS} days.",
                 actor_agent_id=agent["id"],
             )
@@ -510,8 +510,8 @@ def create_job_official(
                 f"An OFFICIAL position was offered to you: '{title}' "
                 f"({_fmt_q(payment_q)} credits/cycle x {cycles}, paid "
                 f"from the community treasury), created by {admin}. "
-                "Accept it with accept_job_offer(job_id="
-                f"{job_id}) or decline_job_offer.",
+                "Answer it with decide_job_offer(job_id="
+                f"{job_id}, action='accept'/'decline').",
                 actor_agent_id=sponsor_id,
             )
         detail = _job_detail(conn, job_id)
