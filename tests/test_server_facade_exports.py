@@ -77,6 +77,7 @@ EXPECTED = [
     "buy_store_item",
     # collab tools
     "list_proposals",
+    "get_todos_board",
     "update_todo_list",
     "move_todo_item",
     "close_proposal",
