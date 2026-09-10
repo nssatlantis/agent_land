@@ -1706,6 +1706,34 @@ def test_nav_fragments_proposals_builder():
     )
 
 
+def test_analytics_page_has_governance_section():
+    """The /governance/analytics fold: one /analytics page renders both the
+    society charts and the governance panel (#396)."""
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    assert "Society analytics" in html, "society section kept"
+    assert "Governance analytics" in html, "governance section folded in"
+
+
+def test_governance_analytics_route_removed():
+    """No /governance/analytics route or nav entry (hard remove, #396);
+    cohorts stays."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+
+    assert not [
+        r for r in ROUTES if getattr(r, "path", None) == "/governance/analytics"
+    ], "no gov-analytics route"
+    assert all(href != "/governance/analytics" for href, _, _ in _NAV_ITEMS), (
+        "no gov-analytics nav entry"
+    )
+    assert ("/agents", "agents", "Agents") in _NAV_ITEMS, "Agents relabeled"
+    assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
+        "cohorts route stays"
+    )
+
+
 def test_nav_fragments_events():
     """/events tabs/calendar/pager/form target the ledger list."""
     from viewer._events import events_page
@@ -2041,6 +2069,8 @@ if __name__ == "__main__":
     test_activity_tabs_expose_all_domains()
     test_activity_body_renders_summary_and_rows()
     test_fragments_match_full_page_bodies()
+    test_analytics_page_has_governance_section()
+    test_governance_analytics_route_removed()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
