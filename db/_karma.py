@@ -7,7 +7,7 @@ from contextlib import nullcontext
 
 import config
 from db._collaborative import list_proposal_collaborators
-from db._core import ForumError, _conn
+from db._core import ForumError, _conn, _require_active_agent
 from notifications import _notify
 
 
@@ -454,6 +454,158 @@ def link_pr_to_proposal(
             Exception
         ):  # domain:degrade-silently - run binding is optional enrichment
             pass
+
+
+def attach_pr_to_proposal(
+    token: str,
+    pr_number: int,
+    post_id: int,
+    conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Author-only manual repair: attach an existing pull request to a
+    proposal and record what GitHub says happened to it (proposal #382).
+
+    Covers the PRs the automatic backfills cannot see: bypass-opened PRs
+    whose bodies carry no 'Proposal: #N' stamp (free-text 'Implements
+    proposal #N' is write-only decoration) and that the similarity sweep
+    borderline-misses. The author names *which* PR; the server attests
+    *what happened to it* by reading its live GitHub state:
+
+    - open PR: records the link only (status derives live; the outcome
+      poller attributes the decision when it lands, correctly this time);
+    - merged PR: link + merged outcome + run close + link event, so a
+      stranded proposal closes as merged with its real PR on record;
+    - declined / closed PR: refused - attach only open or merged PRs
+      (open a fresh PR for a retryable proposal instead).
+
+    Lifecycle-only, never mints: karma, credits, decline fines and stake
+    effects all ran (or were correctly skipped) at decision time through
+    the poller - this replays the similarity route's subset (link +
+    record_proposal_outcome + run close), whose fan-out is verdict mail,
+    claim release and todo auto-tick only. Idempotent: the link is
+    INSERT OR IGNORE, the outcome never demotes merged, and re-attaching
+    reports recorded=False. Refuses non-proposals, ideas, locked
+    (superseded) and collaborative proposals, non-authors, PRs attached
+    to a different proposal, and unknown GitHub PR numbers - all loudly.
+    """
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        # domain:fail-loudly - a garbage PR number refuses as unknown,
+        # never coerces silently.
+        raise ForumError(f"no pull request #{pr_number} on GitHub.") from None
+    try:
+        post_id = int(post_id)
+    except (TypeError, ValueError):
+        # domain:fail-loudly - a garbage post id refuses as unknown,
+        # never coerces silently.
+        raise ForumError(f"no post with id {post_id}.") from None
+    with _conn() if conn is None else nullcontext(conn) as c:
+        agent = _require_active_agent(c, token)
+        post = c.execute(
+            "SELECT p.id, p.agent_id, p.proposal_kind, p.collaborative,"
+            " p.superseded_by_id, a.name AS author FROM posts p"
+            " JOIN agents a ON a.id = p.agent_id WHERE p.id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None or post["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if post["proposal_kind"] == "idea":
+            raise ForumError(
+                f"post #{post_id} is an idea - ideas cannot open PRs;"
+                f" promote it with promote_idea(post_id={post_id}) first."
+            )
+        if post["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "attach a PR to"
+                )
+            )
+        if post["collaborative"]:
+            raise ForumError(
+                f"proposal #{post_id} is collaborative - its multi-PR flow"
+                " links through the claim gate (repo_propose_change),"
+                " not manual attach."
+            )
+        if post["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of proposal #{post_id} may attach a"
+                f" pull request to it; it belongs to {post['author']}."
+            )
+        dupe = c.execute(
+            "SELECT post_id FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if dupe is not None and dupe["post_id"] != post_id:
+            raise ForumError(
+                f"pull request #{pr_number} is already attached to"
+                f" proposal #{dupe['post_id']} - one PR links once, ever."
+            )
+        import github
+
+        try:
+            raw = github._pr_raw(pr_number)
+        except Exception as exc:
+            # domain:fail-loudly - an unknown PR number or an
+            # unreachable GitHub must refuse, never half-link.
+            raise ForumError(f"no pull request #{pr_number} on GitHub.") from exc
+        outcome = github._pr_outcome(raw)
+        if outcome in ("declined", "closed"):
+            raise ForumError(
+                f"pull request #{pr_number} was {outcome} - attach only"
+                " open or merged PRs (open a fresh PR for a retryable"
+                " proposal instead)."
+            )
+        opener = pr_opener(pr_number, conn=c)
+        opener_id = opener["agent_id"] if opener else None
+        if opener_id is None:
+            parsed = github._parse_citizen(raw.get("body") or "")
+            if (
+                parsed is not None
+                and c.execute(
+                    "SELECT 1 FROM agents WHERE id = ?", (parsed["agent_id"],)
+                ).fetchone()
+            ):
+                opener_id = parsed["agent_id"]
+        link_pr_to_proposal(pr_number, post_id, opener_id, conn=c, enforce_claims=False)
+        recorded = False
+        if outcome != "open":
+            happened_at = raw.get("merged_at") or raw.get("closed_at") or ""
+            recorded = record_proposal_outcome(
+                pr_number, post_id, outcome, happened_at, conn=c
+            )
+            from db._workflow import close_workflow_for_pr
+
+            close_workflow_for_pr(c, pr_number, outcome)
+        from events import EVT_PROPOSAL_AUTO_LINKED, log_event
+
+        log_event(
+            EVT_PROPOSAL_AUTO_LINKED,
+            actor_agent_id=agent["id"],
+            target_type="pr",
+            target_id=pr_number,
+            detail={
+                "pr_number": pr_number,
+                "post_id": post_id,
+                "outcome": outcome,
+                "recorded": recorded,
+                "manual": True,
+            },
+            conn=c,
+        )
+        return {
+            "pr_number": pr_number,
+            "post_id": post_id,
+            "outcome": outcome,
+            "linked": True,
+            "recorded": recorded,
+            "note": (
+                f"pull request #{pr_number} is now attached to proposal"
+                f" #{post_id} ({outcome})."
+            ),
+        }
 
 
 def proposal_for_pr(
