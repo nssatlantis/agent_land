@@ -402,6 +402,11 @@ def scenario_db_path_inside_repo():
         rc, out, err = run("trim-ci-events.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
+        rc, out, err = run(
+            "trim-workflow-events.py", env={"FORUM_DB_PATH": str(db_path)}
+        )
+        assert rc == 2, (rc, out, err)
+        assert "inside the repo" in err, err
         assert not db_path.exists(), "refused before touching the filesystem"
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
@@ -514,6 +519,97 @@ def scenario_trim_ci_events():
     return "trim-ci-events caps oversized event tails, idempotent"
 
 
+def scenario_trim_workflow_events():
+    # == trim-workflow-events.py deletes the dead workflow event rows ==
+    # Seeds a db whose events carry workflow_started / workflow_closed rows
+    # plus unrelated kinds. Dry-run deletes nothing; --apply removes exactly
+    # the two workflow kinds and leaves every other kind intact; a re-run
+    # deletes 0 (idempotent); --vacuum alone runs without touching rows.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha"], posts=0)
+        rows = [
+            ("workflow_started", "2026-01-01T00:00:00.000Z"),
+            ("workflow_closed", "2026-01-02T00:00:00.000Z"),
+            ("workflow_closed", "2026-01-03T00:00:00.000Z"),
+            ("workflow_closed", "2026-01-04T00:00:00.000Z"),
+            ("post_created", "2026-01-05T00:00:00.000Z"),
+            ("comment_created", "2026-01-06T00:00:00.000Z"),
+        ]
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for kind, created_at in rows:
+                conn.execute(
+                    "INSERT INTO events (kind, actor_agent_id, detail, created_at)"
+                    " VALUES (?, NULL, ?, ?)",
+                    (kind, '{"proposal_id": 1}', created_at),
+                )
+            conn.commit()
+            by_id = dict(conn.execute("SELECT id, kind FROM events").fetchall())
+        finally:
+            conn.close()
+        workflow_ids = [
+            i for i, k in by_id.items() if k in ("workflow_started", "workflow_closed")
+        ]
+        other_ids = [
+            i
+            for i, k in by_id.items()
+            if k not in ("workflow_started", "workflow_closed")
+        ]
+        assert len(workflow_ids) == 4 and len(other_ids) == 2, (by_id,)
+
+        def kinds(c):
+            return dict(c.execute("SELECT id, kind FROM events").fetchall())
+
+        # Dry run: exit 0, reports the pending delete, nothing written.
+        rc, out, err = run(
+            "trim-workflow-events.py", env={"FORUM_DB_PATH": str(db_path)}
+        )
+        assert rc == 0, (rc, out, err)
+        assert "would delete 4 of 4" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert kinds(conn) == by_id, "dry-run must not write"
+        finally:
+            conn.close()
+        # --apply: deletes exactly the two workflow kinds.
+        rc, out, err = run(
+            "trim-workflow-events.py",
+            "--apply",
+            env={"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "deleted 4 of 4" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            remaining = kinds(conn)
+            assert set(remaining) == set(other_ids), remaining
+        finally:
+            conn.close()
+        # Idempotent: a re-run has nothing left to delete.
+        rc, out, err = run(
+            "trim-workflow-events.py",
+            "--apply",
+            env={"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "deleted 0 of 0" in out, out
+        # --vacuum alone runs without touching rows.
+        rc, out, err = run(
+            "trim-workflow-events.py",
+            "--vacuum",
+            env={"FORUM_DB_PATH": str(db_path)},
+        )
+        assert rc == 0, (rc, out, err)
+        assert "VACUUM complete" in out, out
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert kinds(conn) == remaining, "--vacuum must not touch rows"
+        finally:
+            conn.close()
+    return "trim-workflow-events deletes the dead workflow event rows, idempotent"
+
+
 def scenario_broken_config():
     # == a broken config.py makes every deploy script fail closed ==
     # config.py is now the deploy scripts' single source of path resolution,
@@ -539,6 +635,7 @@ def scenario_broken_config():
             "restore-db.py",
             "backup-db.py",
             "trim-ci-events.py",
+            "trim-workflow-events.py",
         ):
             shutil.copy(DEPLOY / script, fake / "deploy" / script)
         env = dict(os.environ)
@@ -548,6 +645,7 @@ def scenario_broken_config():
             "restore-db.py",
             "backup-db.py",
             "trim-ci-events.py",
+            "trim-workflow-events.py",
         ):
             proc = subprocess.run(
                 [PY, str(fake / "deploy" / script)],
@@ -879,6 +977,7 @@ SCENARIOS = [
     scenario_reject_bad_filename,
     scenario_list_backups,
     scenario_trim_ci_events,
+    scenario_trim_workflow_events,
     scenario_broken_config,
     scenario_config_paths,
     scenario_same_second_backups,

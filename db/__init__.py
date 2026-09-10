@@ -431,6 +431,7 @@ from db._store import (  # noqa: F401
     personal_notes_write,
     pinned_comment_for,
     refund_blessed_bench,
+    store_stats,
     unpin_post,
 )
 

@@ -330,7 +330,7 @@ def test_ledger_tail_is_capped_separately():
         """
         import sys
         print("x" * 50000)
-        sys.exit(0)
+        sys.exit(1)
     """,
     )
     _shadow("CI_RUN_TAIL_BYTES", 4096)
@@ -358,7 +358,7 @@ def test_ledger_tail_is_capped_separately():
 
 
 def test_ledger_tail_not_truncated_when_within_event_cap():
-    """A run whose output fits inside CI_RUN_EVENT_TAIL_BYTES reaches the
+    """A RED run whose output fits inside CI_RUN_EVENT_TAIL_BYTES reaches the
     ledger uncapped and un-flagged (the ledger only reports a trim it
     actually made)."""
     stub = _StubTree(
@@ -366,7 +366,7 @@ def test_ledger_tail_not_truncated_when_within_event_cap():
         """
         import sys
         print("short output")
-        sys.exit(0)
+        sys.exit(1)
     """,
     )
     _shadow("CI_RUN_EVENT_TAIL_BYTES", 4096)
@@ -395,7 +395,7 @@ def test_ledger_tail_full_when_event_cap_zero():
         """
         import sys
         print("x" * 50000)
-        sys.exit(0)
+        sys.exit(1)
     """,
     )
     _shadow("CI_RUN_TAIL_BYTES", 2048)
@@ -412,6 +412,39 @@ def test_ledger_tail_full_when_event_cap_zero():
         detail = after[0]["detail"]
         assert detail["output_tail"] == result["output_tail"]
         assert detail["output_truncated"] is True
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_ledger_drops_tail_on_green():
+    """A green run's ledger detail carries no output_tail / output_truncated
+    at all - the transcript is only for failing runs - while the verdict
+    facts (summary, empty failed_files) still fold every time."""
+    stub = _StubTree(
+        "db_benchmark",
+        """
+        print("[Timing - 9 measured reps, min / median / max / stdev ms]")
+        print("  q                         1.00 /   2.00 /   3.00")
+        print("All checks passed.")
+    """,
+    )
+    try:
+        uid = _uid()
+        before = len(events.query_events(agent_id=uid, kind="ci_db_bench_run"))
+        result = ci_runner.run_checks(uid, "t", "db_benchmark")
+        assert result["ok"] is True and result["exit_code"] == 0
+        after = events.query_events(agent_id=uid, kind="ci_db_bench_run")
+        assert len(after) == before + 1
+        detail = after[0]["detail"]
+        assert "output_tail" not in detail, (
+            "a green run's transcript must not land on the ledger"
+        )
+        assert "output_truncated" not in detail
+        assert detail["summary"]["timings_median_ms"] == {"q": 2.0}, (
+            "verdict facts still fold on a green run"
+        )
+        assert detail.get("failed_files") is None
     finally:
         _restore()
         stub.cleanup()
@@ -1390,6 +1423,7 @@ def main():
     test_ledger_tail_is_capped_separately()
     test_ledger_tail_not_truncated_when_within_event_cap()
     test_ledger_tail_full_when_event_cap_zero()
+    test_ledger_drops_tail_on_green()
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()
     test_env_keep_carries_docker_daemon_config()

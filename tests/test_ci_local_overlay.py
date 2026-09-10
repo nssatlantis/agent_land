@@ -150,19 +150,39 @@ def main():
         assert lf_repl.read_bytes() == b"a = 1\r\nc = 3\r\n", (
             "patch mode should normalize replacement EOL to base EOL"
         )
-        # Ledger detail carries the run's output for post-hoc diagnosis.
+        # Ledger detail carries the run's output for post-hoc diagnosis -
+        # but only for a RED run: a green run's transcript is never read
+        # again, so it drops output_tail while verdict facts still fold.
         got = ci_runner._ci_detail_with_output(
-            {"ok": True},
+            {"checks": "tests"},
             {
+                "ok": True,
+                "timed_out": False,
+                "exit_code": 0,
                 "output_tail": "tail...",
                 "output_truncated": True,
                 "summary": {"static": {"result": "pass"}},
+            },
+        )
+        assert "output_tail" not in got, "green runs drop their transcript"
+        assert "output_truncated" not in got
+        assert got["summary"]["static"]["result"] == "pass"
+        assert got.get("failed_files") is None
+        got_red = ci_runner._ci_detail_with_output(
+            {"checks": "tests"},
+            {
+                "ok": False,
+                "timed_out": False,
+                "exit_code": 1,
+                "output_tail": "tail...",
+                "output_truncated": True,
+                "summary": {"static": {"result": "fail"}},
                 "failed_files": ["viewer/_utils.py"],
             },
         )
-        assert got["output_tail"] == "tail..." and got["output_truncated"] is True
-        assert got["summary"]["static"]["result"] == "pass"
-        assert got["failed_files"] == ["viewer/_utils.py"]
+        assert got_red["output_tail"] == "tail..."
+        assert got_red["output_truncated"] is True
+        assert got_red["failed_files"] == ["viewer/_utils.py"]
 
         # Ledger summary for bench-check runs: native origin/main runs keep
         # full per-query medians; non-native runs (branch merge previews,
