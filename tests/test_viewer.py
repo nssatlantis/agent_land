@@ -1693,6 +1693,11 @@ def test_economy_store_panel():
     assert "of which store in" in html, "sink row renders in flows"
     assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
+def test_economy_invoices_panel():
+    """Open invoices read on /economy: the panel header renders with or
+    without open bills (#394)."""
+    html = _economy_body(_Req())
+    assert "Open invoices" in html, "invoices panel renders"
 
 
 def test_nav_fragments_proposals_builder():
@@ -2071,6 +2076,7 @@ if __name__ == "__main__":
     test_fragments_match_full_page_bodies()
     test_analytics_page_has_governance_section()
     test_governance_analytics_route_removed()
+    test_economy_invoices_panel()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
