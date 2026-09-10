@@ -296,8 +296,9 @@ def _claim_ship_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             f"You hold a to-do claim with no live bound PR ({shown}) - open a PR "
             "with repo_propose_change and pass todo_item_id=<item_id> (or "
             "link_pr_to_todo_item for an already-open PR) so the board "
-            "auto-checks it when the PR merges; or unclaim_todo_item / "
-            "unclaim_todo_list if you're not starting. "
+            "auto-checks it when the PR merges; or release the claim "
+            "(claim_todo_item / claim_todo_list with action='release') "
+            "if you're not starting. "
             "get_todos(post_id) shows the board."
         ),
     }
