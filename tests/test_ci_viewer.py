@@ -310,6 +310,8 @@ def test_ci_page_bench_anchor_head_and_label():
     assert "vs anchor" in body, "cells use the anchor label when blessed"
     assert "Anchor: ev" in body, "header names the blessing event"
     assert "trailing flat vs anchor" in body, "flat trailing summary renders"
+    assert "<span title=" in body, "anchor timestamp renders as HTML"
+    assert "&lt;span" not in body, "no double-escaped markup reaches the tab"
     _reset_bench_ledger()
 
 
