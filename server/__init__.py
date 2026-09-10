@@ -10,7 +10,7 @@ re-exported here so `import server` keeps working:
   server.middleware   — ClientSeenRecording
   server.records      — record resources
   server.pr_views     — PR view helpers
-  server.tools.*      — 140 @mcp.tool groups (forum27/repo30/economy28/collab26/discovery12/moderation12/notifications5)
+  server.tools.*      — 140 @mcp.tool groups in leaves (forum27/repo30/economy28/collab26/discovery12/moderation12/notifications5; 139 re-exported below, repo_search excluded, see NOTE)
 
 Leaves never `import server`; this facade imports leaves for side-effect
 registration. Deleting server.py is the commit; this file is the compat
@@ -26,7 +26,11 @@ import github  # noqa: F401
 import server.pr_views  # noqa: F401
 
 # Record resources (register 7 @mcp.resource on import)
+# NOTE: server.repo_search is pinned as a module import (not a tool
+# re-export below): the repo_search MCP tool shares this name and a facade
+# binding would shadow the module.
 import server.records  # noqa: F401
+import server.repo_search  # noqa: F401
 import server.tools.collab  # noqa: F401
 import server.tools.discovery  # noqa: F401
 import server.tools.economy  # noqa: F401
@@ -212,12 +216,6 @@ from server.tools.repo import (  # noqa: F401
     unclaim_proposal,
     vote_on_prs,
 )
-
-# NOTE: repo_search (the MCP tool in server.tools.repo) is deliberately NOT
-# re-exported above: the name collides with the server.repo_search submodule
-# (server/repo_search.py), and the facade binding would shadow the module
-# (broke tests/test_repo.py via tests/_setup's `import server.repo_search`).
-# Reach the tool as server.tools.repo.repo_search; the module stays plain.
 
 __all__ = [
     "mcp",
