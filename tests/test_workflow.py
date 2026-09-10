@@ -179,6 +179,16 @@ def test_reconcile_batch(agents):
         "post_id"
     ]
     pids["ghost"] = db.create_proposal(gamma["token"], "TB ghost", "tb body")["post_id"]
+    pids["mergedcombo"] = db.create_proposal(
+        gamma["token"], "TB mergedcombo", "tb body"
+    )["post_id"]
+    pids["collabclosed"] = db.create_proposal(
+        gamma["token"],
+        "TB collabclosed",
+        "tb body",
+        collaborative=True,
+        max_collaborators=2,
+    )["post_id"]
     plist = list(pids.values())
     with db._conn() as conn:
         db.record_proposal_outcome(
@@ -193,6 +203,19 @@ def test_reconcile_batch(agents):
         db.record_proposal_outcome(
             81404, pids["retry"], "declined", db._now_iso(), conn=conn
         )
+        db.record_proposal_outcome(
+            81407, pids["mergedcombo"], "merged", db._now_iso(), conn=conn
+        )
+        db.record_proposal_outcome(
+            81408, pids["mergedcombo"], "declined", db._now_iso(), conn=conn
+        )
+        conn.execute(
+            "UPDATE posts SET collaborative_closed = 'closed' WHERE id = ?",
+            (pids["collabclosed"],),
+        )
+    db.link_pr_to_proposal(
+        81401, pids["declined"], gamma["agent_id"]
+    )  # decided WITH link
     db.link_pr_to_proposal(81405, pids["retry"], gamma["agent_id"])  # retry in flight
     db.link_pr_to_proposal(81406, pids["branchlive"], gamma["agent_id"])  # live PR
     db.supersede_proposal(gamma["token"], pids["sup"], "TB sup v2", "tb v2 body")
@@ -270,16 +293,18 @@ def test_reconcile_batch(agents):
         assert oracle[pids["sup"]] == ("closed", "proposal_decided")
         assert oracle[pids["closed"]] == ("closed", "proposal_decided")
         assert oracle[pids["ghost"]] == ("closed", "no_pr_linked")
+        assert oracle[pids["mergedcombo"]] == ("merged", "proposal_decided")
+        assert oracle[pids["collabclosed"]] == ("closed", "proposal_decided")
         for key in ("live", "collab", "retry", "branchlive"):
             assert pids[key] not in oracle, f"{key} proposals stay live"
         assert len(new_stmts) <= 6, (
-            f"batched sweep issued {len(new_stmts)} statements for 9 pids"
+            f"batched sweep issued {len(new_stmts)} statements for 11 pids"
         )
         assert len(new_stmts) < len(old_stmts), (
             f"batch ({len(new_stmts)}) must beat per-pid ({len(old_stmts)})"
         )
         # the batched sweep closes exactly what it decides, then goes quiet
-        assert reconcile_open_runs(conn) == 5, "five stale runs close"
+        assert reconcile_open_runs(conn) == 7, "seven stale runs close"
         assert stale_open_run_count(conn) == 0, "nothing stale left behind"
         ghost_row = conn.execute(
             "SELECT status FROM workflow_runs WHERE proposal_id = ? AND status != 'open'"
