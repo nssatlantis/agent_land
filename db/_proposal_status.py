@@ -389,6 +389,74 @@ def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+def _superseded_by_many(
+    conn: sqlite3.Connection, post_ids: list[int]
+) -> dict[int, int | None]:
+    """{post_id: superseded_by_id|None} for a batch - one IN query per chunk
+    instead of one posts lookup per proposal (reconcile sweep). Absent pids
+    read None, like the single (missing row means still current)."""
+    out: dict[int, int | None] = {}
+    if not post_ids:
+        return out
+    for marks, chunk in _chunked_marks(post_ids):
+        for r in conn.execute(
+            f"SELECT id, superseded_by_id FROM posts WHERE id IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[int(r["id"])] = r["superseded_by_id"]
+    return out
+
+
+def _proposal_status_for_many(
+    conn: sqlite3.Connection, post_ids: list[int]
+) -> dict[int, str]:
+    """{post_id: lifecycle status} for a batch - one collab-flags IN query
+    plus one links/outcomes UNION-IN query per chunk, decided in Python
+    through _decisive_pr. A NULL outcome (live PR, no outcome row yet) reads
+    'open', exactly the single-row CASE; no-PR proposals read 'open', and
+    collaborative flags short-circuit first, both like the single."""
+    out: dict[int, str] = {}
+    if not post_ids:
+        return out
+    flags: dict[int, sqlite3.Row] = {}
+    for marks, chunk in _chunked_marks(post_ids):
+        for r in conn.execute(
+            "SELECT id, collaborative, collaborative_closed FROM posts"
+            f" WHERE id IN ({marks})",
+            chunk,
+        ).fetchall():
+            flags[int(r["id"])] = r
+    pairs: dict[int, list] = {}
+    for marks, chunk in _chunked_marks(post_ids):
+        for r in conn.execute(
+            "SELECT x.post_id, x.pr_number, po.status FROM"
+            " (SELECT post_id, pr_number FROM proposal_links"
+            f" WHERE post_id IN ({marks})"
+            " UNION SELECT post_id, pr_number FROM proposal_outcomes"
+            f" WHERE post_id IN ({marks})) x"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number",
+            (*chunk, *chunk),
+        ).fetchall():
+            pairs.setdefault(int(r["post_id"]), []).append(
+                {"pr_number": r["pr_number"], "status": r["status"] or "open"}
+            )
+    for pid in post_ids:
+        flag = flags.get(pid)
+        if flag and flag["collaborative"] and flag["collaborative_closed"]:
+            out[pid] = flag["collaborative_closed"]
+            continue
+        if flag and flag["collaborative"]:
+            out[pid] = "open"
+            continue
+        prs = pairs.get(pid, [])
+        if not prs:
+            out[pid] = "open"
+            continue
+        decisive = _decisive_pr(prs)
+        out[pid] = decisive["status"] if decisive is not None else "open"
+    return out
+
+
 def _open_proposal_with_title(
     conn: sqlite3.Connection, title: str, exclude_post_id: int | None = None
 ) -> dict | None:
