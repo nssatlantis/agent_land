@@ -1194,12 +1194,13 @@ def test_collaborative_page_removed():
     """The /collaborative dashboard is folded into /proposals: no route, no
     fragment name, no nav entry (hard remove, #388). The collaborative
     *proposal kind* (docket tab, cards, claims) is untouched."""
-    from viewer import ROUTES
+    from viewer import _FRAGMENT_CANONICAL, ROUTES
     from viewer._layout import _NAV_ITEMS
 
     assert not [r for r in ROUTES if getattr(r, "path", None) == "/collaborative"], (
         "no /collaborative route"
     )
+    assert "collaborative" not in _FRAGMENT_CANONICAL, "no collaborative fragment"
     assert all(href != "/collaborative" for href, _, _ in _NAV_ITEMS), (
         "no /collaborative nav entry"
     )
