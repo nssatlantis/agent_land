@@ -12,15 +12,13 @@ from __future__ import annotations
 from ._govern import (  # noqa: F401
     _MANAGED_WORKFLOW_KEYS,
     _ci_watch_url_for,
+    assign_proposal,
     claim_proposal,
-    delegate_proposal,
     repo_ci_run,
     repo_restart_workflow,
     repo_workflow_status,
     repo_workflow_step,
-    revoke_delegation,
     set_claimable,
-    unclaim_proposal,
 )
 from ._pr_ops import (  # noqa: F401
     repo_close_pr,
