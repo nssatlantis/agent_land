@@ -463,7 +463,7 @@ phase so you can see where each proposal stands.
     front - acceptance cannot renege because the money moved first.
     claim_job() takes an open job first-come-first-served, or a creator
     may hold one for a specific citizen with offer_to= (they must still
-    accept_job_offer - offers are invitations, never assignments). The
+    decide_job_offer - offers are invitations, never assignments). The
     worker ticks steps with tick_job_step() and submits each cycle with
     submit_job(evidence); the creator reviews every cycle with
     review_job(action='accept'|'decline'): accept pays that cycle's wage
