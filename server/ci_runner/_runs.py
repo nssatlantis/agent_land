@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -62,9 +63,6 @@ _ENV_KEEP = {
     "DOCKER_HOST",
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
-    # Benchmark opt-in: pass through without secrets so BENCH_WRITE_BASELINE=1
-    # can persist baseline when explicitly requested; default is read-only.
-    "BENCH_WRITE_BASELINE",
 }
 
 
@@ -271,6 +269,32 @@ def _should_gate_bench(checks: str, quiet: bool | None, local_mode: bool) -> boo
     return checks in _BENCH_CHECKS and (quiet or (quiet is None and not local_mode))
 
 
+def _bench_anchor_env() -> tuple[dict[str, str], int | None]:
+    """Anchor medians for bench dispatch: ({env pairs}, bless_event_id).
+    Resolves the blessed anchor server-side and serializes it for the child
+    (subprocess env on the host path, docker --env on sandbox paths); empty
+    when none is blessed. Never raises: uninjected runs go timing-advisory,
+    never fail (domain: degrade-silently)."""
+    try:
+        anchor = events.bench_anchor_for()
+        if not anchor or not anchor.get("medians"):
+            return {}, None
+        payload = json.dumps(anchor["medians"], separators=(",", ":"))
+        bless_id = anchor.get("bless_event_id")
+        return (
+            {
+                "BENCH_ANCHOR_MEDIANS": payload,
+                "BENCH_ANCHOR_EVENT_ID": str(bless_id)
+                if isinstance(bless_id, int)
+                else "",
+            },
+            bless_id if isinstance(bless_id, int) else None,
+        )
+    except Exception:
+        # domain: degrade-silently - uninjected runs go advisory, never fail
+        return {}, None
+
+
 def run_checks_with_deadline(
     soft_seconds: int,
     agent_id: int,
@@ -434,6 +458,14 @@ def run_checks(
             bench_attest["bench_cpus_start"] = _slots_mod._effective_cpus()
         except Exception:
             pass  # domain: degrade-silently - attestation never breaks the run
+    anchor_env: dict[str, str] = {}
+    anchor_event_id: int | None = None
+    if is_bench:
+        # Single-anchor dispatch: resolve the blessed anchor once and carry
+        # it to the child (docker --env on sandbox paths, env dict on the
+        # host path); the bless event id rides the ledger detail for audit.
+        # Empty when none is blessed - the harness then runs advisory.
+        anchor_env, anchor_event_id = _bench_anchor_env()
     try:
         if local_mode:
             assert files is not None or tree is not None
@@ -455,7 +487,7 @@ def run_checks(
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
-                tree, image_tag, script_rel
+                tree, image_tag, script_rel, extra_env=anchor_env
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -523,7 +555,7 @@ def run_checks(
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
-                tree, image_tag, script_rel
+                tree, image_tag, script_rel, extra_env=anchor_env
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -554,7 +586,7 @@ def run_checks(
                 image_tag = _sandbox_mod._ensure_image(tree, head_sha)
                 _sandbox_mod._ensure_tree_traversable(tree, head_sha)
                 argv, container_name = _sandbox_mod._sandbox_argv(
-                    tree, image_tag, script_rel
+                    tree, image_tag, script_rel, extra_env=anchor_env
                 )
                 _cpus_val = _slots_mod._cpus_from_argv(argv)
                 try:
@@ -565,6 +597,10 @@ def run_checks(
                 argv = [sys.executable, script_rel]
                 container_name = None
             env = _child_env(tmp_root)
+            # Host-fallback native runs read the anchor from their env;
+            # sandboxed paths carry it via --env instead (client env above
+            # never crosses into the container). Harmless when empty.
+            env.update(anchor_env)
         pieces = _sandbox_mod._execute(
             argv,
             tree,
@@ -670,6 +706,10 @@ def run_checks(
             # Load attestation rides the bench ledger detail so a later
             # reader can tell quiet from contended without re-running.
             detail["bench_load"] = bench_attest
+            # The blessing that armed this run's gate (None on advisory
+            # runs); readers join it to the anchor for audit.
+            if anchor_event_id is not None:
+                detail["anchor_event_id"] = anchor_event_id
         detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(
@@ -837,7 +877,14 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             return payload
         image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
         _sandbox_mod._ensure_tree_traversable(tree, head_sha)
-        argv, container_name = _sandbox_mod._sandbox_argv(tree, image_tag, script_rel)
+        p_anchor_env: dict[str, str] = {}
+        p_anchor_event_id: int | None = None
+        if checks in _BENCH_CHECKS:
+            # Poller fallback benches arm the same anchor gate as user runs.
+            p_anchor_env, p_anchor_event_id = _bench_anchor_env()
+        argv, container_name = _sandbox_mod._sandbox_argv(
+            tree, image_tag, script_rel, extra_env=p_anchor_env
+        )
         _cpus_val = _slots_mod._cpus_from_argv(argv)
         try:
             _slots_mod._register_active(slot, container_name, _cpus_val)
@@ -875,6 +922,8 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             "tree_warm": bool(merge_info.get("tree_warm")),
             "poller_triggered": True,
         }
+        if p_anchor_event_id is not None:
+            detail["anchor_event_id"] = p_anchor_event_id
         detail = _ci_detail_with_output(detail, pieces)
         try:
             events.log_event(

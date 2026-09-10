@@ -13,14 +13,13 @@ queries — reads plus a write micro-suite (9 measured reps after
 2 warmups, seeded shuffle, GC-quieted) and reports
 min/median/max/stdev ms.
 
-Regression tracking: maintains benchmark_baseline.json to detect
-20%+1ms regressions. When run via repo_ci_run the workspace is
-read-only, so the baseline is only written when BENCH_WRITE_BASELINE=1
-or --write-baseline is passed — agents should get before & after by
+Regression tracking: the dispatcher injects the blessed anchor medians
+(BENCH_ANCHOR_MEDIANS JSON plus BENCH_ANCHOR_EVENT_ID) and the gate
+detects 20%+1ms regressions against them — agents get before & after by
 running on main and on the PR merge preview and comparing
-summary.timings_median_ms (most info / least text). After verified
-performance work, bless a fresh baseline with --reset-baseline (refuses
-on query ERRORs; provenance stamped in _meta).
+summary.timings_median_ms (most info / least text). With no anchor
+injected the run is timing-advisory (structural pins still enforced);
+bless anchor runs with the bless_bench_anchor tool, never by hand.
 
 Quiet scheduling: repo_ci_run holds a db_benchmark run until the pool
 is idle (no slot held, no user run in flight), bounded by
@@ -109,10 +108,26 @@ _SEED = 1234
 # (VOTE/COMMENT caps, TAG create+apply costs, TX fee) before this import.
 # Assigning them again would clobber an outer explicit env for no gain.
 
-# Baseline file for regression tracking
-_BASELINE_FILE = Path(__file__).parent / "benchmark_baseline.json"
-
 # -- helpers -----------------------------------------------------------------
+
+
+def _load_anchor() -> tuple[dict[str, float], str | None]:
+    """Anchor medians injected by the dispatcher (BENCH_ANCHOR_MEDIANS JSON)
+    plus the blessing event id (BENCH_ANCHOR_EVENT_ID), or ({}, None) for a
+    timing-advisory run. Malformed payloads fail to advisory, never crash -
+    a run without an anchor still enforces every structural pin."""
+    anchor: dict[str, float] = {}
+    raw = os.environ.get("BENCH_ANCHOR_MEDIANS") or ""
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                for q, v in data.items():
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        anchor[str(q)] = float(v)
+        except Exception:
+            anchor = {}
+    return anchor, os.environ.get("BENCH_ANCHOR_EVENT_ID") or None
 
 
 def _median_ms(times_ms: list[float]) -> float:
@@ -162,123 +177,30 @@ def _with_conn(fn, *args, **kwargs):
         return fn(conn, *args, **kwargs)
 
 
-def _load_baseline() -> dict:
-    if _BASELINE_FILE.exists():
-        try:
-            data = json.loads(_BASELINE_FILE.read_text())
-            meta = data.pop("_meta", None)
-            if meta is not None:
-                print(f"  baseline meta: {meta}")
-            return data
-        except Exception as e:
-            # domain:fail-loudly - a corrupt baseline must shout; an empty
-            # fallback would report zero regressions and hide the rot.
-            print(
-                f"  WARNING: malformed baseline {_BASELINE_FILE}: {e} — treating as empty"
-            )
-            return {}
-    return {}
-
-
-def _save_baseline(baseline: dict) -> bool:
-    try:
-        _BASELINE_FILE.write_text(json.dumps(baseline, indent=2))
-        return True
-    except OSError as e:
-        # domain: degrade-silently - read-only workspaces must still report
-        # timings; a failed persist warns instead of killing the run.
-        print(f"  WARNING: baseline not written ({e})")
-        return False
-
-
-def _baseline_meta(reset: bool) -> dict:
-    """Provenance stamp for a persisted baseline: when, on what host,
-    from which commit, and whether it replaced the file or merged in."""
-    import datetime
-    import platform
-
-    meta = {
-        "note": "host-coupled medians; refresh on the canonical host",
-        "date": datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
-    }
-    if reset:
-        meta["reset"] = True
-    try:
-        meta["host"] = platform.node() or "unknown"
-    except Exception:
-        meta["host"] = "unknown"  # domain: degrade-silently - provenance only
-    try:
-        import subprocess
-
-        rev = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=Path(__file__).parent.parent,
-        )
-        if rev.returncode == 0 and rev.stdout.strip():
-            meta["commit"] = rev.stdout.strip()
-    except Exception:
-        pass  # domain: degrade-silently - provenance only
-    return meta
-
-
-def _build_baseline(
-    old: dict, new: dict[str, float], reset: bool
-) -> tuple[dict, list[str]]:
-    """Fold a run's medians into a persistable baseline. Update mode merges
-    (old keys survive unless the query is gone); reset mode discards the
-    old file entirely and blesses only this run. Returns (baseline, ghosts)
-    where ghosts are update-mode keys pruned as renamed/removed. Pure -
-    pinned by tests/test_benchmark_flags.py."""
-    if reset:
-        return {**new, "_meta": _baseline_meta(True)}, []
-    merged = dict(old)
-    merged.update(new)
-    ghosts = [k for k in merged.keys() if k not in new and k != "_meta"]
-    for k in ghosts:
-        merged.pop(k, None)
-    merged["_meta"] = _baseline_meta(False)
-    return merged, ghosts
-
-
-def _save_baseline(baseline: dict) -> bool:
-    try:
-        _BASELINE_FILE.write_text(json.dumps(baseline, indent=2))
-        return True
-    except OSError as e:
-        # domain: degrade-silently - read-only workspaces must still report
-        # timings; a failed persist warns instead of killing the run.
-        print(f"  WARNING: baseline not written ({e})")
-        return False
-
-
 def _check_regression(
     label: str,
     median_ms: float,
     stdev_ms: float,
-    baseline: dict,
+    anchor: dict,
     threshold_pct: float = 20.0,
     abs_min_ms: float = 1.0,
 ) -> bool:
-    """Flag only when % and noise-aware abs thresholds both cross.
+    """Flag only when % and noise-aware abs thresholds both cross vs the
+    blessed anchor (empty anchor never flags - advisory mode).
 
     The abs floor is max(1ms, 2·stdev): a jittery query must regress by
     twice its own noise before it counts, which kills single-outlier flap
     on the shared CI hosts while keeping the 1ms floor for quiet queries.
     """
-    if label in baseline:
-        base_median = baseline[label]
+    if label in anchor:
+        base_median = anchor[label]
         if isinstance(base_median, (int, float)) and base_median > 0:
             pct_change = ((median_ms - base_median) / base_median) * 100
             abs_change = median_ms - base_median
             abs_floor = max(abs_min_ms, 2 * stdev_ms)
             if pct_change > threshold_pct and abs_change > abs_floor:
                 print(
-                    f"  REGRESSION: {label} median {median_ms:.2f}ms vs baseline {base_median:.2f}ms (+{pct_change:.1f}%, +{abs_change:.1f}ms, stdev {stdev_ms:.2f})"
+                    f"  REGRESSION: {label} median {median_ms:.2f}ms vs anchor {base_median:.2f}ms (+{pct_change:.1f}%, +{abs_change:.1f}ms, stdev {stdev_ms:.2f})"
                 )
                 return True
     return False
@@ -1299,20 +1221,6 @@ def _check_perf_indexes() -> tuple[bool, set[str]]:
 def main():
     parser = argparse.ArgumentParser(description="AgentLand query benchmark")
     parser.add_argument(
-        "--write-baseline",
-        action="store_true",
-        help="persist baseline (default only when BENCH_WRITE_BASELINE=1)",
-    )
-    parser.add_argument(
-        "--reset-baseline",
-        action="store_true",
-        help="replace the baseline file with this run's medians (+ provenance)"
-        " instead of merging into it - bless a fresh baseline after verified"
-        " performance work. Refuses when any query ERRORed (incomplete data)."
-        " Regressions vs the old file only warn: legitimately faster seeds"
-        " move medians both ways.",
-    )
-    parser.add_argument(
         "--check-only",
         action="store_true",
         help="only run structural EXPLAIN checks, skip timing",
@@ -1334,8 +1242,18 @@ def main():
         f"  {n_agents} agents, {n_posts} posts, {n_comments} comments, {n_proposals} proposals, {n_jobs} jobs, {n_credits} credit_entries\n"
     )
 
-    baseline = _load_baseline()
-    new_baseline: dict[str, float] = {}
+    anchor, anchor_event = _load_anchor()
+    if anchor:
+        print(
+            f"  anchor: {len(anchor)} queries"
+            + (f" (bless ev{anchor_event})" if anchor_event else " (local override)")
+            + "\n"
+        )
+    else:
+        print(
+            "  NO ANCHOR INJECTED - timing advisory only"
+            " (structural pins still enforced)\n"
+        )
     all_ok = True
 
     sample_post = post_ids[0] if post_ids else None
@@ -1695,8 +1613,7 @@ def main():
     for label, fn in queries:
         try:
             lo, med, hi, sd = _time_query(fn)
-            new_baseline[label] = med
-            regression = _check_regression(label, med, sd, baseline)
+            regression = _check_regression(label, med, sd, anchor)
             if regression:
                 regressions += 1
             reg_marker = " [REGRESSION]" if regression else ""
@@ -1714,42 +1631,6 @@ def main():
             f"REGRESSIONS DETECTED: {regressions} query(s) exceeded 20%+1ms threshold"
         )
         all_ok = False
-
-    # Persist baseline only when explicitly requested (workspaces are ro).
-    # --reset-baseline replaces the file with this run (bless a fresh one
-    # after verified performance work); it refuses on query ERRORs since
-    # a partial run cannot bless anything, while regressions vs the old
-    # file only warn - legitimately faster seeds move medians both ways.
-    should_write = args.write_baseline or os.environ.get(
-        "BENCH_WRITE_BASELINE", "0"
-    ) in ("1", "true", "True")
-    if args.reset_baseline and errors > 0:
-        print(
-            f"  REFUSED --reset-baseline with {errors} query ERROR(s): "
-            "fix the run first, a partial run cannot bless a baseline"
-        )
-        all_ok = False
-    elif should_write or args.reset_baseline:
-        if regressions > 0:
-            print(
-                f"  note: blessing with {regressions} regression flag(s) vs "
-                "the old file - confirm they are seed-explained, not real"
-            )
-        baseline, ghosts = _build_baseline(
-            baseline, new_baseline, reset=args.reset_baseline
-        )
-        # Renames must not silently drop history: report pruned ghosts loudly.
-        for k in ghosts:
-            print(f"  pruning renamed/removed baseline key: {k}")
-        if _save_baseline(baseline):
-            print(
-                f"Baseline {'replaced' if args.reset_baseline else 'updated'}"
-                f" at {_BASELINE_FILE}"
-            )
-    else:
-        print(
-            "Baseline not written (pass --write-baseline or BENCH_WRITE_BASELINE=1 to persist)"
-        )
 
     if not all_ok:
         print("\nSome structural checks failed or regressions detected.")

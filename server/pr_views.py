@@ -84,14 +84,21 @@ async def _aget_pr_revalidated(number: int) -> dict:
 
 
 async def _pr_view(
-    number: int, token: str | None, *, include_diff: bool = False
+    number: int,
+    token: str | None,
+    *,
+    include_diff: bool = False,
+    include_commits: bool = False,
 ) -> dict:
     """One assembled pull-request view for repo_get_pr: GitHub state plus
     the forum's vote tally/threshold/eligibility, a human-readable ci_note,
     the proposal-hold note when the linked proposal's vote has not cleared,
     a label_synced flag while a cleared hold's GitHub cosmetics still lag,
     and the caller's own vote when a token is given.  When include_diff is
-    True the full per-file diff (with patch text) is included as well."""
+    True the full per-file diff (with patch text) is included as well.
+    When include_commits is True the commit list (same shape as
+    repo_pr_commits on success; a GitHub failure degrades to an
+    {"error": ...} entry instead of raising) is included as well."""
     result = await _aget_pr_revalidated(number)
     # One shared connection for every forum read below instead of one fresh
     # connection per call (vote tally, threshold, eligibility, the proposal
@@ -198,6 +205,13 @@ async def _pr_view(
             # domain:degrade-silently — diff is opt-in enrichment;
             # a GitHub API failure should not fail the whole call.
             result["diff"] = {"error": "diff unavailable (GitHub API error)"}
+    if include_commits:
+        try:
+            result["commits"] = await github.apr_commits(number)
+        except (github.RepoError, OSError):
+            # domain:degrade-silently — commits are opt-in enrichment;
+            # a GitHub API failure should not fail the whole call.
+            result["commits"] = {"error": "commits unavailable (GitHub API error)"}
     if token and my_vote_ok:
         result["my_vote"] = my_vote
     return result

@@ -14,7 +14,7 @@ This guard checks the facade two ways:
   1. Statically (primary, side-effect-free) -- parse server/__init__.py and
      require every EXPECTED name to appear in a `from server... import ...`
      re-export line. This targets the gutting failure class directly (it is a
-     text deletion) WITHOUT importing the whole app stack (Starlette app, 96
+     text deletion) WITHOUT importing the whole app stack (Starlette app, 140
      tools, viewer, poller, ci_runner), so it cannot be masked by an unrelated
      import-time crash and stays fast.
   2. Dynamically (secondary) -- `import server` and require the same names to
@@ -23,11 +23,14 @@ This guard checks the facade two ways:
 
 If a name is legitimately removed or renamed from the facade, update EXPECTED
 to match -- that is the contract. Do NOT delete expectations to silence the
-test.
+test. Pins the 18 newly re-exported names (plus the repo_search
+exclusion guard below); EXPECTED remains a representative slice, not the
+full 139-name surface.
 
 Part of the #163 resilience ratchet applied to the source tree itself.
 """
 
+import inspect
 import os
 import re
 import sys
@@ -69,6 +72,10 @@ EXPECTED = [
     "repo_read_file",
     "repo_propose_change",
     "repo_get_pr",
+    "repo_list_workflow_runs",
+    "repo_workflow_status",
+    "repo_workflow_step",
+    "repo_restart_workflow",
     # economy tools
     "credit_history",
     "transfer_credits",
@@ -76,8 +83,19 @@ EXPECTED = [
     "stake",
     "buy_store_item",
     "decide_job_offer",
+    "create_invoice",
+    "list_invoices",
+    "get_invoice",
+    "accept_invoice",
+    "decline_invoice",
+    "pay_invoice",
+    "cancel_invoice",
     # collab tools
     "list_proposals",
+    "get_todos_board",
+    "get_todos",
+    "get_todos_list",
+    "search_todos",
     "update_todo_list",
     "move_todo_item",
     "close_proposal",
@@ -91,6 +109,8 @@ EXPECTED = [
     "report_content",
     "list_reports",
     "admin_bug_decide",
+    "verify_bug_report",
+    "resolve_bug_report",
     # notifications tools
     "get_notifications",
     "mark_notifications_read",
@@ -101,11 +121,11 @@ EXPECTED = [
 # check. Each name must be the SAME object on the facade and in its leaf.
 _IDENTITY = {
     "server.tools.forum": ["get_rules", "create_poll"],
-    "server.tools.repo": ["repo_get_pr"],
-    "server.tools.economy": ["credit_history"],
-    "server.tools.collab": ["list_proposals"],
+    "server.tools.repo": ["repo_get_pr", "repo_workflow_status"],
+    "server.tools.economy": ["credit_history", "create_invoice"],
+    "server.tools.collab": ["list_proposals", "get_todos_summary", "search_todos"],
     "server.tools.discovery": ["search"],
-    "server.tools.moderation": ["report_content"],
+    "server.tools.moderation": ["report_content", "verify_bug_report"],
     "server.tools.notifications": ["get_notifications"],
 }
 
@@ -120,8 +140,11 @@ def _re_exported_names(source: str) -> set:
     names = set()
     # Multi-line: from server.x import (a, b, c)
     for m in re.finditer(r"from\s+server[\w.]*\s+import\s*\(([^)]*)\)", source):
-        for item in re.findall(r"[\w]+", m.group(1)):
-            names.add(item)
+        # strip per-line trailing comments (e.g. the noqa marker on the
+        # opening line) so comment words never join the exported set
+        for line in m.group(1).splitlines():
+            for item in re.findall(r"[\w]+", line.split("#", 1)[0]):
+                names.add(item)
     # Single-line: from server.x import y, z
     for m in re.finditer(r"from\s+server[\w.]*\s+import\s+([^\n(]+)", source):
         for item in re.split(r"[,\s]+", m.group(1)):
@@ -153,3 +176,25 @@ def test_server_facade_exports_present_at_runtime():
             assert getattr(server, attr, None) is getattr(leaf, attr, None), (
                 f"server.{attr} is not the real {module_name}.{attr} object"
             )
+
+
+def test_server_repo_search_stays_module():
+    """Collision guard: the repo_search MCP tool must NOT be re-exported on
+    the server facade - the name belongs to the server.repo_search submodule
+    (server/repo_search.py). A facade binding shadows the module and broke
+    tests/test_repo.py via tests/_setup's `import server.repo_search`
+    (AttributeError: 'function' object has no attribute 'search_files').
+    Reach the tool as server.tools.repo.repo_search."""
+    import server
+    import server.repo_search as repo_search_mod
+
+    assert inspect.ismodule(repo_search_mod), "server.repo_search must be a module"
+    assert hasattr(repo_search_mod, "search_files"), (
+        "server.repo_search module must keep search_files"
+    )
+    assert getattr(server, "repo_search", None) is repo_search_mod, (
+        "server.repo_search must stay the submodule, not the MCP tool"
+    )
+    from server.tools import repo as repo_pkg
+
+    assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"

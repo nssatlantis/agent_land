@@ -8,12 +8,17 @@ ci_run / ci_branch_run / ci_local_run kinds; no db writes.
 
 from __future__ import annotations
 
+import statistics
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import config
 from events import (
-    bench_comparison_for,
+    bench_anchor_aging,
+    bench_anchor_base_for,
+    bench_anchor_drifted,
+    bench_native_series,
     bench_pct,
     bench_regressions_for,
     event_total,
@@ -155,12 +160,54 @@ def _bench_badge(detail: dict) -> str:
     )
 
 
+def _bench_anchor_head(anchor: dict | None, rows: list[dict]) -> str:
+    """Anchor identity + trailing summary above the Benchmarks table: who
+    blessed which run when, whether it is aging, and which queries drifted
+    with their trailing series (capped at 10 names). Always a state line -
+    the no-anchor fallback is informative, not empty."""
+    style = "style='color:var(--muted);font-size:13px;margin:0 0 8px'"
+    if anchor is None:
+        return (
+            f"<p {style}>No anchor blessed — deltas fall back to the newest "
+            "native reference (window-best with no reference). Bless one with "
+            "the bless_bench_anchor tool.</p>"
+        )
+    aging, reason = bench_anchor_aging(anchor, rows)
+    who = esc(str(anchor.get("blessed_by_name") or "system"))
+    head = (
+        f"<p {style}>Anchor: ev{anchor.get('bless_event_id')} by {who} "
+        f"({esc(_human_ts(str(anchor.get('blessed_at') or '')))})"
+    )
+    if aging:
+        head += f" — AGING: {esc(reason)}"
+    drifted = bench_anchor_drifted(anchor, rows)
+    if not drifted:
+        return head + " — trailing flat vs anchor.</p>"
+    series = bench_native_series(rows)
+    medians = anchor.get("medians") or {}
+    parts = []
+    for q in sorted(drifted)[:10]:
+        s = series.get(q, [])
+        if not s:
+            continue
+        base = medians.get(q)
+        if not isinstance(base, (int, float)) or isinstance(base, bool):
+            parts.append(f"{esc(q)}: {', '.join(f'{v:.1f}' for v in s)} vs anchor ?")
+            continue
+        trailing = statistics.median(s)
+        pct = bench_pct(trailing, float(base))
+        trail = ", ".join(f"{v:.1f}" for v in s)
+        parts.append(f"{esc(q)}: {trail} vs anchor {float(base):.1f} ({pct:+d}%)")
+    more = f" (+{len(drifted) - 10} more)" if len(drifted) > 10 else ""
+    return head + f" — trailing drift: {'; '.join(parts)}{more}.</p>"
+
+
 def _bench_row(e: dict, bests: dict[str, float], label: str) -> str:
     """One db_benchmark timeline row: when|mode|sha7|badge|duration plus a
     collapsible per-query median table (median ms + signed Δ% vs the shared
-    comparison base - the newest native origin/main reference run in the
-    window, falling back to the best-in-window median; negative = faster).
-    `bests` and `label` come from events.bench_comparison_for (same math as
+    comparison base - the blessed anchor when one exists, else the newest
+    native reference or window-best fallback; negative = faster).
+    `bests` and `label` come from events.bench_anchor_base_for (same math as
     the check-in nudge)."""
     detail = e.get("detail") or {}
     when = _human_ts(e["created_at"])
@@ -305,13 +352,15 @@ def ci_page(request: Request) -> HTMLResponse:
             nav.append(f'<a href="{esc(_href_for_page(page + 1))}">Next \u203a</a>')
         pager = '<div class="pager">' + " \u00b7 ".join(nav) + "</div>"
     empty = "<p style='color:var(--muted)'>No CI runs yet — the runner is idle.</p>"
+    bench_head = ""
     if mode == "bench":
-        bench_bests, bench_label = bench_comparison_for(stats_evts or [])
+        bench_bests, bench_label, bench_anchor = bench_anchor_base_for(stats_evts or [])
         rows_html = (
             "".join(_bench_row(e, bench_bests, bench_label) for e in evts)
             if evts
             else empty
         )
+        bench_head = _bench_anchor_head(bench_anchor, stats_evts or [])
     else:
         rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
@@ -321,12 +370,13 @@ def ci_page(request: Request) -> HTMLResponse:
     elif mode == "local":
         hint = "<p style='color:var(--muted);font-size:13px'>Local mode: <code>repo_ci_run(files=[...])</code> rehearsals — the pre-push overlay of your diff on <code>origin/main</code>, tested in the same Docker sandbox as branch runs (ledger kind <code>ci_local_run</code>).</p>"
     elif mode == "bench":
-        hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared against the newest native origin/main reference run in this window (falling back to the best-in-window median when no reference exists) — a negative delta means faster than main; clean = <code>regressions==0</code>.</p>"
+        hint = "<p style='color:var(--muted);font-size:13px'>Benchmark mode: <code>repo_ci_run(checks='db_benchmark')</code> runs. Each row's median is compared against the blessed anchor (falling back to the newest native origin/main reference run, then window-best) — a negative delta means faster than the anchor; clean = <code>regressions==0</code>.</p>"
     body = (
         '<div class="panel" id="sec-ci"><h2>Build health</h2><p style=\'color:var(--muted);font-size:15px\'>CI runs via the sandboxed runner — native (main), PR merges (branch), local rehearsal (files=) and db_benchmark medians. Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>'
         + tabs
         + top_strip
         + summary
+        + bench_head
         + rows_html
         + pager
         + hint

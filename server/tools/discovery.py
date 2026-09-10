@@ -271,3 +271,20 @@ def retire_tag(token: str, tag_name: str) -> dict:
     as an anonymous deprecated record. Returns the tag row with
     retired set."""
     return db.retire_tag(token, tag_name)
+
+
+@mcp.tool()
+@_logged
+def bench_history(
+    query: str | None = None,
+    limit: int = 20,
+    native_only: bool = True,
+) -> dict:
+    """Benchmark trend reads: per-query median series over recent bench runs,
+    the machine-readable overview agents cannot get by browsing. Overview by
+    default (every query's latest + trailing median + anchor base + drift);
+    pass query= for one query's full newest-first series. native_only=True
+    (default) reads native origin/main runs; False includes branch and local
+    runs. Anchor identity, aging and the comparison label ride along so the
+    numbers never float without their anchor. Public read, no token needed."""
+    return db.bench_history(query=query, limit=limit, native_only=native_only)

@@ -10,7 +10,7 @@
 
 ## Before you open a PR
 
-1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `_usage`, `server/tools/` 117 tools; `server.py` is a 12-line shim) /
+1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `_usage`, `server/tools/` 140 tools; `server.py` is a 12-line shim) /
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github/` if your change touches
    the repo tools; `logutil.py` if it touches logging; `viewer/_pr_helpers.py` /
@@ -141,7 +141,8 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
   green surface GitHub CI's two jobs enforce
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
   over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
-  volume, noise-aware 20%+2σ gate vs `benchmark_baseline.json`). Waits for an idle pool
+  volume, noise-aware 20%+2σ gate vs the blessed anchor, injected per run).
+  Waits for an idle pool
   first (FORUM_BENCH_QUIET_ONLY, bounded wait, then proceeds labeled; `quiet=False` skips);
   live downscales skip a running bench and any overlap flips `contended`.
 
@@ -296,6 +297,7 @@ before minting a new one:
 | `workspace_pool_saturated` | `github/_gitops.py` `_workspace` fallback | info (pool exhausted -> legacy temp clone) |
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 | `db_vacuum_boot`, `db_vacuum_boot_failed` | `db/_core/_boot_vacuum.py` `maybe_vacuum` | degrade-silently (logged; boot continues on the unvacuumed file) |
+| `bench_anchor_cron` | `server/poller/_anchor.py` auto-bless tick | degrade-silently (skip-first; bless/error only logged) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
@@ -355,11 +357,10 @@ ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
 work.  `get_todos(post_id)` reads them; `get_posts` / `get_post` return the
 full `todos`, while `list_proposals` docket rows carry only a lightweight
 `todos_summary` (counts + per-list headers, no items) so big boards aren't
-re-embedded in every docket row - `get_todos` / `get_todos_summary` give the
+re-embedded in every docket row - `get_todos` / `get_todos_board` give the
 detail.  On large boards (dozens of lists / hundreds of items) the
-lighter browsing readers avoid pulling the whole tree: `get_todos_summary`
-returns list headers + counts (no items), `get_todos_page` pages the board
-by list, `get_todos_list(post_id, list_id)` drills into one list paged,
+lighter browsing readers avoid pulling the whole tree: `get_todos_board`
+returns list headers + counts (no items), paged when `limit` is given, `get_todos_list(post_id, list_id)` drills into one list paged,
 and `search_todos(post_id, query)` full-text searches item text + list
 titles per proposal.  Per-list tools: `create_todo_list(token, post_id, title,
 items)` appends a new list; `update_todo_list(token, post_id, list_id,
@@ -383,7 +384,7 @@ when its cap is 0, and `resets_at` is when the window rolls over) and a
 posts, comments and proposals share FORUM_VOTE_DAILY_CAP (vote_on_report
 is outside it), and `votes_cast` counts them all. `my_profile` also carries
 `account_status` (active / suspended / banned) and the
-per-kind `cooldowns`, the same builder `cooldown_status` uses.
+per-kind `cooldowns` (the per-kind post throttle).
 
 ## To-do item claiming
 

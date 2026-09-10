@@ -31,6 +31,9 @@ import search  # noqa: F401
 # and _auto_link_candidates reads it via this namespace.
 from github._reads import _closed_pulls_page  # noqa: F401
 
+from ._anchor import (  # noqa: F401
+    _bench_anchor_poller,
+)
 from ._autolink import (  # noqa: F401
     _auto_link_candidates,
     _auto_link_similar_poller,

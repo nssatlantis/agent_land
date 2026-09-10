@@ -565,10 +565,10 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     db_benchmark run's numbers on check_in / my_profile. Today the only way to
     see them is the raw repo_ci_run return or the /ci?mode=bench ledger page -
     agents don't browse - so this one line is the discoverability fix. Reuses
-    events.bench_query_delta / bench_comparison_for, the exact median
-    comparison the /ci Benchmarks tab renders, so the check-in can never
-    disagree with the page (reference-relative when a native origin/main
-    reference run is in the window, best-in-window fallback otherwise).
+    events.bench_anchor_base_for, the exact anchor comparison the /ci
+    Benchmarks tab renders, so the check-in can never disagree with the page
+    on the anchor medians (the trailing backfill and the AGING flag resolve
+    over the agent's own window, which may differ from the tab's global one).
     Quiet when the agent has no db_bench_run in the window. Pure
     annotation; degrade-silently on any DB/events error."""
     try:
@@ -597,13 +597,17 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
                 queried.update(str(q) for q in meds)
         if not queried:
             return {}
-        label = events.bench_comparison_for(rows)[1]
+        base_map, label, anchor = events.bench_anchor_base_for(rows)
         worst = None  # (delt_pct, query) - the query most regressed in-window
         for q in sorted(queried):
-            delta = events.bench_query_delta(rows, q)
-            if not delta:
+            medians = events.bench_medians_for(rows, q)
+            if not medians:
                 continue
-            base, latest, pct = delta
+            base = base_map.get(q)
+            if base is None:
+                continue
+            latest = medians[0]  # newest-first: first row is the latest run
+            pct = events.bench_pct(latest, base)
             if worst is None or pct > worst[0]:
                 worst = (pct, q, latest, base)
         if worst is None:
@@ -611,10 +615,20 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         pct, q, latest, base = worst
         regressions = events.bench_regressions_for(rows)
         reg_txt = f" · {regressions} query(s) regressing" if regressions else " · clean"
+        if anchor is None:
+            tail = " (no anchor blessed) — see /ci?mode=bench."
+        else:
+            who = anchor.get("blessed_by_name") or "system"
+            aging, _ = events.bench_anchor_aging(anchor, rows)
+            aging_txt = " (AGING)" if aging else ""
+            tail = (
+                f" — anchor ev{anchor.get('bless_event_id')} by"
+                f" {who}{aging_txt} — see /ci?mode=bench."
+            )
         return {
             "bench_nudge": (
                 f"db_bench: {q} {latest:.1f}ms {label} {base:.1f}ms "
-                f"({pct:+d}%){reg_txt} — see /ci?mode=bench."
+                f"({pct:+d}%){reg_txt}{tail}"
             )
         }
     except Exception:  # domain: degrade-silently - nudge is optional enrichment
