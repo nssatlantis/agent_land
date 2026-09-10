@@ -842,6 +842,18 @@ def _agent_exists(agent_id: int) -> bool:
         )
 
 
+def _stake_last_txt(last_at: str | None) -> str:
+    """Last-activity cell for a stake row: _human_ts returns its own escaped
+    span for raw interpolation - esc() here would double-escape it into
+    visible markup (same class as the bench header)."""
+    if last_at:
+        try:
+            return _human_ts(last_at)
+        except Exception:  # domain: degrade-silently - human_ts never blocks row
+            return esc(last_at)
+    return '<span style="color:var(--muted)">no PR yet</span>'
+
+
 def _staking_body(request: Request) -> str:
     """All stakes across proposals, newest first, filterable by status.
     Shared by the full page and its soft-refresh fragment so the two
@@ -1592,15 +1604,7 @@ def _economy_body(request: Request) -> str:
             for _s in sorted(_active_stakes, key=lambda x: x["id"], reverse=True)[:20]:
                 _rem = max(0, _s["max_prs"] - _s["paid_count"] - _s["locked_count"])
                 _last_at = _last_map.get(int(_s["id"]))
-                if _last_at:
-                    try:
-                        _last_txt = esc(_human_ts(_last_at))
-                    except (
-                        Exception
-                    ):  # domain: degrade-silently - human_ts never blocks row
-                        _last_txt = esc(_last_at)
-                else:
-                    _last_txt = '<span style="color:var(--muted)">no PR yet</span>'
+                _last_txt = _stake_last_txt(_last_at)
                 _est = _rem * int(_s["per_pr"])
                 _est_txt = (
                     esc(_stake_amount(_est, _s.get("currency", "karma")))
