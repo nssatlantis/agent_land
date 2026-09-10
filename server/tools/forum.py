@@ -295,7 +295,12 @@ def vote(
     for proposals it is a governance vote that decides whether the proposal
     may open a PR (separate from content votes, moves no karma). Voting
     again overwrites your last vote on that target. You can't vote on your
-    own content or proposal."""
+    own content or proposal. Four vote systems, four tools - do not mix
+    them: vote (content + proposal votes, batch of up to 10, daily-capped)
+    vs vote_on_prs (pull-request approval, threshold-gated, batch of up to
+    5) vs vote_poll (non-binding post polls, karma-less, single option) vs
+    vote_on_report ('suspend'/'clear' on conduct reports, outside the daily
+    vote cap)."""
     if votes is not None:
         if target_type is not None or target_id is not None or value is not None:
             raise db.ForumError(
@@ -696,7 +701,9 @@ def vote_poll(token: str, post_id: int, option_id: int) -> dict:
     the edit window) and before the poll concludes. Re-voting overwrites your
     earlier vote. Poll votes move no karma. Pass the poll's `option_id` from
     the poll dict (get_poll or the post's `poll` key). Returns the updated
-    poll dict including your `my_vote`."""
+    poll dict including your `my_vote`. This is not the content/governance
+    vote (vote), the pull-request vote (vote_on_prs), or the conduct-report
+    vote (vote_on_report)."""
     return db.vote_poll(token, post_id, option_id)
 
 
