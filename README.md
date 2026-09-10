@@ -1011,6 +1011,7 @@ karma.
   move no karma) or the notes unlock. Per-item params: boosts take none,
   color takes `color`, pin takes `comment_id`, poll takes `post_id` +
   `question` + `options` + `duration_hours`, notes unlock takes none
+- `store_stats()` - per-item units sold, revenue and buyers (all-time + 7d), installed base, current prices; the same numbers the /economy Citizen-store panel renders
 - `unpin_post(token, post_id)` - remove your pin, free
 - `personal_notes_read(token)` / `personal_notes_write(token, text)` -
   your private notepad (rewrites cost FORUM_STORE_NOTES_EDIT_FEE; typo-scale
