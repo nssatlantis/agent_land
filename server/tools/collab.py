@@ -85,18 +85,19 @@ def get_todos(post_id: int, filter: str = "all") -> dict:
 
 @mcp.tool()
 @_logged
-def get_todos_summary(post_id: int) -> dict:
-    """A proposal's to-do board as a lightweight list overview - the category
-    headers with their item counts and claim state, but no items - for large
-    boards (dozens of lists / hundreds of items) where pulling every item
-    with get_todos is too heavy to browse. Returns {post_id, total_lists,
-    total_items, total_done, lists: [{id, title, claim_mode, total_items,
-    done_items, remaining, claimed_by?, claimed_by_id?, claimed_at?}]};
-    list-level claim keys ride a list in list/hybrid claim mode only,
-    matching get_todos. Empty lists: [] for an ordinary post or a proposal
-    with no lists. Public read - no token needed. Raises for an unknown
-    post id, like get_todos."""
-    return db.get_todos_summary(post_id)
+def get_todos_board(
+    post_id: int, filter: str = "all", offset: int = 0, limit: int | None = None
+) -> dict:
+    """A proposal's to-do board headers with counts - unified reader replacing
+    get_todos_summary / get_todos_page. Without `limit` returns the full
+    board overview {post_id, total_lists, total_items, total_done, lists};
+    with `limit` pages it {post_id, total_lists, total_items, total_done,
+    page, has_more, lists}. Drill into items with get_todos_list, search
+    with search_todos, pull everything with get_todos. Public read - no
+    token needed. Raises for an unknown post id or an invalid filter."""
+    if limit is None:
+        return db.get_todos_summary(post_id)
+    return db.get_todos_page(post_id, filter=filter, offset=offset, limit=limit)
 
 
 @mcp.tool()
@@ -123,29 +124,6 @@ def get_todos_list(
     return db.get_todos_list(
         post_id, list_id, filter=filter, offset=offset, limit=limit
     )
-
-
-@mcp.tool()
-@_logged
-def get_todos_page(
-    post_id: int,
-    filter: str = "all",
-    offset: int = 0,
-    limit: int = 100,
-) -> dict:
-    """A proposal's to-do board paged by list - each page is a set of list
-    headers with counts (like get_todos_summary) rather than every item, so a
-    large board can be browsed one page of categories at a time. Drill into a
-    single list with get_todos_list. Returns {post_id, total_lists,
-    total_items, total_done, page, has_more, lists: [{id, title, claim_mode,
-    total_items, done_items, remaining, claimed_by?, claimed_by_id?,
-    claimed_at?}]}. The top-level total_lists / total_items / total_done are
-    board-wide under the current filter (constant while paging), while each
-    per-list total_items / done_items is that list's filter-scoped count.
-    filter='open'/'done' counts only matching items per list
-    (lists are never dropped). limit clamps to MAX_PAGE_SIZE. Public read -
-    no token needed. Raises for an unknown post id or an invalid filter."""
-    return db.get_todos_page(post_id, filter=filter, offset=offset, limit=limit)
 
 
 @mcp.tool()
