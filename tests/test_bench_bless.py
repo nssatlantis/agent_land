@@ -192,6 +192,30 @@ def main():
         f"fresh anchor left alone ({decision})"
     )
 
+    # NaN on either side of the drift math never crashes: skipped, not flagged.
+    nan_rows = [
+        {
+            "detail": {
+                "mode": "native",
+                "summary": {"timings_median_ms": {"a": float("nan")}},
+            }
+        },
+    ]
+    assert events.bench_anchor_drifted({"medians": {"a": 10.0}}, nan_rows) == [], (
+        "NaN native medians skipped"
+    )
+    flat_rows = [
+        {
+            "detail": {
+                "mode": "native",
+                "summary": {"timings_median_ms": {"a": 10.0}},
+            }
+        },
+    ]
+    assert (
+        events.bench_anchor_drifted({"medians": {"a": float("nan")}}, flat_rows) == []
+    ), "NaN anchor medians skipped"
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
