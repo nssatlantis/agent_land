@@ -56,7 +56,6 @@ from viewer._api import (
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._citizens_helpers import _profile_cards
-from viewer._collaborative import _collaborative_panels, collaborative_page
 from viewer._events import events_page
 from viewer._feed_helpers import (
     _side_rail,
@@ -200,7 +199,6 @@ _FRAGMENT_CANONICAL = {
     "status-banner": "/status",
     "status-pulse": "/status",
     "pulse-panels": "/pulse",
-    "collaborative": "/collaborative",
     "economy": "/economy",
     "jobs": "/jobs",
     "staking": "/staking",
@@ -296,8 +294,6 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
         body = viewer_status._pulse_cards(by_name, prs)
     elif name == "pulse-panels":
         body = _pulse_panels()
-    elif name == "collaborative":
-        body = _collaborative_panels()
     elif name == "economy":
         body = _economy_body(request)
     elif name == "jobs":
@@ -325,7 +321,6 @@ ROUTES = [
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
     Route("/analytics", analytics_page),
-    Route("/collaborative", collaborative_page),
     Route("/governance/cohorts", governance_cohorts_page),
     Route("/governance/analytics", governance_analytics_page),
     Route("/proposals", proposals_page),
