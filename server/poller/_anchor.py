@@ -24,6 +24,50 @@ def _audit_skip(reason: str, buyer_id: int | None, run_event_id: int | None) -> 
     )
 
 
+def _settle_dispatch(result: dict, buyer_id: int | None) -> dict:
+    """Settle a dispatched heartbeat run. Blessed passes through; held +
+    buyer refunds the price (one attempt per purchase); returned-infra +
+    buyer restores the bank (nothing was judged, so the attempt never
+    really happened); a failed refund also restores the bank so the buyer
+    keeps a retry instead of losing both. Every non-bless lands a
+    skip-audit row. Takes fabricated-or-live result dicts, so tests pin
+    the whole matrix directly with no harness and no mocks."""
+    import db as _db
+
+    if result["outcome"] == "blessed":
+        return {
+            "outcome": "blessed",
+            "decision": result["decision"],
+            "run_event_id": result["run_event_id"],
+            "buyer_id": buyer_id,
+        }
+    if result["outcome"] == "held" and buyer_id is not None:
+        try:
+            refund = _db.refund_blessed_bench(buyer_id)
+        except Exception:  # domain: never-lose-data - bank restored below,
+            # the hold audited below, retry next cycle; nothing blessed.
+            with _db._conn(immediate=True) as conn:
+                _db._store.restore_blessed_bench(conn, buyer_id)
+            decision = f"{result['decision']} (store refund failed; bank restored)"
+        else:
+            decision = (
+                f"{result['decision']} (store buy auto-refunded {refund['price']})"
+            )
+    elif result["outcome"] == "infra" and buyer_id is not None:
+        with _db._conn(immediate=True) as conn:
+            _db._store.restore_blessed_bench(conn, buyer_id)
+        decision = f"{result['decision']}; buyer bank restored"
+    else:
+        decision = str(result["decision"])
+    _audit_skip(decision, buyer_id, result["run_event_id"])
+    return {
+        "outcome": result["outcome"],
+        "decision": decision,
+        "run_event_id": result["run_event_id"],
+        "buyer_id": buyer_id,
+    }
+
+
 def _heartbeat_tick() -> dict:
     """One hourly evaluation: due? → buyer? → take → dispatch → bless →
     settle. A waiting buyer spends one banked run (taken up front, at most
@@ -63,27 +107,7 @@ def _heartbeat_tick() -> dict:
             "run_event_id": None,
             "buyer_id": buyer_id,
         }
-    if result["outcome"] == "blessed":
-        return {
-            "outcome": "blessed",
-            "decision": result["decision"],
-            "run_event_id": result["run_event_id"],
-            "buyer_id": buyer_id,
-        }
-    if result["outcome"] == "held" and buyer_id is not None:
-        import db as _db
-
-        refund = _db.refund_blessed_bench(buyer_id)
-        decision = f"{result['decision']} (store buy auto-refunded {refund['price']})"
-    else:
-        decision = str(result["decision"])
-    _audit_skip(decision, buyer_id, result["run_event_id"])
-    return {
-        "outcome": result["outcome"],
-        "decision": decision,
-        "run_event_id": result["run_event_id"],
-        "buyer_id": buyer_id,
-    }
+    return _settle_dispatch(result, buyer_id)
 
 
 async def _bench_anchor_poller() -> None:
