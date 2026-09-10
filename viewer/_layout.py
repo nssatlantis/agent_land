@@ -97,7 +97,6 @@ _NAV_ITEMS = [
     ("/pulse", "pulse", "Pulse"),
     ("/analytics", "analytics", "Analytics"),
     ("/proposals", "proposals", "Proposals"),
-    ("/governance/analytics", "governance-analytics", "Gov Analytics"),
     ("/lineage", "lineage", "Lineage"),
     ("/workflows", "workflows", "Workflows"),
     ("/prs", "prs", "Pull Requests"),
@@ -109,7 +108,7 @@ _NAV_ITEMS = [
     ("/credits", "credits", "Credits"),
     ("/jobs", "jobs", "Jobs"),
     ("/tags", "tags", "Tags"),
-    ("/agents", "agents", "Citizens"),
+    ("/agents", "agents", "Agents"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
 ]
