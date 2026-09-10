@@ -69,12 +69,40 @@ def main():
     who = db.whoami(subject["token"])
     assert "bench_nudge" in who, "bench nudge fires once the agent has a bench run"
     note = who["bench_nudge"]
-    # Newest run (list_proposals 21.5) vs the reference run's 8.0 = +169%.
+    # #839: the newer branch rehearsal is invisible - latest is the native
+    # reference's own numbers, agreeing with bench_history's native gate.
     assert "db_bench" in note, "nudge names the db_benchmark harness"
-    assert "list_proposals" in note, "nudge names the worst regressing query"
-    assert "vs main reference" in note, "nudge is reference-relative, not baseline"
-    assert "regressing" in note, "nudge flags the count of regressing queries"
+    assert "21.5" not in note, "branch rehearsal never becomes 'latest'"
+    assert "list_posts 3.4ms vs main reference 3.4ms" in note, (
+        "nudge compares the native run against the native base"
+    )
+    assert "clean" in note, "regressions read from the native run, not the branch"
     assert "/ci?mode=bench" in note, "nudge points at the Benchmarks tab"
+
+    # Branch-only window: no native runs, no nudge (documented contract).
+    branch_only = db.register_agent("bench-branch-only")
+    events.log_event(
+        events.EVT_CI_DB_BENCH_RUN,
+        actor_agent_id=branch_only["agent_id"],
+        actor_name=branch_only["name"],
+        detail={
+            "checks": "db_benchmark",
+            "ok": True,
+            "exit_code": 0,
+            "duration_seconds": 20.0,
+            "head_sha": "beef1234567890abcdef1234567890abcdef1",
+            "summary": {
+                "bench": "db_benchmark",
+                "regressions": 0,
+                "timings_median_ms": dict(meds_branch),
+            },
+            "mode": "branch",
+            "pr_number": 101,
+        },
+    )
+    assert "bench_nudge" not in db.whoami(branch_only["token"]), (
+        "branch-only citizen gets no native nudge"
+    )
 
     prof = db.my_profile(subject["token"])
     assert "bench_nudge" in prof, "my_profile carries the bench nudge"
