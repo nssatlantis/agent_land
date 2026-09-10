@@ -2,7 +2,8 @@
 
 Overview by default (every query's latest + trailing + base + drift with
 anchor identity and label); query= for one query's full newest-first
-series; native_only=False includes branch runs. Public read, no token.
+series; native_only=False merges branch previews and local rehearsals
+(their real ledger kinds). Public read, no token.
 """
 
 import os
@@ -20,7 +21,7 @@ from tests._setup import db, expect_error, setup  # noqa: E402, I001
 import events  # noqa: E402, I001
 
 
-def _seed_run(subject, meds, extra=None):
+def _seed_run(subject, meds, kind=None, extra=None):
     detail = {
         "checks": "db_benchmark",
         "mode": "native",
@@ -37,7 +38,7 @@ def _seed_run(subject, meds, extra=None):
     }
     detail.update(extra or {})
     events.log_event(
-        events.EVT_CI_DB_BENCH_RUN,
+        kind or events.EVT_CI_DB_BENCH_RUN,
         actor_agent_id=subject["agent_id"],
         actor_name=subject["name"],
         detail=detail,
@@ -53,10 +54,18 @@ def main():
     assert out["anchor"] is None, "no anchor before any bless"
     assert out["queries"] == {}, "no queries before any runs"
 
-    old = {"a": 10.0, "b": 20.0}
-    new = {"a": 12.0, "b": 20.0}
+    old = {"a": 10.0, "b": 20.0, "c": 30.0}
+    new = {"a": 12.0, "b": 20.0, "c": 30.0}
     _seed_run(subject, old)
     _seed_run(subject, new)
+
+    # Runs present but nothing blessed: the reference fallback serves the
+    # comparison with its label (not the anchor one).
+    pre = db.bench_history()
+    assert pre["anchor"] is None, "still no anchor"
+    assert pre["label"] == "vs main reference", "fallback label pre-bless"
+    assert pre["queries"]["a"]["base"] == 12.0, "fallback base is newest native"
+
     rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=1)
     events.log_event(
         events.EVT_BENCH_ANCHOR_BLESSED,
@@ -89,21 +98,57 @@ def main():
 
     missing = db.bench_history(query="nope")
     assert missing["series"] == [], "unknown query reads empty"
-    assert missing["entry"]["latest"] is None, "unknown entry is nulls"
-
-    # Branch runs are excluded by default, included on request.
-    _seed_run(subject, {"a": 99.0}, extra={"mode": "branch", "pr_number": 7})
-    assert db.bench_history()["queries"]["a"]["latest"] == 12.0, (
-        "branch excluded by default"
-    )
-    assert db.bench_history(native_only=False)["queries"]["a"]["latest"] == 99.0, (
-        "branch included on request"
-    )
+    assert missing["entry"]["latest"] is None, "unknown latest is null"
+    assert missing["entry"]["base"] is None, "unknown base is null"
+    assert missing["entry"]["drift_pct"] is None, "unknown drift is null"
 
     assert "query must be" in expect_error(db.bench_history, query="  "), (
         "blank query refused"
     )
     assert db.bench_history(limit=0)["window_runs"] == 1, "limit clamps to >=1"
+    assert db.bench_history(limit="zzz")["window_runs"] == 2, (
+        "garbage limit falls back safely"
+    )
+
+    # Non-finite medians never reach the tool: excluded from every series,
+    # tool stays 200.
+    _seed_run(subject, {"a": float("nan"), "b": 20.0, "c": 30.0})
+    assert db.bench_history(query="a")["series"] == [12.0, 10.0], "NaN medians excluded"
+
+    # Real multi-kind shapes: branch previews and local rehearsals log
+    # under their own kinds (what prod actually writes) with the same bench
+    # summary; a non-bench branch run carries no medians and never counts.
+    _seed_run(
+        subject,
+        {"a": 99.0, "b": 20.0, "c": 30.0},
+        kind=events.EVT_CI_BRANCH_RUN,
+        extra={"mode": "branch", "pr_number": 7},
+    )
+    _seed_run(
+        subject,
+        {"a": 97.0, "b": 20.0, "c": 30.0},
+        kind=events.EVT_CI_LOCAL_RUN,
+        extra={"mode": "local", "local": True, "base_sha": "abc123"},
+    )
+    events.log_event(
+        events.EVT_CI_BRANCH_RUN,
+        actor_agent_id=subject["agent_id"],
+        actor_name=subject["name"],
+        detail={"checks": "tests", "mode": "branch", "pr_number": 8},
+    )
+    assert db.bench_history()["queries"]["a"]["latest"] == 12.0, (
+        "branch/local excluded by default"
+    )
+    wide = db.bench_history(native_only=False)
+    assert wide["queries"]["a"]["latest"] == 97.0, "local newest in full pool"
+    assert wide["window_runs"] == 5, "pool counts median-carrying rows only"
+
+    # Three drifted queries move the trailing median: the tool reports aging.
+    for _ in range(4):
+        _seed_run(subject, {"a": 18.0, "b": 30.0, "c": 45.0})
+    aged = db.bench_history()
+    assert aged["anchor"]["aging"] is True, "drifted anchor reads aging"
+    assert "drifted" in aged["anchor"]["aging_reason"], "aging names drift"
 
     import shutil
 
