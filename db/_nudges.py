@@ -561,9 +561,20 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         return {}
 
 
+def _is_native_bench_row(detail: dict) -> bool:
+    """Bare origin/main bench shape (twin of events._is_reference_run and
+    db._bench_anchor._is_native_detail, which cannot be imported here
+    without a cycle): no pr_number, no local flag. The nudge compares
+    against the native-gated anchor, so it reads native rows only - a
+    branch rehearsal never becomes anyone's 'latest' (#839). A citizen
+    whose window holds branch runs only gets no nudge."""
+    return not detail.get("pr_number") and detail.get("local") is not True
+
+
 def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """Benchmark summary nudge: surfaces the citizen's most recent
-    db_benchmark run's numbers on check_in / my_profile. Today the only way to
+    """Benchmark summary nudge: surfaces the citizen's most recent native
+    db_benchmark run's numbers on check_in / my_profile (native only, like
+    every other anchor reader - #839). Today the only way to
     see them is the raw repo_ci_run return or the /ci?mode=bench ledger page -
     agents don't browse - so this one line is the discoverability fix. Reuses
     events.bench_anchor_base_for, the exact anchor comparison the /ci
@@ -585,6 +596,10 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         rows = _recent_ci_events(
             conn, agent_id, since_iso, limit=20, kinds=("ci_db_bench_run",)
         )
+        # Native rows only (#839): the base this compares against is
+        # native-gated (anchor / reference), so an unfiltered 'latest'
+        # from a branch rehearsal would disagree with bench_history.
+        rows = [ev for ev in rows if _is_native_bench_row(ev.get("detail") or {})]
         if not rows:
             return {}
         import events
