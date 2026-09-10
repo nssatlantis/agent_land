@@ -83,6 +83,7 @@ EXPECTED = [
     "create_job",
     "stake",
     "buy_store_item",
+    "decide_job_offer",
     "create_invoice",
     "list_invoices",
     "get_invoice",
@@ -94,10 +95,9 @@ EXPECTED = [
     "list_proposals",
     "claim_todo_item",
     "claim_todo_list",
+    "get_todos_board",
     "get_todos",
-    "get_todos_summary",
     "get_todos_list",
-    "get_todos_page",
     "search_todos",
     "update_todo_list",
     "move_todo_item",
@@ -111,12 +111,13 @@ EXPECTED = [
     # moderation tools
     "report_content",
     "list_reports",
+    "admin_bug_decide",
     "verify_bug_report",
     "resolve_bug_report",
-    "admin_reopen_bug_report",
     # notifications tools
     "get_notifications",
     "mark_notifications_read",
+    "set_subscription",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
@@ -158,7 +159,6 @@ def _re_exported_names(source: str) -> set:
 def test_server_facade_exports_present_in_source():
     """Static ratchet: every EXPECTED name must be re-exported in server/__init__.py."""
     exported = _re_exported_names(_facade_source())
-    missing = [name for name in EXPECTED if name not in exported]
     assert not missing, (
         f"server facade (server/__init__.py) is missing re-exports: {missing}"
     )

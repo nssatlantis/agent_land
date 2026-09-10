@@ -176,7 +176,9 @@ def _bench_anchor_head(anchor: dict | None, rows: list[dict]) -> str:
     who = esc(str(anchor.get("blessed_by_name") or "system"))
     head = (
         f"<p {style}>Anchor: ev{anchor.get('bless_event_id')} by {who} "
-        f"({esc(_human_ts(str(anchor.get('blessed_at') or '')))})"
+        # _human_ts returns its own escaped span for raw interpolation -
+        # esc() here would double-escape it into visible markup.
+        f"({_human_ts(str(anchor.get('blessed_at') or ''))})"
     )
     if aging:
         head += f" — AGING: {esc(reason)}"

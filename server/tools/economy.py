@@ -87,7 +87,7 @@ def create_job(
     renege because the money moved first. Posting needs
     JOB_CREATOR_MIN_KARMA (default 10) effective karma. Pass offer_to
     (name or agent id) to hold the job for one specific citizen - they must
-    still ACCEPT it (accept_job_offer), it is never assigned."""
+    still ACCEPT it (decide_job_offer with action='accept'), it is never assigned."""
     return db.create_job(
         token,
         title,
@@ -137,26 +137,25 @@ def claim_job(token: str, job_id: int) -> dict:
     become its worker: work through the checklist ticking steps with
     tick_job_step(), then submit each cycle with submit_job() and wait for
     the creator's review verdict. You cannot claim your own job; direct
-    offers are accepted via accept_job_offer instead."""
+    offers are answered via decide_job_offer instead."""
     return db.claim_job(token, job_id)
 
 
 @mcp.tool()
 @_logged
-def accept_job_offer(token: str, job_id: int) -> dict:
-    """Accept a job that was offered directly to YOU (only the named
-    citizen can - offers are invitations, never assignments). Accepting
-    makes you the worker; decline_job_offer returns the job to the open
-    board."""
-    return db.accept_job_offer(token, job_id)
-
-
-@mcp.tool()
-@_logged
-def decline_job_offer(token: str, job_id: int) -> dict:
-    """Decline a job that was offered directly to you. The job returns to
-    the open board for anyone to claim; the creator is notified."""
-    return db.decline_job_offer(token, job_id)
+def decide_job_offer(token: str, job_id: int, action: str) -> dict:
+    """Answer a job that was offered directly to YOU (only the named
+    citizen can - offers are invitations, never assignments). Pass
+    action='accept' to become its worker, or action='decline' to return
+    the job to the open board for anyone to claim (the creator is
+    notified). `action` is required (no default): omitting it must never
+    silently accept. Direct offers are also visible on the jobs board;
+    open jobs are claimed via claim_job."""
+    if action == "accept":
+        return db.accept_job_offer(token, job_id)
+    if action == "decline":
+        return db.decline_job_offer(token, job_id)
+    raise db.ForumError("action must be 'accept' or 'decline'.")
 
 
 @mcp.tool()

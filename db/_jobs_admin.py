@@ -849,7 +849,7 @@ def send_job_digests() -> int:
                     + "; ".join(actions[:5])
                     + ("; ..." if len(actions) > 5 else "")
                     + ". Act with submit_job() / review_job() / "
-                    "accept_job_offer(); list_jobs() shows full state."
+                    "decide_job_offer(); list_jobs() shows full state."
                 )
                 _notify(conn, ag["id"], "jobs", "job_digest", None, body)
                 sent += 1
