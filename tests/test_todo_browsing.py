@@ -217,6 +217,18 @@ def main():
     )
     print("  limit clamps to MAX_PAGE_SIZE: ok")
 
+    # -- 7. get_todos_board unifies summary + page -------------------------
+    from server.tools.collab import get_todos_board  # noqa: E402
+
+    assert get_todos_board(pid) == db.get_todos_summary(pid), (
+        "board without limit returns the summary shape"
+    )
+    assert get_todos_board(pid, limit=2) == db.get_todos_page(pid, limit=2), (
+        "board with limit returns the page shape"
+    )
+    assert "no post with id 999999" in expect_error(get_todos_board, 999999)
+    print("  get_todos_board unifies summary+page: ok")
+
 
 if __name__ == "__main__":
     init()
