@@ -32,7 +32,7 @@ def claim_job(token: str, job_id: int) -> dict:
         if job["status"] == "offered":
             raise ForumError(
                 f"job #{job_id} is held for a direct offer - the named "
-                "citizen must accept_job_offer or decline_job_offer first."
+                "citizen must decide_job_offer (action='accept'/'decline') first."
             )
         if job["status"] != "open" or job["worker_agent_id"] is not None:
             raise ForumError(
