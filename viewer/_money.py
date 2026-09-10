@@ -1015,7 +1015,8 @@ _ECONOMY_FLOW_LABELS = (
     ("burned_quarters", "burned (supply -)"),
     ("fees_in_quarters", "transaction fees in"),
     ("forfeit_intake_quarters", "forfeitures in"),
-    ("spend_intake_quarters", "tag, stake & job fees in"),
+    ("spend_intake_quarters", "spend intake (tags, stakes, jobs, store)"),
+    ("store_sink_quarters", "of which store in"),
     ("transfer_intake_quarters", "transfers in"),
     ("payout_returns_in_quarters", "clamped-earn returns in"),
     ("payouts_out_quarters", "earnings paid out"),
@@ -1725,6 +1726,48 @@ def _economy_body(request: Request) -> str:
     ):  # domain: degrade-silently - job escrow panel is optional enrichment
         _job_escrow_html = ""
 
+    # Citizen-store sales (store_stats) — display-only, degrade-silently
+    _store_html = ""
+    try:
+        _store = db.store_stats()
+        _st = _store["totals"]
+        _store_rows = "".join(
+            f"<tr><td>{esc(_i['label'])}</td>"
+            f"<td style='text-align:right'>{int(_i['units'])}</td>"
+            f"<td style='text-align:right'>{esc(_i['revenue_credits'])}</td>"
+            f"<td style='text-align:right'>{int(_i['buyers'])}</td>"
+            f"<td style='text-align:right'>{int(_i['units_7d'])}</td>"
+            f"<td style='text-align:right'>{int(_i['held'])}</td>"
+            f"<td style='text-align:right'>{esc(str(_i['price_credits']))}</td></tr>"
+            for _i in _store["items"]
+        )
+        _store_html = (
+            '<div class="panel"><h2>Citizen store</h2>'
+            "<p style='color:var(--muted);font-size:13px'>What the store sold — "
+            "units, revenue and buyers all-time plus trailing 7 days. Revenue is "
+            "exact in quarters; prices are current; blessed-bench revenue is netted "
+            "of quality-fail refunds. Held = currently in force (boosts, banks, "
+            "unlocks, colors, bios, pins, slots); one-shot sales read 0.</p>"
+            '<div style="display:flex;gap:12px;flex-wrap:wrap">'
+            + _card(_st["revenue_credits"], "store revenue (all time)", accent=True)
+            + _card(_st["revenue_7d_credits"], "store revenue (7d)")
+            + _card(str(_st["units"]), "units sold")
+            + _card(str(_st["buyers"]), "citizens bought")
+            + "</div>"
+            "<p style='color:var(--muted);font-size:13px'>Citizens served "
+            f"(ever bought): {int(_store['installed']['citizens_served'])}</p>"
+            "<table><thead><tr><th>item</th><th style='text-align:right'>sold</th>"
+            "<th style='text-align:right'>revenue</th>"
+            "<th style='text-align:right'>buyers</th>"
+            "<th style='text-align:right'>7d sold</th>"
+            "<th style='text-align:right'>held</th>"
+            "<th style='text-align:right'>price now</th></tr></thead><tbody>"
+            + _store_rows
+            + "</tbody></table></div>"
+        )
+    except Exception:  # domain: degrade-silently - store panel is optional enrichment
+        _store_html = ""
+
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
@@ -1747,6 +1790,7 @@ def _economy_body(request: Request) -> str:
         + '<div class="panel"><h2>Treasury flows</h2>'
         + flow_panels
         + "</div>"
+        + _store_html
         + '<div class="panel"><h2>Top holders</h2>'
         + holder_bar
         + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'

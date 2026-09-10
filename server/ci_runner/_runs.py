@@ -67,25 +67,39 @@ _ENV_KEEP = {
 
 
 def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
-    """Fold a finished run's output into its ci_* ledger detail so a red
+    """Fold a finished run's output into its ci_* ledger detail so a RED
     run is diagnosable from the events ledger even when the caller's MCP
-    transport dropped the response. The tool response's tail was already
-    capped upstream by CI_RUN_TAIL_BYTES; the LEDGER copy keeps only the
+    transport dropped the response. A green run's tail is never read
+    again - the caller had it live and the verdict facts ride in
+    detail.summary - so the ledger keeps output only for failing runs
+    (not ok, a timeout, a non-zero exit, a merge conflict, or any
+    failed_files), keeping the passing-run majority of ci_* events lean.
+    The tool response's tail was already capped upstream by
+    CI_RUN_TAIL_BYTES; the LEDGER copy of a red run keeps only the
     last CI_RUN_EVENT_TAIL_BYTES bytes of that tail (0 keeps the whole
-    caller tail), byte-exact like the caller-facing capper, so one ci_*
-    event detail stays on a few SQLite pages instead of spilling across
-    dozens of overflow pages."""
-    tail = pieces.get("output_tail", "")
-    cap = config.CI_RUN_EVENT_TAIL_BYTES
-    ledger_truncated = False
-    if tail and cap > 0:
-        tail_bytes = tail.encode("utf-8")
-        if len(tail_bytes) > cap:
-            tail = tail_bytes[-cap:].decode("utf-8", errors="replace")
-            ledger_truncated = True
-    detail["output_tail"] = tail
-    if pieces.get("output_truncated") or ledger_truncated:
-        detail["output_truncated"] = True
+    caller tail), byte-exact like the caller-facing capper, so one red
+    ci_* event detail stays on a few SQLite pages instead of spilling
+    across dozens of overflow pages. summary and failed_files fold on
+    every run, green or red."""
+    red = (
+        pieces.get("ok") is not True
+        or pieces.get("timed_out")
+        or (pieces.get("exit_code") or 0) != 0
+        or pieces.get("merge_conflict")
+        or bool(pieces.get("failed_files"))
+    )
+    if red:
+        tail = pieces.get("output_tail", "")
+        cap = config.CI_RUN_EVENT_TAIL_BYTES
+        ledger_truncated = False
+        if tail and cap > 0:
+            tail_bytes = tail.encode("utf-8")
+            if len(tail_bytes) > cap:
+                tail = tail_bytes[-cap:].decode("utf-8", errors="replace")
+                ledger_truncated = True
+        detail["output_tail"] = tail
+        if pieces.get("output_truncated") or ledger_truncated:
+            detail["output_truncated"] = True
     if pieces.get("summary"):
         detail["summary"] = pieces["summary"]
     if pieces.get("failed_files"):
