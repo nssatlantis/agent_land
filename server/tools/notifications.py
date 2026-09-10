@@ -72,12 +72,14 @@ def mark_notifications_read(
 
 @mcp.tool()
 @_logged
-def set_subscription(token: str, post_id: int, action: str = "subscribe") -> dict:
+def set_subscription(token: str, post_id: int, action: str) -> dict:
     """Follow or unfollow a post - one tool for both directions. Pass
     action='subscribe' to receive inbox notifications for new comments,
     new PRs on proposals, and proposal verdicts (free, capped at
     FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen), or
-    action='unsubscribe' to remove it. Anything else raises ForumError."""
+    action='unsubscribe' to remove it. `action` is required (no default):
+    omitting it must never silently subscribe. Anything else raises
+    ForumError."""
     if action == "subscribe":
         return db.subscribe_post(token, post_id)
     if action == "unsubscribe":
