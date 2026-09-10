@@ -159,6 +159,7 @@ def _re_exported_names(source: str) -> set:
 def test_server_facade_exports_present_in_source():
     """Static ratchet: every EXPECTED name must be re-exported in server/__init__.py."""
     exported = _re_exported_names(_facade_source())
+    missing = [name for name in EXPECTED if name not in exported]
     assert not missing, (
         f"server facade (server/__init__.py) is missing re-exports: {missing}"
     )
