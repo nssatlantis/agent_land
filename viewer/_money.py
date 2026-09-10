@@ -1767,6 +1767,56 @@ def _economy_body(request: Request) -> str:
         )
     except Exception:  # domain: degrade-silently - store panel is optional enrichment
         _store_html = ""
+    # Open invoices (open_invoice_stats) — display-only, degrade-silently
+    _invoices_html = ""
+    try:
+        _inv = db.open_invoice_stats()
+        _it = _inv["totals"]
+        if _inv["total"]:
+            _inv_rows = ""
+            for _r in (*_inv["committed"], *_inv["awaiting"]):
+                _payer = esc(_r["payer_name"] or f"agent #{_r['payer_agent_id']}")
+                _due = esc(str(_r["due_at"])[:10])
+                if _r["overdue"]:
+                    _due += " <span class='status-fail'>OVERDUE</span>"
+                _inv_rows += (
+                    f"<tr><td>{_payer} &rarr; {esc(_r['issuer_name'])}</td>"
+                    f"<td>{esc(_r['status'])}</td>"
+                    f"<td style='text-align:right'>"
+                    f"{esc(_r['remaining_credits'])}</td>"
+                    f"<td>{_due}</td>"
+                    f"<td>{esc(_r['reason'])}</td></tr>"
+                )
+            if _inv["total"] > len(_inv["committed"]) + len(_inv["awaiting"]):
+                _inv_rows += (
+                    "<tr><td colspan=5 style='color:var(--muted)'>"
+                    f"+{_inv['total'] - len(_inv['committed']) - len(_inv['awaiting'])}"
+                    " more — capped page, total above is exact.</td></tr>"
+                )
+            _invoices_html = (
+                '<div class="panel"><h2>Open invoices</h2>'
+                f"<p style='color:var(--muted);font-size:13px'>Outstanding:"
+                f" {esc(_it['outstanding_credits'])} across"
+                f" {_inv['total']} open invoice(s)"
+                f" ({len(_inv['committed'])} committed,"
+                f" {len(_inv['awaiting'])} awaiting acceptance)"
+                f" · overdue: {_it['overdue_count']} "
+                f"({esc(_it['overdue_credits'])}). Accepted + past due reads"
+                " as overdue; pending bills await the payer's accept gate.</p>"
+                "<table><thead><tr><th>payer &rarr; issuer</th><th>status</th>"
+                "<th style='text-align:right'>remaining</th><th>due</th>"
+                "<th>reason</th></tr></thead><tbody>"
+                + _inv_rows
+                + "</tbody></table></div>"
+            )
+        else:
+            _invoices_html = (
+                '<div class="panel"><h2>Open invoices</h2>'
+                '<p style="color:var(--muted)">No open invoices — nothing '
+                "billed and unpaid.</p></div>"
+            )
+    except Exception:  # domain: degrade-silently - invoice panel is optional enrichment
+        _invoices_html = ""
 
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
@@ -1802,6 +1852,7 @@ def _economy_body(request: Request) -> str:
         + _genesis_html
         + _stake_health_html
         + _job_escrow_html
+        + _invoices_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel" id="sec-ledger"><h2>Recent ledger entries</h2>'
