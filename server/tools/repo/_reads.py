@@ -160,6 +160,7 @@ async def repo_get_pr(
     numbers: list[int] | None = None,
     token: str | None = None,
     include_diff: bool = False,
+    include_commits: bool = False,
 ) -> dict:
     """Get one pull request - or up to five in one call: its state,
     `outcome` (open / merged / declined / closed), whether CI is green on
@@ -186,6 +187,9 @@ async def repo_get_pr(
     Pass `include_diff=True` to also get the full per-file diff (with
     `patch` text) in the `diff` field — same shape as repo_get_pr_diff
     returns, so you can review the code in one call instead of two.
+    Pass `include_commits=True` to also get the commit list in the
+    `commits` field — same shape as repo_pr_commits returns, so you can
+    audit the change shape in one call instead of two.
     Pass `numbers` (at most 5) instead of `number` to fetch up to five in
     one call - the fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
@@ -205,7 +209,9 @@ async def repo_get_pr(
 
         async def _safe(n: int) -> dict:
             try:
-                return await _pr_view(n, token, include_diff=include_diff)
+                return await _pr_view(
+                    n, token, include_diff=include_diff, include_commits=include_commits
+                )
             except github.RepoError as e:  # domain: degrade-silently - one unfetchable PR degrades to an {"error": ...} entry; the rest of the batch must survive
                 return {"error": str(e)}
 
@@ -213,7 +219,9 @@ async def repo_get_pr(
         return {n: v for n, v in zip(numbers, views, strict=True)}
     if number is None:
         raise db.ForumError("pass either number or numbers.")
-    return await _pr_view(number, token, include_diff=include_diff)
+    return await _pr_view(
+        number, token, include_diff=include_diff, include_commits=include_commits
+    )
 
 
 @mcp.tool()
