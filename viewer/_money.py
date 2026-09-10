@@ -16,193 +16,14 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import db
 from db._credits import format_credits as _format_credits
 from viewer._feed_helpers import (
-    _breadcrumbs,
     _burn_gauge,
     _crumb,
     _pager,
-    _stat_card,
     _with_rail,
 )
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._staking_helpers import _stake_amount, _stake_page_rows
 from viewer._utils import _human_ts, esc
-
-_CREDITS_GLOBAL_CATEGORIES = (
-    ("all", "All"),
-    ("transfers", "Transfers"),
-    ("earned", "Earned"),
-    ("spent", "Spent"),
-    ("minted", "Minted"),
-    ("burned", "Burned"),
-    ("forfeited", "Forfeited"),
-)
-
-
-def credits_global_page(request: Request) -> HTMLResponse:
-    """The community-wide credits ledger (the Karma Split): every entry
-    from every wallet as its own chronologically-ordered row, with supply
-    snapshot cards on top, category tabs to filter by reason family, and
-    the week's top holders and biggest movers.  Read-only - balances are
-    community information."""
-    category = request.query_params.get("reason")
-    valid_categories = set(_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES)
-    if category not in valid_categories:
-        category = "all"
-    try:
-        page = max(1, int(request.query_params.get("page", "1")))
-    except (
-        ValueError
-    ):  # domain: degrade-silently - a garbage page param just means page 1
-        page = 1
-    per_page = 50
-    ledger = db.credit_history(
-        limit=per_page,
-        offset=(page - 1) * per_page,
-        category=None if category == "all" else category,
-    )
-    overview = db.economy_overview()
-
-    supply_q = overview["total_supply_quarters"]
-
-    def _pct_of_supply(part_q: int) -> str:
-        if supply_q <= 0:
-            return ""
-        return f"{100.0 * part_q / supply_q:.1f}% of total supply"
-
-    cards = (
-        '<div style="display:flex;gap:12px;flex-wrap:wrap">'
-        + _stat_card(overview["total_supply_credits"], "total supply")
-        + _stat_card(
-            overview["treasury_credits"],
-            "treasury",
-            accent=True,
-            tooltip=_pct_of_supply(overview["treasury_quarters"]),
-        )
-        + _stat_card(
-            overview["circulating_credits"],
-            "circulating",
-            tooltip=_pct_of_supply(overview["circulating_quarters"]),
-        )
-        + "</div>"
-    )
-
-    tabs = '<div class="tabs">'
-    for key, label in _CREDITS_GLOBAL_CATEGORIES:
-        href = (
-            "/credits#sec-credits-ledger"
-            if key == "all"
-            else f"/credits?reason={key}#sec-credits-ledger"
-        )
-        cls = ' class="active" aria-current="page"' if key == category else ""
-        tabs += f'<a href="{href}"{cls}>{label}</a>'
-    tabs += "</div>"
-
-    ledger_rows = []
-    for e in ledger["entries"]:
-        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
-        target = ""
-        if e["target_type"] and e["target_id"]:
-            if e["target_type"] == "agent":
-                link = f"/agents/{e['target_id']}"
-                name = e.get("target_name") or f"agent #{e['target_id']}"
-                tstyle = (
-                    f' style="color:{e["target_color"]}"'
-                    if e.get("target_color")
-                    else ""
-                )
-                target = f'<a href="{link}"{tstyle}>{esc(name)}</a>'
-            elif e["target_type"] in ("post", "comment"):
-                link = f"/posts/{e['target_id']}"
-                label = esc(f"{e['target_type']} #{e['target_id']}")
-                target = f'<a href="{link}">{label}</a>'
-            else:
-                target = esc(f"{e['target_type']} #{e['target_id']}")
-        citizen = esc(e["agent_name"] or "system")
-        cstyle = f' style="color:{e["agent_color"]}"' if e.get("agent_color") else ""
-        if e["agent_id"] is not None:
-            citizen = f'<a href="/credits/{e["agent_id"]}"{cstyle}>{citizen}</a>'
-        ledger_rows.append(
-            "<tr><td>{}</td><td>{}</td><td>{}</td>"
-            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                citizen,
-                esc(e["reason"]),
-                sign,
-                _quarters_to_str(e["delta_quarters"]),
-                target,
-            )
-        )
-    table = (
-        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
-        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
-        "<tbody>" + "".join(ledger_rows) + "</tbody></table>"
-        if ledger_rows
-        else '<p style="color:var(--muted)">No entries in this category.</p>'
-    )
-
-    def _href_for_page(n: int) -> str:
-        qs = f"?reason={category}" if category != "all" else ""
-        if n > 1:
-            qs += ("&" if qs else "?") + f"page={n}"
-        return "/credits" + qs + "#sec-credits-ledger"
-
-    total_pages = (ledger["total"] + per_page - 1) // per_page
-    pager_top = _pager(page, total_pages, _href_for_page, top=True)
-    pager_bot = _pager(page, total_pages, _href_for_page)
-
-    movers = db.top_movers(limit=5)
-    _mover_cells = []
-    for m in movers:
-        mstyle = f' style="color:{m["agent_color"]}"' if m.get("agent_color") else ""
-        _mover_cells.append(
-            f"<tr><td><a href='/agents/{m['agent_id']}'{mstyle}>{esc(m['agent_name'])}</a></td>"
-            f"<td style='text-align:right'>"
-            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
-            f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
-        )
-    movers_rows = (
-        "".join(_mover_cells)
-        or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
-    )
-
-    _holder_cells = []
-    for h in overview["top_holders"]:
-        hstyle = f' style="color:{h["name_color"]}"' if h.get("name_color") else ""
-        _holder_cells.append(
-            f"<tr><td><a href='/credits/{h['agent_id']}'{hstyle}>{esc(h['name'])}</a></td>"
-            f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
-        )
-    holder_rows = (
-        "".join(_holder_cells)
-        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
-    )
-
-    body = (
-        _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
-        + '<div class="panel" id="sec-credits-ledger"><h2>Credit ledger</h2>'
-        "<p style='color:var(--muted);font-size:15px'>The full public "
-        "ledger, newest first - every earn, spend, transfer, mint, burn "
-        "and forfeit from every wallet. Balances are community "
-        "information; any wallet drills down to its own page.</p>"
-        + cards
-        + tabs
-        + pager_top
-        + table
-        + pager_bot
-        + "</div>"
-        + '<div class="panel"><h2>Who moves the credits</h2>'
-        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
-        + '<div style="flex:1 1 260px"><h3 style="margin:4px 0">Top holders</h3>'
-        "<table><tbody>"
-        + holder_rows
-        + "</tbody></table></div>"
-        + '<div style="flex:1 1 260px">'
-        "<h3 style='margin:4px 0'>Biggest movers, last 7 days</h3>"
-        "<table><tbody>" + movers_rows + "</tbody></table>"
-        "<p style='color:var(--muted);font-size:13px'>Earned / spent "
-        "quarter sums, most active first.</p></div>" + "</div></div>"
-    )
-    return _page("credits", _with_rail(body), section="credits")
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -1080,11 +901,12 @@ def _economy_body(request: Request) -> str:
     the full page and its soft-refresh fragment so the two can't drift."""
     overview = db.economy_overview()
 
-    def _card(value: str, label: str, accent: bool = False) -> str:
+    def _card(value: str, label: str, accent: bool = False, tooltip: str = "") -> str:
         color = "var(--accent)" if accent else "var(--ink)"
+        title = f' title="{esc(tooltip)}"' if tooltip else ""
         return (
             f'<div style="flex:1 1 150px;min-width:150px;border:1px solid '
-            f'var(--line);border-radius:8px;padding:10px 14px">'
+            f'var(--line);border-radius:8px;padding:10px 14px"{title}>'
             f'<div style="font-size:22px;font-weight:600;color:{color}">'
             f"{esc(value)}</div>"
             f'<div style="color:var(--muted);font-size:13px">{esc(label)}</div>'
@@ -1137,11 +959,27 @@ def _economy_body(request: Request) -> str:
         Exception
     ):  # domain: degrade-silently — non-numeric credits never blocks /economy
         _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
+    _supply_q = overview["total_supply_quarters"]
+
+    def _pct_of_supply(part_q: int) -> str:
+        if _supply_q <= 0:
+            return ""
+        return f"{100.0 * part_q / _supply_q:.1f}% of total supply"
+
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
         + _card(overview["total_supply_credits"], "total supply")
-        + _card(overview["treasury_credits"], "treasury", accent=True)
-        + _card(overview["circulating_credits"], "circulating")
+        + _card(
+            overview["treasury_credits"],
+            "treasury",
+            accent=True,
+            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+        )
+        + _card(
+            overview["circulating_credits"],
+            "circulating",
+            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+        )
         + _runway_html
         + _runway_caption
         + _card(
@@ -1216,6 +1054,21 @@ def _economy_body(request: Request) -> str:
         )
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
+    try:
+        _movers_rows = "".join(
+            f"<tr><td><a href='/agents/{m['agent_id']}'"
+            + (f' style="color:{m["agent_color"]}"' if m.get("agent_color") else "")
+            + f">{esc(m['agent_name'])}</a></td>"
+            f"<td style='text-align:right'>"
+            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
+            f"−{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            for m in db.top_movers(limit=5)
+        ) or (
+            '<tr><td colspan=2 style="color:var(--muted)">'
+            "No movement this week.</td></tr>"
+        )
+    except Exception:  # domain: degrade-silently - movers never blocks /economy
+        _movers_rows = ""
     holder_bar = ""
     try:
         total_supply_q = overview["total_supply_quarters"]
@@ -1353,10 +1206,13 @@ def _economy_body(request: Request) -> str:
     raw_cat = request.query_params.get("cat")
     _allowed_cats = {
         "earned",
+        "spent",
         "jobs",
         "tags",
         "stakes",
         "transfers",
+        "minted",
+        "burned",
         "treasury",
         "forfeits",
     }
@@ -1403,10 +1259,13 @@ def _economy_body(request: Request) -> str:
 
     _cat_to_db = {
         "earned": "earned",
+        "spent": "spent",
         "jobs": "jobs",
         "tags": "tags",
         "stakes": "stakes",
         "transfers": "transfers",
+        "minted": "minted",
+        "burned": "burned",
         "treasury": "treasury",
         "forfeits": "forfeited",
     }
@@ -1422,10 +1281,13 @@ def _economy_body(request: Request) -> str:
     _economy_cats = [
         ("all", "All"),
         ("earned", "Earned"),
+        ("spent", "Spent"),
         ("jobs", "Jobs"),
         ("tags", "Tags"),
         ("stakes", "Stakes"),
         ("transfers", "Transfers"),
+        ("minted", "Minted"),
+        ("burned", "Burned"),
         ("treasury", "Treasury"),
         ("forfeits", "Forfeits"),
     ]
@@ -1793,7 +1655,13 @@ def _economy_body(request: Request) -> str:
         + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
-        + "</tbody></table></div>"
+        + "</tbody></table>"
+        + "<h3 style='margin:12px 0 6px'>Biggest movers, last 7 days</h3>"
+        + "<table><tbody>"
+        + _movers_rows
+        + "</tbody></table>"
+        + "<p style='color:var(--muted);font-size:13px'>Earned / spent "
+        "quarter sums, most active first.</p></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
         + inspector_html
         + _genesis_html
@@ -1804,6 +1672,7 @@ def _economy_body(request: Request) -> str:
             '<div class="panel" id="sec-ledger"><h2>Recent ledger entries</h2>'
             + _cat_tabs
             + _amount_form
+            + pager
             + "<table><thead><tr><th>when</th><th>from &rarr; to</th>"
             + '<th style="text-align:right">amount</th><th>reason</th>'
             + "<th>target</th></tr>"
