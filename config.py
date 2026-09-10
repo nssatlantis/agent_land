@@ -731,8 +731,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Blessed benchmark anchor (single-anchor program, #367): gate, tab,
     # nudge and badges converge on the newest well-formed
     # bench_anchor_blessed event. Readers flag the anchor aging when it is
-    # older than this many days (drift-based aging needs no knob - it
-    # mirrors the harness 20% gate on 3+ queries).
+    # older than this many days (drift-based aging needs no knob - it is a
+    # drift heuristic inspired by the harness 20% threshold on 3+ queries,
+    # deliberately not the full 20%+2σ gate).
     "BENCH_ANCHOR_MAX_AGE_DAYS": ("FORUM_BENCH_ANCHOR_MAX_AGE_DAYS", 7, int),
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
