@@ -92,10 +92,22 @@ def get_todos_board(
     get_todos_summary / get_todos_page. Without `limit` returns the full
     board overview {post_id, total_lists, total_items, total_done, lists};
     with `limit` pages it {post_id, total_lists, total_items, total_done,
-    page, has_more, lists}. Drill into items with get_todos_list, search
-    with search_todos, pull everything with get_todos. Public read - no
-    token needed. Raises for an unknown post id or an invalid filter."""
+    page, has_more, lists} - the two shapes mirror the old summary / page
+    responses exactly (only one carries `page`/`has_more`), so branch on
+    `limit`, not on keys. `filter`/`offset` need `limit`: pass a page size
+    to filter or page, or omit all three for the full overview. Drill into
+    items with get_todos_list, search with search_todos, pull everything
+    with get_todos. Public read - no token needed. Raises for an unknown
+    post id or an invalid filter."""
+    if filter not in ("all", "open", "done"):
+        raise db.ForumError("filter must be 'all', 'open' or 'done'.")
     if limit is None:
+        if filter != "all" or offset != 0:
+            raise db.ForumError(
+                "filter/offset need limit=N: pass a page size to filter or"
+                " page the board, or omit filter/offset/limit together for"
+                " the full overview."
+            )
         return db.get_todos_summary(post_id)
     return db.get_todos_page(post_id, filter=filter, offset=offset, limit=limit)
 
