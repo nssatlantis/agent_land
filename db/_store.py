@@ -29,6 +29,7 @@ from db._credits import (
     balance_for,
     exact_from_credits,
     format_credits,
+    grant,
     spend,
 )
 
@@ -92,6 +93,17 @@ _BOOST_ITEMS: dict[str, tuple[str, str, str, str, str, str | None]] = {
         "Post cooldown skip (banked)",
         None,
     ),
+    # A banked blessed benchmark run: the hourly anchor tick spends one
+    # banked run at a time by dispatching a fresh quiet native bench and
+    # blessing it (quality-fail auto-refunds). A bank, like post_skip.
+    "blessed_bench": (
+        "blessed_benches",
+        "STORE_BLESSED_BENCH_PRICE",
+        "STORE_BLESSED_BENCH_MAX",
+        "store_blessed_bench",
+        "Blessed benchmark run (banked)",
+        None,
+    ),
 }
 
 _ALL_ITEMS = (
@@ -101,6 +113,7 @@ _ALL_ITEMS = (
     "mailbox_boost",
     "sub_boost",
     "post_skip",
+    "blessed_bench",
     "name_color",
     "pin",
     "poll",
@@ -118,6 +131,7 @@ _ZERO_ENTITLEMENTS = {
     "sub_bonus": 0,
     "post_skips": 0,
     "post_skip_used_at": None,
+    "blessed_benches": 0,
     "name_color": None,
     "notes_unlocked": 0,
     "draft_slots": 0,
@@ -126,7 +140,7 @@ _ZERO_ENTITLEMENTS = {
 
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
-    " sub_bonus, post_skips, post_skip_used_at, name_color,"
+    " sub_bonus, post_skips, post_skip_used_at, blessed_benches, name_color,"
     " notes_unlocked, draft_slots, bio"
 )
 
@@ -198,6 +212,67 @@ def _consume_post_skip(conn: sqlite3.Connection, agent_id: int) -> None:
         " post_skip_used_at = ? WHERE agent_id = ?",
         (_utc_date(), agent_id),
     )
+
+
+def _find_blessed_bench_buyer(conn: sqlite3.Connection) -> int | None:
+    """One citizen holding a banked blessed run, or None. Deterministic
+    (lowest agent id) so the hourly tick spends fairly; at most one spend
+    per tick, so buyers queue instead of stampeding the pool."""
+    row = conn.execute(
+        "SELECT agent_id FROM store_entitlements"
+        " WHERE blessed_benches > 0 ORDER BY agent_id LIMIT 1",
+    ).fetchone()
+    return int(row["agent_id"]) if row else None
+
+
+def _take_blessed_bench(conn: sqlite3.Connection, agent_id: int) -> None:
+    """Spend one banked blessed run inside the caller's transaction —
+    refuses when the bank is empty (the tick checks first via the finder,
+    so this is the race guard, not the UX path)."""
+    cur = conn.execute(
+        "UPDATE store_entitlements SET blessed_benches = blessed_benches - 1"
+        " WHERE agent_id = ? AND blessed_benches > 0",
+        (agent_id,),
+    )
+    if cur.rowcount == 0:
+        raise ForumError("no banked blessed benchmark run to spend.")
+
+
+def restore_blessed_bench(conn: sqlite3.Connection, agent_id: int) -> None:
+    """Give back a taken banked run after an infrastructure failure (the
+    dispatch never produced a run to judge, so the attempt never really
+    happened — no credit movement, the purchase still holds its run)."""
+    conn.execute(
+        "UPDATE store_entitlements SET blessed_benches = blessed_benches + 1"
+        " WHERE agent_id = ?",
+        (agent_id,),
+    )
+
+
+def refund_blessed_bench(
+    agent_id: int, *, conn: sqlite3.Connection | None = None
+) -> dict:
+    """Return the blessed-run price after a quality-failed attempt (the run
+    never blessed, so the buyer keeps nothing but the numbers to read).
+    Treasury-funded like all earnings; the bank stays spent — one attempt
+    per purchase, re-buy to retry."""
+    amount_q = exact_from_credits(
+        config.STORE_BLESSED_BENCH_PRICE, what="STORE_BLESSED_BENCH_PRICE"
+    )
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        if not grant(
+            agent_id,
+            amount_q,
+            "store_blessed_bench_refund",
+            target_type="store",
+            conn=c,
+        ):
+            raise ForumError("treasury cannot fund the blessed-run refund.")
+        return {
+            "status": "refunded",
+            "price": format_credits(amount_q),
+            "balance": format_credits(balance_for(c, agent_id)),
+        }
 
 
 def _bonus(
@@ -525,7 +600,7 @@ def buy_store_item(
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
     spends recycle into the treasury (dest_treasury sink); refunds are not
-    a thing. Suspended/banned citizens are refused — a purchase is a write."""
+    a thing (except blessed-bench quality-fail auto-refunds). Suspended/banned citizens are refused — a purchase is a write."""
     if not config.STORE_ENABLED:
         raise ForumError("the citizen store is closed.")
     if item not in _ALL_ITEMS:

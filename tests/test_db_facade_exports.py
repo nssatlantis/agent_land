@@ -23,8 +23,8 @@ EXPECTED = [
     "ci_usage_for",
     "ci_kind_status",
     # benchmark anchor blessing
-    "bench_anchor_tick",
-    "bless_bench_anchor",
+    "bench_heartbeat_due",
+    "bless_heartbeat_run",
     "bench_history",
     # core infrastructure (full db/_core surface after the package split)
     "ForumError",
@@ -78,6 +78,7 @@ EXPECTED = [
     # citizen store
     "buy_store_item",
     "get_store_catalog",
+    "refund_blessed_bench",
     "effective_vote_cap",
     "draft_save",
     "draft_publish",

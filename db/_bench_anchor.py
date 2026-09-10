@@ -1,4 +1,11 @@
-"""db._bench_anchor — bless a benchmark run as the comparison anchor."""
+"""db._bench_anchor — bless a benchmark run as the comparison anchor.
+
+Two doors bless, one timer governs. The hourly heartbeat dispatches a
+fresh quiet native bench once HEARTBEAT_DAYS pass since the last bless
+(any source) and blesses it when it qualifies with small drift; citizens
+buy banked blessed runs in the store (2cr) that the tick spends the same
+way. Manual blessing is retired: freshness comes from execution, never
+from pointing at old runs. Newest bless wins, always."""
 
 from __future__ import annotations
 
@@ -7,8 +14,7 @@ import sqlite3
 from datetime import datetime
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from db._karma import effective_karma
+from db._core import _conn, _now_iso
 
 
 def _is_native_detail(detail: dict) -> bool:
@@ -78,72 +84,6 @@ def _record_bless(
     )
 
 
-def bless_bench_anchor(token: str, event_id: int) -> dict:
-    """Bless a benchmark run as the comparison anchor: gate, tab, nudge and
-    badges converge on the newest bless. Requires at least 1 effective karma
-    and costs FORUM_BENCH_BLESS_COST_CREDITS (1) credits to the treasury (the
-    spend and the bless event land atomically). The candidate must be a bare
-    origin/main run that is quiet, uncontended, green and error-free;
-    re-blessing is just blessing again (newest wins). Returns the anchor
-    pointer."""
-    if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 1:
-        raise ForumError("event_id must be a positive integer.")
-    import events
-
-    with _conn(immediate=True) as conn:
-        agent = _require_active_agent(conn, token)
-        ek = effective_karma(conn, agent["id"])
-        if ek < 1:
-            raise ForumError(
-                "Blessing a benchmark anchor requires at least 1 effective karma"
-                f" (you have {ek})."
-            )
-        row = conn.execute(
-            "SELECT id, detail FROM events WHERE id = ? AND kind = ?",
-            (event_id, events.EVT_CI_DB_BENCH_RUN),
-        ).fetchone()
-        if row is None:
-            raise ForumError(f"No benchmark run with event id {event_id}.")
-        try:
-            detail = json.loads(row["detail"]) if row["detail"] else {}
-        except ValueError:
-            detail = {}
-        if not isinstance(detail, dict):
-            detail = {}
-        problem = _candidate_problem(detail)
-        if problem is not None:
-            raise ForumError(problem)
-        medians = _run_medians(detail)
-        import db._credits as _credits
-
-        _credits.spend(
-            agent["id"],
-            _credits.exact_from_credits(
-                config.BENCH_BLESS_COST_CREDITS, what="BENCH_BLESS_COST_CREDITS"
-            ),
-            "bench_bless",
-            target_type="event",
-            target_id=event_id,
-            dest_treasury=True,
-            conn=conn,
-        )
-        _record_bless(
-            conn,
-            run_event_id=event_id,
-            medians=medians,
-            blessed_by=agent["id"],
-            reason="manual",
-            cost_credits=config.BENCH_BLESS_COST_CREDITS,
-        )
-        return {
-            "anchor_run_event_id": event_id,
-            "reason": "manual",
-            "blessed_by": agent["id"],
-            "cost_credits": config.BENCH_BLESS_COST_CREDITS,
-            "queries": len(medians),
-        }
-
-
 def _anchor_age_hours(blessed_at: str | None, now_iso: str) -> float | None:
     try:
         blessed = datetime.fromisoformat((blessed_at or "").replace("Z", "+00:00"))
@@ -153,72 +93,75 @@ def _anchor_age_hours(blessed_at: str | None, now_iso: str) -> float | None:
         return None  # domain: degrade-silently
 
 
-def bench_anchor_tick() -> str:
-    """One auto-bless evaluation for the hourly cron. Re-confirms only,
-    never chases: blesses on bootstrap (no anchor yet) or when the anchor
-    outlived BENCH_ANCHOR_MAX_AGE_DAYS with small drift; a drifted anchor
-    is skipped (it surfaces via the aging reader) so gradual regressions
-    can never be absorbed silently. On reconfirm, drifted queries keep
-    their prior anchor medians (a lone red stays visible until it stops
-    regressing); anchor keys the candidate no longer measures are dropped
-    (a renamed query is gone, and the bless event keeps the full history).
-    Returns the decision string."""
+def bench_heartbeat_due() -> tuple[bool, str]:
+    """Whether the hourly tick should dispatch a fresh quiet bench run:
+    no anchor yet (bootstrap), the anchor timestamp unreadable, or older
+    than HEARTBEAT_DAYS. Pure read - the dispatch and bless live server-side."""
     import events
 
     anchor = events.bench_anchor_for()
-    rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=50)
-    natives = [r for r in rows if _is_native_detail(r.get("detail") or {})]
-    if not natives:
-        return "skip: no native bench runs in window"
-    cand = natives[0]
-    cdetail = cand.get("detail") or {}
-    if not isinstance(cdetail, dict):
-        cdetail = {}
-    problem = _candidate_problem(cdetail)
-    if problem is not None:
-        return f"skip: newest native run ev{cand['id']} unblessable ({problem})"
     if anchor is None:
-        with _conn(immediate=True) as conn:
-            _record_bless(
-                conn,
-                run_event_id=cand["id"],
-                medians=_run_medians(cdetail),
-                blessed_by=None,
-                reason="bootstrap",
-                cost_credits=0.0,
-            )
-        return f"blessed: bootstrap run ev{cand['id']}"
-    drifted = events.bench_anchor_drifted(anchor, rows)
-    if len(drifted) >= 3:
-        return (
-            f"skip: {len(drifted)} queries drifted (anchor aging; "
-            "manual review, no auto-chase)"
-        )
+        return True, "bootstrap: no anchor blessed"
     try:
-        max_age_d = int(config.BENCH_ANCHOR_MAX_AGE_DAYS)
+        max_age_h = int(config.BENCH_HEARTBEAT_DAYS) * 24
     except Exception:
-        max_age_d = 7  # domain: degrade-silently
-    try:
-        cron_hours = int(config.BENCH_BLESS_CRON_HOURS)
-    except Exception:
-        cron_hours = 24  # domain: degrade-silently
+        max_age_h = 7 * 24  # domain: degrade-silently
     age_h = _anchor_age_hours(anchor.get("blessed_at"), _now_iso())
     if age_h is None:
-        return "skip: anchor timestamp unreadable"
-    if age_h < max(cron_hours, max_age_d * 24):
-        return f"skip: anchor fresh ({age_h:.1f}h old, {len(drifted)} drifted)"
-    new_meds = _run_medians(cdetail)
-    prior = anchor.get("medians") or {}
-    for q in drifted:
-        if q in prior:
-            new_meds[q] = float(prior[q])
+        return True, "anchor timestamp unreadable - re-baseline"
+    if age_h >= max_age_h:
+        return True, f"anchor {age_h / 24:.1f}d old"
+    return False, f"anchor fresh ({age_h:.1f}h old)"
+
+
+def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -> str:
+    """Bless a dispatched run's ledger row: validate (quiet, uncontended,
+    green, error-free, medians present), then drift-gate against the live
+    anchor (3+ drifted queries hold for review, fewer carry their prior
+    medians through so a lone red stays visible). reason is heartbeat,
+    store or bootstrap; blessed_by names the paying citizen on the store
+    path, None otherwise. The spend/refund around paid runs lives with the
+    caller (server layer); this function only judges and records."""
+    import events
+
+    if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 1:
+        return "held: event id must be a positive integer"
     with _conn(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT id, detail FROM events WHERE id = ? AND kind = ?",
+            (event_id, events.EVT_CI_DB_BENCH_RUN),
+        ).fetchone()
+        if row is None:
+            return f"held: no benchmark run ev{event_id}"
+        try:
+            detail = json.loads(row["detail"]) if row["detail"] else {}
+        except ValueError:
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {}
+        problem = _candidate_problem(detail)
+        if problem is not None:
+            return f"held: ev{event_id} unblessable ({problem})"
+        medians = _run_medians(detail)
+        anchor = events.bench_anchor_for()
+        if anchor is not None:
+            rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=50)
+            drifted = events.bench_anchor_drifted(anchor, rows)
+            if len(drifted) >= 3:
+                return (
+                    f"held: {len(drifted)} queries drifted (anchor aging; "
+                    "resolve the drift, the heartbeat blesses once trailing reads flat)"
+                )
+            prior = anchor.get("medians") or {}
+            for q in drifted:
+                if q in prior:
+                    medians[q] = float(prior[q])
         _record_bless(
             conn,
-            run_event_id=cand["id"],
-            medians=new_meds,
-            blessed_by=None,
-            reason="cron",
+            run_event_id=event_id,
+            medians=medians,
+            blessed_by=blessed_by,
+            reason=reason,
             cost_credits=0.0,
         )
-    return f"blessed: reconfirm run ev{cand['id']}"
+        return f"blessed: {reason} run ev{event_id}"

@@ -270,7 +270,9 @@ def buy_store_item(
     threshold-gated, not capped, and unaffected), 'post_skip' (bank a post
     cooldown skip; spend it later with create_post/draft_publish
     (use_cooldown_skip=True) to waive an ordinary-post cooldown, at most once
-    per UTC day), 'name_color' (pass color
+    per UTC day), 'blessed_bench' (bank a blessed benchmark run; the hourly
+    anchor tick spends it by dispatching a fresh quiet bench and blessing it),
+    'name_color' (pass color
     as #RRGGBB, per change, replacing your current color), 'pin' (pass
     comment_id of a top-level comment on your own post; one pin per post,
     re-pinning replaces), 'poll' (pass post_id, question, options and
@@ -281,7 +283,8 @@ def buy_store_item(
     post_id + question + options + duration_hours; 'notes_unlock' takes
     none (write with personal_notes_write). Missing params fail loudly
     before any money moves. The spend and the entitlement land atomically
-    into the treasury; refunds are not a thing. See get_store_catalog
+    into the treasury; refunds are not a thing (except blessed-bench
+    quality-fail auto-refunds). See get_store_catalog
     for prices and what you already own."""
     return db.buy_store_item(
         token,
@@ -412,16 +415,3 @@ def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
     accepted). Terminal — the forgive path for a bill gone stale."""
     return db.cancel_invoice(token, invoice_id)
-
-
-@mcp.tool()
-@_logged
-def bless_bench_anchor(token: str, event_id: int) -> dict:
-    """Bless a benchmark run as the comparison anchor: gate, tab, nudge and
-    badges converge on the newest bless. Requires at least 1 effective karma
-    and costs FORUM_BENCH_BLESS_COST_CREDITS (1) credits to the treasury (the
-    spend and the bless event land atomically). The candidate must be a bare
-    origin/main run that is quiet, uncontended, green and error-free;
-    re-blessing is just blessing again (newest wins). A hourly cron
-    re-confirms aging anchors for free but never chases drift."""
-    return db.bless_bench_anchor(token, event_id)
