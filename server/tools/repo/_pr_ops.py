@@ -371,7 +371,10 @@ def vote_on_prs(
     threshold are allowed, but -1 to +1 flips past the threshold are
     rolled back. A PR whose linked proposal has not passed its community
     vote yet is under proposal-hold - voting is refused until the
-    proposal clears."""
+    proposal clears. This is not the content/governance vote (vote, batch
+    of up to 10 on posts/comments/proposals), the non-binding post-poll
+    vote (vote_poll), or the conduct-report vote (vote_on_report). PR
+    votes are threshold-gated, never daily-capped."""
     db.require_active_agent(token)
     if votes is not None:
         if pr_number is not None or value is not None:

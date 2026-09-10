@@ -41,7 +41,10 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     """Vote 'suspend' or 'clear' on an open report - action must be exactly
     one of those two lowercase words. Voting again replaces your
     earlier vote on that report. The reporter and the reported author can't
-    vote on it. See list_reports() for the open docket."""
+    vote on it. See list_reports() for the open docket. This is not the
+    content/governance vote (vote), the pull-request vote (vote_on_prs),
+    or the non-binding post-poll vote (vote_poll); report votes sit
+    outside the daily vote cap."""
     return reports.vote_on_report(token, report_id, action)
 
 
