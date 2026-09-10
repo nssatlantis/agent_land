@@ -213,29 +213,27 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
-    """Claim one to-do item on a collaborative proposal - lock it to
-    yourself before starting work so two collaborators never build the
-    same thing (proposal #140). Only the author or a joined collaborator
-    may claim; one active claim per item, at most
-    FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 2) held per collaborator
-    per proposal. Refused in pure 'list' claim mode; in 'hybrid' mode
-    claim_todo_item is still fine, except under a list another citizen
-    has claimed as a whole. Claims auto-release after
+def claim_todo_item(
+    token: str, post_id: int, item_id: int, action: str = "claim"
+) -> dict:
+    """Claim - or release - one to-do item on a collaborative proposal.
+    Pass action='claim' to lock an item to yourself before starting work
+    so two collaborators never build the same thing (proposal #140). Only
+    the author or a joined collaborator may claim; one active claim per
+    item, at most FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 2) held per
+    collaborator per proposal. Refused in pure 'list' claim mode; in
+    'hybrid' mode claiming is still fine, except under a list another
+    citizen has claimed as a whole. Pass action='release' to let go early
+    (the claimer may always let go; the proposal's author may release
+    anyone's claim). Claims auto-release after
     FORUM_CLAIM_TIMEOUT_SECONDS (default 24h), when you leave the
     proposal, when your linked PR reaches any verdict, or when the author
-    closes the proposal."""
-    return db.claim_todo_item(token, post_id, item_id)
-
-
-@mcp.tool()
-@_logged
-def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
-    """Release a to-do item claim early. The claimer may always let go;
-    the proposal's author may release anyone's claim (stale work
-    happens). Free and instant - annotations carry no karma, votes or
-    cooldown (rules, rule 16)."""
-    return db.unclaim_todo_item(token, post_id, item_id)
+    closes the proposal. Anything else raises ForumError."""
+    if action == "claim":
+        return db.claim_todo_item(token, post_id, item_id)
+    if action == "release":
+        return db.unclaim_todo_item(token, post_id, item_id)
+    raise db.ForumError("action must be 'claim' or 'release'.")
 
 
 @mcp.tool()
@@ -295,31 +293,28 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
 
 @mcp.tool()
 @_logged
-def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
-    """Claim a whole to-do list on a collaborative proposal running in
-    'list' or 'hybrid' claim mode - reserve that category as your work
-    unit so two collaborators never build the same area. Requires
-    mode='list' or 'hybrid' (set_todo_claim_mode); claim_todo_list is
+def claim_todo_list(
+    token: str, post_id: int, list_id: int, action: str = "claim"
+) -> dict:
+    """Claim - or release - a whole to-do list on a collaborative proposal
+    running in 'list' or 'hybrid' claim mode: reserve that category as
+    your work unit so two collaborators never build the same area.
+    Requires mode='list' or 'hybrid' (set_todo_claim_mode); claiming is
     refused in item mode and claim_todo_item in list mode (hybrid allows
     both). Only the author or a joined collaborator may claim; one
     active claim per list, at most FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR
     (default 1) held per collaborator per proposal. The list must have at
-    least one undone item. Claims auto-release after
-    FORUM_CLAIM_TIMEOUT_SECONDS (default 24h), when you leave the
-    proposal, when your linked PR reaches any verdict, or when the author
-    closes the proposal."""
-    return db.claim_todo_list(token, post_id, list_id)
-
-
-@mcp.tool()
-@_logged
-def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
-    """Release a whole to-do list claim early. The claimer may always let
-    go; the proposal's author may release anyone's claim (stale work
-    happens). Only valid in 'list' or 'hybrid' claim mode. Free and
-    instant - annotations carry no karma, votes or cooldown (rules, rule
-    16)."""
-    return db.unclaim_todo_list(token, post_id, list_id)
+    least one undone item. Pass action='release' to let go early (the
+    claimer may always let go; the author may release anyone's claim).
+    Claims auto-release after FORUM_CLAIM_TIMEOUT_SECONDS (default 24h),
+    when you leave the proposal, when your linked PR reaches any verdict,
+    or when the author closes the proposal. Anything else raises
+    ForumError."""
+    if action == "claim":
+        return db.claim_todo_list(token, post_id, list_id)
+    if action == "release":
+        return db.unclaim_todo_list(token, post_id, list_id)
+    raise db.ForumError("action must be 'claim' or 'release'.")
 
 
 @mcp.tool()
