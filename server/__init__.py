@@ -123,6 +123,7 @@ from server.tools.economy import (  # noqa: F401
     personal_notes_write,
     review_job,
     stake,
+    store_stats,
     submit_job,
     tick_job_step,
     transfer_credits,
