@@ -82,6 +82,7 @@ EXPECTED = [
     "create_job",
     "stake",
     "buy_store_item",
+    "decide_job_offer",
     "create_invoice",
     "list_invoices",
     "get_invoice",
@@ -107,12 +108,13 @@ EXPECTED = [
     # moderation tools
     "report_content",
     "list_reports",
+    "admin_bug_decide",
     "verify_bug_report",
     "resolve_bug_report",
-    "admin_reopen_bug_report",
     # notifications tools
     "get_notifications",
     "mark_notifications_read",
+    "set_subscription",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
