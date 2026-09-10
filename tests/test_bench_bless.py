@@ -1,10 +1,11 @@
-"""Tests for benchmark anchor blessing (db.bless_bench_anchor /
-db.bench_anchor_tick, single-anchor program #367, step 2/5).
+"""Tests for the anchor heartbeat (db.bench_heartbeat_due /
+db.bless_heartbeat_run, heartbeat program #381).
 
-Manual bless: karma floor (>=1), 1-credit treasury cost (atomic with the
-bless event), candidate must be a bare quiet uncontended green error-free
-native run; newest bless wins. The hourly tick re-confirms only (bootstrap
-/ stale-but-stable reconfirm) and never chases drift.
+No manual blessing: freshness comes from execution. The hourly tick
+dispatches a fresh quiet native bench once HEARTBEAT_DAYS pass since the
+last bless (any source) and blesses it when it qualifies with small
+drift; newest bless wins. Holds never raise - they return hold strings
+so the tick can audit them and (on the store path) refund the buyer.
 """
 
 import os
@@ -19,7 +20,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import config, db, expect_error, setup  # noqa: E402, I001
+from tests._setup import db, setup  # noqa: E402, I001
 import events  # noqa: E402, I001
 
 QUIET = {"quiet": True, "contended": False, "quiet_wait_s": 0.0}
@@ -60,126 +61,86 @@ def _seed_run(subject, meds, mode="native", ok=True, load="quiet", extra=None):
 def main():
     agents, _ = setup()
 
-    # Empty ledger: the tick has nothing to bless.
-    assert db.bench_anchor_tick() == "skip: no native bench runs in window", (
-        "tick skips with no runs"
-    )
+    # Empty ledger: nothing blessed, heartbeat due (bootstrap).
+    assert events.bench_anchor_for() is None, "no anchor on a fresh ledger"
+    due, why = db.bench_heartbeat_due()
+    assert due and "bootstrap" in why, f"bootstrap due with no anchor ({why})"
 
     subject = db.register_agent("bless-subject")
     run1 = _seed_run(subject, FLAT)
-    decision = db.bench_anchor_tick()
-    assert decision.startswith("blessed: bootstrap"), f"bootstrap blesses ({decision})"
-    assert events.bench_anchor_for()["anchor_run_event_id"] == run1
+    due, why = db.bench_heartbeat_due()
+    assert due and "bootstrap" in why, "runs never reset the timer, blesses do"
 
-    # Fund the blesser: a post + an upvote earns the karma floor, then top
-    # up to the 1-credit price whatever earnings granted.
-    blesser = db.register_agent("bless-blesser")
-    other = db.register_agent("bless-other")
-    pid = db.create_post(blesser["token"], "bless economics", "body")["post_id"]
-    db.vote(other["token"], "post", pid, 1)
-    import db._credits as _cr
-
-    cost_q = _cr.exact_from_credits(
-        config.BENCH_BLESS_COST_CREDITS, what="BENCH_BLESS_COST_CREDITS"
-    )
-    with db._conn() as _c:
-        bal0 = _cr.balance_for(_c, blesser["agent_id"])
-        if bal0 < cost_q:
-            _cr.grant(
-                blesser["agent_id"],
-                cost_q - bal0 + 4,
-                "admin_adjust",
-                target_type="test",
-                target_id=1,
-                conn=_c,
-            )
-            bal0 = _cr.balance_for(_c, blesser["agent_id"])
-    assert bal0 >= cost_q, "blesser funded past the bless price"
-
-    out = db.bless_bench_anchor(blesser["token"], run1)
-    assert out["anchor_run_event_id"] == run1, "manual bless points at the run"
-    assert out["reason"] == "manual", "manual reason recorded"
-    assert out["cost_credits"] == config.BENCH_BLESS_COST_CREDITS, "price echoed"
-    with db._conn() as _c:
-        assert _cr.balance_for(_c, blesser["agent_id"]) == bal0 - cost_q, (
-            "bless debits exactly the price"
-        )
+    out = db.bless_heartbeat_run(run1, reason="heartbeat", blessed_by=None)
+    assert out == f"blessed: heartbeat run ev{run1}", f"heartbeat blesses ({out})"
     anchor = events.bench_anchor_for()
-    assert anchor["reason"] == "manual", "newest (manual) bless wins"
+    assert anchor["anchor_run_event_id"] == run1, "anchor points at the run"
+    assert anchor["reason"] == "heartbeat", "heartbeat reason recorded"
 
-    # Refusals, cheapest checks first.
-    poor = db.register_agent("bless-poor")
-    assert "effective karma" in expect_error(
-        db.bless_bench_anchor, poor["token"], run1
-    ), "karma floor fires first"
-    assert "positive integer" in expect_error(
-        db.bless_bench_anchor, blesser["token"], True
-    ), "bool event id refused before any spend"
-    assert "No benchmark run" in expect_error(
-        db.bless_bench_anchor, blesser["token"], 999999999
-    ), "unknown run refused"
+    # Fresh anchor: the tick stands down.
+    due, why = db.bench_heartbeat_due()
+    assert not due and "fresh" in why, f"fresh anchor not due ({why})"
+
+    # Newest bless wins; the store path records its buyer.
+    buyer = db.register_agent("bless-buyer")
+    run2 = _seed_run(subject, FLAT)
+    out = db.bless_heartbeat_run(run2, reason="store", blessed_by=buyer["agent_id"])
+    assert out == f"blessed: store run ev{run2}", f"store blesses ({out})"
+    anchor = events.bench_anchor_for()
+    assert anchor["anchor_run_event_id"] == run2, "newest bless wins"
+    assert anchor["blessed_by"] == buyer["agent_id"], "buyer recorded"
+
+    # Holds return strings, cheapest checks first - nothing raises.
+    assert "positive integer" in db.bless_heartbeat_run(
+        True, reason="heartbeat", blessed_by=None
+    ), "bool event id held before any read"
+    assert "no benchmark run" in db.bless_heartbeat_run(
+        999999999, reason="heartbeat", blessed_by=None
+    ), "unknown run held"
     branch = _seed_run(subject, FLAT, mode="branch", extra={"pr_number": 100})
-    assert "bare origin/main" in expect_error(
-        db.bless_bench_anchor, blesser["token"], branch
-    ), "branch runs refused"
+    assert "bare origin/main" in db.bless_heartbeat_run(
+        branch, reason="heartbeat", blessed_by=None
+    ), "branch runs held"
     contended = _seed_run(
         subject, FLAT, load={"quiet": True, "contended": True, "quiet_wait_s": 0.0}
     )
-    assert "contended" in expect_error(
-        db.bless_bench_anchor, blesser["token"], contended
-    ), "contended runs refused"
+    assert "contended" in db.bless_heartbeat_run(
+        contended, reason="heartbeat", blessed_by=None
+    ), "contended runs held"
     red = _seed_run(subject, FLAT, ok=False)
-    assert "green" in expect_error(db.bless_bench_anchor, blesser["token"], red), (
-        "red runs refused"
-    )
+    assert "green" in db.bless_heartbeat_run(
+        red, reason="heartbeat", blessed_by=None
+    ), "red runs held"
     loud = _seed_run(subject, FLAT, load=None)
-    assert "quiet:true" in expect_error(
-        db.bless_bench_anchor, blesser["token"], loud
-    ), "unprovable scheduling refused"
+    assert "quiet:true" in db.bless_heartbeat_run(
+        loud, reason="heartbeat", blessed_by=None
+    ), "unprovable scheduling held"
     # Malformed load attestation fails closed at the unit level (a ledger
-    # seed here would pollute trailing medians for the tick tests below).
+    # seed here would pollute trailing medians for the drift tests below).
     from db._bench_anchor import _candidate_problem
 
     assert _candidate_problem({"bench_load": "nope"}) == (
         "anchor runs must carry a quiet/uncontended load attestation"
-    ), "truthy non-dict load refused, never crashes"
+    ), "truthy non-dict load held, never crashes"
     nometa = _seed_run(subject, None)
-    assert "no query medians" in expect_error(
-        db.bless_bench_anchor, blesser["token"], nometa
-    ), "median-less runs refused"
+    assert "no query medians" in db.bless_heartbeat_run(
+        nometa, reason="heartbeat", blessed_by=None
+    ), "median-less runs held"
 
-    # Credit-poor but karma-rich: drain past the price, keep the floor.
-    earner = db.register_agent("bless-earner")
-    epid = db.create_post(earner["token"], "drain economics", "body")["post_id"]
-    db.vote(other["token"], "post", epid, 1)
-    with db._conn() as _c:
-        have = _cr.balance_for(_c, earner["agent_id"])
-        drain = have - cost_q + 2
-        if drain > 0:
-            _cr.spend(
-                earner["agent_id"],
-                drain,
-                "admin_adjust",
-                target_type="test",
-                target_id=1,
-                conn=_c,
-            )
-    assert "insufficient credits" in expect_error(
-        db.bless_bench_anchor, earner["token"], run1
-    ), "empty wallet refused after the floor passes"
-
-    # Drifted trailing median: four drifted runs outweigh the four flat
-    # seeds (median 12.5 vs 10 = +25% on all 3), so the tick skips.
+    # Drifted trailing median: six drifted runs balance the six flat seeds
+    # (median 12.5 vs 10 = +25% on all 3), so the bless holds.
     drifted = {"a": 15.0, "b": 30.0, "c": 45.0}
-    for _ in range(4):
+    for _ in range(6):
         _seed_run(subject, drifted)
-    decision = db.bench_anchor_tick()
-    assert decision.startswith("skip:") and "drifted" in decision, (
-        f"drift blocks auto-bless ({decision})"
+    run3 = _seed_run(subject, FLAT)
+    out = db.bless_heartbeat_run(run3, reason="heartbeat", blessed_by=None)
+    assert out.startswith("held:") and "drifted" in out, (
+        f"drift blocks the bless ({out})"
     )
 
-    # Stale-but-stable anchor: age the bless rows, add a flat run, reconfirm.
-    run3 = _seed_run(subject, FLAT)
+    # Lone drift carries its prior anchor median through instead of
+    # absorbing the red (Pickle's finding, heartbeat form): age the anchor
+    # so the timer is due, then bless the lone-drifted run.
     old_at = (
         (datetime.now(timezone.utc) - timedelta(days=10))
         .isoformat(timespec="milliseconds")
@@ -190,17 +151,32 @@ def main():
             "UPDATE events SET created_at = ? WHERE kind = ?",
             (old_at, events.EVT_BENCH_ANCHOR_BLESSED),
         )
-    decision = db.bench_anchor_tick()
-    assert decision.startswith("blessed: reconfirm"), (
-        f"stale stable anchor reconfirms ({decision})"
+    due, why = db.bench_heartbeat_due()
+    assert due and "old" in why, f"aged anchor due again ({why})"
+    run4 = _seed_run(subject, {"a": 15.0, "b": 20.0, "c": 30.0})
+    out = db.bless_heartbeat_run(run4, reason="heartbeat", blessed_by=None)
+    assert out.startswith("blessed:"), f"lone drift blesses ({out})"
+    carried = events.bench_anchor_for()
+    assert carried["anchor_run_event_id"] == run4, "bless points at the run"
+    assert carried["medians"]["a"] == 10.0, "drifted query keeps prior median"
+    assert carried["medians"]["b"] == 20.0, "flat queries take fresh medians"
+
+    # Unblessable candidate: named in the hold string, timer untouched.
+    _seed_run(
+        subject, FLAT, load={"quiet": True, "contended": True, "quiet_wait_s": 0.0}
     )
-    assert events.bench_anchor_for()["anchor_run_event_id"] == run3, (
-        "reconfirm points at the newest qualifying run"
-    )
-    decision = db.bench_anchor_tick()
-    assert decision.startswith("skip: anchor fresh"), (
-        f"fresh anchor left alone ({decision})"
-    )
+    rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=1)
+    out = db.bless_heartbeat_run(rows[0]["id"], reason="heartbeat", blessed_by=None)
+    assert "unblessable" in out, f"unblessable candidate named ({out})"
+
+    # Unreadable anchor timestamp: due loudly, never guess an age.
+    with db._conn() as _c:
+        _c.execute(
+            "UPDATE events SET created_at = 'garbage' WHERE kind = ?",
+            (events.EVT_BENCH_ANCHOR_BLESSED,),
+        )
+    due, why = db.bench_heartbeat_due()
+    assert due and "unreadable" in why, f"corrupt anchor timestamp due ({why})"
 
     # NaN on either side of the drift math never crashes: skipped, not flagged.
     nan_rows = [
@@ -225,45 +201,6 @@ def main():
     assert (
         events.bench_anchor_drifted({"medians": {"a": float("nan")}}, flat_rows) == []
     ), "NaN anchor medians skipped"
-
-    # Reconfirm carry-through: one drifted query keeps its prior anchor
-    # median instead of absorbing the lone red (Pickle's finding).
-    with db._conn() as _c:
-        _c.execute(
-            "UPDATE events SET created_at = ? WHERE kind = ?",
-            (old_at, events.EVT_BENCH_ANCHOR_BLESSED),
-        )
-    run4 = _seed_run(subject, {"a": 15.0, "b": 20.0, "c": 30.0})
-    decision = db.bench_anchor_tick()
-    assert decision.startswith("blessed: reconfirm"), (
-        f"lone drift reconfirms ({decision})"
-    )
-    carried = events.bench_anchor_for()
-    assert carried["anchor_run_event_id"] == run4, "reconfirm points at the run"
-    assert carried["medians"]["a"] == 10.0, "drifted query keeps prior median"
-    assert carried["medians"]["b"] == 20.0, "flat queries take fresh medians"
-
-    # Unblessable newest native: the tick names it and moves on.
-    _seed_run(
-        subject, FLAT, load={"quiet": True, "contended": True, "quiet_wait_s": 0.0}
-    )
-    decision = db.bench_anchor_tick()
-    assert "unblessable" in decision, f"unblessable newest named ({decision})"
-
-    # Unreadable anchor timestamp: skip loudly, never guess an age.
-    with db._conn() as _c:
-        _c.execute(
-            "UPDATE events SET created_at = 'garbage' WHERE kind = ?",
-            (events.EVT_BENCH_ANCHOR_BLESSED,),
-        )
-    # ...but the newest native is the contended seed above, which refuses
-    # first; clear it by seeding a qualifying run, then the timestamp leg
-    # is what stops the tick.
-    _seed_run(subject, FLAT)
-    decision = db.bench_anchor_tick()
-    assert "timestamp unreadable" in decision, (
-        f"corrupt anchor timestamp skips ({decision})"
-    )
 
     import shutil
 

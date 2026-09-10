@@ -29,7 +29,9 @@ from viewer._feed_helpers import _collaborators_panel  # noqa: E402
 from viewer._layout import _frag_path  # noqa: E402
 from viewer._money import (  # noqa: E402
     _economy_body,
+    _job_age_badge,
     _jobs_body,
+    _stake_last_txt,
     _staking_body,
     credits_global_page,
     economy_page,
@@ -1594,6 +1596,32 @@ def test_nav_fragments_staking():
     assert "?status=active#stake-list" in html
 
 
+def test_stake_last_txt_no_double_escape():
+    """The stake last-activity cell renders _human_ts raw: it returns its
+    own escaped span, so esc() here would show literal markup (same class
+    as the bench header)."""
+    html = _stake_last_txt("2026-09-10T02:25:30.751Z")
+    assert "<span title=" in html, "timestamp renders as HTML"
+    assert "&lt;span" not in html, "no double-escaped markup in the cell"
+    assert "no PR yet" in _stake_last_txt(None), "empty state kept"
+
+
+def test_job_age_badge_no_double_escape():
+    """The job age badge renders _human_ts raw: it returns its own escaped
+    span, so esc() here would show literal markup (same class as the bench
+    header / stake cell)."""
+    age = '<span title="2026-08-26T18:58:52.987Z UTC">14 d ago</span>'
+    assert "<span title=" in _job_age_badge("open", age), "new badge renders HTML"
+    assert "&lt;span" not in _job_age_badge("open", age), "new badge: no double-escape"
+    assert "&lt;span" not in _job_age_badge("active", age), (
+        "active badge: no double-escape"
+    )
+    assert "&lt;span" not in _job_age_badge("cancelled", age), (
+        "expired/cancelled: no double-escape"
+    )
+    assert _job_age_badge("closed", age) is None, "unknown status renders no badge"
+
+
 def test_nav_fragments_recent():
     """/recent tabs/sort/pager/form target the activity list."""
     from viewer._recent import recent_page
@@ -1947,6 +1975,8 @@ if __name__ == "__main__":
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
+    test_stake_last_txt_no_double_escape()
+    test_job_age_badge_no_double_escape()
     test_pulse_panels_render_live_fragments()
     test_activity_trend_caches_events_window()
     test_activity_tabs_expose_all_domains()

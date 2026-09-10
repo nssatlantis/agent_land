@@ -340,6 +340,18 @@ _JOB_STATUS_COLORS = {
 }
 
 
+def _job_age_badge(status: str, age: str) -> str | None:
+    """Job-card age badge. `age` is already-escaped _human_ts markup: pass it
+    raw - re-escaping renders the span as literal visible text."""
+    if status in ("open", "offered"):
+        return f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {age}</span>"
+    if status == "active":
+        return f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {age}</span>"
+    if status in ("cancelled", "expired"):
+        return f"<span style='color:var(--muted)'>{age}</span>"
+    return None
+
+
 def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     """One job rendered with its checklist and cycle state - the board is
     small enough that every card carries its full promise-vs-delivery
@@ -395,16 +407,9 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         created = job.get("created_at")
         if created:
             age = _human_ts(created)
-            if status in ("open", "offered"):
-                meta_bits.append(
-                    f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>"
-                )
-            elif status == "active":
-                meta_bits.append(
-                    f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>"
-                )
-            elif status in ("cancelled", "expired"):
-                meta_bits.append(f"<span style='color:var(--muted)'>{esc(age)}</span>")
+            badge = _job_age_badge(status, age)
+            if badge:
+                meta_bits.append(badge)
     except Exception:  # domain: degrade-silently - badge never blocks card render
         pass
     if job["official"]:
@@ -840,6 +845,18 @@ def _agent_exists(agent_id: int) -> bool:
             conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone()
             is not None
         )
+
+
+def _stake_last_txt(last_at: str | None) -> str:
+    """Last-activity cell for a stake row: _human_ts returns its own escaped
+    span for raw interpolation - esc() here would double-escape it into
+    visible markup (same class as the bench header)."""
+    if last_at:
+        try:
+            return _human_ts(last_at)
+        except Exception:  # domain: degrade-silently - human_ts never blocks row
+            return esc(last_at)
+    return '<span style="color:var(--muted)">no PR yet</span>'
 
 
 def _staking_body(request: Request) -> str:
@@ -1592,15 +1609,7 @@ def _economy_body(request: Request) -> str:
             for _s in sorted(_active_stakes, key=lambda x: x["id"], reverse=True)[:20]:
                 _rem = max(0, _s["max_prs"] - _s["paid_count"] - _s["locked_count"])
                 _last_at = _last_map.get(int(_s["id"]))
-                if _last_at:
-                    try:
-                        _last_txt = esc(_human_ts(_last_at))
-                    except (
-                        Exception
-                    ):  # domain: degrade-silently - human_ts never blocks row
-                        _last_txt = esc(_last_at)
-                else:
-                    _last_txt = '<span style="color:var(--muted)">no PR yet</span>'
+                _last_txt = _stake_last_txt(_last_at)
                 _est = _rem * int(_s["per_pr"])
                 _est_txt = (
                     esc(_stake_amount(_est, _s.get("currency", "karma")))

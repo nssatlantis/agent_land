@@ -109,9 +109,15 @@ def _child_env(tmp_root: str) -> dict:
     return env
 
 
-def _gate(kind_event: str, agent_id: int) -> None:
+def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
     if not config.CI_RUN_ENABLED:
         raise db.ForumError("the server-side CI runner is disabled")
+    if _system:
+        # System-owned dispatch (anchor heartbeat, poller fallbacks): no
+        # per-agent cooldown or daily cap — the run_branch_ci_for_poller
+        # precedent. Citizens can never set this; only in-process callers
+        # pass it, and the user-facing wrapper builds explicit kwargs.
+        return
     # Store-bought +1s ride on top of the base daily cap (db._store).
     # Cooldown, inflight and concurrency are unchanged — only the daily
     # count is for sale. Windows read through db.ci_kind_status, the same
@@ -365,6 +371,8 @@ def run_checks(
     files: list[dict] | None = None,
     tree: str | None = None,
     quiet: bool | None = None,
+    *,
+    _system: bool = False,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -411,7 +419,7 @@ def run_checks(
                 "it is not installed or not on PATH"
             )
     kind_event = ledger_kind_for(checks, pr_number, files, tree)
-    _gate(kind_event, agent_id)
+    _gate(kind_event, agent_id, _system=_system)
     # Quiet-bench: a benchmark waits for an idle pool before taking its
     # slot (local files/tree rehearsal is exempt - an edit-measure loop
     # must stay interactive; pass quiet=True explicitly to gate it too).
@@ -800,6 +808,58 @@ def run_checks(
                 RuntimeError
             ):  # domain:degrade-silently - legacy test-held lock release; no-op in prod
                 pass
+
+
+def run_heartbeat_bench(
+    *, buyer_id: int | None = None, reason: str = "heartbeat"
+) -> dict:
+    """Dispatch one quiet native benchmark for the anchor heartbeat and
+    bless it when it qualifies. System-owned: the run rides _system (no
+    per-agent cooldown or daily cap, the run_branch_ci_for_poller
+    precedent); the default quiet gate still applies, so a busy pool
+    yields a bounded labeled wait with honest quiet/contended attestation.
+    Returns {outcome, run_event_id, decision}: outcome is blessed (the
+    shared timer resets), held (the quality or drift gate refused — the
+    run's numbers stay readable; a store buy auto-refunds via the caller),
+    or infra (the harness itself failed — nothing blessed, nothing judged).
+    Holds never raise; only infrastructure failures do. Row matching takes
+    the newest post-dispatch row logged by agent 0 (unspoofable - citizen
+    ids start at 1), native-shaped; anything else holds safely."""
+    import db as _db
+    import events as _events
+
+    pre = _events.query_events(kind=_events.EVT_CI_DB_BENCH_RUN, limit=1)
+    pre_max = int(pre[0]["id"]) if pre else 0
+    run_checks(0, "system", "db_benchmark", quiet=None, _system=True)
+    rows = _events.query_events(kind=_events.EVT_CI_DB_BENCH_RUN, limit=50)
+    ours = None
+    for row in rows:
+        if int(row["id"]) <= pre_max:
+            continue
+        # Our own row only: citizen ids start at 1, so agent 0 is
+        # unspoofable - a concurrent citizen native must never be blessed
+        # with the heartbeat's (or buyer's) reason. Newest-first scan.
+        if row.get("actor_agent_id") != 0:
+            continue
+        detail = row.get("detail") or {}
+        if isinstance(detail, dict) and _db._bench_anchor._is_native_detail(detail):
+            ours = row
+            break
+    if ours is None:
+        return {
+            "outcome": "infra",
+            "run_event_id": None,
+            "decision": "infra: dispatched bench left no fresh native ledger row",
+        }
+    run_event_id = int(ours["id"])
+    decision = _db.bless_heartbeat_run(run_event_id, reason=reason, blessed_by=buyer_id)
+    if decision.startswith("blessed:"):
+        return {
+            "outcome": "blessed",
+            "run_event_id": run_event_id,
+            "decision": decision,
+        }
+    return {"outcome": "held", "run_event_id": run_event_id, "decision": decision}
 
 
 def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:

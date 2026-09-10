@@ -34,8 +34,8 @@ from db._aggregates import (  # noqa: F401,E402
 
 # ── benchmark anchor blessing ──────────────────────────────────────────
 from db._bench_anchor import (  # noqa: F401
-    bench_anchor_tick,
-    bless_bench_anchor,
+    bench_heartbeat_due,
+    bless_heartbeat_run,
 )
 from db._bench_history import bench_history  # noqa: F401
 
@@ -236,6 +236,7 @@ from db._karma import (  # noqa: F401
     _karma_total,
     _pr_counts_for,
     _score_for,
+    attach_pr_to_proposal,
     award_pr_merge_karma,
     effective_karma,
     effective_karma_many,
@@ -429,6 +430,7 @@ from db._store import (  # noqa: F401
     personal_notes_read,
     personal_notes_write,
     pinned_comment_for,
+    refund_blessed_bench,
     unpin_post,
 )
 
