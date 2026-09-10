@@ -17,8 +17,11 @@ so the event and the mutation commit atomically.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+import statistics
 import time
+from datetime import datetime
 from typing import overload
 
 import config
@@ -89,6 +92,10 @@ EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
 EVT_CI_BRANCH_RUN = "ci_branch_run"
 EVT_CI_LOCAL_RUN = "ci_local_run"
+# Blessed benchmark anchor (single-anchor program, #367): blessing a
+# ci_db_bench_run as the comparison anchor logs here - run pointer +
+# denormalized medians + by/reason/at. Newest well-formed row wins.
+EVT_BENCH_ANCHOR_BLESSED = "bench_anchor_blessed"
 
 # The Karma Split: the credits economy and its staking flows log under
 # their own categories. Legacy bounty_* kinds remain valid for history.
@@ -206,6 +213,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_DB_BENCH_RUN,
     EVT_CI_BRANCH_RUN,
     EVT_CI_LOCAL_RUN,
+    EVT_BENCH_ANCHOR_BLESSED,
     EVT_CREDIT_EARNED,
     EVT_CREDIT_SPENT,
     EVT_STAKE_CREATED,
@@ -669,7 +677,12 @@ def bench_medians_for(events_rows: list[dict], query: str) -> list[float]:
     for ev in events_rows:
         med = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY + (query,))
         if isinstance(med, (int, float)) and not isinstance(med, bool):
-            out.append(float(med))
+            fmed = float(med)
+            # Non-finite medians are corrupt ledger data (NaN survives the
+            # JSON round-trip): drop the point rather than crashing every
+            # downstream median/rounding consumer.
+            if math.isfinite(fmed):
+                out.append(fmed)
     return out
 
 
@@ -728,26 +741,6 @@ def bench_comparison_for(
     return bench_window_bests(events_rows), _BENCH_WINDOW_LABEL
 
 
-def bench_query_delta(
-    events_rows: list[dict], query: str
-) -> tuple[float, float, int] | None:
-    """The comparison for one query: (base_median_ms, latest_median_ms,
-    delta_pct) where delta_pct is how the most recent run in the window
-    compares to the comparison base - the newest reference run's median for
-    that query when one exists (negative = faster than main), else the best
-    (lowest) median in the window. Self-contained before/after with no
-    coupling to benchmark_baseline.json. None when the query has no median
-    in the window."""
-    medians = bench_medians_for(events_rows, query)
-    if not medians:
-        return None
-    base = bench_comparison_for(events_rows)[0].get(query)
-    if base is None:
-        base = min(medians)
-    latest = medians[0]  # newest-first: first row is the most recent run
-    return base, latest, bench_pct(latest, base)
-
-
 def bench_window_bests(events_rows: list[dict]) -> dict[str, float]:
     """Best (lowest) median per benchmark query across a window of
     ci_db_bench_run events, the fallback comparison base used when no
@@ -783,3 +776,176 @@ def bench_regressions_for(events_rows: list[dict]) -> int:
             # counts as 0 regressions rather than falling through to older.
             return 0
     return 0
+
+
+# -- blessed benchmark anchor (single-anchor program, proposal #367) -----
+#
+# Gate, tab, nudge and badges converge on one anchor: the newest
+# well-formed bench_anchor_blessed event. Blessing (manual tool + cron,
+# next PR) stores a pointer to the anchor run plus a denormalized medians
+# snapshot, so the anchor survives pruning of the run event itself.
+# Aging is computed lazily by readers - no sweep, no state change.
+
+_BENCH_ANCHOR_LABEL = "vs anchor"
+
+
+def _bench_anchor_valid(detail: dict | None) -> dict[str, float] | None:
+    """Validated medians snapshot from a bless record's detail, or None
+    when malformed (non-int run pointer or empty/non-numeric medians).
+    Malformed rows are skipped by the reader, never fatal
+    (domain: degrade-silently)."""
+    if not isinstance(detail, dict):
+        return None
+    run_id = detail.get("anchor_run_event_id")
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
+        return None
+    meds = detail.get("medians")
+    if not isinstance(meds, dict):
+        return None
+    out: dict[str, float] = {}
+    for q, val in meds.items():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            fval = float(val)
+            if math.isfinite(fval):
+                out[str(q)] = fval
+    return out or None
+
+
+def bench_anchor_for(limit: int = 10) -> dict | None:
+    """The active benchmark anchor: newest well-formed bench_anchor_blessed
+    event, or None when none exists. Returns {bless_event_id, blessed_at,
+    blessed_by, blessed_by_name, reason, anchor_run_event_id, medians}.
+    The anchor kind is separate from the bench runs it blesses, so this
+    queries the ledger itself; malformed rows are paged past (a flood of
+    them can never hide a well-formed anchor). Newest wins, so re-blessing
+    is just blessing again."""
+    rows = query_events(kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit))
+    offset = 0
+    while rows:
+        for ev in rows:
+            meds = _bench_anchor_valid(ev.get("detail"))
+            if meds is None:
+                continue
+            detail = ev.get("detail") or {}
+            return {
+                "bless_event_id": ev["id"],
+                "blessed_at": ev["created_at"],
+                "blessed_by": detail.get("blessed_by"),
+                "blessed_by_name": ev.get("actor_name"),
+                "reason": detail.get("reason"),
+                "anchor_run_event_id": detail.get("anchor_run_event_id"),
+                "medians": meds,
+            }
+        if len(rows) < max(1, limit):
+            break
+        offset += len(rows)
+        rows = query_events(
+            kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit), offset=offset
+        )
+    return None
+
+
+def bench_anchor_drifted(anchor: dict, events_rows: list[dict]) -> list[str]:
+    """Queries whose trailing native median drifted >20% vs the anchor.
+    Shared by the aging reader and the auto-bless tick so both judge the
+    same drift (the 3-query minimum lives with the callers)."""
+    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    drifted: list[str] = []
+    for q, base in (anchor.get("medians") or {}).items():
+        if (
+            not isinstance(base, (int, float))
+            or isinstance(base, bool)
+            or not math.isfinite(float(base))
+        ):
+            continue
+        series = [v for v in bench_medians_for(native, str(q)) if math.isfinite(v)]
+        if not series:
+            continue
+        if abs(bench_pct(statistics.median(series), float(base))) > 20:
+            drifted.append(str(q))
+    return drifted
+
+
+def bench_anchor_aging(
+    anchor: dict | None,
+    events_rows: list[dict],
+    *,
+    now_iso: str | None = None,
+) -> tuple[bool, str]:
+    """Whether the anchor is aging, plus the human reason. Aging when no
+    anchor is blessed, when the anchor is older than
+    BENCH_ANCHOR_MAX_AGE_DAYS, or when trailing native medians drifted
+    >20% vs the anchor on 3+ queries (drift heuristic inspired by the
+    harness 20% threshold - rounded two-sided int pct, no noise floor,
+    deliberately not the full 20%+2σ gate; the 3-query minimum avoids
+    single-query flicker). Readers render the
+    reason beside the anchor; nothing here mutates. now_iso is a test
+    seam defaulting to now."""
+    if anchor is None:
+        return True, "no anchor blessed"
+    try:
+        max_age = int(config.BENCH_ANCHOR_MAX_AGE_DAYS)
+    except Exception:
+        max_age = 7  # domain: degrade-silently
+    try:
+        blessed = datetime.fromisoformat(
+            (anchor.get("blessed_at") or "").replace("Z", "+00:00")
+        )
+        now = datetime.fromisoformat((now_iso or db._now_iso()).replace("Z", "+00:00"))
+        age_days = (now - blessed).total_seconds() / 86400
+    except Exception:
+        age_days = (
+            0  # domain: degrade-silently - unparseable stamp never forces aging alone
+        )
+    native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+    drifted = bench_anchor_drifted(anchor, events_rows)
+    if len(drifted) >= 3:
+        return True, f"{len(drifted)} queries drifted >20% vs trailing native median"
+    if age_days > max_age:
+        return True, f"anchor {age_days:.0f}d old (>{max_age}d)"
+    if not native:
+        return False, "no native runs to compare"
+    return False, "anchor fresh"
+
+
+def bench_anchor_base_for(
+    events_rows: list[dict],
+) -> tuple[dict[str, float], str, dict | None]:
+    """(base map, label, anchor-or-None): the single source the Benchmarks
+    tab and the nudge share. Anchor medians when blessed ("vs anchor",
+    backfilled per query from the reference map for queries the anchor did
+    not measure); otherwise the reference/window-best fallback via
+    bench_comparison_for with its labels intact."""
+    anchor = bench_anchor_for()
+    if anchor and anchor.get("medians"):
+        base = dict(anchor["medians"])
+        for q, best in bench_window_bests(events_rows).items():
+            base.setdefault(q, best)
+        return base, _BENCH_ANCHOR_LABEL, anchor
+    base, label = bench_comparison_for(events_rows)
+    return base, label, None
+
+
+def bench_native_series(
+    events_rows: list[dict], limit: int = 7, native_only: bool = True
+) -> dict[str, list[float]]:
+    """Newest-first per-query median series (last `limit` points each), for
+    trend display. Native origin/main runs only by default; native_only=False
+    includes branch and local runs (agent tooling overviews). Empty when no
+    covered run carries medians."""
+    pool = (
+        [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
+        if native_only
+        else list(events_rows)
+    )
+    names: set[str] = set()
+    for ev in pool:
+        meds = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY)
+        if isinstance(meds, dict):
+            names.update(str(q) for q in meds)
+    out: dict[str, list[float]] = {}
+    for q in names:
+        series = bench_medians_for(pool, q)[: max(1, limit)]
+        if series:
+            out[q] = series
+    return out

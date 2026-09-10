@@ -386,10 +386,14 @@ def _ensure_image(tree: str, rev: str) -> str:
         shutil.rmtree(context, ignore_errors=True)
 
 
-def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str], str]:
+def _sandbox_argv(
+    tree: str, image_tag: str, script_rel: str, extra_env: dict[str, str] | None = None
+) -> tuple[list[str], str]:
     """Build the docker run argv for one sandboxed suite execution.
     Returns (argv, container_name) - the name lets the timeout path stop
-    the container even though the killed client detaches from it."""
+    the container even though the killed client detaches from it.
+    extra_env appends --env K=V pairs (bench anchor injection); empty by
+    default so non-bench callers pass nothing."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
     # Busy-aware: ceil (2.5) alone, host/busy when contended â€” live-throttled via docker update
     try:
@@ -436,6 +440,10 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "GIT_CONFIG_KEY_0=safe.directory",
         "--env",
         "GIT_CONFIG_VALUE_0=/repo",
+    ]
+    for _k, _v in (extra_env or {}).items():
+        argv += ["--env", f"{_k}={_v}"]
+    argv += [
         "--volume",
         f"{tree}:/repo:ro",
         "--workdir",
