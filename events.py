@@ -17,6 +17,7 @@ so the event and the mutation commit atomically.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import statistics
 import time
@@ -810,7 +811,8 @@ def _bench_anchor_valid(detail: dict | None) -> dict[str, float] | None:
     (domain: degrade-silently)."""
     if not isinstance(detail, dict):
         return None
-    if not isinstance(detail.get("anchor_run_event_id"), int):
+    run_id = detail.get("anchor_run_event_id")
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
         return None
     meds = detail.get("medians")
     if not isinstance(meds, dict):
@@ -818,7 +820,9 @@ def _bench_anchor_valid(detail: dict | None) -> dict[str, float] | None:
     out: dict[str, float] = {}
     for q, val in meds.items():
         if isinstance(val, (int, float)) and not isinstance(val, bool):
-            out[str(q)] = float(val)
+            fval = float(val)
+            if math.isfinite(fval):
+                out[str(q)] = fval
     return out or None
 
 
@@ -827,23 +831,32 @@ def bench_anchor_for(limit: int = 10) -> dict | None:
     event, or None when none exists. Returns {bless_event_id, blessed_at,
     blessed_by, blessed_by_name, reason, anchor_run_event_id, medians}.
     The anchor kind is separate from the bench runs it blesses, so this
-    queries the ledger itself; malformed rows are skipped. Newest wins,
-    so re-blessing is just blessing again."""
+    queries the ledger itself; malformed rows are paged past (a flood of
+    them can never hide a well-formed anchor). Newest wins, so re-blessing
+    is just blessing again."""
     rows = query_events(kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit))
-    for ev in rows:
-        meds = _bench_anchor_valid(ev.get("detail"))
-        if meds is None:
-            continue
-        detail = ev.get("detail") or {}
-        return {
-            "bless_event_id": ev["id"],
-            "blessed_at": ev["created_at"],
-            "blessed_by": detail.get("blessed_by"),
-            "blessed_by_name": ev.get("actor_name"),
-            "reason": detail.get("reason"),
-            "anchor_run_event_id": detail.get("anchor_run_event_id"),
-            "medians": meds,
-        }
+    offset = 0
+    while rows:
+        for ev in rows:
+            meds = _bench_anchor_valid(ev.get("detail"))
+            if meds is None:
+                continue
+            detail = ev.get("detail") or {}
+            return {
+                "bless_event_id": ev["id"],
+                "blessed_at": ev["created_at"],
+                "blessed_by": detail.get("blessed_by"),
+                "blessed_by_name": ev.get("actor_name"),
+                "reason": detail.get("reason"),
+                "anchor_run_event_id": detail.get("anchor_run_event_id"),
+                "medians": meds,
+            }
+        if len(rows) < max(1, limit):
+            break
+        offset += len(rows)
+        rows = query_events(
+            kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit), offset=offset
+        )
     return None
 
 
@@ -856,8 +869,10 @@ def bench_anchor_aging(
     """Whether the anchor is aging, plus the human reason. Aging when no
     anchor is blessed, when the anchor is older than
     BENCH_ANCHOR_MAX_AGE_DAYS, or when trailing native medians drifted
-    >20% vs the anchor on 3+ queries (mirrors the harness gate; the
-    3-query minimum avoids single-query flicker). Readers render the
+    >20% vs the anchor on 3+ queries (drift heuristic inspired by the
+    harness 20% threshold - rounded two-sided int pct, no noise floor,
+    deliberately not the full 20%+2σ gate; the 3-query minimum avoids
+    single-query flicker). Readers render the
     reason beside the anchor; nothing here mutates. now_iso is a test
     seam defaulting to now."""
     if anchor is None:
