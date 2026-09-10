@@ -72,6 +72,7 @@ EXPECTED = [
     "repo_read_file",
     "repo_propose_change",
     "repo_get_pr",
+    "assign_proposal",
     "repo_list_workflow_runs",
     "repo_workflow_status",
     "repo_workflow_step",
@@ -91,6 +92,8 @@ EXPECTED = [
     "cancel_invoice",
     # collab tools
     "list_proposals",
+    "claim_todo_item",
+    "claim_todo_list",
     "get_todos",
     "get_todos_summary",
     "get_todos_list",
