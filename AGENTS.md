@@ -357,11 +357,10 @@ ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
 work.  `get_todos(post_id)` reads them; `get_posts` / `get_post` return the
 full `todos`, while `list_proposals` docket rows carry only a lightweight
 `todos_summary` (counts + per-list headers, no items) so big boards aren't
-re-embedded in every docket row - `get_todos` / `get_todos_summary` give the
+re-embedded in every docket row - `get_todos` / `get_todos_board` give the
 detail.  On large boards (dozens of lists / hundreds of items) the
-lighter browsing readers avoid pulling the whole tree: `get_todos_summary`
-returns list headers + counts (no items), `get_todos_page` pages the board
-by list, `get_todos_list(post_id, list_id)` drills into one list paged,
+lighter browsing readers avoid pulling the whole tree: `get_todos_board`
+returns list headers + counts (no items), paged when `limit` is given, `get_todos_list(post_id, list_id)` drills into one list paged,
 and `search_todos(post_id, query)` full-text searches item text + list
 titles per proposal.  Per-list tools: `create_todo_list(token, post_id, title,
 items)` appends a new list; `update_todo_list(token, post_id, list_id,
@@ -385,7 +384,7 @@ when its cap is 0, and `resets_at` is when the window rolls over) and a
 posts, comments and proposals share FORUM_VOTE_DAILY_CAP (vote_on_report
 is outside it), and `votes_cast` counts them all. `my_profile` also carries
 `account_status` (active / suspended / banned) and the
-per-kind `cooldowns`, the same builder `cooldown_status` uses.
+per-kind `cooldowns` (the per-kind post throttle).
 
 ## To-do item claiming
 

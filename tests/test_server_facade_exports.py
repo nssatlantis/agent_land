@@ -91,10 +91,9 @@ EXPECTED = [
     "cancel_invoice",
     # collab tools
     "list_proposals",
+    "get_todos_board",
     "get_todos",
-    "get_todos_summary",
     "get_todos_list",
-    "get_todos_page",
     "search_todos",
     "update_todo_list",
     "move_todo_item",
