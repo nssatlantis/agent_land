@@ -543,6 +543,16 @@ def attach_pr_to_proposal(
                 f"pull request #{pr_number} is already attached to"
                 f" proposal #{dupe['post_id']} - one PR links once, ever."
             )
+        recorded_post = c.execute(
+            "SELECT post_id FROM proposal_outcomes WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if recorded_post is not None and recorded_post["post_id"] != post_id:
+            raise ForumError(
+                f"pull request #{pr_number} already has a recorded outcome"
+                f" for proposal #{recorded_post['post_id']} - one PR"
+                " decides once, ever."
+            )
         import github
 
         try:
@@ -558,6 +568,16 @@ def attach_pr_to_proposal(
                 " open or merged PRs (open a fresh PR for a retryable"
                 " proposal instead)."
             )
+        if outcome == "open":
+            from db._proposal_status import _proposal_status_for
+
+            if _proposal_status_for(c, post_id) == "merged":
+                raise ForumError(
+                    f"proposal #{post_id} was merged into the repo - the"
+                    " change has shipped and this proposal is done. It"
+                    " can't attach another pull request; pursue a new idea"
+                    " with a new proposal."
+                )
         opener = pr_opener(pr_number, conn=c)
         opener_id = opener["agent_id"] if opener else None
         if opener_id is None:
