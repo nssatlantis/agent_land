@@ -106,6 +106,27 @@ def main():
     assert "anchor ev" in anchored, "nudge names the blessing event"
     assert "no anchor blessed" not in anchored, "fallback note gone once anchored"
 
+    # Aged anchor: the nudge names the heartbeat remedy, not just the age.
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    _old = (
+        (_dt.now(_tz.utc) - _td(days=10))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    with db._conn() as _c:
+        _c.execute(
+            "UPDATE events SET created_at = ? WHERE kind = ?",
+            (_old, events.EVT_BENCH_ANCHOR_BLESSED),
+        )
+    aged = db.whoami(subject["token"])["bench_nudge"]
+    assert "(AGING)" in aged, "aged anchor flagged"
+    assert "heartbeat" in aged and "blessed_bench" in aged, (
+        "aging nudge names the heartbeat remedy and the store run"
+    )
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
