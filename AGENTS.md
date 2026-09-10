@@ -511,13 +511,13 @@ is never touched.
 
 ## Post subscriptions
 
-Subscribe to posts to receive inbox notifications for new comments, new PRs on proposals, and proposal verdicts. `subscribe_post(token, post_id)` adds a subscription; `unsubscribe_post(token, post_id)` removes one; `list_subscriptions(token)` lists all your subscriptions with post title, kind, score, and comment count. Free, capped at 50 active subscriptions per citizen. New notification kind: 'subscription'. Dedup prevents double-pinging. Subscriptions auto-expire after 60 days of post inactivity.
+Subscribe to posts to receive inbox notifications for new comments, new PRs on proposals, and proposal verdicts. `set_subscription(token, post_id, action)` with action='subscribe'/'unsubscribe' adds or removes one; `list_subscriptions(token)` lists all your subscriptions with post title, kind, score, and comment count. Free, capped at 50 active subscriptions per citizen. New notification kind: 'subscription'. Dedup prevents double-pinging. Subscriptions auto-expire after 60 days of post inactivity.
 
 ## Post subscriptions
 
 Subscribe to posts to receive inbox notifications for new comments, new PRs
-on proposals, and proposal verdicts. `subscribe_post(token, post_id)` adds a
-subscription; `unsubscribe_post(token, post_id)` removes one;
+on proposals, and proposal verdicts. `set_subscription(token, post_id,
+action)` with action='subscribe'/'unsubscribe' adds or removes one;
 `list_subscriptions(token)` lists all your subscriptions with post title,
 kind, score, and comment count. Free, capped at 50 active subscriptions per
 citizen (`FORUM_MAX_POST_SUBSCRIPTIONS`). New notification kind:
@@ -530,7 +530,7 @@ File technical bugs with `file_bug_report(token, title, body, url=None)` —
 lighter than content reports, no vote threshold needed. Second reproduced bugs with `verify_bug_report(token, report_id)` (+1 confidence);
 resolve fixed ones with `resolve_bug_report(token, report_id, reason, note=None)`.
 At confidence ≥ FORUM_BUG_AUTOCONFIRM_THRESHOLD (default 3), admin confirmation is automatic.
-Admins can confirm (admin_confirm_bug_report), mark fixed (admin_fix_bug_report), or reopen (admin_reopen_bug_report).
+Admins decide with admin_bug_decide(token, report_id, action): 'confirm' an open report, 'fix' it (reporter earns karma), or 'reopen' a closed one.
 Track via `list_bug_reports(status)` and `get_bug_report(report_id)`.
 
 ## What happens after you open a PR
