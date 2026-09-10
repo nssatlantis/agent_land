@@ -87,7 +87,25 @@ def _ci_detail_with_output(detail: dict, pieces: dict) -> dict:
     if pieces.get("output_truncated") or ledger_truncated:
         detail["output_truncated"] = True
     if pieces.get("summary"):
-        detail["summary"] = pieces["summary"]
+        summary = pieces["summary"]
+        # Non-native bench-check runs (branch merge previews, local
+        # rehearsals) drop their per-query medians: every reader gate is
+        # native-only (bench_history's default, the anchor bless, the
+        # check_in nudge), the numbers are host-coupled and uncomparable
+        # (#367 quarantines exactly this class), and the dict is the bulk
+        # of the row.  Keep the verdict facts - regressions, bench_errors,
+        # the bench label - a handful of bytes with real value.  Native
+        # origin/main runs keep full medians unconditionally.  Fold a copy
+        # so the caller-facing pieces["summary"] (tool response) is never
+        # mutated.
+        if (
+            isinstance(summary, dict)
+            and detail.get("checks") in _BENCH_CHECKS
+            and (detail.get("pr_number") or detail.get("local") is True)
+        ):
+            summary = dict(summary)
+            summary.pop("timings_median_ms", None)
+        detail["summary"] = summary
     if pieces.get("failed_files"):
         detail["failed_files"] = pieces["failed_files"]
     return detail
