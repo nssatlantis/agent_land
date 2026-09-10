@@ -867,7 +867,13 @@ def bench_anchor_drifted(anchor: dict, events_rows: list[dict]) -> list[str]:
     native = [ev for ev in events_rows if _is_reference_run(ev.get("detail") or {})]
     drifted: list[str] = []
     for q, base in (anchor.get("medians") or {}).items():
-        series = bench_medians_for(native, str(q))
+        if (
+            not isinstance(base, (int, float))
+            or isinstance(base, bool)
+            or not math.isfinite(float(base))
+        ):
+            continue
+        series = [v for v in bench_medians_for(native, str(q)) if math.isfinite(v)]
         if not series:
             continue
         if abs(bench_pct(statistics.median(series), float(base))) > 20:
