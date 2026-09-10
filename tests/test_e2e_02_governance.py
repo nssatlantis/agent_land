@@ -347,10 +347,10 @@ async def main():
             "\n",
         )
 
-        print("== delegate_proposal: author (agent 2) hands the proposal to agent 1 ==")
+        print("== assign_proposal: author (agent 2) hands the proposal to agent 1 ==")
         dl = unwrap(
             await session.call_tool(
-                "delegate_proposal",
+                "assign_proposal",
                 {
                     "token": token2,
                     "proposal_id": proposal_id,
@@ -402,11 +402,13 @@ async def main():
             "\n",
         )
 
-        print("== revoke_delegation: author (agent 2) takes the proposal back ==")
+        print(
+            "== assign_proposal(delegate=None): author (agent 2) takes the proposal back =="
+        )
         print(
             unwrap(
                 await session.call_tool(
-                    "revoke_delegation",
+                    "assign_proposal",
                     {"token": token2, "proposal_id": proposal_id},
                 )
             ),

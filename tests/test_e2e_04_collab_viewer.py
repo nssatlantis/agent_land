@@ -278,8 +278,13 @@ async def main():
         )
         uc = unwrap(
             await session.call_tool(
-                "unclaim_todo_list",
-                {"token": token2, "post_id": cp_id, "list_id": list_id},
+                "claim_todo_list",
+                {
+                    "token": token2,
+                    "post_id": cp_id,
+                    "list_id": list_id,
+                    "action": "release",
+                },
             )
         )
         assert uc.get("title") == "Phase 1", "unclaim returns the list title"
