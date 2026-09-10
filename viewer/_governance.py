@@ -2,7 +2,7 @@
 
 Display-only, read-only: 12 most active voters (by votes_cast) × 20 newest
 proposals, cells green/red/grey for approve/oppose/abstain. Hover shows
-proposal title + vote value + _human_ts. Reuses aggregates.list_agents and
+proposal title + vote value + vote time. Reuses aggregates.list_agents and
 db._proposal_tally_batch (via batch tally), cached 60s, degrade-silently.
 
 Analytics (4392): approval rate over time, contested vs unanimous,
@@ -21,7 +21,7 @@ import db._aggregates as aggregates
 from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
-from viewer._utils import _human_ts, esc
+from viewer._utils import esc
 
 
 def _cohorts_matrix_html() -> str:
@@ -86,16 +86,13 @@ def _build_cohorts_matrix() -> str:
                     label = "\u00b7"
                 else:
                     val, created_at = vote_map[key]
-                    ts = _human_ts(created_at)
                     if val == 1:
                         bg = "var(--ok)"
                         label = "\u25b2"
                     else:
                         bg = "var(--fail)"
                         label = "\u25bc"
-                    tip = (
-                        f"{esc(p.get('title') or '')} \u00b7 {val:+d} \u00b7 {esc(ts)}"
-                    )
+                    tip = f"{esc(p.get('title') or '')} \u00b7 {val:+d} \u00b7 {esc(created_at)}"
                 cells += (
                     f'<td title="{tip}" style="text-align:center;padding:4px 2px;background:{bg};'
                     f'color:#fff;font-size:11px;min-width:28px">{label}</td>'
