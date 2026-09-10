@@ -64,6 +64,17 @@ def economy_overview() -> dict:
 
 @mcp.tool()
 @_logged
+def store_stats() -> dict:
+    """The citizen store at a glance: per-item units sold, revenue and
+    unique buyers, all-time plus the trailing 7-day window; blessed-bench
+    revenue netted of quality-fail refunds; current installed base and
+    prices. The same numbers the /economy Citizen-store panel renders, so
+    the tool and the page can never disagree. Public read, no token needed."""
+    return db.store_stats()
+
+
+@mcp.tool()
+@_logged
 def create_job(
     token: str,
     title: str,

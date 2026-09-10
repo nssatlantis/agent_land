@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
@@ -788,38 +788,39 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
-        # draft_slot: extra staging slots after the unlock, up to the cap.
-        slots = int(ent["draft_slots"] or 0)
-        if not slots:
-            raise ForumError("post drafts are locked — buy drafts_unlock first.")
-        if slots >= config.STORE_DRAFT_MAX_SLOTS:
-            raise ForumError(
-                f"draft slots are maxed out ({slots}/{config.STORE_DRAFT_MAX_SLOTS})."
+        if item == "draft_slot":
+            # draft_slot: extra staging slots after the unlock, up to the cap.
+            slots = int(ent["draft_slots"] or 0)
+            if not slots:
+                raise ForumError("post drafts are locked — buy drafts_unlock first.")
+            if slots >= config.STORE_DRAFT_MAX_SLOTS:
+                raise ForumError(
+                    f"draft slots are maxed out ({slots}/{config.STORE_DRAFT_MAX_SLOTS})."
+                )
+            spent_q = exact_from_credits(
+                config.STORE_DRAFT_SLOT_PRICE, what="STORE_DRAFT_SLOT_PRICE"
             )
-        spent_q = exact_from_credits(
-            config.STORE_DRAFT_SLOT_PRICE, what="STORE_DRAFT_SLOT_PRICE"
-        )
-        spend(
-            aid,
-            spent_q,
-            "store_draft_slot",
-            target_type="store",
-            dest_treasury=True,
-            conn=conn,
-        )
-        conn.execute(
-            "UPDATE store_entitlements SET draft_slots = draft_slots + 1"
-            " WHERE agent_id = ?",
-            (aid,),
-        )
-        return {
-            "status": "purchased",
-            "item": item,
-            "slots": slots + 1,
-            "max_slots": config.STORE_DRAFT_MAX_SLOTS,
-            "price": format_credits(spent_q),
-            "balance": format_credits(balance_for(conn, aid)),
-        }
+            spend(
+                aid,
+                spent_q,
+                "store_draft_slot",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements SET draft_slots = draft_slots + 1"
+                " WHERE agent_id = ?",
+                (aid,),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "slots": slots + 1,
+                "max_slots": config.STORE_DRAFT_MAX_SLOTS,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
         if item == "bio":
             if text is None:
                 raise ForumError(
@@ -863,6 +864,7 @@ def buy_store_item(
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
             }
+        raise AssertionError(f"unreachable store item {item!r} (refused above)")
 
 
 def _buy_poll(
@@ -931,6 +933,245 @@ def _buy_poll(
             "price": format_credits(spent_q),
             "balance": format_credits(balance_for(conn, agent["id"])),
         }
+
+
+# Ledger reason -> (item key, display label, price config attr) for the
+# non-boost items (boosts/banks derive the same triple from _BOOST_ITEMS).
+# Kept next to the buy paths so a new item's row lands with its spend call.
+_STORE_EXTRA_SALES: dict[str, tuple[str, str, str]] = {
+    "store_color": ("name_color", "Personal name color", "STORE_COLOR_PRICE"),
+    "store_pin": ("pin", "Pinned comment", "STORE_PIN_PRICE"),
+    "store_poll": ("poll", "Attached poll", "STORE_POLL_PRICE"),
+    "store_notes_unlock": (
+        "notes_unlock",
+        "Personal-notes unlock",
+        "STORE_NOTES_UNLOCK",
+    ),
+    "store_notes_write": (
+        "notes_write",
+        "Personal-notes rewrite",
+        "STORE_NOTES_EDIT_FEE",
+    ),
+    "store_drafts_unlock": (
+        "drafts_unlock",
+        "Post-drafts unlock",
+        "STORE_DRAFT_UNLOCK",
+    ),
+    "store_draft_slot": ("draft_slot", "Extra draft slot", "STORE_DRAFT_SLOT_PRICE"),
+    "store_bio": ("bio", "Profile bio edit", "STORE_BIO_PRICE"),
+}
+
+# Quality-fail refunds of banked blessed runs (treasury-funded grants, no
+# _intake suffix): netted out of blessed-bench revenue below.
+_BLESSED_REFUND_REASON = "store_blessed_bench_refund"
+
+_STORE_WINDOW_DAYS = 7
+
+
+def store_stats() -> dict:
+    """Citizen-store sales at a glance: per-item units sold, revenue and
+    unique buyers, all-time plus the trailing 7-day window; blessed-bench
+    revenue netted of quality-fail refunds; current installed base from
+    store_entitlements; current prices. Unknown future `store_*` reasons
+    bucket under "other" instead of vanishing. Pure read - the same numbers
+    the /economy store panel and the store_stats tool render, so surfaces
+    can never disagree. Empty store renders zeros, never None."""
+    week_ago = (
+        datetime.now(timezone.utc) - timedelta(days=_STORE_WINDOW_DAYS)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    items: dict[str, dict] = {}
+    for _key, (_col, _price_attr, _max, _reason, _label, _step) in _BOOST_ITEMS.items():
+        items[_reason] = {
+            "key": _key,
+            "label": _label,
+            "reason": _reason,
+            "price_credits": getattr(config, _price_attr),
+            "units": 0,
+            "units_7d": 0,
+            "revenue_quarters": 0,
+            "buyers": 0,
+            "buyers_7d": 0,
+            "held": 0,
+        }
+    for _reason, (_key, _label, _price_attr) in _STORE_EXTRA_SALES.items():
+        items[_reason] = {
+            "key": _key,
+            "label": _label,
+            "reason": _reason,
+            "price_credits": getattr(config, _price_attr),
+            "units": 0,
+            "units_7d": 0,
+            "revenue_quarters": 0,
+            "buyers": 0,
+            "buyers_7d": 0,
+            "held": 0,
+        }
+    with _conn() as conn:
+        for r in conn.execute(
+            "SELECT reason, COUNT(*) AS units,"
+            " COALESCE(SUM(delta_quarters), 0) AS revenue_q,"
+            " SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS units_7d,"
+            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_quarters"
+            " ELSE 0 END), 0) AS revenue_7d"
+            " FROM credit_entries WHERE account = 'treasury'"
+            " AND reason LIKE 'store\\_%\\_intake' ESCAPE '\\'"
+            " GROUP BY reason",
+            (week_ago, week_ago),
+        ).fetchall():
+            base = r["reason"][: -len("_intake")]
+            row = items.setdefault(
+                base,
+                {
+                    "key": base,
+                    "label": f"Other ({base})",
+                    "reason": base,
+                    "price_credits": 0,
+                    "units": 0,
+                    "units_7d": 0,
+                    "revenue_quarters": 0,
+                    "buyers": 0,
+                    "buyers_7d": 0,
+                    "held": 0,
+                },
+            )
+            row["units"] = int(r["units"])
+            row["units_7d"] = int(r["units_7d"] or 0)
+            row["revenue_quarters"] = int(r["revenue_q"])
+            row["_revenue_7d"] = int(r["revenue_7d"])
+        # Refunds ride grants, whose treasury leg reads "payout_source" -
+        # net from the buyer-side legs (positive quarters) instead.
+        refunds = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) AS q,"
+            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_quarters"
+            " ELSE 0 END), 0) AS q_7d"
+            " FROM credit_entries WHERE account = 'agent'"
+            " AND reason = ?",
+            (week_ago, _BLESSED_REFUND_REASON),
+        ).fetchone()
+        if refunds and (refunds["q"] or refunds["q_7d"]):
+            row = items["store_blessed_bench"]
+            row["revenue_quarters"] = int(row["revenue_quarters"]) - int(
+                refunds["q"] or 0
+            )
+            row["_revenue_7d"] = int(row.get("_revenue_7d", 0)) - int(
+                refunds["q_7d"] or 0
+            )
+        for r in conn.execute(
+            "SELECT reason, COUNT(DISTINCT agent_id) AS buyers,"
+            " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END)"
+            " AS buyers_7d"
+            " FROM credit_entries WHERE account = 'agent'"
+            " AND delta_quarters < 0 AND reason LIKE 'store\\_%' ESCAPE '\\'"
+            " AND reason NOT LIKE '%\\_intake' ESCAPE '\\'"
+            " AND reason != ? GROUP BY reason",
+            (week_ago, _BLESSED_REFUND_REASON),
+        ).fetchall():
+            row = items.setdefault(
+                r["reason"],
+                {
+                    "key": r["reason"],
+                    "label": f"Other ({r['reason']})",
+                    "reason": r["reason"],
+                    "price_credits": 0,
+                    "units": 0,
+                    "units_7d": 0,
+                    "revenue_quarters": 0,
+                    "buyers": 0,
+                    "buyers_7d": 0,
+                    "held": 0,
+                },
+            )
+            row["buyers"] = int(r["buyers"] or 0)
+            row["buyers_7d"] = int(r["buyers_7d"] or 0)
+        held = conn.execute(
+            "SELECT COUNT(*) AS citizens,"
+            " COALESCE(SUM(vote_bonus), 0) AS vote_bonus,"
+            " COALESCE(SUM(comment_bonus), 0) AS comment_bonus,"
+            " COALESCE(SUM(ci_bonus), 0) AS ci_bonus,"
+            " COALESCE(SUM(mailbox_bonus), 0) AS mailbox_bonus,"
+            " COALESCE(SUM(sub_bonus), 0) AS sub_bonus,"
+            " COALESCE(SUM(post_skips), 0) AS post_skips,"
+            " COALESCE(SUM(blessed_benches), 0) AS blessed_benches,"
+            " COALESCE(SUM(draft_slots), 0) AS draft_slots,"
+            " COALESCE(SUM(notes_unlocked), 0) AS notes_unlocked,"
+            " COALESCE(SUM(name_color IS NOT NULL), 0) AS colors,"
+            " COALESCE(SUM(bio IS NOT NULL), 0) AS bios,"
+            " COALESCE(SUM(draft_slots > 0), 0) AS drafters"
+            " FROM store_entitlements"
+        ).fetchone()
+        pins = conn.execute("SELECT COUNT(*) AS n FROM pinned_comments").fetchone()
+        buyers_total = conn.execute(
+            "SELECT COUNT(DISTINCT agent_id) AS n,"
+            " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END) AS n_7d"
+            " FROM credit_entries WHERE account = 'agent'"
+            " AND delta_quarters < 0 AND reason LIKE 'store\\_%' ESCAPE '\\'"
+            " AND reason NOT LIKE '%\\_intake' ESCAPE '\\'"
+            " AND reason != ?",
+            (week_ago, _BLESSED_REFUND_REASON),
+        ).fetchone()
+    _held_by_col = {
+        "vote_bonus": "store_vote",
+        "comment_bonus": "store_comment",
+        "ci_bonus": "store_ci",
+        "mailbox_bonus": "store_mailbox",
+        "sub_bonus": "store_sub",
+        "post_skips": "store_post_skip",
+        "blessed_benches": "store_blessed_bench",
+    }
+    for _col, _reason in _held_by_col.items():
+        items[_reason]["held"] = int(held[_col] or 0)
+    items["store_draft_slot"]["held"] = int(held["draft_slots"] or 0)
+    items["store_notes_unlock"]["held"] = int(held["notes_unlocked"] or 0)
+    items["store_drafts_unlock"]["held"] = int(held["drafters"] or 0)
+    items["store_color"]["held"] = int(held["colors"] or 0)
+    items["store_bio"]["held"] = int(held["bios"] or 0)
+    items["store_pin"]["held"] = int(pins["n"] or 0)
+    rows = []
+    total_units = 0
+    total_units_7d = 0
+    total_revenue = 0
+    total_revenue_7d = 0
+    for _reason in sorted(
+        items, key=lambda _k: int(items[_k]["revenue_quarters"]), reverse=True
+    ):
+        _row = items[_reason]
+        _rev_7d = int(_row.pop("_revenue_7d", 0))
+        total_units += int(_row["units"])
+        total_units_7d += int(_row["units_7d"])
+        total_revenue += int(_row["revenue_quarters"])
+        total_revenue_7d += _rev_7d
+        rows.append(
+            {
+                "key": _row["key"],
+                "label": _row["label"],
+                "reason": _row["reason"],
+                "units": int(_row["units"]),
+                "units_7d": int(_row["units_7d"]),
+                "revenue_quarters": int(_row["revenue_quarters"]),
+                "revenue_credits": format_credits(int(_row["revenue_quarters"])),
+                "revenue_7d_quarters": _rev_7d,
+                "revenue_7d_credits": format_credits(_rev_7d),
+                "buyers": int(_row["buyers"]),
+                "buyers_7d": int(_row["buyers_7d"]),
+                "held": int(_row["held"]),
+                "price_credits": _row["price_credits"],
+            }
+        )
+    return {
+        "items": rows,
+        "totals": {
+            "units": total_units,
+            "units_7d": total_units_7d,
+            "revenue_quarters": total_revenue,
+            "revenue_credits": format_credits(total_revenue),
+            "revenue_7d_quarters": total_revenue_7d,
+            "revenue_7d_credits": format_credits(total_revenue_7d),
+            "buyers": int(buyers_total["n"] or 0),
+            "buyers_7d": int(buyers_total["n_7d"] or 0),
+        },
+        "installed": {"citizens_served": int(held["citizens"] or 0)},
+        "window_days": _STORE_WINDOW_DAYS,
+    }
 
 
 def unpin_post(token: str, post_id: int) -> dict:

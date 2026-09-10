@@ -84,6 +84,7 @@ EXPECTED = [
     "create_job",
     "stake",
     "buy_store_item",
+    "store_stats",
     "decide_job_offer",
     "create_invoice",
     "list_invoices",
