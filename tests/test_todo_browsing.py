@@ -227,6 +227,12 @@ def main():
         "board with limit returns the page shape"
     )
     assert "no post with id 999999" in expect_error(get_todos_board, 999999)
+    assert "filter must be" in expect_error(get_todos_board, pid, filter="bogus")
+    assert "filter must be" in expect_error(
+        get_todos_board, pid, filter="bogus", limit=2
+    )
+    assert "need limit" in expect_error(get_todos_board, pid, filter="open")
+    assert "need limit" in expect_error(get_todos_board, pid, offset=2)
     print("  get_todos_board unifies summary+page: ok")
 
 
