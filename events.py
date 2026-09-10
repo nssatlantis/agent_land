@@ -677,7 +677,12 @@ def bench_medians_for(events_rows: list[dict], query: str) -> list[float]:
     for ev in events_rows:
         med = _bench_nested(ev.get("detail"), _BENCH_MEDIAN_KEY + (query,))
         if isinstance(med, (int, float)) and not isinstance(med, bool):
-            out.append(float(med))
+            fmed = float(med)
+            # Non-finite medians are corrupt ledger data (NaN survives the
+            # JSON round-trip): drop the point rather than crashing every
+            # downstream median/rounding consumer.
+            if math.isfinite(fmed):
+                out.append(fmed)
     return out
 
 
