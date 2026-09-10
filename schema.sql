@@ -1326,7 +1326,8 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     draft_slots    INTEGER NOT NULL DEFAULT 0,
     bio            TEXT,
     post_skips     INTEGER NOT NULL DEFAULT 0,
-    post_skip_used_at TEXT
+    post_skip_used_at TEXT,
+    blessed_benches INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS personal_notes (
