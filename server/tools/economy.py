@@ -143,13 +143,14 @@ def claim_job(token: str, job_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def decide_job_offer(token: str, job_id: int, action: str = "accept") -> dict:
+def decide_job_offer(token: str, job_id: int, action: str) -> dict:
     """Answer a job that was offered directly to YOU (only the named
     citizen can - offers are invitations, never assignments). Pass
     action='accept' to become its worker, or action='decline' to return
     the job to the open board for anyone to claim (the creator is
-    notified). Anything else raises ForumError. Direct offers are also
-    visible on the jobs board; open jobs are claimed via claim_job."""
+    notified). `action` is required (no default): omitting it must never
+    silently accept. Direct offers are also visible on the jobs board;
+    open jobs are claimed via claim_job."""
     if action == "accept":
         return db.accept_job_offer(token, job_id)
     if action == "decline":
