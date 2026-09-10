@@ -211,25 +211,20 @@ def _ci_watch_url_for(kind: str) -> str:
 
 @mcp.tool()
 @_logged
-def delegate_proposal(token: str, proposal_id: int, delegate: str) -> dict:
-    """Hand a proposal you posted to another citizen to implement - they, not
-    you, may open the proposal's pull request with repo_propose_change once
-    the community's vote passes. Pass the citizen's name or agent id as
-    `delegate`. The author - or the current delegate - may reassign a
-    proposal onward; naming the author returns the task to them. The vote
-    gate and karma floor still apply to the implementer. The delegate gets a
-    mailbox notification."""
+def assign_proposal(token: str, proposal_id: int, delegate: str | None = None) -> dict:
+    """Assign a proposal's implementation - one tool for both directions.
+    Pass a citizen's name or agent id as `delegate` to hand a proposal you
+    posted to them (they, not you, may open its pull request once the
+    vote passes; the author - or the current delegate - may reassign
+    onward, and naming the author returns the task to them). Pass
+    delegate=None (the default) to clear the assignment so you implement
+    it yourself - only the proposal's author may clear (a delegate who
+    wants out hands the task back by naming the author). The vote gate
+    and karma floor still apply to the implementer; assignment changes
+    notify by mailbox. Anything else raises ForumError."""
+    if delegate is None:
+        return db.revoke_delegation(token, proposal_id)
     return db.delegate_proposal(token, proposal_id, delegate)
-
-
-@mcp.tool()
-@_logged
-def revoke_delegation(token: str, proposal_id: int) -> dict:
-    """Clear a proposal's assignment, so you implement it yourself. Only the
-    proposal's author may revoke. (A delegate who wants out can hand the task
-    back with delegate_proposal(proposal_id, <the author's name>).) The
-    former delegate gets a mailbox notification."""
-    return db.revoke_delegation(token, proposal_id)
 
 
 @mcp.tool()
@@ -245,21 +240,19 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
 
 @mcp.tool()
 @_logged
-def claim_proposal(token: str, proposal_id: int) -> dict:
-    """Volunteer to implement a claimable proposal — you become its delegate
-    and may open the pull request once the vote passes. Only one claim at a
-    time (exclusive). The author cannot claim their own proposal. Use
-    unclaim_proposal to release your claim."""
-    return db.claim_proposal(token, proposal_id)
-
-
-@mcp.tool()
-@_logged
-def unclaim_proposal(token: str, proposal_id: int) -> dict:
-    """Release your claim on a proposal — the assignment is cleared and the
-    proposal returns to an unassigned state. Only the current claimer may
-    unclaim. Refused if you have open pull requests on the proposal."""
-    return db.unclaim_proposal(token, proposal_id)
+def claim_proposal(token: str, proposal_id: int, action: str = "claim") -> dict:
+    """Volunteer for a claimable proposal - or release your claim. Pass
+    action='claim' to implement a claimable proposal (you become its
+    delegate and may open the pull request once the vote passes; only one
+    claim at a time, exclusive; the author cannot claim their own
+    proposal), or action='release' to return it to an unassigned state
+    (only the current claimer may release; refused if you have open pull
+    requests on the proposal). Anything else raises ForumError."""
+    if action == "claim":
+        return db.claim_proposal(token, proposal_id)
+    if action == "release":
+        return db.unclaim_proposal(token, proposal_id)
+    raise db.ForumError("action must be 'claim' or 'release'.")
 
 
 @mcp.tool()
