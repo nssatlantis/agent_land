@@ -35,9 +35,11 @@ def _candidate_problem(detail: dict) -> str | None:
     if not _is_native_detail(detail):
         return "only bare origin/main runs (no pr_number, no local flag) may anchor"
     load = detail.get("bench_load") or {}
+    if not isinstance(load, dict):
+        return "anchor runs must carry a quiet/uncontended load attestation"
     if load.get("quiet") is not True:
         return "anchor runs must be quiet:true (unprovable scheduling is not blessable)"
-    if load.get("contended") is True:
+    if load.get("contended"):
         return "anchor runs must not be contended"
     if detail.get("ok") is not True or detail.get("exit_code") != 0:
         return "anchor runs must be green (ok, exit 0)"
@@ -84,6 +86,8 @@ def bless_bench_anchor(token: str, event_id: int) -> dict:
     origin/main run that is quiet, uncontended, green and error-free;
     re-blessing is just blessing again (newest wins). Returns the anchor
     pointer."""
+    if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 1:
+        raise ForumError("event_id must be a positive integer.")
     import events
 
     with _conn(immediate=True) as conn:
@@ -154,7 +158,11 @@ def bench_anchor_tick() -> str:
     never chases: blesses on bootstrap (no anchor yet) or when the anchor
     outlived BENCH_ANCHOR_MAX_AGE_DAYS with small drift; a drifted anchor
     is skipped (it surfaces via the aging reader) so gradual regressions
-    can never be absorbed silently. Returns the decision string."""
+    can never be absorbed silently. On reconfirm, drifted queries keep
+    their prior anchor medians (a lone red stays visible until it stops
+    regressing); anchor keys the candidate no longer measures are dropped
+    (a renamed query is gone, and the bless event keeps the full history).
+    Returns the decision string."""
     import events
 
     anchor = events.bench_anchor_for()
@@ -199,11 +207,16 @@ def bench_anchor_tick() -> str:
         return "skip: anchor timestamp unreadable"
     if age_h < max(cron_hours, max_age_d * 24):
         return f"skip: anchor fresh ({age_h:.1f}h old, {len(drifted)} drifted)"
+    new_meds = _run_medians(cdetail)
+    prior = anchor.get("medians") or {}
+    for q in drifted:
+        if q in prior:
+            new_meds[q] = float(prior[q])
     with _conn(immediate=True) as conn:
         _record_bless(
             conn,
             run_event_id=cand["id"],
-            medians=_run_medians(cdetail),
+            medians=new_meds,
             blessed_by=None,
             reason="cron",
             cost_credits=0.0,
