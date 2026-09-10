@@ -544,6 +544,58 @@ def list_invoices(
         }
 
 
+def open_invoice_stats(limit: int = 50) -> dict:
+    """Open + overdue invoices across citizens: awaiting-acceptance vs
+    committed splits with outstanding + overdue totals. Payer/issuer names
+    publish, following the stakes/jobs/reports precedent and the
+    already-public transfer ledger. Pure read; empty renders zeros, never
+    None. Capped page plus total so an unbounded backlog can't bloat the
+    caller."""
+    from db._credits import format_credits
+
+    limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
+    _open_marks = ",".join("?" * len(_OPEN_STATUSES))
+    with _conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
+            _OPEN_STATUSES,
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0"
+            " ORDER BY due_at ASC, id ASC LIMIT ?",
+            (*_OPEN_STATUSES, limit),
+        ).fetchall()
+        awaiting: list[dict] = []
+        committed: list[dict] = []
+        outstanding_q = 0
+        overdue_q = 0
+        overdue_n = 0
+        for r in rows:
+            pub = _public_invoice(conn, r)
+            if pub["status"] == "accepted":
+                committed.append(pub)
+                outstanding_q += int(pub["remaining_quarters"])
+                if pub["overdue"]:
+                    overdue_n += 1
+                    overdue_q += int(pub["remaining_quarters"])
+            else:
+                awaiting.append(pub)
+    return {
+        "awaiting": awaiting,
+        "committed": committed,
+        "total": total,
+        "totals": {
+            "outstanding_quarters": outstanding_q,
+            "outstanding_credits": format_credits(outstanding_q),
+            "overdue_count": overdue_n,
+            "overdue_quarters": overdue_q,
+            "overdue_credits": format_credits(overdue_q),
+        },
+    }
+
+
 def get_invoice(token: str, invoice_id: int) -> dict:
     """One invoice in full. Either side — plus the creator behind a
     Treasury bill — may read it; nobody else."""
