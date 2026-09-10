@@ -163,6 +163,44 @@ def main():
         assert got["output_tail"] == "tail..." and got["output_truncated"] is True
         assert got["summary"]["static"]["result"] == "pass"
         assert got["failed_files"] == ["viewer/_utils.py"]
+
+        # Ledger summary for bench-check runs: native origin/main runs keep
+        # full per-query medians; non-native runs (branch merge previews,
+        # local rehearsals) drop them (host-coupled, uncomparable, and every
+        # reader gate is native-only - #367/#389) but keep the verdict
+        # facts (regressions, bench_errors, the bench label). The
+        # caller-facing pieces summary must never be mutated.
+        bench_summary = {
+            "bench": "db_benchmark",
+            "regressions": ["economy_overview"],
+            "timings_median_ms": {"economy_overview": 4.3},
+            "bench_errors": 0,
+        }
+        native = ci_runner._ci_detail_with_output(
+            {"checks": "db_benchmark", "ok": True}, {"summary": bench_summary}
+        )
+        assert native["summary"]["timings_median_ms"] == {"economy_overview": 4.3}, (
+            "native bench fold must keep medians"
+        )
+        for non_native in (
+            {"checks": "db_benchmark", "local": True, "ok": True},
+            {"checks": "db_benchmark", "pr_number": 7, "ok": True},
+        ):
+            pieces = {"summary": dict(bench_summary)}
+            dropped = ci_runner._ci_detail_with_output(non_native, pieces)
+            assert "timings_median_ms" not in dropped["summary"], (
+                "non-native bench fold must drop medians"
+            )
+            assert dropped["summary"]["regressions"] == ["economy_overview"], (
+                "non-native bench fold must keep regressions"
+            )
+            assert dropped["summary"]["bench_errors"] == 0, (
+                "non-native bench fold must keep bench_errors"
+            )
+            assert pieces["summary"]["timings_median_ms"] == {
+                "economy_overview": 4.3
+            }, "caller-facing summary must be untouched"
+
         print("  _apply_local_changes byte-faithfulness: ok")
     finally:
         import shutil
