@@ -6,6 +6,39 @@ import statistics
 
 from db._core import ForumError
 
+_BENCH_CHECK_KINDS = ("db_benchmark", "db_bench")
+
+
+def _is_native_row(row: dict) -> bool:
+    """Bare origin/main shape (mirrors events._is_reference_run): no PR
+    merge preview, no local rehearsal flag."""
+    detail = row.get("detail") or {}
+    return not detail.get("pr_number") and detail.get("local") is not True
+
+
+def _bench_rows(window: int, native_only: bool) -> list[dict]:
+    """Bench-checks runs newest-first. Native origin/main bench rows live
+    under ci_db_bench_run; branch previews and local rehearsals log under
+    their own kinds carrying the same bench summary, so native_only=False
+    merges all three (filtered to bench checks with medians). With
+    native_only=True the pool is exact, so window_runs always matches the
+    series behind it."""
+    import events
+
+    rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=window)
+    if native_only:
+        return [r for r in rows if _is_native_row(r)]
+    for kind in (events.EVT_CI_BRANCH_RUN, events.EVT_CI_LOCAL_RUN):
+        for r in events.query_events(kind=kind, limit=window):
+            detail = r.get("detail") or {}
+            if detail.get("checks") not in _BENCH_CHECK_KINDS:
+                continue
+            meds = (detail.get("summary") or {}).get("timings_median_ms")
+            if isinstance(meds, dict) and meds:
+                rows.append(r)
+    rows.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or 0), reverse=True)
+    return rows
+
 
 def _entry(q: str, series: list[float], base: dict[str, float]) -> dict:
     """One query's overview row: latest, trailing median, anchor base, drift."""
@@ -45,7 +78,7 @@ def bench_history(
         window = 20  # domain: degrade-silently
     if query is not None and (not isinstance(query, str) or not query.strip()):
         raise ForumError("query must be a non-empty string.")
-    rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=window)
+    rows = _bench_rows(window, native_only)
     base, label, anchor = events.bench_anchor_base_for(rows)
     series_map = events.bench_native_series(rows, limit=window, native_only=native_only)
     if anchor is None:
