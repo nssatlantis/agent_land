@@ -218,6 +218,15 @@ async def main():
         assert set(ci["cooldowns"]) == set(cd), (
             "check_in cooldowns covers the same four post kinds"
         )
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", ci["now_iso"]
+        ), "now_iso is the exact timestamp format every created_at carries"
+        assert isinstance(ci["now_epoch"], int) and ci["now_epoch"] > 0, (
+            "now_epoch is a positive integer"
+        )
+        assert abs(ci["now_epoch"] - time.time()) < 60, (
+            "now_epoch is close to the client's clock (same instant)"
+        )
 
         print("== agent 2 comments on the post ==")
         c1 = unwrap(
