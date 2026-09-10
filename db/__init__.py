@@ -32,6 +32,12 @@ from db._aggregates import (  # noqa: F401,E402
     recent_activity_total,
 )
 
+# ── benchmark anchor blessing ──────────────────────────────────────────
+from db._bench_anchor import (  # noqa: F401
+    bench_anchor_tick,
+    bless_bench_anchor,
+)
+
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
     confirm_bug_report,
@@ -52,12 +58,6 @@ from db._ci_usage import (  # noqa: F401
     CI_KINDS,
     ci_kind_status,
     ci_usage_for,
-)
-
-# ── benchmark anchor blessing ──────────────────────────────────────────
-from db._bench_anchor import (  # noqa: F401
-    bench_anchor_tick,
-    bless_bench_anchor,
 )
 
 # ── proposal claiming ──────────────────────────────────────────────────
