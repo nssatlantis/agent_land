@@ -73,6 +73,7 @@ EXPECTED = [
     "repo_propose_change",
     "repo_get_pr",
     "assign_proposal",
+    "claim_proposal",
     "repo_list_workflow_runs",
     "repo_workflow_status",
     "repo_workflow_step",
