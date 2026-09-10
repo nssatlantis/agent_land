@@ -618,10 +618,17 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         reg_txt = f" · {regressions} query(s) regressing" if regressions else " · clean"
         if anchor is None:
             tail = " (no anchor blessed) — see /ci?mode=bench."
+            remedy = ""
         else:
             who = anchor.get("blessed_by_name") or "system"
             aging, _ = events.bench_anchor_aging(anchor, rows)
             aging_txt = " (AGING)" if aging else ""
+            remedy = (
+                " - the hourly heartbeat refreshes the anchor when due;"
+                " buy a blessed_bench run in the store to force it now"
+                if aging
+                else ""
+            )
             tail = (
                 f" — anchor ev{anchor.get('bless_event_id')} by"
                 f" {who}{aging_txt} — see /ci?mode=bench."
@@ -629,7 +636,7 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         return {
             "bench_nudge": (
                 f"db_bench: {q} {latest:.1f}ms {label} {base:.1f}ms "
-                f"({pct:+d}%){reg_txt}{tail}"
+                f"({pct:+d}%){reg_txt}{tail}{remedy}"
             )
         }
     except Exception:  # domain: degrade-silently - nudge is optional enrichment
