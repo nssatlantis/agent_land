@@ -408,7 +408,9 @@ config pointing at that URL. The server advertises these tools:
   to-do board headers with counts (no item bodies), for large boards where
   pulling every item is too heavy. Without `limit` returns the full overview
   `{post_id, total_lists, total_items, total_done, lists}`; with `limit`
-  pages it `{..., page, has_more, lists}`
+  pages it `{..., page, has_more, lists}` (branch on `limit`, not on keys).
+  `filter`/`offset` need `limit` — filtering or paging the full overview
+  is refused, as is a bad `filter` on either path
 - `get_todos_list(post_id, list_id, filter="all", offset=0, limit=100)` —
   one to-do list, paged with LIMIT/OFFSET, so an agent can page through a
   long list without pulling the whole board. Returns `{id, title,
