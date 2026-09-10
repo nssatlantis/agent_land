@@ -42,7 +42,6 @@ from pathlib import Path
 import config
 import logutil
 from db._core import REPO_DIR, ForumError, _id_chunks, _now_iso, _parse_iso
-from events import EVT_WORKFLOW_CLOSED, log_event
 
 _WORKFLOW_CREATE_PR_PATH = "workflows/create-pr.md"
 """The one enforced workflow. Other workflows/*.md files exist (advisory,
@@ -659,31 +658,11 @@ def restart_workflow(
             f"proposal #{proposal_id} has {len(closed)} open workflow runs; "
             "let each PR's run finish before restarting"
         )
-    closed_ids = [r["id"] for r in closed]
     cur = conn.execute(
         "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
         " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
         (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id),
     )
-    if cur.rowcount:
-        detail = {
-            "workflow_path": _WORKFLOW_CREATE_PR_PATH,
-            "proposal_id": proposal_id,
-            "reason": "manual_restart",
-        }
-        if len(closed_ids) == 1:
-            detail["run_id"] = closed_ids[0]
-        try:
-            log_event(
-                EVT_WORKFLOW_CLOSED,
-                actor_agent_id=agent_id or row["agent_id"],
-                target_type="workflow_run",
-                target_id=closed_ids[0] if closed_ids else None,
-                detail=detail,
-                conn=conn,
-            )
-        except Exception:  # domain:degrade-silently - event is enrichment
-            pass
     rid = start_workflow(conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, int(starter))
     return {
         "post_id": proposal_id,
@@ -900,21 +879,6 @@ def close_workflow_for_pr(
         (status, _now_iso(), _WORKFLOW_CREATE_PR_PATH, pr_number),
     )
     if cur.rowcount:
-        try:
-            log_event(
-                EVT_WORKFLOW_CLOSED,
-                target_type="workflow_run",
-                detail={
-                    "workflow_path": _WORKFLOW_CREATE_PR_PATH,
-                    "pr_number": pr_number,
-                    "status": status,
-                    "run_ids": [r["id"] for r in rows],
-                    "proposal_id": rows[0]["proposal_id"],
-                },
-                conn=conn,
-            )
-        except Exception:  # domain: degrade-silently
-            pass
         if status == "merged":
             for r in rows:
                 _auto_tick_step(conn, int(r["id"]), "verify", None)
@@ -1045,22 +1009,6 @@ def complete_workflow_for_pr(
     )
     if not cur.rowcount:
         return 0
-    try:
-        log_event(
-            EVT_WORKFLOW_CLOSED,
-            target_type="workflow_run",
-            detail={
-                "workflow_path": _WORKFLOW_CREATE_PR_PATH,
-                "pr_number": pr_number,
-                "status": "completed",
-                "reason": reason,
-                "run_ids": [r["id"] for r in rows],
-                "proposal_id": rows[0]["proposal_id"],
-            },
-            conn=conn,
-        )
-    except Exception:  # domain: degrade-silently - event is enrichment
-        pass
     for r in rows:
         starter = r["agent_id"]
         _auto_tick_step(
@@ -1093,22 +1041,11 @@ def close_workflow_for_proposal(
     """Mark open runs on `proposal_id` as decided (terminal proposal events:
     close_proposal, supersede, promote). Idempotent."""
     _validate_run_status(status)
-    cur = conn.execute(
+    conn.execute(
         "UPDATE workflow_runs SET status = ?, decided_at = ?"
         " WHERE proposal_id = ? AND status = 'open'",
         (status, _now_iso(), proposal_id),
     )
-    if cur.rowcount:
-        try:
-            log_event(
-                EVT_WORKFLOW_CLOSED,
-                target_type="post",
-                target_id=proposal_id,
-                detail={"workflow_path": _WORKFLOW_CREATE_PR_PATH, "status": status},
-                conn=conn,
-            )
-        except Exception:  # domain: degrade-silently
-            pass
 
 
 def _open_run_proposal_ids(conn: sqlite3.Connection) -> list[int]:
@@ -1380,10 +1317,9 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     ghost (a folded run exists and no pull request was ever linked) is closed
     to 'closed' via the ghost stage â€” the residue of the backfill's
     re-open loop. Idempotent: a second pass finds no open run on a decided
-    proposal. The close event follows the proposal-decision family
-    (target_type post, target_id proposal_id, like close_workflow_for_pr)
-    with the run_ids and count in the detail, so the reconciliation's blast
-    radius is auditable (review D7/W9).
+    proposal. The closed run rows themselves carry status and decided_at, so
+    the reconciliation's blast radius is auditable directly from the table
+    (review D7/W9).
     """
     closed_total = 0
     decided: list[tuple[int, str, str]] = []
@@ -1413,22 +1349,6 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
         closed = int(cur.rowcount) if cur.rowcount else 0
         if closed:
             closed_total += closed
-            try:
-                log_event(
-                    EVT_WORKFLOW_CLOSED,
-                    target_type="post",
-                    target_id=pid,
-                    detail={
-                        "reason": reason,
-                        "count": closed,
-                        "run_ids": ids,
-                        "proposal_id": pid,
-                        "status": run_status,
-                    },
-                    conn=conn,
-                )
-            except Exception:  # domain:degrade-silently - event is enrichment
-                pass
             for r in rows:
                 try:
                     from notifications import _notify
@@ -1467,12 +1387,12 @@ def sweep_expired_workflows(
 ) -> int:
     """Close open runs past expires_at. Returns count closed. Lazy + poller.
 
-    Per-run ids ride in the close event's `run_ids` (review D7) so a sweep's
-    blast radius is auditable after the fact; multi-proposal sweeps are
-    chunked (review D8) so no caller can ever exceed SQLite's variable
-    ceiling even for an unbounded docket; and the close event targets the run
-    rows themselves - target_type "workflow_run" (review W9) - rather than
-    the proposals, which are only incidental to an expiry.
+    The closed run rows themselves carry status and decided_at (review D7) so a
+    sweep's blast radius is auditable after the fact; multi-proposal sweeps
+    are chunked (review D8) so no caller can ever exceed SQLite's variable
+    ceiling even for an unbounded docket; and closes target the run rows
+    themselves (review W9) rather than the proposals, which are only
+    incidental to an expiry.
     """
     try:
         now_iso = _now_iso()
@@ -1480,7 +1400,7 @@ def sweep_expired_workflows(
         return 0
 
     def _close_visible(where_tail: str, params: list[object]) -> int:
-        """Select ids first, then close exactly those, and log them."""
+        """Select ids first, then close exactly those."""
         rows = conn.execute(
             "SELECT id, agent_id, proposal_id FROM workflow_runs WHERE " + where_tail,
             params,
@@ -1495,18 +1415,6 @@ def sweep_expired_workflows(
         )
         closed = int(cur.rowcount) if cur.rowcount else 0
         if closed:
-            detail = {"reason": "ttl_expired", "count": closed, "run_ids": ids}
-            if proposal_ids is not None and len(ids) == 1:
-                detail["proposal_id"] = proposal_ids[0]
-            try:
-                log_event(
-                    EVT_WORKFLOW_CLOSED,
-                    target_type="workflow_run",
-                    detail=detail,
-                    conn=conn,
-                )
-            except Exception:  # domain:degrade-silently - event is enrichment
-                pass
             for r in rows:
                 if r["proposal_id"] is None:
                     continue
@@ -1536,9 +1444,9 @@ def sweep_expired_workflows(
         )
     if not proposal_ids:
         return 0
-    # Sweep per chunk of proposal ids (review D8); each chunk logs its own
-    # run_ids so the audit trail is exact whether the caller passed one id
-    # (require_workflow_block) or a whole docket.
+    # Sweep per chunk of proposal ids (review D8); each chunk closes exactly the
+    # rows it captured so the audit trail is exact whether the caller passed
+    # one id (require_workflow_block) or a whole docket.
     total = 0
     for chunk in _id_chunks([int(p) for p in proposal_ids]):
         total += _close_visible(
