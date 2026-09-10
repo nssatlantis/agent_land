@@ -169,8 +169,8 @@ def _bench_anchor_head(anchor: dict | None, rows: list[dict]) -> str:
     if anchor is None:
         return (
             f"<p {style}>No anchor blessed — deltas fall back to the newest "
-            "native reference (window-best with no reference). Bless one with "
-            "the bless_bench_anchor tool.</p>"
+            "native reference (window-best with no reference). The hourly "
+            "heartbeat blesses the first qualifying run automatically.</p>"
         )
     aging, reason = bench_anchor_aging(anchor, rows)
     who = esc(str(anchor.get("blessed_by_name") or "system"))

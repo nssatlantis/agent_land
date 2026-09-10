@@ -44,6 +44,7 @@ from ._runs import (  # noqa: F401
     run_branch_ci_for_poller,
     run_checks,
     run_checks_with_deadline,
+    run_heartbeat_bench,
 )
 from ._sandbox import (  # noqa: F401
     _STATIC_SUMMARY_RE,

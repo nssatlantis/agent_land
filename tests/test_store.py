@@ -91,6 +91,7 @@ def test_catalog_shape():
         "mailbox_boost",
         "sub_boost",
         "post_skip",
+        "blessed_bench",
         "name_color",
         "pin",
         "poll",
@@ -818,6 +819,38 @@ def test_viewer_pin_badge_and_color():
     assert "pinned" not in meta2 and "#7dd3fc" not in meta2
 
 
+def test_blessed_bench_bank_flow():
+    import db._store as _store
+
+    buyer = _new_agent("store-bench")
+    _fund(buyer["agent_id"], 200)
+    with db._conn() as _c:
+        assert _store._find_blessed_bench_buyer(_c) is None, "empty bank, no buyer"
+    rep = db.buy_store_item(buyer["token"], "blessed_bench")
+    assert rep["status"] == "purchased" and rep["owned"] == 1, "buy banks one run"
+    assert rep["max"] == 1, "lifetime max is one"
+    err = expect_error(db.buy_store_item, buyer["token"], "blessed_bench")
+    assert "maxed out" in err, "second buy refused at the lifetime max"
+    with db._conn(immediate=True) as _c:
+        assert _store._find_blessed_bench_buyer(_c) == buyer["agent_id"], (
+            "buyer found while banked"
+        )
+        _store._take_blessed_bench(_c, buyer["agent_id"])
+        assert _store._find_blessed_bench_buyer(_c) is None, "take spends the bank"
+        assert "no banked blessed" in expect_error(
+            _store._take_blessed_bench, _c, buyer["agent_id"]
+        ), "empty take refuses (race guard)"
+        _store.restore_blessed_bench(_c, buyer["agent_id"])
+        assert _store._find_blessed_bench_buyer(_c) == buyer["agent_id"], (
+            "infra restore gives the run back"
+        )
+        _store._take_blessed_bench(_c, buyer["agent_id"])
+    b_before = _bal(buyer["agent_id"])
+    refund = db.refund_blessed_bench(buyer["agent_id"])
+    assert refund["status"] == "refunded", "quality-fail refunds"
+    assert _bal(buyer["agent_id"]) - b_before == 8, "refund pays the 2-credit price"
+
+
 def main():
     test_catalog_shape()
     test_unknown_item_refuses()
@@ -831,6 +864,7 @@ def main():
     test_ci_mailbox_sub_effective_caps()
     test_ci_gate_honors_boost()
     test_sub_boost_end_to_end()
+    test_blessed_bench_bank_flow()
     test_name_color_flow()
     test_pin_flow()
     test_poll_purchase_flow()

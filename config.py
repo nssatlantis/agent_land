@@ -428,6 +428,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # cooldown and never accept a skip; at most one skip per UTC day.
     "STORE_POST_SKIP_PRICE": ("FORUM_STORE_POST_SKIP_PRICE", 4.0, float),
     "STORE_POST_SKIP_MAX": ("FORUM_STORE_POST_SKIP_MAX", 3, int),
+    # Blessed benchmark runs: buy a banked blessed run (lifetime MAX buys);
+    # the hourly anchor tick spends one banked run at a time by dispatching
+    # a fresh quiet native bench and blessing it (quality-fail auto-refunds).
+    # Every successful bless - heartbeat, store, legacy manual - resets the
+    # shared heartbeat timer.
+    "STORE_BLESSED_BENCH_PRICE": ("FORUM_STORE_BLESSED_BENCH_PRICE", 2.0, float),
+    "STORE_BLESSED_BENCH_MAX": ("FORUM_STORE_BLESSED_BENCH_MAX", 1, int),
     # Staged posts/proposals (invisible pre-posts): a one-time unlock opens
     # the first slot, extra slots are bought up to MAX_SLOTS, and every new
     # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
@@ -735,11 +742,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # drift heuristic inspired by the harness 20% threshold on 3+ queries,
     # deliberately not the full 20%+2σ gate).
     "BENCH_ANCHOR_MAX_AGE_DAYS": ("FORUM_BENCH_ANCHOR_MAX_AGE_DAYS", 7, int),
-    # Manual bless costs credits to the treasury (used-well assurance);
-    # the hourly cron re-confirms for free. CRON_HOURS floors how often a
-    # cron bless may land (the max-age rule dominates at defaults).
-    "BENCH_BLESS_COST_CREDITS": ("FORUM_BENCH_BLESS_COST_CREDITS", 1.0, float),
-    "BENCH_BLESS_CRON_HOURS": ("FORUM_BENCH_BLESS_CRON_HOURS", 24, int),
+    # Anchor heartbeat: the hourly tick dispatches a fresh quiet native
+    # bench and blesses it once this many days pass since the last bless
+    # (any source - heartbeat, store buy, legacy manual). Replaces
+    # BENCH_BLESS_CRON_HOURS (a spacing floor for a cron that no longer
+    # exists in that form).
+    "BENCH_HEARTBEAT_DAYS": ("FORUM_BENCH_HEARTBEAT_DAYS", 7, int),
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
     # native runs through the same sandbox image as branch/local so it gets

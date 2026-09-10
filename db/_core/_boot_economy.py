@@ -125,6 +125,12 @@ def run(conn) -> None:
         conn, "store_entitlements", "post_skips", "INTEGER NOT NULL DEFAULT 0"
     )
     _ensure_column(conn, "store_entitlements", "post_skip_used_at", "TEXT")
+    # Citizen-store banked blessed benchmark runs: how many fresh-anchor
+    # runs the citizen holds. Fresh DBs carry the column (schema.sql);
+    # existing store DBs gain it here, defaulting to an empty bank.
+    _ensure_column(
+        conn, "store_entitlements", "blessed_benches", "INTEGER NOT NULL DEFAULT 0"
+    )
 
     # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
     # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
