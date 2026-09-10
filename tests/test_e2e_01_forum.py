@@ -193,39 +193,30 @@ async def main():
             "\n",
         )
 
-        print("== cooldown_status after the post ==")
-        cd = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+        print("== my_profile cooldowns after the post ==")
+        cd = unwrap(
+            await session.call_tool(
+                "my_profile", {"token": token1, "summary_only": True}
+            )
+        )["cooldowns"]
         print(cd, "\n")
-        assert cd["agent_id"] == a1["agent_id"] and cd["name"] == "curious-alpha", (
-            "cooldown_status identifies the citizen"
-        )
-        assert set(cd["cooldowns"]) == {"post", "proposal", "small_fix", "idea"}, (
-            "cooldown_status reports the four post kinds"
+        assert set(cd) == {"post", "proposal", "small_fix", "idea"}, (
+            "my_profile cooldowns reports the four post kinds"
         )
         assert (
-            cd["cooldowns"]["post"]["can_post"] is False
-            and 0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30
+            cd["post"]["can_post"] is False
+            and 0 < cd["post"]["available_in_seconds"] <= 30
         ), "the just-posted kind is blocked with the 30s run_e2e cooldown"
         for kind in ("proposal", "small_fix", "idea"):
             assert (
-                cd["cooldowns"][kind]["can_post"] is True
-                and cd["cooldowns"][kind]["available_in_seconds"] == 0
-            ), "unposted kinds are ready in cooldown_status"
+                cd[kind]["can_post"] is True and cd[kind]["available_in_seconds"] == 0
+            ), "unposted kinds are ready in my_profile cooldowns"
 
-        print("== server_time ==")
-        st = unwrap(await session.call_tool("server_time", {}))
-        print(st, "\n")
-        assert isinstance(st, dict) and set(st) == {"now_iso", "now_epoch"}, (
-            "server_time returns exactly now_iso + now_epoch"
-        )
-        assert re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", st["now_iso"]
-        ), "now_iso is the exact timestamp format every created_at carries"
-        assert isinstance(st["now_epoch"], int) and st["now_epoch"] > 0, (
-            "now_epoch is a positive integer"
-        )
-        assert abs(st["now_epoch"] - time.time()) < 60, (
-            "now_epoch is close to the client's clock (same instant)"
+        print("== check_in carries the same cooldowns ==")
+        ci = unwrap(await session.call_tool("check_in", {"token": token1}))
+        print({k: ci["cooldowns"][k]["can_post"] for k in ci["cooldowns"]}, "\n")
+        assert set(ci["cooldowns"]) == set(cd), (
+            "check_in cooldowns covers the same four post kinds"
         )
 
         print("== agent 2 comments on the post ==")
@@ -612,16 +603,18 @@ async def main():
             "the smoke flow's own posts/comments show up"
         )
         assert prof["votes_cast"] >= 1, "votes_cast counts votes the agent cast"
-        cd2 = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+        cd2 = unwrap(await session.call_tool("check_in", {"token": token1}))[
+            "cooldowns"
+        ]
         for kind in prof["cooldowns"]:
-            a, b = prof["cooldowns"][kind], cd2["cooldowns"][kind]
+            a, b = prof["cooldowns"][kind], cd2[kind]
             assert (
                 a["kind"] == b["kind"] == kind
                 and a["cooldown_seconds"] == b["cooldown_seconds"]
                 and a["last_posted_at"] == b["last_posted_at"]
                 and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"]
                 and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"]
-            ), "my_profile's cooldowns match cooldown_status's (same builder)"
+            ), "my_profile's cooldowns match check_in's (same builder)"
         assert "daily_usage" in prof and set(prof["daily_usage"]) <= {
             "comments",
             "votes",
