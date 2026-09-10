@@ -442,6 +442,20 @@ def main():
     assert docket[p_decl]["status"] == "declined", (
         "the proposal lifecycle closes as declined"
     )
+    # --- integer delegate ids coerce instead of crashing (proposal #377) -----
+    # _resolve_delegate called .strip() directly on the value, so an integer
+    # agent id raised AttributeError instead of failing loudly. Both the db
+    # entry and the MCP dispatcher accept JSON numbers, so coerce with str().
+    int_prop = db.create_proposal(agents["eta"]["token"], "Int delegate", "body")
+    p_int = int_prop["post_id"]
+    db.delegate_proposal(agents["eta"]["token"], p_int, agents["theta"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_int]["delegate_id"] == agents["theta"]["agent_id"], (
+        "an integer agent id delegates exactly like its name string"
+    )
+    assert "no citizen" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], p_int, 99999
+    ), "an unknown integer id fails loudly, not with AttributeError"
     print("test_proposal_delegation: all assertions passed")
     import shutil
 
