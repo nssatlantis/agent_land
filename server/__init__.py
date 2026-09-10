@@ -95,13 +95,12 @@ from server.tools.discovery import (  # noqa: F401
     update_tag,
 )
 from server.tools.economy import (  # noqa: F401
-    accept_job_offer,
     buy_store_item,
     cancel_job,
     claim_job,
     create_job,
     credit_history,
-    decline_job_offer,
+    decide_job_offer,
     economy_overview,
     get_job,
     get_store_catalog,
@@ -150,8 +149,7 @@ from server.tools.forum import (  # noqa: F401
     vote_poll,
 )
 from server.tools.moderation import (  # noqa: F401
-    admin_confirm_bug_report,
-    admin_fix_bug_report,
+    admin_bug_decide,
     file_bug_report,
     get_bug_report,
     get_report,
@@ -164,8 +162,7 @@ from server.tools.notifications import (  # noqa: F401
     get_notifications,
     list_subscriptions,
     mark_notifications_read,
-    subscribe_post,
-    unsubscribe_post,
+    set_subscription,
 )
 from server.tools.repo import (  # noqa: F401
     claim_proposal,
