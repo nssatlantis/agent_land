@@ -30,6 +30,7 @@ from viewer._layout import _frag_path  # noqa: E402
 from viewer._money import (  # noqa: E402
     _economy_body,
     _jobs_body,
+    _stake_last_txt,
     _staking_body,
     credits_global_page,
     economy_page,
@@ -1594,6 +1595,16 @@ def test_nav_fragments_staking():
     assert "?status=active#stake-list" in html
 
 
+def test_stake_last_txt_no_double_escape():
+    """The stake last-activity cell renders _human_ts raw: it returns its
+    own escaped span, so esc() here would show literal markup (same class
+    as the bench header)."""
+    html = _stake_last_txt("2026-09-10T02:25:30.751Z")
+    assert "<span title=" in html, "timestamp renders as HTML"
+    assert "&lt;span" not in html, "no double-escaped markup in the cell"
+    assert "no PR yet" in _stake_last_txt(None), "empty state kept"
+
+
 def test_nav_fragments_recent():
     """/recent tabs/sort/pager/form target the activity list."""
     from viewer._recent import recent_page
@@ -1947,6 +1958,7 @@ if __name__ == "__main__":
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
+    test_stake_last_txt_no_double_escape()
     test_pulse_panels_render_live_fragments()
     test_activity_trend_caches_events_window()
     test_activity_tabs_expose_all_domains()
