@@ -112,6 +112,9 @@ def main():
     assert "effective karma" in expect_error(
         db.bless_bench_anchor, poor["token"], run1
     ), "karma floor fires first"
+    assert "positive integer" in expect_error(
+        db.bless_bench_anchor, blesser["token"], True
+    ), "bool event id refused before any spend"
     assert "No benchmark run" in expect_error(
         db.bless_bench_anchor, blesser["token"], 999999999
     ), "unknown run refused"
@@ -133,6 +136,13 @@ def main():
     assert "quiet:true" in expect_error(
         db.bless_bench_anchor, blesser["token"], loud
     ), "unprovable scheduling refused"
+    # Malformed load attestation fails closed at the unit level (a ledger
+    # seed here would pollute trailing medians for the tick tests below).
+    from db._bench_anchor import _candidate_problem
+
+    assert _candidate_problem({"bench_load": "nope"}) == (
+        "anchor runs must carry a quiet/uncontended load attestation"
+    ), "truthy non-dict load refused, never crashes"
     nometa = _seed_run(subject, None)
     assert "no query medians" in expect_error(
         db.bless_bench_anchor, blesser["token"], nometa
@@ -215,6 +225,45 @@ def main():
     assert (
         events.bench_anchor_drifted({"medians": {"a": float("nan")}}, flat_rows) == []
     ), "NaN anchor medians skipped"
+
+    # Reconfirm carry-through: one drifted query keeps its prior anchor
+    # median instead of absorbing the lone red (Pickle's finding).
+    with db._conn() as _c:
+        _c.execute(
+            "UPDATE events SET created_at = ? WHERE kind = ?",
+            (old_at, events.EVT_BENCH_ANCHOR_BLESSED),
+        )
+    run4 = _seed_run(subject, {"a": 15.0, "b": 20.0, "c": 30.0})
+    decision = db.bench_anchor_tick()
+    assert decision.startswith("blessed: reconfirm"), (
+        f"lone drift reconfirms ({decision})"
+    )
+    carried = events.bench_anchor_for()
+    assert carried["anchor_run_event_id"] == run4, "reconfirm points at the run"
+    assert carried["medians"]["a"] == 10.0, "drifted query keeps prior median"
+    assert carried["medians"]["b"] == 20.0, "flat queries take fresh medians"
+
+    # Unblessable newest native: the tick names it and moves on.
+    _seed_run(
+        subject, FLAT, load={"quiet": True, "contended": True, "quiet_wait_s": 0.0}
+    )
+    decision = db.bench_anchor_tick()
+    assert "unblessable" in decision, f"unblessable newest named ({decision})"
+
+    # Unreadable anchor timestamp: skip loudly, never guess an age.
+    with db._conn() as _c:
+        _c.execute(
+            "UPDATE events SET created_at = 'garbage' WHERE kind = ?",
+            (events.EVT_BENCH_ANCHOR_BLESSED,),
+        )
+    # ...but the newest native is the contended seed above, which refuses
+    # first; clear it by seeding a qualifying run, then the timestamp leg
+    # is what stops the tick.
+    _seed_run(subject, FLAT)
+    decision = db.bench_anchor_tick()
+    assert "timestamp unreadable" in decision, (
+        f"corrupt anchor timestamp skips ({decision})"
+    )
 
     import shutil
 
