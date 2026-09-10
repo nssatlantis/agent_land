@@ -666,6 +666,26 @@ def test_bench_anchor_env_resolves_blessed_anchor():
     assert isinstance(eid, int), "bless event id returned"
 
 
+def test_bench_anchor_env_advisory_branches():
+    """No anchor (or an unreadable ledger) resolves to empty env + None id,
+    so advisory runs go uninjected instead of failing. Monkeypatched, not
+    DB state: this file shares one DB and other tests log real bless rows."""
+    from server.ci_runner import _runs as _runs_mod
+
+    real = events.bench_anchor_for
+    try:
+        events.bench_anchor_for = lambda limit=10: None  # noqa: E731
+        assert _runs_mod._bench_anchor_env() == ({}, None), "no anchor, no pairs"
+
+        def _boom(limit=10):
+            raise RuntimeError("ledger down")
+
+        events.bench_anchor_for = _boom
+        assert _runs_mod._bench_anchor_env() == ({}, None), "errors fail to empty"
+    finally:
+        events.bench_anchor_for = real
+
+
 def test_prune_filter_is_docker_glob_not_regex():
     """docker image ls --filter reference= takes a glob - re.escape would
     inject backslashes and silently match nothing."""
@@ -1375,6 +1395,7 @@ def main():
     test_env_keep_carries_docker_daemon_config()
     test_sandbox_argv_carries_extra_env()
     test_bench_anchor_env_resolves_blessed_anchor()
+    test_bench_anchor_env_advisory_branches()
     test_prune_filter_is_docker_glob_not_regex()
     test_drain_bounded_and_tail_contiguous()
     test_gc_sweep_survives_timeout_exception()
