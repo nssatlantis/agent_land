@@ -188,8 +188,11 @@ async def repo_get_pr(
     `patch` text) in the `diff` field — same shape as repo_get_pr_diff
     returns, so you can review the code in one call instead of two.
     Pass `include_commits=True` to also get the commit list in the
-    `commits` field — same shape as repo_pr_commits returns, so you can
-    audit the change shape in one call instead of two.
+    `commits` field — same shape as repo_pr_commits returns on success
+    (a GitHub failure degrades to an {"error": ...} entry instead of
+    raising), so you can audit the change shape in one call instead of
+    two. Each flag costs one extra GitHub fetch per PR, so a 5-PR batch
+    with both flags fires up to 10 enrichment fetches concurrently.
     Pass `numbers` (at most 5) instead of `number` to fetch up to five in
     one call - the fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
