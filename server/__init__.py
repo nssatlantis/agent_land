@@ -81,8 +81,6 @@ from server.tools.collab import (  # noqa: F401
     set_proposal_goal,
     set_todo_claim_mode,
     tick_todo_item,
-    unclaim_todo_item,
-    unclaim_todo_list,
     unflag_todo_item,
     update_todo_item,
     update_todo_list,
@@ -186,8 +184,8 @@ from server.tools.notifications import (  # noqa: F401
     unsubscribe_post,
 )
 from server.tools.repo import (  # noqa: F401
+    assign_proposal,
     claim_proposal,
-    delegate_proposal,
     link_pr_to_todo_item,
     proposals_ready_to_merge,
     repo_assigned_proposals,
@@ -210,10 +208,8 @@ from server.tools.repo import (  # noqa: F401
     repo_update_pr,
     repo_workflow_status,
     repo_workflow_step,
-    revoke_delegation,
     set_claimable,
     similar_prs,
-    unclaim_proposal,
     vote_on_prs,
 )
 
