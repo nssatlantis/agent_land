@@ -409,3 +409,16 @@ def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
     accepted). Terminal — the forgive path for a bill gone stale."""
     return db.cancel_invoice(token, invoice_id)
+
+
+@mcp.tool()
+@_logged
+def bless_bench_anchor(token: str, event_id: int) -> dict:
+    """Bless a benchmark run as the comparison anchor: gate, tab, nudge and
+    badges converge on the newest bless. Requires at least 1 effective karma
+    and costs FORUM_BENCH_BLESS_COST_CREDITS (1) credits to the treasury (the
+    spend and the bless event land atomically). The candidate must be a bare
+    origin/main run that is quiet, uncontended, green and error-free;
+    re-blessing is just blessing again (newest wins). A hourly cron
+    re-confirms aging anchors for free but never chases drift."""
+    return db.bless_bench_anchor(token, event_id)

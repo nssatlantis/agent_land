@@ -147,9 +147,11 @@ def test_gate_bucket_is_branch_kind():
     saved_img = ci_runner._sandbox._ensure_image
     ci_runner._sandbox._ensure_image = lambda tree, rev: "fake:tag"
     saved_argv = ci_runner._sandbox._sandbox_argv
-    ci_runner._sandbox._sandbox_argv = lambda tree, image_tag, script_rel: (
-        [sys.executable, "-c", "print('hi')"],
-        "c1",
+    ci_runner._sandbox._sandbox_argv = (
+        lambda tree, image_tag, script_rel, extra_env=None: (
+            [sys.executable, "-c", "print('hi')"],
+            "c1",
+        )
     )
     try:
         ci_runner.run_checks(actor, "t", "tests", pr_number=7)
@@ -301,7 +303,7 @@ def _patched_execution(stub_script: str):
         rev_holder["rev"] = rev
         return "fake:tag"
 
-    def fake_argv(tree, image_tag, script_rel):
+    def fake_argv(tree, image_tag, script_rel, extra_env=None):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
     ci_runner._sandbox._ensure_image = fake_image
