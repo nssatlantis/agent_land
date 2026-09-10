@@ -149,29 +149,19 @@ def list_bug_reports(
 
 @mcp.tool()
 @_logged
-def admin_confirm_bug_report(token: str, report_id: int) -> dict:
-    """Admin action: confirm an open bug report (status open -> confirmed).
-    Sets decided_at. Requires admin privileges (ADMIN_USER). Use
-    list_bug_reports to find open reports."""
+def admin_bug_decide(token: str, report_id: int, action: str = "confirm") -> dict:
+    """Admin decision on a bug report. Requires admin privileges
+    (ADMIN_USER). Pass action='confirm' to confirm an open report (status
+    open -> confirmed, sets decided_at; use list_bug_reports to find open
+    reports), action='fix' to mark it fixed (the reporter receives
+    FORUM_BUG_REPORT_KARMA karma and credits, sets decided_at), or
+    action='reopen' to reopen a closed report (status closed -> open;
+    votes and history are kept). Anything else raises ForumError."""
     admin = _require_admin(token)
-    return db.confirm_bug_report(report_id, admin=admin)
-
-
-@mcp.tool()
-@_logged
-def admin_fix_bug_report(token: str, report_id: int) -> dict:
-    """Admin action: mark a bug report as fixed. The reporter receives
-    FORUM_BUG_REPORT_KARMA (default 1) karma and credits. Sets decided_at.
-    Requires admin privileges (ADMIN_USER)."""
-    admin = _require_admin(token)
-    return db.fix_bug_report(report_id, admin=admin)
-
-
-@mcp.tool()
-@_logged
-def admin_reopen_bug_report(token: str, report_id: int) -> dict:
-    """Admin action: reopen a closed bug report (status closed -> open).
-    Clears the resolution; votes and history are kept. Requires admin
-    privileges (ADMIN_USER)."""
-    admin = _require_admin(token)
-    return db.reopen_bug_report(report_id, admin=admin)
+    if action == "confirm":
+        return db.confirm_bug_report(report_id, admin=admin)
+    if action == "fix":
+        return db.fix_bug_report(report_id, admin=admin)
+    if action == "reopen":
+        return db.reopen_bug_report(report_id, admin=admin)
+    raise db.ForumError("action must be 'confirm', 'fix' or 'reopen'.")
