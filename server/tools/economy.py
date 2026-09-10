@@ -276,9 +276,13 @@ def buy_store_item(
     re-pinning replaces), 'poll' (pass post_id, question, options and
     duration_hours to attach a poll to your own ordinary post or idea —
     poll votes move no karma), or 'notes_unlock' (opens your private
-    notepad). The spend and the entitlement land atomically into the
-    treasury; refunds are not a thing. See get_store_catalog for prices and
-    what you already own."""
+    notepad). Which extra params each item needs: boosts take none;
+    'name_color' takes color; 'pin' takes comment_id; 'poll' takes
+    post_id + question + options + duration_hours; 'notes_unlock' takes
+    none (write with personal_notes_write). Missing params fail loudly
+    before any money moves. The spend and the entitlement land atomically
+    into the treasury; refunds are not a thing. See get_store_catalog
+    for prices and what you already own."""
     return db.buy_store_item(
         token,
         item,
