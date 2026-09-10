@@ -144,6 +144,152 @@ def test_batch_rows_and_pagination(agents):
     print("  batch rows equivalence + list pagination: ok")
 
 
+def test_reconcile_batch(agents):
+    """_reconcile_decisions matches the per-pid oracle on every fixture
+    shape (differential), in a fraction of the statements (count pin), and
+    the batched sweep closes exactly what it decides."""
+    from db._workflow import (
+        _decided_run_status,
+        _ghost_run_status,
+        _reconcile_decisions,
+    )
+
+    gamma = agents["gamma"]
+    pids = {}
+    pids["live"] = db.create_proposal(gamma["token"], "TB live", "tb body")["post_id"]
+    pids["declined"] = db.create_proposal(gamma["token"], "TB declined", "tb body")[
+        "post_id"
+    ]
+    pids["merged"] = db.create_proposal(gamma["token"], "TB merged", "tb body")[
+        "post_id"
+    ]
+    pids["sup"] = db.create_proposal(gamma["token"], "TB sup", "tb body")["post_id"]
+    pids["closed"] = db.create_proposal(gamma["token"], "TB closed", "tb body")[
+        "post_id"
+    ]
+    pids["collab"] = db.create_proposal(
+        gamma["token"],
+        "TB collab",
+        "tb body",
+        collaborative=True,
+        max_collaborators=2,
+    )["post_id"]
+    pids["retry"] = db.create_proposal(gamma["token"], "TB retry", "tb body")["post_id"]
+    pids["branchlive"] = db.create_proposal(gamma["token"], "TB branchlive", "tb body")[
+        "post_id"
+    ]
+    pids["ghost"] = db.create_proposal(gamma["token"], "TB ghost", "tb body")["post_id"]
+    plist = list(pids.values())
+    with db._conn() as conn:
+        db.record_proposal_outcome(
+            81401, pids["declined"], "declined", db._now_iso(), conn=conn
+        )
+        db.record_proposal_outcome(
+            81402, pids["merged"], "merged", db._now_iso(), conn=conn
+        )
+        db.record_proposal_outcome(
+            81403, pids["closed"], "closed", db._now_iso(), conn=conn
+        )
+        db.record_proposal_outcome(
+            81404, pids["retry"], "declined", db._now_iso(), conn=conn
+        )
+    db.link_pr_to_proposal(81405, pids["retry"], gamma["agent_id"])  # retry in flight
+    db.link_pr_to_proposal(81406, pids["branchlive"], gamma["agent_id"])  # live PR
+    db.supersede_proposal(gamma["token"], pids["sup"], "TB sup v2", "tb v2 body")
+    with db._conn() as conn:
+        sup_run = (
+            int(_open_run(conn, pids["sup"])["id"])
+            if _open_run(conn, pids["sup"])
+            else None
+        )
+        if sup_run is None:
+            # supersede closed the run; re-open to simulate the pre-fix residue
+            conn.execute(
+                "INSERT INTO workflow_runs"
+                " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+                "  created_at, expires_at)"
+                " VALUES (?, ?, 'open', ?, ?, ?, ?)",
+                (
+                    _PATH,
+                    "tb-sup-hash",
+                    pids["sup"],
+                    gamma["agent_id"],
+                    db._now_iso(),
+                    db._now_iso(),
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE workflow_runs SET status = 'open' WHERE id = ?", (sup_run,)
+            )
+            conn.execute(
+                "UPDATE workflow_runs SET decided_at = NULL WHERE id = ?", (sup_run,)
+            )
+        # ghost residue: one open run behind one folded run, no PR ever linked
+        conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+            "  created_at, expires_at)"
+            " VALUES (?, ?, 'closed', ?, ?, ?, ?)",
+            (
+                _PATH,
+                "tb-ghost-hash",
+                pids["ghost"],
+                gamma["agent_id"],
+                db._now_iso(),
+                db._now_iso(),
+            ),
+        )
+        assert _reconcile_decisions(conn, []) == {}, "empty batch decides nothing"
+
+        def _oracle(pid: int):
+            rs = _decided_run_status(conn, pid)
+            reason = "proposal_decided"
+            if rs is None:
+                rs = _ghost_run_status(conn, pid)
+                reason = "no_pr_linked"
+            return (rs, reason) if rs is not None else None
+
+        old_stmts: list[str] = []
+        conn.set_trace_callback(old_stmts.append)
+        oracle = {}
+        for pid in plist:
+            hit = _oracle(pid)
+            if hit is not None:
+                oracle[pid] = hit
+        conn.set_trace_callback(None)
+        new_stmts: list[str] = []
+        conn.set_trace_callback(new_stmts.append)
+        bulk = _reconcile_decisions(conn, plist)
+        conn.set_trace_callback(None)
+        assert bulk == oracle, (
+            f"batched decisions differ from the per-pid oracle: {bulk} vs {oracle}"
+        )
+        assert oracle[pids["declined"]] == ("declined", "proposal_decided")
+        assert oracle[pids["merged"]] == ("merged", "proposal_decided")
+        assert oracle[pids["sup"]] == ("closed", "proposal_decided")
+        assert oracle[pids["closed"]] == ("closed", "proposal_decided")
+        assert oracle[pids["ghost"]] == ("closed", "no_pr_linked")
+        for key in ("live", "collab", "retry", "branchlive"):
+            assert pids[key] not in oracle, f"{key} proposals stay live"
+        assert len(new_stmts) <= 6, (
+            f"batched sweep issued {len(new_stmts)} statements for 9 pids"
+        )
+        assert len(new_stmts) < len(old_stmts), (
+            f"batch ({len(new_stmts)}) must beat per-pid ({len(old_stmts)})"
+        )
+        # the batched sweep closes exactly what it decides, then goes quiet
+        assert reconcile_open_runs(conn) == 5, "five stale runs close"
+        assert stale_open_run_count(conn) == 0, "nothing stale left behind"
+        ghost_row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE proposal_id = ? AND status != 'open'"
+            " ORDER BY id DESC LIMIT 1",
+            (pids["ghost"],),
+        ).fetchone()
+        assert ghost_row["status"] == "closed", "ghost closes to 'closed'"
+    print("  reconcile batched differential + count pin ok")
+
+
 def test_per_agent_ownership(agents):
     """Per-agent run ownership (the fork): claiming a to-do item/list, taking a
     delegation, or claiming a proposal each create the CALLER's OWN open
@@ -1178,6 +1324,7 @@ def main():
     # global run-ledger/sweep assertions if it ran up front.
     test_batch_rows_and_pagination(agents)
     test_per_agent_ownership(agents)
+    test_reconcile_batch(agents)
     print("ALL WORKFLOW TESTS PASSED")
 
 
