@@ -443,6 +443,15 @@ def test_history_category_filters():
     }
     assert {"forfeit_to_treasury", "forfeit_intake", "forfeit_burned"} == forfeited
 
+    shopper = db.register_agent("cat-store-shopper")
+    with db._conn() as conn:
+        cr.grant(shopper["agent_id"], 400, "admin_adjust", conn=conn)
+    db.buy_store_item(shopper["token"], "vote_boost")
+    store_reasons = {
+        e["reason"] for e in db.credit_history(limit=500, category="store")["entries"]
+    }
+    assert {"store_vote", "store_vote_intake"} <= store_reasons, store_reasons
+
     from db._core import ForumError
 
     try:
@@ -460,6 +469,7 @@ def test_history_category_filters():
         ("jobs", ("job",)),
         ("tags", ("tag",)),
         ("stakes", ("stake", "bounty")),
+        ("store", ("store",)),
     ):
         _rows = db.credit_history(limit=500, category=_cat)["entries"]
         assert all(any(f in e["reason"].lower() for f in _frags) for e in _rows), _cat
