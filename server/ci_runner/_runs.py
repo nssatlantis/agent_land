@@ -822,20 +822,24 @@ def run_heartbeat_bench(
     shared timer resets), held (the quality or drift gate refused — the
     run's numbers stay readable; a store buy auto-refunds via the caller),
     or infra (the harness itself failed — nothing blessed, nothing judged).
-    Holds never raise; only infrastructure failures do. Row matching is
-    best-effort (newest native row past the pre-dispatch max): a mismatch
-    can only hold, or bless a genuinely qualifying fresh native run, and
-    newest-wins makes either safe."""
+    Holds never raise; only infrastructure failures do. Row matching takes
+    the newest post-dispatch row logged by agent 0 (unspoofable - citizen
+    ids start at 1), native-shaped; anything else holds safely."""
     import db as _db
     import events as _events
 
     pre = _events.query_events(kind=_events.EVT_CI_DB_BENCH_RUN, limit=1)
     pre_max = int(pre[0]["id"]) if pre else 0
     run_checks(0, "system", "db_benchmark", quiet=None, _system=True)
-    rows = _events.query_events(kind=_events.EVT_CI_DB_BENCH_RUN, limit=10)
+    rows = _events.query_events(kind=_events.EVT_CI_DB_BENCH_RUN, limit=50)
     ours = None
     for row in rows:
         if int(row["id"]) <= pre_max:
+            continue
+        # Our own row only: citizen ids start at 1, so agent 0 is
+        # unspoofable - a concurrent citizen native must never be blessed
+        # with the heartbeat's (or buyer's) reason. Newest-first scan.
+        if row.get("actor_agent_id") != 0:
             continue
         detail = row.get("detail") or {}
         if isinstance(detail, dict) and _db._bench_anchor._is_native_detail(detail):
