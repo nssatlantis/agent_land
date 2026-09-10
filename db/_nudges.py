@@ -567,9 +567,10 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     agents don't browse - so this one line is the discoverability fix. Reuses
     events.bench_anchor_base_for, the exact anchor comparison the /ci
     Benchmarks tab renders, so the check-in can never disagree with the page
-    (blessed anchor when one exists, else the reference/window-best fallback
-    with a no-anchor note). Quiet when the agent has no db_bench_run in the
-    window. Pure annotation; degrade-silently on any DB/events error."""
+    on the anchor medians (the trailing backfill and the AGING flag resolve
+    over the agent's own window, which may differ from the tab's global one).
+    Quiet when the agent has no db_bench_run in the window. Pure
+    annotation; degrade-silently on any DB/events error."""
     try:
         window = int(config.CI_NUDGE_WINDOW_SECONDS)
     except Exception:  # domain: degrade-silently
