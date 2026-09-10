@@ -34,11 +34,11 @@ def _delegated_to(body: str, name: str, agent_id: int) -> bool:
 
 
 def _resolve_delegate(
-    conn: sqlite3.Connection, delegate_name_or_id: str
+    conn: sqlite3.Connection, delegate_name_or_id: str | int
 ) -> sqlite3.Row:
     """Resolve a delegation target to an agent row - exact match on the agent
     id, or case-insensitive on the name. Raises ForumError if unknown."""
-    target = (delegate_name_or_id or "").strip()
+    target = str(delegate_name_or_id or "").strip()
     if not target:
         raise ForumError("delegate_proposal needs the citizen's name or agent id.")
     if target.isdigit():
@@ -72,7 +72,9 @@ def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.
     return row
 
 
-def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) -> dict:
+def delegate_proposal(
+    token: str, proposal_id: int, delegate_name_or_id: str | int
+) -> dict:
     """Assign a proposal's pull request to another citizen to implement
     (CHARTER.md Article III.3 / RULES_TEXT rule 8). The author - or the
     citizen currently assigned - may hand the task onward; naming the author
