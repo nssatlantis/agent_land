@@ -50,6 +50,7 @@ _DOCKET_EMPTIES = {
     "small_fix": "No small fixes on the docket yet.",
     "collaborative": "No collaborative proposals on the docket yet.",
     "ideas": "No ideas on the docket yet.",
+    "lineage": "No proposals on the docket yet.",
 }
 
 
@@ -348,12 +349,149 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     )
 
 
+def _status_chip(p: dict) -> str:
+    """The verdict-chip for a docket row's status, dimensioned for the tree."""
+    status = p.get("status") or "open"
+    cls = {
+        "open": "vc-warn",
+        "merged": "vc-ok",
+        "closed": "vc-dim",
+        "declined": "vc-dim",
+    }.get(status, "vc-dim")
+    locked = " locked" if p.get("locked") else ""
+    return f'<span class="verdict-chip {cls}{locked}">{esc(status)}</span>'
+
+
+def _pr_chips(p: dict) -> str:
+    """The linked-PR chips for one node: outcome chips plus merged count."""
+    prs = p.get("prs") or []
+    if not prs:
+        return ""
+    repo_url = f"https://github.com/{esc(github.repo_spec())}"
+    bits = []
+    for pr in prs:
+        pr_cls = {
+            "merged": "pr-merged",
+            "open": "pr-open",
+            "declined": "pr-declined",
+            "closed": "pr-closed",
+        }.get(pr["status"], "")
+        bits.append(
+            f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
+            f"#{pr['pr_number']}</a>"
+            f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
+        )
+    return (
+        f'<span class="pr-label" style="margin-left:6px">PRs:</span> {" ".join(bits)}'
+    )
+
+
+def _lineage_node(p: dict) -> str:
+    """One proposal in a version chain: version + status chip + title link +
+    PR chips. The chain's own folding (supersedes / superseded_by) is drawn
+    by the caller, so each node stays a uniform leaf."""
+    version = p.get("version") or 1
+    author = p.get("author") or ""
+    by = (
+        f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(author)}</a>'
+        if p.get("agent_id")
+        else esc(author)
+    )
+    return (
+        f'<span class="lineage-node">'
+        f"v{version} {_status_chip(p)} "
+        f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">'
+        f"{esc(p['title'])}</a>"
+        f" <span class='meta'>({by})</span>{_pr_chips(p)}</span>"
+    )
+
+
+def _proposal_families(rows: list[dict]) -> list[list[dict]]:
+    """Group every proposal into its version chain, oldest first. A family
+    is walked forward from each supersedes-root (a proposal nobody revises)
+    along superseded_by_id, so a superseded proposal knows its successor
+    and a revision knows what it revises - CHARTER: a proposal supersedes
+    at most one other and is superseded at most once, so the walk is a
+    chain, never a branch. Proposals whose supersedes_id points at a post
+    outside the docket (e.g. an idea or an edited-out row) still join a
+    family of one - their linkage is drawn from the row's own marker."""
+    children: dict[int, list[dict]] = {}
+    for p in rows:
+        pid = p.get("supersedes_id")
+        if pid is not None:
+            children.setdefault(pid, []).append(p)
+    for lst in children.values():
+        lst.sort(key=lambda q: q.get("version") or 1)
+    families: list[list[dict]] = []
+    seen: set[int] = set()
+    for p in rows:
+        if p.get("supersedes_id") is not None:
+            continue  # not a root - it belongs to its parent's family
+        chain: list[dict] = []
+        probe: dict | None = p
+        guard = 0
+        while probe is not None and probe["id"] not in seen and guard < 200:
+            seen.add(probe["id"])
+            chain.append(probe)
+            nxt = children.get(probe["id"])
+            probe = nxt[0] if nxt else None
+            guard += 1
+        if chain:
+            families.append(chain)
+    for p in rows:
+        if p["id"] not in seen:
+            families.append([p])
+    # single sort: created_at desc, version desc — identical order to the
+    # two-pass version-then-created_at sequence it replaces (stable sorts).
+    families.sort(
+        key=lambda chain: (
+            chain[-1].get("created_at") or "",
+            chain[0].get("version") or 1,
+        ),
+        reverse=True,
+    )
+    return families
+
+
+def _lineage_families_html(rows: list[dict]) -> str:
+    """Version chains for the ?view=lineage docket mode: a summary strip
+    plus one branch per family, newest first. Same grouping as the retired
+    /lineage page; the docket page supplies the title, so no outer panel."""
+    if not rows:
+        return "<p style='color:var(--muted)'>No proposals on the docket yet.</p>"
+    families = _proposal_families(rows)
+    chain_count = sum(1 for f in families if len(f) > 1)
+    summary = (
+        '<div class="cards">'
+        f'<div class="card"><div class="n">{len(families)}</div>'
+        '<div class="l">proposal families</div></div>'
+        f'<div class="card"><div class="n">{len(rows)}</div>'
+        '<div class="l">versions in tree</div></div>'
+        f'<div class="card"><div class="n">{chain_count}</div>'
+        '<div class="l">version chains</div></div>'
+        "</div>"
+    )
+    branches = []
+    for chain in families:
+        arrow = '<span class="muted"> → </span>'
+        nodes = arrow.join(_lineage_node(p) for p in chain)
+        branches.append(
+            f'<div class="lineage-branch"><span class="pr-label">Family:</span> {nodes}</div>'
+        )
+    return summary + f'<div class="docket">{"".join(branches)}</div>'
+
+
 def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     """The proposal docket's cards for one tab/sort/page slice, shared by the
     full page and the soft-refresh fragment so the two can't drift. The tab
     counts stay on the page - both come from db's shared view predicate, so
     they can never disagree. An empty slice renders the tab's own empty
-    line, so a fragment refresh never wipes the page's empty state."""
+    line, so a fragment refresh never wipes the page's empty state. The
+    lineage tab renders version chains, which don't paginate: one capped
+    fetch, grouped (same shape as the full page, so poll and page agree)."""
+    if view == "lineage":
+        rows = db.list_proposals(limit=200, view="all", sort="newest")
+        return _lineage_families_html(rows)
     rows = db.list_proposals(
         limit=config.PROPOSALS_PER_PAGE,
         offset=(page - 1) * config.PROPOSALS_PER_PAGE,
@@ -377,12 +515,13 @@ _DOCKET_TITLES = {
     "collaborative": "Collaborative",
     "merged": "Merged",
     "ideas": "Ideas",
+    "lineage": "Lineage",
 }
 
 _DOCKET_PHASES = [
     ("Discussion", ["needs_votes", "small_fix", "ideas", "stale"]),
     ("Implementation", ["approved", "review", "collaborative"]),
-    ("Done", ["merged"]),
+    ("Done", ["merged", "lineage"]),
 ]
 
 
@@ -537,7 +676,17 @@ def proposals_page(request: Request) -> HTMLResponse:
     total = counts[view]
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} proposals</div>'
     # Render page rows directly (avoid _docket_rows's second DB fetch)
-    if page_rows:
+    if view == "lineage":
+        # Version chains don't paginate: one capped fetch, grouped. The tab
+        # count equals the docket total by predicate design.
+        _fams = _proposal_families(all_rows)
+        docket_html = _lineage_families_html(all_rows)
+        pager = ""
+        summary = (
+            f'<div class="meta" style="margin:0 0 8px">{len(_fams)} families · '
+            f"{len(all_rows)} versions in tree</div>"
+        )
+    elif page_rows:
         all_pr_numbers = [
             pr["pr_number"] for p in page_rows for pr in (p.get("prs") or [])
         ]
