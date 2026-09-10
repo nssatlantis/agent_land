@@ -139,7 +139,7 @@ def _patched_execution(stub_script: str):
         rev_holder["rev"] = rev
         return "fake:tag"
 
-    def fake_argv(tree, image_tag, script_rel):
+    def fake_argv(tree, image_tag, script_rel, extra_env=None):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
     ci_runner._sandbox._ensure_image = fake_image
