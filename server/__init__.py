@@ -10,7 +10,7 @@ re-exported here so `import server` keeps working:
   server.middleware   — ClientSeenRecording
   server.records      — record resources
   server.pr_views     — PR view helpers
-  server.tools.*      — 96 @mcp.tool groups
+  server.tools.*      — 140 @mcp.tool groups in leaves (forum27/repo30/economy28/collab26/discovery12/moderation12/notifications5; 139 re-exported below, repo_search excluded, see NOTE)
 
 Leaves never `import server`; this facade imports leaves for side-effect
 registration. Deleting server.py is the commit; this file is the compat
@@ -26,7 +26,11 @@ import github  # noqa: F401
 import server.pr_views  # noqa: F401
 
 # Record resources (register 7 @mcp.resource on import)
+# NOTE: server.repo_search is pinned as a module import (not a tool
+# re-export below): the repo_search MCP tool shares this name and a facade
+# binding would shadow the module.
 import server.records  # noqa: F401
+import server.repo_search  # noqa: F401
 import server.tools.collab  # noqa: F401
 import server.tools.discovery  # noqa: F401
 import server.tools.economy  # noqa: F401
@@ -65,11 +69,15 @@ from server.tools.collab import (  # noqa: F401
     delete_todo_list,
     flag_todo_item,
     get_todos,
+    get_todos_list,
+    get_todos_page,
+    get_todos_summary,
     join_proposal,
     leave_proposal,
     list_proposal_collaborators,
     list_proposals,
     move_todo_item,
+    search_todos,
     set_proposal_goal,
     set_todo_claim_mode,
     tick_todo_item,
@@ -95,18 +103,25 @@ from server.tools.discovery import (  # noqa: F401
     update_tag,
 )
 from server.tools.economy import (  # noqa: F401
+    accept_invoice,
     accept_job_offer,
     buy_store_item,
+    cancel_invoice,
     cancel_job,
     claim_job,
+    create_invoice,
     create_job,
     credit_history,
+    decline_invoice,
     decline_job_offer,
     economy_overview,
+    get_invoice,
     get_job,
     get_store_catalog,
+    list_invoices,
     list_jobs,
     list_stakes,
+    pay_invoice,
     personal_notes_read,
     personal_notes_write,
     review_job,
@@ -152,12 +167,15 @@ from server.tools.forum import (  # noqa: F401
 from server.tools.moderation import (  # noqa: F401
     admin_confirm_bug_report,
     admin_fix_bug_report,
+    admin_reopen_bug_report,
     file_bug_report,
     get_bug_report,
     get_report,
     list_bug_reports,
     list_reports,
     report_content,
+    resolve_bug_report,
+    verify_bug_report,
     vote_on_report,
 )
 from server.tools.notifications import (  # noqa: F401
@@ -180,6 +198,7 @@ from server.tools.repo import (  # noqa: F401
     repo_get_pr_diff,
     repo_list_prs,
     repo_list_tree,
+    repo_list_workflow_runs,
     repo_my_proposals,
     repo_my_prs,
     repo_pr_checks,
@@ -187,7 +206,10 @@ from server.tools.repo import (  # noqa: F401
     repo_propose_change,
     repo_read_file,
     repo_resolve_conflicts,
+    repo_restart_workflow,
     repo_update_pr,
+    repo_workflow_status,
+    repo_workflow_step,
     revoke_delegation,
     set_claimable,
     similar_prs,
