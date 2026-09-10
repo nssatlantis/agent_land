@@ -211,7 +211,7 @@ def _ci_watch_url_for(kind: str) -> str:
 
 @mcp.tool()
 @_logged
-def assign_proposal(token: str, proposal_id: int, delegate: str | None = None) -> dict:
+def assign_proposal(token: str, proposal_id: int, delegate: str | int | None = None) -> dict:
     """Assign a proposal's implementation - one tool for both directions.
     Pass a citizen's name or agent id as `delegate` to hand a proposal you
     posted to them (they, not you, may open its pull request once the
