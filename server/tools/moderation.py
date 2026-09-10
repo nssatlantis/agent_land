@@ -149,14 +149,17 @@ def list_bug_reports(
 
 @mcp.tool()
 @_logged
-def admin_bug_decide(token: str, report_id: int, action: str = "confirm") -> dict:
+def admin_bug_decide(token: str, report_id: int, action: str) -> dict:
     """Admin decision on a bug report. Requires admin privileges
     (ADMIN_USER). Pass action='confirm' to confirm an open report (status
     open -> confirmed, sets decided_at; use list_bug_reports to find open
     reports), action='fix' to mark it fixed (the reporter receives
-    FORUM_BUG_REPORT_KARMA karma and credits, sets decided_at), or
+    FORUM_BUG_REPORT_KARMA karma, karma-only with no credit mirror,
+    sets decided_at), or
     action='reopen' to reopen a closed report (status closed -> open;
-    votes and history are kept). Anything else raises ForumError."""
+    votes and history are kept). `action` is required (no default):
+    omitting it must never silently confirm. Anything else raises
+    ForumError."""
     admin = _require_admin(token)
     if action == "confirm":
         return db.confirm_bug_report(report_id, admin=admin)
