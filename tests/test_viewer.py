@@ -1755,6 +1755,8 @@ def test_governance_analytics_route_removed():
     assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
         "cohorts route stays"
     )
+
+
 def test_lineage_families_group_chains():
     """Version chains group oldest-first per family; orphans and singletons
     become families of one; newest family first (#398)."""
