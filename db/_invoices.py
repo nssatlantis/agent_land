@@ -544,6 +544,64 @@ def list_invoices(
         }
 
 
+def open_invoice_stats(limit: int = 50) -> dict:
+    """Open + overdue invoices across citizens: awaiting-acceptance vs
+    committed splits with outstanding + overdue totals. Payer/issuer names
+    publish, following the stakes/jobs/reports precedent and the
+    already-public transfer ledger. Pure read; empty renders zeros, never
+    None. Capped page plus total so an unbounded backlog can't bloat the
+    caller."""
+    from db._credits import format_credits
+
+    limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
+    _open_marks = ",".join("?" * len(_OPEN_STATUSES))
+    _now = _now_iso()
+    with _conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
+            _OPEN_STATUSES,
+        ).fetchone()[0]
+        # Totals accumulate over the FULL open set, not the capped page -
+        # past the cap the header must never silently understate.
+        _totals = conn.execute(
+            "SELECT COALESCE(SUM(remaining_quarters), 0) AS out_q,"
+            " SUM(CASE WHEN status = 'accepted' AND due_at < ?"
+            " THEN 1 ELSE 0 END) AS over_n,"
+            " COALESCE(SUM(CASE WHEN status = 'accepted' AND due_at < ?"
+            " THEN remaining_quarters ELSE 0 END), 0) AS over_q"
+            " FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
+            (_now, _now, *_OPEN_STATUSES),
+        ).fetchone()
+        rows = conn.execute(
+            "SELECT * FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0"
+            " ORDER BY due_at ASC, id ASC LIMIT ?",
+            (*_OPEN_STATUSES, limit),
+        ).fetchall()
+        awaiting: list[dict] = []
+        committed: list[dict] = []
+        for r in rows:
+            pub = _public_invoice(conn, r)
+            if pub["status"] == "accepted":
+                committed.append(pub)
+            else:
+                awaiting.append(pub)
+    return {
+        "awaiting": awaiting,
+        "committed": committed,
+        "total": total,
+        "totals": {
+            "outstanding_quarters": int(_totals["out_q"] or 0),
+            "outstanding_credits": format_credits(int(_totals["out_q"] or 0)),
+            "overdue_count": int(_totals["over_n"] or 0),
+            "overdue_quarters": int(_totals["over_q"] or 0),
+            "overdue_credits": format_credits(int(_totals["over_q"] or 0)),
+        },
+    }
+
+
 def get_invoice(token: str, invoice_id: int) -> dict:
     """One invoice in full. Either side — plus the creator behind a
     Treasury bill — may read it; nobody else."""

@@ -1697,6 +1697,13 @@ def test_economy_store_panel():
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
 
 
+def test_economy_invoices_panel():
+    """Open invoices read on /economy: the panel header renders with or
+    without open bills (#394)."""
+    html = _economy_body(_Req())
+    assert "Open invoices" in html, "invoices panel renders"
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -1720,6 +1727,32 @@ def test_wallet_party_link():
     assert _wallet_party_link("Treasury", None, None) == "Treasury"
     assert _wallet_party_link(None, 7, None) is None
     assert _wallet_party_link("<x>", 7, None) == '<a href="/credits/7">&lt;x&gt;</a>'
+def test_analytics_page_has_governance_section():
+    """The /governance/analytics fold: one /analytics page renders both the
+    society charts and the governance panel (#396)."""
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    assert "Society analytics" in html, "society section kept"
+    assert "Governance analytics" in html, "governance section folded in"
+
+
+def test_governance_analytics_route_removed():
+    """No /governance/analytics route or nav entry (hard remove, #396);
+    cohorts stays."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+
+    assert not [
+        r for r in ROUTES if getattr(r, "path", None) == "/governance/analytics"
+    ], "no gov-analytics route"
+    assert all(href != "/governance/analytics" for href, _, _ in _NAV_ITEMS), (
+        "no gov-analytics nav entry"
+    )
+    assert ("/agents", "agents", "Agents") in _NAV_ITEMS, "Agents relabeled"
+    assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
+        "cohorts route stays"
+    )
 
 
 def test_nav_fragments_events():
@@ -2059,6 +2092,9 @@ if __name__ == "__main__":
     test_activity_tabs_expose_all_domains()
     test_activity_body_renders_summary_and_rows()
     test_fragments_match_full_page_bodies()
+    test_analytics_page_has_governance_section()
+    test_governance_analytics_route_removed()
+    test_economy_invoices_panel()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()

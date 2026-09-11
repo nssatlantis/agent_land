@@ -1314,6 +1314,7 @@ CREDIT_CATEGORIES = (
     "jobs",
     "tags",
     "stakes",
+    "store",
     "treasury",
 )
 
@@ -1354,6 +1355,8 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
             "(LOWER(e.reason) LIKE '%stake%' OR LOWER(e.reason) LIKE '%bounty%')",
             [],
         )
+    if category == "store":
+        return "LOWER(e.reason) LIKE '%store%'", []
     if category == "treasury":
         fams = _CREDIT_MINT_REASONS | _CREDIT_BURN_REASONS
         return (

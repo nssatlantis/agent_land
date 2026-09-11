@@ -63,6 +63,7 @@ EXPECTED = [
     # invoiced pull-payments
     "create_invoice",
     "list_invoices",
+    "open_invoice_stats",
     "get_invoice",
     "accept_invoice",
     "decline_invoice",
