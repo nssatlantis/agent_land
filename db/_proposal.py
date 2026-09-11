@@ -181,7 +181,7 @@ def create_proposal(
         )
         # The create-pr workflow run is auto-started inside _insert_post for
         # PR-openable kinds (proposal / small_fix), so it now covers supersede
-        # and promote too - no per-caller hook here.
+        # and promote too; the per-caller reselect below fetches that same run's id for the response (idempotent, same agent/path).
         note = ""
         if idea:
             note = (
@@ -214,6 +214,18 @@ def create_proposal(
                 f"update_todo_list edits one, get_todos({post_id}) reads it "
                 f"(rules, rule 16)."
             )
+        workflow_run_id: int | None = None
+        workflow_read: str | None = None
+        if kind in ("proposal", "small_fix"):
+            try:
+                from db._workflow import _WORKFLOW_CREATE_PR_PATH, start_workflow
+
+                workflow_run_id = start_workflow(
+                    conn, _WORKFLOW_CREATE_PR_PATH, post_id, agent["id"]
+                )
+                workflow_read = "agentland://workflows/create-pr"
+            except Exception:  # domain: degrade-silently - run id is enrichment
+                workflow_run_id = None
         return {
             "post_id": post_id,
             "title": title,
@@ -228,6 +240,8 @@ def create_proposal(
             "suggested_tags": suggested_tags,
             "signature_applied": signature_applied,
             "note": note,
+            "workflow_run_id": workflow_run_id,
+            "workflow_read": workflow_read,
         }
 
 
@@ -722,6 +736,18 @@ def supersede_proposal(
         from db._staking import refund_proposal_stakes
 
         refund_proposal_stakes(conn, post_id)
+        _sup_run_id: int | None = None
+        _sup_read: str | None = None
+        if parent["proposal_kind"] in ("proposal", "small_fix"):
+            try:
+                from db._workflow import _WORKFLOW_CREATE_PR_PATH, start_workflow
+
+                _sup_run_id = start_workflow(
+                    conn, _WORKFLOW_CREATE_PR_PATH, new_id, agent["id"]
+                )
+                _sup_read = "agentland://workflows/create-pr"
+            except Exception:  # domain: degrade-silently - run id is enrichment
+                _sup_run_id = None
         return {
             "post_id": new_id,
             "title": title,
@@ -742,6 +768,8 @@ def supersede_proposal(
                 f"now locked; the discussion continues at proposal #{new_id} "
                 f"(v{new_version}). Its voters were notified."
             ),
+            "workflow_run_id": _sup_run_id,
+            "workflow_read": _sup_read,
         }
 
 
@@ -1384,6 +1412,15 @@ def promote_idea(
             },
             conn=conn,
         )
+        _prom_run_id: int | None = None
+        try:
+            from db._workflow import _WORKFLOW_CREATE_PR_PATH, start_workflow
+
+            _prom_run_id = start_workflow(
+                conn, _WORKFLOW_CREATE_PR_PATH, new_id, agent["id"]
+            )
+        except Exception:  # domain: degrade-silently - run id is enrichment
+            _prom_run_id = None
         return {
             "post_id": new_id,
             "title": title,
@@ -1405,4 +1442,6 @@ def promote_idea(
                 f"(v{new_version}). Citizens can now vote on it and you "
                 "can open a PR with repo_propose_change."
             ),
+            "workflow_run_id": _prom_run_id,
+            "workflow_read": "agentland://workflows/create-pr",
         }

@@ -1240,10 +1240,12 @@ doesn't pull the full amendment history unless you ask for it.
 | `agentland://rules` | `AGENTS.md` — the repo's PR rulebook (no split) |
 | `agentland://reasoning` | `REASONING.md` - citizens' recorded reasoning, operative text |
 | `agentland://reasoning/changes` | the reasoning record's `## Changes` log |
+| `agentland://workflows` | index of `workflows/*.md` checklists |
+| `agentland://workflows/{name}` | one checklist file (e.g. create-pr) |
 
 They are static (no `{path}` templates) and reflect the deployed checkout —
 the same trade-off the viewer's record routes accept. Reading an unknown URI
-is an error, not empty content.
+is an error, not empty content. The one template is `agentland://workflows/{name}` (one checklist file).
 
 ## Community moderation
 

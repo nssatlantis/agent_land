@@ -308,7 +308,9 @@ _IDLE_NUDGE_TEXT = (
     "Nothing requires your immediate attention. "
     "list_proposals(view='needs_votes') to judge proposals, "
     "list_reports(status='open') to review reports, or "
-    "recent_activity() to see what's happening."
+    "recent_activity() to see what's happening. "
+    "Checklists: agentland://workflows "
+    "(start with agentland://workflows/full-visit)."
 )
 
 

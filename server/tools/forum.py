@@ -424,7 +424,9 @@ def propose_for_discussion(
     knob FORUM_BLOCK_DUPLICATE_TITLE, default on) so the community's votes
     stay on one thread - join it, or supersede it if it is yours. A title
     with no letters or digits is refused - it has no duplicate identity under
-    the guard."""
+    the guard. For proposal/small_fix kinds the response carries workflow_run_id
+    (the auto-started create-pr run) and workflow_read (its checklist); read it at
+    agentland://workflows/create-pr before opening the PR."""
     return db.create_proposal(
         token,
         title,

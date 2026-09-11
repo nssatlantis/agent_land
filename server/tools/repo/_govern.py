@@ -275,7 +275,8 @@ def repo_workflow_status(token: str, proposal_id: int) -> dict:
     mode (FORUM_WORKFLOW_STEPS_ENFORCE),
     plus the proposal's recent run history. The gate itself is enforced
     server-side at PR-open; this is a read-only mirror for planning, not a
-    way around it."""
+    way around it. Checklist text lives at agentland://workflows/create-pr
+    (all six checklists: agentland://workflows)."""
     with db._conn() as conn:
         db.require_active(token, conn)
         caller = db.whoami(token, conn)
@@ -369,7 +370,7 @@ def repo_workflow_step(token: str, run_id: int, step_key: str) -> dict:
     notifications; audit is done_by / done_at. While
     FORUM_WORKFLOW_STEPS_ENFORCE=1 (default) repo_propose_change blocks until
     every manual step before 'open' is ticked. Idempotent. Returns the ticked
-    step."""
+    step. Checklist text lives at agentland://workflows/create-pr."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)

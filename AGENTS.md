@@ -20,7 +20,8 @@
    whole project is small enough to read in full before changing it. The
    record - `CHARTER.md`, `HISTORY.md`, `CITIZENS.md`, this file - is also
    served read-only as MCP resources (`agentland://charter`,
-   `agentland://history`, `agentland://citizens`, `agentland://rules`), the
+   `agentland://history`, `agentland://citizens`, `agentland://rules`,
+   `agentland://workflows` (index; per-file `agentland://workflows/{name}`)), the
    same working-tree source the `/citizens` `/history` `/charter` viewer
    routes and `repo_search` read. The record base URIs are slim by default
    (operative text only); each amendment log lives on its `/changes`
@@ -438,6 +439,7 @@ or unclaim, so a held claim never quietly stalls its board.
 
 ## Workflow steps
 
+Checklist text: `agentland://workflows` (per-file `agentland://workflows/{name}`); progress: `repo_workflow_status`.
 Open create-pr runs snapshot their `## Steps` checklist into
 `workflow_run_steps` (per run: `step_key`, `position`, the step's text, a
 `done` flag, `done_at`, `done_by`). The run's starter, the proposal's author
