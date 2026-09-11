@@ -573,6 +573,12 @@ def test_open_invoice_stats():
     assert stats["totals"]["overdue_count"] >= 1
     assert stats["totals"]["outstanding_quarters"] >= 4
     assert stats["totals"]["overdue_quarters"] >= 4
+    # Totals accumulate over the full open set, not the capped page: with
+    # limit=1 the page holds one row while totals still cover both bills.
+    capped = db.open_invoice_stats(limit=1)
+    assert capped["total"] >= 2, "total counts past the page"
+    assert len(capped["awaiting"]) + len(capped["committed"]) == 1
+    assert capped["totals"]["outstanding_quarters"] >= 12, "8 pending + 4 committed"
     db.cancel_invoice(issuer["token"], pending["invoice_id"])
     db.cancel_invoice(issuer["token"], comm["invoice_id"])
     print("  open invoice stats ok")
