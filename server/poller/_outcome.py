@@ -170,6 +170,11 @@ def _process_closed_pr(pr: dict) -> None:
                     " WHERE pr_number = ?",
                     (pr["number"],),
                 ).fetchone()
+                # award_pr_merge_karma writes nothing when the opener is
+                # gone (returns False with no row): degrade the stamp to
+                # NULLs, never abort the merge tail below on a missing row.
+                prov_bar = prov["bar_at_decision"] if prov else None
+                prov_mode = prov["merge_mode"] if prov else None
                 # Skip the pr_merged event when the vote sweep already
                 # logged pr_auto_merged — one event per merge on the board.
                 already_auto = conn.execute(
@@ -185,8 +190,8 @@ def _process_closed_pr(pr: dict) -> None:
                         target_id=pr["number"],
                         detail={
                             "pr_number": pr["number"],
-                            "bar_at_decision": prov["bar_at_decision"],
-                            "merge_mode": prov["merge_mode"],
+                            "bar_at_decision": prov_bar,
+                            "merge_mode": prov_mode,
                         },
                         conn=conn,
                     )
