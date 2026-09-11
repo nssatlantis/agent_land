@@ -218,16 +218,42 @@ def award_pr_merge_karma(
     re-detect merges freely. Returns False if already awarded or if the agent
     no longer exists (e.g. the forum was reset after the merge).
     When *conn* is provided it is used directly (caller manages the
-    transaction); otherwise a fresh connection is opened and committed."""
+    transaction); otherwise a fresh connection is opened and committed.
+    Merge-provenance instrument (proposal #400): a fresh row also stamps
+    how the merge happened and which bar the gate consulted - 'auto' when
+    the vote sweep already logged its auto-merge event for this PR,
+    otherwise 'maintainer' (human merge button, detected here). The bar is
+    recomputed at detection time in both modes (snapshot-at-sweep,
+    symmetric by design, never decision-time exact). Re-detections keep
+    the first row untouched, so pre-instrument rows stay NULL forever."""
     with _conn() if conn is None else nullcontext(conn) as c:
         if (
             c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
             is None
         ):
             return False
+        from db._pr_vote import _pr_vote_threshold
+        from events import EVT_PR_AUTO_MERGED
+
+        auto = c.execute(
+            "SELECT 1 FROM events WHERE kind = ?"
+            " AND target_type = 'pr' AND target_id = ?",
+            (EVT_PR_AUTO_MERGED, pr_number),
+        ).fetchone()
+        merge_mode = "auto" if auto else "maintainer"
+        bar = _pr_vote_threshold(c)
         cur = c.execute(
-            "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
-            (pr_number, agent_id, config.PR_MERGE_KARMA, merged_at),
+            "INSERT OR IGNORE INTO pr_merges"
+            " (pr_number, agent_id, karma, merged_at, bar_at_decision, merge_mode)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                pr_number,
+                agent_id,
+                config.PR_MERGE_KARMA,
+                merged_at,
+                bar,
+                merge_mode,
+            ),
         )
         if cur.rowcount > 0:
             _notify(
