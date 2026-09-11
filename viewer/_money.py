@@ -939,7 +939,9 @@ def _comment_thread_map(entries: list[dict]) -> dict[int, int]:
 
 
 def _jobs_tab_for_status(status: str) -> str:
-    """Board tab holding one job status (matches the /jobs tab filters)."""
+    """Board tab holding one job status (matches the /jobs tab filters).
+    Unknown statuses fall back to open; panel rows only ever carry
+    open/offered/active."""
     if status == "active":
         return "active"
     if status == "completed":
@@ -1127,7 +1129,7 @@ def _economy_body(request: Request) -> str:
             + "</tbody></table>"
             + (
                 "<p style='color:var(--muted);font-size:13px'>No prior window — no trend arrows on All time.</p>"
-                if window_key == "all_time"
+                if window_key == "all_time" and prev_map.get(window_key) is None
                 else ""
             )
             + "</div>"
@@ -1212,7 +1214,7 @@ def _economy_body(request: Request) -> str:
                 f"<tr><td>new since seal</td><td style='text-align:right'>"
                 f"{max(0, overview.get('entry_count', 0) - seal.get('entry_count', 0))} "
                 f"(live {overview.get('entry_count', 0)})</td></tr>"
-                f"<tr><td>sealed supply</td><td style='text-align:right'>"
+                f"<tr><td>sealed supply (at seal)</td><td style='text-align:right'>"
                 f"{esc(seal.get('total_supply_credits', ''))} credits</td></tr>"
                 f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
                 f"{esc(seal.get('running_hash', ''))}</td></tr>"
@@ -1440,23 +1442,7 @@ def _economy_body(request: Request) -> str:
     # _display_entries is already the filtered page.
     _display_entries = ledger["entries"]
     # Comment deep-links need the parent post: one batched map for the page.
-    _comment_threads: dict[int, int] = {}
-    try:
-        _comment_ids = sorted(
-            {
-                int(leg.get("target_id"))
-                for _e in _display_entries
-                for leg in (_e.get("legs") or [])
-                if leg.get("target_type") == "comment"
-                and str(leg.get("target_id") or "").isdigit()
-            }
-        )
-        if _comment_ids:
-            from reports import comment_post_ids
-
-            _comment_threads = dict(comment_post_ids(_comment_ids))
-    except Exception:  # domain: degrade-silently - targets fall back to plain text
-        _comment_threads = {}
+    _comment_threads = _comment_thread_map(_display_entries)
 
     def _ledger_tx_row(_g: dict) -> str:
         _when = esc(_g["created_at"][:19].replace("T", " "))
@@ -1512,12 +1498,25 @@ def _economy_body(request: Request) -> str:
     try:
         _gen_ledger = db.credit_history(limit=20, offset=0, category="treasury")
         _gen_entries = _gen_ledger["entries"]
+        _gen_threads = _comment_thread_map(
+            [
+                {
+                    "legs": [
+                        {
+                            "target_type": e.get("target_type"),
+                            "target_id": e.get("target_id"),
+                        }
+                    ]
+                }
+                for e in _gen_entries
+            ]
+        )
         if _gen_entries:
             _gen_rows = "".join(
                 f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
                 f"<td>{esc(e['agent_name'])}</td>"
                 f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
-                f"<td>{esc(e['reason'])}</td><td>{_led_target(e, _comment_threads)}</td></tr>"
+                f"<td>{esc(e['reason'])}</td><td>{_led_target(e, _gen_threads)}</td></tr>"
                 for e in _gen_entries[:20]
             )
             _genesis_html = (
