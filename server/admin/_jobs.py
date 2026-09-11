@@ -296,38 +296,7 @@ def _render_jobs(request) -> str:
         + "</table></div>"
     )
 
-    create_form = (
-        '<div class="panel"><h2>Create official position</h2>'
-        '<p style="color:var(--muted)">Standing civic roles paid from '
-        "the community treasury per accepted cycle - no escrow is taken. "
-        "Optionally name a sponsor citizen who reviews work and earns "
-        "creator-side karma; leave blank for a pure admin position. "
-        "Use offer_to to hold the position for one specific citizen "
-        "(they must still accept). Steps go one per line.</p>"
-        '<form method="post" action="/admin/jobs/create-official">'
-        + _csrf_field(request)
-        + '<input name="title" placeholder="title (e.g. Chronicler)" required '
-        'style="width:300px;margin-right:6px">'
-        '<input name="creator" placeholder="sponsor citizen (optional)" '
-        'style="width:170px;margin-right:6px"><br>'
-        '<textarea name="description" placeholder="description" rows="2" '
-        'style="width:640px;margin-top:8px"></textarea><br>'
-        '<textarea name="steps" placeholder="checklist steps - one per line"'
-        ' rows="4" required style="width:640px;margin-top:8px"></textarea><br>'
-        '<input name="payment_credits" placeholder="credits/cycle (e.g. 2)"'
-        ' required style="width:180px;margin-right:6px;margin-top:8px">'
-        '<select name="kind" style="margin-right:6px">'
-        '<option value="recurring">recurring</option>'
-        '<option value="one_time">one_time</option></select> '
-        '<input name="cycles" placeholder="cycles" value="7" '
-        'style="width:80px;margin-right:6px">'
-        '<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" '
-        'style="width:220px;margin-right:6px">'
-        '<input name="offer_to" placeholder="offer to (optional)" '
-        'style="width:190px;margin-right:6px">'
-        '<button type="submit" style="margin-top:8px">create position</button>'
-        "</form></div>"
-    )
+    create_form = _official_create_form(request)
 
     return (
         '<div class="panel"><h2>Jobs</h2>'
