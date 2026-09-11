@@ -1727,6 +1727,8 @@ def test_wallet_party_link():
     assert _wallet_party_link("Treasury", None, None) == "Treasury"
     assert _wallet_party_link(None, 7, None) is None
     assert _wallet_party_link("<x>", 7, None) == '<a href="/credits/7">&lt;x&gt;</a>'
+
+
 def test_analytics_page_has_governance_section():
     """The /governance/analytics fold: one /analytics page renders both the
     society charts and the governance panel (#396)."""
