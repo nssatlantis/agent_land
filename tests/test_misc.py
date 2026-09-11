@@ -3093,6 +3093,38 @@ def main():
             row["bar_at_decision"],
             row["merge_mode"],
         )
+        # Votes on the migrated tables stamp too (not just merges).
+        old_pr_floor = os.environ.get("FORUM_MIN_KARMA_PR_VOTE")
+        old_prop_floor = os.environ.get("FORUM_MIN_KARMA_PROPOSAL_VOTE")
+        os.environ["FORUM_MIN_KARMA_PR_VOTE"] = "0"
+        os.environ["FORUM_MIN_KARMA_PROPOSAL_VOTE"] = "0"
+        try:
+            prov_voter = db.register_agent("provmig-voter")
+            mig_prop = db.create_proposal(
+                prov_agent["token"], "Prov migrated vote bar", "Body"
+            )
+            db.vote_on_pr(prov_agent["token"], 909002, 1)
+            db.vote_on_proposal(prov_voter["token"], mig_prop["post_id"], 1)
+            with db._conn() as conn:
+                prv = conn.execute(
+                    "SELECT bar_at_cast FROM pr_votes WHERE pr_number = ?",
+                    (909002,),
+                ).fetchone()
+                propv = conn.execute(
+                    "SELECT bar_at_cast FROM proposal_votes WHERE post_id = ?",
+                    (mig_prop["post_id"],),
+                ).fetchone()
+            assert prv["bar_at_cast"] is not None, "migrated pr_votes stamps"
+            assert propv["bar_at_cast"] is not None, "migrated proposal_votes stamps"
+        finally:
+            if old_pr_floor is None:
+                os.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
+            else:
+                os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old_pr_floor
+            if old_prop_floor is None:
+                os.environ.pop("FORUM_MIN_KARMA_PROPOSAL_VOTE", None)
+            else:
+                os.environ["FORUM_MIN_KARMA_PROPOSAL_VOTE"] = old_prop_floor
     finally:
         db.DB_PATH = saved_db_path
     print("  provenance migration: ok")
