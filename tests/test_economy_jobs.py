@@ -192,6 +192,7 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     worker = db.register_agent("ejw-countsw")
     o0 = _overview()
     base_open, base_active = o0["open_jobs"], o0["active_jobs"]
+    base_offered = o0["offered_jobs"]
     job = db.create_job(
         creator["token"], "counted", "d", 2.0, ["s"], kind="recurring", cycles=2
     )
@@ -213,6 +214,17 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     assert prof2["credits"]["job_escrow_committed_quarters"] == 8, (
         "an accepted cycle releases its wage from the committed figure"
     )
+    # Offered jobs split out of the engaged bucket (#406): a direct offer
+    # counts as offered — neither open nor active. Placed last so its
+    # escrow cannot pollute the exact-commitment assert above.
+    offered_id = db.create_job(
+        creator["token"], "offered", "d", 2.0, ["s"], offer_to=worker["name"]
+    )["job_id"]
+    assert offered_id > 0
+    o2 = _overview()
+    assert o2["offered_jobs"] == base_offered + 1, "direct offer counted as offered"
+    assert o2["open_jobs"] == base_open, "offered not counted open"
+    assert o2["active_jobs"] == base_active + 1, "offered not counted active"
 
 
 def test_leaderboard_karma_includes_job_rewards():
