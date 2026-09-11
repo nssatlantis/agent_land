@@ -696,7 +696,9 @@ def main():
     res_keys = db.create_proposal(alpha["token"], "T6b run keys", "t6b body")
     assert res_keys["workflow_read"] == "agentland://workflows/create-pr"
     with db._conn() as conn:
-        assert res_keys["workflow_run_id"] == int(_open_run(conn, res_keys["post_id"])["id"])
+        assert res_keys["workflow_run_id"] == int(
+            _open_run(conn, res_keys["post_id"])["id"]
+        )
     with db._conn() as conn:
         r6 = int(_open_run(conn, p6)["id"])
         _tick_manual_steps(conn, p6, alpha["agent_id"])
