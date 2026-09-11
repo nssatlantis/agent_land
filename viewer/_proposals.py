@@ -490,7 +490,9 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     lineage tab renders version chains, which don't paginate: one capped
     fetch, grouped (same shape as the full page, so poll and page agree)."""
     if view == "lineage":
-        rows = db.list_proposals(limit=200, view="all", sort="newest")
+        # Full-forest fetch like the retired page (roots outside a smaller
+        # window would strand descendants as families of one).
+        rows = db.list_proposals(limit=500, view="all", sort="newest")
         return _lineage_families_html(rows)
     rows = db.list_proposals(
         limit=config.PROPOSALS_PER_PAGE,
@@ -677,14 +679,16 @@ def proposals_page(request: Request) -> HTMLResponse:
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} proposals</div>'
     # Render page rows directly (avoid _docket_rows's second DB fetch)
     if view == "lineage":
-        # Version chains don't paginate: one capped fetch, grouped. The tab
+        # Full-forest fetch like the retired page (roots outside a smaller
+        # window would strand descendants as families of one). The tab
         # count equals the docket total by predicate design.
-        _fams = _proposal_families(all_rows)
-        docket_html = _lineage_families_html(all_rows)
+        _fam_rows = db.list_proposals(limit=500, view="all", sort="newest")
+        _fams = _proposal_families(_fam_rows)
+        docket_html = _lineage_families_html(_fam_rows)
         pager = ""
         summary = (
             f'<div class="meta" style="margin:0 0 8px">{len(_fams)} families · '
-            f"{len(all_rows)} versions in tree</div>"
+            f"{len(_fam_rows)} versions in tree</div>"
         )
     elif page_rows:
         all_pr_numbers = [
