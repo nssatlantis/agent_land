@@ -39,6 +39,31 @@ def _party_name(dg: dict | None, fallback: str = "admin") -> str:
     return f"<span{_tint_style(dg.get('name_color'))}>{esc(dg['name'])}</span>"
 
 
+def _official_form_values(form=None):
+    """Submitted values (or blank defaults) for the official-position form,
+    so a refused submit re-renders with the admin's input preserved instead
+    of wiping everything typed."""
+
+    def _v(key, default=""):
+        if form is None:
+            return default
+        val = form.get(key)
+        return str(val) if val is not None else default
+
+    return {
+        "title": _v("title"),
+        "creator": _v("creator"),
+        "description": _v("description"),
+        "steps": _v("steps"),
+        "payment_credits": _v("payment_credits"),
+        "kind": _v("kind", "recurring"),
+        "cycles": _v("cycles", "7"),
+        "scope": _v("scope"),
+        "offer_to": _v("offer_to"),
+        "taker_deposit": _v("taker_deposit", "1.0"),
+    }
+
+
 async def create_stake(request):
 
     if not _authorized(request):
