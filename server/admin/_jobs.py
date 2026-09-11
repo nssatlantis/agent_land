@@ -12,6 +12,7 @@ from urllib.parse import quote as _urlquote
 
 from starlette.responses import RedirectResponse
 
+import config
 import db
 from server.admin._auth import (
     _admin_nav,
@@ -100,8 +101,19 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + error_html
         + '<form method="post" action="/admin/jobs/create-official">'
         + _csrf_field(request)
-        + f'<select name="kind">{_rec_sel}{_one_sel}</select>'
-        + f'<input name="title" value="{esc(v["title"])}">'
+        + "<p "
+        + 'style="color:var(--muted)">Standing civic roles, treasury-paid per '
+        + "accepted cycle - no escrow is taken from anyone's wallet. Optionally "
+        + "name a sponsor citizen who reviews work; leave blank for a pure admin "
+        + "position. Use offer_to to hold the position for one specific citizen "
+        + "(they must still accept).</p>"
+        + f'<label>Title <span style="color:var(--muted)">(required, at most {config.JOB_TITLE_MAX_LEN} chars)</span></label><br>'
+        + f'<input name="title" placeholder="title (e.g. Chronicler)" required maxlength="{config.JOB_TITLE_MAX_LEN}" '
+        + f'value="{esc(v["title"])}" style="width:300px;margin-right:6px">'
+        + '<label>Sponsor <span style="color:var(--muted)">(optional active citizen - blank for pure admin; cannot equal the offeree; '
+        + "earns creator karma + 0.25 credits per accepted cycle; no karma floor for officials)</span></label><br>"
+        + f'<input name="creator" placeholder="sponsor citizen (optional)" value="{esc(v["creator"])}" '
+        + 'style="width:300px;margin:4px 0 8px"><br>'
         + "</form></div>"
     )
 
