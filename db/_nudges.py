@@ -789,19 +789,28 @@ def _proposal_todo_nudge(
     caller can act without an extra get_todos round trip. Quiet when
     nothing qualifies - no nudge, no noise; a hint, never a gate.
     `threshold` threads through to the docket rows like _proposal_docket."""
+    from db._proposal_todos import _todos_summary_for_posts
+
     rows = _proposal_rows(
         conn,
         " AND (p.agent_id = ? OR p.delegate_id = ?)",
         (agent_id, agent_id),
+        for_counts=True,
         threshold=threshold,
+    )
+    # Display batches are skipped above; the board counts this nudge reads
+    # come from one targeted batch over the still-qualifying proposals.
+    open_rows = [p for p in rows if not p["locked"] and p["status"] != "merged"]
+    todos_by_post = (
+        _todos_summary_for_posts(conn, [p["id"] for p in open_rows])
+        if open_rows
+        else {}
     )
     missing = 0
     open_items_by_post: list[dict] = []
     live = _posts_with_live_pr_ids(conn)
-    for p in rows:
-        if p["locked"] or p["status"] == "merged":
-            continue
-        summary = p.get("todos_summary") or {}
+    for p in open_rows:
+        summary = todos_by_post.get(p["id"]) or {}
         if not summary.get("lists"):
             missing += 1
             continue
