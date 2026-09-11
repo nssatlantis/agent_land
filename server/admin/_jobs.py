@@ -66,8 +66,44 @@ def _official_form_values(form=None):
 
 def _official_create_form(request, values=None, error=None, dashed=False):
     """The official-position create form, shared by the dashboard panel and
-    the full manager page (one renderer so the two copies cannot drift)."""
-    return "<div></div>"
+    the full manager page (one renderer so the two copies cannot drift).
+    `values` preserves a refused submit's input; `error` renders the refusal
+    inline above the form. Caps and rules mirror db._jobs_ops._create, read
+    live from config, so the form states what the server enforces."""
+    v = values or _official_form_values()
+    style = ' style="border:2px dashed var(--border)"' if dashed else ""
+    try:
+        with db._conn() as _c:
+            _tq = db.treasury_balance(_c)
+        _tb = db.format_credits(_tq)
+    except Exception:
+        # domain:degrade-silently - balance line is advisory; the form
+        # works without it.
+        _tb = None
+    treasury_line = (
+        f'<p style="color:var(--muted)">Treasury balance: {_tb} cr - '
+        "creating this position escrows wage x cycles from the treasury "
+        "immediately, so double-check big numbers.</p>"
+        if _tb is not None
+        else ""
+    )
+    error_html = (
+        f'<p style="color:#c53030;font-weight:600">Not created: {esc(error)}</p>'
+        if error
+        else ""
+    )
+    _one_sel = " selected" if v["kind"] == "one_time" else ""
+    _rec_sel = "" if v["kind"] == "one_time" else " selected"
+    return (
+        f'<div class="panel"{style}><h2>Create official position</h2>'
+        + treasury_line
+        + error_html
+        + '<form method="post" action="/admin/jobs/create-official">'
+        + _csrf_field(request)
+        + f'<select name="kind">{_rec_sel}{_one_sel}</select>'
+        + f'<input name="title" value="{esc(v["title"])}">'
+        + "</form></div>"
+    )
 
 
 async def create_stake(request):
