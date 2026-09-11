@@ -727,6 +727,17 @@ async def create_official_job(request):
 
     steps = [s.strip() for s in str(form.get("steps") or "").splitlines() if s.strip()]
 
+    td_raw = str(form.get("taker_deposit") or "").strip()
+    try:
+        taker_deposit = float(td_raw) if td_raw else 1.0
+    except (ValueError, TypeError):
+        # domain:fail-loudly - bad deposit refuses with values kept, never a silent default.
+        return _official_create_error(
+            request,
+            f"bad taker deposit {td_raw!r} - enter a number or leave blank for the 1.0 default.",
+            form,
+        )
+
     try:
         result = db.create_job_official(
             _admin_user(request),
@@ -739,6 +750,7 @@ async def create_official_job(request):
             cycles=int(form.get("cycles") or 1),
             scope=str(form.get("scope") or ""),
             offer_to=str(form.get("offer_to") or "") or None,
+            taker_deposit_credits=taker_deposit,
         )
 
     except (ValueError, TypeError) as exc:
