@@ -663,6 +663,49 @@ def test_overdue_official_is_nudged_never_released():
         importlib.reload(live_config)
 
 
+def _panel_req(method, path, *, body=None, path_params=None):
+    """Minimal authed admin request for the panel tests below (mirrors the
+    local helper inside test_admin_panel_flow_end_to_end)."""
+    import base64
+    from urllib.parse import urlencode
+
+    from starlette.requests import Request
+
+    from server import admin as admin_mod
+
+    auth = "Basic " + base64.b64encode(b"root:secret").decode()
+    csrf = "tok"
+    hb = [(b"cookie", f"{admin_mod._CSRF_COOKIE}={csrf}".encode())]
+    hb.append((b"authorization", auth.encode()))
+    bb = urlencode(body).encode() if body is not None else b""
+    if body is not None:
+        hb.append((b"content-type", b"application/x-www-form-urlencoded"))
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": bb, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "root_path": "",
+        "query_string": b"",
+        "headers": hb,
+        "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 80),
+        "path_params": path_params or {},
+        "state": {},
+    }
+    return Request(scope, receive), csrf
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
