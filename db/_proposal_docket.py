@@ -644,7 +644,10 @@ def list_proposals(
     shows the 5 latest); None returns them all. `offset` pages past the first
     rows, for use with `limit`. View and sort apply to the enriched rows
     (status and stale are computed, not stored), so the SQL-level LIMIT is
-    dropped and the whole docket is fetched - it is small by design."""
+    dropped and the whole docket is fetched - it is small by design.
+    Filtering views (anything but 'all'/'lineage') fetch in two phases: a
+    counts-only pass first (same predicate fields, no display batches),
+    then the full enrichments over the surviving ids only."""
     if view is None:
         view = "all"
     if view not in _PROPOSAL_VIEWS:
@@ -709,7 +712,23 @@ def list_proposals(
                 rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
             return rows
     with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+        if view in ("all", "lineage"):
+            rows = _proposal_rows(conn, "", ())
+        else:
+            # Two-phase: the counts-only pass keeps every field
+            # _proposal_matches_view() reads but skips the seven display
+            # batches, so filter first and enrich the survivors only. One
+            # shared threshold for both fetches (no active-citizens
+            # recount). 'all'/'lineage' match everything and keep the
+            # single full fetch - two phases there would pure-duplicate it.
+            threshold = _proposal_vote_threshold(conn)
+            light = _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
+            ids = [p["id"] for p in light if _proposal_matches_view(p, view)]
+            if not ids:
+                rows = []
+            else:
+                where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
+                rows = _proposal_rows(conn, where_sql, tuple(ids), threshold=threshold)
     # view=="all" matches everything (_proposal_matches_view returns True),
     # so skip the O(N) pass; the comprehensions below preserve SQL order.
     if view != "all":
