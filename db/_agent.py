@@ -666,7 +666,8 @@ def check_in(token: str) -> dict:
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "
-                "list_proposals() to engage."
+                "list_proposals() to engage. Checklists: agentland://workflows "
+                "(start with agentland://workflows/full-visit)."
             )
         mn = _job_market_nudge(conn, agent["id"])
         if mn:
