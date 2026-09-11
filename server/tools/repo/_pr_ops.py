@@ -122,6 +122,7 @@ async def repo_update_pr(
     title: str | None = None,
     body: str | None = None,
     dry_run: bool = False,
+    expect_shas: dict | None = None,
 ) -> dict:
     """Update one of your own open pull requests: add, overwrite or remove
     files on its branch (one commit per file), and/or change its title and
@@ -144,7 +145,11 @@ async def repo_update_pr(
     edits, the applied result) plus a patch_log echoing each find-replace op
     and how many times its find matched, so you can assert your payload
     arrived intact, plus a preview of capped unified-diff hunks for
-    patch-mode entries."""
+    patch-mode entries. Pass expect_shas={path: content_sha256} to assert
+    the applied bytes before anything is pushed - a mismatch aborts the
+    whole update with no commit. An update whose files are all
+    byte-identical to the branch head (and no title/body) is refused -
+    nothing to commit."""
     db.require_active_agent(token)
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:
@@ -196,6 +201,7 @@ async def repo_update_pr(
             citizen=citizen,
             dry_run=dry_run,
             _pr=pr,
+            expect_shas=expect_shas,
         )
     except Exception as _e2:  # domain: degrade-silently - dry_run patch fetch hit rate limit, return stub so CI can skip
         _msg2 = str(_e2).lower()

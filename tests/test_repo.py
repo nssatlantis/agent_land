@@ -729,6 +729,160 @@ def main():
     ], "update_pr must echo the manifest for a valid content write"
     assert calls == [("GET", "pulls/9")], calls
 
+    # --- tool hardening: no-op refusal + expect_shas assertion ---
+    # An update whose files are all byte-identical to the branch head
+    # (and no title/body) is refused instead of minting an empty commit -
+    # in dry_run and for real, before any PUT. expect_shas aborts before
+    # any push when the applied bytes are not the rehearsed bytes.
+    pr_open = {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+    same_b64 = base64.b64encode(b"same\nbytes\n").decode("ascii")
+    crlf_b64 = base64.b64encode(b"same\r\nbytes\r\n").decode("ascii")
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return dict(pr_open)
+        if method == "GET" and path.startswith("contents/app.py?ref="):
+            return {"content": same_b64, "sha": "app-sha", "encoding": "base64"}
+        if method == "GET" and path.startswith("contents/crlf.py?ref="):
+            return {"content": crlf_b64, "sha": "crlf-sha", "encoding": "base64"}
+        if method == "GET" and path.startswith("contents/new.py?ref="):
+            return None
+        if method == "GET" and path.startswith("contents/reset.py?ref="):
+            return {"content": crlf_b64, "sha": "reset-sha", "encoding": "base64"}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    noop_patch = [{"path": "app.py", "edits": [{"find": "same", "replace": "same"}]}]
+
+    # 1. no-op patch refused in dry_run (resolution GETs only, no PUT).
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.update_pr(
+            9, noop_patch, citizen="curious-alpha (agent_id=3)", dry_run=True
+        )
+        raise AssertionError("a no-op patch update must be refused")
+    except github.RepoError as exc:
+        assert "made no changes" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+    assert calls == [
+        ("GET", "pulls/9"),
+        ("GET", "contents/app.py?ref=feature/x"),
+    ], calls
+
+    # 2. no-op patch refused for real, before any PUT/DELETE/PATCH.
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.update_pr(
+            9, noop_patch, citizen="curious-alpha (agent_id=3)", dry_run=False
+        )
+        raise AssertionError("a real no-op patch update must be refused")
+    except github.RepoError as exc:
+        assert "made no changes" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+    assert not [c for c in calls if c[0] in ("PUT", "DELETE", "PATCH")], calls
+
+    # 3. EOL-insensitive: LF content over a CRLF head is still a no-op.
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.update_pr(
+            9,
+            [{"path": "crlf.py", "content": "same\nbytes\n"}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+        raise AssertionError("EOL-only difference must count as no-op")
+    except github.RepoError as exc:
+        assert "made no changes" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+
+    # 4. mixed (one changed, one not) proceeds; title-only with no-op
+    # files proceeds too.
+    github._core._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            noop_patch
+            + [{"path": "app.py", "edits": [{"find": "same", "replace": "new"}]}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+        )
+        assert plan["changes"] == ["app.py", "app.py"], plan["changes"]
+        plan = github.update_pr(
+            9,
+            noop_patch,
+            title="Retitled",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+        )
+        assert plan["title"] == "Retitled", plan["title"]
+    finally:
+        github._core._request = real_request
+
+    # 5. new files and resets always count as changes (head unknown or
+    # base-restored without a branch-bytes comparison).
+    github._core._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            [{"path": "new.py", "content": "brand new"}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+        )
+        assert plan["changes"] == ["new.py"], plan["changes"]
+        plan = github.update_pr(
+            9,
+            [{"path": "reset.py", "reset": True}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+        )
+        assert plan["changes"] == ["reset.py"], plan["changes"]
+    finally:
+        github._core._request = real_request
+
+    # 6. expect_shas: match proceeds, mismatch and unknown path abort
+    # before any push.
+    changing_patch = [{"path": "app.py", "edits": [{"find": "same", "replace": "new"}]}]
+    applied_sha = hashlib.sha256(b"new\nbytes\n").hexdigest()
+    github._core._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            changing_patch,
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+            expect_shas={"app.py": applied_sha},
+        )
+        assert plan["changes"] == ["app.py"], plan["changes"]
+    finally:
+        github._core._request = real_request
+    for bad_shas, needle in (
+        ({"app.py": "0" * 64}, "sha mismatch"),
+        ({"ghost.py": applied_sha}, "not among"),
+    ):
+        calls = []
+        github._core._request = fake_request
+        try:
+            github.update_pr(
+                9,
+                changing_patch,
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=False,
+                expect_shas=bad_shas,
+            )
+            raise AssertionError(f"expect_shas {bad_shas} must abort")
+        except github.RepoError as exc:
+            assert needle in str(exc), (bad_shas, str(exc))
+        finally:
+            github._core._request = real_request
+        assert not [c for c in calls if c[0] in ("PUT", "DELETE", "PATCH")], calls
+    print("  update no-op refusal + expect_shas: ok")
+
     # the manifest counts UTF-8 bytes, not characters
     plan = github.propose_change(
         [{"path": "docs/u.md", "content": "héllo"}],
@@ -1716,6 +1870,18 @@ def main():
         raise AssertionError("invalid JSON must raise ForumError in update path")
     except db.ForumError as e:
         assert "invalid JSON" in str(e), f"error message must mention invalid JSON: {e}"
+
+    # The invalid-JSON refusal carries a capped repr window around the
+    # error column so the caller sees what broke (parse-site excerpt,
+    # not just the stdlib message).
+    try:
+        rh._changes_for_repo_propose(None, None, '[{"path": "a.md", ')
+        raise AssertionError("truncated JSON must raise ForumError")
+    except db.ForumError as e:
+        assert "near" in str(e) and ">>>" in str(e), (
+            f"error must carry the excerpt marker: {e}"
+        )
+        assert "a.md" in str(e), f"excerpt must show the failing span: {e}"
 
     # None and list inputs still work (backwards compatibility)
     # For propose: None files is only valid with file_path + content provided
