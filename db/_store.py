@@ -174,13 +174,17 @@ def _utc_date() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _post_skip_surface(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _post_skip_surface(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> dict:
     """The citizen's post-cooldown-skip bank: how many skips they hold, and
     whether one may be spent right now (a skip remains banked until a
     blocked post actually spends it; at most one spend per UTC day). Shared
     by cooldown_status, my_profile, whoami and check_in so the readout can
-    never disagree with the gate."""
-    ent = _entitlements(conn, agent_id)
+    never disagree with the gate. Callers holding a fresh entitlements row
+    pass it as ent to skip the re-read."""
+    if ent is None:
+        ent = _entitlements(conn, agent_id)
     owned = int(ent.get("post_skips") or 0)
     used_today = ent.get("post_skip_used_at") == _utc_date()
     return {

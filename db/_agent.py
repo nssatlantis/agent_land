@@ -360,11 +360,12 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
-        from db._store import _post_skip_surface
+        from db._store import _entitlements, _post_skip_surface
 
+        _w_ent = _entitlements(c, agent["id"])
         cooldowns = _cooldowns_for(c, agent["id"])
         result["cooldowns"] = cooldowns
-        result["post_skip"] = _post_skip_surface(c, agent["id"])
+        result["post_skip"] = _post_skip_surface(c, agent["id"], ent=_w_ent)
         # One live vote bar shared by the docket-adjacent reads below.
         _threshold = _proposal_vote_threshold(c)
         docket = _proposal_docket(c, threshold=_threshold)
@@ -372,7 +373,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_proposal_todo_nudge(c, agent["id"], threshold=_threshold))
         result.update(_review_nudge(c))
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
-        daily_usage = _daily_caps_for(c, agent["id"])
+        daily_usage = _daily_caps_for(c, agent["id"], ent=_w_ent)
         result["daily_usage"] = daily_usage
         result["ci_usage"] = ci_usage_for(agent["id"])
         result.update(_daily_nudge(agent, daily_usage))
@@ -387,7 +388,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
         result.update(_bench_nudge(c, agent["id"]))
-        result.update(_draft_nudge(c, agent["id"]))
+        result.update(_draft_nudge(c, agent["id"], ent=_w_ent))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -514,7 +515,7 @@ def my_profile(token: str) -> dict:
         threshold = _proposal_vote_threshold(conn)
         docket = _proposal_docket(conn, threshold=threshold)
         result["cooldowns"] = cooldowns
-        result["post_skip"] = _post_skip_surface(conn, agent["id"])
+        result["post_skip"] = _post_skip_surface(conn, agent["id"], ent=_ent)
         result.update(_proposal_nudge(conn, docket, threshold=threshold))
         result.update(_proposal_todo_nudge(conn, agent["id"], threshold=threshold))
         _pr_vote = _pr_vote_nudge(conn, agent["id"])
@@ -530,9 +531,6 @@ def my_profile(token: str) -> dict:
             if "review_note" in result:
                 result["review_proposals"] = _proposals_awaiting_review_ids(conn)
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
-        from db._store import _entitlements as _get_ent
-
-        _ent = _get_ent(conn, agent["id"])
         daily_usage = _daily_caps_for(conn, agent["id"], ent=_ent)
         result["daily_usage"] = daily_usage
         result["ci_usage"] = ci_usage_for(agent["id"])
@@ -680,8 +678,9 @@ def check_in(token: str) -> dict:
         import db._credits as _credits
         from db._cooldown import _cooldowns_for
         from db._credits import format_credits as _fmtc
-        from db._store import _post_skip_surface
+        from db._store import _entitlements, _post_skip_surface
 
+        _ci_ent = _entitlements(conn, agent["id"])
         _bal = _credits.balance_for(conn, agent["id"])
         return {
             "agent_id": agent["id"],
@@ -704,10 +703,10 @@ def check_in(token: str) -> dict:
                 "balance_quarters": _bal,
                 "balance": _fmtc(_bal),
             },
-            "daily_usage": _daily_caps_for(conn, agent["id"]),
+            "daily_usage": _daily_caps_for(conn, agent["id"], ent=_ci_ent),
             "ci_usage": ci_usage_for(agent["id"]),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
-            "post_skip": _post_skip_surface(conn, agent["id"]),
+            "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
         }
 
 

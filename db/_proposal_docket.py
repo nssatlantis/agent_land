@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import (
@@ -12,6 +12,7 @@ from db._core import (
     _conn,
     _id_chunks,
     _require_agent_by_token,
+    _since_bound,
 )
 from db._proposal_status import (
     _comment_count_batch,
@@ -318,6 +319,69 @@ _PROPOSAL_VIEWS = (
     "lineage",
 )
 _PROPOSAL_SORTS = ("newest", "top")
+
+
+def _view_prefilter_sql(view: str) -> tuple[str, tuple]:
+    """Sargable pre-filter for one docket view: SQL narrowing the two-phase
+    light pass before the exact Python predicate runs. Every clause is a
+    NECESSARY condition of its view (a match always satisfies it), never a
+    sufficient one — the pass may over-include (old approved rows for the
+    stale bound, decided rows for the review EXISTS), but it can never
+    exclude a match, and _proposal_matches_view() stays the exact decider
+    so tab counts and rows agree by construction. Views whose predicate
+    needs tallies/thresholds/PR history ('merged', and the open/threshold
+    half of 'needs_votes'/'approved'/'review'/'stale') carry only their
+    stored-column necessities here."""
+    if view == "needs_votes":
+        # needs_votes ⟹ not approved ⟹ kind is neither small_fix nor idea.
+        return " AND p.proposal_kind = 'proposal'", ()
+    if view == "approved":
+        # The view drops small_fix rows; ideas meeting the bar stay.
+        return " AND p.proposal_kind != 'small_fix'", ()
+    if view == "review":
+        # review ⟹ non-collaborative, unlocked, at least one linked PR
+        # (decided or not — liveness stays Python's call).
+        return (
+            " AND p.collaborative = 0 AND p.superseded_by_id IS NULL"
+            " AND (EXISTS (SELECT 1 FROM proposal_links pl"
+            " WHERE pl.post_id = p.id)"
+            " OR EXISTS (SELECT 1 FROM proposal_outcomes po"
+            " WHERE po.post_id = p.id))",
+            (),
+        )
+    if view == "stale":
+        # stale ⟹ needs_votes (hence kind) ⟹ old enough. The bound is
+        # millis-exact (epoch float through _since_bound, never a
+        # second-truncated strftime) with a +2s margin NEWER than the
+        # anniversary, toward over-inclusion: the rows pass reads its own
+        # later now(), so a proposal born between the prefilter's now and
+        # the rows pass's now is already a match the bound must keep.
+        # Over-inclusion is safe (the exact predicate refilters);
+        # exclusion would break tab counts. Note the sign is load-bearing:
+        # an older bound keeps FEWER rows, i.e. excludes more.
+        bound = _since_bound(
+            (
+                datetime.now(timezone.utc)
+                - timedelta(days=config.PROPOSAL_STALE_DAYS)
+                + timedelta(seconds=2)
+            ).timestamp()
+        )
+        return " AND p.proposal_kind = 'proposal' AND p.created_at <= ?", (bound,)
+    if view == "small_fix":
+        return " AND p.proposal_kind = 'small_fix'", ()
+    if view == "collaborative":
+        return " AND p.collaborative = 1", ()
+    if view == "unclaimed":
+        return " AND p.claimable = 1", ()
+    if view == "staking":
+        return (
+            " AND EXISTS (SELECT 1 FROM proposal_stakes ps"
+            " WHERE ps.proposal_id = p.id AND ps.status = 'active')",
+            (),
+        )
+    if view == "ideas":
+        return " AND p.proposal_kind = 'idea'", ()
+    return "", ()
 
 
 def _proposal_matches_view(p: dict, view: str) -> bool:
@@ -644,7 +708,10 @@ def list_proposals(
     shows the 5 latest); None returns them all. `offset` pages past the first
     rows, for use with `limit`. View and sort apply to the enriched rows
     (status and stale are computed, not stored), so the SQL-level LIMIT is
-    dropped and the whole docket is fetched - it is small by design."""
+    dropped and the whole docket is fetched - it is small by design.
+    Filtering views (anything but 'all'/'lineage') fetch in two phases: a
+    counts-only pass first (same predicate fields, no display batches),
+    then the full enrichments over the surviving ids only."""
     if view is None:
         view = "all"
     if view not in _PROPOSAL_VIEWS:
@@ -709,7 +776,38 @@ def list_proposals(
                 rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
             return rows
     with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+        if view in ("all", "lineage"):
+            rows = _proposal_rows(conn, "", ())
+        else:
+            # Two-phase: the counts-only pass keeps every field
+            # _proposal_matches_view() reads but skips the seven display
+            # batches, so filter first and enrich the survivors only. One
+            # shared threshold for both fetches (no active-citizens
+            # recount). 'all'/'lineage' match everything and keep the
+            # single full fetch - two phases there would pure-duplicate it.
+            threshold = _proposal_vote_threshold(conn)
+            pre_sql, pre_params = _view_prefilter_sql(view)
+            light = _proposal_rows(
+                conn, pre_sql, pre_params, for_counts=True, threshold=threshold
+            )
+            ids = [p["id"] for p in light if _proposal_matches_view(p, view)]
+            if not ids:
+                rows = []
+            else:
+                # Chunk the survivor fetch (SQLite's legacy 999-variable
+                # cap) and re-sort newest across chunks: each chunk comes
+                # back in base-SELECT order, but concatenation is not
+                # globally ordered. Top re-sorts below regardless.
+                rows = []
+                for chunk in _id_chunks(ids):
+                    where_sql = f" AND p.id IN ({','.join('?' * len(chunk))})"
+                    rows.extend(
+                        _proposal_rows(
+                            conn, where_sql, tuple(chunk), threshold=threshold
+                        )
+                    )
+                if sort != "top":
+                    rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
     # view=="all" matches everything (_proposal_matches_view returns True),
     # so skip the O(N) pass; the comprehensions below preserve SQL order.
     if view != "all":
