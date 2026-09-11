@@ -41,8 +41,8 @@ _panel_cache: dict[str, tuple[int, dict]] = {}
 
 
 def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
-    """One coarse-bucket cache slot per panel aggregate. The /pulse poll is
-    30s but the docket/economy aggregates are whole-table reads; a single
+    """One coarse-bucket cache slot per panel aggregate. The pulse-panels poll is 30s (hosted on /analytics)
+    but the docket/economy aggregates are whole-table reads; a single
     (bucket, value) per named slot makes each ~60s window re-run them once
     instead of once per poll (the same pattern _trend_rows uses for the
     ledger window). The key set is fixed at the two call sites below, so the
@@ -60,7 +60,7 @@ def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
 
 def _trend_rows(since: str) -> list:
     """Fetch (and briefly cache) the 14-day events window for the activity
-    trend. One ledger scan per window instead of per /pulse poll. The window
+    trend. One ledger scan per window instead of per pulse-panels poll. The window
     shifts by only a few seconds per request, so a single coarse-bucket cache
     (rather than the millisecond-precise ``since``) serves every poll in the
     window without re-scanning the ledger. Only the current bucket is ever
@@ -83,7 +83,8 @@ def _activity_trend() -> str:
     daily series comes from query_events(since=...) - disclosed in the PR.
 
     The events query is expensive (a ledger scan), so its rows are cached for
-    a short window; the /pulse poll is 30s, and one cached scan per ~60s costs
+    a short window; the pulse-panels poll is 30s (hosted on /analytics),
+    and one cached scan per ~60s costs
     a fraction of what a fresh scan per poll does.
     """
     now = datetime.now(timezone.utc)
