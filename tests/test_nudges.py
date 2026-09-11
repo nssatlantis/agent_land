@@ -509,6 +509,101 @@ def main():
         "review_note should be suppressed when pr_vote_note fires"
     )
 
+    # Counter to _job_nudge above (quiet-when-nothing): the market action is
+    # present on every check_in even with an empty board, and its create_job
+    # hint is gated on the same floor create_job enforces (JOB_CREATOR_MIN_KARMA,
+    # default 10, unchanged in tests). whoami/my_profile stay attention-state
+    # only: the line never appears there - job-pending state on those reads is
+    # _job_nudge's lane.
+    # Quiesce: the PR-vote section above left an open linked PR that would
+    # otherwise fire pr_vote_note for every later fresh agent.
+    with db._conn() as _mconn:
+        _mconn.execute("DELETE FROM proposal_links WHERE pr_number = ?", (pr_number,))
+    mk = db.register_agent("mk-prime")
+    assert "job_market_note" not in db.whoami(mk["token"]), (
+        "whoami stays attention-state - no always-on market line"
+    )
+    assert "job_market_note" not in db.my_profile(mk["token"]), (
+        "my_profile stays attention-state - no always-on market line"
+    )
+    mk_lines = [
+        a
+        for a in db.check_in(mk["token"])["suggested_actions"]
+        if a.startswith("Jobs board")
+    ]
+    assert len(mk_lines) == 1, "check_in always carries exactly one market action"
+    assert "no open jobs right now" in mk_lines[0], (
+        "market action names the empty state"
+    )
+    assert "once you hold 10 effective karma" in mk_lines[0], (
+        "create hint gated below the creator floor on a fresh agent"
+    )
+    # Open board: 1 open + 1 direct offer to mk - the action counts both, in
+    # step with list_jobs(view='open'), and the participation line about the
+    # direct offer coexists with the market action on check_in.
+    with db._conn() as _mconn:
+        _mconn.execute(
+            "INSERT INTO jobs (creator_agent_id, title, description, kind,"
+            " payment_quarters, total_cycles, status) VALUES (?, 'mk boot',"
+            " 'desc', 'one_time', 400, 1, 'open')",
+            (mk["agent_id"],),
+        )
+        _mconn.execute(
+            "INSERT INTO jobs (creator_agent_id, title, description, kind,"
+            " payment_quarters, total_cycles, status, offered_to_agent_id)"
+            " VALUES (?, 'mk offer', 'desc', 'one_time', 400, 1, 'offered', ?)",
+            (mk["agent_id"], mk["agent_id"]),
+        )
+    assert db.list_jobs(view="open")["total"] == 2, "board counts the seeded jobs"
+    mk_board = [
+        a
+        for a in db.check_in(mk["token"])["suggested_actions"]
+        if a.startswith("Jobs board")
+    ]
+    assert "2 open job(s)" in mk_board[0], "market action counts open + offered jobs"
+    mk_joblines = [
+        a for a in db.check_in(mk["token"])["suggested_actions"] if a.startswith("Job")
+    ]
+    assert any(a.startswith("Job market:") for a in mk_joblines), (
+        "participation line fires for the direct offer"
+    )
+    assert any(a.startswith("Jobs board:") for a in mk_joblines), (
+        "market action fires independently of participation"
+    )
+    # Karma gate opens: 10 fresh voters upvoting one of mk's posts clears the
+    # floor, and the market action swaps to the commissioning hint (no gating
+    # tail).
+    mk_post = db.create_post(mk["token"], "mk karma post", "body")["post_id"]
+    mk_voters = [db.register_agent(f"mk-v{i}") for i in range(10)]
+    with db._conn() as _mconn:
+        for mk_v in mk_voters:
+            _mconn.execute(
+                "INSERT INTO votes (agent_id, target_type, target_id, value)"
+                " VALUES (?, 'post', ?, 1)",
+                (mk_v["agent_id"], mk_post),
+            )
+    mk_gated = [
+        a
+        for a in db.check_in(mk["token"])["suggested_actions"]
+        if a.startswith("Jobs board")
+    ]
+    assert "once you hold" not in mk_gated[0], (
+        "create hint opens once the creator floor is cleared"
+    )
+    assert "commission work" in mk_gated[0], (
+        "open-board action offers the commissioning hint at/above the floor"
+    )
+    # The market action is always-on, so the one coexistence invariant worth
+    # pinning is negative: it must never claim a slot reserved for real
+    # waiting state (the idle fallback's gate is _IDLE_NUDGE_KEYS), so a
+    # genuinely quiet day can still end with the idle note beside it.
+    from db._nudges import _IDLE_NUDGE_KEYS
+
+    assert "job_market_note" not in _IDLE_NUDGE_KEYS, (
+        "the market note never suppresses the idle fallback - a quiet day "
+        "is neither silenced nor shouted over"
+    )
+
     print("test_nudges: all assertions passed")
     import shutil
 
