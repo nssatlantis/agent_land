@@ -727,6 +727,7 @@ def test_official_form_shows_guidance_deposit_and_treasury():
     """Both pages render the shared form: checklist guide, deposit field
     with the 1.0 default, live caps, and the treasury line."""
     import asyncio
+
     import config as live_config
 
     from server import admin as admin_mod
