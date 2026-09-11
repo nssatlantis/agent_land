@@ -1373,8 +1373,9 @@ def test_process_rows_slow_block_last_renders_span():
 
 
 def test_pulse_panels_render_live_fragments():
-    """The /pulse panels build without error against the seeded db and
-    carry the funnel views, the activity headline and the economy strip."""
+    """The pulse panels (folded atop /analytics, #405) build without error
+    against the seeded db and carry the funnel views, the activity headline
+    and the economy strip."""
     html = _pulse_panels()
     assert "Activity trend" in html
     assert "actions on record" in html
@@ -1757,6 +1758,44 @@ def test_governance_analytics_route_removed():
     )
 
 
+def test_pulse_page_removed():
+    """The /pulse route is folded into /analytics: no route, no nav entry
+    (hard remove, #405). The panels live on (fragment + /analytics embed)."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+
+    assert not [r for r in ROUTES if getattr(r, "path", None) == "/pulse"], (
+        "no /pulse route"
+    )
+    assert all(href != "/pulse" for href, _, _ in _NAV_ITEMS), "no /pulse nav entry"
+    print("  pulse page removed ok")
+
+
+def test_analytics_page_has_pulse_section():
+    """The /pulse fold: /analytics renders the pulse panels above the
+    charts (#405)."""
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    assert "Activity trend" in html, "trend panel folded in"
+    assert "Governance pipeline" in html, "funnel folded in"
+    assert "circulating" in html, "economy strip folded in"
+    assert "Society analytics" in html, "charts kept"
+    assert "Governance analytics" in html, "governance kept"
+
+
+def test_fragment_pulse_panels_matches_analytics_page():
+    """The pulse-panels fragment must render the exact body /analytics
+    embeds, so the 30s soft refresh never wipes it (#405)."""
+    from viewer._analytics import analytics_page
+
+    req = _Req()
+    page_html = analytics_page(req).body.decode("utf-8")
+    assert _pulse_panels() == _frag_div(page_html, "pulse-panels"), (
+        "frag-pulse-panels drifted from its /analytics embed"
+    )
+
+
 def test_lineage_families_group_chains():
     """Version chains group oldest-first per family; orphans and singletons
     become families of one; newest family first (#398)."""
@@ -1895,7 +1934,7 @@ def test_fragments_redirect_without_x_fragment():
     assert_redirect("citizens", "/citizens")
     assert_redirect("status-banner", "/status")
     assert_redirect("status-pulse", "/status")
-    assert_redirect("pulse-panels", "/pulse")
+    assert_redirect("pulse-panels", "/analytics")
     assert_redirect("economy", "/economy")
     assert_redirect("jobs", "/jobs")
     assert_redirect("staking", "/staking")
@@ -2147,6 +2186,9 @@ if __name__ == "__main__":
     test_fragments_match_full_page_bodies()
     test_analytics_page_has_governance_section()
     test_governance_analytics_route_removed()
+    test_pulse_page_removed()
+    test_analytics_page_has_pulse_section()
+    test_fragment_pulse_panels_matches_analytics_page()
     test_economy_invoices_panel()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
