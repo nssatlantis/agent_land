@@ -5,21 +5,31 @@ The ci_* event ledger rows (repo_ci_run's audit trail) fold a finished
 run's output_tail into their detail. Before the CI_RUN_EVENT_TAIL_BYTES
 cap, that copy was the full caller-facing 16 KiB tail, so a single event's
 detail (~25 KB on prod) spilled across six-odd SQLite overflow pages and
-accounted for all 6.6 MB of overflow on the events table. New rows are
-capped at write time (events.py log_event / _ci_detail_with_output read
-CI_RUN_EVENT_TAIL_BYTES); this script rewrites the pre-cap historical rows.
+accounted for all 6.6 MB of overflow on the events table. Since #1126 the
+write path folds the tail only for RED runs and drops it entirely for
+green ones (a green tail is never read again - the caller had it live and
+the verdict facts ride in summary), but thousands of historical green rows
+still carry a capped ~1.5 KB transcript - the events table's biggest
+single cost. This script rewrites the historical rows to match: green rows
+lose their output_tail entirely; red rows keep a tail capped at
+CI_RUN_EVENT_TAIL_BYTES (read from config like the runtime).
 
 Per event row:
   * detail is not valid JSON, or is not an object, or has no non-empty
     string `output_tail` -> left byte-for-byte intact (kind-agnostic: any
     detail with an output_tail is by construction a ci_* row).
-  * output_tail fits within the cap already -> left byte-for-byte intact
-    (idempotency: re-running rewrites nothing).
-  * output_tail exceeds the cap -> kept to its last cap bytes (byte-exact,
-    like the runtime capper CI_RUN_TAIL_BYTES: the cut may fall inside a
-    multi-byte character, which decodes as U+FFFD), `output_truncated`
-    set True, and the whole detail re-JSONed compactly. Every other key
-    (summary, failed_files, ok, exit_code, ...) is preserved untouched.
+  * GREEN ci_* rows (the stored verdict keys prove it: ok is True, no
+    timed_out, exit_code 0/None, no failed_files, no merge_conflict) ->
+    `output_tail` and `output_truncated` DROPPED, the detail re-JSONed
+    compactly. This is the same fold policy the runtime has enforced since
+    #1126, applied retroactively; every other key (summary, ok, exit_code,
+    checks, ...) is preserved untouched.
+  * RED ci_* rows -> an oversized output_tail is kept to its last cap bytes
+    (byte-exact, like the runtime capper CI_RUN_TAIL_BYTES: the cut may
+    fall inside a multi-byte character, which decodes as U+FFFD),
+    `output_truncated` set True, and the detail re-JSONed compactly. A
+    tail within the cap is left byte-for-byte intact (idempotency:
+    re-running rewrites nothing).
 
 The public read surface - events.query_events' parsed detail - is
 identical before and after (json.loads of the compact form returns the
@@ -62,9 +72,24 @@ def _trim_tail(tail: str, cap: int) -> str:
     return tail_bytes[-cap:].decode("utf-8", errors="replace")
 
 
+def _is_green(detail: dict) -> bool:
+    """Green = the runtime red predicate (server/ci_runner/_runs.py
+    _ci_detail_with_output) inverted, reconstructed from the stored ledger
+    verdict keys. A detail that cannot PROVE green (missing keys fall to
+    the not-green default) keeps its tail - conservative: an unproven row
+    is never rewritten out of its transcript."""
+    return (
+        detail.get("ok") is True
+        and not detail.get("timed_out")
+        and not (detail.get("exit_code") or 0)
+        and not detail.get("merge_conflict")
+        and not bool(detail.get("failed_files"))
+    )
+
+
 def _rewritten_detail(raw: str, cap: int) -> str | None:
-    """The compact, tail-capped re-dump of an event detail, or None when
-    the row needs no rewrite (unparseable / not a dict / no oversized
+    """The compact policy-aligned re-dump of an event detail, or None when
+    the row needs no rewrite (unparseable / not a dict / no non-empty
     output_tail) and must be left byte-for-byte intact."""
     try:
         detail = json.loads(raw)
@@ -75,11 +100,19 @@ def _rewritten_detail(raw: str, cap: int) -> str | None:
     tail = detail.get("output_tail")
     if not isinstance(tail, str) or not tail:
         return None
-    trimmed = _trim_tail(tail, cap)
-    if trimmed == tail:
-        return None
-    detail["output_tail"] = trimmed
-    detail["output_truncated"] = True
+    if _is_green(detail):
+        # The fold the runtime has applied since #1126: a green run's tail
+        # is never read again, so the transcript drops entirely. Without an
+        # output_tail the row is byte-identical after the re-dump, so a
+        # re-run on an already-lean row hits the None above and rewrites 0.
+        detail.pop("output_tail", None)
+        detail.pop("output_truncated", None)
+    else:
+        trimmed = _trim_tail(tail, cap)
+        if trimmed == tail:
+            return None
+        detail["output_tail"] = trimmed
+        detail["output_truncated"] = True
     return json.dumps(detail, separators=(",", ":"))
 
 
