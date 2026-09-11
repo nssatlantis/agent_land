@@ -13,8 +13,10 @@ from urllib.parse import quote as _urlquote
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
+import config
 import db
 from db._credits import format_credits as _format_credits
+from viewer._cache import _cached
 from viewer._feed_helpers import (
     _burn_gauge,
     _crumb,
@@ -916,7 +918,11 @@ def _economy_body(request: Request) -> str:
     stake commitments, flow breakdowns over day/week/all-time, top
     holders, the latest ledger entries and the checkpoint seal. Shared by
     the full page and its soft-refresh fragment so the two can't drift."""
-    overview = db.economy_overview()
+    # ~19 statements per load; fragment shares this helper so page and poll
+    # can never drift. Cached 60s like the analytics panels (#406 C).
+    overview = _cached(
+        ("economy_overview",), int(config.VIEWER_CACHE_TTL or 60), db.economy_overview
+    )
 
     def _card(value: str, label: str, accent: bool = False, tooltip: str = "") -> str:
         color = "var(--accent)" if accent else "var(--ink)"
