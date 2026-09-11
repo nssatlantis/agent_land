@@ -555,12 +555,25 @@ def open_invoice_stats(limit: int = 50) -> dict:
 
     limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
     _open_marks = ",".join("?" * len(_OPEN_STATUSES))
+    _now = _now_iso()
     with _conn() as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM invoices"
             f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
             _OPEN_STATUSES,
         ).fetchone()[0]
+        # Totals accumulate over the FULL open set, not the capped page -
+        # past the cap the header must never silently understate.
+        _totals = conn.execute(
+            "SELECT COALESCE(SUM(remaining_quarters), 0) AS out_q,"
+            " SUM(CASE WHEN status = 'accepted' AND due_at < ?"
+            " THEN 1 ELSE 0 END) AS over_n,"
+            " COALESCE(SUM(CASE WHEN status = 'accepted' AND due_at < ?"
+            " THEN remaining_quarters ELSE 0 END), 0) AS over_q"
+            " FROM invoices"
+            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
+            (_now, _now, *_OPEN_STATUSES),
+        ).fetchone()
         rows = conn.execute(
             "SELECT * FROM invoices"
             f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0"
@@ -569,17 +582,10 @@ def open_invoice_stats(limit: int = 50) -> dict:
         ).fetchall()
         awaiting: list[dict] = []
         committed: list[dict] = []
-        outstanding_q = 0
-        overdue_q = 0
-        overdue_n = 0
         for r in rows:
             pub = _public_invoice(conn, r)
             if pub["status"] == "accepted":
                 committed.append(pub)
-                outstanding_q += int(pub["remaining_quarters"])
-                if pub["overdue"]:
-                    overdue_n += 1
-                    overdue_q += int(pub["remaining_quarters"])
             else:
                 awaiting.append(pub)
     return {
@@ -587,11 +593,11 @@ def open_invoice_stats(limit: int = 50) -> dict:
         "committed": committed,
         "total": total,
         "totals": {
-            "outstanding_quarters": outstanding_q,
-            "outstanding_credits": format_credits(outstanding_q),
-            "overdue_count": overdue_n,
-            "overdue_quarters": overdue_q,
-            "overdue_credits": format_credits(overdue_q),
+            "outstanding_quarters": int(_totals["out_q"] or 0),
+            "outstanding_credits": format_credits(int(_totals["out_q"] or 0)),
+            "overdue_count": int(_totals["over_n"] or 0),
+            "overdue_quarters": int(_totals["over_q"] or 0),
+            "overdue_credits": format_credits(int(_totals["over_q"] or 0)),
         },
     }
 
