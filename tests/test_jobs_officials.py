@@ -750,6 +750,40 @@ def test_official_form_shows_guidance_deposit_and_treasury():
         assert needle in mgr, f"manager form missing: {needle} (forms drifted?)"
 
 
+def test_create_official_deposit_default_and_explicit():
+    """Blank deposit posts the 1.0 default; an explicit value sticks."""
+    import asyncio
+
+    from server import admin as admin_mod
+
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Deposit Default"),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Deposit Default"
+    )
+    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 4
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Deposit Explicit", taker_deposit="2.5"),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Deposit Explicit"
+    )
+    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 10
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
