@@ -526,6 +526,8 @@ def test_tx_id_groups_atomic_flows():
     assert tx["amount_quarters"] == 4  # 1.0 credit = 4 quarters
     assert tx["fee_quarters"] == 1  # 1% of 1.0 credit = 1 quarter
     assert tx["credit"] is True
+    assert tx["from_agent_id"] == s["agent_id"], "sender id rides the descriptor"
+    assert tx["to_agent_id"] == r["agent_id"], "recipient id rides the descriptor"
 
     payout = [g for g in groups if g["leg_count"] == 2 and g["to_name"] == "txg-sender"]
     assert payout, "the grant payout should group into one 2-leg descriptor"

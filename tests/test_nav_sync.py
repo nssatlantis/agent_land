@@ -21,3 +21,8 @@ def test_nav_items_sync_with_routes():
     assert nav_hrefs.issubset(route_paths | {"/api/overview"}), (
         f"unexpected nav hrefs: {sorted(nav_hrefs - route_paths)}"
     )
+
+
+if __name__ == "__main__":
+    test_nav_items_sync_with_routes()
+    print("test_nav_sync: ok")
