@@ -9,7 +9,10 @@ rehearsals instead of discovering limits by tripping them.
 The window math is the single source: _gate() calls ci_kind_status()
 and only adds its ForumError wording, so reader and gate can never skew.
 All cross-module imports stay function-local (the file's lazy-import
-convention): events for the ledger read, db._store for the cap.
+convention): db._core for the connection/bound helpers, db._store for
+the cap. The ledger read is raw narrow SQL (kind, created_at only) on
+one connection for all kinds — never events.query_events, whose full
+detail projection plus json/colors hydration is pure waste here.
 """
 
 from __future__ import annotations
@@ -31,81 +34,107 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _status_for_kinds(agent_id: int, kinds: tuple, now: datetime, conn=None) -> dict:
+    """{kind: {used_today, cap, remaining, cooldown_wait_s}} for several
+    ledger kinds on one connection: the cap is read once and one narrow
+    (kind, created_at) fetch covers every kind's cooldown + daily-cap
+    windows, split per kind in Python. Semantics match the old per-kind
+    query_events reads exactly (same bounds, same newest-row tiebreak,
+    same used cap at cap+1, same zero-query path when both gates are
+    off); `now` is the caller's single instant so a midnight boundary
+    can never skew kinds against each other."""
+    from contextlib import nullcontext
+
+    import config
+    from db._core import _conn, _since_bound
+    from db._store import effective_ci_cap
+
+    with _conn() if conn is None else nullcontext(conn) as c:
+        cooldown = config.CI_RUN_COOLDOWN_SECONDS
+        cap = effective_ci_cap(agent_id, conn=c)
+        out = {
+            kind: {
+                "used_today": 0,
+                "cap": cap,
+                "remaining": cap if cap > 0 else None,
+                "cooldown_wait_s": 0,
+            }
+            for kind in kinds
+        }
+        if not kinds or (cooldown <= 0 and cap <= 0):
+            return out
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Same windows the per-kind reads used: the cooldown window, the
+        # UTC-day window, or their union — one bound covers both.
+        if cap > 0 and cooldown > 0:
+            since_dt = min(midnight, now - timedelta(seconds=cooldown))
+        elif cooldown > 0:
+            since_dt = now - timedelta(seconds=cooldown)
+        else:
+            since_dt = midnight
+        marks = ",".join("?" * len(kinds))
+        rows = c.execute(
+            "SELECT kind, created_at FROM events"
+            " WHERE actor_agent_id = ? AND kind IN (" + marks + ")"
+            " AND created_at >= ?"
+            " ORDER BY kind ASC, created_at DESC, id DESC",
+            (agent_id, *kinds, _since_bound(_iso(since_dt))),
+        ).fetchall()
+        # Same day-split the per-kind reads applied (second-precision
+        # midnight bound, verbatim).
+        midnight_iso = _iso(midnight)
+        by_kind: dict[str, list] = {}
+        for r in rows:
+            by_kind.setdefault(r["kind"], []).append(r["created_at"])
+        for kind in kinds:
+            stamps = by_kind.get(kind, [])
+            wait = 0
+            if cooldown > 0 and stamps:
+                try:
+                    ts = datetime.strptime(stamps[0][:19], "%Y-%m-%dT%H:%M:%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                except Exception:  # domain: degrade-silently - unparseable timestamp means no cooldown applied
+                    ts = None
+                if ts is not None and ts >= now - timedelta(seconds=cooldown):
+                    elapsed = now - ts
+                    wait = max(
+                        1,
+                        int(
+                            timedelta(seconds=cooldown).total_seconds()
+                            - elapsed.total_seconds()
+                        ),
+                    )
+            used = 0
+            if cap > 0:
+                # The old reads truncated at limit=cap+1 (first fetch and
+                # precise re-check alike), so the reported count never
+                # exceeded cap+1 — clamp the exact count the same way.
+                used = min(sum(1 for s in stamps if s >= midnight_iso), cap + 1)
+            out[kind] = {
+                "used_today": used,
+                "cap": cap,
+                "remaining": max(0, cap - used) if cap > 0 else None,
+                "cooldown_wait_s": wait,
+            }
+        return out
+
+
 def ci_kind_status(agent_id: int, kind_event: str, now: datetime | None = None) -> dict:
     """{used_today, cap, remaining, cooldown_wait_s} for one ci_* kind.
 
     Same windows _gate() enforces: cooldown reads the newest row in the
-    cooldown window, the daily cap counts rows since UTC midnight (with
-    the undercount re-check when the first fetch hits its limit).
+    cooldown window, the daily cap counts rows since UTC midnight (exact
+    count, reported at most cap+1 like the old limit-truncated reads).
     `remaining` is None when the cap is 0 (uncapped). Never raises on
     unreadable data - unparseable timestamps mean no cooldown, exactly
     like the gate.
     """
-    import config
-    from db._store import effective_ci_cap
-
     now = now or datetime.now(timezone.utc)
-    cooldown = config.CI_RUN_COOLDOWN_SECONDS
-    cap = effective_ci_cap(agent_id)
-    used = 0
-    wait = 0
-    if cooldown > 0 or cap > 0:
-        import events
-
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        # cap+1 rows cover both windows; single round-trip vs 2.
-        limit = (cap + 1) if cap > 0 else 1
-        if cap > 0 and cooldown > 0:
-            since_dt = min(midnight, now - timedelta(seconds=cooldown))
-            since = _iso(since_dt)
-        elif cooldown > 0:
-            since = _iso(now - timedelta(seconds=cooldown))
-        else:
-            since = _iso(midnight)
-        rows = events.query_events(
-            agent_id=agent_id,
-            kind=kind_event,
-            since=since,
-            limit=limit,
-        )
-        if cooldown > 0 and rows:
-            try:
-                ts = datetime.strptime(
-                    rows[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-                ).replace(tzinfo=timezone.utc)
-            except Exception:  # domain: degrade-silently - unparseable timestamp means no cooldown applied
-                ts = None
-            if ts is not None and ts >= now - timedelta(seconds=cooldown):
-                elapsed = now - ts
-                wait = max(
-                    1,
-                    int(
-                        timedelta(seconds=cooldown).total_seconds()
-                        - elapsed.total_seconds()
-                    ),
-                )
-        if cap > 0:
-            midnight_iso = _iso(midnight)
-            todays = [r for r in rows if r["created_at"] >= midnight_iso]
-            used = len(todays)
-            # undercount check: if we hit limit but some rows were before
-            # midnight, fetch precise.
-            if len(rows) == limit and len(todays) < cap:
-                todays_precise = events.query_events(
-                    agent_id=agent_id,
-                    kind=kind_event,
-                    since=_iso(midnight),
-                    limit=cap + 1,
-                )
-                used = len(todays_precise)
-    return {
-        "used_today": used,
-        "cap": cap,
-        "remaining": max(0, cap - used) if cap > 0 else None,
-        "cooldown_wait_s": wait,
-    }
+    return _status_for_kinds(agent_id, (kind_event,), now)[kind_event]
 
 
 def ci_usage_for(agent_id: int) -> dict:
     """{ledger kind: ci_kind_status(...)} for every gated CI kind."""
-    return {kind: ci_kind_status(agent_id, kind) for kind in CI_KINDS}
+    now = datetime.now(timezone.utc)
+    return _status_for_kinds(agent_id, CI_KINDS, now)
