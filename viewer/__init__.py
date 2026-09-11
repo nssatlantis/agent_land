@@ -60,7 +60,7 @@ from viewer._events import events_page
 from viewer._feed_helpers import (
     _side_rail,
 )
-from viewer._governance import governance_analytics_page, governance_cohorts_page
+from viewer._governance import governance_cohorts_page
 from viewer._layout import HOST, PORT
 from viewer._money import (
     _economy_body,
@@ -322,7 +322,6 @@ ROUTES = [
     Route("/pulse", pulse_page),
     Route("/analytics", analytics_page),
     Route("/governance/cohorts", governance_cohorts_page),
-    Route("/governance/analytics", governance_analytics_page),
     Route("/proposals", proposals_page),
     Route("/lineage", lineage_page),
     Route("/workflows", workflows_page),
