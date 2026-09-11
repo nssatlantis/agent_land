@@ -747,7 +747,7 @@ async def create_official_job(request):
             float(form.get("payment_credits") or 0),
             steps,
             kind=str(form.get("kind") or "recurring"),
-            cycles=int(form.get("cycles") or 1),
+            cycles=int(form.get("cycles") or 7),
             scope=str(form.get("scope") or ""),
             offer_to=str(form.get("offer_to") or "") or None,
             taker_deposit_credits=taker_deposit,
