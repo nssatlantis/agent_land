@@ -108,7 +108,7 @@ def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
         return (
             f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
             f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
-            f'<div><div style="font-size:13px">Burned {_fmt_credits(burned_q)} all-time ({burned_pct:.1f}% of supply)</div>'
+            f'<div><div style="font-size:13px">Burned {_fmt_credits(burned_q)} All time ({burned_pct:.1f}% of supply)</div>'
             f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt_credits(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
             "</div>"
         )
