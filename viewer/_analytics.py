@@ -1,4 +1,5 @@
-"""viewer/_analytics.py - society analytics charts (237:4393).
+"""viewer/_analytics.py - society analytics charts (237:4393) plus the
+governance analytics panel folded in from viewer/_governance.py.
 
 Display-only, read-only: citizen growth, proposal velocity, PR merge rate,
 economy velocity, tag adoption — all from local DB (no GitHub network),
