@@ -83,6 +83,17 @@ def run(conn) -> None:
         conn, "comments", "quote_comment_id", "INTEGER REFERENCES comments(id)"
     )
     _ensure_column(conn, "comments", "quote_text", "TEXT")
+    # The merge-provenance instrument (proposal #400, schema.sql): an
+    # existing forum.db would otherwise lack bar_at_decision / merge_mode on
+    # pr_merges and bar_at_cast on pr_votes / proposal_votes, so merges and
+    # votes couldn't carry their decision-time bar. Existing rows keep NULL
+    # provenance columns - they predate the instrument and are never
+    # backfilled, by design. Fresh databases already have them and this
+    # no-ops.
+    _ensure_column(conn, "pr_merges", "bar_at_decision", "INTEGER")
+    _ensure_column(conn, "pr_merges", "merge_mode", "TEXT")
+    _ensure_column(conn, "pr_votes", "bar_at_cast", "INTEGER")
+    _ensure_column(conn, "proposal_votes", "bar_at_cast", "INTEGER")
     # The reports.status CHECK gained a 'removed' value (target content
     # deleted while the report was open) when the reports revamp landed,
     # but CREATE TABLE IF NOT EXISTS can't widen a constraint on a table

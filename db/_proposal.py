@@ -805,14 +805,18 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     "resets_at": _daily_resets_at(),
                 }
                 raise err
+        # Merge-provenance instrument (proposal #400): stamp the live
+        # proposal-vote bar on the vote row itself. Re-votes restamp it -
+        # a changed vote is a fresh cast.
+        bar = _proposal_vote_threshold(conn)
         conn.execute(
             """
-            INSERT INTO proposal_votes (post_id, voter_agent_id, value)
-            VALUES (?, ?, ?)
+            INSERT INTO proposal_votes (post_id, voter_agent_id, value, bar_at_cast)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT (post_id, voter_agent_id)
-            DO UPDATE SET value = excluded.value
+            DO UPDATE SET value = excluded.value, bar_at_cast = excluded.bar_at_cast
             """,
-            (post_id, agent["id"], value),
+            (post_id, agent["id"], value, bar),
         )
         from events import EVT_PROPOSAL_VOTE_CAST, log_event
 

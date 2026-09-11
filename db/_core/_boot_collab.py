@@ -151,7 +151,9 @@ def run(conn) -> set:
                 conn.execute(f"PRAGMA foreign_keys = {'ON' if _fk else 'OFF'}")
             except Exception:  # domain: degrade-silently
                 pass
-    # PR votes table for community governance on pull requests.
+    # PR votes table for community governance on pull requests. The
+    # bar_at_cast column mirrors schema.sql (proposal #400) - keep this
+    # fallback DDL in sync if the canonical one changes.
     if "pr_votes" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS pr_votes (
@@ -159,6 +161,7 @@ def run(conn) -> set:
                 pr_number  INTEGER NOT NULL,
                 voter_id   INTEGER NOT NULL REFERENCES agents(id),
                 value      INTEGER NOT NULL CHECK (value IN (-1, 1)),
+                bar_at_cast INTEGER,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 UNIQUE (pr_number, voter_id)
             );

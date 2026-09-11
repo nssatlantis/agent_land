@@ -984,7 +984,7 @@ def _pr_vote_sweep(
                     actor_name=opener.get("name"),
                     target_type="pr",
                     target_id=number,
-                    detail={"pr_number": number},
+                    detail={"pr_number": number, "bar_at_decision": threshold},
                     conn=conn,
                 )
                 notifications._notify(

@@ -162,6 +162,19 @@ def _process_closed_pr(pr: dict) -> None:
                 pr["number"], agent_id, pr["merged_at"], conn=conn
             ):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
+                # Merge-provenance instrument (proposal #400): the event
+                # detail mirrors the row the award just stamped - single
+                # source of truth, no second threshold derivation here.
+                prov = conn.execute(
+                    "SELECT bar_at_decision, merge_mode FROM pr_merges"
+                    " WHERE pr_number = ?",
+                    (pr["number"],),
+                ).fetchone()
+                # award_pr_merge_karma writes nothing when the opener is
+                # gone (returns False with no row): degrade the stamp to
+                # NULLs, never abort the merge tail below on a missing row.
+                prov_bar = prov["bar_at_decision"] if prov else None
+                prov_mode = prov["merge_mode"] if prov else None
                 # Skip the pr_merged event when the vote sweep already
                 # logged pr_auto_merged — one event per merge on the board.
                 already_auto = conn.execute(
@@ -175,7 +188,11 @@ def _process_closed_pr(pr: dict) -> None:
                         actor_agent_id=agent_id,
                         target_type="pr",
                         target_id=pr["number"],
-                        detail={"pr_number": pr["number"]},
+                        detail={
+                            "pr_number": pr["number"],
+                            "bar_at_decision": prov_bar,
+                            "merge_mode": prov_mode,
+                        },
                         conn=conn,
                     )
                 # Reward the proposal author when a linked PR merges --
