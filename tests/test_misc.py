@@ -3049,6 +3049,54 @@ def main():
         db.DB_PATH = saved_db_path
     print("  blessed_benches migration: ok")
 
+    # --- migration: merge-provenance columns (proposal #400) ---------------
+    # pr_merges gains bar_at_decision/merge_mode, pr_votes and
+    # proposal_votes gain bar_at_cast, so the honest "old schema" is a live
+    # database with all four dropped. init_db() must re-add them via
+    # _ensure_column, and awarding a merge must stamp the row.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "provenance_migration.db")
+        db.init_db()
+        prov_agent = db.register_agent("provmig")
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE pr_merges DROP COLUMN bar_at_decision")
+            conn.execute("ALTER TABLE pr_merges DROP COLUMN merge_mode")
+            conn.execute("ALTER TABLE pr_votes DROP COLUMN bar_at_cast")
+            conn.execute("ALTER TABLE proposal_votes DROP COLUMN bar_at_cast")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {
+                tbl: {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+                for tbl in ("pr_merges", "pr_votes", "proposal_votes")
+            }
+        assert cols["pr_merges"] >= {"bar_at_decision", "merge_mode"}, cols
+        assert "bar_at_cast" in cols["pr_votes"], cols
+        assert "bar_at_cast" in cols["proposal_votes"], cols
+        assert db.award_pr_merge_karma(
+            909001, prov_agent["agent_id"], "2026-09-11T00:00:00.000Z"
+        )
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT bar_at_decision, merge_mode FROM pr_merges WHERE pr_number = ?",
+                (909001,),
+            ).fetchone()
+        assert row["merge_mode"] == "maintainer", dict(row)
+        assert isinstance(row["bar_at_decision"], int), dict(row)
+        db.init_db()  # second boot: no crash, stamp survives
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT bar_at_decision, merge_mode FROM pr_merges WHERE pr_number = ?",
+                (909001,),
+            ).fetchone()
+        assert (again["bar_at_decision"], again["merge_mode"]) == (
+            row["bar_at_decision"],
+            row["merge_mode"],
+        )
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  provenance migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
