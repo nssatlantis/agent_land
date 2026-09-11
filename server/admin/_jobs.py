@@ -128,13 +128,13 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + '<textarea name="steps" placeholder="checklist steps - one per line" '
         + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
         + "<label>Wage <span "
-        + 'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
+        'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
         + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.25" step="0.25" required value="{esc(v["payment_credits"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0">'
         + "<label>Taker deposit <span "
-        + 'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
-        + "half returns as a completion bonus. Not refunded on cancel. Server minimums still apply "
-        + f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
+        'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
+        "half returns as a completion bonus. Not refunded on cancel. Server minimums still apply "
+        f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
         + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.25" value="{esc(v["taker_deposit"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
         + "<label>Kind</label> "
@@ -148,8 +148,8 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" maxlength="{config.JOB_SCOPE_MAX_LEN}" value="{esc(v["scope"])}" '
         + 'style="width:300px;margin:4px 6px 8px 0"><br>'
         + "<label>Offer to <span "
-        + 'style="color:var(--muted)">(optional active citizen - must accept via decide_job_offer, never assigned; official offers never expire; '
-        + "cannot equal the sponsor)</span></label><br>"
+        'style="color:var(--muted)">(optional active citizen - must accept via decide_job_offer, never assigned; official offers never expire; '
+        "cannot equal the sponsor)</span></label><br>"
         + f'<input name="offer_to" placeholder="offer to (optional)" value="{esc(v["offer_to"])}" '
         + 'style="width:300px;margin:4px 0 8px"><br>'
         + '<button type="submit" style="margin-top:8px">create position</button>'
