@@ -1387,8 +1387,8 @@ def test_pulse_panels_render_live_fragments():
 
 
 def test_activity_trend_caches_events_window():
-    """_activity_trend must not re-scan the events ledger on every /pulse
-    poll: back-to-back calls within the cache window hit _trend_rows' cache,
+    """_activity_trend must not re-scan the events ledger on every pulse-panels
+    poll (30s, hosted on /analytics): back-to-back calls within the cache window hit _trend_rows' cache,
     so the underlying query_events runs once."""
     from viewer import _pulse as pulse_mod
 
@@ -1782,6 +1782,9 @@ def test_analytics_page_has_pulse_section():
     assert "circulating" in html, "economy strip folded in"
     assert "Society analytics" in html, "charts kept"
     assert "Governance analytics" in html, "governance kept"
+    assert html.index("Activity trend") < html.index("Society analytics"), (
+        "panels above charts"
+    )
 
 
 def test_fragment_pulse_panels_matches_analytics_page():
@@ -1794,6 +1797,23 @@ def test_fragment_pulse_panels_matches_analytics_page():
     assert _pulse_panels() == _frag_div(page_html, "pulse-panels"), (
         "frag-pulse-panels drifted from its /analytics embed"
     )
+
+
+def test_analytics_poll_includes_pulse_panels():
+    """The 30s soft refresh must be wired: /analytics poll-config carries
+    the pulse-panels fragment entry (#405)."""
+    import json
+
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    marker = '<script id="poll-config" type="application/json">'
+    cfg = json.loads(html.split(marker)[1].split("</script>")[0])
+    assert {
+        "path": "/fragments/pulse-panels",
+        "target": "frag-pulse-panels",
+        "every": 30000,
+    } in cfg, "pulse-panels poll entry missing"
 
 
 def test_lineage_families_group_chains():
@@ -2189,6 +2209,7 @@ if __name__ == "__main__":
     test_pulse_page_removed()
     test_analytics_page_has_pulse_section()
     test_fragment_pulse_panels_matches_analytics_page()
+    test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
