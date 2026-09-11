@@ -73,8 +73,58 @@ def test_maintainer_mode_stamps_bar():
     print("  maintainer mode stamps: ok")
 
 
+def test_auto_mode_stamps_bar():
+    """A merge WITH a prior sweep auto-event records auto mode + live bar,
+    and no duplicate pr_merged event fires (one event per merge)."""
+    from server.poller import _process_closed_pr
+
+    pr_number = 901102
+    opener = AGENTS["gamma"]
+    with db._conn() as conn:
+        events.log_event(
+            "pr_auto_merged",
+            actor_agent_id=opener["agent_id"],
+            actor_name=opener["name"],
+            target_type="pr",
+            target_id=pr_number,
+            detail={"pr_number": pr_number, "bar_at_decision": _live_pr_bar()},
+            conn=conn,
+        )
+    _process_closed_pr(_merged_dict(pr_number, "gamma"))
+    row = _merge_row(pr_number)
+    assert row is not None, "merge row must exist"
+    assert row["merge_mode"] == "auto", dict(row)
+    assert row["bar_at_decision"] == _live_pr_bar(), dict(row)
+    evs = events.query_events(kind="pr_merged", target_type="pr", target_id=pr_number)
+    assert evs == [], evs
+    print("  auto mode stamps: ok")
+
+
+def test_pre_instrument_row_stays_null():
+    """A row written the old way (explicit columns, no stamp) reads NULL
+    on both provenance columns, and re-detection never overwrites it."""
+    from server.poller import _process_closed_pr
+
+    pr_number = 901103
+    opener = AGENTS["gamma"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, karma, merged_at)"
+            " VALUES (?, ?, ?, ?)",
+            (pr_number, opener["agent_id"], 1, "2026-09-01T00:00:00.000Z"),
+        )
+    _process_closed_pr(
+        _merged_dict(pr_number, "gamma", merged_at="2026-09-11T05:00:00.000Z")
+    )
+    row = _merge_row(pr_number)
+    assert row["bar_at_decision"] is None and row["merge_mode"] is None, dict(row)
+    print("  pre-instrument NULL: ok")
+
+
 def main():
     test_maintainer_mode_stamps_bar()
+    test_auto_mode_stamps_bar()
+    test_pre_instrument_row_stays_null()
     print("== test_merge_provenance: all passed ==")
     import shutil
 
