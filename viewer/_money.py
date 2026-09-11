@@ -854,7 +854,7 @@ _ECONOMY_FLOW_LABELS = (
     ("fees_in_quarters", "transaction fees in"),
     ("forfeit_intake_quarters", "forfeitures in"),
     ("spend_intake_quarters", "spend intake (tags, stakes, jobs, store)"),
-    ("store_sink_quarters", "of which store in"),
+    ("store_sink_quarters", "\u21b3 of which store in"),
     ("transfer_intake_quarters", "transfers in"),
     ("payout_returns_in_quarters", "clamped-earn returns in"),
     ("payouts_out_quarters", "earnings paid out"),
@@ -909,6 +909,66 @@ def _economy_wallet_banner(view_agent, ledger):
         f'<div style="margin-top:4px"><a href="/economy">← All citizens</a></div>'
         "</div>"
     )
+
+
+_OUTFLOW_QUARTERS = ("burned_quarters", "payouts_out_quarters")
+
+
+def _comment_thread_map(entries: list[dict]) -> dict[int, int]:
+    """Batched comment-id -> post-id map for ledger deep-links (#C12 lives
+    on its thread). Degrade-silently: any failure returns {} and targets
+    render as plain text."""
+    try:
+        _ids = sorted(
+            {
+                int(leg.get("target_id"))
+                for _e in entries
+                for leg in (_e.get("legs") or [])
+                if leg.get("target_type") == "comment"
+                and str(leg.get("target_id") or "").isdigit()
+            }
+        )
+        if not _ids:
+            return {}
+        from reports import comment_post_ids
+
+        return dict(comment_post_ids(_ids))
+    except Exception:  # domain: degrade-silently
+        return {}
+
+
+def _jobs_tab_for_status(status: str) -> str:
+    """Board tab holding one job status (matches the /jobs tab filters)."""
+    if status == "active":
+        return "active"
+    if status == "completed":
+        return "completed"
+    if status in ("cancelled", "expired"):
+        return "closed"
+    return "open"
+
+
+def _led_target(e: dict, threads: dict[int, int] | None = None) -> str:
+    if not e.get("target_type") or not e.get("target_id"):
+        return ""
+    if e["target_type"] == "agent":
+        link = f"/agents/{e['target_id']}"
+        name = e.get("target_name") or f"agent #{e['target_id']}"
+        return f'<a href="{link}">{esc(name)}</a>'
+    if e["target_type"] == "comment":
+        _cid = e["target_id"]
+        _thread = (threads or {}).get(int(_cid)) if str(_cid).isdigit() else None
+        if _thread:
+            return (
+                f'<a href="/posts/{_thread}#c{_cid}">'
+                + esc("comment #" + str(_cid))
+                + "</a>"
+            )
+        return esc(f"comment #{_cid}")
+    if e["target_type"] == "post":
+        link = f"/posts/{e['target_id']}"
+        return f'<a href="{link}">{esc("post #" + str(e["target_id"]))}</a>'
+    return esc(f"{e['target_type']} #{e['target_id']}")
 
 
 def _economy_body(request: Request) -> str:
@@ -1003,7 +1063,7 @@ def _economy_body(request: Request) -> str:
         )
         + _card(
             overview["held_in_job_escrow_credits"],
-            "held in job escrow",
+            "held in job escrow (all)",
             tooltip="Held in the ledger escrow bank account (paired legs, supply-neutral) \u2014 citizen wages, official reservations and deposit pools alike.",
         )
         + "</div>"
@@ -1034,20 +1094,26 @@ def _economy_body(request: Request) -> str:
         prev_flows = prev_map.get(window_key)
         max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
 
-        def _delta_arrow(cur: int, prev: int | None) -> str:
+        def _delta_arrow(fkey: str, cur: int, prev: int | None) -> str:
             if prev is None:
                 return ""
             try:
+                _outflow = fkey in _OUTFLOW_QUARTERS
                 if cur > prev:
-                    return f'<span style="color:var(--ok);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2191</span>'
-                if cur < prev:
-                    return f'<span style="color:var(--fail);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2193</span>'
-                return f'<span style="color:var(--muted);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2192</span>'
+                    _color = "var(--fail)" if _outflow else "var(--ok)"
+                    _arrow = " \u2191"
+                elif cur < prev:
+                    _color = "var(--ok)" if _outflow else "var(--fail)"
+                    _arrow = " \u2193"
+                else:
+                    _color = "var(--muted)"
+                    _arrow = " \u2192"
+                return f'<span style="color:{_color};font-size:12px" title="prev {esc(_quarters_to_str(prev))}">{_arrow}</span>'
             except Exception:  # domain: degrade-silently - arrow never blocks panel
                 return ""
 
         rows = "".join(
-            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}{_delta_arrow(window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
+            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}{_delta_arrow(fkey, window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
             "<td style='width:40%'><div style='height:8px;background:var(--accent);"
             f"width:{(int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0)}%;"
             "border-radius:4px;opacity:0.7'></div></td></tr>"
@@ -1055,7 +1121,15 @@ def _economy_body(request: Request) -> str:
         )
         flow_panels += (
             f"<div><h3 style='margin:6px 0'>{esc(label)}</h3>"
-            "<table><tbody>" + rows + "</tbody></table></div>"
+            "<table><tbody>"
+            + rows
+            + "</tbody></table>"
+            + (
+                "<p style='color:var(--muted);font-size:13px'>No prior window — no trend arrows on All time.</p>"
+                if window_key == "all_time"
+                else ""
+            )
+            + "</div>"
         )
 
     holders_rows = (
@@ -1190,9 +1264,9 @@ def _economy_body(request: Request) -> str:
                 f"<tr><td>entries match</td>"
                 f"<td style='text-align:right'><span class='{chain_cls}'>"
                 f"{'yes' if sealed_n == live_n else 'no'}</span></td></tr>"
-                f"<tr><td>sealed supply</td>"
+                f"<tr><td>sealed supply (at seal)</td>"
                 f"<td style='text-align:right'>{esc(sealed_cred)}</td></tr>"
-                f"<tr><td>live supply</td>"
+                f"<tr><td>live supply (now)</td>"
                 f"<td style='text-align:right'>{esc(live_cred)}</td></tr>"
                 f"<tr><td>supply match</td>"
                 f"<td style='text-align:right'><span class='{chain_cls}'>"
@@ -1202,7 +1276,7 @@ def _economy_body(request: Request) -> str:
                 + "</tbody></table></div>"
             )
         except Exception:  # domain: degrade-silently - inspector is observability, never breaks /economy
-            inspector_html = ""
+            inspector_html = '<div class="panel"><h2>Checkpoint inspector</h2><p style="color:var(--muted)">Checkpoint inspector unavailable.</p></div>'
 
     try:
         page = max(1, int(request.query_params.get("page", "1")))
@@ -1263,18 +1337,7 @@ def _economy_body(request: Request) -> str:
         min_q = None
         max_q = None
 
-    def _led_target(e: dict) -> str:
-        if not e.get("target_type") or not e.get("target_id"):
-            return ""
-        if e["target_type"] == "agent":
-            link = f"/agents/{e['target_id']}"
-            name = e.get("target_name") or f"agent #{e['target_id']}"
-            return f'<a href="{link}">{esc(name)}</a>'
-        if e["target_type"] in ("post", "comment"):
-            link = f"/posts/{e['target_id']}"
-            label = f"{e['target_type']} #{e['target_id']}"
-            return f'<a href="{link}">{esc(label)}</a>'
-        return esc(f"{e['target_type']} #{e['target_id']}")
+    # (ledger target links live at module level: _led_target + _comment_thread_map)
 
     _cat_to_db = {
         "earned": "earned",
@@ -1375,6 +1438,24 @@ def _economy_body(request: Request) -> str:
     # min/max_quarters) so paging and has_more reflect the filtered ledger;
     # _display_entries is already the filtered page.
     _display_entries = ledger["entries"]
+    # Comment deep-links need the parent post: one batched map for the page.
+    _comment_threads: dict[int, int] = {}
+    try:
+        _comment_ids = sorted(
+            {
+                int(leg.get("target_id"))
+                for _e in _display_entries
+                for leg in (_e.get("legs") or [])
+                if leg.get("target_type") == "comment"
+                and str(leg.get("target_id") or "").isdigit()
+            }
+        )
+        if _comment_ids:
+            from reports import comment_post_ids
+
+            _comment_threads = dict(comment_post_ids(_comment_ids))
+    except Exception:  # domain: degrade-silently - targets fall back to plain text
+        _comment_threads = {}
 
     def _ledger_tx_row(_g: dict) -> str:
         _when = esc(_g["created_at"][:19].replace("T", " "))
@@ -1394,7 +1475,7 @@ def _economy_body(request: Request) -> str:
         if _g.get("fee_quarters"):
             _fee = db.format_credits(_g["fee_quarters"])
             _amt += f' <span style="color:var(--muted)">(+{_fee} fee)</span>'
-        _tgt = _led_target(_g["legs"][0]) if _g.get("legs") else ""
+        _tgt = _led_target(_g["legs"][0], _comment_threads) if _g.get("legs") else ""
         return (
             f"<tr><td>{_when}</td><td>{_party}</td>"
             f"<td style='text-align:right'>{_amt}</td>"
@@ -1435,7 +1516,7 @@ def _economy_body(request: Request) -> str:
                 f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
                 f"<td>{esc(e['agent_name'])}</td>"
                 f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
-                f"<td>{esc(e['reason'])}</td><td>{_led_target(e)}</td></tr>"
+                f"<td>{esc(e['reason'])}</td><td>{_led_target(e, _comment_threads)}</td></tr>"
                 for e in _gen_entries[:20]
             )
             _genesis_html = (
@@ -1537,7 +1618,7 @@ def _economy_body(request: Request) -> str:
         else:
             _stake_health_html = '<div class="panel"><h2>Stake commitments — health</h2><p style="color:var(--muted)">No active stakes — no commitments in flight.</p></div>'
     except Exception:  # domain: degrade-silently - stake health panel is optional enrichment, never blocks /economy
-        _stake_health_html = ""
+        _stake_health_html = '<div class="panel"><h2>Stake commitments — health</h2><p style="color:var(--muted)">Stake health unavailable.</p></div>'
 
     # Job escrow projection timeline (4396) — display-only, degrade-silently
     _job_escrow_html = ""
@@ -1583,7 +1664,7 @@ def _economy_body(request: Request) -> str:
                             '<span style="color:var(--muted)">no remaining</span>'
                         )
                     _job_rows += (
-                        f"<tr><td><a href='/jobs'>{_title_j}</a> <span style='color:var(--muted)'>#{_j_id}</span></td>"
+                        f"<tr><td><a href='/jobs?status={_jobs_tab_for_status(_j.get('status') or '')}#frag-jobs'>{_title_j}</a> <span style='color:var(--muted)'>#{_j_id}</span></td>"
                         f"<td style='text-align:right'>{_done}/{_total}</td>"
                         f"<td style='text-align:right'>{_pay_txt}</td>"
                         f"<td style='text-align:right'>{_held_txt}</td>"
@@ -1595,7 +1676,7 @@ def _economy_body(request: Request) -> str:
                     continue
             _job_escrow_html = (
                 '<div class="panel"><h2>Job escrow — projection timeline</h2>'
-                f"<p style='color:var(--muted);font-size:13px'>Active escrow: {_fmt_q(_total_held_q)} held across {len(_active_jobs)} jobs (open/offered/active, non-official). Each remaining cycle releases payment_quarters on acceptance.</p>"
+                f"<p style='color:var(--muted);font-size:13px'>Active escrow (non-official jobs): {_fmt_q(_total_held_q)} held across {len(_active_jobs)} jobs (open/offered/active). Each remaining cycle releases payment_quarters on acceptance.</p>"
                 "<table><thead><tr><th>job</th><th style='text-align:right'>done/total</th><th style='text-align:right'>per cycle</th><th style='text-align:right'>held</th><th>projection</th></tr></thead><tbody>"
                 + _job_rows
                 + "</tbody></table>"
@@ -1606,7 +1687,7 @@ def _economy_body(request: Request) -> str:
     except (
         Exception
     ):  # domain: degrade-silently - job escrow panel is optional enrichment
-        _job_escrow_html = ""
+        _job_escrow_html = '<div class="panel"><h2>Job escrow — projection timeline</h2><p style="color:var(--muted)">Job escrow unavailable.</p></div>'
 
     # Citizen-store sales (store_stats) — display-only, degrade-silently
     _store_html = ""
@@ -1647,8 +1728,13 @@ def _economy_body(request: Request) -> str:
             + _store_rows
             + "</tbody></table></div>"
         )
+        if int(_st["units"]) == 0:
+            _store_html = (
+                '<div class="panel"><h2>Citizen store</h2>'
+                '<p style="color:var(--muted)">No store sales yet.</p></div>'
+            )
     except Exception:  # domain: degrade-silently - store panel is optional enrichment
-        _store_html = ""
+        _store_html = '<div class="panel"><h2>Citizen store</h2><p style="color:var(--muted)">Citizen store unavailable.</p></div>'
     # Open invoices (open_invoice_stats) — display-only, degrade-silently
     _invoices_html = ""
     try:
@@ -1698,16 +1784,18 @@ def _economy_body(request: Request) -> str:
                 "billed and unpaid.</p></div>"
             )
     except Exception:  # domain: degrade-silently - invoice panel is optional enrichment
-        _invoices_html = ""
+        _invoices_html = '<div class="panel"><h2>Open invoices</h2><p style="color:var(--muted)">Open invoices unavailable.</p></div>'
 
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
         "spendable valuta: earnings are paid out of the community treasury, "
-        "tags and stake fees recirculate into it, and transfers move value "
-        "between wallets behind a small fee. Every number below sums "
-        "directly from the public ledger.</p>"
+        "while transaction fees, tag prices and forfeitures recirculate "
+        "into it (stake principal stays locked until payout). Every number "
+        "below derives from the public ledger; the runway is a trailing-7d "
+        "estimate.</p>"
         + cards
+        + _economy_wallet_banner(view_agent, ledger)
         + "<h3 style='margin:18px 0 6px'>Treasury configuration</h3>"
         "<table><tbody>"
         f"<tr><td>earnings funded by treasury</td><td style='text-align:right'>"
@@ -1741,7 +1829,6 @@ def _economy_body(request: Request) -> str:
         + _stake_health_html
         + _job_escrow_html
         + _invoices_html
-        + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel" id="sec-ledger"><h2>Recent ledger entries</h2>'
             + _cat_tabs
