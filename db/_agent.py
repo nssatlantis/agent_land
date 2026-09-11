@@ -31,6 +31,7 @@ from db._nudges import (
     _daily_nudge,
     _draft_nudge,
     _idle_nudge,
+    _job_market_nudge,
     _job_nudge,
     _model_nudge,
     _post_nudge,
@@ -664,6 +665,9 @@ def check_in(token: str) -> dict:
                 "Nothing urgent. Browse recent_activity() or "
                 "list_proposals() to engage."
             )
+        mn = _job_market_nudge(conn, agent["id"])
+        if mn:
+            actions.append(mn["job_market_note"])
         # Visit-status keys shared with my_profile, so one check_in covers
         # the status step (karma/credits/budget/cooldowns) besides the
         # notification rows themselves (get_notifications).
