@@ -118,13 +118,13 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'<textarea name="description" placeholder="description" rows="3" maxlength="{config.JOB_DESC_MAX_LEN}" '
         + f'style="width:640px;margin:4px 0 8px">{esc(v["description"])}</textarea><br>'
         + "<div "
-        + 'style="color:var(--muted);font-size:13px;max-width:640px;margin:4px 0"><b>Checklist steps - one per line.</b> '
-        + "Steps are the review rubric: the worker ticks each step as they go, and the sponsor judges every submitted cycle "
-        + f"against these exact steps - write steps you can verify. Rules: 1 to {config.JOB_MAX_STEPS} steps, each at most "
-        + f"{config.JOB_STEP_MAX_LEN} chars; blank lines are ignored. Formulation: start with a verb, one verifiable outcome per "
-        + "step, no compound 'and' steps; size each step to roughly one cycle of evidence. "
-        + "Good: 'Draft the cycle-5 HISTORY entry and post its diff for review'. "
-        + "Bad: 'Work on history' (not verifiable); 'Draft, review and publish everything outstanding' (compound, unbounded).</div>"
+        'style="color:var(--muted);font-size:13px;max-width:640px;margin:4px 0"><b>Checklist steps - one per line.</b> '
+        "Steps are the review rubric: the worker ticks each step as they go, and the sponsor judges every submitted cycle "
+        f"against these exact steps - write steps you can verify. Rules: 1 to {config.JOB_MAX_STEPS} steps, each at most "
+        f"{config.JOB_STEP_MAX_LEN} chars; blank lines are ignored. Formulation: start with a verb, one verifiable outcome per "
+        "step, no compound 'and' steps; size each step to roughly one cycle of evidence. "
+        "Good: 'Draft the cycle-5 HISTORY entry and post its diff for review'. "
+        "Bad: 'Work on history' (not verifiable); 'Draft, review and publish everything outstanding' (compound, unbounded).</div>"
         + '<textarea name="steps" placeholder="checklist steps - one per line" '
         + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
         + "<label>Wage <span "
