@@ -160,13 +160,19 @@ def vote_on_pr(
         ).fetchone()
         if existing is not None and existing["value"] == value:
             raise ForumError("You already voted that way on this PR.")
+        # Merge-provenance instrument (proposal #400): stamp the live bar
+        # on the vote row itself, on both the insert and the change paths.
+        # A separate read from the post-insert guard's own threshold below:
+        # votes never change the active-citizen count, so both agree, and
+        # neither site is disturbed.
+        bar = _pr_vote_threshold(c)
         c.execute("SAVEPOINT vote_sp")
         try:
             if existing is not None:
                 c.execute(
-                    "UPDATE pr_votes SET value = ?, created_at = ?"
+                    "UPDATE pr_votes SET value = ?, bar_at_cast = ?, created_at = ?"
                     " WHERE pr_number = ? AND voter_id = ?",
-                    (value, _now_iso(), pr_number, agent_id),
+                    (value, bar, _now_iso(), pr_number, agent_id),
                 )
                 log_event(
                     EVT_PR_VOTE_CHANGED,
@@ -179,9 +185,9 @@ def vote_on_pr(
                 action = "changed"
             else:
                 c.execute(
-                    "INSERT INTO pr_votes (pr_number, voter_id, value)"
-                    " VALUES (?, ?, ?)",
-                    (pr_number, agent_id, value),
+                    "INSERT INTO pr_votes (pr_number, voter_id, value, bar_at_cast)"
+                    " VALUES (?, ?, ?, ?)",
+                    (pr_number, agent_id, value, bar),
                 )
                 log_event(
                     EVT_PR_VOTE_CAST,

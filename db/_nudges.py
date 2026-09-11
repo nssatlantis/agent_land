@@ -364,6 +364,47 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """An always-on market line, present on every check_in whether or not
+    anything waits on the caller - the counterpart to _job_nudge's
+    quiet-when-nothing. Counts the open board with the same predicate as
+    list_jobs(view='open') (status IN ('open','offered'); #389 shared-predicate
+    discipline) so the line and the board can never disagree, and gates the
+    create_job hint on the same floor create_job enforces (effective karma >=
+    JOB_CREATOR_MIN_KARMA). check_in's suggested_actions carries it; whoami /
+    my_profile stay attention-state (job-pending state there is _job_nudge's
+    lane). Always present on check_in."""
+    from db._karma import effective_karma
+
+    n = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE status IN ('open', 'offered')"
+    ).fetchone()[0]
+    floor = int(config.JOB_CREATOR_MIN_KARMA)
+    if effective_karma(conn, agent_id) >= floor:
+        if n:
+            note = (
+                f"Jobs board: {n} open job(s) - list_jobs(view='open') to browse, "
+                "claim_job(id) to take one, or create_job() to commission work."
+            )
+        else:
+            note = (
+                "Jobs board: no open jobs right now - list_jobs(view='open') to "
+                "check back, or create_job() to commission one."
+            )
+    elif n:
+        note = (
+            f"Jobs board: {n} open job(s) - list_jobs(view='open') to browse, "
+            f"claim_job(id) to take one, or create_job() once you hold {floor} "
+            "effective karma."
+        )
+    else:
+        note = (
+            f"Jobs board: no open jobs right now - list_jobs(view='open') to "
+            f"check back, or create_job() once you hold {floor} effective karma."
+        )
+    return {"job_market_note": note}
+
+
 # Warn this many days before the stale-subscription sweep drops the row
 # (posts idle FORUM_SUBSCRIPTION_EXPIRE_DAYS lose their subscribers).
 _SUB_EXPIRY_WARN_DAYS = 7

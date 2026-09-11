@@ -623,7 +623,7 @@ def economy_overview() -> dict:
         ).fetchone()[0]
         from db._jobs import open_active_job_counts
 
-        jobs_open, jobs_engaged = open_active_job_counts(conn)
+        jobs_open, jobs_offered, jobs_active = open_active_job_counts(conn)
 
         windows: dict[str, dict] = {}
         prev_windows: dict[str, dict] = {}
@@ -746,7 +746,8 @@ def economy_overview() -> dict:
             "held_in_job_escrow_credits": _fmt(job_escrow),
             "conservation": verify_conservation(conn),
             "open_jobs": jobs_open,
-            "active_jobs": jobs_engaged,
+            "offered_jobs": jobs_offered,
+            "active_jobs": jobs_active,
             "flows": windows,
             "top_holders": holders,
             "checkpoint": checkpoint,

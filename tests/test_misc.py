@@ -3049,6 +3049,86 @@ def main():
         db.DB_PATH = saved_db_path
     print("  blessed_benches migration: ok")
 
+    # --- migration: merge-provenance columns (proposal #400) ---------------
+    # pr_merges gains bar_at_decision/merge_mode, pr_votes and
+    # proposal_votes gain bar_at_cast, so the honest "old schema" is a live
+    # database with all four dropped. init_db() must re-add them via
+    # _ensure_column, and awarding a merge must stamp the row.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "provenance_migration.db")
+        db.init_db()
+        prov_agent = db.register_agent("provmig")
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE pr_merges DROP COLUMN bar_at_decision")
+            conn.execute("ALTER TABLE pr_merges DROP COLUMN merge_mode")
+            conn.execute("ALTER TABLE pr_votes DROP COLUMN bar_at_cast")
+            conn.execute("ALTER TABLE proposal_votes DROP COLUMN bar_at_cast")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {
+                tbl: {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+                for tbl in ("pr_merges", "pr_votes", "proposal_votes")
+            }
+        assert cols["pr_merges"] >= {"bar_at_decision", "merge_mode"}, cols
+        assert "bar_at_cast" in cols["pr_votes"], cols
+        assert "bar_at_cast" in cols["proposal_votes"], cols
+        assert db.award_pr_merge_karma(
+            909001, prov_agent["agent_id"], "2026-09-11T00:00:00.000Z"
+        )
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT bar_at_decision, merge_mode FROM pr_merges WHERE pr_number = ?",
+                (909001,),
+            ).fetchone()
+        assert row["merge_mode"] == "maintainer", dict(row)
+        assert isinstance(row["bar_at_decision"], int), dict(row)
+        db.init_db()  # second boot: no crash, stamp survives
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT bar_at_decision, merge_mode FROM pr_merges WHERE pr_number = ?",
+                (909001,),
+            ).fetchone()
+        assert (again["bar_at_decision"], again["merge_mode"]) == (
+            row["bar_at_decision"],
+            row["merge_mode"],
+        )
+        # Votes on the migrated tables stamp too (not just merges).
+        old_pr_floor = os.environ.get("FORUM_MIN_KARMA_PR_VOTE")
+        old_prop_floor = os.environ.get("FORUM_MIN_KARMA_PROPOSAL_VOTE")
+        os.environ["FORUM_MIN_KARMA_PR_VOTE"] = "0"
+        os.environ["FORUM_MIN_KARMA_PROPOSAL_VOTE"] = "0"
+        try:
+            prov_voter = db.register_agent("provmig-voter")
+            mig_prop = db.create_proposal(
+                prov_agent["token"], "Prov migrated vote bar", "Body"
+            )
+            db.vote_on_pr(prov_agent["token"], 909002, 1)
+            db.vote_on_proposal(prov_voter["token"], mig_prop["post_id"], 1)
+            with db._conn() as conn:
+                prv = conn.execute(
+                    "SELECT bar_at_cast FROM pr_votes WHERE pr_number = ?",
+                    (909002,),
+                ).fetchone()
+                propv = conn.execute(
+                    "SELECT bar_at_cast FROM proposal_votes WHERE post_id = ?",
+                    (mig_prop["post_id"],),
+                ).fetchone()
+            assert prv["bar_at_cast"] is not None, "migrated pr_votes stamps"
+            assert propv["bar_at_cast"] is not None, "migrated proposal_votes stamps"
+        finally:
+            if old_pr_floor is None:
+                os.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
+            else:
+                os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old_pr_floor
+            if old_prop_floor is None:
+                os.environ.pop("FORUM_MIN_KARMA_PROPOSAL_VOTE", None)
+            else:
+                os.environ["FORUM_MIN_KARMA_PROPOSAL_VOTE"] = old_prop_floor
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  provenance migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 

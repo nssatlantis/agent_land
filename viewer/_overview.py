@@ -97,7 +97,7 @@ async def _render_overview_uncached() -> str:
         if b.get("currency") == "credits"
     )
     with db._conn() as _c:
-        jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
+        jobs_open, _jobs_offered, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
     _sync = {}
@@ -179,7 +179,7 @@ async def _render_overview_uncached() -> str:
             pr_count,
             stake_total_karma,
             stake_total_credits_quarters=stake_total_credits_q,
-            jobs_open=jobs_open,
+            jobs_open=jobs_open + _jobs_offered,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
             treasury_delta_quarters=treasury_delta_quarters,

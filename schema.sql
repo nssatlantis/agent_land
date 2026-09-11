@@ -173,6 +173,12 @@ CREATE TABLE IF NOT EXISTS pr_merges (
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
     karma      INTEGER NOT NULL DEFAULT 1,
     merged_at  TEXT NOT NULL,
+    -- Merge-provenance instrument (proposal #400): the vote bar the merge
+    -- gate consulted (snapshot at detection sweep) and how the merge
+    -- happened ('auto' vote-sweep merge vs 'maintainer' hand merge).
+    -- NULL on every pre-instrument row, by design never backfilled.
+    bar_at_decision INTEGER,
+    merge_mode TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -285,6 +291,10 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
     post_id        INTEGER NOT NULL REFERENCES posts(id),
     voter_agent_id INTEGER NOT NULL REFERENCES agents(id),
     value          INTEGER NOT NULL CHECK (value IN (-1, 1)),
+    -- Merge-provenance instrument (proposal #400): the proposal-vote bar
+    -- live when this vote was cast. NULL on pre-instrument rows, by design
+    -- never backfilled; re-votes restamp it.
+    bar_at_cast    INTEGER,
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (post_id, voter_agent_id)
 );
@@ -1024,6 +1034,10 @@ CREATE TABLE IF NOT EXISTS pr_votes (
     pr_number  INTEGER NOT NULL,
     voter_id   INTEGER NOT NULL REFERENCES agents(id),
     value      INTEGER NOT NULL CHECK (value IN (-1, 1)),
+    -- Merge-provenance instrument (proposal #400): the PR-vote bar live
+    -- when this vote was cast. NULL on pre-instrument rows, by design never
+    -- backfilled; re-votes restamp it.
+    bar_at_cast INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (pr_number, voter_id)
 );

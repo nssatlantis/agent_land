@@ -1373,8 +1373,9 @@ def test_process_rows_slow_block_last_renders_span():
 
 
 def test_pulse_panels_render_live_fragments():
-    """The /pulse panels build without error against the seeded db and
-    carry the funnel views, the activity headline and the economy strip."""
+    """The pulse panels (folded atop /analytics, #405) build without error
+    against the seeded db and carry the funnel views, the activity headline
+    and the economy strip."""
     html = _pulse_panels()
     assert "Activity trend" in html
     assert "actions on record" in html
@@ -1386,8 +1387,8 @@ def test_pulse_panels_render_live_fragments():
 
 
 def test_activity_trend_caches_events_window():
-    """_activity_trend must not re-scan the events ledger on every /pulse
-    poll: back-to-back calls within the cache window hit _trend_rows' cache,
+    """_activity_trend must not re-scan the events ledger on every pulse-panels
+    poll (30s, hosted on /analytics): back-to-back calls within the cache window hit _trend_rows' cache,
     so the underlying query_events runs once."""
     from viewer import _pulse as pulse_mod
 
@@ -1702,6 +1703,211 @@ def test_economy_invoices_panel():
     without open bills (#394)."""
     html = _economy_body(_Req())
     assert "Open invoices" in html, "invoices panel renders"
+    assert "unavailable" not in html.lower(), "invoices happy path shows no fallback"
+
+
+def test_economy_correctness_bundle_a():
+    """Bundle A (#406): fee copy states flat prices; treasury % matches the
+    legend rounding; committed/escrow cards carry tooltips; movers link to
+    wallets."""
+    import re
+
+    html = _economy_body(_Req())
+    assert "invoice payments" in html, "fee copy names invoice payments"
+    assert "flat prices" in html, "fee copy states flat prices"
+    assert "tag creates/applies, stake/job fees" not in html, "old fee clause gone"
+    assert 'title="Remaining stake payouts' in html, "committed tooltip placed"
+    assert 'title="Held in the ledger escrow' in html, "escrow tooltip placed"
+    assert "locked stakes: sum" not in html, "old locked-only caption gone"
+    assert "deposit pools alike" in html, "escrow note kept as tooltip"
+    assert "href='/agents/" not in html, "movers link to wallets, not profiles"
+    m = re.search(r"credits \(([\d.]+)% of total supply\) receives fees", html)
+    t = re.search(r'title="(\d[\d.]*)% of total supply"', html)
+    assert m and t and m.group(1) == t.group(1), "sentence % matches tooltip %"
+    titles = re.findall(r'title="([\d.]+)% of total supply"', html)
+    assert len(titles) >= 2, "treasury + circulating tooltips render"
+    assert m.group(1) in titles, "sentence matches a rendered share"
+
+
+def test_economy_labels_bundle_b():
+    """Bundle B+D (#409): intro sources; burn all-time label; escrow scopes;
+    subset indent; all-time note; seal labels; banner order."""
+    html = _economy_body(_Req())
+    assert "unavailable" not in html.lower(), "happy path shows no fallback"
+    assert "forfeitures recirculate" in html, "intro names forfeitures"
+    assert "trailing-7d" in html, "intro qualifies runway"
+    assert "All time" in html, "burn legend names window"
+    assert "held in job escrow (all)" in html, "card scope labeled"
+    assert "non-official" in html, "escrow scope labeled"
+    assert "\u21b3" in html, "subset row indented"
+    assert "no trend arrows" in html, "all-time note renders"
+    if "Checkpoint inspector" in html:
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    agent_html = _economy_body(_Req({"agent": "1"}))
+    assert agent_html.index("Wallet") < agent_html.index("Treasury configuration"), (
+        "banner above globals"
+    )
+
+
+def test_economy_store_empty_and_unavailable():
+    """Store empty-state + unavailable fallbacks render titled panels."""
+    import viewer._money as money_mod
+
+    real_stats = money_mod.db.store_stats
+    try:
+        money_mod.db.store_stats = lambda: {
+            "totals": {
+                "revenue_credits": "0",
+                "revenue_7d_credits": "0",
+                "units": 0,
+                "buyers": 0,
+            },
+            "items": [],
+            "installed": {"citizens_served": 0},
+        }
+        html = _economy_body(_Req())
+        assert "No store sales yet." in html, "empty store one-liner"
+        assert "unavailable" not in html.lower(), "empty path shows no fallback"
+
+        def _boom():
+            raise RuntimeError("probe")
+
+        money_mod.db.store_stats = _boom
+        html = _economy_body(_Req())
+        assert "Citizen store unavailable." in html, "store error panel"
+    finally:
+        money_mod.db.store_stats = real_stats
+
+
+def test_jobs_tab_for_status_unit():
+    """Board-tab mapping for escrow deep-links."""
+    from viewer._money import _jobs_tab_for_status
+
+    assert _jobs_tab_for_status("open") == "open"
+    assert _jobs_tab_for_status("offered") == "open"
+    assert _jobs_tab_for_status("active") == "active"
+    assert _jobs_tab_for_status("completed") == "completed"
+    assert _jobs_tab_for_status("cancelled") == "closed"
+    assert _jobs_tab_for_status("expired") == "closed"
+    assert _jobs_tab_for_status("bogus") == "open"
+
+
+def test_economy_comment_targets():
+    """Comment legs deep-link to their thread; unknown ids fall back."""
+    from viewer._money import _comment_thread_map, _led_target
+
+    assert _comment_thread_map([]) == {}
+    assert _led_target({"target_type": "comment", "target_id": 12}, {12: 77}) == (
+        '<a href="/posts/77#c12">comment #12</a>'
+    )
+    assert _led_target({"target_type": "comment", "target_id": 12}, {}) == "comment #12"
+    assert _led_target({"target_type": "post", "target_id": 77}, {}) == (
+        '<a href="/posts/77">post #77</a>'
+    )
+
+
+def test_outflow_quarters_membership():
+    """Polarity map covers exactly the outflow rows."""
+    from viewer._money import _OUTFLOW_QUARTERS
+
+    assert set(_OUTFLOW_QUARTERS) == {"burned_quarters", "payouts_out_quarters"}
+    assert "minted_quarters" not in _OUTFLOW_QUARTERS
+
+
+def test_economy_seal_labels_forced():
+    """Seal scope labels render when a checkpoint exists (#409 D9)."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    real = money_mod.db.economy_overview
+    base = real()
+    seal = {
+        "chain_ok": True,
+        "seals_checked": 1,
+        "sealed_entry_count": 10,
+        "live_entry_count": 10,
+        "sealed_supply_quarters": 4000,
+        "live_supply_quarters": 4000,
+        "sealed_supply_credits": "1000",
+        "live_supply_credits": "1000",
+    }
+
+    def with_seal():
+        out = dict(base)
+        out["checkpoint"] = seal
+        return out
+
+    money_mod.db.economy_overview = with_seal
+    try:
+        cache_mod._reset_for_tests()
+        html = _economy_body(_Req())
+        assert "Checkpoint inspector" in html
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
+def test_economy_overview_cached():
+    """The ~19-statement overview runs once per 60s window, not per load
+    (#410). Cache hygiene restored afterwards."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        _economy_body(_Req())
+        _economy_body(_Req())
+        assert calls["n"] == 1, "second body reuses cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
+def test_economy_fragment_shares_cached_overview():
+    """Page + 30s poll read one cached overview, not two live ones (#410)."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        from viewer import fragments as _fragments_fn
+
+        class _FragReq:
+            path_params = {"name": "economy"}
+            headers = {"x-fragment": "1"}
+
+            def __init__(self):
+                from starlette.datastructures import QueryParams
+
+                self.query_params = QueryParams({})
+
+        _economy_body(_Req())
+        import asyncio
+
+        asyncio.run(_fragments_fn(_FragReq()))
+        assert calls["n"] == 1, "fragment reuses the page's cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
 
 
 def test_nav_fragments_proposals_builder():
@@ -1755,6 +1961,64 @@ def test_governance_analytics_route_removed():
     assert any(getattr(r, "path", None) == "/governance/cohorts" for r in ROUTES), (
         "cohorts route stays"
     )
+
+
+def test_pulse_page_removed():
+    """The /pulse route is folded into /analytics: no route, no nav entry
+    (hard remove, #405). The panels live on (fragment + /analytics embed)."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+
+    assert not [r for r in ROUTES if getattr(r, "path", None) == "/pulse"], (
+        "no /pulse route"
+    )
+    assert all(href != "/pulse" for href, _, _ in _NAV_ITEMS), "no /pulse nav entry"
+    print("  pulse page removed ok")
+
+
+def test_analytics_page_has_pulse_section():
+    """The /pulse fold: /analytics renders the pulse panels above the
+    charts (#405)."""
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    assert "Activity trend" in html, "trend panel folded in"
+    assert "Governance pipeline" in html, "funnel folded in"
+    assert "circulating" in html, "economy strip folded in"
+    assert "Society analytics" in html, "charts kept"
+    assert "Governance analytics" in html, "governance kept"
+    assert html.index("Activity trend") < html.index("Society analytics"), (
+        "panels above charts"
+    )
+
+
+def test_fragment_pulse_panels_matches_analytics_page():
+    """The pulse-panels fragment must render the exact body /analytics
+    embeds, so the 30s soft refresh never wipes it (#405)."""
+    from viewer._analytics import analytics_page
+
+    req = _Req()
+    page_html = analytics_page(req).body.decode("utf-8")
+    assert _pulse_panels() == _frag_div(page_html, "pulse-panels"), (
+        "frag-pulse-panels drifted from its /analytics embed"
+    )
+
+
+def test_analytics_poll_includes_pulse_panels():
+    """The 30s soft refresh must be wired: /analytics poll-config carries
+    the pulse-panels fragment entry (#405)."""
+    import json
+
+    from viewer._analytics import analytics_page
+
+    html = analytics_page(_Req()).body.decode("utf-8")
+    marker = '<script id="poll-config" type="application/json">'
+    cfg = json.loads(html.split(marker)[1].split("</script>")[0])
+    assert {
+        "path": "/fragments/pulse-panels",
+        "target": "frag-pulse-panels",
+        "every": 30000,
+    } in cfg, "pulse-panels poll entry missing"
 
 
 def test_lineage_families_group_chains():
@@ -1895,7 +2159,7 @@ def test_fragments_redirect_without_x_fragment():
     assert_redirect("citizens", "/citizens")
     assert_redirect("status-banner", "/status")
     assert_redirect("status-pulse", "/status")
-    assert_redirect("pulse-panels", "/pulse")
+    assert_redirect("pulse-panels", "/analytics")
     assert_redirect("economy", "/economy")
     assert_redirect("jobs", "/jobs")
     assert_redirect("staking", "/staking")
@@ -2147,7 +2411,20 @@ if __name__ == "__main__":
     test_fragments_match_full_page_bodies()
     test_analytics_page_has_governance_section()
     test_governance_analytics_route_removed()
+    test_pulse_page_removed()
+    test_analytics_page_has_pulse_section()
+    test_fragment_pulse_panels_matches_analytics_page()
+    test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
+    test_economy_overview_cached()
+    test_economy_fragment_shares_cached_overview()
+    test_economy_correctness_bundle_a()
+    test_economy_labels_bundle_b()
+    test_economy_store_empty_and_unavailable()
+    test_jobs_tab_for_status_unit()
+    test_economy_comment_targets()
+    test_outflow_quarters_membership()
+    test_economy_seal_labels_forced()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
