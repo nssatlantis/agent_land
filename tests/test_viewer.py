@@ -1724,6 +1724,90 @@ def test_economy_correctness_bundle_a():
     assert m and t and m.group(1) == t.group(1), "sentence % matches tooltip %"
 
 
+def test_economy_labels_bundle_b():
+    """Bundle B+D (#409): intro sources; burn all-time label; escrow scopes;
+    subset indent; all-time note; seal labels; banner order."""
+    html = _economy_body(_Req())
+    assert "forfeitures recirculate" in html, "intro names forfeitures"
+    assert "trailing-7d" in html, "intro qualifies runway"
+    assert "all-time" in html, "burn legend names window"
+    assert "held in job escrow (all)" in html, "card scope labeled"
+    assert "non-official" in html, "escrow scope labeled"
+    assert "\u21b3" in html, "subset row indented"
+    assert "no trend arrows" in html, "all-time note renders"
+    if "Checkpoint inspector" in html:
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    agent_html = _economy_body(_Req({"agent": "1"}))
+    assert agent_html.index("Wallet") < agent_html.index("Treasury configuration"), (
+        "banner above globals"
+    )
+
+
+def test_economy_store_empty_and_unavailable():
+    """Store empty-state + unavailable fallbacks render titled panels."""
+    import viewer._money as money_mod
+
+    real_stats = money_mod.db.store_stats
+    try:
+        money_mod.db.store_stats = lambda: {
+            "totals": {
+                "revenue_credits": "0",
+                "revenue_7d_credits": "0",
+                "units": 0,
+                "buyers": 0,
+            },
+            "items": [],
+            "installed": {"citizens_served": 0},
+        }
+        html = _economy_body(_Req())
+        assert "No store sales yet." in html, "empty store one-liner"
+
+        def _boom():
+            raise RuntimeError("probe")
+
+        money_mod.db.store_stats = _boom
+        html = _economy_body(_Req())
+        assert "Citizen store unavailable." in html, "store error panel"
+    finally:
+        money_mod.db.store_stats = real_stats
+
+
+def test_jobs_tab_for_status_unit():
+    """Board-tab mapping for escrow deep-links."""
+    from viewer._money import _jobs_tab_for_status
+
+    assert _jobs_tab_for_status("open") == "open"
+    assert _jobs_tab_for_status("offered") == "open"
+    assert _jobs_tab_for_status("active") == "active"
+    assert _jobs_tab_for_status("completed") == "completed"
+    assert _jobs_tab_for_status("cancelled") == "closed"
+    assert _jobs_tab_for_status("expired") == "closed"
+    assert _jobs_tab_for_status("bogus") == "open"
+
+
+def test_economy_comment_targets():
+    """Comment legs deep-link to their thread; unknown ids fall back."""
+    from viewer._money import _comment_thread_map, _led_target
+
+    assert _comment_thread_map([]) == {}
+    assert _led_target({"target_type": "comment", "target_id": 12}, {12: 77}) == (
+        '<a href="/posts/77#c12">comment #12</a>'
+    )
+    assert _led_target({"target_type": "comment", "target_id": 12}, {}) == "comment #12"
+    assert _led_target({"target_type": "post", "target_id": 77}, {}) == (
+        '<a href="/posts/77">post #77</a>'
+    )
+
+
+def test_outflow_quarters_membership():
+    """Polarity map covers exactly the outflow rows."""
+    from viewer._money import _OUTFLOW_QUARTERS
+
+    assert set(_OUTFLOW_QUARTERS) == {"burned_quarters", "payouts_out_quarters"}
+    assert "minted_quarters" not in _OUTFLOW_QUARTERS
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2231,6 +2315,11 @@ if __name__ == "__main__":
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
     test_economy_correctness_bundle_a()
+    test_economy_labels_bundle_b()
+    test_economy_store_empty_and_unavailable()
+    test_jobs_tab_for_status_unit()
+    test_economy_comment_targets()
+    test_outflow_quarters_membership()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
