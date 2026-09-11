@@ -69,7 +69,7 @@ def _cooldown_remaining(
     `cooldown_seconds` overrides the kind's default when a special path
     pays a different window (supersede_proposal pays a fraction of the
     proposal cooldown). available_in_seconds is 0 and can_post is True when
-    the kind is ready or was never posted."""
+    the kind is ready or was never posted. """
     cooldown = (
         cooldown_seconds
         if cooldown_seconds is not None
