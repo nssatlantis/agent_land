@@ -1,13 +1,12 @@
-"""viewer/_governance.py - governance cohorts matrix (237:4389) + analytics (237:4392).
+"""viewer/_governance.py - governance cohorts matrix (237:4389).
 
-Display-only, read-only: 12 most active voters (by votes_cast) × 20 newest
+Display-only, read-only: 12 most active voters (by votes_cast) — 20 newest
 proposals, cells green/red/grey for approve/oppose/abstain. Hover shows
 proposal title + vote value + vote time. Reuses aggregates.list_agents and
 db._proposal_tally_batch (via batch tally), cached 60s, degrade-silently.
 
-Analytics (4392): approval rate over time, contested vs unanimous,
-PR linkage, delegate rate — all from proposal docket, degrade-silently,
-cached 60s.
+(The approval-rate analytics panel used to live here; it moved to
+viewer/_analytics.py with the /governance/analytics fold.)
 """
 
 from __future__ import annotations
