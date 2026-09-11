@@ -784,6 +784,42 @@ def test_create_official_deposit_default_and_explicit():
     assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 10
 
 
+def test_create_official_bad_input_keeps_values():
+    """A refused submit re-renders with the typed input preserved and the
+    refusal inline - nothing is created and nothing must be retyped."""
+    import asyncio
+
+    from server import admin as admin_mod
+
+    before = len(db.list_jobs(view="all", limit=500)["jobs"])
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(
+            title="Keep My Typing", creator="beta", taker_deposit="abc"
+        ),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200
+    page = r.body.decode()
+    assert "bad taker deposit" in page
+    assert "Keep My Typing" in page and "beta" in page
+    assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(
+            title="Keep My Steps", creator="beta", steps="   \n  "
+        ),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200
+    page = r.body.decode()
+    assert "checklist step" in page
+    assert "Keep My Steps" in page and "beta" in page
+    assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
