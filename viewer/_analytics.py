@@ -1,9 +1,11 @@
-"""viewer/_analytics.py - society analytics charts (237:4393) plus the
+"""viewer/_analytics.py - the single society dashboard (/analytics): the
+retired /pulse panels on top (activity trend, governance funnel, economy
+strip, live 30s fragment), then society charts (237:4393), then the
 governance analytics panel folded in from viewer/_governance.py.
 
-Display-only, read-only: citizen growth, proposal velocity, PR merge rate,
-economy velocity, tag adoption — all from local DB (no GitHub network),
-cached 60s, degrade-silently. New route /analytics.
+Display-only, read-only: pulse panels, citizen growth, proposal velocity,
+PR merge rate, economy velocity, tag adoption — all from local DB (no
+GitHub network), cached 60s, degrade-silently.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import db
 from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._pulse import _pulse_panels
 from viewer._utils import esc
 
 
@@ -30,6 +33,10 @@ def _fetch_analytics_html() -> str:
     try:
         # All time-series data in a single DB round-trip (was 3 separate
         # full-table scans before this merge — item 4918).
+        # NOTE (#405): prop_per_month counts every proposal_kind (ideas
+        # included) via SQL; the governance panel below re-buckets
+        # proposal/small_fix months in Python because it also needs the
+        # approved split, which no GROUP BY can produce — dual by design.
         growth_per_month: dict[str, int] = defaultdict(int)
         prop_per_month: dict[str, int] = defaultdict(int)
         econ_per_month: dict[str, int] = defaultdict(int)
@@ -189,6 +196,7 @@ def _governance_analytics_html() -> str:
 
 def _build_analytics() -> str:
     try:
+        # Newest-first capped window; the panel discloses "last 1000" (#405).
         proposals = db.list_proposals(limit=1000, view="all", sort="newest")
         # filter to real proposals - exclude ideas (4389 counted as approved always)
         props = [
@@ -254,13 +262,13 @@ def _build_analytics() -> str:
         )
         return (
             '<div class="panel"><h2>Governance analytics</h2>'
-            "<p style='color:var(--muted);font-size:13px'>Approval rate, contested vs unanimous, PR linkage and delegate coverage across the docket. Read-only, cached 60s.</p>"
+            "<p style='color:var(--muted);font-size:13px'>Approval rate, contested vs unanimous, PR linkage and delegate coverage across the last 1000 proposals (newest first). Read-only, cached 60s.</p>"
             + cards
             + "<h3 style='margin:12px 0 6px'>Approval over time (last 6 months)</h3>"
             + "<table><thead><tr><th>month</th><th style='text-align:right'>approved/total</th><th style='text-align:right'>rate</th><th>bar</th></tr></thead><tbody>"
             + month_rows
             + "</tbody></table>"
-            + "<p style='color:var(--muted);font-size:13px'>Unanimous = up&gt;0 down=0; contested = up&gt;0 down&gt;0; PR linked = has at least one linked PR (proposal_links); delegated = delegate_id set (claim or assign). Degrades to no data when DB unavailable.</p>"
+            + "<p style='color:var(--muted);font-size:13px'>Unanimous = up&gt;0 down=0; contested = up&gt;0 down&gt;0; PR linked = has at least one linked PR (proposal_links); delegated = delegate_id set (claim or assign). Approval rate counts proposals + small fixes including decided ones; the funnel above shows open-docket states only. Degrades to no data when DB unavailable.</p>"
             + "</div>"
         )
     except Exception:  # noqa: BLE001  # domain: degrade-silently
@@ -268,11 +276,23 @@ def _build_analytics() -> str:
 
 
 def analytics_page(request) -> HTMLResponse:
-    """GET /analytics - society charts plus governance analytics. Read-only, cached 60s."""
-    body = _crumb("/", "overview") + _analytics_html() + _governance_analytics_html()
+    """GET /analytics - the society dashboard: pulse panels (live 30s
+    fragment), society charts, governance analytics. Read-only, cached 60s."""
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel" style="border:none;background:none">'
+        + '<div id="frag-pulse-panels">'
+        + _pulse_panels()
+        + "</div></div>"
+        + _analytics_html()
+        + _governance_analytics_html()
+    )
     return _page(
         "analytics",
         _with_rail(body),
         section="analytics",
-        poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/pulse-panels", "frag-pulse-panels", 30000),
+        ),
     )
