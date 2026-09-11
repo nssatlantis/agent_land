@@ -1,6 +1,8 @@
-"""viewer._pulse - the /pulse society dashboard: a live activity trend, a
+"""viewer._pulse - the pulse panels library: a live activity trend, a
 governance pipeline funnel and an economy strip, all read-only derivations
-over existing db helpers (no db/schema changes)."""
+over existing db helpers (no db/schema changes). The /pulse route is
+retired (#405); the panels render atop /analytics and its pulse-panels
+fragment."""
 
 from __future__ import annotations
 
@@ -8,15 +10,10 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from starlette.requests import Request
-from starlette.responses import HTMLResponse
-
 import config
 import db
 import db._aggregates as aggregates
 from events import query_events
-from viewer._feed_helpers import _crumb, _with_rail
-from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import esc
 
 # ---------------------------------------------------------- pulse panels --
@@ -44,8 +41,8 @@ _panel_cache: dict[str, tuple[int, dict]] = {}
 
 
 def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
-    """One coarse-bucket cache slot per panel aggregate. The /pulse poll is
-    30s but the docket/economy aggregates are whole-table reads; a single
+    """One coarse-bucket cache slot per panel aggregate. The pulse-panels poll is 30s (hosted on /analytics)
+    but the docket/economy aggregates are whole-table reads; a single
     (bucket, value) per named slot makes each ~60s window re-run them once
     instead of once per poll (the same pattern _trend_rows uses for the
     ledger window). The key set is fixed at the two call sites below, so the
@@ -63,7 +60,7 @@ def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
 
 def _trend_rows(since: str) -> list:
     """Fetch (and briefly cache) the 14-day events window for the activity
-    trend. One ledger scan per window instead of per /pulse poll. The window
+    trend. One ledger scan per window instead of per pulse-panels poll. The window
     shifts by only a few seconds per request, so a single coarse-bucket cache
     (rather than the millisecond-precise ``since``) serves every poll in the
     window without re-scanning the ledger. Only the current bucket is ever
@@ -86,7 +83,8 @@ def _activity_trend() -> str:
     daily series comes from query_events(since=...) - disclosed in the PR.
 
     The events query is expensive (a ledger scan), so its rows are cached for
-    a short window; the /pulse poll is 30s, and one cached scan per ~60s costs
+    a short window; the pulse-panels poll is 30s (hosted on /analytics),
+    and one cached scan per ~60s costs
     a fraction of what a fresh scan per poll does.
     """
     now = datetime.now(timezone.utc)
@@ -181,31 +179,9 @@ def _economy_strip() -> str:
 
 
 def _pulse_panels() -> str:
-    """The three pulse panels, shared by the full /pulse page and its
+    """The three pulse panels, shared by the full /analytics page and its
     soft-refresh fragment so the two can never drift. Read-only."""
     return _activity_trend() + _governance_funnel() + _economy_strip()
 
 
-# ------------------------------------------------------------- full page --
-
-
-def pulse_page(request: Request) -> HTMLResponse:
-    """The /pulse society dashboard: activity trend, governance funnel and
-    economy strip beside the side rail, soft-refreshed on a heavy 30s poll
-    (plus the usual rail poll). Read-only, like every route here."""
-    body = (
-        _crumb("/", "overview")
-        + '<div class="panel" style="border:none;background:none">'
-        + '<div id="frag-pulse-panels">'
-        + _pulse_panels()
-        + "</div></div>"
-    )
-    return _page(
-        "pulse",
-        _with_rail(body),
-        section="pulse",
-        poll=_poll_config(
-            ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/pulse-panels", "frag-pulse-panels", 30000),
-        ),
-    )
+# (the /pulse route lived here; retired #405 — panels render via viewer/_analytics.py)
