@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import (
@@ -318,6 +318,60 @@ _PROPOSAL_VIEWS = (
     "lineage",
 )
 _PROPOSAL_SORTS = ("newest", "top")
+
+
+def _view_prefilter_sql(view: str) -> tuple[str, tuple]:
+    """Sargable pre-filter for one docket view: SQL narrowing the two-phase
+    light pass before the exact Python predicate runs. Every clause is a
+    NECESSARY condition of its view (a match always satisfies it), never a
+    sufficient one — the pass may over-include (old approved rows for the
+    stale bound, decided rows for the review EXISTS), but it can never
+    exclude a match, and _proposal_matches_view() stays the exact decider
+    so tab counts and rows agree by construction. Views whose predicate
+    needs tallies/thresholds/PR history ('merged', and the open/threshold
+    half of 'needs_votes'/'approved'/'review'/'stale') carry only their
+    stored-column necessities here."""
+    if view == "needs_votes":
+        # needs_votes ⟹ not approved ⟹ kind is neither small_fix nor idea.
+        return " AND p.proposal_kind = 'proposal'", ()
+    if view == "approved":
+        # The view drops small_fix rows; ideas meeting the bar stay.
+        return " AND p.proposal_kind != 'small_fix'", ()
+    if view == "review":
+        # review ⟹ non-collaborative, unlocked, at least one linked PR
+        # (decided or not — liveness stays Python's call).
+        return (
+            " AND p.collaborative = 0 AND p.superseded_by_id IS NULL"
+            " AND (EXISTS (SELECT 1 FROM proposal_links pl"
+            " WHERE pl.post_id = p.id)"
+            " OR EXISTS (SELECT 1 FROM proposal_outcomes po"
+            " WHERE po.post_id = p.id))",
+            (),
+        )
+    if view == "stale":
+        # stale ⟹ needs_votes (hence kind) ⟹ old enough; the bound is a
+        # _since_bound millis form so the text compare is chronological.
+        bound = _since_bound(
+            (
+                datetime.now(timezone.utc) - timedelta(days=config.PROPOSAL_STALE_DAYS)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        return " AND p.proposal_kind = 'proposal' AND p.created_at <= ?", (bound,)
+    if view == "small_fix":
+        return " AND p.proposal_kind = 'small_fix'", ()
+    if view == "collaborative":
+        return " AND p.collaborative = 1", ()
+    if view == "unclaimed":
+        return " AND p.claimable = 1", ()
+    if view == "staking":
+        return (
+            " AND EXISTS (SELECT 1 FROM proposal_stakes ps"
+            " WHERE ps.proposal_id = p.id AND ps.status = 'active')",
+            (),
+        )
+    if view == "ideas":
+        return " AND p.proposal_kind = 'idea'", ()
+    return "", ()
 
 
 def _proposal_matches_view(p: dict, view: str) -> bool:
@@ -722,7 +776,10 @@ def list_proposals(
             # recount). 'all'/'lineage' match everything and keep the
             # single full fetch - two phases there would pure-duplicate it.
             threshold = _proposal_vote_threshold(conn)
-            light = _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
+            pre_sql, pre_params = _view_prefilter_sql(view)
+            light = _proposal_rows(
+                conn, pre_sql, pre_params, for_counts=True, threshold=threshold
+            )
             ids = [p["id"] for p in light if _proposal_matches_view(p, view)]
             if not ids:
                 rows = []
