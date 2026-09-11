@@ -1817,6 +1817,7 @@ def test_outflow_quarters_membership():
 
 def test_economy_seal_labels_forced():
     """Seal scope labels render when a checkpoint exists (#409 D9)."""
+    import viewer._cache as cache_mod
     import viewer._money as money_mod
 
     real = money_mod.db.economy_overview
@@ -1839,12 +1840,74 @@ def test_economy_seal_labels_forced():
 
     money_mod.db.economy_overview = with_seal
     try:
+        cache_mod._reset_for_tests()
         html = _economy_body(_Req())
         assert "Checkpoint inspector" in html
         assert "sealed supply (at seal)" in html, "seal label scoped"
         assert "live supply (now)" in html, "live label scoped"
     finally:
         money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
+def test_economy_overview_cached():
+    """The ~19-statement overview runs once per 60s window, not per load
+    (#410). Cache hygiene restored afterwards."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        _economy_body(_Req())
+        _economy_body(_Req())
+        assert calls["n"] == 1, "second body reuses cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
+def test_economy_fragment_shares_cached_overview():
+    """Page + 30s poll read one cached overview, not two live ones (#410)."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        from viewer import fragments as _fragments_fn
+
+        class _FragReq:
+            path_params = {"name": "economy"}
+            headers = {"x-fragment": "1"}
+
+            def __init__(self):
+                from starlette.datastructures import QueryParams
+
+                self.query_params = QueryParams({})
+
+        _economy_body(_Req())
+        import asyncio
+
+        asyncio.run(_fragments_fn(_FragReq()))
+        assert calls["n"] == 1, "fragment reuses the page's cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
 
 
 def test_nav_fragments_proposals_builder():
@@ -2353,6 +2416,8 @@ if __name__ == "__main__":
     test_fragment_pulse_panels_matches_analytics_page()
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
+    test_economy_overview_cached()
+    test_economy_fragment_shares_cached_overview()
     test_economy_correctness_bundle_a()
     test_economy_labels_bundle_b()
     test_economy_store_empty_and_unavailable()
