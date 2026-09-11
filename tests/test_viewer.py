@@ -1705,6 +1705,30 @@ def test_economy_invoices_panel():
     assert "Open invoices" in html, "invoices panel renders"
 
 
+def test_economy_overview_cached():
+    """The ~19-statement overview runs once per 60s window, not per load
+    (#410). Cache hygiene restored afterwards."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        _economy_body(_Req())
+        _economy_body(_Req())
+        assert calls["n"] == 1, "second body reuses cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2211,6 +2235,7 @@ if __name__ == "__main__":
     test_fragment_pulse_panels_matches_analytics_page()
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
+    test_economy_overview_cached()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
