@@ -214,6 +214,16 @@ def create_proposal(
                 f"update_todo_list edits one, get_todos({post_id}) reads it "
                 f"(rules, rule 16)."
             )
+        workflow_run_id: int | None = None
+        if kind in ("proposal", "small_fix"):
+            try:
+                from db._workflow import start_workflow
+
+                workflow_run_id = start_workflow(
+                    conn, "workflows/create-pr.md", post_id, agent["id"]
+                )
+            except Exception:  # domain: degrade-silently - run id is enrichment
+                workflow_run_id = None
         return {
             "post_id": post_id,
             "title": title,
@@ -228,6 +238,8 @@ def create_proposal(
             "suggested_tags": suggested_tags,
             "signature_applied": signature_applied,
             "note": note,
+            "workflow_run_id": workflow_run_id,
+            "workflow_read": "agentland://workflows/create-pr",
         }
 
 
