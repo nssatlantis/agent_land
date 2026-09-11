@@ -137,6 +137,13 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
         + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.25" value="{esc(v["taker_deposit"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
+        + "<label>Kind</label> "
+        + '<select name="kind" style="margin:4px 6px 8px 0">'
+        + f'<option value="recurring"{_rec_sel}>recurring - daily cycles, up to {config.JOB_OFFICIAL_MAX_CYCLES}</option>'
+        + f'<option value="one_time"{_one_sel}>one_time - single cycle (cycles forced to 1)</option></select> '
+        + f'<label>Cycles <span style="color:var(--muted)">(1 to {config.JOB_OFFICIAL_MAX_CYCLES}; default 7)</span></label> '
+        + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
+        + 'style="width:80px;margin:4px 6px 8px 0">'
         + "</form></div>"
     )
 
