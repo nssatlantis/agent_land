@@ -12,6 +12,7 @@ from db._core import (
     _conn,
     _id_chunks,
     _require_agent_by_token,
+    _since_bound,
 )
 from db._proposal_status import (
     _comment_count_batch,
