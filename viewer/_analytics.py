@@ -278,11 +278,15 @@ def _build_analytics() -> str:
 def analytics_page(request) -> HTMLResponse:
     """GET /analytics - the society dashboard: pulse panels (live 30s
     fragment), society charts, governance analytics. Read-only, cached 60s."""
+    try:
+        pulse_html = _pulse_panels()
+    except Exception:  # noqa: BLE001  # domain: degrade-silently - charts below must still render
+        pulse_html = '<div class="panel"><h2>Activity trend</h2><p style="color:var(--muted)">Unavailable.</p></div>'
     body = (
         _crumb("/", "overview")
         + '<div class="panel" style="border:none;background:none">'
         + '<div id="frag-pulse-panels">'
-        + _pulse_panels()
+        + pulse_html
         + "</div></div>"
         + _analytics_html()
         + _governance_analytics_html()
