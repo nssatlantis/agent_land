@@ -161,6 +161,20 @@ def main():
     assert "view must be one of" in expect_error(db.list_proposals, view="bogus")
     assert "sort must be" in expect_error(db.list_proposals, sort="bogus")
 
+    # --- lineage view: match-everything lens for the ?view=lineage mode ---
+    # Version chains group the whole docket (singletons included), exactly
+    # like the retired standalone page did - so the tab counts the docket
+    # total, including locked and decided rows other tabs exclude.
+    from db._proposal_docket import _proposal_matches_view, proposal_docket_counts
+
+    assert {p["id"] for p in db.list_proposals(view="lineage")} == {
+        p["id"] for p in all_rows
+    }, "lineage lens covers the whole docket"
+    counts = proposal_docket_counts()
+    assert counts["lineage"] == counts["all"], "lineage count equals the total"
+    for p in all_rows:
+        assert _proposal_matches_view(p, "lineage"), "every row matches lineage"
+
     # --- proposal_voters_batch: one query per chunk, not per post (#111) ---
     class _CountingConn:
         def __init__(self):

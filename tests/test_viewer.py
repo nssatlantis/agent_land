@@ -1757,6 +1757,55 @@ def test_governance_analytics_route_removed():
     )
 
 
+def test_lineage_families_group_chains():
+    """Version chains group oldest-first per family; orphans and singletons
+    become families of one; newest family first (#398)."""
+    from viewer._proposals import _lineage_families_html, _proposal_families
+
+    def _row(pid, **kw):
+        base = {
+            "id": pid,
+            "title": f"p{pid}",
+            "version": 1,
+            "status": "open",
+            "author": "a",
+            "agent_id": 1,
+            "created_at": "2026-01-01T00:00:00.000Z",
+            "supersedes_id": None,
+            "prs": [],
+        }
+        base.update(kw)
+        return base
+
+    rows = [
+        _row(1, status="closed", created_at="2026-01-01T00:00:00.000Z"),
+        _row(2, version=2, supersedes_id=1, created_at="2026-01-02T00:00:00.000Z"),
+        _row(3, created_at="2026-01-03T00:00:00.000Z"),
+        _row(4, supersedes_id=999, created_at="2026-01-04T00:00:00.000Z"),
+    ]
+    fams = _proposal_families(rows)
+    assert [[p["id"] for p in f] for f in fams] == [[4], [3], [1, 2]]
+    html = _lineage_families_html(rows)
+    assert "Family:" in html and "v2" in html and "/posts/2" in html
+    assert "No proposals" in _lineage_families_html([])
+
+
+def test_lineage_mode_renders_and_route_removed():
+    """?view=lineage renders families on the docket; the standalone route
+    and nav entry are gone (hard remove, #398)."""
+    from viewer import ROUTES
+    from viewer._layout import _NAV_ITEMS
+    from viewer._proposals import proposals_page
+
+    html = proposals_page(_Req({"view": "lineage"})).body.decode("utf-8")
+    assert "Lineage" in html, "docket title follows the view"
+    assert "Family:" in html or "No proposals" in html, "chains render in mode"
+    assert not [r for r in ROUTES if getattr(r, "path", None) == "/lineage"], (
+        "no /lineage route"
+    )
+    assert all(href != "/lineage" for href, _, _ in _NAV_ITEMS), "no /lineage nav"
+
+
 def test_nav_fragments_events():
     """/events tabs/calendar/pager/form target the ledger list."""
     from viewer._events import events_page
@@ -2080,6 +2129,8 @@ if __name__ == "__main__":
     test_docket_card_shows_list_claim_summary()
     test_docket_summary_strip()
     test_collaborative_page_removed()
+    test_lineage_families_group_chains()
+    test_lineage_mode_renders_and_route_removed()
     test_nav_fragments_economy()
     test_economy_store_panel()
     test_economy_ledger_union_tabs()

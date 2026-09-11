@@ -315,6 +315,7 @@ _PROPOSAL_VIEWS = (
     "unclaimed",
     "staking",
     "ideas",
+    "lineage",
 )
 _PROPOSAL_SORTS = ("newest", "top")
 
@@ -355,6 +356,10 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         )
     if view == "ideas":
         return p.get("proposal_kind") == "idea"
+    if view == "lineage":
+        # Version chains group the whole docket (singletons included),
+        # exactly like the retired standalone page did.
+        return True
     if view == "staking":
         return (
             p.get("stake_total_karma", 0) > 0
@@ -645,7 +650,7 @@ def list_proposals(
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative, unclaimed, staking, ideas."
+            "merged, small_fix, collaborative, unclaimed, staking, ideas, lineage."
         )
     if sort is None:
         sort = "newest"
