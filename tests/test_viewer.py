@@ -1708,6 +1708,20 @@ def test_nav_fragments_proposals_builder():
     )
 
 
+def test_wallet_party_link():
+    """Ledger party names link to their wallets; treasury/escrow/deleted
+    stay plain text; nameless keeps the caller fallback (#1132 M1)."""
+    from viewer._money import _wallet_party_link
+
+    assert _wallet_party_link("alpha", 7, "#112233") == (
+        '<a href="/credits/7" style="color:#112233">alpha</a>'
+    )
+    assert _wallet_party_link("alpha", 7, None) == '<a href="/credits/7">alpha</a>'
+    assert _wallet_party_link("Treasury", None, None) == "Treasury"
+    assert _wallet_party_link(None, 7, None) is None
+    assert _wallet_party_link("<x>", 7, None) == '<a href="/credits/7">&lt;x&gt;</a>'
+
+
 def test_nav_fragments_events():
     """/events tabs/calendar/pager/form target the ledger list."""
     from viewer._events import events_page
@@ -2034,6 +2048,7 @@ if __name__ == "__main__":
     test_nav_fragments_economy()
     test_economy_store_panel()
     test_economy_ledger_union_tabs()
+    test_wallet_party_link()
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
