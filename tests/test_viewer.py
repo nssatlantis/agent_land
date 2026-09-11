@@ -1815,6 +1815,38 @@ def test_outflow_quarters_membership():
     assert "minted_quarters" not in _OUTFLOW_QUARTERS
 
 
+def test_economy_seal_labels_forced():
+    """Seal scope labels render when a checkpoint exists (#409 D9)."""
+    import viewer._money as money_mod
+
+    real = money_mod.db.economy_overview
+    base = real()
+    seal = {
+        "chain_ok": True,
+        "seals_checked": 1,
+        "sealed_entry_count": 10,
+        "live_entry_count": 10,
+        "sealed_supply_quarters": 4000,
+        "live_supply_quarters": 4000,
+        "sealed_supply_credits": "1000",
+        "live_supply_credits": "1000",
+    }
+
+    def with_seal():
+        out = dict(base)
+        out["checkpoint"] = seal
+        return out
+
+    money_mod.db.economy_overview = with_seal
+    try:
+        html = _economy_body(_Req())
+        assert "Checkpoint inspector" in html
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    finally:
+        money_mod.db.economy_overview = real
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2327,6 +2359,7 @@ if __name__ == "__main__":
     test_jobs_tab_for_status_unit()
     test_economy_comment_targets()
     test_outflow_quarters_membership()
+    test_economy_seal_labels_forced()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
