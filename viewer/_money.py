@@ -919,7 +919,8 @@ def _economy_body(request: Request) -> str:
     holders, the latest ledger entries and the checkpoint seal. Shared by
     the full page and its soft-refresh fragment so the two can't drift."""
     # ~19 statements per load; fragment shares this helper so page and poll
-    # can never drift. Cached 60s like the analytics panels (#406 C).
+    # can never drift. Cached per VIEWER_CACHE_TTL (default 60s) like the
+    # analytics panels (#406 C).
     overview = _cached(
         ("economy_overview",), int(config.VIEWER_CACHE_TTL or 60), db.economy_overview
     )
