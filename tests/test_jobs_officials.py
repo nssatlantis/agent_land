@@ -723,6 +723,33 @@ def _valid_official_body(**over):
     return body
 
 
+def test_official_form_shows_guidance_deposit_and_treasury():
+    """Both pages render the shared form: checklist guide, deposit field
+    with the 1.0 default, live caps, and the treasury line."""
+    import asyncio
+
+    from server import admin as admin_mod
+
+    needles = [
+        "review rubric",
+        'name="taker_deposit"',
+        'value="1.0"',
+        "Treasury balance",
+        'maxlength="120"',
+        'type="number"',
+        "never expire",
+        "completion bonus",
+    ]
+    req, _ = _panel_req("GET", "/admin")
+    dash = asyncio.run(admin_mod.admin_page(req)).body.decode()
+    for needle in needles:
+        assert needle in dash, f"dashboard form missing: {needle}"
+    req, _ = _panel_req("GET", "/admin/jobs")
+    mgr = asyncio.run(admin_mod.jobs_manager_page(req)).body.decode()
+    for needle in needles:
+        assert needle in mgr, f"manager form missing: {needle} (forms drifted?)"
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
