@@ -112,7 +112,7 @@ def _insert_post(
     # Centralized create-pr workflow auto-start (P0-B): every PR-openable
     # proposal - created directly, superseded, or promoted from an idea -
     # flows through _insert_post, so this single hook starts the create-pr
-    # run for all of them (create_proposal's inline call is removed). Ideas
+    # run for all of them (create_proposal re-selects the same run below to return its id; the re-select is idempotent). Ideas
     # and ordinary posts are excluded: ideas cannot open a PR until promoted
     # (which re-inserts as 'proposal'), ordinary posts never do.
     try:
