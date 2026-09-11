@@ -203,6 +203,7 @@ from db._invoices import (  # noqa: F401
     get_invoice,
     issue_pr_decline_fine,
     list_invoices,
+    open_invoice_stats,
     pay_invoice,
     sweep_invoice_reminders,
 )
