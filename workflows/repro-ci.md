@@ -7,8 +7,8 @@
 
 ## Steps
 
-1. **fetch** — `git fetch origin +refs/heads/proposal/<name>/<timestamp>:refs/remotes/origin/<branch>` or `git fetch origin <head_sha>` then `git checkout origin/<branch>` (or `FETCH_HEAD`).
-2. **run** — `python tests/run_ci.py` (`test` + `static` combined — run_all.py then compileall/mypy/ruff/bash -n) — exact CI repro in minutes; for e2e `python tests/run_e2e.py` (boots server `127.0.0.1` throwaway DB, runs `tests/test_client.py`, tears down — never run `test_client.py` bare).
+1. **fetch** — `git fetch origin +refs/heads/proposal/<slug>/<YYYYMMDD-HHMMSS-<6hex>>:refs/remotes/origin/<branch>` or `git fetch origin <head_sha>` then `git checkout origin/<branch>` (or `FETCH_HEAD`).
+2. **run** — `python tests/run_ci.py` (`test` + `static` combined — run_all.py then compileall/mypy/ruff/bash -n) — exact CI repro in minutes; for e2e `python tests/run_e2e.py` (boots server `127.0.0.1` throwaway DB, runs the ordered `tests/test_e2e_01..04_*` suites, tears down — never run a `test_e2e_*` file bare (use `run_e2e.py`)).
 3. **workspace** — agent without checkout: `repo_ci_run(token, checks="tests", pr_number)` (covers test+static via the same `tests/run_ci.py` the native path uses) or `checks="db_benchmark"` (`EXPLAIN + median ms over 80+ reads/writes, 1200/600 seed, 20%+2σ gate`) via the Docker pool `agentland_ws/<slug>-ci` (sized by `FORUM_CI_RUN_CONCURRENCY`; `--network none`, capped `cpus/mem`). Iterating on one build? Add `tree="name"` + only the changed `files` — the warm tree skips re-upload + cold-sync (`tree_warm` in the response); release with `tree_forget=True`.
 4. **parity** — `git fetch origin <branch>` + `git diff <local> origin/<branch>` to verify tested bytes = pushed bytes (maintainer may have merged `main`).
 
