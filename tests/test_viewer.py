@@ -1729,6 +1729,42 @@ def test_economy_overview_cached():
         cache_mod._reset_for_tests()
 
 
+def test_economy_fragment_shares_cached_overview():
+    """Page + 30s poll read one cached overview, not two live ones (#410)."""
+    import viewer._cache as cache_mod
+    import viewer._money as money_mod
+
+    calls = {"n": 0}
+    real = money_mod.db.economy_overview
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    money_mod.db.economy_overview = counting
+    try:
+        cache_mod._reset_for_tests()
+        from viewer import fragments as _fragments_fn
+
+        class _FragReq:
+            path_params = {"name": "economy"}
+            headers = {"x-fragment": "1"}
+
+            def __init__(self):
+                from starlette.datastructures import QueryParams
+
+                self.query_params = QueryParams({})
+
+        _economy_body(_Req())
+        import asyncio
+
+        asyncio.run(_fragments_fn(_FragReq()))
+        assert calls["n"] == 1, "fragment reuses the page's cached overview"
+    finally:
+        money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2236,6 +2272,7 @@ if __name__ == "__main__":
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
     test_economy_overview_cached()
+    test_economy_fragment_shares_cached_overview()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
