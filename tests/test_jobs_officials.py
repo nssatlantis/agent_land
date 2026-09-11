@@ -663,6 +663,177 @@ def test_overdue_official_is_nudged_never_released():
         importlib.reload(live_config)
 
 
+def _panel_req(method, path, *, body=None, path_params=None):
+    """Minimal authed admin request for the panel tests below (mirrors the
+    local helper inside test_admin_panel_flow_end_to_end)."""
+    import base64
+    from urllib.parse import urlencode
+
+    from starlette.requests import Request
+
+    from server import admin as admin_mod
+
+    auth = "Basic " + base64.b64encode(b"root:secret").decode()
+    csrf = "tok"
+    hb = [(b"cookie", f"{admin_mod._CSRF_COOKIE}={csrf}".encode())]
+    hb.append((b"authorization", auth.encode()))
+    bb = urlencode(body).encode() if body is not None else b""
+    if body is not None:
+        hb.append((b"content-type", b"application/x-www-form-urlencoded"))
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": bb, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "root_path": "",
+        "query_string": b"",
+        "headers": hb,
+        "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 80),
+        "path_params": path_params or {},
+        "state": {},
+    }
+    return Request(scope, receive), csrf
+
+
+def _valid_official_body(**over):
+    body = {
+        "csrf": "tok",
+        "title": "Form Chronicler",
+        "creator": "",
+        "description": "keeps the record",
+        "steps": "draft the entry\npost the diff",
+        "payment_credits": "1",
+        "kind": "recurring",
+        "cycles": "3",
+        "scope": "HISTORY.md",
+        "offer_to": "",
+    }
+    body.update(over)
+    return body
+
+
+def test_official_form_shows_guidance_deposit_and_treasury():
+    """Both pages render the shared form: checklist guide, deposit field
+    with the 1.0 default, live caps, and the treasury line."""
+    import asyncio
+
+    import config as live_config
+    from server import admin as admin_mod
+
+    needles = [
+        "review rubric",
+        'name="taker_deposit"',
+        'value="1.0"',
+        "Treasury balance",
+        f'maxlength="{live_config.JOB_TITLE_MAX_LEN}"',
+        'type="number"',
+        "never expire",
+        "completion bonus",
+    ]
+    req, _ = _panel_req("GET", "/admin")
+    dash = asyncio.run(admin_mod.admin_page(req)).body.decode()
+    for needle in needles:
+        assert needle in dash, f"dashboard form missing: {needle}"
+    req, _ = _panel_req("GET", "/admin/jobs")
+    mgr = asyncio.run(admin_mod.jobs_manager_page(req)).body.decode()
+    for needle in needles:
+        assert needle in mgr, f"manager form missing: {needle} (forms drifted?)"
+
+
+def test_create_official_deposit_default_and_explicit():
+    """Blank deposit posts the 1.0 default; an explicit value sticks."""
+    import asyncio
+
+    from server import admin as admin_mod
+
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Deposit Default"),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Deposit Default"
+    )
+    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 4
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Deposit Explicit", taker_deposit="2.5"),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Deposit Explicit"
+    )
+    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 10
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Cycles Default", cycles=""),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Cycles Default"
+    )
+    assert db.get_job(row["job_id"])["total_cycles"] == 7
+
+
+def test_create_official_bad_input_keeps_values():
+    """A refused submit re-renders with the typed input preserved and the
+    refusal inline - nothing is created and nothing must be retyped."""
+    import asyncio
+
+    from server import admin as admin_mod
+
+    before = len(db.list_jobs(view="all", limit=500)["jobs"])
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(
+            title="Keep My Typing", creator="beta", taker_deposit="abc"
+        ),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200
+    page = r.body.decode()
+    assert "bad taker deposit" in page
+    assert 'value="Keep My Typing"' in page and 'value="beta"' in page
+    assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(
+            title="Keep My Steps", creator="beta", steps="   \n  "
+        ),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200
+    page = r.body.decode()
+    assert "checklist step" in page
+    assert 'value="Keep My Steps"' in page and 'value="beta"' in page
+    assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)

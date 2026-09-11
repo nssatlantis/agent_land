@@ -12,6 +12,7 @@ from urllib.parse import quote as _urlquote
 
 from starlette.responses import RedirectResponse
 
+import config
 import db
 from server.admin._auth import (
     _admin_nav,
@@ -37,6 +38,123 @@ def _party_name(dg: dict | None, fallback: str = "admin") -> str:
     if not dg:
         return fallback
     return f"<span{_tint_style(dg.get('name_color'))}>{esc(dg['name'])}</span>"
+
+
+def _official_form_values(form=None):
+    """Submitted values (or blank defaults) for the official-position form,
+    so a refused submit re-renders with the admin's input preserved instead
+    of wiping everything typed."""
+
+    def _v(key, default=""):
+        if form is None:
+            return default
+        val = form.get(key)
+        return str(val) if val is not None else default
+
+    return {
+        "title": _v("title"),
+        "creator": _v("creator"),
+        "description": _v("description"),
+        "steps": _v("steps"),
+        "payment_credits": _v("payment_credits"),
+        "kind": _v("kind", "recurring"),
+        "cycles": _v("cycles", "7"),
+        "scope": _v("scope"),
+        "offer_to": _v("offer_to"),
+        "taker_deposit": _v("taker_deposit", "1.0"),
+    }
+
+
+def _official_create_form(request, values=None, error=None, dashed=False):
+    """The official-position create form, shared by the dashboard panel and
+    the full manager page (one renderer so the two copies cannot drift).
+    `values` preserves a refused submit's input; `error` renders the refusal
+    inline above the form. Caps and rules mirror db._jobs_ops._create, read
+    live from config, so the form states what the server enforces."""
+    v = values or _official_form_values()
+    style = ' style="border:2px dashed var(--border)"' if dashed else ""
+    try:
+        with db._conn() as _c:
+            _tq = db.treasury_balance(_c)
+        _tb = db.format_credits(_tq)
+    except Exception:
+        # domain:degrade-silently - balance line is advisory; the form
+        # works without it.
+        _tb = None
+    treasury_line = (
+        f'<p style="color:var(--muted)">Treasury balance: {_tb} cr - '
+        "creating this position escrows wage x cycles from the treasury "
+        "immediately, so double-check big numbers.</p>"
+        if _tb is not None
+        else ""
+    )
+    error_html = (
+        f'<p style="color:#c53030;font-weight:600">Not created: {esc(error)}</p>'
+        if error
+        else ""
+    )
+    _one_sel = " selected" if v["kind"] == "one_time" else ""
+    _rec_sel = "" if v["kind"] == "one_time" else " selected"
+    return (
+        f'<div class="panel"{style}><h2>Create official position</h2>'
+        "<p "
+        'style="color:var(--muted)">Standing civic roles, treasury-paid per '
+        "accepted cycle - no escrow is taken from anyone's wallet. Optionally "
+        "name a sponsor citizen who reviews work; leave blank for a pure admin "
+        "position. Use offer_to to hold the position for one specific citizen "
+        "(they must still accept).</p>"
+        + treasury_line
+        + error_html
+        + '<form method="post" action="/admin/jobs/create-official">'
+        + _csrf_field(request)
+        + f'<label>Title <span style="color:var(--muted)">(required, at most {config.JOB_TITLE_MAX_LEN} chars)</span></label><br>'
+        + f'<input name="title" placeholder="title (e.g. Chronicler)" required maxlength="{config.JOB_TITLE_MAX_LEN}" '
+        + f'value="{esc(v["title"])}" style="width:300px;margin-right:6px">'
+        + '<label>Sponsor <span style="color:var(--muted)">(optional active citizen - blank for pure admin; cannot equal the offeree; '
+        + "earns creator karma + 0.25 credits per accepted cycle; no karma floor for officials)</span></label><br>"
+        + f'<input name="creator" placeholder="sponsor citizen (optional)" value="{esc(v["creator"])}" '
+        + 'style="width:300px;margin:4px 0 8px"><br>'
+        + f'<label>Description <span style="color:var(--muted)">(at most {config.JOB_DESC_MAX_LEN} chars - what the position owns and how cycles are judged)</span></label><br>'
+        + f'<textarea name="description" placeholder="description" rows="3" maxlength="{config.JOB_DESC_MAX_LEN}" '
+        + f'style="width:640px;margin:4px 0 8px">{esc(v["description"])}</textarea><br>'
+        + "<div "
+        'style="color:var(--muted);font-size:13px;max-width:640px;margin:4px 0"><b>Checklist steps - one per line.</b> '
+        "Steps are the review rubric: the worker ticks each step as they go, and the sponsor judges every submitted cycle "
+        f"against these exact steps - write steps you can verify. Rules: 1 to {config.JOB_MAX_STEPS} steps, each at most "
+        f"{config.JOB_STEP_MAX_LEN} chars; blank lines are ignored. Formulation: start with a verb, one verifiable outcome per "
+        "step, no compound 'and' steps; size each step to roughly one cycle of evidence. "
+        "Good: 'Draft the cycle-5 HISTORY entry and post its diff for review'. "
+        "Bad: 'Work on history' (not verifiable); 'Draft, review and publish everything outstanding' (compound, unbounded).</div>"
+        + '<textarea name="steps" placeholder="checklist steps - one per line" '
+        + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
+        + "<label>Wage <span "
+        'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
+        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.25" step="0.25" required value="{esc(v["payment_credits"])}" '
+        + 'style="width:180px;margin:4px 6px 8px 0">'
+        + "<label>Taker deposit <span "
+        'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
+        "half returns as a completion bonus. Not refunded on cancel. Server minimums still apply "
+        f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
+        + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.25" value="{esc(v["taker_deposit"])}" '
+        + 'style="width:180px;margin:4px 6px 8px 0"><br>'
+        + "<label>Kind</label> "
+        + '<select name="kind" style="margin:4px 6px 8px 0">'
+        + f'<option value="recurring"{_rec_sel}>recurring - daily cycles, up to {config.JOB_OFFICIAL_MAX_CYCLES}</option>'
+        + f'<option value="one_time"{_one_sel}>one_time - single cycle (cycles forced to 1)</option></select> '
+        + f'<label>Cycles <span style="color:var(--muted)">(1 to {config.JOB_OFFICIAL_MAX_CYCLES}; default 7)</span></label> '
+        + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
+        + 'style="width:80px;margin:4px 6px 8px 0">'
+        + f'<label>Scope <span style="color:var(--muted)">(advisory file/area pointer, at most {config.JOB_SCOPE_MAX_LEN} chars - never a restriction)</span></label><br>'
+        + f'<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" maxlength="{config.JOB_SCOPE_MAX_LEN}" value="{esc(v["scope"])}" '
+        + 'style="width:300px;margin:4px 6px 8px 0"><br>'
+        + "<label>Offer to <span "
+        'style="color:var(--muted)">(optional active citizen - must accept via decide_job_offer, never assigned; official offers never expire; '
+        "cannot equal the sponsor)</span></label><br>"
+        + f'<input name="offer_to" placeholder="offer to (optional)" value="{esc(v["offer_to"])}" '
+        + 'style="width:300px;margin:4px 0 8px"><br>'
+        + '<button type="submit" style="margin-top:8px">create position</button>'
+        + "</form></div>"
+    )
 
 
 async def create_stake(request):
@@ -178,38 +296,7 @@ def _render_jobs(request) -> str:
         + "</table></div>"
     )
 
-    create_form = (
-        '<div class="panel"><h2>Create official position</h2>'
-        '<p style="color:var(--muted)">Standing civic roles paid from '
-        "the community treasury per accepted cycle - no escrow is taken. "
-        "Optionally name a sponsor citizen who reviews work and earns "
-        "creator-side karma; leave blank for a pure admin position. "
-        "Use offer_to to hold the position for one specific citizen "
-        "(they must still accept). Steps go one per line.</p>"
-        '<form method="post" action="/admin/jobs/create-official">'
-        + _csrf_field(request)
-        + '<input name="title" placeholder="title (e.g. Chronicler)" required '
-        'style="width:300px;margin-right:6px">'
-        '<input name="creator" placeholder="sponsor citizen (optional)" '
-        'style="width:170px;margin-right:6px"><br>'
-        '<textarea name="description" placeholder="description" rows="2" '
-        'style="width:640px;margin-top:8px"></textarea><br>'
-        '<textarea name="steps" placeholder="checklist steps - one per line"'
-        ' rows="4" required style="width:640px;margin-top:8px"></textarea><br>'
-        '<input name="payment_credits" placeholder="credits/cycle (e.g. 2)"'
-        ' required style="width:180px;margin-right:6px;margin-top:8px">'
-        '<select name="kind" style="margin-right:6px">'
-        '<option value="recurring">recurring</option>'
-        '<option value="one_time">one_time</option></select> '
-        '<input name="cycles" placeholder="cycles" value="7" '
-        'style="width:80px;margin-right:6px">'
-        '<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" '
-        'style="width:220px;margin-right:6px">'
-        '<input name="offer_to" placeholder="offer to (optional)" '
-        'style="width:190px;margin-right:6px">'
-        '<button type="submit" style="margin-top:8px">create position</button>'
-        "</form></div>"
-    )
+    create_form = _official_create_form(request)
 
     return (
         '<div class="panel"><h2>Jobs</h2>'
@@ -224,7 +311,7 @@ def _render_jobs(request) -> str:
     )
 
 
-def _render_jobs_manager(request) -> str:
+def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     """Dedicated /admin/jobs manager: beautiful overview + moderation.
 
     Admins create only OFFICIAL positions, but can moderate any job (close)
@@ -233,7 +320,9 @@ def _render_jobs_manager(request) -> str:
 
     sponsored via admin_review_job_as with on_behalf_of audit. Citizen jobs
 
-    are not reviewable here (use their creator token)."""
+    are not reviewable here (use their creator token). `form_values` /
+    `form_error` re-render a refused create-official submit with its input
+    preserved (see create_official_job)."""
 
     # Filter tabs
 
@@ -465,21 +554,8 @@ def _render_jobs_manager(request) -> str:
     if not cards:
         cards = '<p style="color:var(--muted)">No jobs match filter.</p>'
 
-    create_form = (
-        '<div class="panel" style="border:2px dashed var(--border)"><h2>Create official position</h2>'
-        '<p style="color:var(--muted)">Standing civic roles ΓÇö treasury-paid per accepted cycle. Sponsor optional (earns creator karma); blank = pure admin. Offer_to holds for one citizen.</p>'
-        '<form method="post" action="/admin/jobs/create-official">'
-        + _csrf_field(request)
-        + '<input name="title" placeholder="title (e.g. Chronicler)" required style="width:300px;margin-right:6px">'
-        '<input name="creator" placeholder="sponsor citizen (optional)" style="width:170px;margin-right:6px"><br>'
-        '<textarea name="description" placeholder="description" rows="2" style="width:640px;margin-top:8px"></textarea><br>'
-        '<textarea name="steps" placeholder="checklist steps ΓÇö one per line" rows="4" required style="width:640px;margin-top:8px"></textarea><br>'
-        '<input name="payment_credits" placeholder="credits/cycle (e.g. 2)" required style="width:180px;margin-right:6px;margin-top:8px">'
-        '<select name="kind" style="margin-right:6px"><option value="recurring">recurring</option><option value="one_time">one_time</option></select> '
-        '<input name="cycles" placeholder="cycles" value="7" style="width:80px;margin-right:6px">'
-        '<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" style="width:220px;margin-right:6px">'
-        '<input name="offer_to" placeholder="offer to (optional)" style="width:190px;margin-right:6px">'
-        '<button type="submit" style="margin-top:8px">create position</button></form></div>'
+    create_form = _official_create_form(
+        request, values=form_values, error=form_error, dashed=True
     )
 
     return (
@@ -622,6 +698,23 @@ async def jobs_detail_page(request):
     return _admin_page(request, f"admin - job #{job_id}", body)
 
 
+def _official_create_error(request, message, form):
+    """Re-render the jobs manager with a refused create-official submit's
+    input preserved and the refusal inline (a bare flash would wipe
+    everything typed). The manager is the canonical home of the shared
+    form, whichever page posted."""
+    return _admin_page(
+        request,
+        "admin - jobs",
+        _admin_nav()
+        + _render_jobs_manager(
+            request,
+            form_values=_official_form_values(form),
+            form_error=message,
+        ),
+    )
+
+
 async def create_official_job(request):
 
     if not _authorized(request):
@@ -634,6 +727,17 @@ async def create_official_job(request):
 
     steps = [s.strip() for s in str(form.get("steps") or "").splitlines() if s.strip()]
 
+    td_raw = str(form.get("taker_deposit") or "").strip()
+    try:
+        taker_deposit = float(td_raw) if td_raw else 1.0
+    except (ValueError, TypeError):
+        # domain:fail-loudly - bad deposit refuses with values kept, never a silent default.
+        return _official_create_error(
+            request,
+            f"bad taker deposit {td_raw!r} - enter a number or leave blank for the 1.0 default.",
+            form,
+        )
+
     try:
         result = db.create_job_official(
             _admin_user(request),
@@ -643,28 +747,32 @@ async def create_official_job(request):
             float(form.get("payment_credits") or 0),
             steps,
             kind=str(form.get("kind") or "recurring"),
-            cycles=int(form.get("cycles") or 1),
+            cycles=int(form.get("cycles") or 7),
             scope=str(form.get("scope") or ""),
             offer_to=str(form.get("offer_to") or "") or None,
+            taker_deposit_credits=taker_deposit,
         )
 
     except (ValueError, TypeError) as exc:
-        # domain: fail-loudly - bad form input surfaces as a flash, never
+        # domain: fail-loudly - bad form input surfaces with values kept, never
 
         # a silent default.
 
-        return _flash(request, f"bad form input: {exc}")
+        return _official_create_error(request, f"bad form input: {exc}", form)
 
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
 
-        return _flash(request, str(exc))
+        return _official_create_error(request, str(exc), form)
 
+    _total_q = int(result["payment_quarters"]) * int(result["total_cycles"])
     return _flash(
         request,
         f"OFFICIAL position #{result['job_id']} '{result['title']}' "
         f"created ({result['payment_credits']} credits/cycle x "
-        f"{result['total_cycles']}, sponsor "
+        f"{result['total_cycles']}, taker deposit "
+        f"{result['taker_deposit_credits']} cr, "
+        f"{db.format_credits(_total_q)} cr escrowed from treasury, sponsor "
         f"{result['creator']['name'] if result['creator'] else 'admin'}) "
         "- it is on the /jobs board.",
     )
