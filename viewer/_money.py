@@ -26,6 +26,21 @@ from viewer._staking_helpers import _stake_amount, _stake_page_rows
 from viewer._utils import _human_ts, esc
 
 
+def _wallet_party_link(
+    name: str | None, agent_id: int | None, color: str | None
+) -> str | None:
+    """A ledger party name linked to its wallet, plain text when the account
+    has no citizen (treasury / escrow / deleted), None when nameless so
+    callers keep their reason fallback. Colors ride escaped (validated
+    #RRGGBB at buy time regardless)."""
+    if name is None:
+        return None
+    if agent_id is None:
+        return esc(name)
+    style = f' style="color:{esc(color)}"' if color else ""
+    return f'<a href="/credits/{int(agent_id)}"{style}>{esc(name)}</a>'
+
+
 def credits_page(request: Request) -> HTMLResponse:
     """One citizen's credits ledger (the Karma Split): every earn and spend
     as its own row, with the balance and earning-window summary on top.
@@ -67,12 +82,14 @@ def credits_page(request: Request) -> HTMLResponse:
     rows = []
     for _g in db.group_transactions(ledger["entries"]):
         _from, _to = _g["from_name"], _g["to_name"]
-        if _from and _to:
-            _party = f"{esc(_from)} &rarr; {esc(_to)}"
-        elif _to:
-            _party = esc(_to)
-        elif _from:
-            _party = esc(_from)
+        _pf = _wallet_party_link(_from, _g.get("from_agent_id"), _g.get("from_color"))
+        _pt = _wallet_party_link(_to, _g.get("to_agent_id"), _g.get("to_color"))
+        if _pf and _pt:
+            _party = f"{_pf} &rarr; {_pt}"
+        elif _pt:
+            _party = _pt
+        elif _pf:
+            _party = _pf
         else:
             _party = esc(_g["reason"] or "system")
         _sign = "+" if _g["credit"] else "\u2212"
@@ -136,7 +153,7 @@ def credits_page(request: Request) -> HTMLResponse:
         + '<p class="meta" style="margin-top:8px">Spent excludes '
         "vote-flip cancellations and forfeitures.</p>" + pager + "</div>"
     )
-    return _page("credits", _with_rail(body), section="credits")
+    return _page("credits", _with_rail(body), section="economy")
 
 
 def _quarters_to_str(quarters: int) -> str:
@@ -1068,7 +1085,9 @@ def _economy_body(request: Request) -> str:
             "No movement this week.</td></tr>"
         )
     except Exception:  # domain: degrade-silently - movers never blocks /economy
-        _movers_rows = ""
+        _movers_rows = (
+            '<tr><td colspan=2 style="color:var(--muted)">Movers unavailable.</td></tr>'
+        )
     holder_bar = ""
     try:
         total_supply_q = overview["total_supply_quarters"]
@@ -1358,12 +1377,14 @@ def _economy_body(request: Request) -> str:
     def _ledger_tx_row(_g: dict) -> str:
         _when = esc(_g["created_at"][:19].replace("T", " "))
         _from, _to = _g["from_name"], _g["to_name"]
-        if _from and _to:
-            _party = f"{esc(_from)} &rarr; {esc(_to)}"
-        elif _to:
-            _party = esc(_to)
-        elif _from:
-            _party = esc(_from)
+        _pf = _wallet_party_link(_from, _g.get("from_agent_id"), _g.get("from_color"))
+        _pt = _wallet_party_link(_to, _g.get("to_agent_id"), _g.get("to_color"))
+        if _pf and _pt:
+            _party = f"{_pf} &rarr; {_pt}"
+        elif _pt:
+            _party = _pt
+        elif _pf:
+            _party = _pf
         else:
             _party = esc(_g["reason"] or "system")
         _sign = "+" if _g["credit"] else "\u2212"
