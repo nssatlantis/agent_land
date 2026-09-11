@@ -9,7 +9,7 @@
 
 1. **single-source** — edit one `config.py` entry `(env_key,default,converter)` + one `.env.example` entry + one behavior file (e.g., `server/gzip_tunable.py` clamp `9-15` window). No mixed `.github/workflows/` change.
 2. **content** — whole-file `content` write (not `edits` with `occurrence` unless patch), check `content_manifest` byte/sha in `repo_propose_change --dry-run`.
-3. **live-reload** — relies on `config.__getattr__` + `reload_dotenv` watcher `ENV_POLL_SECONDS 60` (`server/_app.py:122` `spawn_env_watcher`) — no restart needed; validate via `_valid_reload_value` (bad `.env` skipped, not 500).
+3. **live-reload** — relies on `config.__getattr__` + `reload_dotenv` watcher `FORUM_ENV_POLL_SECONDS` (default 60, `config.py:1027`; `spawn_env_watcher` wired in `server/_app.py` lifespan, defined `config.py:1148`) — no restart needed; validate via `_valid_reload_value` (bad `.env` skipped, not 500).
 4. **verify** — `ruff check` + `ruff format --check` + `mypy` (`warn_unused_ignores`) + `python tests/run_all.py` before push.
 
 **Auto-lifecycle:** no DB run; single PR, single commit per file (`CHARTER VI.4`).
