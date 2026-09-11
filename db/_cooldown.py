@@ -77,7 +77,7 @@ def _cooldown_remaining(
             None: config.POST_COOLDOWN_SECONDS,
             "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
             "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
-            "idea": config.IDEA_COOLDOWN_SECONDS,
+            "idea": config.IDEA_COOLDOWN_SECONDSX
         }[proposal_kind]
     )
     last = conn.execute(
