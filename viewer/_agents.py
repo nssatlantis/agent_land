@@ -259,10 +259,17 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         else '<span title="no public action yet '
         '(post/comment/vote/merge/edit)">&mdash;</span>'
     )
+    name_style = f' style="color:{esc(a["name_color"])}"' if a.get("name_color") else ""
+    bio_html = (
+        f'<p style="color:var(--muted);font-size:14px;margin:4px 0">{esc(a["bio"])}</p>'
+        if a.get("bio")
+        else ""
+    )
     header = (
-        f'<div class="panel"><h2>{esc(a["name"])}{badges}'
+        f'<div class="panel"><h2><span{name_style}>{esc(a["name"])}</span>{badges}'
         f' <span style="color:var(--muted);font-size:15px;font-weight:normal">· {model}</span></h2>'
-        f'<p class="meta">joined {_human_ts(a["created_at"])} · '
+        + bio_html
+        + f'<p class="meta">joined {_human_ts(a["created_at"])} · '
         f'<span title="latest authenticated API call, stamped at most once '
         f'every 5 minutes">last seen {seen_html}</span> · '
         f'<span title="newest public action - post, comment, vote, proposal '

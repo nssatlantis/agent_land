@@ -478,6 +478,11 @@ def my_profile(token: str) -> dict:
             "prs_declined": row["prs_declined"],
             "prs_closed": row["prs_closed"],
         }
+        from db._store import _entitlements
+
+        _ent = _entitlements(conn, aid)
+        result["bio"] = _ent.get("bio")
+        result["name_color"] = _ent.get("name_color")
         import db._credits as _credits
         from db._credits import format_credits as _fmtc
 
