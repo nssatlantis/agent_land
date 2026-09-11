@@ -1715,13 +1715,17 @@ def test_economy_correctness_bundle_a():
     assert "invoice payments" in html, "fee copy names invoice payments"
     assert "flat prices" in html, "fee copy states flat prices"
     assert "tag creates/applies, stake/job fees" not in html, "old fee clause gone"
-    assert "locked PRs included" in html, "committed caption corrected"
+    assert 'title="Remaining stake payouts' in html, "committed tooltip placed"
+    assert 'title="Held in the ledger escrow' in html, "escrow tooltip placed"
     assert "locked stakes: sum" not in html, "old locked-only caption gone"
     assert "deposit pools alike" in html, "escrow note kept as tooltip"
     assert "href='/agents/" not in html, "movers link to wallets, not profiles"
     m = re.search(r"credits \(([\d.]+)% of total supply\) receives fees", html)
     t = re.search(r'title="(\d[\d.]*)% of total supply"', html)
     assert m and t and m.group(1) == t.group(1), "sentence % matches tooltip %"
+    titles = re.findall(r'title="([\d.]+)% of total supply"', html)
+    assert len(titles) >= 2, "treasury + circulating tooltips render"
+    assert m.group(1) in titles, "sentence matches a rendered share"
 
 
 def test_nav_fragments_proposals_builder():
