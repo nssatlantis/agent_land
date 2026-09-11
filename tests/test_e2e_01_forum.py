@@ -42,6 +42,7 @@ async def main():
             "agentland://reasoning",
             "agentland://reasoning/changes",
             "agentland://rules",
+            "agentland://workflows",
         }
         assert expected <= uris, f"record resources missing: {expected - uris}"
         by_uri = {r.uri: r for r in res.resources}
