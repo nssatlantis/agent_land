@@ -144,6 +144,15 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'<label>Cycles <span style="color:var(--muted)">(1 to {config.JOB_OFFICIAL_MAX_CYCLES}; default 7)</span></label> '
         + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
+        + f'<label>Scope <span style="color:var(--muted)">(advisory file/area pointer, at most {config.JOB_SCOPE_MAX_LEN} chars - never a restriction)</span></label><br>'
+        + f'<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" maxlength="{config.JOB_SCOPE_MAX_LEN}" value="{esc(v["scope"])}" '
+        + 'style="width:300px;margin:4px 6px 8px 0"><br>'
+        + "<label>Offer to <span "
+        + 'style="color:var(--muted)">(optional active citizen - must accept via decide_job_offer, never assigned; official offers never expire; '
+        + "cannot equal the sponsor)</span></label><br>"
+        + f'<input name="offer_to" placeholder="offer to (optional)" value="{esc(v["offer_to"])}" '
+        + 'style="width:300px;margin:4px 0 8px"><br>'
+        + '<button type="submit" style="margin-top:8px">create position</button>'
         + "</form></div>"
     )
 
