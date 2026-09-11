@@ -82,7 +82,7 @@ def test_auto_mode_stamps_bar():
     opener = AGENTS["gamma"]
     with db._conn() as conn:
         events.log_event(
-            "pr_auto_merged",
+            events.EVT_PR_AUTO_MERGED,
             actor_agent_id=opener["agent_id"],
             actor_name=opener["name"],
             target_type="pr",
@@ -140,6 +140,13 @@ def test_pr_vote_stamps_bar():
             (pr_number, AGENTS["beta"]["agent_id"]),
         ).fetchone()[0]
     assert bar == _live_pr_bar(), bar
+    # Prove the change path restamps (not just the insert): corrupt the
+    # bar, flip the vote, and require it to snap back to the live bar.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE pr_votes SET bar_at_cast = 999 WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, AGENTS["beta"]["agent_id"]),
+        )
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
     with db._conn() as conn:
         bar = conn.execute(
@@ -170,6 +177,13 @@ def test_proposal_vote_stamps_bar():
 
     db.vote_on_proposal(AGENTS["gamma"]["token"], pid, 1)
     assert _bar() == _live_proposal_bar(), _bar()
+    # Prove the re-vote restamps: corrupt the bar, flip, require snap-back.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE proposal_votes SET bar_at_cast = 999"
+            " WHERE post_id = ? AND voter_agent_id = ?",
+            (pid, AGENTS["gamma"]["agent_id"]),
+        )
     db.vote_on_proposal(AGENTS["gamma"]["token"], pid, -1)
     assert _bar() == _live_proposal_bar(), _bar()
     print("  proposal vote stamps: ok")
