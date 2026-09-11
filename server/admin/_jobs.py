@@ -698,6 +698,23 @@ async def jobs_detail_page(request):
     return _admin_page(request, f"admin - job #{job_id}", body)
 
 
+def _official_create_error(request, message, form):
+    """Re-render the jobs manager with a refused create-official submit's
+    input preserved and the refusal inline (a bare flash would wipe
+    everything typed). The manager is the canonical home of the shared
+    form, whichever page posted."""
+    return _admin_page(
+        request,
+        "admin - jobs",
+        _admin_nav()
+        + _render_jobs_manager(
+            request,
+            form_values=_official_form_values(form),
+            form_error=message,
+        ),
+    )
+
+
 async def create_official_job(request):
 
     if not _authorized(request):
