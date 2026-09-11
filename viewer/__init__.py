@@ -80,7 +80,7 @@ from viewer._pr_helpers import (
 )
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._prs import pr_diff_page, prs_page, workflow_detail_page, workflows_page
-from viewer._pulse import _pulse_panels, pulse_page
+from viewer._pulse import _pulse_panels
 from viewer._recent import _fetch_recent_events, _recent_rows, recent_page
 from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
@@ -196,7 +196,7 @@ _FRAGMENT_CANONICAL = {
     "citizens": "/citizens",
     "status-banner": "/status",
     "status-pulse": "/status",
-    "pulse-panels": "/pulse",
+    "pulse-panels": "/analytics",
     "economy": "/economy",
     "jobs": "/jobs",
     "staking": "/staking",
@@ -316,7 +316,6 @@ ROUTES = [
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
-    Route("/pulse", pulse_page),
     Route("/analytics", analytics_page),
     Route("/governance/cohorts", governance_cohorts_page),
     Route("/proposals", proposals_page),
