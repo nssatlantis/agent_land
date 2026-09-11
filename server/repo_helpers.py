@@ -20,7 +20,12 @@ def _coerce_files_json(files: list[dict] | str | None) -> list[dict] | str | Non
         try:
             return json.loads(files)
         except json.JSONDecodeError as e:
-            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+            pos = e.pos or 0
+            doc = e.doc or files
+            lo, hi = max(0, pos - 100), pos + 100
+            raise db.ForumError(
+                f"files parameter is invalid JSON: {e} near {doc[lo:pos]!r}>>>{doc[pos:hi]!r}"
+            ) from e
     return files
 
 
