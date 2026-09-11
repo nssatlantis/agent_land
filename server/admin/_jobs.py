@@ -64,6 +64,12 @@ def _official_form_values(form=None):
     }
 
 
+def _official_create_form(request, values=None, error=None, dashed=False):
+    """The official-position create form, shared by the dashboard panel and
+    the full manager page (one renderer so the two copies cannot drift)."""
+    return "<div></div>"
+
+
 async def create_stake(request):
 
     if not _authorized(request):
