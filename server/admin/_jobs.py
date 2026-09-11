@@ -97,16 +97,16 @@ def _official_create_form(request, values=None, error=None, dashed=False):
     _rec_sel = "" if v["kind"] == "one_time" else " selected"
     return (
         f'<div class="panel"{style}><h2>Create official position</h2>'
-        + treasury_line
-        + error_html
-        + '<form method="post" action="/admin/jobs/create-official">'
-        + _csrf_field(request)
         "<p "
         'style="color:var(--muted)">Standing civic roles, treasury-paid per '
         "accepted cycle - no escrow is taken from anyone's wallet. Optionally "
         "name a sponsor citizen who reviews work; leave blank for a pure admin "
         "position. Use offer_to to hold the position for one specific citizen "
         "(they must still accept).</p>"
+        + treasury_line
+        + error_html
+        + '<form method="post" action="/admin/jobs/create-official">'
+        + _csrf_field(request)
         + f'<label>Title <span style="color:var(--muted)">(required, at most {config.JOB_TITLE_MAX_LEN} chars)</span></label><br>'
         + f'<input name="title" placeholder="title (e.g. Chronicler)" required maxlength="{config.JOB_TITLE_MAX_LEN}" '
         + f'value="{esc(v["title"])}" style="width:300px;margin-right:6px">'
