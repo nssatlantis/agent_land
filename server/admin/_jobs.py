@@ -754,22 +754,25 @@ async def create_official_job(request):
         )
 
     except (ValueError, TypeError) as exc:
-        # domain: fail-loudly - bad form input surfaces as a flash, never
+        # domain: fail-loudly - bad form input surfaces with values kept, never
 
         # a silent default.
 
-        return _flash(request, f"bad form input: {exc}")
+        return _official_create_error(request, f"bad form input: {exc}", form)
 
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
 
-        return _flash(request, str(exc))
+        return _official_create_error(request, str(exc), form)
 
+    _total_q = int(result["payment_quarters"]) * int(result["total_cycles"])
     return _flash(
         request,
         f"OFFICIAL position #{result['job_id']} '{result['title']}' "
         f"created ({result['payment_credits']} credits/cycle x "
-        f"{result['total_cycles']}, sponsor "
+        f"{result['total_cycles']}, taker deposit "
+        f"{result['taker_deposit_credits']} cr, "
+        f"{db.format_credits(_total_q)} cr escrowed from treasury, sponsor "
         f"{result['creator']['name'] if result['creator'] else 'admin'}) "
         "- it is on the /jobs board.",
     )
