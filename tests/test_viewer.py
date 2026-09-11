@@ -33,7 +33,6 @@ from viewer._money import (  # noqa: E402
     _jobs_body,
     _stake_last_txt,
     _staking_body,
-    credits_global_page,
     economy_page,
     jobs_page,
     staking_page,
@@ -1616,12 +1615,15 @@ def test_nav_fragments_tags():
     assert "onsubmit=\"this.action='/tags#sec-tags'\"" in html
 
 
-def test_nav_fragments_credits():
-    """/credits tabs/pager target the ledger (sec-credits-ledger)."""
+def test_economy_ledger_union_tabs():
+    """The merged ledger carries both vocabularies: the economy filters
+    plus spent/minted/burned from the retired /credits page, with movers
+    beside holders (#397)."""
 
-    html = credits_global_page(_Req()).body.decode("utf-8")
-    assert 'id="sec-credits-ledger"' in html
-    assert "?reason=earned#sec-credits-ledger" in html
+    html = _economy_body(_Req())
+    for cat in ("spent", "minted", "burned", "earned", "treasury"):
+        assert f"?cat={cat}#sec-ledger" in html, f"{cat} tab kept"
+    assert "Biggest movers" in html, "movers panel folded in"
 
 
 def test_nav_fragments_jobs_params():
@@ -1711,6 +1713,20 @@ def test_nav_fragments_proposals_builder():
         _proposals_href("merged", "top", 3)
         == "?view=merged&sort=top&page=3#frag-docket-rows"
     )
+
+
+def test_wallet_party_link():
+    """Ledger party names link to their wallets; treasury/escrow/deleted
+    stay plain text; nameless keeps the caller fallback (#1132 M1)."""
+    from viewer._money import _wallet_party_link
+
+    assert _wallet_party_link("alpha", 7, "#112233") == (
+        '<a href="/credits/7" style="color:#112233">alpha</a>'
+    )
+    assert _wallet_party_link("alpha", 7, None) == '<a href="/credits/7">alpha</a>'
+    assert _wallet_party_link("Treasury", None, None) == "Treasury"
+    assert _wallet_party_link(None, 7, None) is None
+    assert _wallet_party_link("<x>", 7, None) == '<a href="/credits/7">&lt;x&gt;</a>'
 
 
 def test_analytics_page_has_governance_section():
@@ -2066,6 +2082,8 @@ if __name__ == "__main__":
     test_collaborative_page_removed()
     test_nav_fragments_economy()
     test_economy_store_panel()
+    test_economy_ledger_union_tabs()
+    test_wallet_party_link()
     test_process_rows_no_double_escape()
     test_human_ts_until_future_expiry_not_just_now()
     test_process_rows_slow_block_last_renders_span()
