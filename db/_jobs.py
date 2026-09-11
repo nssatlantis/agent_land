@@ -59,14 +59,16 @@ def escrow_committed_for(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchone()[0]
 
 
-def open_active_job_counts(conn: sqlite3.Connection) -> tuple[int, int]:
-    """(open_jobs, active_jobs) across the whole board - the /economy
-    cross-link and overview card read these. Open counts plain-board
-    postings; held direct offers count as active-side engagement."""
+def open_active_job_counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
+    """(open_jobs, offered_jobs, active_jobs) across the whole board - the
+    /economy cross-link and overview card read these. Open counts plain-board
+    postings; offered counts held direct offers; active counts working jobs.
+    Board tabs agree: Open = open + offered, In progress = active."""
     row = conn.execute(
         "SELECT"
         " SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),"
-        " SUM(CASE WHEN status IN ('offered', 'active') THEN 1 ELSE 0 END)"
+        " SUM(CASE WHEN status = 'offered' THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END)"
         " FROM jobs",
     ).fetchone()
-    return (row[0] or 0, row[1] or 0)
+    return (row[0] or 0, row[1] or 0, row[2] or 0)
