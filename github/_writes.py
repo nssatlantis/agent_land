@@ -235,6 +235,7 @@ def update_pr(
     citizen: str,
     dry_run: bool = False,
     _pr: dict | None = None,
+    expect_shas: dict | None = None,
 ) -> dict:
     """Add, overwrite or remove files on an existing pull request's branch,
     and/or change its title and body. Never writes to the base branch.
@@ -261,6 +262,10 @@ def update_pr(
     _pr:       a pre-fetched PR dict for /pulls/{number} - either the raw
              GitHub response or the forum-facing get_pr() result; the branch
              is read from head.ref (raw) or head (forum string).
+    expect_shas: optional {path: content_sha256} asserted against the
+             manifest before anything is pushed - a mismatch aborts the
+             whole update with no PUT/PATCH, so a caller can prove the
+             bytes it rehearsed are the bytes about to land.
 
     Empty write content is rejected - an empty file is not a valid change;
     removal is the delete operation. The plan carries a content_manifest:
@@ -337,14 +342,17 @@ def update_pr(
             # For dry_run keep network-free (canonical LF) like propose_change.
             if dry_run:
                 p["content"] = _normalize_eol(p["content"], "\n")
+                p["_head_text"] = None
             else:
                 pr_data = _core._request(
                     "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
                 )
                 base_text = None
+                pr_text = None
                 if pr_data is not None:
                     try:
                         base_text = _decode_content_text(p["path"], pr_data)
+                        pr_text = base_text
                     except (
                         RepoError
                     ):  # domain:degrade-silently - PR branch decode fallback
@@ -372,6 +380,9 @@ def update_pr(
                     _target_eol_for_text(base_text) if base_text is not None else "\n"
                 )
                 p["content"] = _normalize_eol(p["content"], target)
+                # PR-branch bytes for the no-op check (None = new file or
+                # undecodable head: always treated as a change).
+                p["_head_text"] = pr_text
         elif p.get("reset"):
             data = _core._request(
                 "GET", f"contents/{p['path']}?ref={base_branch_name}", ok_404=True
@@ -410,6 +421,28 @@ def update_pr(
     }
     if body is not None:
         plan["body"] = body
+    if planned and title is None and body is None:
+        if not any(_planned_changed(p) for p in planned):
+            raise RepoError(
+                "update made no changes: every file is byte-identical to "
+                "the branch head and no title or body was given - nothing "
+                "to commit."
+            )
+    if expect_shas is not None:
+        manifest = {m["path"]: m["content_sha256"] for m in plan["content_manifest"]}
+        for path, want in expect_shas.items():
+            got = manifest.get(path)
+            if got is None:
+                raise RepoError(
+                    f"expect_shas names {path!r}, which is not among this "
+                    "update's files."
+                )
+            if got != want:
+                raise RepoError(
+                    f"sha mismatch for {path!r}: expected "
+                    f"{str(want)[:12]}..., applied {got[:12]}... - re-read "
+                    "the file and retry."
+                )
     if dry_run:
         return plan
 
@@ -683,6 +716,24 @@ def _preview_list(planned: list[dict]) -> list[dict]:
         for p in planned
         if "preview_hunks" in p
     ]
+
+
+def _planned_changed(p: dict) -> bool:
+    """True when one resolved entry would change branch bytes. Deletes and
+    resets always count (a missing delete target already refuses
+    elsewhere); patch entries count exactly when their preview is
+    non-empty (identical texts preview as ("", False)); content entries
+    compare EOL-insensitively against the fetched PR-branch text, and
+    count when no head text was fetched (new files, and content dry_runs,
+    which stay network-free by design)."""
+    if p.get("delete") or p.get("reset"):
+        return True
+    if "edits" in p:
+        return bool(p.get("preview_hunks"))
+    head = p.get("_head_text")
+    if head is None:
+        return True
+    return _normalize_eol(head, "\n") != _normalize_eol(p["content"], "\n")
 
 
 def _validate_change(path: str, c: dict) -> dict:
