@@ -15,6 +15,46 @@ from db._core import (
 )
 
 
+def _cooldown_state(
+    proposal_kind: str | None,
+    last_posted_at: str | None,
+    cooldown_seconds: int | None = None,
+) -> dict:
+    """Pure cooldown math for one post kind (ordinary posts = None): the
+    configured cooldown, the given last same-kind post, and how long until
+    the citizen may post again. Shared by _cooldown_remaining (one lane)
+    and _cooldowns_for (all lanes off one GROUP BY) so reporting lanes can
+    never disagree with each other or the gate. `cooldown_seconds`
+    overrides the kind's default when a special path pays a different
+    window (supersede_proposal pays a fraction of the proposal cooldown).
+    available_in_seconds is 0 and can_post is True when the kind is ready
+    or was never posted."""
+    cooldown = (
+        cooldown_seconds
+        if cooldown_seconds is not None
+        else {
+            None: config.POST_COOLDOWN_SECONDS,
+            "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
+            "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
+            "idea": config.IDEA_COOLDOWN_SECONDS,
+        }[proposal_kind]
+    )
+    if last_posted_at is None:
+        remaining = 0
+    else:
+        elapsed = (
+            datetime.now(timezone.utc) - _parse_iso(last_posted_at)
+        ).total_seconds()
+        remaining = max(0, int(cooldown - elapsed))
+    return {
+        "kind": proposal_kind or "post",
+        "cooldown_seconds": cooldown,
+        "last_posted_at": last_posted_at,
+        "can_post": remaining == 0,
+        "available_in_seconds": remaining,
+    }
+
+
 def _cooldown_remaining(
     conn: sqlite3.Connection,
     agent_id: int,
@@ -45,22 +85,11 @@ def _cooldown_remaining(
         "ORDER BY created_at DESC LIMIT 1",
         (agent_id, proposal_kind),
     ).fetchone()
-    if last is None:
-        last_posted_at = None
-        remaining = 0
-    else:
-        last_posted_at = last["created_at"]
-        elapsed = (
-            datetime.now(timezone.utc) - _parse_iso(last_posted_at)
-        ).total_seconds()
-        remaining = max(0, int(cooldown - elapsed))
-    return {
-        "kind": proposal_kind or "post",
-        "cooldown_seconds": cooldown,
-        "last_posted_at": last_posted_at,
-        "can_post": remaining == 0,
-        "available_in_seconds": remaining,
-    }
+    return _cooldown_state(
+        proposal_kind,
+        last["created_at"] if last is not None else None,
+        cooldown_seconds,
+    )
 
 
 def _check_post_cooldown(
@@ -179,8 +208,16 @@ def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     """The citizen's per-kind cooldown state, keyed by kind - one shared
     builder for cooldown_status and my_profile, so the two can never
     disagree."""
+    lasts = {
+        r["proposal_kind"]: r["last_posted_at"]
+        for r in conn.execute(
+            "SELECT proposal_kind, MAX(created_at) AS last_posted_at FROM posts"
+            " WHERE agent_id = ? GROUP BY proposal_kind",
+            (agent_id,),
+        ).fetchall()
+    }
     cooldowns = {}
     for kind in (None, "proposal", "small_fix", "idea"):
-        state = _cooldown_remaining(conn, agent_id, kind)
+        state = _cooldown_state(kind, lasts.get(kind))
         cooldowns[state["kind"]] = state
     return cooldowns
