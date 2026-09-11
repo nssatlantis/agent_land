@@ -706,6 +706,23 @@ def _panel_req(method, path, *, body=None, path_params=None):
     return Request(scope, receive), csrf
 
 
+def _valid_official_body(**over):
+    body = {
+        "csrf": "tok",
+        "title": "Form Chronicler",
+        "creator": "",
+        "description": "keeps the record",
+        "steps": "draft the entry\npost the diff",
+        "payment_credits": "1",
+        "kind": "recurring",
+        "cycles": "3",
+        "scope": "HISTORY.md",
+        "offer_to": "",
+    }
+    body.update(over)
+    return body
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
