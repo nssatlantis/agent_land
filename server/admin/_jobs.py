@@ -311,7 +311,7 @@ def _render_jobs(request) -> str:
     )
 
 
-def _render_jobs_manager(request) -> str:
+def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     """Dedicated /admin/jobs manager: beautiful overview + moderation.
 
     Admins create only OFFICIAL positions, but can moderate any job (close)
@@ -320,7 +320,9 @@ def _render_jobs_manager(request) -> str:
 
     sponsored via admin_review_job_as with on_behalf_of audit. Citizen jobs
 
-    are not reviewable here (use their creator token)."""
+    are not reviewable here (use their creator token). `form_values` /
+    `form_error` re-render a refused create-official submit with its input
+    preserved (see create_official_job)."""
 
     # Filter tabs
 
