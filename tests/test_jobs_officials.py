@@ -727,6 +727,7 @@ def test_official_form_shows_guidance_deposit_and_treasury():
     """Both pages render the shared form: checklist guide, deposit field
     with the 1.0 default, live caps, and the treasury line."""
     import asyncio
+    import config as live_config
 
     from server import admin as admin_mod
 
@@ -735,7 +736,7 @@ def test_official_form_shows_guidance_deposit_and_treasury():
         'name="taker_deposit"',
         'value="1.0"',
         "Treasury balance",
-        'maxlength="120"',
+        f'maxlength="{live_config.JOB_TITLE_MAX_LEN}"',
         'type="number"',
         "never expire",
         "completion bonus",
@@ -782,6 +783,19 @@ def test_create_official_deposit_default_and_explicit():
         if j["title"] == "Deposit Explicit"
     )
     assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 10
+    req, _ = _panel_req(
+        "POST",
+        "/admin/jobs/create-official",
+        body=_valid_official_body(title="Cycles Default", cycles=""),
+    )
+    r = asyncio.run(admin_mod.create_official_job(req))
+    assert r.status_code == 200, r.body.decode()[:300]
+    row = next(
+        j
+        for j in db.list_jobs(view="all", limit=500)["jobs"]
+        if j["title"] == "Cycles Default"
+    )
+    assert db.get_job(row["job_id"])["total_cycles"] == 7
 
 
 def test_create_official_bad_input_keeps_values():
@@ -803,7 +817,7 @@ def test_create_official_bad_input_keeps_values():
     assert r.status_code == 200
     page = r.body.decode()
     assert "bad taker deposit" in page
-    assert "Keep My Typing" in page and "beta" in page
+    assert 'value="Keep My Typing"' in page and 'value="beta"' in page
     assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
     req, _ = _panel_req(
         "POST",
@@ -816,7 +830,7 @@ def test_create_official_bad_input_keeps_values():
     assert r.status_code == 200
     page = r.body.decode()
     assert "checklist step" in page
-    assert "Keep My Steps" in page and "beta" in page
+    assert 'value="Keep My Steps"' in page and 'value="beta"' in page
     assert len(db.list_jobs(view="all", limit=500)["jobs"]) == before
 
 
