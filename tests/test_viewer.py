@@ -1693,6 +1693,8 @@ def test_economy_store_panel():
     assert "of which store in" in html, "sink row renders in flows"
     assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
+
+
 def test_economy_invoices_panel():
     """Open invoices read on /economy: the panel header renders with or
     without open bills (#394)."""
