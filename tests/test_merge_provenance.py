@@ -121,10 +121,66 @@ def test_pre_instrument_row_stays_null():
     print("  pre-instrument NULL: ok")
 
 
+def test_pr_vote_stamps_bar():
+    """PR votes stamp the live bar on insert and restamp it on change."""
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Prov pr-vote bar {_pid_counter[0]}",
+        "Body",
+        small_fix=True,
+    )
+    _pid_counter[0] += 1
+    pid = prop["post_id"]
+    pr_number = 901200 + pid
+    db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    with db._conn() as conn:
+        bar = conn.execute(
+            "SELECT bar_at_cast FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, AGENTS["beta"]["agent_id"]),
+        ).fetchone()[0]
+    assert bar == _live_pr_bar(), bar
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+    with db._conn() as conn:
+        bar = conn.execute(
+            "SELECT bar_at_cast FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, AGENTS["beta"]["agent_id"]),
+        ).fetchone()[0]
+    assert bar == _live_pr_bar(), bar
+    print("  pr vote stamps: ok")
+
+
+def test_proposal_vote_stamps_bar():
+    """Proposal votes stamp the live bar on cast and restamp it on change."""
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Prov proposal-vote bar {_pid_counter[0]}",
+        "Body",
+    )
+    _pid_counter[0] += 1
+    pid = prop["post_id"]
+
+    def _bar():
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT bar_at_cast FROM proposal_votes"
+                " WHERE post_id = ? AND voter_agent_id = ?",
+                (pid, AGENTS["gamma"]["agent_id"]),
+            ).fetchone()[0]
+
+    db.vote_on_proposal(AGENTS["gamma"]["token"], pid, 1)
+    assert _bar() == _live_proposal_bar(), _bar()
+    db.vote_on_proposal(AGENTS["gamma"]["token"], pid, -1)
+    assert _bar() == _live_proposal_bar(), _bar()
+    print("  proposal vote stamps: ok")
+
+
 def main():
     test_maintainer_mode_stamps_bar()
     test_auto_mode_stamps_bar()
     test_pre_instrument_row_stays_null()
+    test_pr_vote_stamps_bar()
+    test_proposal_vote_stamps_bar()
     print("== test_merge_provenance: all passed ==")
     import shutil
 
