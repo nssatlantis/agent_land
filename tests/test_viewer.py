@@ -1703,6 +1703,7 @@ def test_economy_invoices_panel():
     without open bills (#394)."""
     html = _economy_body(_Req())
     assert "Open invoices" in html, "invoices panel renders"
+    assert "unavailable" not in html.lower(), "invoices happy path shows no fallback"
 
 
 def test_economy_correctness_bundle_a():
@@ -1732,9 +1733,10 @@ def test_economy_labels_bundle_b():
     """Bundle B+D (#409): intro sources; burn all-time label; escrow scopes;
     subset indent; all-time note; seal labels; banner order."""
     html = _economy_body(_Req())
+    assert "unavailable" not in html.lower(), "happy path shows no fallback"
     assert "forfeitures recirculate" in html, "intro names forfeitures"
     assert "trailing-7d" in html, "intro qualifies runway"
-    assert "all-time" in html, "burn legend names window"
+    assert "All time" in html, "burn legend names window"
     assert "held in job escrow (all)" in html, "card scope labeled"
     assert "non-official" in html, "escrow scope labeled"
     assert "\u21b3" in html, "subset row indented"
@@ -1766,6 +1768,7 @@ def test_economy_store_empty_and_unavailable():
         }
         html = _economy_body(_Req())
         assert "No store sales yet." in html, "empty store one-liner"
+        assert "unavailable" not in html.lower(), "empty path shows no fallback"
 
         def _boom():
             raise RuntimeError("probe")
