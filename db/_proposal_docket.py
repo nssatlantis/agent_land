@@ -350,12 +350,21 @@ def _view_prefilter_sql(view: str) -> tuple[str, tuple]:
             (),
         )
     if view == "stale":
-        # stale ⟹ needs_votes (hence kind) ⟹ old enough; the bound is a
-        # _since_bound millis form so the text compare is chronological.
+        # stale ⟹ needs_votes (hence kind) ⟹ old enough. The bound is
+        # millis-exact (epoch float through _since_bound, never a
+        # second-truncated strftime) with a +2s margin NEWER than the
+        # anniversary, toward over-inclusion: the rows pass reads its own
+        # later now(), so a proposal born between the prefilter's now and
+        # the rows pass's now is already a match the bound must keep.
+        # Over-inclusion is safe (the exact predicate refilters);
+        # exclusion would break tab counts. Note the sign is load-bearing:
+        # an older bound keeps FEWER rows, i.e. excludes more.
         bound = _since_bound(
             (
-                datetime.now(timezone.utc) - timedelta(days=config.PROPOSAL_STALE_DAYS)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                datetime.now(timezone.utc)
+                - timedelta(days=config.PROPOSAL_STALE_DAYS)
+                + timedelta(seconds=2)
+            ).timestamp()
         )
         return " AND p.proposal_kind = 'proposal' AND p.created_at <= ?", (bound,)
     if view == "small_fix":
@@ -785,8 +794,20 @@ def list_proposals(
             if not ids:
                 rows = []
             else:
-                where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
-                rows = _proposal_rows(conn, where_sql, tuple(ids), threshold=threshold)
+                # Chunk the survivor fetch (SQLite's legacy 999-variable
+                # cap) and re-sort newest across chunks: each chunk comes
+                # back in base-SELECT order, but concatenation is not
+                # globally ordered. Top re-sorts below regardless.
+                rows = []
+                for chunk in _id_chunks(ids):
+                    where_sql = f" AND p.id IN ({','.join('?' * len(chunk))})"
+                    rows.extend(
+                        _proposal_rows(
+                            conn, where_sql, tuple(chunk), threshold=threshold
+                        )
+                    )
+                if sort != "top":
+                    rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
     # view=="all" matches everything (_proposal_matches_view returns True),
     # so skip the O(N) pass; the comprehensions below preserve SQL order.
     if view != "all":
