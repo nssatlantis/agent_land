@@ -961,27 +961,22 @@ def _economy_body(request: Request) -> str:
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
                 "No net treasury burn in the trailing 7 days (income \u2265 expense).</p>"
             )
-    # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
-    try:
-        _treasury_pct = (
-            int(
-                float(overview["treasury_credits"])
-                / float(overview["total_supply_credits"])
-                * 1000
-            )
-            / 10
-        )
-        _pct_str = f"{_treasury_pct:g}% of supply"
-    except (
-        Exception
-    ):  # domain: degrade-silently — non-numeric credits never blocks /economy
-        _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
     _supply_q = overview["total_supply_quarters"]
 
     def _pct_of_supply(part_q: int) -> str:
         if _supply_q <= 0:
             return ""
         return f"{100.0 * part_q / _supply_q:.1f}% of total supply"
+
+    # Single rounding helper owns every share on this page (review-527
+    # follow-up: the old int-truncate here read 70.8% next to the legend's
+    # 70.9% for the same ratio).
+    try:
+        _pct_str = _pct_of_supply(overview["treasury_quarters"])
+    except (
+        Exception
+    ):  # domain: degrade-silently — non-numeric overview never blocks /economy
+        _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
 
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
@@ -999,18 +994,20 @@ def _economy_body(request: Request) -> str:
         )
         + _runway_html
         + _runway_caption
+        + "</div>"
+        + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">'
         + _card(
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
+            tooltip="Remaining stake payouts: sum(per_pr \u00d7 (max \u2212 paid)) across active stakes, locked PRs included.",
         )
-        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Committed = locked stakes: sum(per_pr \u00d7 locked_prs) across active stakes (escrow for PRs in flight).</p>'
         + _card(
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
+            tooltip="Held in the ledger escrow bank account (paired legs, supply-neutral) \u2014 citizen wages, official reservations and deposit pools alike.",
         )
-        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Held in the ledger escrow bank account (paired legs, supply-neutral) \u2014 citizen wages, official reservations and deposit pools alike.</p>'
         + "</div>"
-        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies (2 / 1) and invoice creation (0.25) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
             overview["total_supply_quarters"],
             overview["treasury_quarters"],
@@ -1018,9 +1015,11 @@ def _economy_body(request: Request) -> str:
         )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
-        f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
+        f"{overview['open_jobs'] + overview['offered_jobs']} open &middot; {overview['active_jobs']} in"
         f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
-        if (overview["open_jobs"] or overview["active_jobs"])
+        if (
+            overview["open_jobs"] or overview["offered_jobs"] or overview["active_jobs"]
+        )
         else ""
     )
 
@@ -1073,7 +1072,7 @@ def _economy_body(request: Request) -> str:
     )
     try:
         _movers_rows = "".join(
-            f"<tr><td><a href='/agents/{m['agent_id']}'"
+            f"<tr><td><a href='/credits/{m['agent_id']}'"
             + (f' style="color:{m["agent_color"]}"' if m.get("agent_color") else "")
             + f">{esc(m['agent_name'])}</a></td>"
             f"<td style='text-align:right'>"
