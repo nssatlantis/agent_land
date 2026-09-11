@@ -1705,6 +1705,25 @@ def test_economy_invoices_panel():
     assert "Open invoices" in html, "invoices panel renders"
 
 
+def test_economy_correctness_bundle_a():
+    """Bundle A (#406): fee copy states flat prices; treasury % matches the
+    legend rounding; committed/escrow cards carry tooltips; movers link to
+    wallets."""
+    import re
+
+    html = _economy_body(_Req())
+    assert "invoice payments" in html, "fee copy names invoice payments"
+    assert "flat prices" in html, "fee copy states flat prices"
+    assert "tag creates/applies, stake/job fees" not in html, "old fee clause gone"
+    assert "locked PRs included" in html, "committed caption corrected"
+    assert "locked stakes: sum" not in html, "old locked-only caption gone"
+    assert "deposit pools alike" in html, "escrow note kept as tooltip"
+    assert "href='/agents/" not in html, "movers link to wallets, not profiles"
+    m = re.search(r"credits \(([\d.]+)% of total supply\) receives fees", html)
+    t = re.search(r'title="(\d[\d.]*)% of total supply"', html)
+    assert m and t and m.group(1) == t.group(1), "sentence % matches tooltip %"
+
+
 def test_nav_fragments_proposals_builder():
     """Every docket link flows through _proposals_href: one choke point."""
     from viewer._proposals import _proposals_href
@@ -2211,6 +2230,7 @@ if __name__ == "__main__":
     test_fragment_pulse_panels_matches_analytics_page()
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
+    test_economy_correctness_bundle_a()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()
