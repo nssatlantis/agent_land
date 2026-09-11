@@ -413,13 +413,15 @@ def scenario_db_path_inside_repo():
 
 
 def scenario_trim_ci_events():
-    # == trim-ci-events.py caps historical oversized ci_* event tails ==
+    # == trim-ci-events.py slims historical ci_* event tails ==
     # Seeds a db whose events carry pre-cap detail rows with an oversized
-    # `output_tail` plus rows already within the cap, non-ci details, and a
-    # malformed one. Dry-run trims nothing; --apply caps the oversized tails
-    # byte-exactly (last cap bytes, output_truncated=True) while every other
-    # detail key survives; a re-run trims 0 (idempotent); --vacuum alone
-    # runs without touching rows.
+    # `output_tail` plus rows already within the cap, GREEN rows with a tail
+    # (which must lose it entirely - the fold the runtime has applied since
+    # #1126), a lean green row, non-ci details, and a malformed one. Dry-run
+    # trims nothing; --apply caps oversized RED tails byte-exactly (last cap
+    # bytes, output_truncated=True) while every other detail key survives,
+    # and DROPS green transcripts outright; a re-run trims 0 (idempotent);
+    # --vacuum alone runs without touching rows.
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
         seed(db_path, ["alpha"], posts=0)
@@ -434,17 +436,42 @@ def scenario_trim_ci_events():
             }
         )
         raw["capped"] = json.dumps({"output_tail": "y" * 5})
+        raw["green"] = json.dumps(
+            {
+                "output_tail": "g" * 500,
+                "output_truncated": True,
+                "summary": {"checks": "tests", "passed_files": 12},
+                "ok": True,
+                "timed_out": False,
+                "exit_code": 0,
+            }
+        )
+        raw["green_lean"] = json.dumps(
+            {"summary": {"checks": "tests", "passed_files": 12}, "ok": True}
+        )
         raw["nodetail"] = json.dumps({"some": "thing"})
         raw["nondict"] = json.dumps(["not", "a", "dict"])
         raw["malformed"] = "{not json"
         conn = sqlite3.connect(str(db_path))
-        raw_order = ("oversized", "capped", "nodetail", "nondict", "malformed")
+        raw_order = (
+            "oversized",
+            "capped",
+            "green",
+            "green_lean",
+            "nodetail",
+            "nondict",
+            "malformed",
+        )
         ids: dict[str, int] = {}
         orig: dict[str, str] = {}
         stored: dict[int, str] = {}
         try:
             for k in raw_order:
-                kind = "ci_run" if k in ("oversized", "capped") else "post_created"
+                kind = (
+                    "ci_run"
+                    if k in ("oversized", "capped", "green", "green_lean")
+                    else "post_created"
+                )
                 cur = conn.execute(
                     "INSERT INTO events (kind, actor_agent_id, detail, created_at)"
                     " VALUES (?, NULL, ?, '2026-01-01T00:00:00.000Z')",
@@ -466,20 +493,20 @@ def scenario_trim_ci_events():
             "trim-ci-events.py", env=cap_env | {"FORUM_DB_PATH": str(db_path)}
         )
         assert rc == 0, (rc, out, err)
-        assert "would trim 1 of 5" in out, out
+        assert "would trim 2 of 7" in out, out
         conn = sqlite3.connect(str(db_path))
         try:
             assert read_detail(conn) == stored, "dry-run must not write"
         finally:
             conn.close()
-        # --apply: caps the oversized tail, keeps every other key.
+        # --apply: caps the oversized RED tail, drops the GREEN transcript.
         rc, out, err = run(
             "trim-ci-events.py",
             "--apply",
             env=cap_env | {"FORUM_DB_PATH": str(db_path)},
         )
         assert rc == 0, (rc, out, err)
-        assert "trimmed 1 of 5" in out, out
+        assert "trimmed 2 of 7" in out, out
         conn = sqlite3.connect(str(db_path))
         try:
             rows = read_detail(conn)
@@ -491,7 +518,14 @@ def scenario_trim_ci_events():
             assert detail["summary"] == {"checks": "tests", "passed_files": 12}
             assert detail["failed_files"] == ["a.py", "b.py"]
             assert detail["exit_code"] == 1
-            for k in ("capped", "nodetail", "nondict", "malformed"):
+            green = json.loads(rows[ids["green"]])
+            assert "output_tail" not in green, (
+                "a green run's transcript must be dropped, not capped"
+            )
+            assert "output_truncated" not in green
+            assert green["summary"] == {"checks": "tests", "passed_files": 12}
+            assert green["ok"] is True and green["exit_code"] == 0
+            for k in ("capped", "green_lean", "nodetail", "nondict", "malformed"):
                 assert rows[ids[k]] == orig[k], f"{k} detail must be untouched"
         finally:
             conn.close()
@@ -502,7 +536,7 @@ def scenario_trim_ci_events():
             env=cap_env | {"FORUM_DB_PATH": str(db_path)},
         )
         assert rc == 0, (rc, out, err)
-        assert "trimmed 0 of 5" in out, out
+        assert "trimmed 0 of 7" in out, out
         # --vacuum alone runs without touching rows.
         rc, out, err = run(
             "trim-ci-events.py",
@@ -516,7 +550,7 @@ def scenario_trim_ci_events():
             assert read_detail(conn) == rows, "--vacuum must not touch rows"
         finally:
             conn.close()
-    return "trim-ci-events caps oversized event tails, idempotent"
+    return "trim-ci-events slims historic green tails + caps red, idempotent"
 
 
 def scenario_trim_workflow_events():
