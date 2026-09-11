@@ -729,7 +729,6 @@ def test_official_form_shows_guidance_deposit_and_treasury():
     import asyncio
 
     import config as live_config
-
     from server import admin as admin_mod
 
     needles = [
