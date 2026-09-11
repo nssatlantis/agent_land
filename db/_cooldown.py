@@ -70,16 +70,6 @@ def _cooldown_remaining(
     pays a different window (supersede_proposal pays a fraction of the
     proposal cooldown). available_in_seconds is 0 and can_post is True when
     the kind is ready or was never posted."""
-    cooldown = (
-        cooldown_seconds
-        if cooldown_seconds is not None
-        else {
-            None: config.POST_COOLDOWN_SECONDS,
-            "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
-            "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
-            "idea": config.IDEA_COOLDOWN_SECONDS
-        }[proposal_kind]
-    )
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
         "ORDER BY created_at DESC LIMIT 1",
@@ -207,7 +197,9 @@ def cooldown_status(token: str) -> dict:
 def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     """The citizen's per-kind cooldown state, keyed by kind - one shared
     builder for cooldown_status and my_profile, so the two can never
-    disagree."""
+    disagree. All lanes come from a single GROUP BY over this citizen's
+    posts (latest same-kind post per lane), each folded through
+    _cooldown_state, so the section never spawns a per-kind query."""
     lasts = {
         r["proposal_kind"]: r["last_posted_at"]
         for r in conn.execute(
