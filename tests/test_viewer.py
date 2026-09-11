@@ -1703,6 +1703,148 @@ def test_economy_invoices_panel():
     without open bills (#394)."""
     html = _economy_body(_Req())
     assert "Open invoices" in html, "invoices panel renders"
+    assert "unavailable" not in html.lower(), "invoices happy path shows no fallback"
+
+
+def test_economy_correctness_bundle_a():
+    """Bundle A (#406): fee copy states flat prices; treasury % matches the
+    legend rounding; committed/escrow cards carry tooltips; movers link to
+    wallets."""
+    import re
+
+    html = _economy_body(_Req())
+    assert "invoice payments" in html, "fee copy names invoice payments"
+    assert "flat prices" in html, "fee copy states flat prices"
+    assert "tag creates/applies, stake/job fees" not in html, "old fee clause gone"
+    assert 'title="Remaining stake payouts' in html, "committed tooltip placed"
+    assert 'title="Held in the ledger escrow' in html, "escrow tooltip placed"
+    assert "locked stakes: sum" not in html, "old locked-only caption gone"
+    assert "deposit pools alike" in html, "escrow note kept as tooltip"
+    assert "href='/agents/" not in html, "movers link to wallets, not profiles"
+    m = re.search(r"credits \(([\d.]+)% of total supply\) receives fees", html)
+    t = re.search(r'title="(\d[\d.]*)% of total supply"', html)
+    assert m and t and m.group(1) == t.group(1), "sentence % matches tooltip %"
+    titles = re.findall(r'title="([\d.]+)% of total supply"', html)
+    assert len(titles) >= 2, "treasury + circulating tooltips render"
+    assert m.group(1) in titles, "sentence matches a rendered share"
+
+
+def test_economy_labels_bundle_b():
+    """Bundle B+D (#409): intro sources; burn all-time label; escrow scopes;
+    subset indent; all-time note; seal labels; banner order."""
+    html = _economy_body(_Req())
+    assert "unavailable" not in html.lower(), "happy path shows no fallback"
+    assert "forfeitures recirculate" in html, "intro names forfeitures"
+    assert "trailing-7d" in html, "intro qualifies runway"
+    assert "All time" in html, "burn legend names window"
+    assert "held in job escrow (all)" in html, "card scope labeled"
+    assert "non-official" in html, "escrow scope labeled"
+    assert "\u21b3" in html, "subset row indented"
+    assert "no trend arrows" in html, "all-time note renders"
+    if "Checkpoint inspector" in html:
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    agent_html = _economy_body(_Req({"agent": "1"}))
+    assert agent_html.index("Wallet") < agent_html.index("Treasury configuration"), (
+        "banner above globals"
+    )
+
+
+def test_economy_store_empty_and_unavailable():
+    """Store empty-state + unavailable fallbacks render titled panels."""
+    import viewer._money as money_mod
+
+    real_stats = money_mod.db.store_stats
+    try:
+        money_mod.db.store_stats = lambda: {
+            "totals": {
+                "revenue_credits": "0",
+                "revenue_7d_credits": "0",
+                "units": 0,
+                "buyers": 0,
+            },
+            "items": [],
+            "installed": {"citizens_served": 0},
+        }
+        html = _economy_body(_Req())
+        assert "No store sales yet." in html, "empty store one-liner"
+        assert "unavailable" not in html.lower(), "empty path shows no fallback"
+
+        def _boom():
+            raise RuntimeError("probe")
+
+        money_mod.db.store_stats = _boom
+        html = _economy_body(_Req())
+        assert "Citizen store unavailable." in html, "store error panel"
+    finally:
+        money_mod.db.store_stats = real_stats
+
+
+def test_jobs_tab_for_status_unit():
+    """Board-tab mapping for escrow deep-links."""
+    from viewer._money import _jobs_tab_for_status
+
+    assert _jobs_tab_for_status("open") == "open"
+    assert _jobs_tab_for_status("offered") == "open"
+    assert _jobs_tab_for_status("active") == "active"
+    assert _jobs_tab_for_status("completed") == "completed"
+    assert _jobs_tab_for_status("cancelled") == "closed"
+    assert _jobs_tab_for_status("expired") == "closed"
+    assert _jobs_tab_for_status("bogus") == "open"
+
+
+def test_economy_comment_targets():
+    """Comment legs deep-link to their thread; unknown ids fall back."""
+    from viewer._money import _comment_thread_map, _led_target
+
+    assert _comment_thread_map([]) == {}
+    assert _led_target({"target_type": "comment", "target_id": 12}, {12: 77}) == (
+        '<a href="/posts/77#c12">comment #12</a>'
+    )
+    assert _led_target({"target_type": "comment", "target_id": 12}, {}) == "comment #12"
+    assert _led_target({"target_type": "post", "target_id": 77}, {}) == (
+        '<a href="/posts/77">post #77</a>'
+    )
+
+
+def test_outflow_quarters_membership():
+    """Polarity map covers exactly the outflow rows."""
+    from viewer._money import _OUTFLOW_QUARTERS
+
+    assert set(_OUTFLOW_QUARTERS) == {"burned_quarters", "payouts_out_quarters"}
+    assert "minted_quarters" not in _OUTFLOW_QUARTERS
+
+
+def test_economy_seal_labels_forced():
+    """Seal scope labels render when a checkpoint exists (#409 D9)."""
+    import viewer._money as money_mod
+
+    real = money_mod.db.economy_overview
+    base = real()
+    seal = {
+        "chain_ok": True,
+        "seals_checked": 1,
+        "sealed_entry_count": 10,
+        "live_entry_count": 10,
+        "sealed_supply_quarters": 4000,
+        "live_supply_quarters": 4000,
+        "sealed_supply_credits": "1000",
+        "live_supply_credits": "1000",
+    }
+
+    def with_seal():
+        out = dict(base)
+        out["checkpoint"] = seal
+        return out
+
+    money_mod.db.economy_overview = with_seal
+    try:
+        html = _economy_body(_Req())
+        assert "Checkpoint inspector" in html
+        assert "sealed supply (at seal)" in html, "seal label scoped"
+        assert "live supply (now)" in html, "live label scoped"
+    finally:
+        money_mod.db.economy_overview = real
 
 
 def test_nav_fragments_proposals_builder():
@@ -2211,6 +2353,13 @@ if __name__ == "__main__":
     test_fragment_pulse_panels_matches_analytics_page()
     test_analytics_poll_includes_pulse_panels()
     test_economy_invoices_panel()
+    test_economy_correctness_bundle_a()
+    test_economy_labels_bundle_b()
+    test_economy_store_empty_and_unavailable()
+    test_jobs_tab_for_status_unit()
+    test_economy_comment_targets()
+    test_outflow_quarters_membership()
+    test_economy_seal_labels_forced()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
     test_record_page_default_shows_operative_view()

@@ -165,6 +165,7 @@ def _economy_strip() -> str:
     committed = eo.get("committed_to_active_stakes_credits", "0")
     escrow = eo.get("held_in_job_escrow_credits", "0")
     jobs_open = eo.get("open_jobs", 0)
+    jobs_offered = eo.get("offered_jobs", 0)
     jobs_active = eo.get("active_jobs", 0)
     return (
         f'<div class="panel"><h2>Economy</h2><div class="cards">'
@@ -174,7 +175,7 @@ def _economy_strip() -> str:
         f"</div>"
         f'<p class="meta">24h net <span style="color:{color};font-weight:600">{delta:+d}</span> quarters '
         f"(minted {minted} \xb7 burned {burned}) \xb7 committed to stakes {esc(committed)} \xb7 "
-        f"job escrow {esc(escrow)} \xb7 jobs {jobs_active} active / {jobs_open} open</p></div>"
+        f"job escrow {esc(escrow)} \xb7 jobs {jobs_active} active / {jobs_open + jobs_offered} open</p></div>"
     )
 
 
