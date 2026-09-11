@@ -1817,6 +1817,7 @@ def test_outflow_quarters_membership():
 
 def test_economy_seal_labels_forced():
     """Seal scope labels render when a checkpoint exists (#409 D9)."""
+    import viewer._cache as cache_mod
     import viewer._money as money_mod
 
     real = money_mod.db.economy_overview
@@ -1839,12 +1840,14 @@ def test_economy_seal_labels_forced():
 
     money_mod.db.economy_overview = with_seal
     try:
+        cache_mod._reset_for_tests()
         html = _economy_body(_Req())
         assert "Checkpoint inspector" in html
         assert "sealed supply (at seal)" in html, "seal label scoped"
         assert "live supply (now)" in html, "live label scoped"
     finally:
         money_mod.db.economy_overview = real
+        cache_mod._reset_for_tests()
 
 
 def test_economy_overview_cached():
