@@ -121,6 +121,7 @@ def _validate_run_status(status: str) -> None:
 
 
 _workflow_sha_cache: dict[str, tuple[float, str]] = {}
+_workflow_steps_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _workflow_sha_for(path: str) -> str | None:
@@ -150,7 +151,18 @@ def _parse_workflow_steps(path: str) -> list[dict]:
     later workflow edit never rewrites a run's history). Keys are deduped by
     first appearance; a line that does not parse is skipped â€” a stray
     paragraph can never corrupt a checklist."""
-    text = _workflow_file(path).read_text(encoding="utf-8")
+    wf_file = _workflow_file(path)
+    try:
+        wf_mtime = wf_file.stat().st_mtime
+    except (  # domain: degrade-silently - stat best-effort, like _workflow_sha_for
+        Exception
+    ):
+        wf_mtime = 0.0
+    if wf_mtime:
+        hit = _workflow_steps_cache.get(path)
+        if hit is not None and hit[0] == wf_mtime:
+            return [dict(s) for s in hit[1]]
+    text = wf_file.read_text(encoding="utf-8")
     out: list[dict] = []
     seen: set[str] = set()
     in_steps = False
@@ -170,6 +182,10 @@ def _parse_workflow_steps(path: str) -> list[dict]:
             continue
         seen.add(key)
         out.append({"key": key, "text": stripped})
+    if wf_mtime:
+        if len(_workflow_steps_cache) > 128:
+            _workflow_steps_cache.clear()
+        _workflow_steps_cache[path] = (wf_mtime, [dict(s) for s in out])
     return out
 
 
