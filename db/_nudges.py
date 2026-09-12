@@ -131,6 +131,7 @@ def _collab_work_list(
     agent_id: int,
     todos_by_post: dict | None = None,
     member_rows: list | None = None,
+    merged_by_post: dict | None = None,
 ) -> list[dict]:
     """Open collaborative work for *agent_id*: proposals where the agent
     is a collaborator, still open, with undone to-do items and PR progress.
@@ -139,8 +140,9 @@ def _collab_work_list(
     ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
     so the two surfaces can never disagree. `todos_by_post` may carry a
     caller-held board batch (my_profile unions these ids with the todo
-    nudge's); `member_rows` may carry caller-held membership rows; Nones
-    fetch as before."""
+    nudge's); `member_rows` may carry caller-held membership rows;
+    `merged_by_post` may carry a caller-held {post_id: merged-PR count} map
+    (the digest sweep batches it over the union); Nones fetch as before."""
     from db._proposal_todos import _todos_summary_for_posts
 
     rows = (
@@ -153,16 +155,17 @@ def _collab_work_list(
     post_ids = [r["id"] for r in rows]
     if todos_by_post is None:
         todos_by_post = _todos_summary_for_posts(conn, post_ids)
-    merged_by_post = {
-        r["post_id"]: r["merged"]
-        for r in conn.execute(
-            "SELECT pl.post_id, COUNT(*) AS merged FROM proposal_outcomes po"
-            " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
-            f" WHERE pl.post_id IN ({','.join('?' * len(post_ids))})"
-            " AND po.status = 'merged' GROUP BY pl.post_id",
-            post_ids,
-        ).fetchall()
-    }
+    if merged_by_post is None:
+        merged_by_post = {
+            r["post_id"]: r["merged"]
+            for r in conn.execute(
+                "SELECT pl.post_id, COUNT(*) AS merged FROM proposal_outcomes po"
+                " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
+                f" WHERE pl.post_id IN ({','.join('?' * len(post_ids))})"
+                " AND po.status = 'merged' GROUP BY pl.post_id",
+                post_ids,
+            ).fetchall()
+        }
     out: list[dict] = []
     for r in rows:
         pid = r["id"]
