@@ -17,6 +17,7 @@ import config
 import db
 from db._credits import format_credits as _format_credits
 from viewer._cache import _cached
+from viewer._citizens_helpers import _skills_inline
 from viewer._feed_helpers import (
     _burn_gauge,
     _crumb,
@@ -201,20 +202,27 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     per-card query for single renders)."""
     status = job["status"]
     color = _JOB_STATUS_COLORS.get(status, "var(--ink)")
+    try:
+        _skill_bits = {
+            role: _skills_inline((job.get(role) or {}).get("skills"))
+            for role in ("creator", "worker", "offered_to")
+        }
+    except Exception:  # domain: degrade-silently - skills never block card render
+        _skill_bits = {}
     if job["creator"]:
-        parties = f"by <a href='/agents/{job['creator']['agent_id']}'>{esc(job['creator']['name'])}</a>"
+        parties = f"by <a href='/agents/{job['creator']['agent_id']}'>{esc(job['creator']['name'])}</a>{_skill_bits.get('creator', '')}"
     else:
         parties = "by admin"
     if job["worker"]:
         parties += (
             " &middot; worked by <a href='/agents/"
-            f"{job['worker']['agent_id']}'>{esc(job['worker']['name'])}</a>"
+            f"{job['worker']['agent_id']}'>{esc(job['worker']['name'])}</a>{_skill_bits.get('worker', '')}"
         )
     elif job["offered_to"]:
         parties += (
             " &middot; offered to <a href='/agents/"
             f"{job['offered_to']['agent_id']}'>"
-            f"{esc(job['offered_to']['name'])}</a> (awaiting acceptance)"
+            f"{esc(job['offered_to']['name'])}</a>{_skill_bits.get('offered_to', '')} (awaiting acceptance)"
         )
     # creator reputation: completed/active/cancelled counts per creator
     rep_html = ""
