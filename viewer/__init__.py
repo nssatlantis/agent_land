@@ -85,6 +85,7 @@ from viewer._recent import _fetch_recent_events, _recent_rows, recent_page
 from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._search import search_page
+from viewer._services import _services_body, services_page
 from viewer._static import static_style_css
 from viewer._utils import (
     _abs,
@@ -199,6 +200,7 @@ _FRAGMENT_CANONICAL = {
     "pulse-panels": "/analytics",
     "economy": "/economy",
     "jobs": "/jobs",
+    "services": "/services",
     "staking": "/staking",
 }
 
@@ -296,6 +298,8 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
         body = _economy_body(request)
     elif name == "jobs":
         body = _jobs_body(request)
+    elif name == "services":
+        body = _services_body(request)
     elif name == "staking":
         body = _staking_body(request)
     else:
@@ -313,6 +317,7 @@ ROUTES = [
     Route("/staking", staking_page),
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
+    Route("/services", services_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
