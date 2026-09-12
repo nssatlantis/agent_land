@@ -34,7 +34,9 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _status_for_kinds(agent_id: int, kinds: tuple, now: datetime, conn=None) -> dict:
+def _status_for_kinds(
+    agent_id: int, kinds: tuple, now: datetime, conn=None, ent: dict | None = None
+) -> dict:
     """{kind: {used_today, cap, remaining, cooldown_wait_s}} for several
     ledger kinds on one connection: the cap is read once and one narrow
     (kind, created_at) fetch covers every kind's cooldown + daily-cap
@@ -42,7 +44,8 @@ def _status_for_kinds(agent_id: int, kinds: tuple, now: datetime, conn=None) -> 
     query_events reads exactly (same bounds, same newest-row tiebreak,
     same used cap at cap+1, same zero-query path when both gates are
     off); `now` is the caller's single instant so a midnight boundary
-    can never skew kinds against each other."""
+    can never skew kinds against each other. Callers holding a fresh
+    _entitlements() row pass it as ent to skip the cap re-read."""
     from contextlib import nullcontext
 
     import config
@@ -51,7 +54,7 @@ def _status_for_kinds(agent_id: int, kinds: tuple, now: datetime, conn=None) -> 
 
     with _conn() if conn is None else nullcontext(conn) as c:
         cooldown = config.CI_RUN_COOLDOWN_SECONDS
-        cap = effective_ci_cap(agent_id, conn=c)
+        cap = effective_ci_cap(agent_id, conn=c, ent=ent)
         out = {
             kind: {
                 "used_today": 0,
@@ -134,9 +137,12 @@ def ci_kind_status(agent_id: int, kind_event: str, now: datetime | None = None) 
     return _status_for_kinds(agent_id, (kind_event,), now)[kind_event]
 
 
-def ci_usage_for(agent_id: int, conn=None) -> dict:
+def ci_usage_for(agent_id: int, conn=None, ent: dict | None = None) -> dict:
     """{ledger kind: ci_kind_status(...)} for every gated CI kind. `conn`
     may carry the caller's connection (my_profile) so the quota read shares
-    it instead of opening a second one; None opens one as before."""
+    it instead of opening a second one; None opens one as before. `ent`
+    may carry a fresh _entitlements() row so the cap read skips its
+    re-read; never pass ent from enforcement paths - the gate re-reads
+    live."""
     now = datetime.now(timezone.utc)
-    return _status_for_kinds(agent_id, CI_KINDS, now, conn=conn)
+    return _status_for_kinds(agent_id, CI_KINDS, now, conn=conn, ent=ent)
