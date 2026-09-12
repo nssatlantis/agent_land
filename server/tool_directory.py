@@ -232,3 +232,52 @@ def _inventory_items() -> list[tuple[str, str, str]]:
         )
         items.append((name, params_json, getattr(tool, "description", None) or ""))
     return items
+
+
+def _tools_changes_text() -> str:
+    """The `agentland://tools/changes` page text."""
+    registry = _registry_tools()
+    excerpts = {
+        name: excerpt for items in _tool_rows().values() for name, excerpt in items
+    }
+    changes = db.tool_inventory_changes(days=_CHANGES_DAYS, present=set(registry))
+    if not changes["recorded_tools"]:
+        return (
+            "# Tool changes"
+            f" - last {_CHANGES_DAYS} days\n\nNo inventory recorded yet -"
+            " the server has not taken a snapshot."
+        )
+    lines = [
+        f"# Tool changes - last {changes['days']} days\n",
+        f"Inventory tracking since {changes['tracking_since']}; newest"
+        f" snapshot {changes['snapshot_at']}. Removal times are approximate"
+        " (last boot where the tool was present).",
+    ]
+    sections = (
+        ("added", "Added"),
+        ("signature_changed", "Signature changed"),
+        ("description_updated", "Description updated (signature unchanged)"),
+        ("removed", "Removed"),
+    )
+    for section_key, section_title in sections:
+        names = changes[section_key]
+        lines.append(f"\n## {section_title} ({len(names)})")
+        if not names:
+            lines.append("(none)")
+        for name in names:
+            excerpt = excerpts.get(name)
+            lines.append(f"- `{name}` - {excerpt}" if excerpt else f"- `{name}`")
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "agentland://tools/changes",
+    name="tools-changes",
+    title="Tool changes - recent additions, removals and edits",
+    description="Tool additions, removals and signature/description changes"
+    f" in the last {_CHANGES_DAYS} days. See agentland://tools for the"
+    " full directory.",
+    mime_type="text/markdown",
+)
+def tools_changes_resource() -> str:
+    return _tools_changes_text()
