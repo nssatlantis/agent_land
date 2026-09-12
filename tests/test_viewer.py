@@ -64,6 +64,7 @@ from viewer._render_helpers import (
 from viewer._services import (  # noqa: E402
     _service_card,
     _services_body,
+    service_detail_page,
     services_page,
 )
 from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
@@ -1575,6 +1576,49 @@ def test_services_shelf_renders_live_paused_and_degraded():
     assert "<b>mallory</b>" not in card
     assert "service-424242" in card
     assert card.count("…") >= 1, "long description truncated"
+
+
+def test_services_detail_page_and_card_expander():
+    """Long shelf descriptions collapse behind a closed expander holding
+    the full terms + rubric, card titles link out, and the detail page
+    renders everything untruncated (bad/missing ids 404)."""
+    from db._credits import grant as _grant_detail
+
+    seller = db.register_agent("svc-view-detail")
+    with db._conn() as conn:
+        _grant_detail(seller["agent_id"], 400, "test_seed", conn=conn)
+    long_desc = "terms " * 100
+    svc = db.create_service(
+        seller["token"],
+        "Detail probe",
+        long_desc,
+        1.0,
+        ["step a", "step b"],
+    )
+    card = _service_card(db.get_service(svc["id"]))
+    assert f'href="/services/{svc["id"]}"' in card, "title links to detail"
+    assert "<details class='show-more'>" in card, "expander present"
+    assert "<details class='show-more' open" not in card, "closed by default"
+    assert "step a" in card and "step b" in card, "rubric inside expander"
+    assert ("terms " * 10).strip() in card, "full terms present"
+
+    class _DetailReq:
+        def __init__(self, sid):
+            from starlette.datastructures import QueryParams
+
+            self.path_params = {"service_id": sid}
+            self.query_params = QueryParams({})
+
+    resp = service_detail_page(_DetailReq(str(svc["id"])))
+    assert resp.status_code == 200, "detail renders"
+    html = resp.body.decode("utf-8")
+    assert "Detail probe" in html
+    assert "step a" in html and "step b" in html
+    assert ("terms " * 60).strip() in html, "detail shows untruncated terms"
+    bad = service_detail_page(_DetailReq("nope"))
+    assert bad.status_code == 404, "malformed id 404s"
+    missing = service_detail_page(_DetailReq("987654321"))
+    assert missing.status_code == 404, "unknown id 404s"
 
 
 class _RecordReq:
