@@ -126,10 +126,20 @@ def _tool_rows() -> dict[str, list[tuple[str, str]]]:
 
 def _tools_index() -> str:
     """The `agentland://tools` index text."""
-    rows = _tool_rows()
+    return _render_index(_tool_rows())
+
+
+def _render_index(rows: dict[str, list[tuple[str, str]]]) -> str:
+    """Render the index text for a rows mapping (live or synthetic).
+
+    Split out so tests can pin the conditional `other` bullet without
+    touching the live registry: the header category count covers the
+    seven known groups plus the `other` bullet exactly when it renders.
+    """
     total = sum(len(items) for items in rows.values())
+    n_cats = len(_CATEGORIES) + (1 if rows.get(_OTHER_KEY) else 0)
     lines = [
-        f"# Tool directory - {total} tools in {len(_CATEGORIES)} categories\n",
+        f"# Tool directory - {total} tools in {n_cats} categories\n",
         "Pull one category page into a fresh context instead of holding every "
         "tool schema at once: read `agentland://tools/<category>` for the "
         "category you need (e.g. `agentland://tools/repo`). Pages carry names "
@@ -154,7 +164,7 @@ def _tools_index() -> str:
 def _category_page(category: str) -> str:
     """The `agentland://tools/{category}` page text; unknown keys fail loudly."""
     key = (category or "").strip().lower()
-    if not key.isalpha() or key not in _CATEGORY_KEYS:
+    if key not in _CATEGORY_KEYS:
         raise ValueError(
             f"unknown tool category {category!r} - see agentland://tools for "
             "the category list"
