@@ -1316,31 +1316,23 @@ def _open_run_rows_for_many(
 def _ghost_run_status_for_many(
     conn: sqlite3.Connection, proposal_ids: list[int]
 ) -> dict[int, str]:
-    """{proposal_id: 'closed'} for the no-PR ghost residue in a batch - two
-    DISTINCT-IN queries (linked pids; folded-run pids) instead of two probes
-    per proposal. A pid is a ghost iff it holds a folded run and no pull
-    request was ever linked; absent pids are healthy runs (None)."""
+    """{proposal_id: 'closed'} for the no-PR ghost residue in a batch - one
+    anti-join per chunk instead of two DISTINCT-IN probes. A pid is a ghost
+    iff it holds a folded run and no pull request was ever linked; absent
+    pids are healthy runs (None)."""
     out: dict[int, str] = {}
     if not proposal_ids:
         return out
-    linked: set[int] = set()
-    folded: set[int] = set()
     for chunk in _id_chunks(sorted(set(proposal_ids))):
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
-            f"SELECT DISTINCT post_id FROM proposal_links WHERE post_id IN ({marks})",
-            chunk,
-        ).fetchall():
-            linked.add(int(r["post_id"]))
-        for r in conn.execute(
-            "SELECT DISTINCT proposal_id FROM workflow_runs"
-            " WHERE workflow_path = ? AND proposal_id IN"
-            f" ({marks}) AND status != 'open'",
+            "SELECT DISTINCT wr.proposal_id FROM workflow_runs wr"
+            " LEFT JOIN proposal_links pl ON pl.post_id = wr.proposal_id"
+            " WHERE wr.workflow_path = ? AND wr.proposal_id IN"
+            f" ({marks}) AND wr.status != 'open' AND pl.post_id IS NULL",
             (_WORKFLOW_CREATE_PR_PATH, *chunk),
         ).fetchall():
-            folded.add(int(r["proposal_id"]))
-    for pid in folded - linked:
-        out[pid] = "closed"
+            out[int(r["proposal_id"])] = "closed"
     return out
 
 
@@ -1348,8 +1340,8 @@ def _reconcile_decisions(
     conn: sqlite3.Connection, proposal_ids: list[int]
 ) -> dict[int, tuple[str, str]]:
     """{proposal_id: (run_status, reason)} for a batch of open-run proposals -
-    one batched probe per stage instead of up to five statements per pid.
-    Precedence mirrors the per-pid path exactly (superseded gate, then
+    one fused posts fetch plus one batched probe per remaining stage
+    instead of up to five statements per pid. Precedence mirrors the per-pid path exactly (superseded gate, then
     lifecycle status with NULL-status semantics, then ghost) - including
     under failure: a bulk-fetch failure logs workflow_reconcile_probe_failed
     and its pids flow onward exactly as the per-pid path's skips do, so only
@@ -1358,14 +1350,18 @@ def _reconcile_decisions(
     _ghost_run_status stay as the differential-test oracle for this helper;
     prod sweeps call only this."""
     from db._proposal_status import (
+        _posts_flags_many,
         _proposal_status_for_many,
-        _superseded_by_many,
     )
 
     decisions: dict[int, tuple[str, str]] = {}
     pids = list(proposal_ids)
+    # One fused posts fetch serves the supersede gate and the lifecycle
+    # flags below; on failure both fall back exactly as the two separate
+    # probes did (gate empty, flags re-fetched inside), so a failed fetch
+    # only ever skips closes, never invents them.
     try:
-        sup = _superseded_by_many(conn, pids)
+        post_flags: dict | None = _posts_flags_many(conn, pids)
     except Exception as exc:  # domain:degrade-silently - skip, retry next pass
         logutil.log(
             "workflow_reconcile_probe_failed",
@@ -1373,7 +1369,12 @@ def _reconcile_decisions(
             probe="superseded_by_many",
             error=str(exc),
         )
-        sup = {}
+        post_flags = None
+    sup = (
+        {pid: r["superseded_by_id"] for pid, r in post_flags.items()}
+        if post_flags is not None
+        else {}
+    )
     rest: list[int] = []
     for pid in pids:
         if sup.get(pid) is not None:
@@ -1381,7 +1382,7 @@ def _reconcile_decisions(
         else:
             rest.append(pid)
     try:
-        st = _proposal_status_for_many(conn, rest)
+        st = _proposal_status_for_many(conn, rest, flags=post_flags)
     except Exception as exc:  # domain:degrade-silently - skip, retry next pass
         logutil.log(
             "workflow_reconcile_probe_failed",
