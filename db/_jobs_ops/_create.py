@@ -192,6 +192,7 @@ def _insert_job_with_steps(
     treasury_escrow_quarters: int = 0,
     service_id: int | None = None,
     service_terms: str | None = None,
+    long_running: int = 0,
 ) -> int:
     """Shared row insertion so both creators write identical shapes. The
     service linkage rides the same INSERT (and commit) as the escrow -
@@ -200,8 +201,9 @@ def _insert_job_with_steps(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
         " title, description, scope, kind, cycle_every_days,"
         " payment_quarters, total_cycles, official, taker_deposit_quarters,"
-        " treasury_escrow_quarters, service_id, service_terms, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " treasury_escrow_quarters, service_id, service_terms,"
+        " long_running, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id,
             offered_to_id,
@@ -217,6 +219,7 @@ def _insert_job_with_steps(
             treasury_escrow_quarters,
             service_id,
             service_terms,
+            long_running,
             "offered" if offered_to_id is not None else "open",
         ),
     )
@@ -291,11 +294,15 @@ def create_job(
     taker_deposit_credits: float | None = None,
     service_id: int | None = None,
     service_terms: str | None = None,
+    long_running: bool = False,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post. service_id/service_terms
     (services orders only) ride the same INSERT - linkage and escrow
-    commit together, never apart."""
+    commit together, never apart. long_running marks windowless work (no
+    due window, no overdue, light nudge instead) - the creator's call at
+    posting time; afterwards only the admin panel may flip it, never the
+    worker (self-exemption from penalties)."""
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     (
         title,
@@ -379,6 +386,7 @@ def create_job(
             treasury_escrow_quarters=0,
             service_id=service_id,
             service_terms=service_terms,
+            long_running=1 if long_running else 0,
         )
         from db._credits import spend
 
