@@ -8,6 +8,7 @@ import sqlite3
 from db._core import _id_chunks
 
 from ._helpers import (
+    _cadence_hours,
     _fmt_q,
     _job_overdue_anchor_sql,
     _overdue_flag,
@@ -17,7 +18,8 @@ from ._helpers import (
 
 _JOB_COLS = (
     "id, creator_agent_id, worker_agent_id, offered_to_agent_id, title,"
-    " description, scope, kind, payment_quarters, total_cycles, cycles_done,"
+    " description, scope, kind, cycle_every_days, payment_quarters,"
+    " total_cycles, cycles_done,"
     " official, taker_deposit_quarters, deposit_bonus_quarters,"
     " treasury_escrow_quarters, service_id, service_terms,"
     " status, created_at, decided_at"
@@ -55,20 +57,31 @@ def _job_detail_from_parts(
     by _job_detail and _job_details_batch so the single-job and batched
     shapes can never drift."""
     cur_status: str | None = None
+    cur_opens_at: str | None = None
     if job["status"] == "active":
-        cur_status = next(
-            (c["status"] for c in cycles if c["cycle_no"] == job["cycles_done"] + 1),
+        cur = next(
+            (c for c in cycles if c["cycle_no"] == job["cycles_done"] + 1),
             None,
         )
+        if cur is not None:
+            cur_status = cur["status"]
+            cur_opens_at = cur.get("opens_at")
     return {
         "job_id": job["id"],
         "title": job["title"],
         "description": job["description"],
         "scope": job["scope"],
         "kind": job["kind"],
+        "cycle_every_days": job["cycle_every_days"],
         "official": bool(job["official"]),
         "status": job["status"],
-        "overdue": _overdue_flag(job["status"], cur_status, job["anchor_at"], cutoff),
+        "overdue": _overdue_flag(
+            job["status"],
+            cur_status,
+            job["anchor_at"],
+            cutoff,
+            opens_at=cur_opens_at,
+        ),
         "creator": (
             {
                 "agent_id": job["creator_agent_id"],
@@ -147,7 +160,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     ]
     cycles = []
     for r in conn.execute(
-        "SELECT cycle_no, status, evidence, evidence_pr_numbers,"
+        "SELECT cycle_no, opens_at, status, evidence, evidence_pr_numbers,"
         " evidence_pr_shas, feedback, submitted_at, decided_at"
         " FROM job_cycles WHERE job_id = ? ORDER BY cycle_no",
         (job_id,),
@@ -156,6 +169,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         cycles.append(
             {
                 "cycle_no": r["cycle_no"],
+                "opens_at": r["opens_at"],
                 "status": r["status"],
                 "evidence": r["evidence"],
                 "evidence_pr_numbers": pr_numbers,
@@ -165,7 +179,9 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 "decided_at": r["decided_at"],
             }
         )
-    return _job_detail_from_parts(job, steps, cycles, job_overdue_cutoff())
+    return _job_detail_from_parts(
+        job, steps, cycles, job_overdue_cutoff(hours=_cadence_hours(job))
+    )
 
 
 def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:
@@ -176,7 +192,6 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
     if not job_ids:
         return {}
     details: dict[int, dict] = {}
-    cutoff = job_overdue_cutoff()
     for chunk in _id_chunks(list(job_ids)):
         marks = ",".join("?" * len(chunk))
         job_rows = conn.execute(
@@ -212,8 +227,9 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
             )
         cycles_by_job: dict[int, list[dict]] = {}
         for r in conn.execute(
-            "SELECT job_id, cycle_no, status, evidence, evidence_pr_numbers,"
-            " evidence_pr_shas, feedback, submitted_at, decided_at"
+            "SELECT job_id, cycle_no, opens_at, status, evidence,"
+            " evidence_pr_numbers, evidence_pr_shas, feedback,"
+            " submitted_at, decided_at"
             f" FROM job_cycles WHERE job_id IN ({marks})"
             " ORDER BY job_id, cycle_no",
             chunk,
@@ -222,6 +238,7 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
             cycles_by_job.setdefault(r["job_id"], []).append(
                 {
                     "cycle_no": r["cycle_no"],
+                    "opens_at": r["opens_at"],
                     "status": r["status"],
                     "evidence": r["evidence"],
                     "evidence_pr_numbers": pr_numbers,
@@ -234,7 +251,10 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
         for r in job_rows:
             jid = r["id"]
             details[jid] = _job_detail_from_parts(
-                r, steps_by_job.get(jid, []), cycles_by_job.get(jid, []), cutoff
+                r,
+                steps_by_job.get(jid, []),
+                cycles_by_job.get(jid, []),
+                job_overdue_cutoff(hours=_cadence_hours(r)),
             )
     return details
 
