@@ -193,15 +193,34 @@ def workflow_steps_for_run(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     """A run's guided steps, ordered, each carrying {id, step_key, position,
     text, done, done_at, done_by, done_by_name}. The read surface for the
     gate, the nudge and the MCP status tool."""
-    rows = conn.execute(
-        "SELECT s.id, s.step_key, s.position, s.text, s.done, s.done_at,"
-        " s.done_by, a.name AS done_by_name"
+    return workflow_steps_for_runs(conn, [run_id]).get(run_id, [])
+
+
+def workflow_steps_for_runs(
+    conn: sqlite3.Connection, run_ids: list[int]
+) -> dict[int, list[dict]]:
+    """{run_id: [steps]} for many runs - the batch twin of
+    workflow_steps_for_run, so the nudge (≤3 open runs) pays one SELECT
+    instead of one per run (perf bundle). Same rows, same position order,
+    same keys incl. done_by_name=NULL for deleted agents; missing runs map
+    to [] exactly like the single form on an unknown id."""
+    ids = list(dict.fromkeys(int(r) for r in run_ids if r is not None))
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    out: dict[int, list[dict]] = {i: [] for i in ids}
+    for r in conn.execute(
+        "SELECT s.run_id, s.id, s.step_key, s.position, s.text, s.done,"
+        " s.done_at, s.done_by, a.name AS done_by_name"
         " FROM workflow_run_steps s"
         " LEFT JOIN agents a ON a.id = s.done_by"
-        " WHERE s.run_id = ? ORDER BY s.position",
-        (run_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+        f" WHERE s.run_id IN ({marks}) ORDER BY s.run_id, s.position",
+        ids,
+    ).fetchall():
+        d = dict(r)
+        rid = d.pop("run_id")
+        out[rid].append(d)
+    return out
 
 
 def available_next_steps(steps: list[dict]) -> list[str]:
@@ -1647,6 +1666,11 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
     now = datetime.now(timezone.utc)
     summaries = []
     runs = []
+    # One steps fetch for all open runs (≤3) instead of one per run.
+    try:
+        steps_by_run = workflow_steps_for_runs(conn, [int(r["id"]) for r in rows])
+    except Exception:  # domain:degrade-silently - display-only enrichment
+        steps_by_run = {}
     for r in rows:
         action = "reopened" if int(r["prior_closes"] or 0) > 0 else "open"
         expires_in = None
@@ -1661,7 +1685,7 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
         steps_total = None
         step_waiting: list[str] = []
         try:
-            steps = workflow_steps_for_run(conn, int(r["id"]))
+            steps = steps_by_run.get(int(r["id"]), [])
             if steps:
                 open_pos = next(
                     (s["position"] for s in steps if s["step_key"] == "open"), None
