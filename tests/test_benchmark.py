@@ -1176,6 +1176,15 @@ def _check_explain_economy() -> bool:
     )
 
 
+def _check_explain_workflow_runs() -> bool:
+    # list_workflow_runs' default docket read (no filter, LIMIT 50) orders by
+    # created_at DESC; without idx_workflow_runs_created it full-scans and
+    # temp-B-tree-sorts the whole table. Pin on the index, reject a bare scan.
+    sql = "SELECT wr.id FROM workflow_runs wr ORDER BY wr.created_at DESC LIMIT 50"
+    plan = _explain(sql)
+    return "idx_workflow_runs_created" in plan and _no_full_scan(plan, "workflow_runs")
+
+
 def _check_explain_notifications_unread(agent_id: int) -> bool:
     # per-whoami unread count — must use a covering index, never scan.
     # Either the unread-partial or the agent/read composite serves it;
@@ -1272,6 +1281,10 @@ def main():
         ),
         ("EXPLAIN events: uses idx_events_kind_created_id", _check_explain_events),
         ("EXPLAIN economy flow: grouped treasury scan", _check_explain_economy),
+        (
+            "EXPLAIN workflow_runs docket: uses created_at index",
+            _check_explain_workflow_runs,
+        ),
     ]
     if sample_post:
         _fat_parent = (
