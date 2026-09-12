@@ -508,6 +508,24 @@ def main():
     assert n == 0, n
     print("  decided-proposal voter silence: ok")
 
+    # --- 19. F7 flags pass-through == fresh fetch ------------------------------
+    from db._proposal_status import _posts_flags_many, _proposal_status_for_many
+
+    _fc = db.create_proposal(alpha["token"], "Trim flag proposal", "Body.")
+    _fx = db.create_proposal(
+        beta["token"], "Trim flag collab", "Body.", collaborative=True
+    )
+    _fpids = [prop["post_id"], p2["post_id"], _fc["post_id"], _fx["post_id"], 424242]
+    with db._conn() as conn:
+        flags = _posts_flags_many(conn, _fpids)
+        assert set(flags) == set(_fpids) - {424242}, set(flags)
+        assert flags[_fc["post_id"]]["superseded_by_id"] is None
+        assert flags[_fx["post_id"]]["collaborative"] == 1
+        assert _proposal_status_for_many(conn, _fpids, flags=flags) == (
+            _proposal_status_for_many(conn, _fpids)
+        )
+    print("  flags pass-through parity: ok")
+
     print("test_bench_trims: all assertions passed")
 
 
