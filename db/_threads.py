@@ -270,9 +270,7 @@ def reopen_thread(
     plus the note write under `note_post` when a note was given."""
     note = (note or "").strip()
     if len(note) > config.MAX_COMMENT_LEN:
-        raise ForumError(
-            f"note must be {config.MAX_COMMENT_LEN} characters or fewer."
-        )
+        raise ForumError(f"note must be {config.MAX_COMMENT_LEN} characters or fewer.")
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = _thread_post(conn, post_id, for_open=False)
@@ -310,9 +308,7 @@ def list_threads(post_id: int) -> list:
     Counts, never bodies - read one line with
     list_comments(parent_comment_id=thread_id). Public read."""
     with _conn() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
@@ -340,9 +336,7 @@ def threads_summary_for(post_id: int) -> dict:
     """Lightweight thread counts for one post: {post_id, total, open,
     closed}. Strict on unknown posts - callers read it beside get_post."""
     with _conn() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
