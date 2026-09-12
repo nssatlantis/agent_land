@@ -337,6 +337,70 @@ def main():
     assert not [s for s in dg_stmts if "FROM notifications" in s], dg_stmts
     print("  empty-candidates early exit: ok")
 
+    # --- 13. F5 board: exact current cycle + cutoff memo -------------------
+    import db._jobs_ops._board as _board_mod
+
+    with db._conn() as conn:
+        _bids = []
+        for days, done, total in ((1, 1, 3), (3, 0, 2), (2, 0, 1)):
+            conn.execute(
+                "INSERT INTO jobs (creator_agent_id, title, description,"
+                " scope, kind, payment_quarters, total_cycles, cycles_done,"
+                " official, status, cycle_every_days)"
+                " VALUES (?, 't', 'd', 's', 'one_time', 4, ?, ?, 0, 'active',"
+                " ?)",
+                (alpha["agent_id"], total, done, days),
+            )
+            _bids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, evidence, status,"
+            " opens_at) VALUES (?, 1, 'e', 'accepted', NULL)",
+            (_bids[0],),
+        )
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, evidence, status,"
+            " opens_at) VALUES (?, 2, '', 'awaiting', '2026-01-01T00:00:00.000Z')",
+            (_bids[0],),
+        )
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, evidence, status,"
+            " opens_at) VALUES (?, 1, '', 'awaiting', '2999-01-01T00:00:00.000Z')",
+            (_bids[2],),
+        )
+        conn.commit()
+    _calls = [0]
+    _real_cutoff = _board_mod.job_overdue_cutoff
+
+    def _counting_cutoff(*a, **k):
+        _calls[0] += 1
+        return _real_cutoff(*a, **k)
+
+    with mock.patch.object(_board_mod, "job_overdue_cutoff", _counting_cutoff):
+        board = db.list_jobs(view="all", limit=100)
+    by_id = {j["job_id"]: j for j in board["jobs"]}
+    assert by_id[_bids[0]]["opens_at"] == "2026-01-01T00:00:00.000Z"
+    assert by_id[_bids[1]]["opens_at"] is None  # no cycles at all
+    assert by_id[_bids[2]]["overdue"] is False  # future opens_at never overdue
+    with db._conn() as conn:
+        hours = {
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT cycle_every_days FROM jobs"
+            ).fetchall()
+        }
+    assert _calls[0] <= len(hours), (_calls[0], hours)
+    with db._conn() as conn:
+        plan = "\n".join(
+            r[3]
+            for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT jc.job_id FROM job_cycles jc"
+                " JOIN jobs j ON j.id = jc.job_id WHERE j.id IN (1, 2)"
+                " AND jc.cycle_no = j.cycles_done + 1"
+            ).fetchall()
+        )
+    assert "SCAN" not in plan and "USING COVERING INDEX" in plan, plan
+    print("  board exact-cycle + cutoff memo: ok")
+
     print("test_bench_trims: all assertions passed")
 
 
