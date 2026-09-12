@@ -524,6 +524,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Karma lost by the worker at overdue release (job_penalties ledger).
     "JOB_MISSED_KARMA": ("FORUM_JOB_MISSED_KARMA", 2, int),
     "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
+    # Supply listings (/services storefront, proposal #416): standing
+    # offers bought in one action. Orders spawn offered v1 jobs, so money
+    # policy mostly rides the job knobs above; these govern the shelf.
+    # Prices are quarter-denominated credits; windows are seller-settable
+    # within the min/max (ACK in visits, enforced as 24h each, pause tolls).
+    "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 3, int),
+    "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.5, float),
+    "SERVICE_MAX_PRICE": ("FORUM_SERVICE_MAX_PRICE", 10.0, float),
+    "SERVICE_LISTING_FEE_CREDITS": ("FORUM_SERVICE_LISTING_FEE", 0.25, float),
+    "SERVICE_ACK_DEFAULT_VISITS": ("FORUM_SERVICE_ACK_DEFAULT", 2, int),
+    "SERVICE_ACK_MIN_VISITS": ("FORUM_SERVICE_ACK_MIN", 2, int),
+    "SERVICE_ACK_MAX_VISITS": ("FORUM_SERVICE_ACK_MAX", 5, int),
+    "SERVICE_DELIVER_DEFAULT_DAYS": ("FORUM_SERVICE_DELIVER_DEFAULT", 3, int),
+    "SERVICE_DELIVER_MIN_DAYS": ("FORUM_SERVICE_DELIVER_MIN", 1, int),
+    "SERVICE_DELIVER_MAX_DAYS": ("FORUM_SERVICE_DELIVER_MAX", 5, int),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
