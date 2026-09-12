@@ -481,6 +481,8 @@ def _seed():
         "store_post_skip",
         "store_blessed_bench",
     )
+    n_store_legs = 0
+    n_ents = 0
     with db._conn() as conn:
         for i in range(_STORE_SALES):
             aid = agents[all_names[i % len(all_names)]]["agent_id"]
@@ -494,6 +496,7 @@ def _seed():
                     "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (NULL, ?, ?, 'treasury')",
                     (4, reason + "_intake"),
                 )
+                n_store_legs += 2
             except Exception:
                 pass
         for i in range(20):
@@ -508,6 +511,7 @@ def _seed():
                         f"Bench bio {i}" if i % 3 == 0 else None,
                     ),
                 )
+                n_ents += 1
             except Exception:
                 pass
         # alpha reads notes in the timing loop — unlock outright (read path
@@ -521,6 +525,9 @@ def _seed():
         except Exception:
             pass
         conn.commit()
+    print(f"  store substrate: {n_store_legs} legs / {n_ents} entitlements")
+    assert n_store_legs == _STORE_SALES * 2, "store legs seed collapsed"
+    assert n_ents == 20, "store entitlements seed collapsed"
 
     # Stakes — mix of karma and credits (small sizes fit vote-earned balances
     # and the ledger top-up above); per-currency asserts, not a pooled one.
@@ -794,7 +801,9 @@ def _seed():
                 pass
         conn.commit()
     print(f"  invoices seeded: {n_invoices}")
-    assert n_invoices >= _INVOICES // 2, "invoices seed collapsed"
+    # Exact: payer index (i+7)%59 never equals issuer i%59, so the skip is
+    # dead and every attempt executes against a permissive schema.
+    assert n_invoices == _INVOICES, "invoices seed collapsed"
 
     # pr_votes — some votes on linked PRs (direct SQL, needs pr_numbers)
     pr_numbers: list[int] = []
@@ -902,6 +911,10 @@ def _seed():
             except Exception:
                 pass
         conn.commit()
+        if fat_comment_ids:
+            assert (
+                _store_mod.pinned_comment_for(conn, fat_post) == fat_comment_ids[0]
+            ), "pinned seed unreadable"
 
     # Fat board — one collaborative proposal with 3 full lists + claims
     fat_board = db.create_proposal(
@@ -1167,6 +1180,7 @@ def _seed():
         except Exception:
             pass
     print(f"  personal runs seeded: {n_personal}")
+    assert n_personal == _PERSONAL_RUNS, "personal runs seed collapsed"
 
     # Reports on others' content (reporter != author)
     n_reports = 0
@@ -1245,7 +1259,8 @@ def _seed():
                 except Exception:
                     pass
     print(f"  threads seeded: {n_threads} anchors on {len(thread_pids)} posts")
-    assert n_threads >= _THREAD_POSTS, "thread seed collapsed"
+    # Exact: unique titles per post, cap 10, author-driven throughout.
+    assert n_threads == _THREAD_POSTS * _THREADS_PER_POST, "thread seed collapsed"
 
     # Pre-staged distinct write targets (one use each → no intra-run dupes).
     # Vote pairs stage one DISTINCT post per k (first-fit without a used-set
@@ -2044,7 +2059,7 @@ def main():
         (
             "name_colors",
             lambda: _with_conn(
-                _store_mod.name_colors_for, [alpha_id, w["skill_agent_id"]]
+                _store_mod.name_colors_for, [alpha_id, w["personal_agent_id"]]
             ),
         ),
         (
