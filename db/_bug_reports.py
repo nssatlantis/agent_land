@@ -325,15 +325,65 @@ def verify_bug_report(token: str, report_id: int) -> dict:
         }
 
 
+def _sync_bug_report_links(
+    conn: sqlite3.Connection, post_id: int, referenced: list | None
+) -> None:
+    """Rewrite one post's bug-report links from its validated references.
+    Called on every post-body write with the already-computed `referenced`
+    list, so no new parse pass is needed: only {kind: bug_report} entries
+    (existing reports, outside code spans) ever link. Delete-then-insert
+    keeps edits exact; INSERT OR IGNORE is belt-and-braces."""
+    conn.execute("DELETE FROM bug_report_links WHERE post_id = ?", (post_id,))
+    seen: set[int] = set()
+    for ref in referenced or []:
+        if ref.get("kind") != "bug_report":
+            continue
+        rid = ref.get("id")
+        if rid in seen:
+            continue
+        seen.add(rid)
+        conn.execute(
+            "INSERT OR IGNORE INTO bug_report_links (report_id, post_id) VALUES (?, ?)",
+            (rid, post_id),
+        )
+
+
+def _backfill_bug_report_links(conn: sqlite3.Connection) -> int:
+    """One-shot backfill for the version-4 migration: rebuild links for
+    every proposal post from its stored body, reusing _expand_references
+    (same validation as the live write path). Chunked like the mention
+    rewrite so a large forum never holds every body in memory."""
+    from db._text import _expand_references
+
+    count = 0
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, body FROM posts WHERE id > ? AND proposal_kind IS NOT NULL"
+            " ORDER BY id LIMIT 500",
+            (last_id,),
+        ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            last_id = row["id"]
+            _, referenced, _ = _expand_references(conn, row["body"] or "")
+            _sync_bug_report_links(conn, row["id"], referenced)
+            count += 1
+    return count
+
+
 def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report, including its duplicate chain."""
     with _conn() as conn:
         row = conn.execute(
             "SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
-            " se.name_color AS reporter_color"
+            " se.name_color AS reporter_color,"
+            " pb.original_id AS parent_original_id"
             " FROM bug_reports br"
             " JOIN agents a ON br.agent_id = a.id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " LEFT JOIN bug_report_duplicates pb ON pb.duplicate_id = br.id"
             " WHERE br.id = ?",
             (report_id,),
         ).fetchone()
@@ -375,22 +425,21 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
-        # What this report is a duplicate of (if any)
-        parent = conn.execute(
-            "SELECT brd.original_id"
-            " FROM bug_report_duplicates brd"
-            " WHERE brd.duplicate_id = ?",
-            (report_id,),
-        ).fetchone()
+        # The parent link rides Q1's LEFT JOIN (UNIQUE(duplicate_id) keeps
+        # the grain at one row); NULL-when-absent, exactly like the old
+        # point lookup.
 
-        # Linked proposals (posts whose body references #B<id>)
+        # Linked proposals via the write-time link table: indexed equality
+        # on validated references instead of a leading-wildcard LIKE over
+        # every proposal body. The kind guard preserves the posts-only
+        # scope of the old scan.
         linked = conn.execute(
             "SELECT p.id, p.title, p.proposal_kind"
-            " FROM posts p"
-            " WHERE p.body LIKE ? ESCAPE '\\'"
-            " AND p.proposal_kind IS NOT NULL"
+            " FROM bug_report_links l"
+            " JOIN posts p ON p.id = l.post_id"
+            " WHERE l.report_id = ? AND p.proposal_kind IS NOT NULL"
             " ORDER BY p.created_at DESC",
-            (f"%#B{report_id}%",),
+            (report_id,),
         ).fetchall()
 
         # Merged PRs per linked proposal (fix-landed badge on the viewer).
@@ -438,7 +487,7 @@ def get_bug_report(report_id: int) -> dict:
                 }
                 for v in verifiers
             ],
-            "duplicate_of": parent["original_id"] if parent else None,
+            "duplicate_of": row["parent_original_id"],
             "resolution": row["resolution"],
             "resolution_note": row["resolution_note"],
             "resolvers": [
