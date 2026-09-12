@@ -121,6 +121,11 @@ def run(conn) -> None:
     # jobs behave byte-identically before and after migration.
     _ensure_column(conn, "jobs", "cycle_every_days", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "job_cycles", "opens_at", "TEXT")
+    # Long-running work: windowless jobs never read overdue (officials are
+    # standing appointments and auto-treated as set at read time, so this
+    # column only needs to exist for commissioned builds). Existing rows
+    # default to 0 = windowed, byte-identical behavior before and after.
+    _ensure_column(conn, "jobs", "long_running", "INTEGER NOT NULL DEFAULT 0")
     # Citizen-store draft slots: how many staging slots the citizen owns
     # (unlock opens the first). Fresh DBs carry the column (schema.sql);
     # existing ones (including store-era DBs) gain it here, defaulting
@@ -367,7 +372,8 @@ def run(conn) -> None:
         " WHEN kind IN ("
         "'job_created','job_claimed','job_offer_declined',"
         "'job_submitted','job_cycle_accepted','job_cycle_declined',"
-        "'job_completed','job_cancelled','job_expired'"
+        "'job_completed','job_cancelled','job_expired',"
+        "'job_released','job_reactivated','job_updated'"
         ") THEN 'jobs'"
         " WHEN kind IN ("
         "'tag_created','tag_applied','tag_retired',"
