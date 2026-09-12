@@ -236,6 +236,9 @@ def main():
     # opens_at stays NULL = open now - the jobs-cadence and services
     # feature sets coexist on the same job rows.
     assert reread["cycle_every_days"] == 1, reread
+    board = db.list_jobs(view="all")["jobs"]
+    brow = next(j for j in board if j["job_id"] == job["job_id"])
+    assert brow["cycle_every_days"] == 1 and brow["opens_at"] is None, brow
     assert db.get_service(svc["id"])["open_orders"] == 1
     # order book of 1 is full now
     try:
