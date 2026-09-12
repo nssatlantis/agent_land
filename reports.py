@@ -348,12 +348,14 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
             target_id,
             f"Your {target_type} #{target_id} was reported: {reason}",
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
         )
         from events import EVT_REPORT_FILED, log_event
 
         log_event(
             EVT_REPORT_FILED,
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             target_type=target_type,
             target_id=target_id,
             detail={"reason": reason},

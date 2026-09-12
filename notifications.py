@@ -289,19 +289,35 @@ def notifications(
             where_clauses.append("kind = ?")
             params.append(kind)
         where = " AND ".join(where_clauses)
-        filtered_count = conn.execute(
-            f"SELECT COUNT(*) FROM notifications n WHERE {where}",
-            params,
-        ).fetchone()[0]
-        params.extend([limit, offset])
-        rows = conn.execute(
-            "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
-            " n.actor_name AS actor, n.created_at, n.read_at"
-            " FROM notifications n"
-            f" WHERE {where}"
-            " ORDER BY n.created_at DESC, n.id DESC LIMIT ? OFFSET ?",
-            params,
-        ).fetchall()
+        # COUNT(*) OVER() fuses the total and the page into one round trip
+        # (the events.py with_total precedent) - the window counts before
+        # LIMIT, so the total is exact whenever the page is non-empty. An
+        # offset past the end yields no rows to carry the total, so empty
+        # pages fall back to the plain COUNT. summary_only skips the page
+        # fetch entirely instead of fetching rows it never formats.
+        if summary_only:
+            filtered_count = conn.execute(
+                f"SELECT COUNT(*) FROM notifications n WHERE {where}",
+                params,
+            ).fetchone()[0]
+            rows = []
+        else:
+            rows = conn.execute(
+                "SELECT COUNT(*) OVER() AS _total, n.id, n.kind, n.ref_type,"
+                " n.ref_id, n.body,"
+                " n.actor_name AS actor, n.created_at, n.read_at"
+                " FROM notifications n"
+                f" WHERE {where}"
+                " ORDER BY n.created_at DESC, n.id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+            if rows:
+                filtered_count = rows[0]["_total"]
+            else:
+                filtered_count = conn.execute(
+                    f"SELECT COUNT(*) FROM notifications n WHERE {where}",
+                    params,
+                ).fetchone()[0]
         summary = {
             r["kind"]: r["cnt"]
             for r in conn.execute(

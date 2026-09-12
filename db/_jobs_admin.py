@@ -734,31 +734,12 @@ def sweep_expired_jobs() -> int:
 def _outstanding_actions(
     conn: sqlite3.Connection,
     agent_id: int,
-    now: str | None = None,
 ) -> list[str]:
-    """Every job action currently waiting on *agent_id*, as short phrases.
-    The single predicate source shared by _nudges._job_nudge (profile
-    note) and the daily digest, so the two surfaces can never disagree
-    about what someone owes (#389 shared-predicate discipline). `now`
-    may carry one _now_iso() instant for the opens_at bounds (perf
-    bundle: the todo/stale bounds share it instead of clocking twice);
-    per-cadence overdue cutoffs are cached by hours within the call."""
     """Every job action currently waiting on *agent_id*, as short phrases.
     The single predicate source shared by _nudges._job_nudge (profile
     note) and the daily digest, so the two surfaces can never disagree
     about what someone owes (#389 shared-predicate discipline)."""
     out: list[str] = []
-    if now is None:
-        now = _now_iso()
-    cutoffs: dict[int, str] = {}
-
-    def _cutoff_for(job: sqlite3.Row) -> str:
-        hours = _cadence_hours(job)
-        hit = cutoffs.get(hours)
-        if hit is None:
-            hit = cutoffs.setdefault(hours, job_overdue_cutoff(hours=hours))
-        return hit
-
     offers = conn.execute(
         "SELECT id, title FROM jobs"
         " WHERE status = 'offered' AND offered_to_agent_id = ?"
@@ -775,7 +756,7 @@ def _outstanding_actions(
         " AND jc.status IN ('awaiting', 'declined')"
         " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
         " ORDER BY j.id",
-        (agent_id, now),
+        (agent_id, _now_iso()),
     ).fetchall()
     review = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
@@ -793,7 +774,7 @@ def _outstanding_actions(
         " AND jc.status IN ('awaiting', 'declined')"
         " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
         " ORDER BY j.id",
-        (agent_id, now),
+        (agent_id, _now_iso()),
     ).fetchall()
     # One batched anchor lookup for both lists instead of a correlated
     # events probe per row; missing anchors fall back to created_at,
@@ -807,7 +788,7 @@ def _outstanding_actions(
         if _cycle_is_overdue(
             r["status"],
             anchors.get(r["id"], r["created_at"]),
-            _cutoff_for(r),
+            job_overdue_cutoff(hours=_cadence_hours(r)),
             opens_at=r["opens_at"],
         ):
             phrase += " (overdue)"
@@ -821,7 +802,7 @@ def _outstanding_actions(
         if _cycle_is_overdue(
             r["status"],
             anchors.get(r["id"], r["created_at"]),
-            _cutoff_for(r),
+            job_overdue_cutoff(hours=_cadence_hours(r)),
             opens_at=r["opens_at"],
         ):
             out.append(
@@ -845,8 +826,6 @@ def send_job_digests() -> int:
     day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
         "%Y-%m-%dT%H:%M:%S.%f"
     )[:-3] + "Z"
-    day_ago_dt = _parse_iso(day_ago)
-    now_iso = _now_iso()
     with _conn() as conn:
         if (
             conn.execute(
@@ -856,33 +835,55 @@ def send_job_digests() -> int:
         ):
             return 0
         agents = conn.execute(
-            "SELECT id FROM agents"
+            "SELECT id, banned, suspended_until FROM agents"
             " WHERE NOT banned AND (suspended_until IS NULL"
             " OR suspended_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         ).fetchall()
-        # One newest-digest lookup for every citizen instead of one per
-        # citizen (perf bundle): MAX(created_at) is the LIMIT-1 row's
-        # stamp, and an absent key means no prior digest - proceed.
-        gates: dict[int, str] = {}
-        if agents:
-            marks = ",".join("?" * len(agents))
-            gates = {
-                r["agent_id"]: r["newest"]
-                for r in conn.execute(
-                    "SELECT agent_id, MAX(created_at) AS newest"
-                    " FROM notifications WHERE kind = 'jobs'"
-                    " AND ref_type = 'job_digest'"
-                    f" AND agent_id IN ({marks}) GROUP BY agent_id",
-                    [ag["id"] for ag in agents],
-                ).fetchall()
-            }
+        if not agents:
+            return 0
+        agent_ids = [int(ag["id"]) for ag in agents]
+        marks = ",".join("?" * len(agent_ids))
+        triple = agent_ids + agent_ids + agent_ids
+        # One gate lookup for every citizen instead of one per citizen: the
+        # newest digest each has seen (same 24h compare as the old read).
+        newest_by_agent = {
+            int(r["agent_id"]): r["newest"]
+            for r in conn.execute(
+                "SELECT agent_id, MAX(created_at) AS newest FROM notifications"
+                " WHERE kind = 'jobs' AND ref_type = 'job_digest'"
+                f" AND agent_id IN ({marks}) GROUP BY agent_id",
+                agent_ids,
+            ).fetchall()
+        }
+        # Only citizens touching offered/active jobs can have actions: the
+        # role columns are a proven superset of _outstanding_actions
+        # coverage (offered_to on offered, worker/creator on active).
+        candidates = {
+            int(r["agent_id"])
+            for r in conn.execute(
+                "SELECT offered_to_agent_id AS agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND offered_to_agent_id IN ({marks})"
+                " UNION SELECT worker_agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND worker_agent_id IN ({marks})"
+                " UNION SELECT creator_agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND creator_agent_id IN ({marks})",
+                triple,
+            ).fetchall()
+        }
+        day_ago_dt = _parse_iso(day_ago)
         for ag in agents:
             try:
-                newest = gates.get(ag["id"])
+                aid = int(ag["id"])
+                if aid not in candidates:
+                    continue
+                newest = newest_by_agent.get(aid)
                 if newest is not None:
                     if _parse_iso(newest) > day_ago_dt:
                         continue
-                actions = _outstanding_actions(conn, ag["id"], now=now_iso)
+                actions = _outstanding_actions(conn, aid)
                 if not actions:
                     continue
                 body = (

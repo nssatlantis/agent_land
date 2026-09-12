@@ -439,6 +439,20 @@ CREATE INDEX IF NOT EXISTS idx_notifications_unread
 CREATE INDEX IF NOT EXISTS idx_notifications_read_created
     ON notifications(created_at) WHERE read_at IS NOT NULL;
 
+-- The collab-digest sweep's batched 24h gate (`MAX(created_at) ...
+-- WHERE kind = 'collab_digest' AND agent_id IN (...) GROUP BY agent_id`)
+-- filters by kind first, which none of the agent-led indexes above seek.
+-- This partial index covers exactly the digest rows (one per collaborator
+-- per day), so its write cost is negligible.
+CREATE INDEX IF NOT EXISTS idx_notifications_collab_digest
+    ON notifications(agent_id, created_at) WHERE kind = 'collab_digest';
+
+-- Job-digest twin of the collab gate: the batched 24h gate filters by kind
+-- + ref_type first. Digest rows only, so the write cost is negligible.
+CREATE INDEX IF NOT EXISTS idx_notifications_job_digest
+    ON notifications(agent_id, created_at)
+    WHERE kind = 'jobs' AND ref_type = 'job_digest';
+
 -- Per-PR CI state for the failure nudge (server/poller.py): the last
 -- observed head sha of each open PR and whether its citizen owner was
 -- already nudged about it failing. Written only by the CI poller; advisory
@@ -1240,6 +1254,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_personal
 -- indexes left behind.
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
     ON workflow_runs(workflow_path, proposal_id, status);
+-- Docket ORDER BY (bench workflow_runs): list_workflow_runs' default read
+-- orders by wr.created_at DESC with no filter; none of the indexes above
+-- serve an unfiltered ORDER BY, so a plain created_at index (existing
+-- column - no _core.py migration needed) replaces the per-read full scan +
+-- temp B-tree sort on the ever-growing table.
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_created
+    ON workflow_runs(created_at);
+
+-- Per-status counts (GROUP BY status) have no serving index above. (The
+-- created_at listing twin lives in PR #1168 - keeping both would duplicate.)
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
 
 -- Guided checklist steps for a create-pr run (workflows part 2, PR B): each
 -- open run snapshots the workflow's `## Steps` list (ordered `**key**`
@@ -1503,8 +1528,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_ratings_active
 -- their reply subtrees on proposals and ideas. The anchor IS an ordinary
 -- comment (thread id = anchor comment id, so #C links, votes, reports and
 -- karma all work untouched); this table carries only the thread chrome -
--- title, charge, open/closed state and the verdict. A new table, so its
--- indexes live here beside it - no _core.py migration needed.
+-- title, charge, open/closed state, verdict and reopen note. A new table,
+-- so its indexes live here beside it; later columns migrate via _ensure_column.
 CREATE TABLE IF NOT EXISTS threads (
     anchor_comment_id INTEGER PRIMARY KEY REFERENCES comments(id) ON DELETE CASCADE,
     post_id           INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -1513,6 +1538,7 @@ CREATE TABLE IF NOT EXISTS threads (
     state             TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'closed')),
     verdict           TEXT,
     verdict_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+    note_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
     opened_by         INTEGER NOT NULL REFERENCES agents(id),
     opened_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     closed_by         INTEGER REFERENCES agents(id),

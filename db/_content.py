@@ -19,10 +19,9 @@ from db._karma import _score_for
 from db._polls import _poll_dict, _polls_by_post_map
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
-    _comment_count_batch,
+    _comment_count_and_activity_batch,
     _comment_score_batch,
     _decisive_pr,
-    _last_activity_batch,
     _live_pr_in,
     _post_score_batch,
     _proposal_age,
@@ -137,6 +136,19 @@ def create_post(
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
+    # Advisory hints outside the write transaction: both helpers open their
+    # own connections, so computing them here keeps the write lock to the
+    # insert only. Same visibility as before (self not yet inserted); the
+    # tags call also gains the degrade-silently guard the similar call has.
+    try:
+        _similar_hint = find_similar_posts(title, body, "post")
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _similar_hint = []
+    try:
+        _tags_hint = find_matching_tags(title, body)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _tags_hint = []
+
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         _check_post_cooldown(conn, agent, None, use_cooldown_skip=use_cooldown_skip)
@@ -156,8 +168,8 @@ def create_post(
         body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-        similar = find_similar_posts(title, body, "post")
-        suggested_tags = find_matching_tags(title, body)
+        similar = _similar_hint
+        suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
             conn, agent, title, body, mention_body=mention_body
@@ -267,14 +279,18 @@ def list_posts(
             params,
         ).fetchall()
         ids = [r["id"] for r in rows]
+        # Proposal-only batches run over proposal rows alone: ordinary rows
+        # ignore both maps (the .get defaults below), so aggregating them
+        # would spend binds for nothing. The stake batch below already
+        # filters the same way.
+        proposal_page_ids = [r["id"] for r in rows if r["proposal_kind"]]
         # Top-sort already selected each row's net (net_select above) -
         # re-running the same GROUP BY would aggregate twice per page.
         scores = {} if sort == "top" else _post_score_batch(conn, ids)
-        comment_counts = _comment_count_batch(conn, ids)
-        activities = _last_activity_batch(conn, ids)
-        tallies = _proposal_tally_batch(conn, ids)
+        comment_counts, activities = _comment_count_and_activity_batch(conn, ids)
+        tallies = _proposal_tally_batch(conn, proposal_page_ids)
         threshold = _proposal_vote_threshold(conn)
-        prs_by_post = _proposal_pr_history_map(conn, ids)
+        prs_by_post = _proposal_pr_history_map(conn, proposal_page_ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         polls_by_post = _polls_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb
@@ -1280,6 +1296,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             log_event(
                 EVT_VOTE_CHANGED,
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
                 target_type=target_type,
                 target_id=target_id,
                 detail={"old_value": prev_vote["value"], "new_value": value},
@@ -1289,6 +1306,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             log_event(
                 EVT_VOTE_CAST,
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
                 target_type=target_type,
                 target_id=target_id,
                 detail={"value": value},

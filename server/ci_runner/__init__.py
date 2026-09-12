@@ -40,6 +40,7 @@ from ._runs import (  # noqa: F401
     _inflight_occupied,
     _inflight_release,
     _inflight_snapshot,
+    ci_run_status,
     ledger_kind_for,
     run_branch_ci_for_poller,
     run_checks,

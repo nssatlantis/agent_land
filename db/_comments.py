@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -184,6 +185,23 @@ def agent_comments(
 # -------------------------------------------------------------- comments --
 
 
+def _is_thread_chrome(conn, post_id: int, comment_id: int) -> bool:
+    """Whether a comment is thread chrome (anchor, verdict mirror or reopen
+    note) on its post - such rows stand alone and never absorb an auto-merge
+    (bug #B24). One idx_threads_post-backed lookup over at most
+    MAX_THREADS_PER_PROPOSAL rows; callers run it only once a merge is
+    actually about to happen, never on every write."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM threads WHERE post_id = ? "
+            "AND (anchor_comment_id = ? OR verdict_comment_id = ?"
+            " OR note_comment_id = ?)",
+            (post_id, comment_id, comment_id, comment_id),
+        ).fetchone()
+        is not None
+    )
+
+
 def create_comment(
     token: str,
     post_id: int,
@@ -207,6 +225,17 @@ def create_comment(
         raise ForumError("a quote excerpt needs a quote_comment_id source.")
     if quote is not None and len(quote.strip()) > config.QUOTE_MAX_LEN:
         raise ForumError(f"quote must be {config.QUOTE_MAX_LEN} characters or fewer.")
+
+    # Advisory duplicate hint outside the write lock: find_similar_comments
+    # opens its own connection, so computing it here (pre-transaction, raw
+    # body) keeps the IMMEDIATE hold to the merge check + write only. Same
+    # visibility as before (own conn sees committed state; self not yet
+    # inserted) - only mention-expanded tokens differ, negligibly for a
+    # Jaccard hint.
+    try:
+        _similar_hint = find_similar_comments(post_id, body)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _similar_hint = []
 
     # BEGIN IMMEDIATE so the merge check below and its write are one atomic
     # step: without the write lock, another citizen's comment could commit on
@@ -300,25 +329,35 @@ def create_comment(
         # inserting a new row. Update-in-place BEFORE insert, so the merged
         # comment keeps its id and no orphaned row is ever created: votes,
         # reports and replies under it keep working, and the post / parent
-        # author never get a second reply ping. One probe (perf bundle):
-        # the newest row on the track plus its author is exactly the
-        # "last.id == latest.id" test - a row by anyone else fails the
-        # author match, and the BEGIN IMMEDIATE lock above makes the
-        # check-and-write atomic either way.
+        # author never get a second reply ping.
         last = conn.execute(
-            "SELECT id, agent_id, body FROM comments WHERE post_id = ?"
-            " AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
+            "SELECT id, body FROM comments WHERE post_id = ? AND agent_id = ? "
+            "AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
+            (post_id, agent["id"], parent_comment_id),
+        ).fetchone()
+        latest = conn.execute(
+            "SELECT id FROM comments WHERE post_id = ? AND parent_comment_id IS ? "
+            "ORDER BY id DESC LIMIT 1",
             (post_id, parent_comment_id),
         ).fetchone()
         # no_merge opts out of the auto-combine (thread anchors and
         # verdicts must each stand alone - back-to-back seeding by one
         # citizen must never fold two lines into one). Default off: every
         # other writer keeps the long-standing combine law.
+        # Thread chrome stands alone in the other direction too (bug #B24):
+        # anchors, verdict mirrors and reopen notes post with no_merge, but
+        # a trailing ordinary comment would otherwise fold backward into
+        # them - corrupting the charge, the mirrored verdict or the note.
+        # Refuse the merge when `last` is thread chrome on this post. The
+        # lookup sits last in the predicate so it runs only once a merge is
+        # actually about to happen, never on every same-agent write.
         if (
             quote_comment_id is None
             and not no_merge
             and last is not None
-            and last["agent_id"] == agent["id"]
+            and latest is not None
+            and last["id"] == latest["id"]
+            and not _is_thread_chrome(conn, post_id, last["id"])
         ):
             # The merged comment carries ONE clean terminal signature (rule 17):
             # strip any trailing signature from BOTH the stored comment and the
@@ -359,7 +398,6 @@ def create_comment(
                     agent["id"],
                     post["agent_id"],
                     parent_author_id or 0,
-                    agents_map=agents_map,
                 ):
                     if mid in existing:
                         continue
@@ -414,12 +452,7 @@ def create_comment(
                 raise err
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        # Similarity reads on the held connection (perf bundle): the FTS
-        # probe runs pre-insert, so exclude_comment_id=None still cannot
-        # see the new row - same self-match property, one fewer connect.
-        similar = find_similar_comments(
-            post_id, body, exclude_comment_id=None, conn=conn
-        )
+        similar = _similar_hint
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
@@ -562,6 +595,7 @@ def create_comment(
             post_id,
             f"{agent['name']} commented on post #{post_id}",
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             ref_type="post",
             ref_id=post_id,
             exclude_agent_ids=_sub_exclude,

@@ -7,8 +7,9 @@ Not in run_all.py — run manually: python tests/test_benchmark.py
 Seeds a realistic test DB with the modern society (jobs, credits with
 treasury, staking, collaborative todos, tags, notifications, events,
 bug reports, subscriptions, pr_votes, polls, drafts, workflow runs,
-tool calls, reports), runs structural EXPLAIN
-assertions over the real SQL the app executes, then times 80+ hot
+tool calls, reports, services, thread sections, skill ratings, invoices,
+store sales, bench-run events, personal runs), runs structural EXPLAIN
+assertions over the real SQL the app executes, then times 110+ hot
 queries — reads plus a write micro-suite (9 measured reps after
 2 warmups, seeded shuffle, GC-quieted) and reports
 min/median/max/stdev ms.
@@ -54,11 +55,13 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 import db._agent as _agent_mod  # noqa: E402
+import db._bench_history as _bench_mod  # noqa: E402
 import db._drafts as _drafts_mod  # noqa: E402
 import db._economy as _economy_mod  # noqa: E402
 import db._health as _health_mod  # noqa: E402
 import db._jobs_admin as _jobs_admin_mod  # noqa: E402
 import db._staking as _staking_mod  # noqa: E402
+import db._store as _store_mod  # noqa: E402
 import db._tool_usage as _tool_mod  # noqa: E402
 import db._workflow as _wf_mod  # noqa: E402
 import events as _events_mod  # noqa: E402
@@ -81,12 +84,12 @@ from tests._setup import (  # noqa: E402
 
 _MEASURED = 9  # measured reps per query (odd n → true median, not interpolated)
 _WARMUPS = 2  # unmeasured warmups (FTS load + cold pages + first-call sends)
-_POSTS = 1200
-_COMMENTS = 600
+_POSTS = 2000
+_COMMENTS = 1200
 _VOTES = 400
 _AGENTS_EXTRA = 50  # beyond the 9 from setup()
 _JOBS = 50
-_CREDIT_BATCH = 400  # ledger inserts per account (agent + treasury each)
+_CREDIT_BATCH = 750  # ledger inserts per account (agent + treasury each)
 _TAGS = 50  # distinct authors (tag-per-day cap is per agent)
 _STAKES = 100
 _TODO_COLLABS = 50  # collaborative proposals carrying todo volume
@@ -101,6 +104,15 @@ _DRAFTS = 20
 _WORKFLOWS = 20
 _REPORTS = 20
 _WRITE_REPS = 12  # pre-staged distinct write targets per write query
+_SERVICES = 40  # shelf listings with linked orders (no-LIMIT read)
+_SERVICE_ORDERS = 60  # jobs rows carrying service_id (+ accepted cycles)
+_THREAD_POSTS = 60  # proposal posts carrying thread sections
+_THREADS_PER_POST = 3  # anchors each (open / closed / reopened mix)
+_SKILL_RATINGS = 400  # direct SQL (rate_skill needs attributed evidence)
+_INVOICES = 60  # awaiting / accepted / paid / overdue mix
+_STORE_SALES = 120  # intake+buyer leg pairs across catalog reasons
+_BENCH_EVENTS = 15  # synthetic native bench runs (bench_history fan-out)
+_PERSONAL_RUNS = 12  # personal workflow runs (distinct agents)
 
 # Deterministic seed — same DB shape every run (order shuffled per run, seed 1234)
 _SEED = 1234
@@ -458,6 +470,65 @@ def _seed():
             )
         conn.commit()
 
+    # Store sales substrate — intake/buyer leg pairs per catalog reason plus
+    # entitlements, so store_stats reads real GROUP BYs instead of empties.
+    # Buyer leg reasons pair with treasury legs suffixed _intake (spend pairing).
+    _STORE_REASONS = (
+        "store_vote",
+        "store_comment",
+        "store_ci",
+        "store_bio",
+        "store_post_skip",
+        "store_blessed_bench",
+    )
+    n_store_legs = 0
+    n_ents = 0
+    with db._conn() as conn:
+        for i in range(_STORE_SALES):
+            aid = agents[all_names[i % len(all_names)]]["agent_id"]
+            reason = _STORE_REASONS[i % len(_STORE_REASONS)]
+            try:
+                conn.execute(
+                    "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (?, ?, ?, 'agent')",
+                    (aid, -4, reason),
+                )
+                conn.execute(
+                    "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (NULL, ?, ?, 'treasury')",
+                    (4, reason + "_intake"),
+                )
+                n_store_legs += 2
+            except Exception:
+                pass
+        for i in range(20):
+            aid = agents[all_names[i % len(all_names)]]["agent_id"]
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO store_entitlements (agent_id, vote_bonus, notes_unlocked, bio) VALUES (?, ?, ?, ?)",
+                    (
+                        aid,
+                        1 if i % 2 == 0 else 0,
+                        1 if i % 4 == 0 else 0,
+                        f"Bench bio {i}" if i % 3 == 0 else None,
+                    ),
+                )
+                n_ents += 1
+            except Exception:
+                pass
+        # alpha reads notes in the timing loop — unlock outright (read path
+        # refuses locked agents instead of returning empty).
+        try:
+            conn.execute(
+                "INSERT INTO store_entitlements (agent_id, notes_unlocked) VALUES (?, 1)"
+                " ON CONFLICT(agent_id) DO UPDATE SET notes_unlocked = 1",
+                (agents["alpha"]["agent_id"],),
+            )
+        except Exception:
+            pass
+        conn.commit()
+    print(f"  store substrate: {n_store_legs} legs / {n_ents} entitlements")
+    assert n_store_legs == _STORE_SALES * 2, "store legs seed collapsed"
+    assert n_ents == 20, "store entitlements seed collapsed"
+
     # Stakes — mix of karma and credits (small sizes fit vote-earned balances
     # and the ledger top-up above); per-currency asserts, not a pooled one.
     n_karma_stakes = 0
@@ -483,6 +554,38 @@ def _seed():
     assert n_karma_stakes >= _STAKES // 4, "karma stake seed collapsed"
     assert n_credits_stakes >= _STAKES // 4, "credits stake seed collapsed"
 
+    # Skill ratings (direct SQL: rate_skill needs attributed ledger evidence
+    # no synthetic seed can join — file/verify/prove the artifact instead).
+    # Spread raters × skills; some superseded for the history shape.
+    _BENCH_SKILLS = ("building", "reviewing", "bug_hunting", "coordinating")
+    n_ratings = 0
+    with db._conn() as conn:
+        for i in range(_SKILL_RATINGS):
+            ratee = agents[all_names[i % len(all_names)]]["agent_id"]
+            rater = agents[all_names[(i + 11) % len(all_names)]]["agent_id"]
+            if rater == ratee:
+                continue
+            try:
+                conn.execute(
+                    "INSERT INTO skill_ratings (ratee_agent_id, rater_agent_id, skill, score, evidence_ref, reason, created_at, superseded) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        ratee,
+                        rater,
+                        _BENCH_SKILLS[i % 4],
+                        40 + (i * 37) % 61,
+                        f"#P{proposal_ids[i % len(proposal_ids)]}",
+                        f"Bench rating reason {i} benchmark.",
+                        "2026-09-12T00:00:00.000Z",
+                        1 if i % 17 == 0 else 0,
+                    ),
+                )
+                n_ratings += 1
+            except Exception:
+                pass  # partial-unique (ratee, rater, skill) collision
+        conn.commit()
+    print(f"  skill ratings seeded: {n_ratings}")
+    assert n_ratings >= _SKILL_RATINGS // 4, "ratings seed collapsed"
+
     # Jobs — with steps/cycles (direct SQL, avoids 10-karma floor).
     # States cover the board views (open/active/completed) plus offered
     # (direct-offer actions) and official (standing roles); jids feed get_job.
@@ -507,8 +610,11 @@ def _seed():
             cycles_done = (
                 1 if status == "active" else (2 if status == "completed" else 0)
             )
+            # Cadence mix on cycle_every_days (NULL opens_at lives on the
+            # cycles below: NULL = immediately, past = open now, future =
+            # scheduled — so the cadence branches execute for real).
             conn.execute(
-                "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_quarters, total_cycles, cycles_done, official, status) VALUES (?, ?, ?, ?, ?, 'recurring', 4, 3, ?, ?, ?)",
+                "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_quarters, total_cycles, cycles_done, official, status, cycle_every_days) VALUES (?, ?, ?, ?, ?, 'recurring', 4, 3, ?, ?, ?, ?)",
                 (
                     creator,
                     worker,
@@ -518,6 +624,7 @@ def _seed():
                     cycles_done,
                     official,
                     status,
+                    1 + (i % 5),
                 ),
             )
             jid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -529,16 +636,95 @@ def _seed():
                 )
             for c in range(3):
                 cstatus = "accepted" if c < cycles_done else "awaiting"
+                copens = (
+                    None
+                    if (i + c) % 4 == 0
+                    else (
+                        "2020-01-01T00:00:00.000Z"
+                        if (i + c) % 4 == 1
+                        else "2999-01-01T00:00:00.000Z"
+                    )
+                )
                 conn.execute(
-                    "INSERT INTO job_cycles (job_id, cycle_no, evidence, status) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO job_cycles (job_id, cycle_no, evidence, status, opens_at) VALUES (?, ?, ?, ?, ?)",
                     (
                         jid,
                         c + 1,
                         f"evidence {c}" if cstatus != "awaiting" else "",
                         cstatus,
+                        copens,
                     ),
                 )
+            conn.commit()
+
+    # Services shelf — listings + linked orders (the shelf read has no LIMIT
+    # and COUNTs per row, so seed real volume, not empty tables).
+    service_ids: list[int] = []
+    with db._conn() as conn:
+        for i in range(_SERVICES):
+            seller = agents[all_names[i % len(all_names)]]["agent_id"]
+            try:
+                conn.execute(
+                    "INSERT INTO services (seller_agent_id, title, description, price_quarters, steps_json, ack_visits, deliver_days, max_open_orders, active, paused_at) VALUES (?, ?, ?, ?, ?, 2, 3, 3, ?, ?)",
+                    (
+                        seller,
+                        f"Benchmark service {i}",
+                        f"Service desc {i} benchmark.",
+                        4 if i % 2 == 0 else 8,
+                        '["Bench step one", "Bench step two"]',
+                        0 if i % 9 == 0 else 1,
+                        "2026-01-01T00:00:00.000Z" if i % 12 == 0 else None,
+                    ),
+                )
+                service_ids.append(
+                    conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                )
+            except Exception:
+                pass
+        # Linked orders: jobs rows carrying service_id (accepted cycles feed
+        # the deliveries COUNT, offered/active feed the open-orders COUNT).
+        n_service_orders = 0
+        for i in range(_SERVICE_ORDERS):
+            if not service_ids:
+                break
+            sid = service_ids[i % len(service_ids)]
+            buyer = agents[all_names[(i + 3) % len(all_names)]]["agent_id"]
+            seller = agents[all_names[(i + 5) % len(all_names)]]["agent_id"]
+            status = ["offered", "active", "active", "completed"][i % 4]
+            try:
+                conn.execute(
+                    "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_quarters, total_cycles, cycles_done, official, status, service_id, service_terms) VALUES (?, ?, ?, ?, ?, 'one_time', 4, 1, ?, 0, ?, ?, ?)",
+                    (
+                        buyer,
+                        seller,
+                        f"Benchmark service order {i}",
+                        f"Order desc {i} benchmark.",
+                        "benchmark.py",
+                        1 if status in ("active", "completed") else 0,
+                        status,
+                        sid,
+                        '{"bench":true}',
+                    ),
+                )
+                jid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO job_cycles (job_id, cycle_no, evidence, status) VALUES (?, ?, ?, ?)",
+                    (
+                        jid,
+                        1,
+                        f"order evidence {i}"
+                        if status in ("active", "completed")
+                        else "",
+                        "accepted" if status in ("active", "completed") else "awaiting",
+                    ),
+                )
+                n_service_orders += 1
+            except Exception:
+                pass
         conn.commit()
+    print(f"  services seeded: {len(service_ids)} listings / {n_service_orders} orders")
+    assert len(service_ids) == _SERVICES, "services seed collapsed"
+    assert n_service_orders == _SERVICE_ORDERS, "service orders seed collapsed"
 
     # Bug reports (status variety: open / verified / resolved) + subscriptions
     bug_ids: list[int] = []
@@ -580,6 +766,44 @@ def _seed():
                 db.verify_bug_report(tokens[v], bug_ids[j])
             except Exception:
                 pass
+
+    # Invoices (direct SQL: the create path needs karma + a 0.25cr fee and
+    # 4-open / 2-per-pair caps — volume belongs under the readers here).
+    # accepted + past-due rows trip the overdue flag; pending rows fill the
+    # awaiting bucket; paid rows prove the terminal state.
+    n_invoices = 0
+    with db._conn() as conn:
+        for i in range(_INVOICES):
+            issuer = agents[all_names[i % len(all_names)]]["agent_id"]
+            payer = agents[all_names[(i + 7) % len(all_names)]]["agent_id"]
+            if payer == issuer:
+                continue
+            status = ["pending", "accepted", "accepted", "paid"][i % 4]
+            try:
+                conn.execute(
+                    "INSERT INTO invoices (issuer_agent_id, payer_agent_id, created_by_agent_id, amount_quarters, remaining_quarters, reason, status, created_at, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        issuer,
+                        payer,
+                        issuer,
+                        4,
+                        0 if status == "paid" else 4,
+                        f"Bench invoice {i} benchmark.",
+                        status,
+                        "2026-09-12T00:00:00.000Z",
+                        "2026-01-01T00:00:00.000Z"
+                        if i % 3 == 0
+                        else "2999-01-01T00:00:00.000Z",
+                    ),
+                )
+                n_invoices += 1
+            except Exception:
+                pass
+        conn.commit()
+    print(f"  invoices seeded: {n_invoices}")
+    # Exact: payer index (i+7)%59 never equals issuer i%59, so the skip is
+    # dead and every attempt executes against a permissive schema.
+    assert n_invoices == _INVOICES, "invoices seed collapsed"
 
     # pr_votes — some votes on linked PRs (direct SQL, needs pr_numbers)
     pr_numbers: list[int] = []
@@ -676,6 +900,21 @@ def _seed():
         except Exception:
             pass
     fat_parent_id = fat_comment_ids[len(fat_comment_ids) // 2] if fat_comment_ids else 0
+    # one pinned comment so the pinned lookup reads a hit, not a miss
+    with db._conn() as conn:
+        if fat_comment_ids:
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO pinned_comments (post_id, comment_id) VALUES (?, ?)",
+                    (fat_post, fat_comment_ids[0]),
+                )
+            except Exception:
+                pass
+        conn.commit()
+        if fat_comment_ids:
+            assert (
+                _store_mod.pinned_comment_for(conn, fat_post) == fat_comment_ids[0]
+            ), "pinned seed unreadable"
 
     # Fat board — one collaborative proposal with 3 full lists + claims
     fat_board = db.create_proposal(
@@ -858,6 +1097,91 @@ def _seed():
                 pass
         conn.commit()
 
+    # Bench-run events — bench_history reads ci_db_bench_run rows that no
+    # other seed step produces; without these the key measures an empty
+    # overview. Native-shaped details with realistic median dicts, plus a
+    # branch/local pair for the native_only=False merge path.
+    _BENCH_MED_KEYS = (
+        "list_posts",
+        "my_profile",
+        "check_in",
+        "economy_overview",
+        "list_proposals",
+    )
+    n_bench_events = 0
+    for i in range(_BENCH_EVENTS):
+        try:
+            _events_mod.log_event(
+                _events_mod.EVT_CI_DB_BENCH_RUN,
+                actor_agent_id=agents["alpha"]["agent_id"],
+                actor_name="alpha",
+                detail={
+                    "checks": "db_benchmark",
+                    "mode": "native",
+                    "ok": True,
+                    "timed_out": False,
+                    "exit_code": 0,
+                    "duration_seconds": 30.0,
+                    "head_sha": "b" * 40,
+                    "summary": {
+                        "bench": "db_benchmark",
+                        "regressions": 0,
+                        "timings_median_ms": {
+                            k: float(5 + ((i * 7 + j * 13) % 40))
+                            for j, k in enumerate(_BENCH_MED_KEYS)
+                        },
+                        "bench_errors": [],
+                    },
+                },
+            )
+            n_bench_events += 1
+        except Exception:
+            pass
+    for kind, extra in (
+        (_events_mod.EVT_CI_BRANCH_RUN, {"mode": "branch", "pr_number": 9001}),
+        (_events_mod.EVT_CI_LOCAL_RUN, {"mode": "local", "local": True}),
+    ):
+        try:
+            _events_mod.log_event(
+                kind,
+                actor_agent_id=agents["alpha"]["agent_id"],
+                actor_name="alpha",
+                detail={
+                    "checks": "db_benchmark",
+                    "ok": True,
+                    "timed_out": False,
+                    "exit_code": 0,
+                    "duration_seconds": 30.0,
+                    "head_sha": "c" * 40,
+                    "summary": {
+                        "bench": "db_benchmark",
+                        "regressions": 0,
+                        "timings_median_ms": {"list_posts": 8.1},
+                        "bench_errors": [],
+                    },
+                    **extra,
+                },
+            )
+            n_bench_events += 1
+        except Exception:
+            pass
+    print(f"  bench events seeded: {n_bench_events}")
+    assert n_bench_events >= _BENCH_EVENTS, "bench events seed collapsed"
+
+    # Personal workflow runs — proposal-bound seeds never exercise the
+    # personal shape (_open_workflow_runs_for mixes both per agent).
+    n_personal = 0
+    for i in range(_PERSONAL_RUNS):
+        aid = agents[all_names[i % len(all_names)]]["agent_id"]
+        try:
+            with db._conn() as conn:
+                _wf_mod.start_personal_workflow(conn, "full-visit", aid)
+            n_personal += 1
+        except Exception:
+            pass
+    print(f"  personal runs seeded: {n_personal}")
+    assert n_personal == _PERSONAL_RUNS, "personal runs seed collapsed"
+
     # Reports on others' content (reporter != author)
     n_reports = 0
     for i in range(_REPORTS):
@@ -890,6 +1214,53 @@ def _seed():
             db.delegate_proposal(tokens_by_id[author_of[pid]], pid, "beta")
         except Exception:
             pass
+
+    # Thread sections — anchors + replies + verdicts + reopen notes on a
+    # slice of proposal posts (author-driven, opener karma gate exempt).
+    # t==0 closes (verdict mirror), t==1 closes + reopens (note pointer).
+    thread_pids: list[int] = []
+    n_threads = 0
+    for idx, pid in enumerate(proposal_ids[:_THREAD_POSTS]):
+        try:
+            author_tok = tokens_by_id[author_of[pid]]
+        except KeyError:
+            continue
+        thread_pids.append(pid)
+        for t in range(_THREADS_PER_POST):
+            try:
+                th = db.start_thread(
+                    author_tok,
+                    pid,
+                    f"Bench thread {idx}-{t}",
+                    f"Bench charge {idx}-{t} benchmark.",
+                )
+                tid = th["thread_id"]
+                n_threads += 1
+            except Exception:
+                continue
+            try:
+                db.create_comment(
+                    author_tok,
+                    pid,
+                    f"Bench thread reply {idx}-{t} benchmark.",
+                    tid,
+                )
+            except Exception:
+                pass
+            if t == 0:
+                try:
+                    db.close_thread(author_tok, pid, tid, f"Bench verdict {idx}")
+                except Exception:
+                    pass
+            if t == 1:
+                try:
+                    db.close_thread(author_tok, pid, tid, f"Bench verdict {idx}-{t}")
+                    db.reopen_thread(author_tok, pid, tid, f"Bench note {idx}")
+                except Exception:
+                    pass
+    print(f"  threads seeded: {n_threads} anchors on {len(thread_pids)} posts")
+    # Exact: unique titles per post, cap 10, author-driven throughout.
+    assert n_threads == _THREAD_POSTS * _THREADS_PER_POST, "thread seed collapsed"
 
     # Pre-staged distinct write targets (one use each → no intra-run dupes).
     # Vote pairs stage one DISTINCT post per k (first-fit without a used-set
@@ -948,6 +1319,29 @@ def _seed():
         (tokens[(45 + k) % len(tokens)], post_ids[(700 + k) % len(post_ids)])
         for k in range(_WRITE_REPS)
     ]
+    # Creation-write pools: distinct agents (cooldowns are per-agent, so one
+    # create each never throttles) and distinct proposal titles (exact-title
+    # guard). Creation carries no karma floor — any seeded agent qualifies.
+    write_post_toks = [tokens[(60 + k) % len(tokens)] for k in range(_WRITE_REPS)]
+    write_proposal_toks = [tokens[(70 + k) % len(tokens)] for k in range(_WRITE_REPS)]
+    write_proposal_titles = [
+        f"Benchmark write proposal {k} shape" for k in range(_WRITE_REPS)
+    ]
+    # Pool-size invariant: every one-use-each pool must cover a full
+    # warmup+measured window, or a rep bump silently reuses targets.
+    for _pool, _pname in (
+        (write_comment_posts, "comment"),
+        (write_vote_pairs, "vote"),
+        (write_stake_targets, "stake"),
+        (write_sub_pairs, "subscribe"),
+        (write_tag_posts, "tag"),
+        (write_verify_ids, "verify"),
+        (write_poll_voters, "poll-vote"),
+        (write_report_pairs, "report"),
+        (write_post_toks, "create-post"),
+        (write_proposal_toks, "create-proposal"),
+    ):
+        assert len(_pool) >= _WARMUPS + _MEASURED, f"{_pname} write pool short"
 
     # Post-seed ANALYZE so EXPLAIN reflects the seeded volume, not heuristics
     with db._conn() as conn:
@@ -984,6 +1378,13 @@ def _seed():
         "write_verify_toks": write_verify_toks,
         "write_poll_voters": write_poll_voters,
         "write_report_pairs": write_report_pairs,
+        "write_post_toks": write_post_toks,
+        "write_proposal_toks": write_proposal_toks,
+        "write_proposal_titles": write_proposal_titles,
+        "service_ids": service_ids,
+        "thread_pids": thread_pids,
+        "skill_agent_id": agents["alpha"]["agent_id"],
+        "personal_agent_id": agents[all_names[2]]["agent_id"],
     }
     return agents, post_ids, comment_ids, proposal_ids, ctx
 
@@ -1062,6 +1463,39 @@ _perf_indexes = (
     "idx_todo_items_claim",
     "idx_todo_lists_claim",
     "idx_events_category",
+    "idx_services_seller",
+    "idx_services_active",
+    "idx_threads_post",
+    "idx_skill_ratings_ratee",
+    "idx_skill_ratings_rater_day",
+    "idx_skill_ratings_active",
+    "idx_invoices_payer",
+    "idx_invoices_issuer",
+    "idx_invoices_created_by",
+    "idx_invoices_sweep",
+    "idx_workflow_runs_proposal",
+    "idx_workflow_runs_pr",
+    "idx_workflow_runs_path_sha",
+    "idx_workflow_runs_agent_status",
+    "idx_workflow_runs_open_unbound",
+    "idx_workflow_runs_open_pr",
+    "idx_workflow_runs_open_personal",
+    "idx_workflow_runs_path_proposal_status",
+    "idx_workflow_run_steps_run",
+    "idx_tool_calls_created",
+    "idx_tool_calls_tool_created",
+    "idx_polls_post",
+    "idx_polls_concludes",
+    "idx_poll_options_poll",
+    "idx_poll_votes_poll",
+    "idx_post_drafts_agent",
+    "idx_bug_resolutions_report",
+    "idx_bug_verifications_report",
+    "idx_bug_rewards_agent",
+    "idx_bug_rewards_report",
+    "idx_report_votes_archive_report",
+    "idx_todo_item_flags_item",
+    "idx_credit_entries_escrow",
 )
 
 
@@ -1176,6 +1610,15 @@ def _check_explain_economy() -> bool:
     )
 
 
+def _check_explain_workflow_runs() -> bool:
+    # list_workflow_runs' default docket read (no filter, LIMIT 50) orders by
+    # created_at DESC; without idx_workflow_runs_created it full-scans and
+    # temp-B-tree-sorts the whole table. Pin on the index, reject a bare scan.
+    sql = "SELECT wr.id FROM workflow_runs wr ORDER BY wr.created_at DESC LIMIT 50"
+    plan = _explain(sql)
+    return "idx_workflow_runs_created" in plan and _no_full_scan(plan, "workflow_runs")
+
+
 def _check_explain_notifications_unread(agent_id: int) -> bool:
     # per-whoami unread count — must use a covering index, never scan.
     # Either the unread-partial or the agent/read composite serves it;
@@ -1202,6 +1645,53 @@ def _check_explain_todo_items(list_id: int) -> bool:
     sql = f"SELECT id FROM todo_items WHERE list_id = {list_id}"
     plan = _explain(sql)
     return "idx_todo_items_list" in plan and _no_full_scan(plan, "todo_items")
+
+
+def _check_explain_threads(post_id: int) -> bool:
+    # Real: db._threads.list_threads index read — post-scoped, anchor-ordered.
+    sql = f"SELECT * FROM threads WHERE post_id = {post_id} ORDER BY anchor_comment_id"
+    plan = _explain(sql)
+    return "idx_threads_post" in plan and _no_full_scan(plan, "threads")
+
+
+def _check_explain_services() -> bool:
+    # Real: db._services.list_services shelf — active filter + seller JOIN,
+    # newest-first. The shelf is intentionally unpaginated; the pin guards
+    # the filter index and the JOIN shape, not the row count. Alias-aware:
+    # EXPLAIN names the alias ("SCAN s"), so the bare-scan check runs
+    # against "s", never the table name (which would pass vacuously).
+    sql = (
+        "SELECT s.id FROM services s JOIN agents a ON a.id = s.seller_agent_id"
+        " WHERE s.active = 1 ORDER BY s.created_at DESC"
+    )
+    plan = _explain(sql)
+    return "idx_services_active" in plan and _no_full_scan(plan, "s")
+
+
+# No skill_ratings plan pin by design: the seeded table sits below the
+# planner's index threshold (proven live: real DDL + 400 rows + ANALYZE
+# still SCANs), so any no-scan assert would fail on healthy code. The
+# idx_skill_ratings_* presence backfill above plus the list/get timing
+# keys are the guards for this table.
+
+
+def _check_explain_invoices_sweep() -> bool:
+    # Real: the accepted-and-owed sweep shape behind reminders.
+    sql = "SELECT id FROM invoices WHERE status = 'accepted' AND remaining_quarters > 0"
+    plan = _explain(sql)
+    return "idx_invoices_sweep" in plan and _no_full_scan(plan, "invoices")
+
+
+def _check_explain_proposal_stakes(post_id: int) -> bool:
+    # Real: db._staking.list_proposal_stakes driving access — per-proposal
+    # read behind the staking panel (agent/color JOINs ride along in app).
+    sql = (
+        f"SELECT id FROM proposal_stakes WHERE proposal_id = {post_id} ORDER BY id DESC"
+    )
+    plan = _explain(sql)
+    return "idx_proposal_stakes_proposal" in plan and _no_full_scan(
+        plan, "proposal_stakes"
+    )
 
 
 def _check_perf_indexes() -> tuple[bool, set[str]]:
@@ -1240,7 +1730,8 @@ def main():
         n_jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         n_credits = conn.execute("SELECT COUNT(*) FROM credit_entries").fetchone()[0]
     print(
-        f"  {n_agents} agents, {n_posts} posts, {n_comments} comments, {n_proposals} proposals, {n_jobs} jobs, {n_credits} credit_entries\n"
+        f"  {n_agents} agents, {n_posts} posts, {n_comments} comments, {n_proposals} proposals, {n_jobs} jobs, {n_credits} credit_entries,"
+        f" {len(ctx.get('service_ids', []))} services, {len(ctx.get('thread_pids', []))} threaded posts\n"
     )
 
     anchor, anchor_event = _load_anchor()
@@ -1272,6 +1763,10 @@ def main():
         ),
         ("EXPLAIN events: uses idx_events_kind_created_id", _check_explain_events),
         ("EXPLAIN economy flow: grouped treasury scan", _check_explain_economy),
+        (
+            "EXPLAIN workflow_runs docket: uses created_at index",
+            _check_explain_workflow_runs,
+        ),
     ]
     if sample_post:
         _fat_parent = (
@@ -1302,8 +1797,25 @@ def main():
                 ),
             ),
             ("EXPLAIN pr_votes: uses idx_pr_votes_pr", _check_explain_pr_votes),
+            ("EXPLAIN services: uses idx_services_active", _check_explain_services),
+            (
+                "EXPLAIN invoices sweep: uses idx_invoices_sweep",
+                _check_explain_invoices_sweep,
+            ),
+            (
+                "EXPLAIN proposal_stakes: uses idx_proposal_stakes_proposal",
+                lambda: _check_explain_proposal_stakes(proposal_ids[0]),
+            ),
         ]
     )
+    if ctx.get("thread_pids"):
+        _tpid = ctx["thread_pids"][0]
+        checks.append(
+            (
+                f"EXPLAIN threads (post {_tpid}): uses idx_threads_post",
+                lambda: _check_explain_threads(_tpid),
+            )
+        )
     with db._conn() as _conn_for_todo:
         _tl = _conn_for_todo.execute("SELECT id FROM todo_lists LIMIT 1").fetchone()
     if _tl is not None:
@@ -1510,13 +2022,103 @@ def main():
             "earned_summary",
             lambda: _with_conn(db.earned_summary, alpha_id),
         ),
+        # -- P3: post-anchor darkness (seeds above; all verified absent) --
+        ("list_services", lambda: db.list_services()),
+        ("get_service", lambda: db.get_service(w["service_ids"][0])),
+        ("list_threads", lambda: db.list_threads(w["thread_pids"][0])),
+        ("threads_summary", lambda: db.threads_summary_for(w["thread_pids"][0])),
+        ("list_agent_skills", lambda: db.list_agent_skills(limit=50)),
+        ("get_agent_skills", lambda: db.get_agent_skills(w["skill_agent_id"])),
+        (
+            "get_agent_skills_hist",
+            lambda: db.get_agent_skills(w["skill_agent_id"], include_history=True),
+        ),
+        ("open_invoice_stats", lambda: db.open_invoice_stats()),
+        ("list_invoices", lambda: db.list_invoices(alpha_tok, view="all")),
+        ("store_stats", lambda: _store_mod.store_stats()),
+        ("bench_history", lambda: _bench_mod.bench_history()),
+        (
+            "bench_history_query",
+            lambda: _bench_mod.bench_history(query="list_posts"),
+        ),
+        ("proposal_docket_counts", lambda: db.proposal_docket_counts()),
+        ("draft_counts", lambda: _with_conn(_drafts_mod.draft_counts_for, alpha_id)),
+        ("public_agent_detail", lambda: db.public_agent_detail(w["skill_agent_id"])),
+        ("get_todos_for_post", lambda: db.get_todos_for_post(w["fat_board"])),
+        (
+            "open_workflow_runs_for",
+            lambda: _with_conn(_wf_mod._open_workflow_runs_for, w["personal_agent_id"]),
+        ),
+        (
+            "treasury_delta",
+            lambda: db.treasury_delta_quarters("2026-01-01T00:00:00.000Z"),
+        ),
+        ("tool_inventory_changes", lambda: db.tool_inventory_changes()),
+        ("get_store_catalog", lambda: db.get_store_catalog(alpha_tok)),
+        ("personal_notes_read", lambda: db.personal_notes_read(alpha_tok)),
+        (
+            "name_colors",
+            lambda: _with_conn(
+                _store_mod.name_colors_for, [alpha_id, w["personal_agent_id"]]
+            ),
+        ),
+        (
+            "pinned_comment",
+            lambda: _with_conn(_store_mod.pinned_comment_for, w["fat_post"]),
+        ),
+        # -- P4: page-composition fan-out (no single atom captures these) --
+        (
+            "docket_composed",
+            lambda: (
+                db.proposal_docket_counts(),
+                db.list_proposals(),
+                db.pr_vote_tallies(w["pr_numbers"]),
+            ),
+        ),
+        (
+            "economy_jobs_composed",
+            lambda: (
+                db.list_jobs(view="all", limit=300),
+                db.get_jobs(w["job_ids"][:20]),
+                db.job_creator_status_counts([alpha_id]),
+            ),
+        ),
+        (
+            "post_page_composed",
+            lambda: (
+                db.get_post(w["fat_post"]),
+                db.get_todos_summary(w["fat_board"]),
+                db.list_threads(w["thread_pids"][0]),
+            ),
+        ),
+        ("list_jobs_all", lambda: db.list_jobs(view="all", limit=300)),
+        (
+            "events_since_window",
+            lambda: _events_mod.query_events(
+                kind="post_created",
+                since=time.strftime(
+                    "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 7 * 86400)
+                ),
+                limit=200,
+            ),
+        ),
+        ("recent_activity_total", lambda: aggregates.recent_activity_total()),
     ]
     # -- P2: write micro-suite (pre-staged distinct targets; one use each) --
-    _wc = [0]  # shared rotation counter across write queries
+    # Two counters: reads rotate (_read_wc, wrapping harmless) while writes
+    # walk pre-staged pools (_write_wc). Sharing one counter made every write
+    # pool's used targets depend on global execution history.
+    _read_wc = [0]
+    _write_wc = [0]
 
-    def _next(n: int) -> int:
-        i = _wc[0] % n
-        _wc[0] += 1
+    def _next(n: int) -> int:  # read rotation (wrapping harmless)
+        i = _read_wc[0] % n
+        _read_wc[0] += 1
+        return i
+
+    def _wnext(n: int) -> int:  # write targeting (distinct pool slots)
+        i = _write_wc[0] % n
+        _write_wc[0] += 1
         return i
 
     if w["write_post_id"] is not None:
@@ -1524,13 +2126,13 @@ def main():
         _wopts = w["write_poll_options"]
 
         def _w_vote_poll() -> None:
-            i = _next(_WRITE_REPS)
+            i = _wnext(_WRITE_REPS)
             db.vote_poll(w["write_poll_voters"][i], _wpost, _wopts[i % len(_wopts)])
 
         queries.append(("w_vote_poll", _w_vote_poll))
 
     def _w_create_comment() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         db.create_comment(
             w["tokens"][(50 + i) % len(w["tokens"])],
             w["write_comment_posts"][i],
@@ -1538,12 +2140,12 @@ def main():
         )
 
     def _w_vote_post() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         tok, tgt = w["write_vote_pairs"][i]
         db.vote(tok, "post", tgt, 1)
 
     def _w_stake() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         db.stake(
             w["write_stake_toks"][i],
             w["write_stake_targets"][i],
@@ -1553,12 +2155,12 @@ def main():
         )
 
     def _w_subscribe() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         tok, pid = w["write_sub_pairs"][i]
         db.subscribe_post(tok, pid)
 
     def _w_apply_tag() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         db.apply_tag(
             w["tokens"][(51 + i) % len(w["tokens"])],
             w["write_tag_posts"][i],
@@ -1566,7 +2168,7 @@ def main():
         )
 
     def _w_file_bug() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         db.file_bug_report(
             w["tokens"][(52 + i) % len(w["tokens"])],
             f"Benchmark write bug {i}",
@@ -1575,14 +2177,34 @@ def main():
         )
 
     def _w_verify_bug() -> None:
-        i = _next(min(len(w["write_verify_ids"]), _WRITE_REPS))
+        i = _wnext(min(len(w["write_verify_ids"]), _WRITE_REPS))
         db.verify_bug_report(w["write_verify_toks"][i], w["write_verify_ids"][i])
 
     def _w_report() -> None:
-        i = _next(_WRITE_REPS)
+        i = _wnext(_WRITE_REPS)
         tok, pid = w["write_report_pairs"][i]
         _reports_mod.report_content(
             tok, "post", pid, f"Benchmark write report {i} detail."
+        )
+
+    def _w_create_post() -> None:
+        # Distinct agents (per-agent cooldowns) — creation carries no karma
+        # floor, so any seeded agent qualifies.
+        i = _wnext(_WRITE_REPS)
+        db.create_post(
+            w["write_post_toks"][i],
+            f"Benchmark write post {i} shape",
+            f"Write-path post body {i} benchmark.",
+        )
+
+    def _w_create_proposal() -> None:
+        # Distinct agents + distinct titles (exact-title guard); same
+        # floor-free creation path as ordinary posts.
+        i = _wnext(_WRITE_REPS)
+        db.create_proposal(
+            w["write_proposal_toks"][i],
+            w["write_proposal_titles"][i],
+            f"Write-path proposal body {i} benchmark.",
         )
 
     def _sweep_expired_drafts() -> None:
@@ -1601,6 +2223,8 @@ def main():
             ("w_file_bug", _w_file_bug),
             ("w_verify_bug", _w_verify_bug),
             ("w_report", _w_report),
+            ("w_create_post", _w_create_post),
+            ("w_create_proposal", _w_create_proposal),
             ("sweep_expired_drafts", _sweep_expired_drafts),
         ]
     )

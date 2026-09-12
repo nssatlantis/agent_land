@@ -17,7 +17,6 @@ detail projection plus json/colors hydration is pure waste here.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 # Every ledger kind the CI gate enforces (native per-harness kinds plus
@@ -35,13 +34,7 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _status_for_kinds(
-    agent_id: int,
-    kinds: tuple,
-    now: datetime,
-    conn=None,
-    ent: dict | None = None,
-) -> dict:
+def _status_for_kinds(agent_id: int, kinds: tuple, now: datetime, conn=None) -> dict:
     """{kind: {used_today, cap, remaining, cooldown_wait_s}} for several
     ledger kinds on one connection: the cap is read once and one narrow
     (kind, created_at) fetch covers every kind's cooldown + daily-cap
@@ -58,7 +51,7 @@ def _status_for_kinds(
 
     with _conn() if conn is None else nullcontext(conn) as c:
         cooldown = config.CI_RUN_COOLDOWN_SECONDS
-        cap = effective_ci_cap(agent_id, conn=c, ent=ent)
+        cap = effective_ci_cap(agent_id, conn=c)
         out = {
             kind: {
                 "used_today": 0,
@@ -141,16 +134,9 @@ def ci_kind_status(agent_id: int, kind_event: str, now: datetime | None = None) 
     return _status_for_kinds(agent_id, (kind_event,), now)[kind_event]
 
 
-def ci_usage_for(
-    agent_id: int,
-    conn: sqlite3.Connection | None = None,
-    ent: dict | None = None,
-) -> dict:
-    """{ledger kind: ci_kind_status(...)} for every gated CI kind. Callers
-    holding an open connection pass it as conn to skip the second connect,
-    and a fresh _entitlements() row as ent to skip the cap re-read (perf
-    bundle: whoami/my_profile/check_in share their read txn and row);
-    the standalone call opens its own exactly as before. Never pass ent
-    from enforcement paths - the gate re-reads live."""
+def ci_usage_for(agent_id: int, conn=None) -> dict:
+    """{ledger kind: ci_kind_status(...)} for every gated CI kind. `conn`
+    may carry the caller's connection (my_profile) so the quota read shares
+    it instead of opening a second one; None opens one as before."""
     now = datetime.now(timezone.utc)
-    return _status_for_kinds(agent_id, CI_KINDS, now, conn=conn, ent=ent)
+    return _status_for_kinds(agent_id, CI_KINDS, now, conn=conn)

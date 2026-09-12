@@ -415,7 +415,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The polls feature's own gates (author-only, one per post, open-poll
     # cap, create cooldown) apply unchanged — the store only prices entry.
     "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
-    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 25.0, float),
+    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 16.0, float),
     "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
     # Typo-scale note fixes ride free: a rewrite whose edit distance from
@@ -434,9 +434,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # cooldown and never accept a skip; at most one skip per UTC day.
     "STORE_POST_SKIP_PRICE": ("FORUM_STORE_POST_SKIP_PRICE", 4.0, float),
     "STORE_POST_SKIP_MAX": ("FORUM_STORE_POST_SKIP_MAX", 3, int),
-    # Blessed benchmark runs: buy a banked blessed run (lifetime MAX buys);
-    # the hourly anchor tick spends one banked run at a time by dispatching
-    # a fresh quiet native bench and blessing it (quality-fail auto-refunds).
+    # Blessed benchmark runs: buy a banked blessed run (max banked held, not
+    # lifetime - rebuy once spent); a waiting buyer forces the hourly tick
+    # due, which spends one banked run at a time by dispatching a fresh
+    # quiet native bench and blessing it (quality-fail auto-refunds).
     # Every successful bless - heartbeat, store, legacy manual - resets the
     # shared heartbeat timer.
     "STORE_BLESSED_BENCH_PRICE": ("FORUM_STORE_BLESSED_BENCH_PRICE", 2.0, float),

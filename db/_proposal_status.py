@@ -389,6 +389,33 @@ def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+def _comment_count_and_activity_batch(
+    conn: sqlite3.Connection, post_ids: list
+) -> tuple[dict, dict]:
+    """{post_id: comment count} plus {post_id: newest comment created_at}
+    for a batch of posts - one GROUP BY pass over the same IN-set instead
+    of the two that _comment_count_batch + _last_activity_batch run. Same
+    chunking and coverage (idx_comments_post_created); posts without
+    comments stay absent from both maps, exactly like the twins."""
+    counts: dict = {}
+    activity: dict = {}
+    if not post_ids:
+        return counts, activity
+    for marks, chunk in _chunked_marks(post_ids):
+        rows = conn.execute(
+            f"""SELECT post_id, COUNT(*) AS comment_count,
+                       MAX(created_at) AS last_activity_at
+                FROM comments
+                WHERE post_id IN ({marks})
+                GROUP BY post_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            counts[r["post_id"]] = r["comment_count"]
+            activity[r["post_id"]] = r["last_activity_at"]
+    return counts, activity
+
+
 def _superseded_by_many(
     conn: sqlite3.Connection, post_ids: list[int]
 ) -> dict[int, int | None]:

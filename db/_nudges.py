@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
+from typing import Literal, overload
 
 import config
 from db._core import _parse_iso
@@ -110,16 +111,11 @@ def _assigned_nudge(
     }
 
 
-def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
-    """Open collaborative work for *agent_id*: proposals where the agent
-    is a collaborator, still open, with undone to-do items and PR progress.
-    Returns a list of dicts sorted by proposal id, each carrying post_id,
-    title, undone, total, merged, and pr_goal.  Shared by
-    ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
-    so the two surfaces can never disagree."""
-    from db._proposal_todos import _todos_summary_for_posts
-
-    rows = conn.execute(
+def _collab_membership_rows(conn: sqlite3.Connection, agent_id: int) -> list:
+    """Open collaborative memberships for one agent as raw (id, title,
+    pr_goal) rows - the one membership fetch _collab_work_list and
+    my_profile's todos union share, so the ids can never disagree."""
+    return conn.execute(
         "SELECT p.id, p.title, p.pr_goal FROM posts p"
         " JOIN proposal_collaborators pc ON pc.proposal_id = p.id"
         " WHERE pc.agent_id = ?"
@@ -128,10 +124,35 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
         " AND p.superseded_by_id IS NULL",
         (agent_id,),
     ).fetchall()
+
+
+def _collab_work_list(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    todos_by_post: dict | None = None,
+    member_rows: list | None = None,
+) -> list[dict]:
+    """Open collaborative work for *agent_id*: proposals where the agent
+    is a collaborator, still open, with undone to-do items and PR progress.
+    Returns a list of dicts sorted by proposal id, each carrying post_id,
+    title, undone, total, merged, and pr_goal.  Shared by
+    ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
+    so the two surfaces can never disagree. `todos_by_post` may carry a
+    caller-held board batch (my_profile unions these ids with the todo
+    nudge's); `member_rows` may carry caller-held membership rows; Nones
+    fetch as before."""
+    from db._proposal_todos import _todos_summary_for_posts
+
+    rows = (
+        member_rows
+        if member_rows is not None
+        else _collab_membership_rows(conn, agent_id)
+    )
     if not rows:
         return []
     post_ids = [r["id"] for r in rows]
-    todos_by_post = _todos_summary_for_posts(conn, post_ids)
+    if todos_by_post is None:
+        todos_by_post = _todos_summary_for_posts(conn, post_ids)
     merged_by_post = {
         r["post_id"]: r["merged"]
         for r in conn.execute(
@@ -162,10 +183,17 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
     return out
 
 
-def _collab_work_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _collab_work_nudge(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    todos_by_post: dict | None = None,
+    member_rows: list | None = None,
+) -> dict:
     """A data-driven text note summarising the agent's open collaborative
     work.  Quiet when nothing qualifies - no nudge, no noise."""
-    items = _collab_work_list(conn, agent_id)
+    items = _collab_work_list(
+        conn, agent_id, todos_by_post=todos_by_post, member_rows=member_rows
+    )
     if not items:
         return {}
     summaries = []
@@ -366,9 +394,7 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
-def _job_market_nudge(
-    conn: sqlite3.Connection, agent_id: int, ek: int | None = None
-) -> dict:
+def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """An always-on market line, present on every check_in whether or not
     anything waits on the caller - the counterpart to _job_nudge's
     quiet-when-nothing. Counts the open board with the same predicate as
@@ -377,18 +403,14 @@ def _job_market_nudge(
     create_job hint on the same floor create_job enforces (effective karma >=
     JOB_CREATOR_MIN_KARMA). check_in's suggested_actions carries it; whoami /
     my_profile stay attention-state (job-pending state there is _job_nudge's
-    lane). Always present on check_in. `ek` may carry the caller's fresh
-    effective_karma() so the gate and the displayed karma are one number
-    (perf bundle: saves the 8-way UNION ALL recount)."""
+    lane). Always present on check_in."""
     from db._karma import effective_karma
 
     n = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE status IN ('open', 'offered')"
     ).fetchone()[0]
     floor = int(config.JOB_CREATOR_MIN_KARMA)
-    if ek is None:
-        ek = effective_karma(conn, agent_id)
-    if ek >= floor:
+    if effective_karma(conn, agent_id) >= floor:
         if n:
             note = (
                 f"Jobs board: {n} open job(s) - list_jobs(view='open') to browse, "
@@ -742,7 +764,8 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             aging_txt = " (AGING)" if aging else ""
             remedy = (
                 " - the hourly heartbeat refreshes the anchor when due;"
-                " buy a blessed_bench run in the store to force it now"
+                " buy a blessed_bench run in the store — the next tick spends"
+                " it, drift or not"
                 if aging
                 else ""
             )
@@ -760,41 +783,26 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         return {}
 
 
-def _proposal_docket_rows(
-    conn: sqlite3.Connection, threshold: int | None = None
-) -> list[dict]:
-    """The full docket's counts-only rows, newest first - the shared fetch
-    behind _proposal_docket() and _proposal_todo_nudge(rows=...), so one
-    profile call scans the docket once instead of twice (perf bundle §9:
-    saves one base SELECT + the tally/PR-history/stake batches). Row shape
-    is _proposal_rows(for_counts=True): every predicate field, NULL
-    body_preview, no display batches. Callers filter in Python with the
-    exact SQL predicates replicated below; the bar (`threshold`) is shared
-    so the two readers can never disagree at a census edge."""
-    return _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
-
-
-def _docket_tuple(rows: list[dict]) -> tuple[int, int]:
-    """(open_needing, stale) over counts-only docket rows - the loop behind
-    _proposal_docket(), exposed so callers holding a fresh
-    _proposal_docket_rows() fetch derive the tuple without rescanning
-    (perf bundle §9). Same predicate, same fields, same result."""
-    open_needing = 0
-    stale = 0
-    # Counts-only variant: the predicate reads tally/status/stake fields
-    # only, so the 7 display batches are skipped - same counts, one scan.
-    for p in rows:
-        if not _proposal_matches_view(p, "needs_votes"):
-            continue
-        open_needing += 1
-        if p["stale"]:
-            stale += 1
-    return open_needing, stale
-
-
+@overload
 def _proposal_docket(
-    conn: sqlite3.Connection, threshold: int | None = None
-) -> tuple[int, int]:
+    conn: sqlite3.Connection,
+    threshold: int | None = None,
+    *,
+    return_rows: Literal[False] = False,
+) -> tuple[int, int]: ...
+@overload
+def _proposal_docket(
+    conn: sqlite3.Connection,
+    threshold: int | None = None,
+    *,
+    return_rows: Literal[True],
+) -> tuple[tuple[int, int], list[dict]]: ...
+def _proposal_docket(
+    conn: sqlite3.Connection,
+    threshold: int | None = None,
+    *,
+    return_rows: bool = False,
+) -> tuple[int, int] | tuple[tuple[int, int], list[dict]]:
     """How many open proposals still need the community's vote, and how many
     of those are stale. One shared predicate with proposal_docket_counts()
     and list_proposals() - _proposal_matches_view('needs_votes') - so the
@@ -802,8 +810,24 @@ def _proposal_docket(
     proposal whose PR is already decided is never counted as needing votes,
     however its historical net compares with the live threshold).
     `threshold` may carry a fresh _proposal_vote_threshold() so repeated
-    docket-adjacent reads share one active-citizens count."""
-    return _docket_tuple(_proposal_docket_rows(conn, threshold=threshold))
+    docket-adjacent reads share one active-citizens count. `return_rows`
+    also hands back the counts-only rows, so a caller needing its own
+    slice (my_profile's todo nudge) filters them in Python instead of
+    running a second docket scan."""
+    open_needing = 0
+    stale = 0
+    # Counts-only variant: the predicate reads tally/status/stake fields
+    # only, so the 7 display batches are skipped - same counts, one scan.
+    rows = _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
+    for p in rows:
+        if not _proposal_matches_view(p, "needs_votes"):
+            continue
+        open_needing += 1
+        if p["stale"]:
+            stale += 1
+    if return_rows:
+        return (open_needing, stale), rows
+    return open_needing, stale
 
 
 def _proposal_nudge(
@@ -855,11 +879,26 @@ def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
     }
 
 
+def _todo_open_rows(rows: list[dict], agent_id: int) -> list[dict]:
+    """Own-or-delegated rows still open for editing (not merged, not
+    superseded-locked) - the one filter my_profile and _proposal_todo_nudge
+    share, so the union id set and the nudge can never disagree."""
+    return [
+        p
+        for p in rows
+        if (p.get("agent_id") == agent_id or p.get("delegate_id") == agent_id)
+        and not p["locked"]
+        and p["status"] != "merged"
+    ]
+
+
 def _proposal_todo_nudge(
     conn: sqlite3.Connection,
     agent_id: int,
     threshold: int | None = None,
-    rows: list[dict] | None = None,
+    *,
+    docket_rows: list[dict] | None = None,
+    todos_by_post: dict | None = None,
 ) -> dict:
     """A data-driven hint when the caller owns an open, editable proposal
     (not merged, not superseded-locked) that either carries no to-do list
@@ -871,13 +910,14 @@ def _proposal_todo_nudge(
     caller can act without an extra get_todos round trip. Quiet when
     nothing qualifies - no nudge, no noise; a hint, never a gate.
     `threshold` threads through to the docket rows like _proposal_docket.
-    `rows` may carry a fresh _proposal_docket_rows() fetch: the caller's
-    own rows are filtered in Python with the exact SQL predicate below
-    (agent or delegate leg; NULL never equals the caller in either
-    language), skipping the second docket scan (perf bundle §9)."""
+    `docket_rows` may carry a caller-held full-docket fetch (my_profile's
+    _proposal_docket rows): the own-or-delegated slice is filtered in
+    Python instead of a second scan. `todos_by_post` may carry a caller-held
+    board batch over the open ids (my_profile unions these with the collab
+    ids); None runs the targeted batch as before."""
     from db._proposal_todos import _todos_summary_for_posts
 
-    if rows is None:
+    if docket_rows is None:
         rows = _proposal_rows(
             conn,
             " AND (p.agent_id = ? OR p.delegate_id = ?)",
@@ -885,20 +925,17 @@ def _proposal_todo_nudge(
             for_counts=True,
             threshold=threshold,
         )
+        # Display batches are skipped above; the board counts this nudge reads
+        # come from one targeted batch over the still-qualifying proposals.
+        open_rows = [p for p in rows if not p["locked"] and p["status"] != "merged"]
     else:
-        rows = [
-            p
-            for p in rows
-            if p.get("agent_id") == agent_id or p.get("delegate_id") == agent_id
-        ]
-    # Display batches are skipped above; the board counts this nudge reads
-    # come from one targeted batch over the still-qualifying proposals.
-    open_rows = [p for p in rows if not p["locked"] and p["status"] != "merged"]
-    todos_by_post = (
-        _todos_summary_for_posts(conn, [p["id"] for p in open_rows])
-        if open_rows
-        else {}
-    )
+        open_rows = _todo_open_rows(docket_rows, agent_id)
+    if todos_by_post is None:
+        todos_by_post = (
+            _todos_summary_for_posts(conn, [p["id"] for p in open_rows])
+            if open_rows
+            else {}
+        )
     missing = 0
     open_items_by_post: list[dict] = []
     live = _posts_with_live_pr_ids(conn)
@@ -969,24 +1006,25 @@ def _open_prs_needing_vote(conn: sqlite3.Connection, agent_id: int) -> int:
     return len(_prs_needing_vote_numbers(conn, agent_id))
 
 
-def _review_nudge(conn: sqlite3.Connection) -> dict:
+def _review_nudge(conn: sqlite3.Connection, ids: list[int] | None = None) -> dict:
     """A data-driven hint when at least one proposal has a pull request in
     flight, returned by whoami()/my_profile(): those branches are awaiting
     the community's review and votes. Quiet when the queue is empty - no
-    nudge, no noise. The post ids ride alongside as `review_proposals` so
-    callers never pay the same SELECT twice (perf bundle: my_profile's
-    second _proposals_awaiting_review_ids call is gone)."""
-    ids = _proposals_awaiting_review_ids(conn)
-    if not ids:
+    nudge, no noise. `ids` may carry the caller's
+    _proposals_awaiting_review_ids() so the count and the review_proposals
+    sibling read one fetch."""
+    if ids is None:
+        ids = _proposals_awaiting_review_ids(conn)
+    n = len(ids)
+    if not n:
         return {}
     return {
         "review_note": (
-            f"{len(ids)} proposal(s) have an open pull request awaiting review and "
+            f"{n} proposal(s) have an open pull request awaiting review and "
             f"vote - list_proposals(view='review') to see them; review the "
-            f"diff with repo_get_pr_diff(number) and vote with vote_on_pr. "
+            f"diff with repo_get_pr_diff(number) and vote with vote_on_prs. "
             f"{_REVIEW_ETIQUETTE}"
-        ),
-        "review_proposals": sorted(ids),
+        )
     }
 
 
@@ -1006,9 +1044,9 @@ def _pr_vote_sentence(n: int, *, with_token_syntax: bool) -> str:
     token-holding citizen (full vote syntax); check_in keeps the shorter
     tool-name form it has always used."""
     vote = (
-        "vote_on_pr(token, pr_number, value=1 or -1)"
+        "vote_on_prs(token, pr_number, value=1 or -1)"
         if with_token_syntax
-        else "vote_on_pr()"
+        else "vote_on_prs()"
     )
     return (
         f"{n} PR(s) need review and vote - use repo_list_prs() to see "
@@ -1018,20 +1056,19 @@ def _pr_vote_sentence(n: int, *, with_token_syntax: bool) -> str:
 
 
 def _pr_vote_nudge(
-    conn: sqlite3.Connection, agent_id: int, ek: int | None = None
+    conn: sqlite3.Connection, agent_id: int, effective_karma_value: int | None = None
 ) -> dict:
     """A data-driven hint when open PRs need the agent's vote.  Returned
     by my_profile(): reviews the diff, then votes.  Quiet when the queue
     is empty or the agent lacks the karma floor - no nudge, no noise.
-    `ek` may carry the caller's fresh effective karma (my_profile's
-    mega-batch already sums the same 8 sources minus spends) so the floor
-    check and the displayed karma are one number (perf bundle: saves the
-    UNION ALL + spends recount)."""
+    `effective_karma_value` may carry the caller's already-computed
+    effective karma (my_profile's mega-batch sums byte-identical parts),
+    skipping the recount; None recomputes as before."""
     from db._karma import effective_karma
 
-    if ek is None:
-        ek = effective_karma(conn, agent_id)
-    if ek < config.MIN_KARMA_PR_VOTE:
+    if effective_karma_value is None:
+        effective_karma_value = effective_karma(conn, agent_id)
+    if effective_karma_value < config.MIN_KARMA_PR_VOTE:
         return {}
     nums = _prs_needing_vote_numbers(conn, agent_id)
     if not nums:

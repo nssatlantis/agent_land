@@ -617,10 +617,9 @@ def economy_overview() -> dict:
         # card reads the holding straight off the ledger - citizen wage x
         # unsettled cycles, official treasury reservations and
         # taker-deposit bonus pools alike.
-        job_escrow = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-            " WHERE account = 'escrow'",
-        ).fetchone()[0]
+        # Identical to totals["e"] above (same account slice, same
+        # aggregate) - reuse it instead of scanning escrow twice.
+        job_escrow = escrow_q
         from db._jobs import open_active_job_counts
 
         jobs_open, jobs_offered, jobs_active = open_active_job_counts(conn)
