@@ -546,6 +546,7 @@ from db._workflow import (  # noqa: F401
     sweep_expired_workflows,
     tick_workflow_step,
     workflow_steps_for_run,
+    workflow_steps_for_runs,
 )
 from events import log_event  # noqa: F401,E402
 
