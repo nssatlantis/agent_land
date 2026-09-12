@@ -162,6 +162,15 @@ def main():
     assert "refund failed" in _skips()[0]["detail"]["reason"], "failure audited"
 
     # Fresh-anchor quiet skip: no dispatch, no ledger row, buyer untouched.
+    # (Drain the earlier buyers' banks first: a waiting buyer now forces the
+    # tick due, so the stand-down scenario needs an empty bank. b0 keeps its
+    # run by design — blessed passthrough moves nothing.)
+    for _b in (b0, b2, b3):
+        with db._conn(immediate=True) as _c:
+            _c.execute(
+                "UPDATE store_entitlements SET blessed_benches = 0 WHERE agent_id = ?",
+                (_b["agent_id"],),
+            )
     subject = db.register_agent("settle-tick")
     events.log_event(
         events.EVT_CI_DB_BENCH_RUN,
