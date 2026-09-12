@@ -11,7 +11,9 @@ with fewer statements, self-delegated pids in both lists.
 import os
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
+from unittest import mock
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_bench_trims_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -20,6 +22,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402, I001
+import db._content as _content_mod  # noqa: E402, I001
 from db._agent import _agent_row, _agent_row_fast  # noqa: E402, I001
 from db._proposal_docket import _proposal_rows, _proposal_rows_many  # noqa: E402, I001
 
@@ -65,8 +68,14 @@ def main():
     fresh = db.register_agent("bench-trim-fresh")
     slow, fast = _rows(fresh["agent_id"])
     assert slow["last_active"] is None and fast["last_active"] is None
-    for k in ("karma", "post_count", "comment_count", "prs_merged",
-              "jobs_completed", "credits_quarters"):
+    for k in (
+        "karma",
+        "post_count",
+        "comment_count",
+        "prs_merged",
+        "jobs_completed",
+        "credits_quarters",
+    ):
         assert slow[k] == 0 and fast[k] == 0, (k, slow[k], fast[k])
     print("  never-acted NULL/zero parity: ok")
 
@@ -206,6 +215,91 @@ def main():
     old_n, new_n = _count(_old), _count(_new)
     assert new_n < old_n, (old_n, new_n)
     print(f"  rows_many statements {old_n} -> {new_n}: ok")
+
+    # --- 9. F3 top-sort: order + scores match an independent tally --------
+    t1 = db.create_post(alpha["token"], "Trim top A", "Body A.")
+    t2 = db.create_post(beta["token"], "Trim top B", "Body B.")
+    t3 = db.create_post(pv["token"], "Trim top C", "Body C.")
+    for tok, tgt in (
+        (alpha["token"], t2["post_id"]),
+        (pv["token"], t2["post_id"]),
+        (beta["token"], t1["post_id"]),
+    ):
+        try:
+            db.vote(tok, "post", tgt, 1)
+        except Exception:
+            pass
+    with db._conn() as conn:
+        expect = {
+            r["id"]: r["s"]
+            for r in conn.execute(
+                "SELECT p.id AS id, COALESCE(SUM(v.value), 0) AS s"
+                " FROM posts p LEFT JOIN votes v ON v.target_type = 'post'"
+                " AND v.target_id = p.id"
+                f" WHERE p.id IN ({t1['post_id']},{t2['post_id']},{t3['post_id']})"
+                " GROUP BY p.id"
+            ).fetchall()
+        }
+        created = {
+            r["id"]: r["created_at"]
+            for r in conn.execute(
+                "SELECT id, created_at FROM posts WHERE id IN"
+                f" ({t1['post_id']},{t2['post_id']},{t3['post_id']})"
+            ).fetchall()
+        }
+    got = db.list_posts(limit=100, sort="top")
+    got = [d for d in got if d["id"] in expect]
+    # Fixed-width millis stamps sort lexicographically == chronologically,
+    # so reverse=True on (net, created, id) is exactly the SQL key.
+    assert [d["id"] for d in got] == sorted(
+        expect, key=lambda i: (expect[i], created[i], i), reverse=True
+    ), [d["id"] for d in got]
+    for d in got:
+        assert d["score"] == expect[d["id"]], (d["id"], d["score"], expect[d["id"]])
+    print("  top-sort order + scores: ok")
+
+    # --- 10. F3 surfaces: tag error, offset, kind, lazy threshold ---------
+    for sort in ("newest", "top"):
+        try:
+            db.list_posts(limit=5, sort=sort, tag="no-such-tag-xyz")
+            raise AssertionError(f"unknown tag must raise ({sort})")
+        except db.ForumError:
+            pass
+    full = db.list_posts(limit=100, sort="top")
+    p_a = db.list_posts(limit=50, sort="top")
+    p_b = db.list_posts(limit=50, sort="top", offset=50)
+    assert [d["id"] for d in p_a] + [d["id"] for d in p_b] == [
+        d["id"] for d in full[:100]
+    ]
+    kinds = {d["id"] for d in db.list_posts(limit=100, proposal_kind="none")}
+    assert (
+        all(
+            d["proposal_kind"] is None
+            for d in db.list_posts(limit=100, proposal_kind="none")
+        )
+        and kinds
+    )
+    stmts: list[str] = []
+
+    def _traced_list_posts(**kw):
+        # list_posts owns its connection: hand it a traced one so the
+        # statement pin observes the real path (an untraced fetch would
+        # pass vacuously).
+        with db._conn() as conn:
+            conn.set_trace_callback(stmts.append)
+            with mock.patch.object(
+                _content_mod, "_conn", return_value=nullcontext(conn)
+            ):
+                return db.list_posts(**kw)
+
+    _traced_list_posts(limit=20, sort="top", proposal_kind="none")
+    assert not [s for s in stmts if "COUNT(*) FROM agents" in s], stmts
+    stmts.clear()
+    _traced_list_posts(limit=100, sort="newest")
+    assert [s for s in stmts if "COUNT(*) FROM agents" in s], (
+        "proposal-bearing page must still read the live bar"
+    )
+    print("  tag/offset/kind/lazy-threshold: ok")
 
     print("test_bench_trims: all assertions passed")
 
