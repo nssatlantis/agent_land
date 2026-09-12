@@ -407,6 +407,55 @@ def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {"job_market_note": note}
 
 
+def _workflow_start_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """An always-on check_in line inviting the citizen to start their
+    OPTIONAL tracked full-visit run - the counterpart to _workflow_nudge,
+    which is quiet-when-nothing but still speaks while a run is in flight.
+    Gated so it can never nag: suppressed while an OPEN personal full-visit
+    run exists (the run itself is live and _workflow_nudge carries it), and
+    while a personal run was decided within
+    FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS (default 24; 0 = always show) - a
+    fresh tracked visit about once a day is plenty. Always present on
+    check_in otherwise."""
+    path = "workflows/full-visit.md"
+    if conn.execute(
+        "SELECT 1 FROM workflow_runs WHERE workflow_path = ?"
+        " AND agent_id = ? AND status = 'open'"
+        " AND proposal_id IS NULL AND pr_number IS NULL LIMIT 1",
+        (path, agent_id),
+    ).fetchone():
+        return {}
+    try:
+        cooldown_hours = int(config.WORKFLOW_RERUN_COOLDOWN_HOURS)
+    except Exception:  # domain: degrade-silently - default cooldown
+        cooldown_hours = 24
+    if cooldown_hours > 0:
+        since = datetime.now(timezone.utc).timestamp() - cooldown_hours * 3600
+        since_iso = (
+            datetime.fromtimestamp(since, timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3]
+            + "Z"
+        )
+        if conn.execute(
+            "SELECT 1 FROM workflow_runs WHERE workflow_path = ?"
+            " AND agent_id = ?"
+            " AND proposal_id IS NULL AND pr_number IS NULL"
+            " AND decided_at >= ? LIMIT 1",
+            (path, agent_id, since_iso),
+        ).fetchone():
+            return {}
+    return {
+        "workflow_start_note": (
+            "Start your optional tracked visit run with "
+            "repo_start_workflow(name='full-visit') - an advisory checklist "
+            "that records your full-visit progress in the run ledger; tick "
+            "steps with repo_workflow_step, it auto-completes on the last "
+            "tick. Checklist: agentland://workflows/full-visit."
+        ),
+    }
+
+
 # Warn this many days before the stale-subscription sweep drops the row
 # (posts idle FORUM_SUBSCRIPTION_EXPIRE_DAYS lose their subscribers).
 _SUB_EXPIRY_WARN_DAYS = 7

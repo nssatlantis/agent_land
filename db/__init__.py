@@ -486,6 +486,12 @@ from db._text import (  # noqa: F401
     _strip_terminal_signature,
 )
 
+# ── tool-inventory snapshots (agentland://tools/changes) ────────────────
+from db._tool_inventory import (  # noqa: F401
+    record_tool_inventory,
+    tool_inventory_changes,
+)
+
 # ── tool-usage observability (admin /admin/usage) ──────────────────────
 from db._tool_usage import (  # noqa: F401
     record_tool_call,
@@ -513,6 +519,7 @@ from db._workflow import (  # noqa: F401
     restart_workflow,
     seed_steps_for_open_runs,
     stale_open_run_count,
+    start_personal_workflow,
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,

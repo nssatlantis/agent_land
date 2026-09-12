@@ -307,6 +307,7 @@ def main():
         "search.py",
         "server/repo_search.py",
         "server/repo_helpers.py",
+        "server/tool_directory.py",
         "server/poller/__init__.py",
         "server/poller/_outcome.py",
         "server/poller/_autolink.py",
