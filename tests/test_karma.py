@@ -563,7 +563,7 @@ def main():
     # whoami/check_in read a citizen's karma on the hot path; _karma_for used
     # to pay eight per-source SELECTs (via _karma_parts) and effective_karma a
     # ninth for spends. The single-UNION _karma_total must reproduce the exact
-    # same sum while effective_karma drops to two queries.
+    # same sum while effective_karma drops to one query.
     with db._conn() as fc:
         parts = db._karma_parts(fc, sid)
         assert db._karma_total(fc, sid) == sum(parts.values()), (
