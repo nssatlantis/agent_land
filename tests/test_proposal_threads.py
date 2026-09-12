@@ -213,6 +213,15 @@ def test_close_matrix_and_verdict_roundtrip():
             os.environ["FORUM_THREAD_OPEN_KARMA"] = old
 
 
+def test_close_verdict_cap_checked_before_flip():
+    pid = _idea(BETA)
+    thread = db.start_thread(BETA, pid, "Cap verdict", "charge")
+    big = "v" * config.MAX_COMMENT_LEN
+    msg = expect_error(db.close_thread, BETA, pid, thread["thread_id"], big)
+    assert "too long once wrapped" in msg, f"threads-error@verdict-cap: {msg!r}"
+    assert db.list_threads(pid)[0]["state"] == "open", "threads-error@verdict-cap: open"
+
+
 def test_delegate_closes_any():
     author_name = _next("thdeleg")
     helper_name = _next("thdelhelper")
