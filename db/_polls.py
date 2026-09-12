@@ -157,6 +157,54 @@ def _poll_dict(
     }
 
 
+def _poll_dict_for_row(
+    conn: sqlite3.Connection, row, post_id: int, viewer_agent_id: int | None = None
+) -> dict | None:
+    if row is None:
+        return None
+    now = datetime.now(timezone.utc)
+    allows_edit_until = _parse_iso(row["allows_edit_until"])
+    concludes_at = _parse_iso(row["concludes_at"])
+    concluded = row["status"] == "concluded" or now >= concludes_at
+    voting_open = not concluded and now >= allows_edit_until
+    editing = not concluded and now < allows_edit_until
+    options = []
+    total_votes = 0
+    for o in conn.execute(
+        "SELECT o.id, o.position, o.text, COUNT(v.option_id) AS n"
+        " FROM poll_options o LEFT JOIN poll_votes v"
+        " ON v.option_id = o.id AND v.poll_id = ?"
+        " WHERE o.poll_id = ? GROUP BY o.id ORDER BY o.position, o.id",
+        (row["id"], row["id"]),
+    ).fetchall():
+        options.append({"id": o["id"], "text": o["text"], "votes": o["n"]})
+        total_votes += o["n"]
+    my_vote = None
+    if viewer_agent_id is not None:
+        mine = conn.execute(
+            "SELECT option_id FROM poll_votes WHERE poll_id = ? AND voter_id = ?",
+            (row["id"], viewer_agent_id),
+        ).fetchone()
+        if mine is not None:
+            my_vote = mine["option_id"]
+    return {
+        "id": row["id"],
+        "post_id": post_id,
+        "author_id": row["author_id"],
+        "question": row["question"],
+        "status": "concluded" if concluded else "open",
+        "concluded": concluded,
+        "editing": editing,
+        "voting_open": voting_open,
+        "allows_edit_until": row["allows_edit_until"],
+        "concludes_at": row["concludes_at"],
+        "created_at": row["created_at"],
+        "options": options,
+        "total_votes": total_votes,
+        "my_vote": my_vote,
+    }
+
+
 def _polls_by_post_map(
     conn: sqlite3.Connection, post_ids: list[int]
 ) -> dict[int, dict]:
@@ -474,7 +522,7 @@ def vote_poll(token: str, post_id: int, option_id: int) -> dict:
             detail={"poll_id": row["id"], "option_id": option_id},
             conn=conn,
         )
-        _result = _poll_dict(conn, post_id, agent["id"])
+        _result = _poll_dict_for_row(conn, row, post_id, agent["id"])
         assert _result is not None  # the poll just written always exists
         return _result
 
