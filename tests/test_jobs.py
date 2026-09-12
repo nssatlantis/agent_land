@@ -249,6 +249,32 @@ def test_create_validations():
             ),
             "yourself",
         ),
+        (
+            lambda: db.create_job(
+                creator["token"],
+                "t",
+                "d",
+                1.0,
+                ["s"],
+                kind="recurring",
+                cycles=2,
+                cycle_every_days=0,
+            ),
+            "recurring jobs run every",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"],
+                "t",
+                "d",
+                1.0,
+                ["s"],
+                kind="recurring",
+                cycles=2,
+                cycle_every_days=31,
+            ),
+            "recurring jobs run every",
+        ),
     ]
     for fn, needle in cases:
         try:
@@ -1297,6 +1323,123 @@ def test_overdue_notified_column_migrates_and_stamps_once():
         assert db._jobs.sweep_overdue_job_cycles() == 0, "no re-notify"
     finally:
         _restore_arms()
+
+
+def test_cadence_opens_next_cycle_on_schedule():
+    """cycle_every_days>1 delays the next cycle: its opens_at rides a
+    future deadline, so until that deadline passes the seeded awaiting row
+    is neither actionable nor overdue (the opens_at IS NULL OR <= now
+    filter is the whole seam the shared predicate reads), and the submit
+    gate refuses it outright. Once the deadline passes, the cycle opens
+    and ages into overdue on the same clock as any other."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    try:
+        creator = _make_creator("jobc-cadence")
+        worker = db.register_agent("jobw-cadence")
+        job = _simple_job(
+            creator, pay=1.0, kind="recurring", cycles=2, cycle_every_days=2
+        )
+        job_id = job["job_id"]
+
+        def _what_waits(agent_token: str) -> list[str]:
+            with db._conn() as conn:
+                aid = db._require_agent_by_token(conn, agent_token)["id"]
+                return [
+                    a
+                    for a in db._jobs._outstanding_actions(conn, aid)
+                    if f"#{job_id} " in a
+                ]
+
+        def _age_everything() -> None:
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE events SET created_at = '2026-01-01T00:00:00.000Z'"
+                    " WHERE target_type = 'job' AND target_id = ?"
+                    " AND kind IN ('job_claimed','job_submitted',"
+                    " 'job_cycle_accepted','job_cycle_declined')",
+                    (job_id,),
+                )
+
+        # Created: cadence stored and mirrored on the board row.  Cycle
+        # rows are seeded lazily (first submit); until then the board's
+        # current-cycle opens_at is NULL (the daily default = 'open now').
+        assert job["cycle_every_days"] == 2
+        detail = db.get_job(job_id)
+        assert detail["cycle_every_days"] == 2
+        mine = db.list_jobs(view="mine", token=creator["token"])["jobs"]
+        row = next(j for j in mine if j["job_id"] == job_id)
+        assert row["cycle_every_days"] == 2 and row["opens_at"] is None
+
+        db.claim_job(worker["token"], job_id)
+        assert db.get_job(job_id)["overdue"] is False
+
+        # Accept cycle 1 -> cycle 2 is seeded with a FUTURE opens_at
+        # (= accept + 2 days), not NULL.
+        db.submit_job(worker["token"], job_id, "#P1")
+        db.review_job(creator["token"], job_id, "accept")
+        detail = db.get_job(job_id)
+        cyc2 = detail["cycles"][1]
+        assert cyc2["status"] == "awaiting"
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        assert cyc2["opens_at"] is not None and cyc2["opens_at"] > now_iso, (
+            f"cycle 2 should open in the future, got {cyc2['opens_at']}"
+        )
+
+        # Not yet open: not actionable, not overdue even after the anchor
+        # ages, and the submit gate refuses the early work.
+        _age_everything()
+        assert db.get_job(job_id)["overdue"] is False, (
+            "a cadence-closed cycle is never overdue - it has not opened"
+        )
+        acts = _what_waits(worker["token"])
+        assert not any("cycle 2 awaits your work" in a for a in acts), acts
+        try:
+            db.submit_job(worker["token"], job_id, "#early")
+            raise AssertionError("closed cadence cycle should refuse submission")
+        except db.ForumError as exc:
+            assert "not open" in str(exc)
+
+        # Deadline passes -> the row opens and ages into overdue like any
+        # awaiting cycle.
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE job_cycles SET opens_at = '2026-01-01T00:00:00.000Z'"
+                " WHERE job_id = ? AND cycle_no = 2",
+                (job_id,),
+            )
+        assert db.get_job(job_id)["overdue"] is True
+        mine = db.list_jobs(view="mine", token=creator["token"])["jobs"]
+        row = next(j for j in mine if j["job_id"] == job_id)
+        assert row["overdue"] is True, "board row carries the cadence overdue"
+        acts = _what_waits(worker["token"])
+        assert any(
+            "cycle 2 awaits your work - submit_job() (overdue)" in a for a in acts
+        ), acts
+        db.submit_job(worker["token"], job_id, "#P2")
+        assert db.get_job(job_id)["cycles"][1]["status"] == "submitted"
+    finally:
+        _restore_arms()
+
+
+def test_cadence_columns_migrate():
+    """jobs.cycle_every_days / job_cycles.opens_at migrate onto
+    pre-column databases (CREATE TABLE IF NOT EXISTS is a no-op there, so
+    the boot migration must raise them) and cadence creating still works
+    after the upgrade."""
+    creator = _make_creator("jobc-cadmig")
+    job = _simple_job(creator, kind="recurring", cycles=2, cycle_every_days=3)
+    assert job["cycle_every_days"] == 3
+    with db._conn(immediate=True) as conn:
+        conn.execute("ALTER TABLE jobs DROP COLUMN cycle_every_days")
+        conn.execute("ALTER TABLE job_cycles DROP COLUMN opens_at")
+    db.init_db()
+    with db._conn() as conn:
+        jobs_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        cyc_cols = {r[1] for r in conn.execute("PRAGMA table_info(job_cycles)")}
+    assert "cycle_every_days" in jobs_cols, "init_db re-adds jobs.cycle_every_days"
+    assert "opens_at" in cyc_cols, "init_db re-adds job_cycles.opens_at"
+    nxt = _simple_job(creator, kind="recurring", cycles=2, cycle_every_days=2)
+    assert nxt["cycle_every_days"] == 2, "cadence create works after migration"
 
 
 if __name__ == "__main__":
