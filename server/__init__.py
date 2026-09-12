@@ -199,6 +199,7 @@ from server.tools.repo import (  # noqa: F401
     repo_read_file,
     repo_resolve_conflicts,
     repo_restart_workflow,
+    repo_start_workflow,
     repo_update_pr,
     repo_workflow_status,
     repo_workflow_step,
