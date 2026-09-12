@@ -225,7 +225,7 @@ def claim_todo_item(
     Pass action='claim' to lock an item to yourself before starting work
     so two collaborators never build the same thing (proposal #140). Only
     the author or a joined collaborator may claim; one active claim per
-    item, at most FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 2) held per
+    item, at most FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 4) held per
     collaborator per proposal. Refused in pure 'list' claim mode; in
     'hybrid' mode claiming is still fine, except under a list another
     citizen has claimed as a whole. Pass action='release' to let go early
