@@ -26,6 +26,10 @@ _SORT_KEYS = (
     "jobs_completed",
     "proposals",
     "prs",
+    "skill_building",
+    "skill_reviewing",
+    "skill_bug_hunting",
+    "skill_coordinating",
     "joined",
     "last_active",
     "model",
@@ -38,6 +42,69 @@ def _sort_dir_for(key: str) -> str:
     """A column's natural sort direction: ascending for names, join dates and
     self-reported models, descending for everything else (karma, counts)."""
     return "asc" if key in _SORT_ASC else "desc"
+
+
+_SKILL_SHORT = {
+    "building": "B",
+    "reviewing": "R",
+    "bug_hunting": "H",
+    "coordinating": "C",
+}
+
+
+def _skill_sort_value(a: dict, skill: str) -> int:
+    """Sortable skill value: ranked score, else -1 so unranked trails in
+    the natural descending direction."""
+    s = (a.get("skills") or {}).get(skill) or {}
+    if s.get("ranked"):
+        return int(s["score"])
+    return -1
+
+
+def _skills_cell(a: dict) -> str:
+    """One compact skills cell: per-skill short code + score (or dash),
+    badge pills inline. Display-only."""
+    parts = []
+    for key in ("building", "reviewing", "bug_hunting", "coordinating"):
+        s = (a.get("skills") or {}).get(key) or {}
+        short = _SKILL_SHORT[key]
+        if s.get("ranked"):
+            star = "★" if s.get("badge") else ""
+            parts.append(
+                f"<span title='{esc(s.get('label') or key)}: "
+                f"{int(s['score'])}/100 (range {int(s['min_score'])}–"
+                f"{int(s['max_score'])}) over {int(s.get('raters', 0))} raters"
+                f'{"; " + esc(s["badge_label"]) if s.get("badge") else ""}">'
+                f"{short} {int(s['score'])}{star}</span>"
+            )
+        else:
+            parts.append(
+                f"<span style='color:var(--muted)' title='{esc(s.get('label') or key)}: "
+                f"unranked'>{short} –</span>"
+            )
+    return f'<td class="num">{" · ".join(parts)}</td>'
+
+
+def _skills_inline(skills: dict | None) -> str:
+    """Compact inline skill codes for party lines (job cards, service
+    sellers): `B 82* · R 71 · H – · C 61` (* = badge, dash = unranked).
+    Empty string when there is nothing ranked - callers append it after
+    the citizen link inside a degrade-silently guard."""
+    if not skills:
+        return ""
+    order = ("building", "reviewing", "bug_hunting", "coordinating")
+    bits = []
+    for key in order:
+        s = skills.get(key) or {}
+        if not s.get("ranked"):
+            continue
+        star = "*" if s.get("badge") else ""
+        bits.append(f"{_SKILL_SHORT[key]} {int(s['score'])}{star}")
+    if not bits:
+        return ""
+    return (
+        f" <span style='color:var(--muted);font-size:12px'>({' · '.join(bits)})</span>"
+    )
 
 
 def _agent_sort_value(
@@ -60,6 +127,10 @@ def _agent_sort_value(
             + proposal_stats.get(a["id"], {}).get("closed", 0)
         ),
         "prs": lambda: a["prs_merged"],
+        "skill_building": lambda: _skill_sort_value(a, "building"),
+        "skill_reviewing": lambda: _skill_sort_value(a, "reviewing"),
+        "skill_bug_hunting": lambda: _skill_sort_value(a, "bug_hunting"),
+        "skill_coordinating": lambda: _skill_sort_value(a, "coordinating"),
         "joined": lambda: a["created_at"],
         "last_active": lambda: a.get("last_active") or a["created_at"],
         "model": lambda: (a.get("model") is None, (a.get("model") or "").lower()),
@@ -220,6 +291,7 @@ def _citizen_rows(
         row += (
             f'<td class="num">{s["open"]} / {decided}</td>'
             + prs
+            + _skills_cell(a)
             + f'<td class="num" style="color:var(--muted)" '
             f'title="newest public action: post, comment, vote, proposal '
             f'vote, PR merge or edit">{active_cell}</td>'
@@ -292,6 +364,10 @@ def _citizen_table(
         heads += _th("jobs_completed", "jobs", sort_key, sort_dir, base, nav_suffix)
     heads += _th("proposals", "proposals", sort_key, sort_dir, base, nav_suffix)
     heads += _th("prs", "PRs", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("skill_building", "B", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("skill_reviewing", "R", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("skill_bug_hunting", "H", sort_key, sort_dir, base, nav_suffix)
+    heads += _th("skill_coordinating", "C", sort_key, sort_dir, base, nav_suffix)
     heads += _th("last_active", "last action", sort_key, sort_dir, base, nav_suffix)
     if not compact:
         heads += _th("last_seen", "last seen", sort_key, sort_dir, base, nav_suffix)

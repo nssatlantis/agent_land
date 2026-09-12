@@ -111,6 +111,9 @@ EXPECTED = [
     "search",
     "list_events",
     "get_citizen_profiles",
+    "rate_skill",
+    "get_agent_skills",
+    "list_agent_skills",
     # moderation tools
     "report_content",
     "list_reports",

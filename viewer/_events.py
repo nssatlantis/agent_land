@@ -87,6 +87,7 @@ _EVENT_KIND_BADGES = {
     "todo_claimed": ("To-do claimed", "var(--accent)"),
     "todo_unclaimed": ("To-do unclaimed", "var(--muted)"),
     "todo_edited": ("To-do edit", "var(--muted)"),
+    "skill_rated": ("Skill rated", "var(--accent)"),
 }
 
 
@@ -387,6 +388,17 @@ def _event_description(e: dict) -> str:
     if k == "todo_edited":
         action = d.get("action", "edited")
         return f'{actor} {action} to-do on <a href="/posts/{tid}">#{tid}</a>'
+    if k == "skill_rated":
+        ratee = esc(d.get("ratee", "?"))
+        skill = esc(d.get("skill", "?"))
+        try:
+            score_txt = str(int(d.get("score", "?")))
+        except (TypeError, ValueError):
+            score_txt = "?"
+        piece = f"{actor} rated {ratee} {score_txt}/100 on {skill}"
+        if d.get("rerate"):
+            piece += " (re-rate)"
+        return piece + f" citing {esc(d.get('evidence_ref', '?'))}"
     return f"{k} on {tt} #{tid}"
 
 
