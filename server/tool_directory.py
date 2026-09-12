@@ -237,10 +237,23 @@ def _inventory_items() -> list[tuple[str, str, str]]:
 def _tools_changes_text() -> str:
     """The `agentland://tools/changes` page text."""
     registry = _registry_tools()
+    if not registry:
+        return (
+            "# Tool changes"
+            f" - last {_CHANGES_DAYS} days\n\n(tool registry unreadable -"
+            " changes unavailable.)"
+        )
     excerpts = {
         name: excerpt for items in _tool_rows().values() for name, excerpt in items
     }
     changes = db.tool_inventory_changes(days=_CHANGES_DAYS, present=set(registry))
+    return _render_changes(changes, excerpts)
+
+
+def _render_changes(changes: dict, excerpts: dict[str, str]) -> str:
+    """Render the changes page for a reader result + excerpt map (live or
+    synthetic, so tests can pin the empty sections and removed bullets
+    without touching the registry)."""
     if not changes["recorded_tools"]:
         return (
             "# Tool changes"
