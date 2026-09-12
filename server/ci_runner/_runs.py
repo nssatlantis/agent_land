@@ -397,7 +397,6 @@ def run_checks_with_deadline(
             raise exc_holder[0]
         return result_holder[0], False, started_at, run_id
     gave_up.set()
-    gave_up.set()
     return None, True, started_at, run_id
 
 
