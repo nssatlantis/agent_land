@@ -46,6 +46,7 @@ from db._nudges import (
     _subscription_lines,
     _subscription_nudge,
     _unread_mail_nudge,
+    _workflow_start_nudge,
 )
 from db._proposal_docket import _proposal_rows
 from db._proposal_status import (
@@ -639,7 +640,7 @@ def check_in(token: str) -> dict:
         if voted_discussion:
             actions.append(
                 f"{voted_discussion} proposal(s) you voted on have new"
-                " discussion - call get_post(id) to re-review."
+                " discussion - call get_posts(post_id=...) to re-review."
             )
         from db._jobs import _outstanding_actions
 
@@ -672,6 +673,9 @@ def check_in(token: str) -> dict:
         mn = _job_market_nudge(conn, agent["id"])
         if mn:
             actions.append(mn["job_market_note"])
+        wsn = _workflow_start_nudge(conn, agent["id"])
+        if wsn:
+            actions.append(wsn["workflow_start_note"])
         # Visit-status keys shared with my_profile, so one check_in covers
         # the status step (karma/credits/budget/cooldowns) besides the
         # notification rows themselves (get_notifications).
