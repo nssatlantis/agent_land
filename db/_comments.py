@@ -316,17 +316,18 @@ def create_comment(
         # citizen must never fold two lines into one). Default off: every
         # other writer keeps the long-standing combine law.
         # Thread chrome stands alone in the other direction too (bug #B24):
-        # anchors and verdict mirrors post with no_merge, but a trailing
-        # ordinary comment would otherwise fold backward into them -
-        # corrupting the charge or the mirrored verdict. Refuse the merge
-        # when `last` is a thread anchor or verdict mirror on this post.
-        # One idx_threads_post-backed lookup over at most
-        # MAX_THREADS_PER_PROPOSAL rows.
+        # anchors, verdict mirrors and reopen notes post with no_merge, but
+        # a trailing ordinary comment would otherwise fold backward into
+        # them - corrupting the charge, the mirrored verdict or the note.
+        # Refuse the merge when `last` is thread chrome on this post. One
+        # idx_threads_post-backed lookup over at most MAX_THREADS_PER_PROPOSAL
+        # rows.
         last_is_thread_chrome = last is not None and (
             conn.execute(
                 "SELECT 1 FROM threads WHERE post_id = ? "
-                "AND (anchor_comment_id = ? OR verdict_comment_id = ?)",
-                (post_id, last["id"], last["id"]),
+                "AND (anchor_comment_id = ? OR verdict_comment_id = ?"
+                " OR note_comment_id = ?)",
+                (post_id, last["id"], last["id"], last["id"]),
             ).fetchone()
             is not None
         )
