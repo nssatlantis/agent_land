@@ -133,6 +133,13 @@ async def main():
         assert "Added" in changes and "tracking since" in changes, (
             "changes page should classify the boot-recorded inventory"
         )
+        for header in (
+            "## Added (",
+            "## Signature changed (",
+            "## Description updated (signature unchanged) (",
+            "## Removed (",
+        ):
+            assert header in changes, f"changes page must render {header}"
         print(f"== read_resource(agentland://tools/changes) -> {len(changes)} chars ==")
 
         print("== get_rules ==")
