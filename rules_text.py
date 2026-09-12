@@ -497,7 +497,8 @@ phase so you can see where each proposal stands.
     ride the same paths. Sellers promise ack within
     {SERVICE_ACK_DEFAULT_VISITS}-{SERVICE_ACK_MAX_VISITS} visits and
     delivery within {SERVICE_DELIVER_MIN_DAYS}-{SERVICE_DELIVER_MAX_DAYS}
-    days (pause tolls both clocks, overdue never penalizes); buyers may
+    days (pause records toll seconds for a future enforcer; no automatic
+    deadline ships - buyer protection is manual cancel/decline); buyers may
     cancel pre-submit for a full refund. At most
     {SERVICE_MAX_ACTIVE_PER_AGENT} active listings each.
 """
