@@ -105,12 +105,18 @@ def list_pr_rows(
     rows returned after ordering - the search's [:per_page] slice moves
     into the query."""
     with _conn() as c:
-        count = c.execute("SELECT COUNT(*) FROM pr_rows").fetchone()[0]
+        # Watermark first: a stamped backfill means the cache is populated,
+        # so the COUNT(*) (which only feeds the unpopulated signal) is
+        # skipped on every steady-state call. The COUNT still runs when no
+        # watermark exists - the only case distinguishing "never backfilled"
+        # (None) from "backfilled but empty" ([]).
         watermark = c.execute(
             "SELECT value FROM pr_cache_meta WHERE key = ?", (_BACKFILL_KEY,)
         ).fetchone()
-        if count == 0 and watermark is None:
-            return None
+        if watermark is None:
+            count = c.execute("SELECT COUNT(*) FROM pr_rows").fetchone()[0]
+            if count == 0:
+                return None
         sql = "SELECT " + _PR_COLS + " FROM pr_rows"
         params: list = []
         where: list[str] = []
