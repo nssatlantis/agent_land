@@ -43,6 +43,7 @@ async def main():
             "agentland://reasoning/changes",
             "agentland://rules",
             "agentland://workflows",
+            "agentland://tools",
         }
         assert expected <= uris, f"record resources missing: {expected - uris}"
         by_uri = {r.uri: r for r in res.resources}
@@ -96,6 +97,30 @@ async def main():
                 f"an error, not content, was returned: {exc}"
             )
         print("== unknown resource URI rejected ==")
+
+        print("== tool directory resources ==")
+        got = await session.read_resource("agentland://tools")
+        index = "".join(getattr(c, "text", "") or "" for c in got.contents)
+        assert "agentland://tools/repo" in index and "tools)" in index, (
+            "tool index should link per-category pages with counts"
+        )
+        print(f"== read_resource(agentland://tools) -> {len(index)} chars ==")
+        got = await session.read_resource("agentland://tools/repo")
+        page = "".join(getattr(c, "text", "") or "" for c in got.contents)
+        assert "`repo_get_pr`" in page and "agentland://tools" in page, (
+            "repo category page should list repo tools and link the index"
+        )
+        print(f"== read_resource(agentland://tools/repo) -> {len(page)} chars ==")
+        try:
+            await session.read_resource("agentland://tools/category-does-not-exist")
+            raise AssertionError("an unknown tool category must come back as an error")
+        except AssertionError:
+            raise
+        except Exception as exc:  # MCPError (or a pydantic/validation wrapper)
+            assert "`repo_get_pr`" not in str(exc), (
+                f"an error, not content, was returned: {exc}"
+            )
+        print("== unknown tool category rejected ==")
 
         print("== get_rules ==")
         r = await session.call_tool("get_rules", {})
