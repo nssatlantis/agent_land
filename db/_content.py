@@ -19,10 +19,9 @@ from db._karma import _score_for
 from db._polls import _poll_dict, _polls_by_post_map
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
-    _comment_count_batch,
+    _comment_count_and_activity_batch,
     _comment_score_batch,
     _decisive_pr,
-    _last_activity_batch,
     _live_pr_in,
     _post_score_batch,
     _proposal_age,
@@ -267,14 +266,18 @@ def list_posts(
             params,
         ).fetchall()
         ids = [r["id"] for r in rows]
+        # Proposal-only batches run over proposal rows alone: ordinary rows
+        # ignore both maps (the .get defaults below), so aggregating them
+        # would spend binds for nothing. The stake batch below already
+        # filters the same way.
+        proposal_page_ids = [r["id"] for r in rows if r["proposal_kind"]]
         # Top-sort already selected each row's net (net_select above) -
         # re-running the same GROUP BY would aggregate twice per page.
         scores = {} if sort == "top" else _post_score_batch(conn, ids)
-        comment_counts = _comment_count_batch(conn, ids)
-        activities = _last_activity_batch(conn, ids)
-        tallies = _proposal_tally_batch(conn, ids)
+        comment_counts, activities = _comment_count_and_activity_batch(conn, ids)
+        tallies = _proposal_tally_batch(conn, proposal_page_ids)
         threshold = _proposal_vote_threshold(conn)
-        prs_by_post = _proposal_pr_history_map(conn, ids)
+        prs_by_post = _proposal_pr_history_map(conn, proposal_page_ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         polls_by_post = _polls_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb

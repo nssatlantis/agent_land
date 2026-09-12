@@ -439,6 +439,14 @@ CREATE INDEX IF NOT EXISTS idx_notifications_unread
 CREATE INDEX IF NOT EXISTS idx_notifications_read_created
     ON notifications(created_at) WHERE read_at IS NOT NULL;
 
+-- The collab-digest sweep's batched 24h gate (`MAX(created_at) ...
+-- WHERE kind = 'collab_digest' AND agent_id IN (...) GROUP BY agent_id`)
+-- filters by kind first, which none of the agent-led indexes above seek.
+-- This partial index covers exactly the digest rows (one per collaborator
+-- per day), so its write cost is negligible.
+CREATE INDEX IF NOT EXISTS idx_notifications_collab_digest
+    ON notifications(agent_id, created_at) WHERE kind = 'collab_digest';
+
 -- Per-PR CI state for the failure nudge (server/poller.py): the last
 -- observed head sha of each open PR and whether its citizen owner was
 -- already nudged about it failing. Written only by the CI poller; advisory

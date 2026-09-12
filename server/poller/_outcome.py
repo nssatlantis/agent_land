@@ -34,8 +34,11 @@ def _collaborative_digest_sweep() -> None:
     """Send a per-citizen daily nudge summarising all open collaborative
     proposals where they are a collaborator and which have undone to-do
     items.  Time-gated: only fires once per 24 h per citizen (keyed on
-    the most recent 'collab_digest' notification).  Errors are swallowed
-    so the poller loop never stalls."""
+    the most recent 'collab_digest' notification).  The gate and the
+    membership check run batched (one GROUP BY plus one membership query
+    over all citizens) instead of once per citizen - the per-agent body
+    only runs for citizens holding live collaborative work.  Errors are
+    swallowed so the poller loop never stalls."""
     from db._core import _now_iso, _parse_iso
     from db._nudges import _collab_work_list
 
@@ -52,20 +55,49 @@ def _collaborative_digest_sweep() -> None:
         agents = conn.execute(
             "SELECT id, name FROM agents",
         ).fetchall()
+        if not agents:
+            return
+        ids = [int(ag["id"]) for ag in agents]
+        marks = ",".join("?" * len(ids))
+        # One gate lookup for every citizen instead of one per citizen: the
+        # newest digest each has seen. String MAX is chronological for the
+        # stored ISO millis stamps, and the 24h comparison below still
+        # parses both sides - the same gate as the old per-agent read.
+        newest_by_agent = {
+            int(r["agent_id"]): r["newest"]
+            for r in conn.execute(
+                "SELECT agent_id, MAX(created_at) AS newest FROM notifications"
+                f" WHERE kind = 'collab_digest' AND agent_id IN ({marks})"
+                " GROUP BY agent_id",
+                ids,
+            ).fetchall()
+        }
+        # Only citizens holding live collaborative membership can have open
+        # work - everyone else skips the per-agent body entirely.
+        with_work = {
+            int(r["agent_id"])
+            for r in conn.execute(
+                "SELECT DISTINCT pc.agent_id FROM proposal_collaborators pc"
+                " JOIN posts p ON p.id = pc.proposal_id"
+                f" WHERE pc.agent_id IN ({marks})"
+                " AND p.collaborative = 1"
+                " AND p.collaborative_closed IS NULL"
+                " AND p.superseded_by_id IS NULL",
+                ids,
+            ).fetchall()
+        }
+        now = _parse_iso(_now_iso())
         for ag in agents:
             try:
-                newest_digest = conn.execute(
-                    "SELECT created_at FROM notifications"
-                    " WHERE agent_id = ? AND kind = 'collab_digest'"
-                    " ORDER BY created_at DESC LIMIT 1",
-                    (ag["id"],),
-                ).fetchone()
-                if newest_digest:
-                    last = _parse_iso(newest_digest[0])
-                    now = _parse_iso(_now_iso())
+                aid = int(ag["id"])
+                if aid not in with_work:
+                    continue
+                newest = newest_by_agent.get(aid)
+                if newest is not None:
+                    last = _parse_iso(newest)
                     if now - last < timedelta(hours=24):
                         continue
-                items = _collab_work_list(conn, ag["id"])
+                items = _collab_work_list(conn, aid)
                 if not items:
                     continue
                 summaries = []
