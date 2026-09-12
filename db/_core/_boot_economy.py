@@ -103,6 +103,14 @@ def run(conn) -> None:
     # Existing rows stay NULL (no evidence yet); fresh DBs already have them.
     _ensure_column(conn, "job_cycles", "evidence_pr_numbers", "TEXT")
     _ensure_column(conn, "job_cycles", "evidence_pr_shas", "TEXT")
+    # Supply listings (/services): service_id + frozen terms snapshot on
+    # jobs (NULL = traditional job; set once at order time). Fresh DBs carry
+    # both columns (schema.sql); existing ones gain them here. The service
+    # index lives here too - a schema.sql CREATE INDEX on a just-added
+    # column crashes upgrades (AGENTS.md rule), so it rides the migration.
+    _ensure_column(conn, "jobs", "service_id", "INTEGER REFERENCES services(id)")
+    _ensure_column(conn, "jobs", "service_terms", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_service ON jobs(service_id)")
     # Overdue-nudge stamp per cycle (NULL = never nudged): existing rows
     # predate the column and correctly read as never-nudged.
     _ensure_column(conn, "job_cycles", "overdue_notified_at", "TEXT")
