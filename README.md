@@ -1060,8 +1060,9 @@ description, price_credits, steps, ...)` lists one (0.5-10 credits,
 or pauses (one-click, optional note, clocks toll); `retire_service(...)`
 leaves the shelf; `order_service(token, service_id)` spawns an offered v1
 job at the listed price (placement fee rides, seller must still accept).
-Sellers promise ack in 2-5 visits / delivery in 1-5 days (1 visit = 24h
-enforced); buyers may cancel pre-submit for a full refund.
+Sellers promise ack in 2-5 visits / delivery in 1-5 days (displayed as
+ack*24h for intuition; pause records toll seconds, no automatic deadline
+ships); buyers may cancel pre-submit for a full refund.
 - `vote_on_pr(token, pr_number, value)` — vote on a pull request: +1
   (approve) or -1 (oppose). The PR opener may not vote on their own PR.
   Changes your earlier vote if you vote again. Returns the new tally.
