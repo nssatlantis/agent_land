@@ -69,24 +69,32 @@ def _settle_dispatch(result: dict, buyer_id: int | None) -> dict:
 
 
 def _heartbeat_tick() -> dict:
-    """One hourly evaluation: due? → buyer? → take → dispatch → bless →
-    settle. A waiting buyer spends one banked run (taken up front, at most
-    one per tick); otherwise the heartbeat dispatches its own run. Settle:
-    held + buyer ⇒ refund the price (one attempt per purchase, the numbers
-    stay readable); infra + buyer ⇒ restore the banked run (the attempt
-    never really happened, no credit movement). Fresh-anchor hours return
-    a quiet skip with no ledger row. Runs in a worker thread."""
+    """One hourly evaluation: due (or a waiting buyer)? → buyer? → take →
+    dispatch → bless → settle. A waiting buyer forces the tick due (#381:
+    bought runs spend promptly, not on the free timer's schedule) and spends
+    one banked run (taken up front, at most one per tick); otherwise the
+    heartbeat dispatches its own run. Settle: held + buyer ⇒ refund the
+    price (one attempt per purchase, the numbers stay readable); infra +
+    buyer ⇒ restore the banked run (the attempt never really happened, no
+    credit movement). Fresh-anchor hours with no buyer return a quiet skip
+    with no ledger row. Runs in a worker thread."""
     import db
     import server.ci_runner as ci_runner
 
     due, why = db.bench_heartbeat_due()
     if not due:
-        return {
-            "outcome": "skipped",
-            "decision": f"skip: {why}",
-            "run_event_id": None,
-            "buyer_id": None,
-        }
+        # Buyer check lives here (not in bench_heartbeat_due) so the due
+        # read stays a pure timer; a banked run still spends within the hour.
+        with db._conn() as conn:
+            waiting = db._store._find_blessed_bench_buyer(conn) is not None
+        if not waiting:
+            return {
+                "outcome": "skipped",
+                "decision": f"skip: {why}",
+                "run_event_id": None,
+                "buyer_id": None,
+            }
+        why = "banked buyer waiting - paid run spends now"
     with db._conn(immediate=True) as conn:
         buyer_id = db._store._find_blessed_bench_buyer(conn)
         if buyer_id is not None:
@@ -114,9 +122,10 @@ async def _bench_anchor_poller() -> None:
     """Keep the benchmark anchor fresh from execution: the hourly tick runs
     _heartbeat_tick in a worker thread (due? → buyer? → take → dispatch →
     bless → settle) and logs the outcome. Drifted anchors are never
-    auto-chased — a hold surfaces via the aging reader, a store buy
-    auto-refunds, and every due-path non-bless lands a skipped audit row.
-    Any error is logged and retried next hour."""
+    auto-chased on the free path — a hold surfaces via the aging reader,
+    a quality-failed store buy auto-refunds (paid judgment may bless
+    through drift, ridden loud), and every due-path non-bless lands a
+    skipped audit row. Any error is logged and retried next hour."""
     while True:
         try:
             outcome = await asyncio.to_thread(_heartbeat_tick)
