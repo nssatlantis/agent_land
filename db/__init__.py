@@ -513,6 +513,7 @@ from db._workflow import (  # noqa: F401
     restart_workflow,
     seed_steps_for_open_runs,
     stale_open_run_count,
+    start_personal_workflow,
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,
