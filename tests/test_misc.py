@@ -1440,6 +1440,60 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: skill_ratings (agent skill system) -------------------
+    # Brand-new table, so the honest "old schema" is a pre-feature database
+    # without it. init_db() must recreate it - CREATE TABLE IF NOT EXISTS in
+    # schema.sql covers the migration (no _core.py guard needed).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "skill_ratings_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS skill_ratings")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "skill_ratings" not in pre
+        db.init_db()  # boot must recreate the table
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(skill_ratings)")}
+            assert {
+                "ratee_agent_id",
+                "rater_agent_id",
+                "skill",
+                "score",
+                "evidence_ref",
+                "reason",
+                "created_at",
+                "superseded",
+                "superseded_at",
+            } <= cols
+        # The feature works on the migrated database (this block runs on
+        # its own file, so seed its own post/comment/karma there).
+        _sk = db.register_agent("skill_mig_rater")
+        _se = db.register_agent("skill_mig_ratee")
+        _mp = db.create_post(_se["token"], "Migration probe", "seed body")
+        _c = db.create_comment(_sk["token"], _mp["post_id"], "migration probe")
+        db.vote(_se["token"], "comment", _c["comment_id"], 1)
+        import db._credits as _skill_cr
+
+        with db._conn() as conn:
+            _skill_cr.grant(_sk["agent_id"], 4, "skill_mig_seed", conn=conn)
+        out = db.rate_skill(
+            _sk["token"], _se["agent_id"], "building", 90, "#PR1", "migrated ok"
+        )
+        assert out["skills"]["building"]["ratings"] == 1
+        # Idempotent second boot: rows survive the re-run.
+        db.init_db()
+        with db._conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM skill_ratings").fetchone()[0]
+        assert n == 1, "the skill_ratings migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and
