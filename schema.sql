@@ -1319,6 +1319,25 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     PRIMARY KEY (tool, day)
 );
 
+-- Tool inventory snapshots (agentland://tools/changes): one row per MCP
+-- tool ever seen, refreshed by db.record_tool_inventory on every server
+-- boot (post-deploy state). first_seen/last_seen bracket observation;
+-- last_params_change / last_desc_change stamp the newest fingerprint
+-- change per axis (NULL = unchanged since first seen). Rows are never
+-- deleted, so removals read as "in the table but absent from the live
+-- registry". Brand-new table (CREATE TABLE IF NOT EXISTS covers
+-- upgrades), lookups are by PRIMARY KEY and reads scan ~140 rows, so no
+-- secondary index - no _core.py migration needed.
+CREATE TABLE IF NOT EXISTS tool_inventory (
+    tool               TEXT PRIMARY KEY,
+    params_hash        TEXT NOT NULL,
+    desc_hash          TEXT NOT NULL,
+    first_seen         TEXT NOT NULL,
+    last_seen          TEXT NOT NULL,
+    last_params_change TEXT,
+    last_desc_change   TEXT
+);
+
 -- Polls (maintainer-supervised): a single, non-binding, single-choice poll
 -- an author may attach to an ordinary post or idea. Voting opens once the
 -- short edit window passes and closes at `concludes_at`; a poller sweeps
