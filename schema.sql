@@ -1053,6 +1053,8 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
     ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
     ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers
+    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_quarters < 0;
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
