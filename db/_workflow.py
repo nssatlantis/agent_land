@@ -1366,7 +1366,7 @@ def _reconcile_decisions(
         logutil.log(
             "workflow_reconcile_probe_failed",
             proposal_id=None,
-            probe="superseded_by_many",
+            probe="posts_flags_many",
             error=str(exc),
         )
         post_flags = None
