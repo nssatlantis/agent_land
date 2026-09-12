@@ -112,10 +112,12 @@ def repo_ci_run(
     merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}.
     A run still going at FORUM_CI_RUN_RESPOND_SECONDS (default 50, kept under
     the MCP client's ~60s read timeout) instead returns {status: "running",
-    ok: null, checks, ledger_kind, started_at, watch_events, watch_url, note}:
-    the run continues in the background and audits itself on completion, the
-    ledger event is authoritative, and the same payload should never be
-    re-fired - the -32001 timeout only ended the request."""
+    ok: null, checks, ledger_kind, started_at, run_id, watch_events,
+    watch_url, note}: the run continues in the background and audits itself
+    on completion, the ledger event is authoritative, and the same payload
+    should never be re-fired - the -32001 timeout only ended the request.
+    Resolve the run with repo_ci_run_status(run_id) - the run_id receipt
+    also rides the completion event's detail, so no timestamp archaeology."""
     db.require_active_agent(token)
     who = db.whoami(token)
     if pr_number is not None and files is not None:
@@ -163,7 +165,7 @@ def repo_ci_run(
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
-    result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+    result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
         who["name"],
@@ -183,16 +185,37 @@ def repo_ci_run(
         "checks": checks,
         "ledger_kind": kind,
         "started_at": started_at,
+        "run_id": run_id,
         "watch_events": {"kind": kind, "since": started_at},
         "watch_url": _ci_watch_url_for(kind),
         "note": (
             "your run is still in flight: the MCP client's ~60s read timeout "
             "beat it, which ended this request, NOT the run - it continues in "
             "the background and audits itself on completion. Do not re-fire "
-            "the same payload; poll list_events(kind=..., since=...) or the "
-            "watch_url page for its ci_* ledger event."
+            "the same payload; resolve it with repo_ci_run_status(run_id)."
         ),
     }
+
+
+@mcp.tool()
+@_logged
+def repo_ci_run_status(token: str, run_id: str) -> dict:
+    """Where your handed-off CI run stands - the point-read twin of the
+    repo_ci_run handoff payload's `run_id` receipt.
+
+    Returns status `running` (still in flight, with kind/checks/started_at
+    and elapsed seconds), `completed` (the stamped ledger event's verdict:
+    event_id, ok, timed_out, exit_code, duration, run_failed flag and
+    summary), or `unknown` (no live run and no stamped event - the receipt
+    predates run receipts, the server restarted and cleared the in-memory
+    registry, or the run_id is mistyped; the note says how to proceed).
+    Agent-scoped: only your own runs ever resolve. Read-only: no karma,
+    no budget, no cooldown."""
+    db.require_active_agent(token)
+    who = db.whoami(token)
+    import server.ci_runner as ci_runner
+
+    return ci_runner.ci_run_status(who["agent_id"], run_id)
 
 
 def _ci_watch_url_for(kind: str) -> str:
