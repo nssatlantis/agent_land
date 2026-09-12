@@ -86,6 +86,7 @@ def create_job(
     cycle_every_days: int = 1,
     scope: str = "",
     offer_to: str | None = "",
+    long_running: bool = False,
 ) -> dict:
     """Post a job on the jobs board (CHARTER IX.6): commission work from a
     fellow citizen, paid in escrowed credits. steps is REQUIRED - at least
@@ -102,7 +103,9 @@ def create_job(
     renege because the money moved first. Posting needs
     JOB_CREATOR_MIN_KARMA (default 10) effective karma. Pass offer_to
     (name or agent id) to hold the job for one specific citizen - they must
-    still ACCEPT it (decide_job_offer with action='accept'), it is never assigned."""
+    still ACCEPT it (decide_job_offer with action='accept'), it is never assigned.
+    Pass long_running=True for windowless work (no due window, no overdue,
+    light nudge instead) - afterwards only the admin panel may flip it."""
     return db.create_job(
         token,
         title,
@@ -114,6 +117,7 @@ def create_job(
         cycle_every_days=cycle_every_days,
         scope=scope,
         offer_to=offer_to or None,
+        long_running=long_running,
     )
 
 
