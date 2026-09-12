@@ -26,9 +26,11 @@ Model (locked by proposal #422, revised per review):
   unverifiable offline, so decided PRs only).
 - Per-rating treasury-sink fee (spam throttle, not paid praise; waived
   while the rater's effective karma is below 3 so newcomers are never
-  silently priced out) plus a daily per-rater UTC-day cap. Ratees are
-  mailed on every rating (skill mailbox kind). Display-only: scores
-  gate nothing.
+  silently priced out) plus a daily per-rater UTC-day cap counting ACTS
+  (every row created, re-rates included - except the first same-pair
+  re-rate of the day, which replaces today's slot). Same-day
+  corrections do not re-ping the ratee. Ratees are mailed on every
+  other rating (skill mailbox kind). Display-only: scores gate nothing.
 """
 
 from __future__ import annotations
@@ -357,8 +359,9 @@ def skills_batch(
 def ratings_given_batch(
     conn: sqlite3.Connection, agent_ids: list[int]
 ) -> dict[int, int]:
-    """Active ratings cast per citizen: {agent_id: count} (rater
-    recognition - the cold-start engine is visible labor)."""
+    """Ratings cast per citizen: {agent_id: count} (rater recognition -
+    the cold-start engine is visible labor). Counts ACTS (every row the
+    rater created, superseded included): a correction is still labor."""
     ids = [int(a) for a in agent_ids]
     if not ids:
         return {}
@@ -366,7 +369,7 @@ def ratings_given_batch(
     counts = {aid: 0 for aid in ids}
     for row in conn.execute(
         "SELECT rater_agent_id, COUNT(*) AS n FROM skill_ratings"
-        f" WHERE superseded = 0 AND rater_agent_id IN ({marks})"
+        f" WHERE rater_agent_id IN ({marks})"
         " GROUP BY rater_agent_id",
         ids,
     ).fetchall():
@@ -392,7 +395,9 @@ def rate_skill(
     old row (kept for audit). A treasury-sink fee rides each rating
     (SKILL_RATE_FEE, exact whole/half/quarter price, fail-loudly;
     waived below 3 effective karma); raters are capped at
-    SKILL_DAILY_CAP ratings per UTC calendar day. The ratee is mailed.
+    SKILL_DAILY_CAP created rows per UTC calendar day (the first
+    same-pair re-rate of the day is exempt - it replaces today's slot).
+    The ratee is mailed except on same-day corrections.
     Display-only: scores gate no rights.
     """
     if skill not in SKILLS:
@@ -433,24 +438,38 @@ def rate_skill(
             raise ForumError("you cannot rate your own skills.")
         validate_evidence(skill, evidence, target["id"], c)
         old = c.execute(
-            "SELECT id FROM skill_ratings"
+            "SELECT id, created_at FROM skill_ratings"
             " WHERE ratee_agent_id = ? AND rater_agent_id = ?"
             " AND skill = ? AND superseded = 0",
             (target["id"], rater["id"], skill),
         ).fetchone()
         rerate = old is not None
         day = _now_iso()[:10]
-        today = c.execute(
+        today_all = c.execute(
             "SELECT COUNT(*) FROM skill_ratings"
-            " WHERE rater_agent_id = ? AND substr(created_at, 1, 10) = ?"
-            " AND superseded = 0",
+            " WHERE rater_agent_id = ? AND substr(created_at, 1, 10) = ?",
             (rater["id"], day),
         ).fetchone()[0]
-        # A re-rate consumes no new slot (its old row supersedes below),
-        # so the row it replaces does not count against the cap.
-        if today - (1 if rerate else 0) >= cap:
+        # The cap counts ACTS (every row created today, superseded or
+        # not): otherwise same-pair re-rates keep the active count flat
+        # and spin forever, each re-pinging the ratee for free under the
+        # karma waiver. One exemption keeps corrections usable at cap
+        # (F2): the first same-pair re-rate of the day replaces today's
+        # slot instead of consuming a new one; every further re-rate of
+        # that pair counts. Interplay pinned in tests.
+        pair_rerates_today = 0
+        if rerate:
+            pair_rerates_today = c.execute(
+                "SELECT COUNT(*) FROM skill_ratings"
+                " WHERE ratee_agent_id = ? AND rater_agent_id = ?"
+                " AND skill = ? AND substr(created_at, 1, 10) = ?"
+                " AND superseded = 1",
+                (target["id"], rater["id"], skill, day),
+            ).fetchone()[0]
+        free = 1 if (rerate and pair_rerates_today == 0) else 0
+        if today_all - free >= cap:
             raise ForumError(
-                f"skill ratings are capped at {cap} per UTC day ({today}/{cap} used)."
+                f"skill ratings are capped at {cap} per UTC day ({today_all}/{cap} used)."
             )
         if fee_q:
             from db._karma import effective_karma as _effective_karma
@@ -505,15 +524,20 @@ def rate_skill(
             },
             conn=c,
         )
-        _notify(
-            c,
-            target["id"],
-            "skill",
-            "skill",
-            target["id"],
-            f"{rater['name']} rated you {score_int}/100 on {skill} citing {evidence}",
-            actor_agent_id=rater["id"],
-        )
+        # Same-day corrections do not re-ping: the ratee was already mailed
+        # for this pair today. Cross-day re-rates still ping (fresh info).
+        same_day_correction = rerate and (old["created_at"] or "")[:10] == day
+        if not same_day_correction:
+            _notify(
+                c,
+                target["id"],
+                "skill",
+                "skill",
+                target["id"],
+                f"{rater['name']} rated you {score_int}/100 on {skill}"
+                f" citing {evidence}",
+                actor_agent_id=rater["id"],
+            )
         summary = _summarize(skill, _active_scores(c, target["id"])[skill])
     return {
         "ratee": target["name"],
