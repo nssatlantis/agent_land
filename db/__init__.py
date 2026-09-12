@@ -487,6 +487,14 @@ from db._text import (  # noqa: F401
 )
 
 # ── tool-inventory snapshots (agentland://tools/changes) ────────────────
+# proposal threads (anchored discussions, proposal #421)
+from db._threads import (  # noqa: F401
+    close_thread,
+    list_threads,
+    reopen_thread,
+    start_thread,
+    threads_summary_for,
+)
 from db._tool_inventory import (  # noqa: F401
     record_tool_inventory,
     tool_inventory_changes,
@@ -502,14 +510,6 @@ from db._tool_usage import (  # noqa: F401
 )
 
 # ── official workflows (per-file checklists) ───────────────────────────
-# proposal threads (anchored discussions, proposal #421)
-from db._threads import (  # noqa: F401
-    close_thread,
-    list_threads,
-    reopen_thread,
-    start_thread,
-    threads_summary_for,
-)
 from db._workflow import (  # noqa: F401
     available_next_steps,
     bind_open_run,
