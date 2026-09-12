@@ -13,7 +13,13 @@ from db._core import ForumError, _conn, _now_iso, _require_active_agent
 
 from ._create import _handle_taker_deposit
 from ._detail import _JOB_COLS, _detail_or_raise
-from ._helpers import _all_prs_merged, _fmt_q, _parse_pr_numbers, _unhold_cycle_prs
+from ._helpers import (
+    _all_prs_merged,
+    _fmt_q,
+    _parse_pr_numbers,
+    _unhold_cycle_prs,
+    job_cycle_opens_at,
+)
 
 
 def claim_job(token: str, job_id: int) -> dict:
@@ -217,6 +223,15 @@ def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True) -> d
             raise ForumError(f"no job with id {job_id}.")
         if job["worker_agent_id"] != agent["id"]:
             raise ForumError("only the job's current worker may tick its steps.")
+        cycle_no = job["cycles_done"] + 1
+        cycle = conn.execute(
+            "SELECT opens_at FROM job_cycles WHERE job_id = ? AND cycle_no = ?",
+            (job["id"], cycle_no),
+        ).fetchone()
+        if cycle is not None and cycle["opens_at"] and cycle["opens_at"] > _now_iso():
+            raise ForumError(
+                f"cycle {cycle_no} opens at {cycle['opens_at']} and is not open yet."
+            )
         cur = conn.execute(
             "UPDATE job_steps SET done = ? WHERE id = ? AND job_id = ?",
             (1 if done else 0, int(step_id), job["id"]),
@@ -285,6 +300,11 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             raise ForumError(
                 f"cycle {cycle_no} is already submitted - waiting on the "
                 "creator's review_job() verdict."
+            )
+        if cycle is not None and cycle["opens_at"] and cycle["opens_at"] > _now_iso():
+            raise ForumError(
+                f"cycle {cycle_no} opens at {cycle['opens_at']} and is not "
+                "open for submission yet."
             )
         pr_numbers_json = json.dumps(pr_numbers) if pr_numbers else None
         pr_shas_json = json.dumps(pr_shas) if pr_numbers else None
@@ -566,12 +586,16 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
 
 
 def _seed_next_cycle(conn, job, new_done: int) -> None:
-    """Seed the next cycle's awaiting row for recurring jobs."""
+    """Seed the next cycle's awaiting row for recurring jobs.  A cadenced
+    job (cycle_every_days > 1) schedules the new cycle to open N days after
+    the accept; the daily default keeps opens_at NULL = open now."""
     if new_done < job["total_cycles"]:
+        cadence = int(job["cycle_every_days"] or 1)
+        opens_at = job_cycle_opens_at(cadence) if cadence > 1 else None
         conn.execute(
             "INSERT OR IGNORE INTO job_cycles"
-            " (job_id, cycle_no, status) VALUES (?, ?, 'awaiting')",
-            (job["id"], new_done + 1),
+            " (job_id, cycle_no, opens_at, status) VALUES (?, ?, ?, 'awaiting')",
+            (job["id"], new_done + 1, opens_at),
         )
 
 

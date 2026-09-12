@@ -242,6 +242,8 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         f"cycle {min(job['cycles_done'] + 1, job['total_cycles'])}"
         f"/{job['total_cycles']}",
     ]
+    if int(job.get("cycle_every_days") or 1) > 1:
+        meta_bits.append(f"every {job['cycle_every_days']} days")
     # expiry countdown + urgency indicator (new/active X days, near-expiry warning)
     try:
         created = job.get("created_at")
@@ -275,7 +277,10 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     cycles_html = ""
     for c in job["cycles"]:
         if c["status"] == "awaiting":
-            cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>cycle {c['cycle_no']}: <b>awaiting</b> <span style='color:var(--muted)'>(awaiting submission)</span></div>"
+            note = "<span style='color:var(--muted)'>(awaiting submission)</span>"
+            if c.get("opens_at"):
+                note += f" opens {_human_ts(c['opens_at'])}"
+            cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>cycle {c['cycle_no']}: <b>awaiting</b> {note}</div>"
             continue
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
         if c["submitted_at"]:

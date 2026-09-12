@@ -111,7 +111,8 @@ def _validated_job_intake(
     scope: str,
     max_cycles: int,
     knob_name: str,
-) -> tuple[str, str, str, str, list[str], int, int]:
+    cycle_every_days: int = 1,
+) -> tuple[str, str, str, str, list[str], int, int, int]:
     """Shared intake validation for citizen and official creation."""
     title = str(title).strip()
     description = str(description).strip()
@@ -144,12 +145,33 @@ def _validated_job_intake(
         raise ForumError(
             f"recurring jobs run between 1 and {max_cycles} cycles ({knob_name})."
         )
+    try:
+        cycle_every_days = int(cycle_every_days)
+    except (TypeError, ValueError):
+        raise ForumError("cycle_every_days must be a whole number.") from None
+    if kind == "one_time":
+        cycle_every_days = 1
+    max_every = int(config.JOB_MAX_CYCLE_EVERY_DAYS)
+    if cycle_every_days < 1 or cycle_every_days > max_every:
+        raise ForumError(
+            f"recurring jobs run every 1 to {max_every} days "
+            "(FORUM_JOB_MAX_CYCLE_EVERY_DAYS)."
+        )
     from db._credits import to_quarters
 
     payment_q = int(to_quarters(float(payment_credits)))
     if payment_q < 1:
         raise ForumError("payment must be at least 0.25 credits.")
-    return title, description, scope, kind, steps, payment_q, cycles
+    return (
+        title,
+        description,
+        scope,
+        kind,
+        steps,
+        payment_q,
+        cycles,
+        cycle_every_days,
+    )
 
 
 def _insert_job_with_steps(
@@ -163,6 +185,7 @@ def _insert_job_with_steps(
     kind,
     payment_q,
     cycles,
+    cycle_every_days,
     official,
     steps,
     taker_deposit_quarters: int = 0,
@@ -175,10 +198,10 @@ def _insert_job_with_steps(
     an order must never exist as escrowed-but-unlinked."""
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
-        " title, description, scope, kind, payment_quarters,"
-        " total_cycles, official, taker_deposit_quarters,"
+        " title, description, scope, kind, cycle_every_days,"
+        " payment_quarters, total_cycles, official, taker_deposit_quarters,"
         " treasury_escrow_quarters, service_id, service_terms, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id,
             offered_to_id,
@@ -186,6 +209,7 @@ def _insert_job_with_steps(
             description,
             scope or None,
             kind,
+            cycle_every_days,
             payment_q,
             cycles,
             official,
@@ -261,6 +285,7 @@ def create_job(
     *,
     kind: str = "one_time",
     cycles: int = 1,
+    cycle_every_days: int = 1,
     scope: str = "",
     offer_to: str | int | None = None,
     taker_deposit_credits: float | None = None,
@@ -272,7 +297,16 @@ def create_job(
     (services orders only) ride the same INSERT - linkage and escrow
     commit together, never apart."""
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
-    title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
+    (
+        title,
+        description,
+        scope,
+        kind,
+        steps,
+        payment_q,
+        cycles,
+        cycle_every_days,
+    ) = _validated_job_intake(
         title,
         description,
         payment_credits,
@@ -282,6 +316,7 @@ def create_job(
         scope=scope,
         max_cycles=config.JOB_MAX_CYCLES,
         knob_name="FORUM_JOB_MAX_CYCLES",
+        cycle_every_days=cycle_every_days,
     )
     escrow_q = payment_q * cycles
     from db._credits import exact_from_credits, fee_quarters
@@ -337,6 +372,7 @@ def create_job(
             kind=kind,
             payment_q=payment_q,
             cycles=cycles,
+            cycle_every_days=cycle_every_days,
             official=0,
             steps=steps,
             taker_deposit_quarters=taker_deposit_q,
@@ -374,6 +410,7 @@ def create_job(
             detail={
                 "title": title,
                 "kind": kind,
+                "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
                 "payment_quarters": payment_q,
                 "total_cycles": cycles,
@@ -418,12 +455,22 @@ def create_job_official(
     *,
     kind: str = "recurring",
     cycles: int = 7,
+    cycle_every_days: int = 1,
     scope: str = "",
     offer_to: str | int | None = None,
     taker_deposit_credits: float | None = None,
 ) -> dict:
     """Create an OFFICIAL job position (admin panel only)."""
-    title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
+    (
+        title,
+        description,
+        scope,
+        kind,
+        steps,
+        payment_q,
+        cycles,
+        cycle_every_days,
+    ) = _validated_job_intake(
         title,
         description,
         payment_credits,
@@ -433,6 +480,7 @@ def create_job_official(
         scope=scope,
         max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
         knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
+        cycle_every_days=cycle_every_days,
     )
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     treasury_escrow_q = payment_q * cycles
@@ -466,6 +514,7 @@ def create_job_official(
             kind=kind,
             payment_q=payment_q,
             cycles=cycles,
+            cycle_every_days=cycle_every_days,
             official=1,
             steps=steps,
             taker_deposit_quarters=taker_deposit_q,
@@ -498,6 +547,7 @@ def create_job_official(
             detail={
                 "title": title,
                 "kind": kind,
+                "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
                 "payment_quarters": payment_q,
                 "total_cycles": cycles,

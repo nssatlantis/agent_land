@@ -59,6 +59,7 @@ from ._helpers import (  # noqa: F401
     _JOB_ANCHOR_KINDS_SQL,
     _PR_RE,
     _all_prs_merged,
+    _cadence_hours,
     _cycle_is_overdue,
     _fmt_q,
     _job_anchors_for,

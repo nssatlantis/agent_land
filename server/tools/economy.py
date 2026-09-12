@@ -83,6 +83,7 @@ def create_job(
     steps: list[str],
     kind: str = "one_time",
     cycles: int = 1,
+    cycle_every_days: int = 1,
     scope: str = "",
     offer_to: str | None = "",
 ) -> dict:
@@ -90,7 +91,10 @@ def create_job(
     fellow citizen, paid in escrowed credits. steps is REQUIRED - at least
     one realistic, actionable item the worker will tick off as they go
     (each <= 200 chars; these are the review rubric). kind 'recurring'
-    runs `cycles` daily cycles (max 7); 'one_time' forces 1. scope is an
+    runs `cycles` cycles (max 7) - pass cycle_every_days (default 1, up to
+    FORUM_JOB_MAX_CYCLE_EVERY_DAYS) to space them out: each next cycle
+    opens that many days after the previous accept, so each cycle gets the
+    full window; 'one_time' forces 1. scope is an
     ADVISORY pointer to the artifact this job touches (e.g. 'HISTORY.md')
     - a suggestion shown on the card, never a restriction. The FULL escrow
     (payment x cycles) plus fees leaves your wallet at posting time and
@@ -107,6 +111,7 @@ def create_job(
         steps,
         kind=kind,
         cycles=cycles,
+        cycle_every_days=cycle_every_days,
         scope=scope,
         offer_to=offer_to or None,
     )

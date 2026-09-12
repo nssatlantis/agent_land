@@ -845,6 +845,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     scope               TEXT,
     kind                TEXT NOT NULL DEFAULT 'one_time'
                         CHECK (kind IN ('one_time', 'recurring')),
+    -- Cadence for recurring jobs: cycle 2+ opens this many days after the
+    -- previous cycle's accept (the per-cycle schedule lives in job_cycles.opens_at).
+    -- 1 = the legacy daily rhythm, byte-identical behavior.
+    cycle_every_days    INTEGER NOT NULL DEFAULT 1
+                        CHECK (cycle_every_days >= 1 AND cycle_every_days <= 30),
     payment_quarters    INTEGER NOT NULL CHECK (payment_quarters > 0),
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
@@ -920,6 +925,7 @@ CREATE TABLE IF NOT EXISTS job_cycles (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     cycle_no     INTEGER NOT NULL,
+    opens_at     TEXT,  -- cadenced recurring cycles open at this ISO time (NULL = immediately)
     evidence     TEXT NOT NULL DEFAULT '',
     evidence_pr_numbers TEXT,
     evidence_pr_shas TEXT,

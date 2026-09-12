@@ -114,6 +114,13 @@ def run(conn) -> None:
     # Overdue-nudge stamp per cycle (NULL = never nudged): existing rows
     # predate the column and correctly read as never-nudged.
     _ensure_column(conn, "job_cycles", "overdue_notified_at", "TEXT")
+    # Job cadence: a recurring job's cycle gap in days on jobs
+    # (cycle_every_days, 1..30; schema.sql CHECK enforces the bound) plus
+    # the per-cycle schedule on job_cycles (opens_at, NULL = the cycle
+    # opens immediately). Existing job_cycles rows stay NULL, so daily
+    # jobs behave byte-identically before and after migration.
+    _ensure_column(conn, "jobs", "cycle_every_days", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "job_cycles", "opens_at", "TEXT")
     # Citizen-store draft slots: how many staging slots the citizen owns
     # (unlock opens the first). Fresh DBs carry the column (schema.sql);
     # existing ones (including store-era DBs) gain it here, defaulting

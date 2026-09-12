@@ -10,6 +10,7 @@ from db._core import ForumError, _conn, _id_chunks, _require_active_agent
 
 from ._detail import _job_detail, _job_details_batch
 from ._helpers import (
+    _cadence_hours,
     _fmt_q,
     _job_anchors_for,
     _overdue_flag,
@@ -73,10 +74,10 @@ def list_jobs(
             agent_id = agent["id"]
             params.append(agent_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        _cutoff = job_overdue_cutoff()
         rows = conn.execute(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
-            " j.payment_quarters, j.total_cycles, j.cycles_done,"
+            " j.cycle_every_days, j.payment_quarters,"
+            " j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
@@ -92,39 +93,49 @@ def list_jobs(
         # cycle status) over the page ids instead of paying 2N subqueries.
         page_ids = [r["id"] for r in rows]
         anchors = _job_anchors_for(conn, page_ids)
-        cur_by_job: dict[int, dict[int, str | None]] = {}
+        cur_by_job: dict[int, dict[int, tuple[str | None, str | None]]] = {}
         if page_ids:
             marks = ",".join("?" * len(page_ids))
             for cr in conn.execute(
-                "SELECT job_id, cycle_no, status FROM job_cycles"
+                "SELECT job_id, cycle_no, status, opens_at FROM job_cycles"
                 f" WHERE job_id IN ({marks})",
                 page_ids,
             ).fetchall():
-                cur_by_job.setdefault(cr["job_id"], {})[cr["cycle_no"]] = cr["status"]
-        jobs_out = [
-            {
-                "job_id": r["id"],
-                "title": r["title"],
-                "kind": r["kind"],
-                "status": r["status"],
-                "scope": r["scope"],
-                "official": bool(r["official"]),
-                "creator": r["creator_name"] or "admin",
-                "worker": r["worker_name"],
-                "offered_to": r["offered_to_name"],
-                "payment_credits": _fmt_q(r["payment_quarters"]),
-                "total_cycles": r["total_cycles"],
-                "cycles_done": r["cycles_done"],
-                "overdue": _overdue_flag(
-                    r["status"],
-                    cur_by_job.get(r["id"], {}).get(r["cycles_done"] + 1),
-                    anchors.get(r["id"], r["created_at"]),
-                    _cutoff,
-                ),
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
+                cur_by_job.setdefault(cr["job_id"], {})[cr["cycle_no"]] = (
+                    cr["status"],
+                    cr["opens_at"],
+                )
+        jobs_out = []
+        for r in rows:
+            cur_pair = cur_by_job.get(r["id"], {}).get(r["cycles_done"] + 1)
+            cur_status = cur_pair[0] if cur_pair else None
+            cur_opens_at = cur_pair[1] if cur_pair else None
+            jobs_out.append(
+                {
+                    "job_id": r["id"],
+                    "title": r["title"],
+                    "kind": r["kind"],
+                    "status": r["status"],
+                    "scope": r["scope"],
+                    "official": bool(r["official"]),
+                    "cycle_every_days": r["cycle_every_days"],
+                    "creator": r["creator_name"] or "admin",
+                    "worker": r["worker_name"],
+                    "offered_to": r["offered_to_name"],
+                    "payment_credits": _fmt_q(r["payment_quarters"]),
+                    "total_cycles": r["total_cycles"],
+                    "cycles_done": r["cycles_done"],
+                    "overdue": _overdue_flag(
+                        r["status"],
+                        cur_status,
+                        anchors.get(r["id"], r["created_at"]),
+                        job_overdue_cutoff(hours=_cadence_hours(r)),
+                        opens_at=cur_opens_at,
+                    ),
+                    "opens_at": cur_opens_at,
+                    "created_at": r["created_at"],
+                }
+            )
     return {
         "view": view,
         "jobs": jobs_out,

@@ -94,14 +94,16 @@ def _job_anchors_for(
     }
 
 
-def job_overdue_cutoff() -> str:
+def job_overdue_cutoff(hours: int | None = None) -> str:
     """The ISO boundary for 'overdue', or '' when the feature is disabled.
 
     An active job whose CURRENT cycle is still awaiting/declined past this
     many hours (config.JOB_CYCLE_DUE_HOURS) since its last status move
     reads as overdue.  A cutoff of 0 (FORUM_JOB_CYCLE_DUE_HOURS=0) disables
-    the feature."""
-    hours = int(config.JOB_CYCLE_DUE_HOURS)
+    the feature.  Pass `hours` to apply a per-job effective window (a
+    cadenced recurring job's cycle_every_days x FORUM_JOB_CYCLE_DUE_HOURS);
+    the default uses the configured hours."""
+    hours = int(hours if hours is not None else config.JOB_CYCLE_DUE_HOURS)
     if hours <= 0:
         return ""
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
@@ -109,32 +111,74 @@ def job_overdue_cutoff() -> str:
     )[:-3] + "Z"
 
 
-def _cycle_is_overdue(status: str | None, anchor_at: str | None, cutoff: str) -> bool:
+def job_cycle_opens_at(days: int) -> str:
+    """ISO time a cadenced cycle opens: N days from now, in the ledger's
+    format - the forward twin of job_overdue_cutoff(), so the same string
+    comparison decides 'not open yet'."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+
+
+def _cadence_hours(job: sqlite3.Row) -> int:
+    """A cadenced job's effective due window in hours: its cycle gap in
+    days times the base FORUM_JOB_CYCLE_DUE_HOURS."""
+    return int(int(job["cycle_every_days"] or 1) * int(config.JOB_CYCLE_DUE_HOURS))
+
+
+def _cycle_is_overdue(
+    status: str | None,
+    anchor_at: str | None,
+    cutoff: str,
+    *,
+    opens_at: str | None = None,
+) -> bool:
     """True when a job's current cycle idles past the due window.
 
     awaiting/declined are the worker's turn (the creator has already made
     their move); 'submitted' means the ball is with the creator and never
     counts as overdue.  Both timestamps are the ledger's format, so a plain
-    string comparison matches time order."""
+    string comparison matches time order.  A cadenced cycle that has not
+    opened yet (opens_at in the future) is never overdue - the worker has
+    nothing to submit until it opens.  Once it opens, the due clock starts
+    at the later of the accept and the opens_at, so a cadenced cycle keeps
+    its full cadence x FORUM_JOB_CYCLE_DUE_HOURS window instead of reading
+    overdue the instant its opens_at passes."""
     if not cutoff or status not in ("awaiting", "declined"):
         return False
     if not anchor_at:
         return False
+    if opens_at:
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        if opens_at > now_iso:
+            return False
+        anchor_at = max(anchor_at, opens_at)
     return anchor_at <= cutoff
 
 
-def _overdue_windows_elapsed(anchor_at: str | None, cutoff: str) -> int:
-    """How many whole FORUM_JOB_CYCLE_DUE_HOURS windows a cycle has idled
-    past its deadline: 0 = not overdue, 1 = the first due window has fully
-    elapsed, then +1 per window.  Deterministic from the events anchor
-    alone (no schema column), so the release threshold
-    (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the fly; a misread
-    ledger or dead clock degrades to 0 and never releases."""
-    hours = int(config.JOB_CYCLE_DUE_HOURS)
+def _overdue_windows_elapsed(
+    anchor_at: str | None,
+    cutoff: str,
+    *,
+    hours: int | None = None,
+    opens_at: str | None = None,
+) -> int:
+    """How many whole due windows a cycle has idled past its deadline: 0 =
+    not overdue, 1 = the first window has fully elapsed, then +1 per window.
+    `hours` overrides the base FORUM_JOB_CYCLE_DUE_HOURS for cadenced jobs
+    (their effective window is cycle_every_days x base).  `opens_at` (a
+    cadenced cycle's open time) re-anchors the clock at the later of the
+    accept and the open, so a just-opened cycle counts no elapsed window.
+    Deterministic from the events anchor alone (no schema column), so the
+    release threshold (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the
+    fly; a misread ledger or dead clock degrades to 0 and never releases."""
+    hours = int(hours if hours is not None else config.JOB_CYCLE_DUE_HOURS)
     if not cutoff or hours <= 0 or not anchor_at:
         return 0
     try:
         window_s = hours * 3600
+        if opens_at:
+            anchor_at = max(anchor_at, opens_at)
         anchor = datetime.fromisoformat(anchor_at.replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - anchor).total_seconds()
         if age < window_s:
@@ -149,14 +193,17 @@ def _overdue_flag(
     cur_cycle_status: str | None,
     anchor_at: str | None,
     cutoff: str,
+    *,
+    opens_at: str | None = None,
 ) -> bool:
     """Board-level overdue flag: the job must be ACTIVE and its current
     cycle must idle past the due window.  Completed/expired/cancelled jobs
     never read overdue, even where a leftover cycle row still sits in a
-    transitional status."""
+    transitional status.  A future opens_at (cadenced cycle not yet open)
+    is never overdue."""
     if status != "active":
         return False
-    return _cycle_is_overdue(cur_cycle_status, anchor_at, cutoff)
+    return _cycle_is_overdue(cur_cycle_status, anchor_at, cutoff, opens_at=opens_at)
 
 
 def _all_prs_merged(pr_numbers: list[int]) -> bool:
