@@ -190,6 +190,10 @@ def start_thread(token: str, post_id: int, title: str, charge: str) -> dict:
             (created["comment_id"], post_id, title, charge, agent["id"], _now_iso()),
         )
         if cur.rowcount == 0:
+            conn.execute(
+                "DELETE FROM comments WHERE id = ? AND agent_id = ?",
+                (created["comment_id"], agent["id"]),
+            )
             raise ForumError(
                 f"a thread titled {title!r} just landed on proposal #{post_id} -"
                 " join that one."
@@ -231,6 +235,13 @@ def close_thread(token: str, post_id: int, thread_id: int, verdict: str) -> dict
             raise ForumError(
                 f"thread #{thread_id} is already closed - reopen it to change"
                 " the verdict."
+            )
+        # Headroom for the wrapper chrome composed below: refuse before the
+        # state flip so an over-long verdict never half-closes the thread.
+        if len(verdict) + len(row["title"]) > config.MAX_COMMENT_LEN - 200:
+            raise ForumError(
+                "that verdict is too long once wrapped - keep verdict plus"
+                f" title under {config.MAX_COMMENT_LEN - 200} characters."
             )
     with _conn(immediate=True) as conn:
         cur = conn.execute(
@@ -283,6 +294,12 @@ def reopen_thread(
         if row["state"] != "closed":
             raise ForumError(f"thread #{thread_id} is already open.")
         title = row["title"]
+        # Same headroom guard as close: refuse before the state flip.
+        if len(note) + len(title) > config.MAX_COMMENT_LEN - 200:
+            raise ForumError(
+                "that note is too long once wrapped - keep note plus"
+                f" title under {config.MAX_COMMENT_LEN - 200} characters."
+            )
     with _conn(immediate=True) as conn:
         cur = conn.execute(
             "UPDATE threads SET state = 'open', closed_by = NULL, closed_at = NULL"
