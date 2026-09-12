@@ -481,7 +481,7 @@ def test_handoff_fast_run_returns_full_result():
     )
     uid = _uid()
     try:
-        result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+        result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
             30, uid, "t", "tests"
         )
         assert handed_off is False
@@ -503,7 +503,14 @@ def test_handoff_slow_run_returns_running_and_completes():
     done_mark: list = []
 
     def _slow(
-        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+        agent_id,
+        name,
+        checks,
+        pr_number=None,
+        files=None,
+        tree=None,
+        quiet=True,
+        _run_id=None,
     ):
         started.set()
         assert release.wait(15)
@@ -513,9 +520,10 @@ def test_handoff_slow_run_returns_running_and_completes():
     uid = _uid()
     try:
         with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_slow):
-            result, handed_off, started_at = ci_runner.run_checks_with_deadline(
+            out = ci_runner.run_checks_with_deadline(
                 0, uid, "t", "tests", files=[{"path": "x.py", "content": "y"}]
             )
+            result, handed_off, started_at, run_id = out
             assert result is None
             assert handed_off is True
             assert started_at
@@ -541,7 +549,14 @@ def test_handoff_error_propagates_within_deadline():
     import unittest.mock as _mock
 
     def _raise(
-        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+        agent_id,
+        name,
+        checks,
+        pr_number=None,
+        files=None,
+        tree=None,
+        quiet=True,
+        _run_id=None,
     ):
         raise db.ForumError("something went wrong while rehearsing")
 
@@ -569,7 +584,14 @@ def test_single_flight_refuses_concurrent_second_run():
     done_mark: list = []
 
     def _slow(
-        agent_id, name, checks, pr_number=None, files=None, tree=None, quiet=True
+        agent_id,
+        name,
+        checks,
+        pr_number=None,
+        files=None,
+        tree=None,
+        quiet=True,
+        _run_id=None,
     ):
         started.set()
         assert release.wait(15)
@@ -989,7 +1011,7 @@ def test_wrapper_bench_idle_pool_is_fast_and_quiet():
     )
     try:
         start = time.monotonic()
-        result, handed_off, _ = ci_runner.run_checks_with_deadline(
+        result, handed_off, _, run_id = ci_runner.run_checks_with_deadline(
             60, _uid(), "t", "db_benchmark"
         )
         elapsed = time.monotonic() - start
@@ -1386,6 +1408,261 @@ def test_dockerfile_resolves_from_split_package():
     print("  dockerfile resolves from split package: ok")
 
 
+def test_handoff_payload_carries_run_id_receipt():
+    """The handoff 4-tuple carries a 32-hex run_id receipt matching the
+    single-flight claim, and ci_run_status reads it back as running."""
+    import re as _re
+    import unittest.mock as _mock
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow(
+        agent_id,
+        name,
+        checks,
+        pr_number=None,
+        files=None,
+        tree=None,
+        quiet=True,
+        _run_id=None,
+    ):
+        started.set()
+        assert release.wait(15)
+        return {"ok": True}
+
+    uid = _uid()
+    try:
+        with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_slow):
+            out = ci_runner.run_checks_with_deadline(0, uid, "t", "tests")
+            result, handed_off, started_at, run_id = out
+            assert result is None and handed_off is True
+            assert _re.fullmatch(r"[0-9a-f]{32}", run_id), run_id
+            assert started.wait(5)
+            status = ci_runner.ci_run_status(uid, run_id)
+            assert status["status"] == "running", status
+            assert status["started_at"] == started_at
+            release.set()
+        deadline = time.monotonic() + 10
+        while ci_runner._inflight_occupied(uid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ci_runner._inflight_occupied(uid) is False
+    finally:
+        release.set()
+
+
+def test_late_worker_failure_audits_failure_event():
+    """A worker failing AFTER the handoff deadline writes a stamped failure
+    event (ok False, run_failed True) instead of vanishing - and the status
+    reader resolves it as completed."""
+    import unittest.mock as _mock
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_fail(
+        agent_id,
+        name,
+        checks,
+        pr_number=None,
+        files=None,
+        tree=None,
+        quiet=True,
+        _run_id=None,
+    ):
+        started.set()
+        assert release.wait(15)
+        raise db.ForumError("boom late")
+
+    uid = _uid()
+    try:
+        with _mock.patch.object(ci_runner._runs, "run_checks", side_effect=_slow_fail):
+            out = ci_runner.run_checks_with_deadline(0, uid, "t", "tests")
+            result, handed_off, started_at, run_id = out
+            assert result is None and handed_off is True
+            assert started.wait(5)
+            release.set()
+        deadline = time.monotonic() + 10
+        while ci_runner._inflight_occupied(uid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ci_runner._inflight_occupied(uid) is False
+        rows = events.query_events(agent_id=uid, kind=events.EVT_CI_RUN, limit=20)
+        hits = [
+            r
+            for r in rows
+            if isinstance(r.get("detail"), dict)
+            and (r.get("detail") or {}).get("run_id") == run_id
+        ]
+        assert len(hits) == 1, f"exactly one failure event, got {len(hits)}"
+        detail = hits[0]["detail"]
+        assert detail["run_failed"] is True and detail["ok"] is False
+        assert detail["error"] == "ForumError"
+        status = ci_runner.ci_run_status(uid, run_id)
+        assert status["status"] == "completed", status
+        assert status["run_failed"] is True
+        assert status["event_id"] == hits[0]["id"]
+    finally:
+        release.set()
+
+
+def test_ci_run_status_running_completed_unknown():
+    """ci_run_status reads live claims, then stamped events, then answers
+    unknown honestly; malformed receipts fail loud; a foreign claim never
+    matches."""
+    runs = ci_runner._runs
+    uid = _uid()
+    other = _uid()
+    rid = "a" * 32
+    try:
+        runs._inflight_claim(uid, "ci_local_run", "tests", "2030-01-01T00:00:00Z", rid)
+        live = runs.ci_run_status(uid, rid)
+        assert live["status"] == "running", live
+        assert live["kind"] == "ci_local_run" and live["checks"] == "tests"
+        foreign = runs.ci_run_status(other, rid)
+        assert foreign["status"] == "unknown", foreign
+    finally:
+        runs._inflight_release(uid, rid)
+    events.log_event(
+        events.EVT_CI_LOCAL_RUN,
+        actor_agent_id=uid,
+        actor_name="t",
+        detail={"checks": "tests", "ok": True, "run_id": rid},
+    )
+    done = runs.ci_run_status(uid, rid)
+    assert done["status"] == "completed", done
+    assert done["ok"] is True
+    ghost = runs.ci_run_status(uid, "b" * 32)
+    assert ghost["status"] == "unknown", ghost
+    try:
+        runs.ci_run_status(uid, "not-a-receipt")
+        raise AssertionError("expected ForumError")
+    except db.ForumError as exc:
+        assert "run_id" in str(exc)
+
+
+def test_conflict_path_stamps_run_id_on_payload_and_event():
+    """A merge-conflict short-circuit stamps run_id on BOTH the returned
+    payload and the ledger event, so the receipt resolves either way."""
+    import unittest.mock as _mock
+
+    uid = _uid()
+    rid = "c" * 32
+    saved_docker = ci_runner._sandbox._docker_available
+    ci_runner._sandbox._docker_available = lambda: True
+    try:
+        with _mock.patch.object(
+            ci_runner._trees,
+            "_prepare_br_tree",
+            return_value=(
+                "treex",
+                "deadbeef",
+                {"conflict": True, "files": ["a.py"]},
+            ),
+        ):
+            result = ci_runner.run_checks(uid, "t", "tests", pr_number=7, _run_id=rid)
+    finally:
+        ci_runner._sandbox._docker_available = saved_docker
+    assert result.get("merge_conflict") is True
+    assert result.get("run_id") == rid, result
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_BRANCH_RUN, limit=20)
+    hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == rid
+    ]
+    assert len(hits) == 1, f"exactly one stamped conflict event, got {len(hits)}"
+
+
+def test_audit_late_failure_modes_and_status_kinds():
+    """_audit_late_failure maps local/tree/pr_number to modes, carries
+    pr_number without head_sha (poller-cache invisible), and ci_run_status
+    resolves bench-kind stamps too."""
+    runs = ci_runner._runs
+    uid = _uid()
+    local_rid = "d" * 32
+    runs._audit_late_failure(
+        uid,
+        "t",
+        events.EVT_CI_LOCAL_RUN,
+        "tests",
+        local_rid,
+        "2026-09-12T00:00:00.000Z",
+        db.ForumError("x"),
+        files=[{"path": "a.py", "content": "b"}],
+    )
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_LOCAL_RUN, limit=20)
+    local_hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == local_rid
+    ]
+    assert len(local_hits) == 1
+    assert local_hits[0]["detail"]["mode"] == "local"
+    assert local_hits[0]["detail"]["run_failed"] is True
+    branch_rid = "e" * 32
+    runs._audit_late_failure(
+        uid,
+        "t",
+        events.EVT_CI_BRANCH_RUN,
+        "tests",
+        branch_rid,
+        "2026-09-12T00:00:00.000Z",
+        RuntimeError("y"),
+        pr_number=9,
+    )
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_BRANCH_RUN, limit=20)
+    branch_hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == branch_rid
+    ]
+    assert len(branch_hits) == 1
+    assert branch_hits[0]["detail"]["pr_number"] == 9
+    assert "head_sha" not in branch_hits[0]["detail"]
+    bench_rid = "f" * 32
+    events.log_event(
+        events.EVT_CI_DB_BENCH_RUN,
+        actor_agent_id=uid,
+        actor_name="t",
+        detail={"checks": "db_benchmark", "ok": True, "run_id": bench_rid},
+    )
+    seen = runs.ci_run_status(uid, bench_rid)
+    assert seen["status"] == "completed", seen
+    assert seen["kind"] == events.EVT_CI_DB_BENCH_RUN
+
+
+def test_fast_run_stamps_run_id_on_result_and_event():
+    """Through the real run_checks (stub tree), a within-deadline run
+    returns run_id on the result and stamps it on the ledger event."""
+    stub = _StubTree(
+        "tests",
+        """
+        import sys
+        print("all 1 test files passed")
+        sys.exit(0)
+    """,
+    )
+    uid = _uid()
+    try:
+        out = ci_runner.run_checks_with_deadline(30, uid, "t", "tests")
+        result, handed_off, started_at, run_id = out
+        assert handed_off is False and result["ok"] is True
+        assert result["run_id"] == run_id
+        rows = events.query_events(agent_id=uid, kind=events.EVT_CI_RUN, limit=20)
+        hits = [
+            r
+            for r in rows
+            if isinstance(r.get("detail"), dict)
+            and (r.get("detail") or {}).get("run_id") == run_id
+        ]
+        assert len(hits) == 1, f"exactly one stamped event, got {len(hits)}"
+    finally:
+        stub.cleanup()
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -1439,6 +1716,12 @@ def main():
     test_native_host_fallback_with_static_tools_is_parity()
     test_traversable_memoizes_per_marker()
     test_dockerfile_resolves_from_split_package()
+    test_handoff_payload_carries_run_id_receipt()
+    test_late_worker_failure_audits_failure_event()
+    test_ci_run_status_running_completed_unknown()
+    test_fast_run_stamps_run_id_on_result_and_event()
+    test_conflict_path_stamps_run_id_on_payload_and_event()
+    test_audit_late_failure_modes_and_status_kinds()
     print("test_ci_runner: all ok")
 
 

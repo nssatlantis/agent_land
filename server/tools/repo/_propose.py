@@ -443,6 +443,9 @@ async def repo_propose_change(
             for ev in recent:
                 if ev["kind"] in ci_kinds:
                     detail = ev.get("detail") or {}
+                    if detail.get("run_failed"):
+                        # domain: infra-failure audit, not rehearsal - keep looking
+                        continue
                     # ci_runner logs ok/exit_code; any ci_* event counts as rehearsal if detail missing
                     if (
                         detail.get("ok") is True

@@ -15,6 +15,7 @@ from ._govern import (  # noqa: F401
     assign_proposal,
     claim_proposal,
     repo_ci_run,
+    repo_ci_run_status,
     repo_restart_workflow,
     repo_start_workflow,
     repo_workflow_status,
