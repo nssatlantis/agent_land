@@ -23,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402, I001
 import db._content as _content_mod  # noqa: E402, I001
+import db._jobs_admin as _ja_mod  # noqa: E402, I001
 from db._agent import _agent_row, _agent_row_fast  # noqa: E402, I001
+from db._core import _parse_iso  # noqa: E402, I001
+from db._jobs_admin import _digest_is_fresh  # noqa: E402, I001
 from db._proposal_docket import _proposal_rows, _proposal_rows_many  # noqa: E402, I001
 
 _KEYS_17 = {
@@ -300,6 +303,39 @@ def main():
         "proposal-bearing page must still read the live bar"
     )
     print("  tag/offset/kind/lazy-threshold: ok")
+
+    # --- 11. F4 digest gate: fast path == parse oracle --------------------
+    gate_cases = [
+        ("2026-09-12T20:00:00.000Z", "2026-09-11T20:00:00.000Z", True),
+        ("2026-09-10T20:00:00.000Z", "2026-09-11T20:00:00.000Z", False),
+        ("2026-09-11T20:00:00.000Z", "2026-09-11T20:00:00.000Z", False),
+        ("2026-09-11T20:00:00.001Z", "2026-09-11T20:00:00.000Z", True),
+        ("2026-01-01T00:00:00.000Z", "2026-09-11T20:00:00.000Z", False),
+        ("2026-09-11T20:00:00Z", "2026-09-11T20:00:00.000Z", False),
+        ("2026-09-12T20:00:00Z", "2026-09-11T20:00:00.000Z", True),
+    ]
+    for newest, ago, want in gate_cases:
+        assert _digest_is_fresh(newest, ago) is want, (newest, ago)
+        assert (_parse_iso(newest) > _parse_iso(ago)) is want, (newest, ago)
+    print("  digest gate fast-path parity: ok")
+
+    # --- 12. F4 empty candidates: no gate query -----------------------------
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO jobs (creator_agent_id, title, description, scope,"
+            " kind, payment_quarters, total_cycles, cycles_done, official,"
+            " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 1, 1, 0,"
+            " 'completed')",
+            (alpha["agent_id"],),
+        )
+        conn.commit()
+    dg_stmts: list[str] = []
+    with db._conn() as conn:
+        conn.set_trace_callback(dg_stmts.append)
+        with mock.patch.object(_ja_mod, "_conn", return_value=nullcontext(conn)):
+            assert db._jobs.send_job_digests() == 0
+    assert not [s for s in dg_stmts if "FROM notifications" in s], dg_stmts
+    print("  empty-candidates early exit: ok")
 
     print("test_bench_trims: all assertions passed")
 
