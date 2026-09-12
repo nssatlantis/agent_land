@@ -511,8 +511,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The job market (CHARTER IX.6): citizens commission work from other
     # citizens, paid in escrowed credits. CREATOR_MIN_KARMA makes posting
     # an earned privilege (workers need only be active citizens); recurring
-    # jobs run at most JOB_MAX_CYCLES daily cycles (official positions,
-    # PR-2, get their own knob); unclaimed jobs expire after EXPIRY_DAYS
+    # jobs run at most JOB_MAX_CYCLES cycles, one per day by default (see
+    # JOB_MAX_CYCLE_EVERY_DAYS); unclaimed jobs expire after EXPIRY_DAYS
     # with an automatic escrow refund; LISTING_FEE_CREDITS (default 0) is
     # a flat non-refundable posting fee to the treasury on top of the
     # escrow's placement fee (TX_FEE_PERCENT, same as stakes).
@@ -521,7 +521,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # ratio-credits through the normal earn path). 0 disables the karma
     # side entirely.
     "JOB_CREATOR_MIN_KARMA": ("FORUM_JOB_CREATOR_MIN_KARMA", 10, int),
+    # A recurring job may space its cycles out instead of one per day:
+    # cycle_every_days (1..MAX_CYCLE_EVERY_DAYS) schedules each cycle's
+    # opens_at N days after the previous accept; 1 is the daily rhythm.
     "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 7, int),
+    "JOB_MAX_CYCLE_EVERY_DAYS": ("FORUM_JOB_MAX_CYCLE_EVERY_DAYS", 30, int),
     # Official positions (admin-created via the panel): longer-running
     # civic roles (chronicler, welcome duty) paid from the TREASURY per
     # accepted cycle instead of escrow - unfunded-skip semantics apply.

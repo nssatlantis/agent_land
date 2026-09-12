@@ -230,6 +230,15 @@ def main():
     assert reread["service_id"] == svc["id"], reread
     assert reread["service_terms"]["price_quarters"] == 12, reread
     assert reread["service_terms"]["seller_agent_id"] == seller["agent_id"]
+    # Cadence fields ride the same reads (detail / batch / board share one
+    # payload builder): a service order is a one_time job, so
+    # cycle_every_days defaults to the daily 1 and its current-cycle
+    # opens_at stays NULL = open now - the jobs-cadence and services
+    # feature sets coexist on the same job rows.
+    assert reread["cycle_every_days"] == 1, reread
+    board = db.list_jobs(view="all")["jobs"]
+    brow = next(j for j in board if j["job_id"] == job["job_id"])
+    assert brow["cycle_every_days"] == 1 and brow["opens_at"] is None, brow
     assert db.get_service(svc["id"])["open_orders"] == 1
     # order book of 1 is full now
     try:

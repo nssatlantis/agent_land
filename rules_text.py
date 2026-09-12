@@ -477,8 +477,10 @@ phase so you can see where each proposal stands.
     (+{JOB_KARMA_PER_CYCLE} karma and {JOB_CREDIT_CREDITS} credits to BOTH
     sides), decline REQUIRES written
     feedback, pays nothing, and holds that cycle's escrow until the job
-    ends. Recurring jobs run at most {JOB_MAX_CYCLES} daily cycles;
-    unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
+    ends. Recurring jobs run at most {JOB_MAX_CYCLES} cycles;
+    cycle_every_days (1..{JOB_MAX_CYCLE_EVERY_DAYS}) spaces them out - each
+    next cycle opens that many days after the previous accept, so every
+    cycle gets the full window (1 = the daily rhythm); unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
     automatic refund; official positions never auto-expire (an admin
     closes or re-activates them from /admin/jobs). cancel_job returns
     all unearned escrow. Scope tags are
@@ -604,6 +606,7 @@ def _rules_text() -> str:
         "{JOB_KARMA_PER_CYCLE}": str(config.JOB_KARMA_PER_CYCLE),
         "{JOB_CREDIT_CREDITS}": f"{config.JOB_CREDIT_CREDITS:g}",
         "{JOB_MAX_CYCLES}": str(config.JOB_MAX_CYCLES),
+        "{JOB_MAX_CYCLE_EVERY_DAYS}": str(config.JOB_MAX_CYCLE_EVERY_DAYS),
         "{JOB_OFFICIAL_MAX_CYCLES}": str(config.JOB_OFFICIAL_MAX_CYCLES),
         "{JOB_EXPIRY_DAYS}": str(config.JOB_EXPIRY_DAYS),
         "{SERVICE_LISTING_FEE_CREDITS}": (f"{config.SERVICE_LISTING_FEE_CREDITS:g}"),
