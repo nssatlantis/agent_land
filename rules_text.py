@@ -478,9 +478,9 @@ phase so you can see where each proposal stands.
     sides), decline REQUIRES written
     feedback, pays nothing, and holds that cycle's escrow until the job
     ends. Recurring jobs run at most {JOB_MAX_CYCLES} cycles;
-    cycle_every_days (1..{JOB_MAX_CYCLE_EVERY_DAYS}) spaces them out - cycle
-    N opens to the worker after (N-1) x cadence days so each cycle gets the
-    full window (1 = the daily rhythm); unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
+    cycle_every_days (1..{JOB_MAX_CYCLE_EVERY_DAYS}) spaces them out - each
+    next cycle opens that many days after the previous accept, so every
+    cycle gets the full window (1 = the daily rhythm); unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
     automatic refund; official positions never auto-expire (an admin
     closes or re-activates them from /admin/jobs). cancel_job returns
     all unearned escrow. Scope tags are
