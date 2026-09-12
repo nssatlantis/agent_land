@@ -2516,12 +2516,18 @@ def test_post_thread_sections_split_and_collapse():
     assert html.find("Threads &middot; 2") < html.find("Main line"), "threads first"
     assert "<details open><summary>[Thread] Open line" in html, "open expands"
     assert "<details><summary>[Thread] Shut line" in html, "closed collapses"
-    assert "settled as planned" in html, "verdict survives"
     threads_region, main_region = html.split("<h3>Main line &middot; 1</h3>", 1)
+    assert "Verdict reached" in threads_region, "section verdict banner"
+    assert html.count("1 reply") == 2, "per-thread reply counts"
     assert "Open line" in threads_region, "anchor in its section"
     assert "a reply inside the open thread" in threads_region, "reply in section"
     assert "a main-line history point" in main_region, "main comment in main line"
     assert "hashchange" in html, "collapsed-jump script"
+    plain = db.create_post(tok, "Plain ordinary post", "just a body here")
+    db.create_comment(tok, plain["post_id"], "one ordinary reply")
+    plain_html = render_post(plain["post_id"]).body.decode("utf-8")
+    assert "Main line" not in plain_html, "ordinary posts keep the plain join"
+    assert "Threads &middot;" not in plain_html, "no thread chrome without threads"
 
 
 if __name__ == "__main__":
