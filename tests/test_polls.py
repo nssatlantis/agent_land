@@ -103,6 +103,10 @@ def main():
     assert gv["my_vote"] == opt1
     assert gv["total_votes"] == 2
     assert gv["options"][1]["votes"] == 1
+    # --- single-query tally parity (folded LEFT JOIN COUNT) ------------------
+    assert [o["text"] for o in gv["options"]] == ["Red", "Blue", "Green"]
+    assert [o["votes"] for o in gv["options"]] == [1, 1, 0], "zero-vote kept"
+    assert gv["total_votes"] == 2
     # author cannot vote own poll
     assert "own poll" in expect_error(lambda: db.vote_poll(ta, p, opt0))
     # unknown option refused

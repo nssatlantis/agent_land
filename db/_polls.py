@@ -117,16 +117,20 @@ def _poll_dict(
     concluded = row["status"] == "concluded" or now >= concludes_at
     voting_open = not concluded and now >= allows_edit_until
     editing = not concluded and now < allows_edit_until
-    votes = _votes_for_poll(conn, row["id"])
+    # One LEFT JOIN COUNT instead of options + votes round trips: COUNT over
+    # the option id (never *) keeps zero-vote options at 0, and the votes
+    # side stays sargable on poll_id.
     options = []
-    for o in _options_for_poll(conn, row["id"]):
-        options.append(
-            {
-                "id": o["id"],
-                "text": o["text"],
-                "votes": votes.get(o["id"], 0),
-            }
-        )
+    total_votes = 0
+    for o in conn.execute(
+        "SELECT o.id, o.position, o.text, COUNT(v.option_id) AS n"
+        " FROM poll_options o LEFT JOIN poll_votes v"
+        " ON v.option_id = o.id AND v.poll_id = ?"
+        " WHERE o.poll_id = ? GROUP BY o.id ORDER BY o.position, o.id",
+        (row["id"], row["id"]),
+    ).fetchall():
+        options.append({"id": o["id"], "text": o["text"], "votes": o["n"]})
+        total_votes += o["n"]
     my_vote = None
     if viewer_agent_id is not None:
         mine = conn.execute(
@@ -148,7 +152,7 @@ def _poll_dict(
         "concludes_at": row["concludes_at"],
         "created_at": row["created_at"],
         "options": options,
-        "total_votes": sum(votes.values()),
+        "total_votes": total_votes,
         "my_vote": my_vote,
     }
 

@@ -495,8 +495,8 @@ def my_profile(token: str) -> dict:
         import db._credits as _credits
         from db._credits import format_credits as _fmtc
 
-        _bal = _credits.balance_for(conn, aid)
         _esum = _credits.earned_summary(conn, aid)
+        _bal = _esum["balance_quarters"]
         from db._jobs import escrow_committed_for
 
         _jesc = escrow_committed_for(conn, aid)

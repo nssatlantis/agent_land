@@ -1262,6 +1262,10 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_created
     ON workflow_runs(created_at);
 
+-- Per-status counts (GROUP BY status) have no serving index above. (The
+-- created_at listing twin lives in PR #1168 - keeping both would duplicate.)
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+
 -- Guided checklist steps for a create-pr run (workflows part 2, PR B): each
 -- open run snapshots the workflow's `## Steps` list (ordered `**key**`
 -- tokens) into workflow_run_steps; `repo_propose_change` gates on the manual

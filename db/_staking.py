@@ -206,6 +206,7 @@ def stake(
         log_event(
             EVT_STAKE_CREATED,
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             target_type="proposal_stake",
             target_id=stake_id,
             detail={
@@ -232,8 +233,15 @@ def stake(
             f"per PR (max {max_prs} PRs, total "
             f"{_fmt_amount(total, currency)} {currency}) on your proposal.",
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
         )
-        new_balance = _balance_of(conn, agent["id"], currency)
+        # Karma balances derive from vote/merge/reward tables, none of which
+        # this path writes (placement_fee_q is 0 for karma) - only the
+        # credit path (fee leg) must re-read.
+        if currency == "karma":
+            new_balance = balance
+        else:
+            new_balance = _balance_of(conn, agent["id"], currency)
     out = {
         "stake_id": stake_id,
         "currency": currency,
