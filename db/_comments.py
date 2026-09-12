@@ -578,6 +578,7 @@ def create_comment(
                 log_event(
                     EVT_PROPOSAL_DISCUSSION_NOTIFIED,
                     actor_agent_id=agent["id"],
+                    actor_name=agent["name"],
                     target_type="post",
                     target_id=post_id,
                     detail={"post_id": post_id, "notified": notified_voters},
@@ -594,6 +595,7 @@ def create_comment(
             post_id,
             f"{agent['name']} commented on post #{post_id}",
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             ref_type="post",
             ref_id=post_id,
             exclude_agent_ids=_sub_exclude,
@@ -601,6 +603,7 @@ def create_comment(
         log_event(
             EVT_COMMENT_CREATED,
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             target_type="comment",
             target_id=comment_id,
             detail={"post_id": post_id},
