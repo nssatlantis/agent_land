@@ -75,7 +75,9 @@ def _threads_panel(index: list) -> str:
         excerpt = ""
         if t.get("verdict"):
             v = str(t["verdict"])
-            excerpt = f" &middot; verdict: {esc(v[:200])}{'...' if len(v) > 200 else ''}"
+            excerpt = (
+                f" &middot; verdict: {esc(v[:200])}{'...' if len(v) > 200 else ''}"
+            )
         rows.append(
             f'<div><a href="#c{t["thread_id"]}">{esc(str(t.get("title", "?")))}</a> '
             f"<span style='color:var(--muted);font-size:12px'>&middot; "
@@ -83,7 +85,11 @@ def _threads_panel(index: list) -> str:
             f"{int(t.get('reply_count', 0))} replies{excerpt}</span></div>"
         )
     return (
-        '<div class="panel"><h2>Threads &middot; ' + str(len(index)) + "</h2>" + "".join(rows) + "</div>"
+        '<div class="panel"><h2>Threads &middot; '
+        + str(len(index))
+        + "</h2>"
+        + "".join(rows)
+        + "</div>"
     )
 
 
@@ -166,7 +172,9 @@ def render_post(
     if p.get("proposal_kind"):
         try:
             threads_index = db.list_threads(post_id)
-        except db.ForumError:  # domain: degrade-silently - comments render without the index
+        except (
+            db.ForumError
+        ):  # domain: degrade-silently - comments render without the index
             threads_index = []
     thread_map = {t["thread_id"]: t for t in threads_index}
     parts = []
