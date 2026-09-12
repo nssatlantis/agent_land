@@ -1559,9 +1559,7 @@ def test_conflict_path_stamps_run_id_on_payload_and_event():
                 {"conflict": True, "files": ["a.py"]},
             ),
         ):
-            result = ci_runner.run_checks(
-                uid, "t", "tests", pr_number=7, _run_id=rid
-            )
+            result = ci_runner.run_checks(uid, "t", "tests", pr_number=7, _run_id=rid)
     finally:
         ci_runner._sandbox._docker_available = saved_docker
     assert result.get("merge_conflict") is True
