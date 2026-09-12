@@ -38,7 +38,9 @@ def _karmaed(name, points=1):
 
 
 def _idea(token, title=None):
-    idea = db.create_proposal(token, title or _next("Thread idea"), "idea body", idea=True)
+    idea = db.create_proposal(
+        token, title or _next("Thread idea"), "idea body", idea=True
+    )
     return idea["post_id"]
 
 
@@ -154,7 +156,9 @@ def test_close_matrix_and_verdict_roundtrip():
             db.close_thread, AGENTS["delta"]["token"], pid, tid, "alien verdict"
         )
         assert "only the" in msg
-        closed = db.close_thread(AGENTS["gamma"]["token"], pid, tid, "adopted as planned")
+        closed = db.close_thread(
+            AGENTS["gamma"]["token"], pid, tid, "adopted as planned"
+        )
         assert closed["state"] == "closed"
         assert closed["verdict"] == "adopted as planned"
         assert closed["closed_by_name"] == "gamma"
@@ -199,7 +203,9 @@ def test_delegate_closes_any():
             "UPDATE posts SET delegate_id = ? WHERE id = ?", (helper["agent_id"], pid)
         )
     thread = db.start_thread(author["token"], pid, "Deleg line", "charge")
-    closed = db.close_thread(helper["token"], pid, thread["thread_id"], "delegate verdict")
+    closed = db.close_thread(
+        helper["token"], pid, thread["thread_id"], "delegate verdict"
+    )
     assert closed["state"] == "closed"
     assert closed["closed_by_name"] == helper_name
 
