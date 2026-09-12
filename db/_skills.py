@@ -176,7 +176,8 @@ def validate_evidence(
         )
         hint = (
             "building evidence must be a decided PR the ratee opened "
-            "(open PRs are unverifiable offline)"
+            "(open PRs are unverifiable offline; any decided status "
+            "counts - attribution, not endorsement)"
         )
     elif skill == "reviewing" and kind == "pr":
         hit = (
