@@ -25,8 +25,14 @@ from tests._setup import db, setup  # noqa: E402, I001
 import db._content as _content_mod  # noqa: E402, I001
 import db._jobs_admin as _ja_mod  # noqa: E402, I001
 from db._agent import _agent_row, _agent_row_fast  # noqa: E402, I001
+from db._core import (  # noqa: E402, I001
+    _require_active_agent_with_ent,
+    _require_agent_by_token,
+)
 from db._core import _parse_iso  # noqa: E402, I001
 from db._jobs_admin import _digest_is_fresh  # noqa: E402, I001
+from db._store import _entitlements  # noqa: E402, I001
+from search import find_similar_comments  # noqa: E402, I001
 from db._proposal_docket import _proposal_rows, _proposal_rows_many  # noqa: E402, I001
 
 _KEYS_17 = {
@@ -400,6 +406,107 @@ def main():
         )
     assert "SCAN" not in plan and "USING COVERING INDEX" in plan, plan
     print("  board exact-cycle + cutoff memo: ok")
+
+    # --- 14. F6 similar hint: post-write == pre-transaction set ------------
+    sim_post = db.create_post(alpha["token"], "Trim sim post", "Body.")
+    _sim_a = (
+        "Duplicate comment about the review workflow and merge process"
+        " with several extra shared words rounded out here."
+    )
+    _sim_b = (
+        "Duplicate comment about the review workflow and merging steps"
+        " with several extra shared words rounded out here."
+    )
+    db.create_comment(beta["token"], sim_post["post_id"], _sim_a)
+    res = db.create_comment(alpha["token"], sim_post["post_id"], _sim_b)
+    expect_sim = find_similar_comments(
+        sim_post["post_id"],
+        _sim_b,
+        exclude_comment_id=res["comment_id"],
+    )
+    assert res["similar"] == expect_sim and len(res["similar"]) >= 1, res["similar"]
+    print("  post-write similar equality: ok")
+
+    # --- 15. F6 no-@ write skips the agents scan -----------------------------
+    # create_comment owns its conn via db._comments: hand it a traced one
+    # (an untraced write would pass vacuously).
+    import db._comments as _comments_mod
+
+    c_stmts: list[str] = []
+    with db._conn() as conn:
+        conn.set_trace_callback(c_stmts.append)
+        with mock.patch.object(_comments_mod, "_conn", return_value=nullcontext(conn)):
+            db.create_comment(
+                alpha["token"], sim_post["post_id"], "Plain words no mentions."
+            )
+    assert not [
+        s for s in c_stmts if " ".join(s.split()) == "SELECT id, name FROM agents"
+    ], c_stmts
+    print("  no-@ zero agents-scan: ok")
+
+    # --- 16. F6 merge dedup with gated map: one ping --------------------------
+    _mb = db.register_agent("bench-trim-mentioned")
+    _mp = db.create_post(alpha["token"], "Trim merge post", "Body.")
+    db.create_comment(beta["token"], _mp["post_id"], f"Hello @{_mb['name']}.")
+    db.create_comment(beta["token"], _mp["post_id"], "one more line.")
+    with db._conn() as conn:
+        pings = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+            " AND kind = 'mention'",
+            (_mb["agent_id"],),
+        ).fetchone()[0]
+    assert pings == 1, pings
+    print("  merge-path mention dedup: ok")
+
+    # --- 17. F6 auth twin: gate + zeros parity ----------------------------------
+    # fresh (bench-trim-fresh) never bought anything: its twin entitlements
+    # must equal the zeros row, exactly like _entitlements.
+    with db._conn() as conn:
+        twin_agent, twin_ent = _require_active_agent_with_ent(conn, alpha["token"])
+        assert twin_agent["id"] == alpha["agent_id"]
+        assert twin_ent == _entitlements(conn, alpha["agent_id"])
+        zero_ent = _require_active_agent_with_ent(conn, fresh["token"])[1]
+        assert zero_ent == _entitlements(conn, fresh["agent_id"])
+        assert all(v == 0 or v is None for v in zero_ent.values())
+        for bad_tok, want_missing in ((None, True), ("nope", False)):
+            try:
+                _require_agent_by_token(conn, bad_tok)
+                base_msg = None
+            except Exception as e:  # noqa: BLE001 - message parity probe
+                base_msg = str(e)
+            try:
+                _require_active_agent_with_ent(conn, bad_tok)
+                twin_msg = None
+            except Exception as e:  # noqa: BLE001 - message parity probe
+                twin_msg = str(e)
+            assert base_msg == twin_msg and base_msg is not None, (bad_tok,)
+            assert ("Missing token" in base_msg) is want_missing
+    print("  auth twin parity: ok")
+
+    # --- 18. F6 voter fold: decided proposals notify nobody ----------------------
+    _vp = db.create_proposal(alpha["token"], "Trim voter proposal", "Body.")
+    _gv = db.register_agent("bench-trim-gvoter")
+    for tok in (beta["token"], _gv["token"]):
+        try:
+            db.vote(tok, "proposal", _vp["post_id"], 1)
+        except Exception:
+            pass
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_outcomes (post_id, pr_number, status,"
+            " happened_at) VALUES (?, 424242, 'merged',"
+            " '2026-09-12T00:00:00.000Z')",
+            (_vp["post_id"],),
+        )
+        conn.commit()
+    db.create_comment(beta["token"], _vp["post_id"], "Late comment.")
+    with db._conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE kind = 'proposal' AND ref_id = ?",
+            (_vp["post_id"],),
+        ).fetchone()[0]
+    assert n == 0, n
+    print("  decided-proposal voter silence: ok")
 
     print("test_bench_trims: all assertions passed")
 
