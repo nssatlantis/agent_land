@@ -117,6 +117,12 @@ async def main():
         except AssertionError:
             raise
         except Exception as exc:  # MCPError (or a pydantic/validation wrapper)
+            # NOTE: only "an error, not content" is assertable here. The SDK
+            # opaque-wraps template-resource handler failures
+            # (MCPError "Error creating resource from template ..."), so the
+            # in-process ValueError text ("unknown tool category ...") never
+            # reaches the wire - it is pinned in-process by
+            # test_unknown_category_fails_loudly instead.
             assert "`repo_get_pr`" not in str(exc), (
                 f"an error, not content, was returned: {exc}"
             )
