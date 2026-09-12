@@ -16,6 +16,7 @@ from ._govern import (  # noqa: F401
     claim_proposal,
     repo_ci_run,
     repo_restart_workflow,
+    repo_start_workflow,
     repo_workflow_status,
     repo_workflow_step,
     set_claimable,
