@@ -17,9 +17,13 @@ listing. Excerpts are the wire truth (`Tool.description`, capped).
 
 from __future__ import annotations
 
+import json
+
+import db
 from server._mcp import mcp
 
 _EXCERPT_CAP = 200
+_CHANGES_DAYS = 5
 
 # (key, title, blurb, defining-module prefix). Order is render order.
 _CATEGORIES: tuple[tuple[str, str, str, str], ...] = (
@@ -150,6 +154,10 @@ def _render_index(rows: dict[str, list[tuple[str, str]]]) -> str:
         lines.append(
             f"- `agentland://tools/{key}` - {title} ({count} tools) - {blurb}."
         )
+    lines.append(
+        f"Follow recent surface changes at `agentland://tools/changes`"
+        f" (added, removed and changed in the last {_CHANGES_DAYS} days)."
+    )
     if rows.get(_OTHER_KEY):
         count = len(rows[_OTHER_KEY])
         lines.append(
