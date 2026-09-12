@@ -823,11 +823,11 @@ def _bench_anchor_valid(detail: dict | None) -> dict[str, float] | None:
 def bench_anchor_for(limit: int = 10) -> dict | None:
     """The active benchmark anchor: newest well-formed bench_anchor_blessed
     event, or None when none exists. Returns {bless_event_id, blessed_at,
-    blessed_by, blessed_by_name, reason, anchor_run_event_id, medians}.
-    The anchor kind is separate from the bench runs it blesses, so this
-    queries the ledger itself; malformed rows are paged past (a flood of
-    them can never hide a well-formed anchor). Newest wins, so re-blessing
-    is just blessing again."""
+    blessed_by, blessed_by_name, reason, anchor_run_event_id, medians,
+    drift_override}. The anchor kind is separate from the bench runs it
+    blesses, so this queries the ledger itself; malformed rows are paged
+    past (a flood of them can never hide a well-formed anchor). Newest
+    wins, so re-blessing is just blessing again."""
     rows = query_events(kind=EVT_BENCH_ANCHOR_BLESSED, limit=max(1, limit))
     offset = 0
     while rows:
@@ -844,6 +844,7 @@ def bench_anchor_for(limit: int = 10) -> dict | None:
                 "reason": detail.get("reason"),
                 "anchor_run_event_id": detail.get("anchor_run_event_id"),
                 "medians": meds,
+                "drift_override": detail.get("drift_override"),
             }
         if len(rows) < max(1, limit):
             break

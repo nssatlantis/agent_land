@@ -736,7 +736,8 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             aging_txt = " (AGING)" if aging else ""
             remedy = (
                 " - the hourly heartbeat refreshes the anchor when due;"
-                " buy a blessed_bench run in the store to force it now"
+                " buy a blessed_bench run in the store — the next tick spends"
+                " it, drift or not"
                 if aging
                 else ""
             )

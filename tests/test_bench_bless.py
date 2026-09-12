@@ -202,6 +202,37 @@ def main():
         events.bench_anchor_drifted({"medians": {"a": float("nan")}}, flat_rows) == []
     ), "NaN anchor medians skipped"
 
+    # Paid judgment overrides drift (#381 restoration): top up a solid
+    # drifted trailing window (the flat seeds above outnumber the earlier
+    # drifted six), then the same drifted state blesses on reason="store"
+    # with the overridden queries ridden loud — while the free path still
+    # holds on the identical state.
+    for _ in range(6):
+        _seed_run(subject, drifted)
+    run5 = _seed_run(subject, FLAT)
+    out = db.bless_heartbeat_run(run5, reason="store", blessed_by=buyer["agent_id"])
+    assert out.startswith("blessed:") and "paid judgment" in out, (
+        f"store overrides drift ({out})"
+    )
+    # The unreadable-timestamp section above poisoned bless-row ordering
+    # ('garbage' sorts above real timestamps), so find run5's bless by its
+    # recorded run id instead of newest-first.
+    brows = events.query_events(kind=events.EVT_BENCH_ANCHOR_BLESSED, limit=50)
+    mine = [
+        b for b in brows if (b.get("detail") or {}).get("anchor_run_event_id") == run5
+    ]
+    assert mine, "override bless recorded"
+    det = mine[0].get("detail") or {}
+    assert sorted(det.get("drift_override") or []) == ["a", "b", "c"], (
+        f"drift ridden loud ({det.get('drift_override')})"
+    )
+    assert det["medians"]["a"] == 10.0, "drifted queries keep prior medians"
+    run6 = _seed_run(subject, FLAT)
+    out = db.bless_heartbeat_run(run6, reason="heartbeat", blessed_by=None)
+    assert out.startswith("held:") and "drifted" in out, (
+        f"heartbeat still holds through drift ({out})"
+    )
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)

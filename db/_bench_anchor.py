@@ -3,9 +3,11 @@
 Two doors bless, one timer governs. The hourly heartbeat dispatches a
 fresh quiet native bench once HEARTBEAT_DAYS pass since the last bless
 (any source) and blesses it when it qualifies with small drift; citizens
-buy banked blessed runs in the store (2cr) that the tick spends the same
-way. Manual blessing is retired: freshness comes from execution, never
-from pointing at old runs. Newest bless wins, always."""
+buy banked blessed runs in the store (2cr, max 1 banked) that force the
+next tick to spend them promptly, blessing on quality even through drift
+(paid explicit judgment, ridden loud). Manual blessing is retired:
+freshness comes from execution, never from pointing at old runs. Newest
+bless wins, always."""
 
 from __future__ import annotations
 
@@ -65,21 +67,27 @@ def _record_bless(
     blessed_by: int | None,
     reason: str,
     cost_credits: float,
+    drift_override: list[str] | None = None,
 ) -> None:
     """Log the bless event inside the caller's transaction (the caller owns
-    the debit on paid paths; cron/bootstrap pass cost 0)."""
+    the debit on paid paths; cron/bootstrap pass cost 0). A paid
+    drift-override rides loud as drift_override so the forced baseline
+    never looks clean."""
     from events import EVT_BENCH_ANCHOR_BLESSED, log_event
 
+    detail: dict = {
+        "anchor_run_event_id": run_event_id,
+        "blessed_by": blessed_by,
+        "reason": reason,
+        "medians": dict(medians),
+        "cost_credits": cost_credits,
+    }
+    if drift_override:
+        detail["drift_override"] = list(drift_override)
     log_event(
         EVT_BENCH_ANCHOR_BLESSED,
         actor_agent_id=blessed_by,
-        detail={
-            "anchor_run_event_id": run_event_id,
-            "blessed_by": blessed_by,
-            "reason": reason,
-            "medians": dict(medians),
-            "cost_credits": cost_credits,
-        },
+        detail=detail,
         conn=conn,
     )
 
@@ -118,10 +126,13 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
     """Bless a dispatched run's ledger row: validate (quiet, uncontended,
     green, error-free, medians present), then drift-gate against the live
     anchor (3+ drifted queries hold for review, fewer carry their prior
-    medians through so a lone red stays visible). reason is heartbeat,
-    store or bootstrap; blessed_by names the paying citizen on the store
-    path, None otherwise. The spend/refund around paid runs lives with the
-    caller (server layer); this function only judges and records."""
+    medians through so a lone red stays visible). A store-bought run blesses
+    through drift on paid explicit judgment (#381) — quality gates still
+    apply, the overridden queries ride loud on the record, and prior
+    medians still carry through. reason is heartbeat, store or bootstrap;
+    blessed_by names the paying citizen on the store path, None otherwise.
+    The spend/refund around paid runs lives with the caller (server layer);
+    this function only judges and records."""
     import events
 
     if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 1:
@@ -144,14 +155,19 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
             return f"held: ev{event_id} unblessable ({problem})"
         medians = _run_medians(detail)
         anchor = events.bench_anchor_for()
+        drift_override: list[str] = []
         if anchor is not None:
             rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=50)
             drifted = events.bench_anchor_drifted(anchor, rows)
-            if len(drifted) >= 3:
+            if len(drifted) >= 3 and reason != "store":
                 return (
                     f"held: {len(drifted)} queries drifted (anchor aging; "
                     "resolve the drift, the heartbeat blesses once trailing reads flat)"
                 )
+            if len(drifted) >= 3:
+                # Paid explicit judgment: a bought run blesses through drift,
+                # but the overridden queries ride loud on the bless record.
+                drift_override = sorted(str(q) for q in drifted)
             prior = anchor.get("medians") or {}
             for q in drifted:
                 if q in prior:
@@ -163,5 +179,12 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
             blessed_by=blessed_by,
             reason=reason,
             cost_credits=0.0,
+            drift_override=drift_override or None,
         )
+        if drift_override:
+            return (
+                f"blessed: {reason} run ev{event_id} (paid judgment through"
+                f" {len(drift_override)} drifted queries:"
+                f" {', '.join(drift_override)})"
+            )
         return f"blessed: {reason} run ev{event_id}"

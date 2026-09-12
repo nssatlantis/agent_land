@@ -161,7 +161,22 @@ def main():
     assert _bank(b3) == 1, "failed refund restores the bank for a retry"
     assert "refund failed" in _skips()[0]["detail"]["reason"], "failure audited"
 
-    # Fresh-anchor quiet skip: no dispatch, no ledger row, buyer untouched.
+    # Buyer-forces-due helper: True while a bank is held (pins the new
+    # branch condition without dispatching a real bench; the False side is
+    # asserted after the drain below).
+    b4 = _banked_buyer("settle-waiting")
+    assert tick._banked_buyer_waiting() is True, "waiting buyer detected"
+    _take(b4)
+    # (Drain the earlier buyers' banks first: a waiting buyer now forces the
+    # tick due, so the stand-down scenario needs an empty bank. b0 keeps its
+    # run by design — blessed passthrough moves nothing.)
+    for _b in (b0, b2, b3):
+        with db._conn(immediate=True) as _c:
+            _c.execute(
+                "UPDATE store_entitlements SET blessed_benches = 0 WHERE agent_id = ?",
+                (_b["agent_id"],),
+            )
+    assert tick._banked_buyer_waiting() is False, "empty bank reads False"
     subject = db.register_agent("settle-tick")
     events.log_event(
         events.EVT_CI_DB_BENCH_RUN,
