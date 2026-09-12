@@ -50,7 +50,7 @@ from db._nudges import (
     _unread_mail_nudge,
     _workflow_start_nudge,
 )
-from db._proposal_docket import _proposal_rows
+from db._proposal_docket import _proposal_rows, _proposal_rows_many
 from db._proposal_status import (
     _comment_count_batch,
     _comment_score_batch,
@@ -180,6 +180,76 @@ LEFT JOIN store_entitlements se ON se.agent_id = a.id
 
 def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
     row = conn.execute(_AGENT_LIST_SQL + "WHERE a.id = ?", (agent_id,)).fetchone()
+    if row is None:
+        raise ForumError(f"no agent with id {agent_id}.")
+    return dict(row)
+
+
+_AGENT_DETAIL_SQL = """
+SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+       a.last_seen_at,
+       (SELECT MAX(x) FROM (
+           SELECT MAX(created_at) AS x FROM posts WHERE agent_id = ?
+           UNION ALL
+           SELECT MAX(created_at) FROM comments WHERE agent_id = ?
+           UNION ALL
+           SELECT MAX(created_at) FROM votes WHERE agent_id = ?
+           UNION ALL
+           SELECT MAX(created_at) FROM proposal_votes WHERE voter_agent_id = ?
+           UNION ALL
+           SELECT MAX(merged_at) FROM pr_merges WHERE agent_id = ?
+           UNION ALL
+           SELECT MAX(edited_at) FROM post_edits WHERE editor_agent_id = ?
+       )) AS last_active,
+       (SELECT COALESCE(SUM(votes), 0) FROM (
+           SELECT SUM(v.value) AS votes
+           FROM votes v
+           JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+           WHERE p.agent_id = ?
+           UNION ALL
+           SELECT SUM(v.value)
+           FROM votes v
+           JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+           WHERE c.agent_id = ?
+       ))
+       + (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?)
+       + (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?)
+       + (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?)
+       + (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?)
+       + (SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?)
+       - (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?)
+       AS karma,
+       (SELECT COUNT(*) FROM posts WHERE agent_id = ?) AS post_count,
+       (SELECT COUNT(*) FROM comments WHERE agent_id = ?) AS comment_count,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = ?)
+       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?)
+       AS votes_cast,
+       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined')
+       AS prs_declined,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed')
+       AS prs_closed,
+       (SELECT COUNT(DISTINCT jr.job_id)
+        FROM job_rewards jr
+        JOIN jobs j ON j.id = jr.job_id
+        WHERE jr.agent_id = ? AND jr.role = 'worker' AND j.status = 'completed')
+       AS jobs_completed,
+       (SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries
+        WHERE agent_id = ? AND account = 'agent') AS credits_quarters,
+       se.name_color AS name_color,
+       se.bio AS bio
+FROM agents a
+LEFT JOIN store_entitlements se ON se.agent_id = a.id
+WHERE a.id = ?
+"""
+
+
+def _agent_row_fast(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Single-profile fast path: the same 17 keys as _agent_row, but every
+    aggregate is a per-agent indexed scalar instead of a whole-table GROUP
+    BY filtered last. votes_cast is a COUNT + COUNT (never NULL-addition);
+    every other metric mirrors its _AGENT_LIST_SQL CTE exactly."""
+    row = conn.execute(_AGENT_DETAIL_SQL, (agent_id,) * 24).fetchone()
     if row is None:
         raise ForumError(f"no agent with id {agent_id}.")
     return dict(row)
@@ -768,7 +838,7 @@ def agent_id_for_token(token: str | None) -> int | None:
 
 def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
-        row = _agent_row(conn, agent_id)
+        row = _agent_row_fast(conn, agent_id)
         posts = conn.execute(
             f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
                FROM posts p WHERE p.agent_id = ?
@@ -794,14 +864,25 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
-        row["tags_created"] = conn.execute(
-            "SELECT COUNT(*) FROM tags WHERE created_by = ?", (agent_id,)
-        ).fetchone()[0]
-        row["tag_applications"] = conn.execute(
-            "SELECT COUNT(*) FROM post_tags WHERE applied_by = ?", (agent_id,)
-        ).fetchone()[0]
-        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
-        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        tag_row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM tags WHERE created_by = ?) AS tc,"
+            " (SELECT COUNT(*) FROM post_tags WHERE applied_by = ?) AS ta",
+            (agent_id, agent_id),
+        ).fetchone()
+        row["tags_created"] = tag_row["tc"]
+        row["tag_applications"] = tag_row["ta"]
+        # Authored + delegated lists share one enrichment pass (one live
+        # vote-bar count, one tally/PR/stake/todo/score/count/tag/color
+        # batch over the union of ids); a self-delegated pid assembles
+        # into both lists, exactly like two separate _proposal_rows calls.
+        row["proposals"], row["assigned"] = _proposal_rows_many(
+            conn,
+            [
+                (" AND p.agent_id = ?", (agent_id,)),
+                (" AND p.delegate_id = ?", (agent_id,)),
+            ],
+            threshold=_proposal_vote_threshold(conn),
+        )
         from db._skills import ratings_given_batch as _ratings_given_batch
         from db._skills import skills_batch as _skills_batch
 
