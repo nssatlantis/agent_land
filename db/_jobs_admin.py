@@ -662,6 +662,11 @@ def admin_set_job_long_running(admin: str, job_id: int, value: bool) -> dict:
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
+        if job["status"] not in ("open", "offered", "active"):
+            raise ForumError(
+                f"job #{job_id} is '{job['status']}' - the flag only matters"
+                " for live jobs."
+            )
         if int(job["long_running"]) == want:
             raise ForumError(
                 f"job #{job_id} is already {'long-running' if want else 'windowed'}."
@@ -669,6 +674,14 @@ def admin_set_job_long_running(admin: str, job_id: int, value: bool) -> dict:
         conn.execute(
             "UPDATE jobs SET long_running = ? WHERE id = ?",
             (want, job["id"]),
+        )
+        # A flip re-arms the other side's once-per-cycle notice: the gentle
+        # and alarm paths share the overdue_notified_at stamp, so without
+        # this reset each would suppress the other forever after a toggle.
+        conn.execute(
+            "UPDATE job_cycles SET overdue_notified_at = NULL"
+            " WHERE job_id = ? AND cycle_no = ?",
+            (job["id"], int(job["cycles_done"]) + 1),
         )
         log_event(
             EVT_JOB_UPDATED,
@@ -972,12 +985,16 @@ def _release_overdue_job(
     recorded, and both parties are notified.  Returns how many notices
     were sent.  Caller holds the transaction and already re-checked
     status = 'active'.  The overdue sweep never passes official positions
-    (standing roles are admin-managed)."""
+    (standing roles are admin-managed) or windowless work (flagged
+    long-running builds) - the guard below backstops the sweep's early
+    branch, so a direct call can never release either class."""
     from events import EVT_JOB_RELEASED, log_event
     from notifications import _notify
 
     job = conn.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone()
     if job is None or job["status"] != "active":
+        return 0
+    if _is_windowless_job(job):
         return 0
     job_id = job["id"]
     cycle_no = row["cycle_no"]
@@ -1170,8 +1187,16 @@ def sweep_overdue_job_cycles() -> int:
                 opens_at=r["opens_at"],
             )
             # Official positions are never released - a standing role
-            # stays active; the overdue marking + nudges still fire.
-            if release_after > 0 and windows >= release_after and not r["official"]:
+            # stays active; windowless work (flagged or official) gets the
+            # gentle check-in above instead. The release predicate repeats
+            # the windowless guard (defense in depth: the early continue is
+            # the policy, this is the backstop).
+            if (
+                release_after > 0
+                and windows >= release_after
+                and not r["official"]
+                and not _is_windowless_job(r)
+            ):
                 sent += _release_overdue_job(conn, r, windows)
                 continue
             if r["overdue_notified_at"] is not None:
