@@ -10,6 +10,7 @@ from db._core import _id_chunks
 from ._helpers import (
     _cadence_hours,
     _fmt_q,
+    _is_windowless_job,
     _job_overdue_anchor_sql,
     _overdue_flag,
     _parse_cycle_evidence,
@@ -98,6 +99,7 @@ def _job_detail_from_parts(
         "kind": job["kind"],
         "cycle_every_days": job["cycle_every_days"],
         "official": bool(job["official"]),
+        "long_running": bool(job["long_running"]),
         "status": job["status"],
         "overdue": _overdue_flag(
             job["status"],
@@ -105,6 +107,7 @@ def _job_detail_from_parts(
             job["anchor_at"],
             cutoff,
             opens_at=cur_opens_at,
+            windowless=_is_windowless_job(job),
         ),
         "creator": (
             {
