@@ -68,6 +68,17 @@ def _settle_dispatch(result: dict, buyer_id: int | None) -> dict:
     }
 
 
+def _banked_buyer_waiting() -> bool:
+    """Whether any citizen currently holds a banked blessed run. A waiting
+    buyer forces the tick due (bought runs spend promptly, not on the free
+    timer's schedule). Separate helper so the branch condition pins without
+    dispatching a real bench."""
+    import db
+
+    with db._conn() as conn:
+        return db._store._find_blessed_bench_buyer(conn) is not None
+
+
 def _heartbeat_tick() -> dict:
     """One hourly evaluation: due (or a waiting buyer)? → buyer? → take →
     dispatch → bless → settle. A waiting buyer forces the tick due (#381:
@@ -76,29 +87,34 @@ def _heartbeat_tick() -> dict:
     heartbeat dispatches its own run. Settle: held + buyer ⇒ refund the
     price (one attempt per purchase, the numbers stay readable); infra +
     buyer ⇒ restore the banked run (the attempt never really happened, no
-    credit movement). Fresh-anchor hours with no buyer return a quiet skip
-    with no ledger row. Runs in a worker thread."""
+    credit movement). Fresh-anchor hours with an empty bank return a quiet
+    skip with no ledger row. Runs in a worker thread."""
     import db
     import server.ci_runner as ci_runner
 
     due, why = db.bench_heartbeat_due()
-    if not due:
-        # Buyer check lives here (not in bench_heartbeat_due) so the due
-        # read stays a pure timer; a banked run still spends within the hour.
-        with db._conn() as conn:
-            waiting = db._store._find_blessed_bench_buyer(conn) is not None
-        if not waiting:
-            return {
-                "outcome": "skipped",
-                "decision": f"skip: {why}",
-                "run_event_id": None,
-                "buyer_id": None,
-            }
-        why = "banked buyer waiting - paid run spends now"
+    # Buyer check lives here (not in bench_heartbeat_due) so the due read
+    # stays a pure timer; a banked run still spends within the hour.
+    if not due and not _banked_buyer_waiting():
+        return {
+            "outcome": "skipped",
+            "decision": f"skip: {why}",
+            "run_event_id": None,
+            "buyer_id": None,
+        }
     with db._conn(immediate=True) as conn:
         buyer_id = db._store._find_blessed_bench_buyer(conn)
         if buyer_id is not None:
             db._store._take_blessed_bench(conn, buyer_id)
+    if not due and buyer_id is None:
+        # The bank drained between the waiting check and the take: stand
+        # down on the original timer reason instead of dispatching free.
+        return {
+            "outcome": "skipped",
+            "decision": f"skip: {why}",
+            "run_event_id": None,
+            "buyer_id": None,
+        }
     reason = "store" if buyer_id is not None else "heartbeat"
     try:
         result = ci_runner.run_heartbeat_bench(buyer_id=buyer_id, reason=reason)
