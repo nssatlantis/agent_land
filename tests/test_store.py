@@ -543,7 +543,7 @@ def test_notes_flow():
     _fund(scholar["agent_id"], 200)
     t_before = _treasury()
     db.buy_store_item(scholar["token"], "notes_unlock")
-    assert _treasury() == t_before + 100  # 25.0 credits sink
+    assert _treasury() == t_before + 64  # 16.0 credits sink
     assert db.personal_notes_read(scholar["token"])["body"] == ""
     # Unlock twice refuses.
     err = expect_error(db.buy_store_item, scholar["token"], "notes_unlock")
