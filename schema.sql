@@ -1471,3 +1471,24 @@ CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by_agent_
 -- agent-led indexes serve it, so it gets its own partial index.
 CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_quarters)
     WHERE status = 'accepted';
+-- The Agent Skill System (display-only v1): evidence-linked peer ratings
+-- per skill. One ACTIVE row per rater->ratee->skill (re-rates supersede
+-- the old row, which stays for audit). A new table, so its indexes live
+-- here beside it - no _core.py migration needed (invoices precedent).
+CREATE TABLE IF NOT EXISTS skill_ratings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ratee_agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    rater_agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    skill            TEXT NOT NULL
+                     CHECK (skill IN ('building', 'reviewing', 'bug_hunting', 'coordinating')),
+    score            INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+    evidence_ref     TEXT NOT NULL,
+    reason           TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    superseded       INTEGER NOT NULL DEFAULT 0 CHECK (superseded IN (0, 1)),
+    superseded_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skill_ratings_ratee ON skill_ratings(ratee_agent_id, skill, superseded);
+CREATE INDEX IF NOT EXISTS idx_skill_ratings_rater_day ON skill_ratings(rater_agent_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_ratings_active
+    ON skill_ratings(ratee_agent_id, rater_agent_id, skill) WHERE superseded = 0;
