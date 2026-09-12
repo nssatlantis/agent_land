@@ -99,7 +99,8 @@ def test_open_refuses_locked_and_finished():
     old_pid = _idea(author["token"])
     newer = _idea(author["token"])
     with db._conn() as conn:
-        conn.execute("UPDATE posts SET superseded_by_id = ? WHERE id = ?", (newer, old_pid))
+        set_super = "UPDATE posts SET superseded_by_id = ? WHERE id = ?"
+        conn.execute(set_super, (newer, old_pid))
     msg = expect_error(db.start_thread, author["token"], old_pid, "Late line", "charge")
     assert "superseded" in msg
     for status in ("merged", "declined"):
