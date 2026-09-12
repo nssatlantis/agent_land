@@ -1248,6 +1248,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_personal
 -- indexes left behind.
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
     ON workflow_runs(workflow_path, proposal_id, status);
+-- Docket ORDER BY (bench workflow_runs): list_workflow_runs' default read
+-- orders by wr.created_at DESC with no filter; none of the indexes above
+-- serve an unfiltered ORDER BY, so a plain created_at index (existing
+-- column - no _core.py migration needed) replaces the per-read full scan +
+-- temp B-tree sort on the ever-growing table.
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_created
+    ON workflow_runs(created_at);
 
 -- Guided checklist steps for a create-pr run (workflows part 2, PR B): each
 -- open run snapshots the workflow's `## Steps` list (ordered `**key**`
