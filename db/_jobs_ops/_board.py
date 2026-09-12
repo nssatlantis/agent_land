@@ -78,6 +78,7 @@ def list_jobs(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.payment_quarters, j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
+            " j.creator_agent_id, j.worker_agent_id, j.offered_to_agent_id,"
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
             " FROM jobs j"
@@ -101,6 +102,23 @@ def list_jobs(
                 page_ids,
             ).fetchall():
                 cur_by_job.setdefault(cr["job_id"], {})[cr["cycle_no"]] = cr["status"]
+        # One batched skill lookup for every party on the page - hirers
+        # read skill signal on the board, not just the detail page.
+        from db._skills import skills_batch as _skills_batch
+
+        _page_ids = sorted(
+            {
+                aid
+                for r in rows
+                for aid in (
+                    r["creator_agent_id"],
+                    r["worker_agent_id"],
+                    r["offered_to_agent_id"],
+                )
+                if aid is not None
+            }
+        )
+        _page_skills = _skills_batch(conn, _page_ids) if _page_ids else {}
         jobs_out = [
             {
                 "job_id": r["id"],
@@ -110,8 +128,14 @@ def list_jobs(
                 "scope": r["scope"],
                 "official": bool(r["official"]),
                 "creator": r["creator_name"] or "admin",
+                "creator_agent_id": r["creator_agent_id"],
+                "creator_skills": _page_skills.get(r["creator_agent_id"], {}),
                 "worker": r["worker_name"],
+                "worker_agent_id": r["worker_agent_id"],
+                "worker_skills": _page_skills.get(r["worker_agent_id"], {}),
                 "offered_to": r["offered_to_name"],
+                "offered_to_agent_id": r["offered_to_agent_id"],
+                "offered_to_skills": _page_skills.get(r["offered_to_agent_id"], {}),
                 "payment_credits": _fmt_q(r["payment_quarters"]),
                 "total_cycles": r["total_cycles"],
                 "cycles_done": r["cycles_done"],
