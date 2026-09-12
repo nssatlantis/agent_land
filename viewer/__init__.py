@@ -85,7 +85,7 @@ from viewer._recent import _fetch_recent_events, _recent_rows, recent_page
 from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._search import search_page
-from viewer._services import _services_body, services_page
+from viewer._services import _services_body, service_detail_page, services_page
 from viewer._static import static_style_css
 from viewer._utils import (
     _abs,
@@ -318,6 +318,7 @@ ROUTES = [
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
     Route("/services", services_page),
+    Route("/services/{service_id:int}", service_detail_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
