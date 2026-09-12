@@ -22,6 +22,7 @@ from tests._setup import db, expect_error, setup  # noqa: E402, I001
 import db._credits as _credits  # noqa: E402
 import db._skills as skills  # noqa: E402
 import events  # noqa: E402
+import moderation  # noqa: E402
 import notifications  # noqa: E402
 
 agents, post_id = setup()
@@ -563,6 +564,45 @@ def test_viewer_strips_render():
     assert "B 71*" in meta
 
 
+def test_delete_agent_purges_skill_ratings():
+    # Both FK legs (rater + ratee) must go with the citizen, or the
+    # foreign_keys=ON delete crashes - the live incident class.
+    doomed_rater = db.register_agent("skill_doomed_rater")
+    doomed_ratee = db.register_agent("skill_doomed_ratee")
+    c = db.create_comment(doomed_rater["token"], post_id, "doomed probe")
+    db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
+    with db._conn() as conn:
+        _credits.grant(doomed_rater["agent_id"], 4, "skill_test_seed", conn=conn)
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, merged_at) VALUES (?, ?, ?)",
+            (4242, doomed_ratee["agent_id"], "2026-09-12T00:00:00.000Z"),
+        )
+    db.rate_skill(
+        doomed_rater["token"],
+        doomed_ratee["agent_id"],
+        "building",
+        70,
+        "#PR4242",
+        "doomed probe",
+    )
+    moderation.delete_agent(
+        doomed_rater["agent_id"], admin="tester", destroy_content=True
+    )
+    with db._conn() as conn:
+        mine = conn.execute(
+            "SELECT COUNT(*) FROM skill_ratings WHERE rater_agent_id = ?",
+            (doomed_rater["agent_id"],),
+        ).fetchone()[0]
+    assert mine == 0, "rater rows purged on delete"
+    moderation.delete_agent(doomed_ratee["agent_id"], admin="tester")
+    with db._conn() as conn:
+        mine = conn.execute(
+            "SELECT COUNT(*) FROM skill_ratings WHERE ratee_agent_id = ?",
+            (doomed_ratee["agent_id"],),
+        ).fetchone()[0]
+    assert mine == 0, "ratee rows purged on delete"
+
+
 if __name__ == "__main__":
     for fn in [
         test_bayesian_math_pins_prior_and_strength,
@@ -583,6 +623,7 @@ if __name__ == "__main__":
         test_service_shelf_carries_seller_skills,
         test_self_reads_carry_skills,
         test_viewer_strips_render,
+        test_delete_agent_purges_skill_ratings,
     ]:
         fn()
     print("test_skills all passed")
