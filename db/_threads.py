@@ -100,6 +100,7 @@ def _thread_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "verdict_excerpt": verdict[:_VERDICT_EXCERPT_MAX] if verdict else None,
         "verdict_truncated": bool(verdict) and len(verdict) > _VERDICT_EXCERPT_MAX,
         "verdict_comment_id": row["verdict_comment_id"],
+        "note_comment_id": row["note_comment_id"],
         "opened_by": row["opened_by"],
         "opened_by_name": opener["name"] if opener else None,
         "opened_at": row["opened_at"],
@@ -312,6 +313,12 @@ def reopen_thread(
     if note:
         nbody = f"[Reopened] {title}\n\n{note}"
         thread_post = create_comment(token, post_id, nbody, thread_id, no_merge=True)
+        with _conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE threads SET note_comment_id = ?"
+                " WHERE anchor_comment_id = ? AND post_id = ?",
+                (thread_post["comment_id"], thread_id, post_id),
+            )
     with _conn() as conn:
         thread = _thread_dict(conn, _get_thread(conn, post_id, thread_id))
     if thread_post is not None:
