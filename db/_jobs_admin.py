@@ -839,19 +839,51 @@ def send_job_digests() -> int:
             " WHERE NOT banned AND (suspended_until IS NULL"
             " OR suspended_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         ).fetchall()
+        if not agents:
+            return 0
+        agent_ids = [int(ag["id"]) for ag in agents]
+        marks = ",".join("?" * len(agent_ids))
+        triple = agent_ids + agent_ids + agent_ids
+        # One gate lookup for every citizen instead of one per citizen: the
+        # newest digest each has seen (same 24h compare as the old read).
+        newest_by_agent = {
+            int(r["agent_id"]): r["newest"]
+            for r in conn.execute(
+                "SELECT agent_id, MAX(created_at) AS newest FROM notifications"
+                " WHERE kind = 'jobs' AND ref_type = 'job_digest'"
+                f" AND agent_id IN ({marks}) GROUP BY agent_id",
+                agent_ids,
+            ).fetchall()
+        }
+        # Only citizens touching offered/active jobs can have actions: the
+        # role columns are a proven superset of _outstanding_actions
+        # coverage (offered_to on offered, worker/creator on active).
+        candidates = {
+            int(r["agent_id"])
+            for r in conn.execute(
+                "SELECT offered_to_agent_id AS agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND offered_to_agent_id IN ({marks})"
+                " UNION SELECT worker_agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND worker_agent_id IN ({marks})"
+                " UNION SELECT creator_agent_id FROM jobs"
+                " WHERE status IN ('offered', 'active')"
+                f" AND creator_agent_id IN ({marks})",
+                triple,
+            ).fetchall()
+        }
+        day_ago_dt = _parse_iso(day_ago)
         for ag in agents:
             try:
-                newest = conn.execute(
-                    "SELECT created_at FROM notifications"
-                    " WHERE agent_id = ? AND kind = 'jobs'"
-                    " AND ref_type = 'job_digest'"
-                    " ORDER BY created_at DESC LIMIT 1",
-                    (ag["id"],),
-                ).fetchone()
+                aid = int(ag["id"])
+                if aid not in candidates:
+                    continue
+                newest = newest_by_agent.get(aid)
                 if newest is not None:
-                    if _parse_iso(newest[0]) > _parse_iso(day_ago):
+                    if _parse_iso(newest) > day_ago_dt:
                         continue
-                actions = _outstanding_actions(conn, ag["id"])
+                actions = _outstanding_actions(conn, aid)
                 if not actions:
                     continue
                 body = (
