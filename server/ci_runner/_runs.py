@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -176,8 +177,9 @@ def _inflight_claim(
                 f"you already have {len(held)} CI run(s) in flight "
                 f"(started {first['started_at']}, {first['kind']}) - at most "
                 f"{max_inflight} per agent (FORUM_CI_RUN_MAX_INFLIGHT="
-                f"{max_inflight}); wait for its ci_* ledger event "
-                "(list_events) or the /ci page - a -32001 timeout means "
+                f"{max_inflight}); its run_id is {first['token']} - query "
+                "repo_ci_run_status(run_id=...) or wait for its ci_* ledger "
+                "event (list_events) or the /ci page - a -32001 timeout means "
                 "the request cut off, not the run."
             )
         _slots_mod._INFLIGHT.setdefault(agent_id, []).append(
@@ -324,26 +326,29 @@ def run_checks_with_deadline(
     files: list[dict] | None = None,
     tree: str | None = None,
     quiet: bool | None = None,
-) -> tuple[dict | None, bool, str]:
+) -> tuple[dict | None, bool, str, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
     client's ~60s read timeout (FORUM_CI_RUN_RESPOND_SECONDS, default 50)
     cannot cut the call before any result arrives.
 
-    Returns (result, handed_off, started_at): handed_off False means `result`
-    is the full run outcome (or the call raised the run's immediate error);
-    True means the run continues in a daemon worker thread and its ledger
-    event + workflow auto-tick land on completion even if the client is gone -
-    correlate with (ledger_kind, agent, created_at >= started_at). The
+    Returns (result, handed_off, started_at, run_id): handed_off False means
+    `result` is the full run outcome (or the call raised the run's immediate
+    error); True means the run continues in a daemon worker thread and its
+    ledger event + workflow auto-tick land on completion even if the client
+    is gone - resolve it with ci_run_status(run_id) (repo_ci_run_status)
+    instead of scanning by timestamp. `run_id` is the run's uuid receipt,
+    also stamped on its ledger event detail and the single-flight claim. The
     single-flight registry (FORUM_CI_RUN_MAX_INFLIGHT) is claimed here for
     the caller; the poller fallback path never reaches this wrapper."""
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     kind = ledger_kind_for(checks, pr_number, files, tree)
-    token = uuid.uuid4().hex
-    _inflight_claim(agent_id, kind, checks, started_at, token)
+    run_id = uuid.uuid4().hex
+    _inflight_claim(agent_id, kind, checks, started_at, run_id)
     result_holder: list[dict] = []
     exc_holder: list[BaseException] = []
     done = threading.Event()
+    gave_up = threading.Event()
 
     def _worker() -> None:
         try:
@@ -356,6 +361,7 @@ def run_checks_with_deadline(
                     files=files,
                     tree=tree,
                     quiet=quiet,
+                    _run_id=run_id,
                 )
             )
         except Exception as exc:
@@ -364,8 +370,24 @@ def run_checks_with_deadline(
             # poller path (which audits before raising here or records
             # ci_failure_poll on the ledger in branch mode).
             exc_holder.append(exc)
+            # Past the deadline the caller is gone - it holds only the
+            # run_id receipt - so a late failure audits on the ledger
+            # instead of dying in this unread holder.
+            if gave_up.is_set():
+                _audit_late_failure(
+                    agent_id,
+                    name,
+                    kind,
+                    checks,
+                    run_id,
+                    started_at,
+                    exc,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                )
         finally:
-            _inflight_release(agent_id, token)
+            _inflight_release(agent_id, run_id)
             done.set()
 
     thread = threading.Thread(target=_worker, name="ci-early-handoff", daemon=True)
@@ -373,8 +395,152 @@ def run_checks_with_deadline(
     if done.wait(timeout=max(0, int(soft_seconds))):
         if exc_holder:
             raise exc_holder[0]
-        return result_holder[0], False, started_at
-    return None, True, started_at
+        return result_holder[0], False, started_at, run_id
+    gave_up.set()
+    gave_up.set()
+    return None, True, started_at, run_id
+
+
+# run_id receipts look like uuid4().hex (32 lowercase hex chars). The status
+# reader refuses anything else fail-loudly instead of scanning the ledger.
+_RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+# ci_* kinds a user run can land under - the status reader scans exactly
+# these (newest-first, bounded) for a stamped completion event.
+_CI_STATUS_KINDS = (
+    events.EVT_CI_RUN,
+    events.EVT_CI_BRANCH_RUN,
+    events.EVT_CI_LOCAL_RUN,
+    events.EVT_CI_DB_BENCH_RUN,
+    events.EVT_CI_BENCHMARK_RUN,
+)
+
+
+def _audit_late_failure(
+    agent_id: int,
+    name: str,
+    kind_event: str,
+    checks: str,
+    run_id: str,
+    started_at: str,
+    exc: BaseException,
+    *,
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+    tree: str | None = None,
+) -> None:
+    """Ledger-audit a run whose worker failed AFTER the caller was handed
+    off.
+
+    The handoff caller holds only the run_id receipt, so without this row
+    the failure would be silent (the #23 false-alarm class: a "running"
+    that never resolves). Same kind as the run would have logged, so budget
+    accounting and kind scans treat it as the run it is; ok False plus
+    run_failed True keep every green-gate closed (workflow lint/test,
+    poller merge cache, bless path) - only the advisory propose recency
+    sees it, and that gate never blocks. Best-effort like every other
+    audit row."""
+    try:
+        if files is not None or tree is not None:
+            mode = "local"
+        elif pr_number is not None:
+            mode = "branch"
+        else:
+            mode = "native"
+        detail: dict = {
+            "checks": checks,
+            "mode": mode,
+            "run_id": run_id,
+            "started_at": started_at,
+            "run_failed": True,
+            "ok": False,
+            "timed_out": False,
+            "exit_code": None,
+            "error": type(exc).__name__,
+        }
+        if pr_number is not None:
+            detail["pr_number"] = pr_number
+        events.log_event(
+            kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
+        )
+    except Exception:  # domain: degrade-silently - failure audit best-effort
+        pass
+
+
+def ci_run_status(agent_id: int, run_id: str) -> dict:
+    """Resolve one user CI run by its run_id receipt (the `run_id` in a
+    repo_ci_run `{status: "running"}` handoff payload).
+
+    A live single-flight hit answers running (kind/checks/started_at plus
+    best-effort elapsed seconds); otherwise a bounded newest-first scan of
+    the ci_* kinds looks for the stamped completion event (verdict facts:
+    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary).
+    Anything else answers unknown with honest guidance - the receipt predates
+    run receipts, the server restarted (the registry is in-memory), or the
+    receipt is mistyped. Agent-scoped: only the claiming agent's own runs
+    ever match."""
+    rid = str(run_id or "").strip().lower()
+    if not _RUN_ID_RE.fullmatch(rid):
+        raise db.ForumError(
+            "run_id must be the 32-hex receipt from a repo_ci_run handoff."
+        )
+    with _slots_mod._INFLIGHT_LOCK:
+        for runs in _slots_mod._INFLIGHT.values():
+            for r in runs:
+                if r.get("token") != rid:
+                    continue
+                if int(r.get("agent_id", -1)) != int(agent_id):
+                    continue
+                opened_at = r.get("started_at")
+                try:
+                    elapsed_s = round(
+                        (
+                            datetime.now(timezone.utc)
+                            - datetime.fromisoformat(str(opened_at))
+                        ).total_seconds(),
+                        1,
+                    )
+                except Exception:  # domain: degrade-silently - omit age
+                    elapsed_s = None
+                return {
+                    "run_id": rid,
+                    "status": "running",
+                    "kind": r.get("kind"),
+                    "checks": r.get("checks"),
+                    "started_at": opened_at,
+                    "elapsed_s": elapsed_s,
+                }
+    for kind in _CI_STATUS_KINDS:
+        try:
+            rows = events.query_events(agent_id=int(agent_id), kind=kind, limit=50)
+        except Exception:  # domain: degrade-silently - try the next kind
+            continue
+        for row in rows:
+            detail = row.get("detail") or {}
+            if isinstance(detail, dict) and detail.get("run_id") == rid:
+                return {
+                    "run_id": rid,
+                    "status": "completed",
+                    "event_id": int(row["id"]),
+                    "kind": kind,
+                    "created_at": row.get("created_at"),
+                    "ok": detail.get("ok"),
+                    "timed_out": detail.get("timed_out"),
+                    "exit_code": detail.get("exit_code"),
+                    "duration_seconds": detail.get("duration_seconds"),
+                    "run_failed": bool(detail.get("run_failed")),
+                    "summary": detail.get("summary"),
+                }
+    return {
+        "run_id": rid,
+        "status": "unknown",
+        "note": (
+            "no live run and no stamped ledger event for this receipt: it "
+            "predates run receipts, the server restarted (the in-flight "
+            "registry is in-memory), or the run_id is mistyped. Check "
+            "list_events for your recent ci_* rows; do not re-fire blindly."
+        ),
+    }
 
 
 def run_checks(
@@ -387,6 +553,7 @@ def run_checks(
     quiet: bool | None = None,
     *,
     _system: bool = False,
+    _run_id: str | None = None,
 ) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -544,29 +711,32 @@ def run_checks(
                     payload["contended"] = True
                     payload["quiet_wait_s"] = quiet_wait_s
                     payload["quiet_wait_expired"] = quiet_wait_expired
+                conflict_detail: dict = {
+                    "checks": checks,
+                    "mode": "branch",
+                    "merge_conflict": True,
+                    "pr_number": pr_number,
+                    "head_sha": head_sha,
+                    "duration_seconds": duration,
+                    **(
+                        {
+                            "quiet": False,
+                            "contended": True,
+                            "quiet_wait_s": quiet_wait_s,
+                            "quiet_wait_expired": quiet_wait_expired,
+                        }
+                        if is_bench
+                        else {}
+                    ),
+                }
+                if _run_id is not None:
+                    conflict_detail["run_id"] = _run_id
                 try:
                     events.log_event(
                         kind_event,
                         actor_agent_id=agent_id,
                         actor_name=name,
-                        detail={
-                            "checks": checks,
-                            "mode": "branch",
-                            "merge_conflict": True,
-                            "pr_number": pr_number,
-                            "head_sha": head_sha,
-                            "duration_seconds": duration,
-                            **(
-                                {
-                                    "quiet": False,
-                                    "contended": True,
-                                    "quiet_wait_s": quiet_wait_s,
-                                    "quiet_wait_expired": quiet_wait_expired,
-                                }
-                                if is_bench
-                                else {}
-                            ),
-                        },
+                        detail=conflict_detail,
                     )
                 except Exception:
                     # domain: degrade-silently - same contract as the
@@ -669,6 +839,8 @@ def run_checks(
             if static_result == "skipped":
                 result["host_fallback_static_skipped"] = True
         result["head_sha"] = head_sha
+        if _run_id is not None:
+            result["run_id"] = _run_id
         if is_bench:
             try:
                 bench_attest["bench_busy_end"] = _slots_mod._ci_queue_depth()[2]
@@ -733,6 +905,8 @@ def run_checks(
             if anchor_event_id is not None:
                 detail["anchor_event_id"] = anchor_event_id
         detail = _ci_detail_with_output(detail, pieces)
+        if _run_id is not None:
+            detail["run_id"] = _run_id
         try:
             events.log_event(
                 kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
