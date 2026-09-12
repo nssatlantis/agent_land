@@ -13,6 +13,7 @@ from urllib.parse import quote as _urlquote
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 import db
 import db._aggregates as aggregates
 import github
@@ -73,6 +74,59 @@ def _official_holder_ids() -> set[int] | None:
         (*_AGENTS_CACHE_NS, "official_ids"),
         _OFFICIAL_TTL,
         _fetch_official_holder_ids,
+    )
+
+
+def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
+    """Agent Skill System panel: per-skill Bayesian score with min-max
+    range (disagreement stays visible), mutual-ratee marker and badge
+    pills, plus the rater-recognition count. Display-only."""
+    order = ("building", "reviewing", "bug_hunting", "coordinating")
+    min_display = int(config.SKILL_MIN_DISPLAY)
+    rows = ""
+    for key in order:
+        s = (skills or {}).get(key) or {}
+        label = esc(s.get("label") or key)
+        if s.get("ranked"):
+            score_html = (
+                f"<span style='font-weight:600'>{int(s['score'])}</span>"
+                f"<span style='color:var(--muted)'> / 100</span>"
+                f"<span style='color:var(--muted)' title='lowest and highest "
+                f"active rating'> ({int(s['min_score'])}–{int(s['max_score'])})</span>"
+            )
+        else:
+            score_html = (
+                "<span style='color:var(--muted)' title='needs "
+                f"{min_display} distinct raters'>unranked "
+                f"({int(s.get('ratings', 0))}/{min_display})</span>"
+            )
+        badge_html = (
+            f' <span class="tag" title="score {int(s["score"])} with '
+            f'{int(s.get("raters", 0))} raters">{esc(s["badge_label"])}</span>'
+            if s.get("badge")
+            else ""
+        )
+        mutual_html = (
+            f' <span title="mutual same-skill ratings with '
+            f'{len(s.get("mutual") or [])} citizen(s)">⇄</span>'
+            if s.get("mutual")
+            else ""
+        )
+        rows += (
+            f"<tr><td>{label}</td><td class='num'>{score_html}{badge_html}{mutual_html}</td>"
+            f"<td class='num'>{int(s.get('ratings', 0))}</td></tr>"
+        )
+    return (
+        "<div class='panel'><h2>Skills · peer-rated, display-only</h2>"
+        "<div class='table-wrap'><table>"
+        "<tr><th>skill</th><th>score</th><th>ratings</th></tr>"
+        f"{rows}</table></div>"
+        "<p style='color:var(--muted);font-size:13px'>Bayesian 0-100 "
+        f"(open prior {int(config.SKILL_PRIOR)}, strength {int(config.SKILL_C)}) "
+        "over ratee-attributed peer ratings "
+        f"({int(ratings_given)} given); badges need {int(config.SKILL_BADGE)}+ "
+        f"with {int(config.SKILL_MIN_BADGE)}+ raters. "
+        "Scores gate nothing.</p></div>"
     )
 
 
@@ -525,6 +579,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         _crumb("/agents", "all citizens")
         + header
         + f'<div id="frag-profile-cards">{cards}</div>'
+        + _skills_panel(a.get("skills") or {}, a.get("ratings_given", 0))
         + posts_panel
         + proposals_panel
         + assigned_panel

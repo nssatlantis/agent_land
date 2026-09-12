@@ -294,4 +294,7 @@ def run(conn) -> set:
     # The mailbox gained a 'poll' notification kind (polls attached to
     # posts): the same CHECK-widen rebuild as the kinds above.
     _widen_notifications_check(conn, "poll")
+    # The mailbox gained a 'skill' notification kind (ratees are pinged
+    # when rated, proposal #422): same rebuild.
+    _widen_notifications_check(conn, "skill")
     return existing_tables

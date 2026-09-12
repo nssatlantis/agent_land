@@ -488,6 +488,13 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute("DELETE FROM karma_spends WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_record WHERE agent_id = ?", (agent_id,))
+        # Skill ratings cast by or about the citizen go too (both FK legs
+        # would otherwise reject the delete); survivors' scores recompute
+        # from the remaining rows, same policy as pr/poll vote purges.
+        conn.execute(
+            "DELETE FROM skill_ratings WHERE rater_agent_id = ? OR ratee_agent_id = ?",
+            (agent_id, agent_id),
+        )
         # Their in-place proposal edits go too (the editor_agent_id FK would
         # otherwise reject the delete); the edit history of the proposals they
         # touched keeps its other rows intact.

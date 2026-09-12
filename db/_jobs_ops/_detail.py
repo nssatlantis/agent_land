@@ -47,6 +47,30 @@ def _service_terms_of(job: sqlite3.Row) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _attach_party_skills(conn: sqlite3.Connection, details: dict[int, dict]) -> None:
+    """Stamp `skills` into each detail's creator/worker/offered_to party
+    dicts (one batched IN query per call) so hirers read skill signal
+    where they decide. Parties stay None when absent."""
+    from db._skills import skills_batch as _skills_batch
+
+    ids = sorted(
+        {
+            p["agent_id"]
+            for d in details.values()
+            for p in (d.get("creator"), d.get("worker"), d.get("offered_to"))
+            if p is not None
+        }
+    )
+    if not ids:
+        return
+    batched = _skills_batch(conn, ids)
+    for d in details.values():
+        for role in ("creator", "worker", "offered_to"):
+            party = d.get(role)
+            if party is not None:
+                party["skills"] = batched.get(party["agent_id"], {})
+
+
 def _job_detail_from_parts(
     job: sqlite3.Row,
     steps: list[dict],
@@ -179,9 +203,11 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 "decided_at": r["decided_at"],
             }
         )
-    return _job_detail_from_parts(
+    detail = _job_detail_from_parts(
         job, steps, cycles, job_overdue_cutoff(hours=_cadence_hours(job))
     )
+    _attach_party_skills(conn, {job_id: detail})
+    return detail
 
 
 def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:
@@ -256,6 +282,7 @@ def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int
                 cycles_by_job.get(jid, []),
                 job_overdue_cutoff(hours=_cadence_hours(r)),
             )
+        _attach_party_skills(conn, details)
     return details
 
 
