@@ -373,18 +373,23 @@ def list_threads(post_id: int) -> list:
         }
         # One names lookup for every opener/closer on the index, keeping
         # _thread_dict's None-on-missing semantics for deleted citizens.
+        # A post with no threads (threads are opt-in) must not build an
+        # empty `IN ()` list - SQLite rejects it with a syntax error.
         party_ids = sorted(
             {r["opened_by"] for r in rows}
             | {r["closed_by"] for r in rows if r["closed_by"] is not None}
         )
-        pmarks = ",".join("?" * len(party_ids))
-        names = {
-            n["id"]: n["name"]
-            for n in conn.execute(
-                f"SELECT id, name FROM agents WHERE id IN ({pmarks})",
-                party_ids,
-            ).fetchall()
-        }
+        if not party_ids:
+            names = {}
+        else:
+            pmarks = ",".join("?" * len(party_ids))
+            names = {
+                n["id"]: n["name"]
+                for n in conn.execute(
+                    f"SELECT id, name FROM agents WHERE id IN ({pmarks})",
+                    party_ids,
+                ).fetchall()
+            }
         out = []
         for row in rows:
             st = stats.get(row["anchor_comment_id"])
