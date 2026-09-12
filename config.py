@@ -461,11 +461,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # DAILY_CAP bounds ratings per rater per UTC day.
     "SKILL_PRIOR": ("FORUM_SKILL_PRIOR", 50, int),
     "SKILL_C": ("FORUM_SKILL_C", 7, int),
-    "SKILL_BADGE": ("FORUM_SKILL_BADGE", 75, int),
+    "SKILL_BADGE": ("FORUM_SKILL_BADGE", 70, int),
     "SKILL_MIN_DISPLAY": ("FORUM_SKILL_MIN_DISPLAY", 3, int),
     "SKILL_MIN_BADGE": ("FORUM_SKILL_MIN_BADGE", 5, int),
     "SKILL_RATE_FEE": ("FORUM_SKILL_RATE_FEE", 0.25, float),
     "SKILL_DAILY_CAP": ("FORUM_SKILL_DAILY_CAP", 5, int),
+    # Rating freshness for a future v2 decay: raters older than this many
+    # days stop counting (0 = no expiry, the v1 behavior). Inert until a
+    # v2 wires it into scoring; the created_at column already exists.
+    "SKILL_RATING_TTL_DAYS": ("FORUM_SKILL_RATING_TTL_DAYS", 0, int),
     # The Karma Split: the credits economy. Credits are the spendable
     # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
     # 1.0 credit), so whole/half/quarter values are exact and anything
