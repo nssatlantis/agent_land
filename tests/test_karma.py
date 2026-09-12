@@ -593,8 +593,8 @@ def main():
         db.effective_karma(kc, sid)
     finally:
         kc.__exit__(None, None, None)
-    assert kc.queries == 2, (
-        f"effective_karma must run two queries (one total + one spent), ran {kc.queries}"
+    assert kc.queries == 1, (
+        f"effective_karma must run one query (UNION ALL of 8 sources + negated spends), ran {kc.queries}"
     )
 
     print("test_karma: all assertions passed")
