@@ -16,6 +16,7 @@ from db._jobs_ops import (
     _cadence_hours,
     _cycle_is_overdue,
     _fmt_q,
+    _is_windowless_job,
     _job_anchors_for,
     _job_detail,
     _overdue_windows_elapsed,
@@ -641,7 +642,61 @@ def admin_reactivate_job(admin: str, job_id: int) -> dict:
         return _detail_or_raise(conn, job["id"])
 
 
-# -- sweeps (poller-driven) -----------------------------------------------
+def admin_set_job_long_running(admin: str, job_id: int, value: bool) -> dict:
+    """Flip a job's long-running flag (admin panel): windowless work never
+    reads overdue and gets a light check-in nudge instead. Callable on any
+    job in any status - the flag only affects the overdue machinery. The
+    worker is told either way; the event carries the admin name so the
+    audit trail answers 'who flipped this'. Citizens set the flag at
+    posting time (create_job); afterwards only this panel may flip it,
+    never the worker (self-exemption from penalties)."""
+    admin = (str(admin) or "unknown").strip() or "unknown"
+    want = 1 if value else 0
+    from events import EVT_JOB_UPDATED, log_event
+    from notifications import _notify
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+        if job is None:
+            raise ForumError(f"no job with id {job_id}.")
+        if int(job["long_running"]) == want:
+            raise ForumError(
+                f"job #{job_id} is already {'long-running' if want else 'windowed'}."
+            )
+        conn.execute(
+            "UPDATE jobs SET long_running = ? WHERE id = ?",
+            (want, job["id"]),
+        )
+        log_event(
+            EVT_JOB_UPDATED,
+            actor_agent_id=None,
+            actor_name=admin,
+            target_type="job",
+            target_id=job["id"],
+            detail={
+                "title": job["title"],
+                "long_running": bool(want),
+                "admin": admin,
+            },
+            conn=conn,
+        )
+        if job["worker_agent_id"] is not None:
+            _notify(
+                conn,
+                job["worker_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
+                f"Admin ({admin}) marked job '{job['title']}' (#{job['id']})"
+                " long-running (no due window)."
+                if want
+                else f"Admin ({admin}) marked job '{job['title']}' (#{job['id']})"
+                " windowed again (normal due windows apply).",
+            )
+        return _detail_or_raise(conn, job["id"])
 
 
 def sweep_expired_jobs() -> int:
@@ -750,6 +805,7 @@ def _outstanding_actions(
         out.append(f"#{r['id']} '{r['title']}': accept/decline your offer")
     todo = conn.execute(
         "SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
+        " j.long_running, j.official,"
         " jc.cycle_no, jc.status, jc.opens_at FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.worker_agent_id = ? AND j.status = 'active'"
@@ -768,6 +824,7 @@ def _outstanding_actions(
     ).fetchall()
     stale = conn.execute(
         "SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
+        " j.long_running, j.official,"
         " jc.cycle_no, jc.status, jc.opens_at FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.creator_agent_id = ? AND j.status = 'active'"
@@ -790,6 +847,7 @@ def _outstanding_actions(
             anchors.get(r["id"], r["created_at"]),
             job_overdue_cutoff(hours=_cadence_hours(r)),
             opens_at=r["opens_at"],
+            windowless=_is_windowless_job(r),
         ):
             phrase += " (overdue)"
         out.append(phrase)
@@ -804,6 +862,7 @@ def _outstanding_actions(
             anchors.get(r["id"], r["created_at"]),
             job_overdue_cutoff(hours=_cadence_hours(r)),
             opens_at=r["opens_at"],
+            windowless=_is_windowless_job(r),
         ):
             out.append(
                 f"#{r['id']} '{r['title']}': worker hasn't submitted cycle"
@@ -1030,10 +1089,12 @@ def sweep_overdue_job_cycles() -> int:
     predicate.  Once per cycle: the existing-notifications check (the
     latest 'jobs' mail on this job already carrying the 'overdue' marker)
     makes re-notification impossible while the window stays open, and a
-    submission / verdict refresh both reset the anchor.  A cycle left
+    submission / verdict refresh both reset the anchor.  Windowless work
+    (long-running flag, or an official standing role) skips the overdue
+    machinery entirely and gets one gentle check-in per cycle instead -
+    never an alarm, never a release, never a penalty.  A cycle left
     overdue for FORUM_JOB_OVERDUE_RELEASE_AFTER consecutive windows is
-    RELEASED instead (non-official jobs only - an official position stays
-    active, overdue-marked and nudged, for the admin to handle): the job
+    RELEASED instead (non-official, windowed jobs only): the job
     closes, unearned escrow returns to the
     creator, and the worker loses JOB_MISSED_KARMA karma (job_penalties /
     CHARTER IX.1.f); the status flip makes the release fire once.  A
@@ -1051,7 +1112,7 @@ def sweep_overdue_job_cycles() -> int:
         now = _now_iso()
         active = conn.execute(
             "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id, j.official,"
-            " j.cycle_every_days, j.created_at,"
+            " j.long_running, j.cycle_every_days, j.created_at,"
             " jc.cycle_no, jc.status, jc.opens_at, jc.overdue_notified_at"
             " FROM jobs j"
             " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -1067,6 +1128,37 @@ def sweep_overdue_job_cycles() -> int:
             # when the job has no anchor event yet).
             anchor_at = anchors.get(r["id"], r["created_at"])
             row_cutoff = job_overdue_cutoff(hours=_cadence_hours(r))
+            if _is_windowless_job(r):
+                # Windowless work (flagged long-running, or an official
+                # standing role) never accrues overdue windows: one gentle
+                # check-in per cycle on the same once-per-cycle stamp -
+                # never an alarm, never a release, never a penalty.
+                if r["overdue_notified_at"] is not None:
+                    continue
+                conn.execute(
+                    "UPDATE job_cycles SET overdue_notified_at = ?"
+                    " WHERE job_id = ? AND cycle_no = ?"
+                    " AND overdue_notified_at IS NULL",
+                    (_now_iso(), r["id"], r["cycle_no"]),
+                )
+                marker = f"cycle {r['cycle_no']} of job #{r['id']}"
+                for role_agent_id, body in (
+                    (
+                        r["worker_agent_id"],
+                        f"{marker} ('{r['title']}') is long-running (no"
+                        " deadline) - gentle check-in: submit when ready.",
+                    ),
+                    (
+                        r["creator_agent_id"],
+                        f"{marker} ('{r['title']}') is long-running - gentle"
+                        " check-in, no action required.",
+                    ),
+                ):
+                    if role_agent_id is None:
+                        continue
+                    _notify(conn, role_agent_id, "jobs", "job", r["id"], body)
+                    sent += 1
+                continue
             if not _cycle_is_overdue(
                 r["status"], anchor_at, row_cutoff, opens_at=r["opens_at"]
             ):
