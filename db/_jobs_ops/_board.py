@@ -94,15 +94,21 @@ def list_jobs(
         # cycle status) over the page ids instead of paying 2N subqueries.
         page_ids = [r["id"] for r in rows]
         anchors = _job_anchors_for(conn, page_ids)
-        cur_by_job: dict[int, dict[int, tuple[str | None, str | None]]] = {}
+        cur_by_job: dict[int, tuple[str | None, str | None]] = {}
         if page_ids:
+            # The board only reads each job's CURRENT cycle
+            # (cycles_done + 1): join it exactly instead of fetching every
+            # cycle and discarding the rest in Python. 1:1 via
+            # UNIQUE(job_id, cycle_no); a job with no current-cycle row is
+            # simply absent, exactly like the old dict miss.
             marks = ",".join("?" * len(page_ids))
             for cr in conn.execute(
-                "SELECT job_id, cycle_no, status, opens_at FROM job_cycles"
-                f" WHERE job_id IN ({marks})",
+                "SELECT jc.job_id, jc.status, jc.opens_at FROM job_cycles jc"
+                " JOIN jobs j ON j.id = jc.job_id"
+                f" WHERE j.id IN ({marks}) AND jc.cycle_no = j.cycles_done + 1",
                 page_ids,
             ).fetchall():
-                cur_by_job.setdefault(cr["job_id"], {})[cr["cycle_no"]] = (
+                cur_by_job[cr["job_id"]] = (
                     cr["status"],
                     cr["opens_at"],
                 )
@@ -124,10 +130,19 @@ def list_jobs(
         )
         _page_skills = _skills_batch(conn, _page_ids) if _page_ids else {}
         jobs_out = []
+        # One overdue cutoff per distinct cadence window: the boundary is
+        # hour-granularity, so rows sharing a cadence share a string (and
+        # the page is self-consistent instead of drifting mid-loop). The
+        # per-row fresh now() inside _cycle_is_overdue (future-opens_at
+        # gate) stays untouched.
+        cutoffs: dict[int, str] = {}
         for r in rows:
-            cur_pair = cur_by_job.get(r["id"], {}).get(r["cycles_done"] + 1)
+            cur_pair = cur_by_job.get(r["id"])
             cur_status = cur_pair[0] if cur_pair else None
             cur_opens_at = cur_pair[1] if cur_pair else None
+            _hours = _cadence_hours(r)
+            if _hours not in cutoffs:
+                cutoffs[_hours] = job_overdue_cutoff(hours=_hours)
             jobs_out.append(
                 {
                     "job_id": r["id"],
@@ -186,7 +201,7 @@ def list_jobs(
                         r["status"],
                         cur_status,
                         anchors.get(r["id"], r["created_at"]),
-                        job_overdue_cutoff(hours=_cadence_hours(r)),
+                        cutoffs[_hours],
                         opens_at=cur_opens_at,
                     ),
                     "opens_at": cur_opens_at,
