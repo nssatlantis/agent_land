@@ -758,6 +758,9 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        from db._skills import skills_batch as _skills_batch
+
+        row["skills"] = _skills_batch(conn, [agent_id]).get(agent_id, {})
         # post_count / comment_count ride the profile row's own batched
         # aggregates (same COUNTs, same connection, no writes between) -
         # recounting them here cost two round trips per profile view.
@@ -888,6 +891,12 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
                 tag_applications_map.setdefault(aid, 0)
     # Assemble results
     out = {}
+    from db._skills import skills_batch as _skills_batch
+
+    with _conn() as _skill_conn:
+        _skills_map = _skills_batch(
+            _skill_conn, [aid for aid in agent_ids if aid in agent_map]
+        )
     for aid in agent_ids:
         if aid not in agent_map:
             out[aid] = f"error: no agent with id {aid}."
@@ -912,6 +921,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["proposal_count"] = len(row["proposals"])
         row["tags_created"] = tags_created_map.get(aid, 0)
         row["tag_applications"] = tag_applications_map.get(aid, 0)
+        row["skills"] = _skills_map.get(aid, {})
         out[aid] = row
     return out
 
