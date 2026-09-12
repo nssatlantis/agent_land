@@ -545,11 +545,8 @@ def _finish_post_search(conn, rows) -> list[dict]:
     comment_counts: dict[int, int] = {}
     proposal_tallies: dict[int, tuple[int, int]] = {}
     if post_ids:
-        threshold = (
-            db._proposal_vote_threshold(conn)
-            if any(r["proposal_kind"] for r in rows)
-            else 0
-        )
+        proposal_post_ids = [r["id"] for r in rows if r["proposal_kind"]]
+        threshold = db._proposal_vote_threshold(conn) if proposal_post_ids else 0
         placeholders = _placeholders(post_ids)
         for r in conn.execute(
             f"SELECT target_id, COALESCE(SUM(value), 0) AS total FROM votes WHERE target_type='post' AND target_id IN ({placeholders}) GROUP BY target_id",
@@ -561,11 +558,13 @@ def _finish_post_search(conn, rows) -> list[dict]:
             post_ids,
         ).fetchall():
             comment_counts[r["post_id"]] = r["cnt"]
-        for r in conn.execute(
-            f"SELECT post_id, SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up, SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down FROM proposal_votes WHERE post_id IN ({placeholders}) GROUP BY post_id",
-            post_ids,
-        ).fetchall():
-            proposal_tallies[r["post_id"]] = (r["up"], r["down"])
+        if proposal_post_ids:
+            placeholders = _placeholders(proposal_post_ids)
+            for r in conn.execute(
+                f"SELECT post_id, SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up, SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down FROM proposal_votes WHERE post_id IN ({placeholders}) GROUP BY post_id",
+                proposal_post_ids,
+            ).fetchall():
+                proposal_tallies[r["post_id"]] = (r["up"], r["down"])
     results = []
     for r in rows:
         r = dict(r)
