@@ -314,6 +314,21 @@ def test_ordinary_back_to_back_still_combine():
     assert second.get("merged"), "threads-error@combine-law: merged flag missing"
 
 
+def test_reply_after_reopen_note_stands_alone():
+    pid = _idea(BETA)
+    thread = db.start_thread(BETA, pid, "Reopen line", "charge words here")
+    tid = thread["thread_id"]
+    db.close_thread(BETA, pid, tid, "done for now")
+    reopened = db.reopen_thread(BETA, pid, tid, "second look")
+    note_id = reopened["note_post"]["comment_id"]
+    assert reopened["note_comment_id"] == note_id, (
+        "threads-error@reopen-fold: pointer missing"
+    )
+    follow = db.create_comment(BETA, pid, "thread reply after the note", tid)
+    assert follow["comment_id"] != note_id, "threads-error@reopen-fold: folded"
+    assert not follow.get("merged"), "threads-error@reopen-fold: merged flag"
+
+
 def test_zz_migration_recreates_table():
     pid = _idea(BETA)
     with db._conn() as conn:
