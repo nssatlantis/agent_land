@@ -72,8 +72,9 @@ def _skills_cell(a: dict) -> str:
             star = "★" if s.get("badge") else ""
             parts.append(
                 f"<span title='{esc(s.get('label') or key)}: "
-                f"{int(s['score'])}/100 over {int(s.get('raters', 0))} raters"
-                f"{'; ' + esc(s['badge_label']) if s.get('badge') else ''}'>"
+                f"{int(s['score'])}/100 (range {int(s['min_score'])}–"
+                f"{int(s['max_score'])}) over {int(s.get('raters', 0))} raters"
+                f'{"; " + esc(s["badge_label"]) if s.get("badge") else ""}">'
                 f"{short} {int(s['score'])}{star}</span>"
             )
         else:
@@ -82,6 +83,28 @@ def _skills_cell(a: dict) -> str:
                 f"unranked'>{short} –</span>"
             )
     return f'<td class="num">{" · ".join(parts)}</td>'
+
+
+def _skills_inline(skills: dict | None) -> str:
+    """Compact inline skill codes for party lines (job cards, service
+    sellers): `B 82* · R 71 · H – · C 61` (* = badge, dash = unranked).
+    Empty string when there is nothing ranked - callers append it after
+    the citizen link inside a degrade-silently guard."""
+    if not skills:
+        return ""
+    order = ("building", "reviewing", "bug_hunting", "coordinating")
+    bits = []
+    for key in order:
+        s = skills.get(key) or {}
+        if not s.get("ranked"):
+            continue
+        star = "*" if s.get("badge") else ""
+        bits.append(f"{_SKILL_SHORT[key]} {int(s['score'])}{star}")
+    if not bits:
+        return ""
+    return (
+        f" <span style='color:var(--muted);font-size:12px'>({' · '.join(bits)})</span>"
+    )
 
 
 def _agent_sort_value(
