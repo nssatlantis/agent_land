@@ -79,16 +79,27 @@ def _is_owner(post: sqlite3.Row, agent_id: int) -> bool:
     return delegate is not None and agent_id == delegate
 
 
-def _thread_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    """One thread row as a wire dict, with opener/closer names resolved."""
-    opener = conn.execute(
-        "SELECT name FROM agents WHERE id = ?", (row["opened_by"],)
-    ).fetchone()
-    closer = None
-    if row["closed_by"] is not None:
-        closer = conn.execute(
-            "SELECT name FROM agents WHERE id = ?", (row["closed_by"],)
+def _thread_dict(conn: sqlite3.Connection, row: sqlite3.Row, names=None) -> dict:
+    """One thread row as a wire dict, with opener/closer names resolved.
+
+    Pass a preloaded {agent_id: name} `names` map (see list_threads) to skip
+    the per-thread lookups; a missing id still resolves to None."""
+    if names is None:
+        opener = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (row["opened_by"],)
         ).fetchone()
+        closer = None
+        if row["closed_by"] is not None:
+            closer = conn.execute(
+                "SELECT name FROM agents WHERE id = ?", (row["closed_by"],)
+            ).fetchone()
+        opener_name = opener["name"] if opener else None
+        closer_name = closer["name"] if closer else None
+    else:
+        opener_name = names.get(row["opened_by"])
+        closer_name = (
+            names.get(row["closed_by"]) if row["closed_by"] is not None else None
+        )
     verdict = row["verdict"]
     return {
         "thread_id": row["anchor_comment_id"],
@@ -102,10 +113,10 @@ def _thread_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "verdict_comment_id": row["verdict_comment_id"],
         "note_comment_id": row["note_comment_id"],
         "opened_by": row["opened_by"],
-        "opened_by_name": opener["name"] if opener else None,
+        "opened_by_name": opener_name,
         "opened_at": row["opened_at"],
         "closed_by": row["closed_by"],
-        "closed_by_name": closer["name"] if closer else None,
+        "closed_by_name": closer_name,
         "closed_at": row["closed_at"],
     }
 
@@ -339,24 +350,49 @@ def list_threads(post_id: int) -> list:
             "SELECT * FROM threads WHERE post_id = ? ORDER BY anchor_comment_id",
             (post_id,),
         ).fetchall()
+        # One aggregate for every anchor: the CTE carries its seed label so
+        # each subtree stays attributable. The row-producing shape is kept
+        # deliberately - a bare COUNT(*) directly over the recursive CTE
+        # short-circuits the recursion (seed row only) on this SQLite
+        # build - proven live with a correct 4-row subtree counting 0 -
+        # while a row-producing inner query drains fully.
+        stats = {
+            s["anchor"]: s
+            for s in conn.execute(
+                "WITH RECURSIVE sub(anchor, id) AS ("
+                " SELECT anchor_comment_id, anchor_comment_id FROM threads"
+                " WHERE post_id = ?"
+                " UNION ALL SELECT s.anchor, c.id FROM comments c"
+                " JOIN sub s ON c.parent_comment_id = s.id)"
+                " SELECT s.anchor AS anchor, COUNT(*) - 1 AS n,"
+                " MAX(c.created_at) AS last"
+                " FROM sub s JOIN comments c ON c.id = s.id"
+                " WHERE c.post_id = ? GROUP BY s.anchor",
+                (post_id, post_id),
+            ).fetchall()
+        }
+        # One names lookup for every opener/closer on the index, keeping
+        # _thread_dict's None-on-missing semantics for deleted citizens.
+        party_ids = sorted(
+            {r["opened_by"] for r in rows}
+            | {r["closed_by"] for r in rows if r["closed_by"] is not None}
+        )
+        pmarks = ",".join("?" * len(party_ids))
+        names = {
+            n["id"]: n["name"]
+            for n in conn.execute(
+                f"SELECT id, name FROM agents WHERE id IN ({pmarks})",
+                party_ids,
+            ).fetchall()
+        }
         out = []
         for row in rows:
-            # The aggregate reads the comments table with the subtree as an
-            # IN-list: a bare COUNT(*) directly over the recursive CTE
-            # short-circuits the recursion (seed row only) on this SQLite
-            # build - proven live with a correct 4-row subtree counting 0 -
-            # while a row-producing inner query drains fully.
-            stats = conn.execute(
-                "WITH RECURSIVE sub(id) AS ("
-                " SELECT ? AS id UNION ALL SELECT c.id FROM comments c"
-                " JOIN sub s ON c.parent_comment_id = s.id)"
-                " SELECT COUNT(*) - 1 AS n, MAX(created_at) AS last FROM comments"
-                " WHERE post_id = ? AND id IN (SELECT id FROM sub)",
-                (row["anchor_comment_id"], post_id),
-            ).fetchone()
-            thread = _thread_dict(conn, row)
-            thread["reply_count"] = stats["n"] if stats["n"] > 0 else 0
-            thread["last_activity"] = stats["last"] or row["opened_at"]
+            st = stats.get(row["anchor_comment_id"])
+            thread = _thread_dict(conn, row, names=names)
+            thread["reply_count"] = st["n"] if st is not None and st["n"] > 0 else 0
+            thread["last_activity"] = (st["last"] if st is not None else None) or row[
+                "opened_at"
+            ]
             out.append(thread)
         return out
 
