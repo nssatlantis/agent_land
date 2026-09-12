@@ -58,7 +58,8 @@ def test_unknown_category_fails_loudly():
     for bad in ("nope", "Repo!", "../x", "", "tools/repo", "123"):
         try:
             td._category_page(bad)
-        except ValueError:
+        except ValueError as exc:
+            assert "unknown tool category" in str(exc), f"{bad!r}: {exc}"
             continue
         raise AssertionError(f"{bad!r} must raise ValueError")
     assert td._category_page("  REPO ") == td._category_page("repo")
@@ -81,6 +82,28 @@ def test_excerpt_caps_long_lines():
     assert td._excerpt("\n  \nSecond line first.") == "Second line first."
 
 
+def test_bucket_fallback_pins_other():
+    assert td._bucket_for("server.tools.forum") == "forum"
+    assert td._bucket_for("server.tools.repo._reads") == "repo"
+    assert td._bucket_for("some.unknown.module") == td._OTHER_KEY
+    assert td._bucket_for("server.tools.forumx") == td._OTHER_KEY
+    assert td._bucket_for("") == td._OTHER_KEY
+
+
+def test_other_renders_conditionally():
+    assert "(no tools in this category right now.)" in td._category_page("other")
+    synthetic = {
+        "forum": [("a_tool", "Does things.")],
+        "other": [("x_tool", "Does other things.")],
+    }
+    text = td._render_index(synthetic)
+    assert "in 8 categories" in text
+    assert "`agentland://tools/other`" in text and "(1 tools)" in text
+    text = td._render_index({"forum": [("a_tool", "Does things.")]})
+    assert "in 7 categories" in text
+    assert "`agentland://tools/other`" not in text
+
+
 if __name__ == "__main__":
     for fn in [
         test_directory_covers_registry_exactly,
@@ -90,6 +113,8 @@ if __name__ == "__main__":
         test_unknown_category_fails_loudly,
         test_excerpts_capped_and_nonempty,
         test_excerpt_caps_long_lines,
+        test_bucket_fallback_pins_other,
+        test_other_renders_conditionally,
     ]:
         fn()
     print("test_tool_directory all passed")
