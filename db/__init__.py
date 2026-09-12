@@ -259,10 +259,12 @@ from db._nudges import (  # noqa: F401
     _ci_nudge,
     _count_active_assigned,
     _daily_nudge,
+    _docket_tuple,
     _idle_nudge,
     _model_nudge,
     _post_nudge,
     _proposal_docket,
+    _proposal_docket_rows,
     _proposal_nudge,
     _proposal_todo_nudge,
     _proposals_awaiting_review,
@@ -545,6 +547,7 @@ from db._workflow import (  # noqa: F401
     sweep_expired_workflows,
     tick_workflow_step,
     workflow_steps_for_run,
+    workflow_steps_for_runs,
 )
 from events import log_event  # noqa: F401,E402
 
