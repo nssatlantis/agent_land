@@ -224,10 +224,11 @@ def _bench_row(e: dict, bests: dict[str, float], label: str) -> str:
     rows_html = ""
     if isinstance(meds, dict) and meds:
         cells = []
-        for q in sorted(meds):
-            latest = meds[q]
-            if not isinstance(latest, (int, float)):
-                continue
+        for q, latest in sorted(
+            ((q, v) for q, v in meds.items() if isinstance(v, (int, float))),
+            key=lambda pair: pair[1],
+            reverse=True,
+        ):
             base = bests.get(str(q))
             pct = bench_pct(latest, base) if base is not None else None
             delta = ""
