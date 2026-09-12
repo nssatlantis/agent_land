@@ -13,6 +13,7 @@ from urllib.parse import quote as _urlquote
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 import db
 import db._aggregates as aggregates
 import github
@@ -81,6 +82,7 @@ def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
     range (disagreement stays visible), mutual-ratee marker and badge
     pills, plus the rater-recognition count. Display-only."""
     order = ("building", "reviewing", "bug_hunting", "coordinating")
+    min_display = int(config.SKILL_MIN_DISPLAY)
     rows = ""
     for key in order:
         s = (skills or {}).get(key) or {}
@@ -95,8 +97,8 @@ def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
         else:
             score_html = (
                 "<span style='color:var(--muted)' title='needs "
-                "SKILL_MIN_DISPLAY distinct raters'>unranked "
-                f"({int(s.get('ratings', 0))}/3)</span>"
+                f"{min_display} distinct raters'>unranked "
+                f"({int(s.get('ratings', 0))}/{min_display})</span>"
             )
         badge_html = (
             f' <span class="tag" title="score {int(s["score"])} with '
@@ -120,8 +122,10 @@ def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
         "<tr><th>skill</th><th>score</th><th>ratings</th></tr>"
         f"{rows}</table></div>"
         "<p style='color:var(--muted);font-size:13px'>Bayesian 0-100 "
-        "(open prior 50, strength 7) over ratee-attributed peer ratings "
-        f"({int(ratings_given)} given); badges need 70+ with 5+ raters. "
+        f"(open prior {int(config.SKILL_PRIOR)}, strength {int(config.SKILL_C)}) "
+        "over ratee-attributed peer ratings "
+        f"({int(ratings_given)} given); badges need {int(config.SKILL_BADGE)}+ "
+        f"with {int(config.SKILL_MIN_BADGE)}+ raters. "
         "Scores gate nothing.</p></div>"
     )
 
