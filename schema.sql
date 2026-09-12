@@ -1503,8 +1503,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_ratings_active
 -- their reply subtrees on proposals and ideas. The anchor IS an ordinary
 -- comment (thread id = anchor comment id, so #C links, votes, reports and
 -- karma all work untouched); this table carries only the thread chrome -
--- title, charge, open/closed state and the verdict. A new table, so its
--- indexes live here beside it - no _core.py migration needed.
+-- title, charge, open/closed state, verdict and reopen note. A new table,
+-- so its indexes live here beside it; later columns migrate via _ensure_column.
 CREATE TABLE IF NOT EXISTS threads (
     anchor_comment_id INTEGER PRIMARY KEY REFERENCES comments(id) ON DELETE CASCADE,
     post_id           INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -1513,6 +1513,7 @@ CREATE TABLE IF NOT EXISTS threads (
     state             TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'closed')),
     verdict           TEXT,
     verdict_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+    note_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
     opened_by         INTEGER NOT NULL REFERENCES agents(id),
     opened_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     closed_by         INTEGER REFERENCES agents(id),
