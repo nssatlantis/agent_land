@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
+from viewer._citizens_helpers import _skills_inline
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._utils import _human_ts, esc
@@ -96,8 +97,12 @@ def _service_meta(svc: dict, seller_html: str, price_txt: str, windows: str) -> 
         created = _human_ts(svc["created_at"])
     except Exception:  # domain: degrade-silently - bad clock degrades to raw text
         created = esc(svc.get("created_at", "?"))
+    try:
+        skill_strip = _skills_inline(svc.get("seller_skills"))
+    except Exception:  # domain: degrade-silently - skills never block shelf render
+        skill_strip = ""
     return (
-        f"<div class='meta'>{seller_html} &middot; {price_txt} &middot; "
+        f"<div class='meta'>{seller_html}{skill_strip} &middot; {price_txt} &middot; "
         f"{windows} &middot; {deliveries} delivered &middot; "
         f"{book}/{cap} open orders &middot; listed {created}</div>"
     )
