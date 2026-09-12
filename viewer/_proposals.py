@@ -59,7 +59,9 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     the locked tag, the title with its lineage badge, the meta line
     (author, time, implementer or delegation state), the body preview, the
     pull-request trail, and the vote bar or tally. Escaped everywhere -
-    the viewer is read-only."""
+    the viewer is read-only. PR vote badges prefer the caller's tallies,
+    then the row's embedded pr["votes"] (fetched with the docket), then
+    zeros - no extra query."""
     verdict, color = _cached_verdict(p)
     kind = (
         '<span class="kind-badge kind-smallfix">small fix</span>'
@@ -180,9 +182,6 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             pass
     if prs_raw:
         repo_url = f"https://github.com/{esc(github.repo_spec())}"
-        pr_numbers = [pr["pr_number"] for pr in prs_raw]
-        if tallies is None:
-            tallies = db.pr_vote_tallies(pr_numbers)
         bits = []
         for pr in prs_raw:
             pr_cls = {
@@ -191,7 +190,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 "declined": "pr-declined",
                 "closed": "pr-closed",
             }.get(pr["status"], "")
-            tv = tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
+            tv = (
+                (tallies.get(pr["pr_number"]) if tallies else None)
+                or pr.get("votes")
+                or {"up": 0, "down": 0, "net": 0}
+            )
             vote_badge = ""
             if tv["up"] + tv["down"] > 0:
                 vote_badge = (
@@ -502,9 +505,7 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     )
     if not rows:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
-    all_pr_numbers = [pr["pr_number"] for p in rows for pr in (p.get("prs") or [])]
-    tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
-    return "".join(_docket_card(p, tallies=tallies) for p in rows)
+    return "".join(_docket_card(p) for p in rows)
 
 
 _DOCKET_TITLES = {
@@ -691,11 +692,7 @@ def proposals_page(request: Request) -> HTMLResponse:
             f"{len(_fam_rows)} versions in tree</div>"
         )
     elif page_rows:
-        all_pr_numbers = [
-            pr["pr_number"] for p in page_rows for pr in (p.get("prs") or [])
-        ]
-        tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
-        docket_html = "".join(_docket_card(p, tallies=tallies) for p in page_rows)
+        docket_html = "".join(_docket_card(p) for p in page_rows)
     else:
         docket_html = f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
     body = (

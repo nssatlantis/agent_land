@@ -15,9 +15,8 @@ from db._core import (
     _since_bound,
 )
 from db._proposal_status import (
-    _comment_count_batch,
+    _comment_count_and_activity_batch,
     _decisive_pr,
-    _last_activity_batch,
     _live_pr_in,
     _post_score_batch,
     _proposal_age,
@@ -28,7 +27,6 @@ from db._proposal_status import (
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_vote_threshold,
-    _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_summary_for_posts
 from db._staking import _stake_totals_batch
@@ -54,6 +52,31 @@ def _batch_pr_vote_tallies(
         r["pr_number"]: {"up": r["up"], "down": r["down"], "net": r["up"] - r["down"]}
         for r in rows
     }
+
+
+def _agent_name_colors(conn: sqlite3.Connection, rows: list) -> dict:
+    """{agent_id: name_color} for every author, delegate and claim holder
+    on the given docket rows - one batched entitlements lookup replacing
+    the three store_entitlements LEFT JOINs the main SELECT used to carry.
+    Agents without an entitlements row (or with a NULL color) map to None
+    via .get(), exactly like the joins did."""
+    ids = sorted(
+        {r["agent_id"] for r in rows}
+        | {r["delegate_id"] for r in rows if r["delegate_id"] is not None}
+        | {r["claim_agent_id"] for r in rows if r["claim_agent_id"] is not None}
+    )
+    if not ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT agent_id, name_color FROM store_entitlements"
+            f" WHERE agent_id IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[r["agent_id"]] = r["name_color"]
+    return out
 
 
 def _proposal_kind_clause(kind: str) -> dict:
@@ -117,27 +140,26 @@ def _proposal_list_sql(where_sql: str = "") -> str:
     for the regression test that EXPLAINs it and asserts no correlated scalar
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
-    batched rows instead of a second SELECT shape."""
+    batched rows instead of a second SELECT shape. Name colors ride one
+    batched entitlements lookup afterwards (never per-row joins); the
+    superseded parent's title/version ride a posts self-join."""
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-               sea.name_color AS author_color,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
                p.collaborative_closed, p.pr_goal,
                d.name AS delegate_name,
-               sed.name_color AS delegate_color,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
-               seca.name_color AS claim_name_color,
+               par.title AS parent_title,
+               par.version AS parent_version,
                substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
-        LEFT JOIN store_entitlements sea ON sea.agent_id = a.id
         LEFT JOIN agents d ON d.id = p.delegate_id
-        LEFT JOIN store_entitlements sed ON sed.agent_id = d.id
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
         LEFT JOIN agents ca ON ca.id = pc.agent_id
-        LEFT JOIN store_entitlements seca ON seca.agent_id = ca.id
+        LEFT JOIN posts par ON par.id = p.supersedes_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC, p.id ASC
         """
@@ -197,25 +219,25 @@ def _proposal_rows(
             _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         )
         todos_by_post = _todos_summary_for_posts(conn, ids)
-        # Activity enrichment: content score, comment count and the newest
-        # comment timestamp (None when there are no comments - the viewer
-        # falls back to created_at). Same one-query-per-batch pattern.
+        # Activity enrichment: content score, plus the comment count and
+        # the newest comment timestamp in one GROUP BY over the same IN-set
+        # (absent when there are no comments - the viewer falls back to
+        # created_at). Same one-query-per-batch pattern.
         scores = _post_score_batch(conn, ids)
-        comment_counts = _comment_count_batch(conn, ids)
-        last_activity = _last_activity_batch(conn, ids)
+        comment_counts, last_activity = _comment_count_and_activity_batch(conn, ids)
         # One lookup for the lineage parents of every superseding row, so
         # the caller can follow the chain back to the earlier version
         # without a per-row round trip (NULL/0 supersedes_id rows join
         # nothing).
-        parents = _supersedes_parents_map(conn, rows)
         tags_by_post = _tags_by_post_map(conn, ids)
+        colors = _agent_name_colors(conn, rows)
     else:
         pr_vote_tallies = {}
         todos_by_post = {}
         scores = {}
         comment_counts = {}
         last_activity = {}
-        parents = {}
+        colors = {}
         tags_by_post = {}
     out = []
     _now = datetime.now(timezone.utc)
@@ -225,6 +247,9 @@ def _proposal_rows(
         d["is_idea"] = d["proposal_kind"] == "idea"
         d["collaborative"] = bool(d.get("collaborative", 0))
         d["claimable"] = bool(d.get("claimable", 0))
+        d["author_color"] = colors.get(d["agent_id"])
+        d["delegate_color"] = colors.get(d.get("delegate_id"))
+        d["claim_name_color"] = colors.get(d.get("claim_agent_id"))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
         d.update(
             _proposal_tally(
@@ -255,7 +280,19 @@ def _proposal_rows(
         d["open_days"] = _age_days
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
-        d["supersedes"] = parents.get(d["id"])
+        # Lineage parent rides the main SELECT's posts self-join (same
+        # {id, title, version} shape the parents map built); a dangling
+        # supersedes_id reads None, exactly like a map miss.
+        parent_title = d.pop("parent_title")
+        parent_version = d.pop("parent_version")
+        if d["supersedes_id"] is not None and parent_title is not None:
+            d["supersedes"] = {
+                "id": d["supersedes_id"],
+                "title": parent_title,
+                "version": parent_version,
+            }
+        else:
+            d["supersedes"] = None
         d["stale"] = (
             False
             if d["locked"]
