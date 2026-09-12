@@ -366,7 +366,9 @@ def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
-def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _job_market_nudge(
+    conn: sqlite3.Connection, agent_id: int, ek: int | None = None
+) -> dict:
     """An always-on market line, present on every check_in whether or not
     anything waits on the caller - the counterpart to _job_nudge's
     quiet-when-nothing. Counts the open board with the same predicate as
@@ -375,14 +377,18 @@ def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     create_job hint on the same floor create_job enforces (effective karma >=
     JOB_CREATOR_MIN_KARMA). check_in's suggested_actions carries it; whoami /
     my_profile stay attention-state (job-pending state there is _job_nudge's
-    lane). Always present on check_in."""
+    lane). Always present on check_in. `ek` may carry the caller's fresh
+    effective_karma() so the gate and the displayed karma are one number
+    (perf bundle: saves the 8-way UNION ALL recount)."""
     from db._karma import effective_karma
 
     n = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE status IN ('open', 'offered')"
     ).fetchone()[0]
     floor = int(config.JOB_CREATOR_MIN_KARMA)
-    if effective_karma(conn, agent_id) >= floor:
+    if ek is None:
+        ek = effective_karma(conn, agent_id)
+    if ek >= floor:
         if n:
             note = (
                 f"Jobs board: {n} open job(s) - list_jobs(view='open') to browse, "
@@ -754,6 +760,38 @@ def _bench_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         return {}
 
 
+def _proposal_docket_rows(
+    conn: sqlite3.Connection, threshold: int | None = None
+) -> list[dict]:
+    """The full docket's counts-only rows, newest first - the shared fetch
+    behind _proposal_docket() and _proposal_todo_nudge(rows=...), so one
+    profile call scans the docket once instead of twice (perf bundle §9:
+    saves one base SELECT + the tally/PR-history/stake batches). Row shape
+    is _proposal_rows(for_counts=True): every predicate field, NULL
+    body_preview, no display batches. Callers filter in Python with the
+    exact SQL predicates replicated below; the bar (`threshold`) is shared
+    so the two readers can never disagree at a census edge."""
+    return _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
+
+
+def _docket_tuple(rows: list[dict]) -> tuple[int, int]:
+    """(open_needing, stale) over counts-only docket rows - the loop behind
+    _proposal_docket(), exposed so callers holding a fresh
+    _proposal_docket_rows() fetch derive the tuple without rescanning
+    (perf bundle §9). Same predicate, same fields, same result."""
+    open_needing = 0
+    stale = 0
+    # Counts-only variant: the predicate reads tally/status/stake fields
+    # only, so the 7 display batches are skipped - same counts, one scan.
+    for p in rows:
+        if not _proposal_matches_view(p, "needs_votes"):
+            continue
+        open_needing += 1
+        if p["stale"]:
+            stale += 1
+    return open_needing, stale
+
+
 def _proposal_docket(
     conn: sqlite3.Connection, threshold: int | None = None
 ) -> tuple[int, int]:
@@ -765,17 +803,7 @@ def _proposal_docket(
     however its historical net compares with the live threshold).
     `threshold` may carry a fresh _proposal_vote_threshold() so repeated
     docket-adjacent reads share one active-citizens count."""
-    open_needing = 0
-    stale = 0
-    # Counts-only variant: the predicate reads tally/status/stake fields
-    # only, so the 7 display batches are skipped - same counts, one scan.
-    for p in _proposal_rows(conn, "", (), for_counts=True, threshold=threshold):
-        if not _proposal_matches_view(p, "needs_votes"):
-            continue
-        open_needing += 1
-        if p["stale"]:
-            stale += 1
-    return open_needing, stale
+    return _docket_tuple(_proposal_docket_rows(conn, threshold=threshold))
 
 
 def _proposal_nudge(
@@ -828,7 +856,10 @@ def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
 
 
 def _proposal_todo_nudge(
-    conn: sqlite3.Connection, agent_id: int, threshold: int | None = None
+    conn: sqlite3.Connection,
+    agent_id: int,
+    threshold: int | None = None,
+    rows: list[dict] | None = None,
 ) -> dict:
     """A data-driven hint when the caller owns an open, editable proposal
     (not merged, not superseded-locked) that either carries no to-do list
@@ -839,16 +870,27 @@ def _proposal_todo_nudge(
     structured `todo_open_items` sibling ([{post_id, open_items}]) so the
     caller can act without an extra get_todos round trip. Quiet when
     nothing qualifies - no nudge, no noise; a hint, never a gate.
-    `threshold` threads through to the docket rows like _proposal_docket."""
+    `threshold` threads through to the docket rows like _proposal_docket.
+    `rows` may carry a fresh _proposal_docket_rows() fetch: the caller's
+    own rows are filtered in Python with the exact SQL predicate below
+    (agent or delegate leg; NULL never equals the caller in either
+    language), skipping the second docket scan (perf bundle §9)."""
     from db._proposal_todos import _todos_summary_for_posts
 
-    rows = _proposal_rows(
-        conn,
-        " AND (p.agent_id = ? OR p.delegate_id = ?)",
-        (agent_id, agent_id),
-        for_counts=True,
-        threshold=threshold,
-    )
+    if rows is None:
+        rows = _proposal_rows(
+            conn,
+            " AND (p.agent_id = ? OR p.delegate_id = ?)",
+            (agent_id, agent_id),
+            for_counts=True,
+            threshold=threshold,
+        )
+    else:
+        rows = [
+            p
+            for p in rows
+            if p.get("agent_id") == agent_id or p.get("delegate_id") == agent_id
+        ]
     # Display batches are skipped above; the board counts this nudge reads
     # come from one targeted batch over the still-qualifying proposals.
     open_rows = [p for p in rows if not p["locked"] and p["status"] != "merged"]
@@ -931,17 +973,20 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
     """A data-driven hint when at least one proposal has a pull request in
     flight, returned by whoami()/my_profile(): those branches are awaiting
     the community's review and votes. Quiet when the queue is empty - no
-    nudge, no noise."""
-    n = _proposals_awaiting_review(conn)
-    if not n:
+    nudge, no noise. The post ids ride alongside as `review_proposals` so
+    callers never pay the same SELECT twice (perf bundle: my_profile's
+    second _proposals_awaiting_review_ids call is gone)."""
+    ids = _proposals_awaiting_review_ids(conn)
+    if not ids:
         return {}
     return {
         "review_note": (
-            f"{n} proposal(s) have an open pull request awaiting review and "
+            f"{len(ids)} proposal(s) have an open pull request awaiting review and "
             f"vote - list_proposals(view='review') to see them; review the "
             f"diff with repo_get_pr_diff(number) and vote with vote_on_pr. "
             f"{_REVIEW_ETIQUETTE}"
-        )
+        ),
+        "review_proposals": sorted(ids),
     }
 
 
@@ -972,13 +1017,21 @@ def _pr_vote_sentence(n: int, *, with_token_syntax: bool) -> str:
     )
 
 
-def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _pr_vote_nudge(
+    conn: sqlite3.Connection, agent_id: int, ek: int | None = None
+) -> dict:
     """A data-driven hint when open PRs need the agent's vote.  Returned
     by my_profile(): reviews the diff, then votes.  Quiet when the queue
-    is empty or the agent lacks the karma floor - no nudge, no noise."""
+    is empty or the agent lacks the karma floor - no nudge, no noise.
+    `ek` may carry the caller's fresh effective karma (my_profile's
+    mega-batch already sums the same 8 sources minus spends) so the floor
+    check and the displayed karma are one number (perf bundle: saves the
+    UNION ALL + spends recount)."""
     from db._karma import effective_karma
 
-    if effective_karma(conn, agent_id) < config.MIN_KARMA_PR_VOTE:
+    if ek is None:
+        ek = effective_karma(conn, agent_id)
+    if ek < config.MIN_KARMA_PR_VOTE:
         return {}
     nums = _prs_needing_vote_numbers(conn, agent_id)
     if not nums:
