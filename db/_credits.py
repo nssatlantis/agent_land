@@ -1262,7 +1262,8 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
         "  COALESCE(SUM(CASE WHEN delta_quarters < 0 AND reason NOT IN"
         "    ('post_vote_cancel','comment_vote_cancel',"
         "    'forfeit_to_treasury','forfeit_burned')"
-        "    THEN -delta_quarters ELSE 0 END), 0)"
+        "    THEN -delta_quarters ELSE 0 END), 0),"
+        "  COALESCE(SUM(delta_quarters), 0)"
         " FROM credit_entries WHERE agent_id = ?",
         (week_iso, month_iso, agent_id),
     ).fetchone()
@@ -1271,6 +1272,7 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
         "earned_this_week_quarters": row[1],
         "earned_this_month_quarters": row[2],
         "spent_total_quarters": row[3],
+        "balance_quarters": row[4],
     }
 
 
@@ -1471,15 +1473,7 @@ def history(
             }
             for r in rows[:limit]
         ]
-        balances = balance_many(conn, [agent_id]) if agent_id is not None else {}
-        summary = (
-            {
-                "balance_quarters": balances[agent_id],
-                **earned_summary(conn, agent_id),
-            }
-            if agent_id is not None
-            else {}
-        )
+        summary = earned_summary(conn, agent_id) if agent_id is not None else {}
         return {
             "entries": entries,
             "total": total,
