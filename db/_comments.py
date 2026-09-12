@@ -184,6 +184,23 @@ def agent_comments(
 # -------------------------------------------------------------- comments --
 
 
+def _is_thread_chrome(conn, post_id: int, comment_id: int) -> bool:
+    """Whether a comment is thread chrome (anchor, verdict mirror or reopen
+    note) on its post - such rows stand alone and never absorb an auto-merge
+    (bug #B24). One idx_threads_post-backed lookup over at most
+    MAX_THREADS_PER_PROPOSAL rows; callers run it only once a merge is
+    actually about to happen, never on every write."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM threads WHERE post_id = ? "
+            "AND (anchor_comment_id = ? OR verdict_comment_id = ?"
+            " OR note_comment_id = ?)",
+            (post_id, comment_id, comment_id, comment_id),
+        ).fetchone()
+        is not None
+    )
+
+
 def create_comment(
     token: str,
     post_id: int,
@@ -315,12 +332,20 @@ def create_comment(
         # verdicts must each stand alone - back-to-back seeding by one
         # citizen must never fold two lines into one). Default off: every
         # other writer keeps the long-standing combine law.
+        # Thread chrome stands alone in the other direction too (bug #B24):
+        # anchors, verdict mirrors and reopen notes post with no_merge, but
+        # a trailing ordinary comment would otherwise fold backward into
+        # them - corrupting the charge, the mirrored verdict or the note.
+        # Refuse the merge when `last` is thread chrome on this post. The
+        # lookup sits last in the predicate so it runs only once a merge is
+        # actually about to happen, never on every same-agent write.
         if (
             quote_comment_id is None
             and not no_merge
             and last is not None
             and latest is not None
             and last["id"] == latest["id"]
+            and not _is_thread_chrome(conn, post_id, last["id"])
         ):
             # The merged comment carries ONE clean terminal signature (rule 17):
             # strip any trailing signature from BOTH the stored comment and the

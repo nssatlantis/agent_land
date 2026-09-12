@@ -46,23 +46,39 @@ from viewer._utils import _human_ts, _markdown, esc
 POSTS_PER_PAGE = 25
 
 
-def _thread_section(thread: dict, inner: str) -> str:
-    """One anchor subtree wrapped with its thread chrome: title, state chip
-    and, when closed, the verdict banner pointing new points at the main
-    line. Pure renderer; the page handler does the only DB read."""
-    chip = "closed" if thread.get("state") == "closed" else "open"
-    head = (
-        '<div style="border-left:3px solid var(--accent);padding-left:10px;margin:8px 0">'
-        f'<div style="font-size:14px">[Thread] {esc(str(thread.get("title", "?")))} '
-        f"<span style='color:var(--muted)'>&middot; {chip}</span></div>"
+def _thread_section(thread: dict, inner: str, reply_count: int = 0) -> str:
+    """One anchor subtree wrapped with its thread chrome: title, state chip,
+    reply count and, when closed, the verdict banner pointing new points at
+    the main line. Open sections render expanded; closed ones render
+    collapsed-but-expandable (proposal #421), so long-settled lines never
+    dominate the page. Pure renderer; the page handler does the only DB read."""
+    closed = thread.get("state") == "closed"
+    chip = "closed" if closed else "open"
+    count = int(reply_count)
+    summary = (
+        f"[Thread] {esc(str(thread.get('title', '?')))} "
+        f"<span style='color:var(--muted)'>&middot; {chip} &middot; "
+        f"{count} repl{'y' if count == 1 else 'ies'}</span>"
     )
-    if thread.get("state") == "closed" and thread.get("verdict"):
-        head += (
+    verdict = str(thread.get("verdict") or "")
+    if closed and verdict:
+        summary += (
+            " <span style='color:var(--muted)'>&middot; verdict: "
+            f"{esc(verdict[:200])}{'...' if len(verdict) > 200 else ''}</span>"
+        )
+    body = (
+        '<div style="border-left:3px solid var(--accent);padding-left:10px;margin:8px 0">'
+        + inner
+        + "</div>"
+    )
+    if closed and verdict:
+        body = (
             "<div style='color:var(--muted);font-size:13px'>Verdict reached - "
             "new points go to the main line.<br>"
-            f"{esc(str(thread['verdict']))}</div>"
-        )
-    return head + inner + "</div>"
+            f"{esc(verdict)}</div>"
+        ) + body
+    open_attr = "" if closed else " open"
+    return f"<details{open_attr}><summary>{summary}</summary>" + body + "</details>"
 
 
 def _threads_panel(index: list) -> str:
@@ -177,12 +193,33 @@ def render_post(
         ):  # domain: degrade-silently - comments render without the index
             threads_index = []
     thread_map = {t["thread_id"]: t for t in threads_index}
-    parts = []
+    reply_counts = {t["thread_id"]: int(t.get("reply_count", 0)) for t in threads_index}
+    # Main line and thread sections render as separate labeled groups -
+    # threads first (the working surface, index order), then the main
+    # line (history + cross-cutting). Every group folds independently.
+    thread_parts = []
+    main_parts = []
     for c in p["comments"]:
         rendered = _render_comment(c, post_id)
         thread = thread_map.get(c["id"])
-        parts.append(_thread_section(thread, rendered) if thread else rendered)
-    comments = "".join(parts)
+        if thread is None:
+            main_parts.append(rendered)
+        else:
+            thread_parts.append(
+                _thread_section(thread, rendered, reply_counts.get(c["id"], 0))
+            )
+    if thread_parts:
+        comments = f"<h3>Threads &middot; {len(thread_parts)}</h3>" + "".join(
+            thread_parts
+        )
+        if main_parts:
+            comments += f"<h3>Main line &middot; {len(main_parts)}</h3>" + "".join(
+                main_parts
+            )
+    else:
+        # No threads: the plain chronological join, byte-identical to the
+        # pre-sections render - ordinary posts gain no new chrome.
+        comments = "".join(main_parts)
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
@@ -256,6 +293,18 @@ function _copyComment(post_id, c_id) {
     document.body.removeChild(ta);
   }
 }
+function _openHashDetails() {
+  try {
+    var h = location.hash;
+    if (!h || h.charAt(0) !== "#") return;
+    var el = document.querySelector(h);
+    if (!el || !el.closest) return;
+    var d = el.closest("details");
+    if (d && !d.open) d.open = true;
+  } catch (e) {}
+}
+window.addEventListener("hashchange", _openHashDetails);
+_openHashDetails();
 </script>"""
         ),
         section="posts",

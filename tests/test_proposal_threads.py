@@ -279,6 +279,56 @@ def test_anchor_votes_like_comment():
     assert anchor["score"] == 1, f"threads-error@vote: score={anchor['score']!r}"
 
 
+def test_trailing_ordinary_comment_stands_alone_of_anchor():
+    pid = _idea(BETA)
+    thread = db.start_thread(BETA, pid, "Lone line", "charge words here")
+    tid = thread["thread_id"]
+    posted = db.create_comment(BETA, pid, "main-line follow-up point")
+    assert posted["comment_id"] != tid, "threads-error@trailing-fold: folded"
+    assert not posted.get("merged"), "threads-error@trailing-fold: merged flag"
+    rows = db.list_comments(pid)
+    anchor = [r for r in rows if r["id"] == tid][0]
+    assert "main-line follow-up point" not in anchor["body"], (
+        "threads-error@trailing-fold: anchor body polluted"
+    )
+
+
+def test_reply_after_verdict_stands_alone_of_mirror():
+    pid = _idea(BETA)
+    thread = db.start_thread(BETA, pid, "Verdict line", "charge words here")
+    tid = thread["thread_id"]
+    closed = db.close_thread(BETA, pid, tid, "settled as planned")
+    vcid = closed["verdict_comment_id"]
+    follow = db.create_comment(BETA, pid, "thread reply after the verdict", tid)
+    assert follow["comment_id"] != vcid, "threads-error@verdict-fold: folded"
+    assert not follow.get("merged"), "threads-error@verdict-fold: merged flag"
+
+
+def test_ordinary_back_to_back_still_combine():
+    pid = _idea(BETA)
+    first = db.create_comment(BETA, pid, "first ordinary point")
+    second = db.create_comment(BETA, pid, "second ordinary point")
+    assert second["comment_id"] == first["comment_id"], (
+        "threads-error@combine-law: split"
+    )
+    assert second.get("merged"), "threads-error@combine-law: merged flag missing"
+
+
+def test_reply_after_reopen_note_stands_alone():
+    pid = _idea(BETA)
+    thread = db.start_thread(BETA, pid, "Reopen line", "charge words here")
+    tid = thread["thread_id"]
+    db.close_thread(BETA, pid, tid, "done for now")
+    reopened = db.reopen_thread(BETA, pid, tid, "second look")
+    note_id = reopened["note_post"]["comment_id"]
+    assert reopened["note_comment_id"] == note_id, (
+        "threads-error@reopen-fold: pointer missing"
+    )
+    follow = db.create_comment(BETA, pid, "thread reply after the note", tid)
+    assert follow["comment_id"] != note_id, "threads-error@reopen-fold: folded"
+    assert not follow.get("merged"), "threads-error@reopen-fold: merged flag"
+
+
 def test_zz_migration_recreates_table():
     pid = _idea(BETA)
     with db._conn() as conn:

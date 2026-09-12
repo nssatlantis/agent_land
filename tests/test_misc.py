@@ -3280,6 +3280,54 @@ def main():
         db.DB_PATH = saved_db_path
     print("  provenance migration: ok")
 
+    # --- migration: threads.note_comment_id (reopen-note chrome) ---------
+    # Reopen notes gain a pointer beside verdict_comment_id, so the honest
+    # "old schema" is a live database with the column dropped. init_db()
+    # must re-add it via _ensure_column, and a reopen note must record it.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "threads_note_migration.db")
+        db.init_db()
+        note_agent = db.register_agent("notemig")
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE threads DROP COLUMN note_comment_id")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(threads)")}
+        assert "note_comment_id" in cols, "init_db() re-adds the note pointer"
+        note_idea = db.create_proposal(
+            note_agent["token"], "Note migrated thread idea", "Body", idea=True
+        )
+        note_pid = note_idea["post_id"]
+        note_thread = db.start_thread(
+            note_agent["token"], note_pid, "Note line", "charge words here"
+        )
+        db.close_thread(
+            note_agent["token"], note_pid, note_thread["thread_id"], "done for now"
+        )
+        reopened = db.reopen_thread(
+            note_agent["token"], note_pid, note_thread["thread_id"], "second look"
+        )
+        assert reopened["note_post"] is not None, "reopen note posts"
+        with db._conn() as conn:
+            ptr = conn.execute(
+                "SELECT note_comment_id FROM threads WHERE anchor_comment_id = ?",
+                (note_thread["thread_id"],),
+            ).fetchone()
+        assert ptr["note_comment_id"] == reopened["note_post"]["comment_id"], (
+            "reopen records its note pointer"
+        )
+        db.init_db()  # second boot: no crash, pointer survives
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT note_comment_id FROM threads WHERE anchor_comment_id = ?",
+                (note_thread["thread_id"],),
+            ).fetchone()
+        assert again["note_comment_id"] == ptr["note_comment_id"], "pointer survives"
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  threads note pointer migration: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
