@@ -405,8 +405,10 @@ def list_agents() -> list[dict]:
         ).fetchall()
         out = [dict(r) for r in rows]
         skills = db.skills_batch(conn, [r["id"] for r in out])
+        given = db.ratings_given_batch(conn, [r["id"] for r in out])
         for r in out:
             r["skills"] = skills.get(r["id"], {})
+            r["ratings_given"] = given.get(r["id"], 0)
         return out
 
 
