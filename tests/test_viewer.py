@@ -2498,6 +2498,32 @@ def test_page_shell_has_theme_toggle():
     assert "{utc_pill}" not in html
 
 
+def test_post_thread_sections_split_and_collapse():
+    """Proposal post page renders thread sections before a labeled main line (proposal #421 follow-up): open threads expanded, closed collapsed with verdict."""
+    from viewer._posts import render_post
+
+    tok = AGENTS["alpha"]["token"]
+    idea = db.create_proposal(tok, "Sectioned thread idea", "idea body here", idea=True)
+    pid = idea["post_id"]
+    db.create_comment(tok, pid, "a main-line history point")
+    open_t = db.start_thread(tok, pid, "Open line", "charge words here")
+    db.create_comment(tok, pid, "a reply inside the open thread", open_t["thread_id"])
+    shut_t = db.start_thread(tok, pid, "Shut line", "charge words here")
+    db.close_thread(tok, pid, shut_t["thread_id"], "settled as planned")
+    html = render_post(pid).body.decode("utf-8")
+    assert "<h3>Threads &middot; 2</h3>" in html, "thread sections heading"
+    assert "<h3>Main line &middot; 1</h3>" in html, "main-line heading"
+    assert html.find("Threads &middot; 2") < html.find("Main line"), "threads first"
+    assert "<details open><summary>[Thread] Open line" in html, "open expands"
+    assert "<details><summary>[Thread] Shut line" in html, "closed collapses"
+    assert "settled as planned" in html, "verdict survives"
+    threads_region, main_region = html.split("<h3>Main line &middot; 1</h3>", 1)
+    assert "Open line" in threads_region, "anchor in its section"
+    assert "a reply inside the open thread" in threads_region, "reply in section"
+    assert "a main-line history point" in main_region, "main comment in main line"
+    assert "hashchange" in html, "collapsed-jump script"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -2584,4 +2610,5 @@ if __name__ == "__main__":
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
     test_storage_table_rows_degrades_when_dbstat_absent()
+    test_post_thread_sections_split_and_collapse()
     print("\n== test_viewer: all passed ==")
