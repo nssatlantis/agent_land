@@ -186,6 +186,7 @@ from server.tools.repo import (  # noqa: F401
     proposals_ready_to_merge,
     repo_assigned_proposals,
     repo_ci_run,
+    repo_ci_run_status,
     repo_close_pr,
     repo_comment_on_pr,
     repo_get_pr,
