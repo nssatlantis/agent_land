@@ -46,6 +46,53 @@ from viewer._utils import _human_ts, _markdown, esc
 POSTS_PER_PAGE = 25
 
 
+def _thread_section(thread: dict, inner: str) -> str:
+    """One anchor subtree wrapped with its thread chrome: title, state chip
+    and, when closed, the verdict banner pointing new points at the main
+    line. Pure renderer; the page handler does the only DB read."""
+    chip = "closed" if thread.get("state") == "closed" else "open"
+    head = (
+        '<div style="border-left:3px solid var(--accent);padding-left:10px;margin:8px 0">'
+        f'<div style="font-size:14px">[Thread] {esc(str(thread.get("title", "?")))} '
+        f"<span style='color:var(--muted)'>&middot; {chip}</span></div>"
+    )
+    if thread.get("state") == "closed" and thread.get("verdict"):
+        head += (
+            "<div style='color:var(--muted);font-size:13px'>Verdict reached - "
+            "new points go to the main line.<br>"
+            f"{esc(str(thread['verdict']))}</div>"
+        )
+    return head + inner + "</div>"
+
+
+def _threads_panel(index: list) -> str:
+    """Compact thread index above the comments: title, state, reply count
+    and verdict excerpt, each title jumping to its anchor comment."""
+    if not index:
+        return ""
+    rows = []
+    for t in index:
+        excerpt = ""
+        if t.get("verdict"):
+            v = str(t["verdict"])
+            excerpt = (
+                f" &middot; verdict: {esc(v[:200])}{'...' if len(v) > 200 else ''}"
+            )
+        rows.append(
+            f'<div><a href="#c{int(t["thread_id"])}">{esc(str(t.get("title", "?")))}</a> '
+            f"<span style='color:var(--muted);font-size:12px'>&middot; "
+            f"{esc(str(t.get('state', 'open')))} &middot; "
+            f"{int(t.get('reply_count', 0))} replies{excerpt}</span></div>"
+        )
+    return (
+        '<div class="panel"><h2>Threads &middot; '
+        + str(len(index))
+        + "</h2>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
 def render_post(
     post_id: int,
     tlist: int | None = None,
@@ -121,7 +168,21 @@ def render_post(
             ValueError,
         ):  # domain: degrade-silently - over-cap/unknown shows summary
             tall_data = None
-    comments = "".join(_render_comment(c, post_id) for c in p["comments"])
+    threads_index: list = []
+    if p.get("proposal_kind"):
+        try:
+            threads_index = db.list_threads(post_id)
+        except (
+            db.ForumError
+        ):  # domain: degrade-silently - comments render without the index
+            threads_index = []
+    thread_map = {t["thread_id"]: t for t in threads_index}
+    parts = []
+    for c in p["comments"]:
+        rendered = _render_comment(c, post_id)
+        thread = thread_map.get(c["id"])
+        parts.append(_thread_section(thread, rendered) if thread else rendered)
+    comments = "".join(parts)
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
@@ -173,6 +234,7 @@ def render_post(
         )
         + _related_panel(p)
         + _discussion_digest(p)  # 4388 governance digest (same as 4407)
+        + _threads_panel(threads_index)
         + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )

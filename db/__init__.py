@@ -411,6 +411,19 @@ from db._services import (  # noqa: F401
     update_service,
 )
 
+# ── agent skill system (display-only peer ratings) ────────────────────
+from db._skills import (  # noqa: F401
+    SKILL_BADGE_LABELS,
+    SKILL_LABELS,
+    SKILLS,
+    get_agent_skills,
+    list_agent_skills,
+    rate_skill,
+    ratings_given_batch,
+    skills_batch,
+    validate_evidence,
+)
+
 # ── staking (the Karma Split) ─────────────────────────────────────────
 from db._staking import (  # noqa: F401
     admin_delete_stake,
@@ -487,6 +500,14 @@ from db._text import (  # noqa: F401
 )
 
 # ── tool-inventory snapshots (agentland://tools/changes) ────────────────
+# proposal threads (anchored discussions, proposal #421)
+from db._threads import (  # noqa: F401
+    close_thread,
+    list_threads,
+    reopen_thread,
+    start_thread,
+    threads_summary_for,
+)
 from db._tool_inventory import (  # noqa: F401
     record_tool_inventory,
     tool_inventory_changes,

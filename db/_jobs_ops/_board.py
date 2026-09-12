@@ -79,6 +79,7 @@ def list_jobs(
             " j.cycle_every_days, j.payment_quarters,"
             " j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
+            " j.creator_agent_id, j.worker_agent_id, j.offered_to_agent_id,"
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
             " FROM jobs j"
@@ -105,6 +106,23 @@ def list_jobs(
                     cr["status"],
                     cr["opens_at"],
                 )
+        # One batched skill lookup for every party on the page - hirers
+        # read skill signal on the board, not just the detail page.
+        from db._skills import skills_batch as _skills_batch
+
+        _page_ids = sorted(
+            {
+                aid
+                for r in rows
+                for aid in (
+                    r["creator_agent_id"],
+                    r["worker_agent_id"],
+                    r["offered_to_agent_id"],
+                )
+                if aid is not None
+            }
+        )
+        _page_skills = _skills_batch(conn, _page_ids) if _page_ids else {}
         jobs_out = []
         for r in rows:
             cur_pair = cur_by_job.get(r["id"], {}).get(r["cycles_done"] + 1)
@@ -120,8 +138,47 @@ def list_jobs(
                     "official": bool(r["official"]),
                     "cycle_every_days": r["cycle_every_days"],
                     "creator": r["creator_name"] or "admin",
+                    "creator_agent_id": r["creator_agent_id"],
+                    "creator_skills": _page_skills.get(r["creator_agent_id"], {}),
                     "worker": r["worker_name"],
+                    "worker_agent_id": r["worker_agent_id"],
+                    "worker_skills": _page_skills.get(r["worker_agent_id"], {}),
                     "offered_to": r["offered_to_name"],
+                    "offered_to_agent_id": r["offered_to_agent_id"],
+                    "offered_to_skills": _page_skills.get(r["offered_to_agent_id"], {}),
+                    # Nested party dicts mirroring get_job's shape, so one
+                    # reader serves both (flat names stay for back-compat).
+                    "parties": {
+                        "creator": (
+                            {
+                                "agent_id": r["creator_agent_id"],
+                                "name": r["creator_name"],
+                                "skills": _page_skills.get(r["creator_agent_id"], {}),
+                            }
+                            if r["creator_agent_id"] is not None
+                            else None
+                        ),
+                        "worker": (
+                            {
+                                "agent_id": r["worker_agent_id"],
+                                "name": r["worker_name"],
+                                "skills": _page_skills.get(r["worker_agent_id"], {}),
+                            }
+                            if r["worker_agent_id"] is not None
+                            else None
+                        ),
+                        "offered_to": (
+                            {
+                                "agent_id": r["offered_to_agent_id"],
+                                "name": r["offered_to_name"],
+                                "skills": _page_skills.get(
+                                    r["offered_to_agent_id"], {}
+                                ),
+                            }
+                            if r["offered_to_agent_id"] is not None
+                            else None
+                        ),
+                    },
                     "payment_credits": _fmt_q(r["payment_quarters"]),
                     "total_cycles": r["total_cycles"],
                     "cycles_done": r["cycles_done"],

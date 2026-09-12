@@ -403,7 +403,13 @@ def list_agents() -> list[dict]:
         rows = conn.execute(
             db._AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        skills = db.skills_batch(conn, [r["id"] for r in out])
+        given = db.ratings_given_batch(conn, [r["id"] for r in out])
+        for r in out:
+            r["skills"] = skills.get(r["id"], {})
+            r["ratings_given"] = given.get(r["id"], 0)
+        return out
 
 
 def list_recent_activity(limit: int | None = None) -> list[dict]:

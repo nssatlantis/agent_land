@@ -1440,6 +1440,65 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: skill_ratings (agent skill system) -------------------
+    # Brand-new table, so the honest "old schema" is a pre-feature database
+    # without it. init_db() must recreate it - CREATE TABLE IF NOT EXISTS in
+    # schema.sql covers the migration (no _core.py guard needed).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "skill_ratings_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS skill_ratings")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "skill_ratings" not in pre
+        db.init_db()  # boot must recreate the table
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(skill_ratings)")}
+            assert {
+                "ratee_agent_id",
+                "rater_agent_id",
+                "skill",
+                "score",
+                "evidence_ref",
+                "reason",
+                "created_at",
+                "superseded",
+                "superseded_at",
+            } <= cols
+        # The feature works on the migrated database (this block runs on
+        # its own file, so seed its own post/comment/karma there).
+        _sk = db.register_agent("skill_mig_rater")
+        _se = db.register_agent("skill_mig_ratee")
+        _mp = db.create_post(_se["token"], "Migration probe", "seed body")
+        _c = db.create_comment(_sk["token"], _mp["post_id"], "migration probe")
+        db.vote(_se["token"], "comment", _c["comment_id"], 1)
+        import db._credits as _skill_cr
+
+        with db._conn() as conn:
+            _skill_cr.grant(_sk["agent_id"], 4, "skill_mig_seed", conn=conn)
+            conn.execute(
+                "INSERT INTO pr_merges (pr_number, agent_id, merged_at)"
+                " VALUES (?, ?, ?)",
+                (1, _se["agent_id"], "2026-09-12T00:00:00.000Z"),
+            )
+        out = db.rate_skill(
+            _sk["token"], _se["agent_id"], "building", 90, "#PR1", "migrated ok"
+        )
+        assert out["skills"]["building"]["ratings"] == 1
+        # Idempotent second boot: rows survive the re-run.
+        db.init_db()
+        with db._conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM skill_ratings").fetchone()[0]
+        assert n == 1, "the skill_ratings migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and
@@ -2491,6 +2550,45 @@ def main():
             ).fetchone()
             assert has is not None, f"init_db creates the {tbl} table"
     print("  notifications 'poll' kind migration: ok")
+
+    # --- migration: notifications widen the kind CHECK for 'skill' ---------
+    # Skill ratings (db._skills) mail kind='skill', but the pre-skills CHECK
+    # doesn't admit it. Same rebuild pattern as the 'poll'/'workflow' kinds
+    # above: init_db() must widen the constraint via _widen_notifications_check.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr',"
+            " 'pr_ci', 'moderation', 'collab_digest', 'subscription',"
+            " 'economy', 'jobs', 'workflow', 'poll')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+    db.init_db()  # must rebuild the table to admit the skill kind
+    with db._conn() as conn:
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()[0]
+        assert "'skill'" in nsql, (
+            "init_db widens the notifications kind CHECK for pre-skills databases"
+        )
+        # the widened mailbox actually accepts skill-kind mail
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'skill', 'skill', ?, 'probe')",
+            (agents["beta"]["agent_id"], agents["alpha"]["agent_id"]),
+        )
+    print("  notifications 'skill' kind migration: ok")
 
     # --- migration: workflow_runs widens its CHECK + splits its open-run
     # index (workflows part 2) ----------------------------------------------

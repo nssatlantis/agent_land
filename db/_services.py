@@ -81,6 +81,11 @@ def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     row["steps"] = json.loads(row.get("steps_json") or "[]")
     row["deliveries"] = _deliveries_for(conn, row["id"])
     row["open_orders"] = _open_orders_for(conn, row["id"])
+    from db._skills import skills_batch as _skills_batch
+
+    row["seller_skills"] = _skills_batch(conn, [row["seller_agent_id"]]).get(
+        row["seller_agent_id"], {}
+    )
     row["sla"] = {
         "ack_visits": row["ack_visits"],
         "deliver_days": row["deliver_days"],
@@ -266,11 +271,15 @@ def list_services(active_only: bool = True) -> list[dict]:
             + " ORDER BY s.created_at DESC, s.id ASC",
         ).fetchall()
         out = []
+        from db._skills import skills_batch as _skills_batch
+
+        _shelf_skills = _skills_batch(conn, [r["seller_agent_id"] for r in rows])
         for r in rows:
             d = dict(r)
             d["steps"] = json.loads(d.get("steps_json") or "[]")
             d["deliveries"] = _deliveries_for(conn, d["id"])
             d["open_orders"] = _open_orders_for(conn, d["id"])
+            d["seller_skills"] = _shelf_skills.get(d["seller_agent_id"], {})
             out.append(d)
         return out
 
