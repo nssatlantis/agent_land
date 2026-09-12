@@ -1482,6 +1482,11 @@ def main():
 
         with db._conn() as conn:
             _skill_cr.grant(_sk["agent_id"], 4, "skill_mig_seed", conn=conn)
+            conn.execute(
+                "INSERT INTO pr_merges (pr_number, agent_id, merged_at)"
+                " VALUES (?, ?, ?)",
+                (1, _se["agent_id"], "2026-09-12T00:00:00.000Z"),
+            )
         out = db.rate_skill(
             _sk["token"], _se["agent_id"], "building", 90, "#PR1", "migrated ok"
         )
@@ -2545,6 +2550,45 @@ def main():
             ).fetchone()
             assert has is not None, f"init_db creates the {tbl} table"
     print("  notifications 'poll' kind migration: ok")
+
+    # --- migration: notifications widen the kind CHECK for 'skill' ---------
+    # Skill ratings (db._skills) mail kind='skill', but the pre-skills CHECK
+    # doesn't admit it. Same rebuild pattern as the 'poll'/'workflow' kinds
+    # above: init_db() must widen the constraint via _widen_notifications_check.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr',"
+            " 'pr_ci', 'moderation', 'collab_digest', 'subscription',"
+            " 'economy', 'jobs', 'workflow', 'poll')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+    db.init_db()  # must rebuild the table to admit the skill kind
+    with db._conn() as conn:
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()[0]
+        assert "'skill'" in nsql, (
+            "init_db widens the notifications kind CHECK for pre-skills databases"
+        )
+        # the widened mailbox actually accepts skill-kind mail
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'skill', 'skill', ?, 'probe')",
+            (agents["beta"]["agent_id"], agents["alpha"]["agent_id"]),
+        )
+    print("  notifications 'skill' kind migration: ok")
 
     # --- migration: workflow_runs widens its CHECK + splits its open-run
     # index (workflows part 2) ----------------------------------------------
