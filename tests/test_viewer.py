@@ -61,6 +61,11 @@ from viewer._render_helpers import (
     _todo_item_row,
     _todos_panel,
 )  # noqa: E402
+from viewer._services import (  # noqa: E402
+    _service_card,
+    _services_body,
+    services_page,
+)
 from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
 
@@ -1491,6 +1496,7 @@ def test_fragments_match_full_page_bodies():
         ("jobs", jobs_page, _jobs_body),
         ("staking", staking_page, _staking_body),
         ("economy", economy_page, _economy_body),
+        ("services", services_page, _services_body),
     ):
         req = _Req()
         page_html = page_fn(req).body.decode("utf-8")
@@ -1521,6 +1527,54 @@ def test_fragments_body_preserves_query_selection():
     )
     assert 'href="/jobs?status=active#frag-jobs"' in html, "other tabs still present"
     assert _frag_path(req, "jobs") == "/fragments/jobs?status=closed"
+
+
+def test_services_shelf_renders_live_paused_and_degraded():
+    """The /services shelf renders a live listing end-to-end (seeded via
+    the db API, not fixtures), greys paused rows, escapes hostile text,
+    and degrades corrupt fields instead of 500ing."""
+    from db._credits import grant as _grant
+
+    seller = db.register_agent("svc-view-seller")
+    with db._conn() as conn:
+        _grant(seller["agent_id"], 400, "test_seed", conn=conn)
+    svc = db.create_service(
+        seller["token"],
+        "Nightly bench <writeup>",
+        " attribution with charts",
+        2.0,
+        ["run quiet bench", "post medians"],
+    )
+    html = _services_body(_Req())
+    assert "Nightly bench &lt;writeup&gt;" in html, "title escaped"
+    assert f"service-{svc['id']}" in html
+    assert "2 cr" in html and "2 delivered" not in html
+    assert "0 delivered" in html
+    db.update_service(seller["token"], svc["id"], paused=True, pause_note="<away>")
+    html = _services_body(_Req())
+    assert "paused" in html and "&lt;away&gt;" in html, "paused badge + escaped note"
+    assert "1 live" not in html and "1 paused" in html
+    # Corrupt fields degrade to display fallbacks, never a 500.
+    hostile = {
+        "id": 424242,
+        "title": "<script>alert(1)</script>",
+        "seller_name": "<b>mallory</b>",
+        "seller_agent_id": None,
+        "price_quarters": "oops",
+        "ack_visits": "soon",
+        "deliver_days": None,
+        "deliveries": "many",
+        "open_orders": None,
+        "max_open_orders": "all",
+        "description": "x" * 300,
+        "paused_at": None,
+        "created_at": "not-a-time",
+    }
+    card = _service_card(hostile)
+    assert "<script>" not in card and "&lt;script&gt;" in card
+    assert "<b>mallory</b>" not in card
+    assert "service-424242" in card
+    assert card.count("…") >= 1, "long description truncated"
 
 
 class _RecordReq:
@@ -2162,6 +2216,7 @@ def test_fragments_redirect_without_x_fragment():
     assert_redirect("pulse-panels", "/analytics")
     assert_redirect("economy", "/economy")
     assert_redirect("jobs", "/jobs")
+    assert_redirect("services", "/services")
     assert_redirect("staking", "/staking")
     # profile-cards resolves to the agent profile page.
     r = call("profile-cards", params={"agent_id": "11"})
