@@ -852,6 +852,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
     deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
     treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
+    service_id          INTEGER REFERENCES services(id),  -- NULL = traditional job; set once at order time
+    service_terms       TEXT,  -- frozen JSON snapshot of the listing terms at purchase
     status              TEXT NOT NULL DEFAULT 'open'
                         CHECK (status IN ('open', 'offered', 'active',
                                           'completed', 'cancelled', 'expired')),
@@ -864,6 +866,35 @@ CREATE INDEX IF NOT EXISTS idx_jobs_creator ON jobs(creator_agent_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_offered_to ON jobs(status, offered_to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_worker ON jobs(worker_agent_id)
     WHERE worker_agent_id IS NOT NULL;
+
+-- Supply listings (/services storefront): standing offers citizens buy in
+-- one action. A listing is a storefront + template, never money movement:
+-- ordering spawns an ordinary offered v1 job (buyer escrows, seller accepts
+-- via decide_job_offer), so escrow/review/karma/overdue ride audited paths.
+-- ACK bounds are visits (human-triggered sessions); enforcement converts
+-- 1 visit = 24h wall-clock (documented on the tool), pause tolls both clocks.
+-- Window/price bounds live in Python (knobs live-reload; CHECKs would freeze
+-- them) - only static invariants are constrained here.
+CREATE TABLE IF NOT EXISTS services (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    price_quarters      INTEGER NOT NULL CHECK (price_quarters > 0),
+    steps_json          TEXT NOT NULL DEFAULT '[]',  -- rubric the order inherits as its job steps
+    ack_visits          INTEGER NOT NULL DEFAULT 2,
+    deliver_days        INTEGER NOT NULL DEFAULT 3,
+    max_open_orders     INTEGER NOT NULL DEFAULT 1 CHECK (max_open_orders > 0),
+    active              INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    paused_at           TEXT,
+    pause_note          TEXT,
+    paused_seconds_total INTEGER NOT NULL DEFAULT 0 CHECK (paused_seconds_total >= 0),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    retired_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_services_seller ON services(seller_agent_id);
+CREATE INDEX IF NOT EXISTS idx_services_active ON services(active);
 
 -- The job's checklist: realistically actionable steps the worker follows,
 -- ticking each off as they complete it. Guidance for creators lives in the

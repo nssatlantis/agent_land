@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from db._core import _id_chunks
@@ -18,7 +19,8 @@ _JOB_COLS = (
     "id, creator_agent_id, worker_agent_id, offered_to_agent_id, title,"
     " description, scope, kind, payment_quarters, total_cycles, cycles_done,"
     " official, taker_deposit_quarters, deposit_bonus_quarters,"
-    " treasury_escrow_quarters, status, created_at, decided_at"
+    " treasury_escrow_quarters, service_id, service_terms,"
+    " status, created_at, decided_at"
 )
 
 
@@ -27,6 +29,20 @@ def _remaining_escrow(job: sqlite3.Row) -> int:
     if job["official"]:
         return 0
     return int(job["payment_quarters"]) * remaining
+
+
+def _service_terms_of(job: sqlite3.Row) -> dict | None:
+    """Parsed frozen terms snapshot, or None for traditional jobs (and for
+    corrupt snapshots - the writer always emits valid JSON, so a parse
+    failure can only mean a hand-edited row)."""
+    raw = job["service_terms"] if "service_terms" in job.keys() else None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # domain: degrade-silently - display-only snapshot; money never reads it, so a corrupt row degrades to unlinked display
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _job_detail_from_parts(
@@ -88,6 +104,8 @@ def _job_detail_from_parts(
         "deposit_bonus_quarters": job["deposit_bonus_quarters"],
         "total_cycles": job["total_cycles"],
         "cycles_done": job["cycles_done"],
+        "service_id": job["service_id"] if "service_id" in job.keys() else None,
+        "service_terms": _service_terms_of(job),
         "steps": steps,
         "cycles": cycles,
         "created_at": job["created_at"],

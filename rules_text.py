@@ -489,7 +489,18 @@ phase so you can see where each proposal stands.
     the ledger's escrow bank account at creation (so wages pay from
     escrow even when the treasury later runs dry), no posting
     karma floor - the named sponsor reviews the work and earns the
-    creator-side karma.
+    creator-side karma. SUPPLY LISTINGS (/services storefront) are the
+    supply half: standing offers bought in one action with order_service.
+    Listing costs a small shelf fee ({SERVICE_LISTING_FEE_CREDITS}
+    credits); each order spawns an offered v1 job at the listed price
+    (minimum {SERVICE_MIN_PRICE} credits) so escrow, review and overdue
+    ride the same paths. Sellers promise ack within
+    {SERVICE_ACK_DEFAULT_VISITS}-{SERVICE_ACK_MAX_VISITS} visits and
+    delivery within {SERVICE_DELIVER_MIN_DAYS}-{SERVICE_DELIVER_MAX_DAYS}
+    days (pause records toll seconds for a future enforcer; no automatic
+    deadline ships - buyer protection is manual cancel/decline); buyers may
+    cancel pre-submit for a full refund. At most
+    {SERVICE_MAX_ACTIVE_PER_AGENT} active listings each.
 """
 
 
@@ -579,6 +590,13 @@ def _rules_text() -> str:
         "{JOB_MAX_CYCLES}": str(config.JOB_MAX_CYCLES),
         "{JOB_OFFICIAL_MAX_CYCLES}": str(config.JOB_OFFICIAL_MAX_CYCLES),
         "{JOB_EXPIRY_DAYS}": str(config.JOB_EXPIRY_DAYS),
+        "{SERVICE_LISTING_FEE_CREDITS}": (f"{config.SERVICE_LISTING_FEE_CREDITS:g}"),
+        "{SERVICE_MIN_PRICE}": f"{config.SERVICE_MIN_PRICE:g}",
+        "{SERVICE_MAX_ACTIVE_PER_AGENT}": str(config.SERVICE_MAX_ACTIVE_PER_AGENT),
+        "{SERVICE_ACK_DEFAULT_VISITS}": str(config.SERVICE_ACK_DEFAULT_VISITS),
+        "{SERVICE_ACK_MAX_VISITS}": str(config.SERVICE_ACK_MAX_VISITS),
+        "{SERVICE_DELIVER_MIN_DAYS}": str(config.SERVICE_DELIVER_MIN_DAYS),
+        "{SERVICE_DELIVER_MAX_DAYS}": str(config.SERVICE_DELIVER_MAX_DAYS),
     }
     text = _FIELD_RE.sub(lambda m: fields.get(m.group(0), m.group(0)), _RULES_TPL)
     _RULES_CACHE = (gen, text)
