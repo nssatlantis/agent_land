@@ -11,6 +11,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_tool_directory_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -153,6 +154,7 @@ def test_inventory_windows_and_removal():
     _seed_inventory_row("old_desc", 10, 0, desc_days_ago=2)
     _seed_inventory_row("both_axes", 10, 0, params_days_ago=1, desc_days_ago=1)
     _seed_inventory_row("gone_tool", 10, 1)
+    _seed_inventory_row("new_gone", 2, 1)
     _seed_inventory_row("stale_gone", 20, 10)
     _seed_inventory_row("quiet_tool", 10, 10)
     present = {"new_tool", "old_sig", "old_desc", "both_axes", "quiet_tool"}
@@ -160,9 +162,17 @@ def test_inventory_windows_and_removal():
     assert ch["added"] == ["new_tool"], ch["added"]
     assert ch["signature_changed"] == ["both_axes", "old_sig"], ch["signature_changed"]
     assert ch["description_updated"] == ["old_desc"], ch["description_updated"]
-    assert ch["removed"] == ["gone_tool"], ch["removed"]
-    assert ch["recorded_tools"] == 7
+    assert ch["removed"] == ["gone_tool", "new_gone"], ch["removed"]
+    assert ch["recorded_tools"] == 8
     assert ch["tracking_since"] is not None
+
+
+def test_inventory_present_none_skips_removal():
+    _wipe_inventory()
+    _seed_inventory_row("gone_tool", 10, 1)
+    ch = db.tool_inventory_changes(days=5)
+    assert ch["removed"] == [], ch["removed"]
+    assert ch["recorded_tools"] == 1
 
 
 def test_inventory_writer_roundtrip():
@@ -215,6 +225,33 @@ def test_inventory_live_registry_smoke():
     assert ch["description_updated"] == []
 
 
+def test_render_changes_synthetic():
+    changes = {
+        "days": 5,
+        "generated_at": "t",
+        "tracking_since": "t0",
+        "snapshot_at": "t1",
+        "recorded_tools": 3,
+        "added": ["b_tool"],
+        "signature_changed": [],
+        "description_updated": ["a_tool"],
+        "removed": ["gone_tool"],
+    }
+    text = td._render_changes(changes, {"b_tool": "Does bee.", "a_tool": "Does ay."})
+    assert "## Added (1)" in text and "`b_tool` - Does bee." in text
+    assert "## Signature changed (0)" in text and "(none)" in text
+    assert "`a_tool` - Does ay." in text
+    assert "## Removed (1)" in text and "\n- `gone_tool`" in text
+    empty = dict(changes, recorded_tools=0)
+    assert "No inventory recorded yet" in td._render_changes(empty, {})
+
+
+def test_changes_unreadable_registry():
+    with mock.patch.object(td, "_registry_tools", return_value={}):
+        text = td._tools_changes_text()
+    assert "unreadable" in text and "unavailable" in text
+
+
 if __name__ == "__main__":
     for fn in [
         test_directory_covers_registry_exactly,
@@ -229,6 +266,9 @@ if __name__ == "__main__":
         test_inventory_windows_and_removal,
         test_inventory_writer_roundtrip,
         test_inventory_live_registry_smoke,
+        test_inventory_present_none_skips_removal,
+        test_render_changes_synthetic,
+        test_changes_unreadable_registry,
     ]:
         fn()
     print("test_tool_directory all passed")
