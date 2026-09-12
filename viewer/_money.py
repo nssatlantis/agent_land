@@ -264,6 +264,8 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         pass
     if job["official"]:
         meta_bits.append("OFFICIAL")
+    if job.get("long_running"):
+        meta_bits.append("LONG-RUNNING")
     if job["scope"]:
         meta_bits.append(f"scope: {esc(job['scope'])}")
     if job.get("overdue") and status == "active":
