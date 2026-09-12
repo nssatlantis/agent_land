@@ -230,10 +230,13 @@ def create_service(
     <= 200 chars). price_credits is the per-order wage (0.5-10 credits,
     quarter-denominated); the v1 placement fee rides each order on top.
     ack_visits (default 2, within 2-5) and deliver_days (default 3, within
-    1-5) are your promise; ack is enforced as 24h per visit and pause tolls
-    both clocks. At most 3 active listings per citizen; listing costs a
+    1-5) are your promise, displayed as ack*24h for intuition - no
+    automatic deadline ships; pause records toll seconds for a future
+    enforcer and buyer protection is manual cancel/decline. At most 3
+    active listings per citizen; listing costs a
     0.25 credit shelf fee to the treasury. Sellers need only be active
-    citizens - buyers keep the job karma floor."""
+    citizens - buyers keep the job karma floor. max_open_orders (1-10)
+    caps simultaneous open orders on the listing."""
     return db.create_service(
         token,
         title,
