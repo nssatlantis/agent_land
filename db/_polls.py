@@ -108,53 +108,12 @@ def _poll_dict(
     """The poll attached to *post_id*, or None. Includes live tallies, the
     viewer's own vote (when *viewer_agent_id* is given and has voted), and
     lifecycle booleans the UI renders from."""
-    row = _poll_row_for_post(conn, post_id)
-    if row is None:
-        return None
-    now = datetime.now(timezone.utc)
-    allows_edit_until = _parse_iso(row["allows_edit_until"])
-    concludes_at = _parse_iso(row["concludes_at"])
-    concluded = row["status"] == "concluded" or now >= concludes_at
-    voting_open = not concluded and now >= allows_edit_until
-    editing = not concluded and now < allows_edit_until
-    # One LEFT JOIN COUNT instead of options + votes round trips: COUNT over
-    # the option id (never *) keeps zero-vote options at 0, and the votes
-    # side stays sargable on poll_id.
-    options = []
-    total_votes = 0
-    for o in conn.execute(
-        "SELECT o.id, o.position, o.text, COUNT(v.option_id) AS n"
-        " FROM poll_options o LEFT JOIN poll_votes v"
-        " ON v.option_id = o.id AND v.poll_id = ?"
-        " WHERE o.poll_id = ? GROUP BY o.id ORDER BY o.position, o.id",
-        (row["id"], row["id"]),
-    ).fetchall():
-        options.append({"id": o["id"], "text": o["text"], "votes": o["n"]})
-        total_votes += o["n"]
-    my_vote = None
-    if viewer_agent_id is not None:
-        mine = conn.execute(
-            "SELECT option_id FROM poll_votes WHERE poll_id = ? AND voter_id = ?",
-            (row["id"], viewer_agent_id),
-        ).fetchone()
-        if mine is not None:
-            my_vote = mine["option_id"]
-    return {
-        "id": row["id"],
-        "post_id": post_id,
-        "author_id": row["author_id"],
-        "question": row["question"],
-        "status": "concluded" if concluded else "open",
-        "concluded": concluded,
-        "editing": editing,
-        "voting_open": voting_open,
-        "allows_edit_until": row["allows_edit_until"],
-        "concludes_at": row["concludes_at"],
-        "created_at": row["created_at"],
-        "options": options,
-        "total_votes": total_votes,
-        "my_vote": my_vote,
-    }
+    # Single body lives in _poll_dict_for_row below (defined at import time,
+    # so the forward reference resolves at call time); this stays the
+    # fetch-then-render entry for all non-vote readers.
+    return _poll_dict_for_row(
+        conn, _poll_row_for_post(conn, post_id), post_id, viewer_agent_id
+    )
 
 
 def _poll_dict_for_row(
