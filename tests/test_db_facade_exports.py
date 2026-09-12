@@ -87,6 +87,8 @@ EXPECTED = [
     "get_agent_skills",
     "list_agent_skills",
     "skills_batch",
+    "ratings_given_batch",
+    "validate_evidence",
     "draft_save",
     "draft_publish",
     # proposals / content
