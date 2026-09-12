@@ -136,6 +136,19 @@ def create_post(
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
+    # Advisory hints outside the write transaction: both helpers open their
+    # own connections, so computing them here keeps the write lock to the
+    # insert only. Same visibility as before (self not yet inserted); the
+    # tags call also gains the degrade-silently guard the similar call has.
+    try:
+        _similar_hint = find_similar_posts(title, body, "post")
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _similar_hint = []
+    try:
+        _tags_hint = find_matching_tags(title, body)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _tags_hint = []
+
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         _check_post_cooldown(conn, agent, None, use_cooldown_skip=use_cooldown_skip)
@@ -155,8 +168,8 @@ def create_post(
         body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-        similar = find_similar_posts(title, body, "post")
-        suggested_tags = find_matching_tags(title, body)
+        similar = _similar_hint
+        suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
             conn, agent, title, body, mention_body=mention_body

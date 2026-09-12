@@ -447,6 +447,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_read_created
 CREATE INDEX IF NOT EXISTS idx_notifications_collab_digest
     ON notifications(agent_id, created_at) WHERE kind = 'collab_digest';
 
+-- Job-digest twin of the collab gate: the batched 24h gate filters by kind
+-- + ref_type first. Digest rows only, so the write cost is negligible.
+CREATE INDEX IF NOT EXISTS idx_notifications_job_digest
+    ON notifications(agent_id, created_at)
+    WHERE kind = 'jobs' AND ref_type = 'job_digest';
+
 -- Per-PR CI state for the failure nudge (server/poller.py): the last
 -- observed head sha of each open PR and whether its citizen owner was
 -- already nudged about it failing. Written only by the CI poller; advisory

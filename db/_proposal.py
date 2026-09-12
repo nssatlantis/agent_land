@@ -121,6 +121,18 @@ def create_proposal(
     if max_collaborators is not None:
         proposal_config = json.dumps({"max_collaborators": max_collaborators})
 
+    # Advisory hints outside the write transaction (same shape as
+    # create_post): both helpers open their own connections. Same
+    # visibility as before (self not yet inserted).
+    try:
+        _similar_hint = find_similar_posts(title, body, kind)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _similar_hint = []
+    try:
+        _tags_hint = find_matching_tags(title, body)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _tags_hint = []
+
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         _check_post_cooldown(conn, agent, kind)
@@ -155,8 +167,8 @@ def create_proposal(
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
                         _bug_confirmed(conn, ref["id"], threshold)
-        similar = find_similar_posts(title, body, kind)
-        suggested_tags = find_matching_tags(title, body)
+        similar = _similar_hint
+        suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
             conn,
