@@ -349,6 +349,29 @@ def run_checks_with_deadline(
     exc_holder: list[BaseException] = []
     done = threading.Event()
     gave_up = threading.Event()
+    audit_lock = threading.Lock()
+    audited = threading.Event()
+
+    def _maybe_audit(exc: BaseException) -> None:
+        # Exactly-once failure audit across the handoff race: the worker may
+        # append while the parent gives up (or vice versa), so the flag check
+        # and set share this lock; the ledger write itself stays outside it.
+        with audit_lock:
+            if audited.is_set():
+                return
+            audited.set()
+        _audit_late_failure(
+            agent_id,
+            name,
+            kind,
+            checks,
+            run_id,
+            started_at,
+            exc,
+            pr_number=pr_number,
+            files=files,
+            tree=tree,
+        )
 
     def _worker() -> None:
         try:
@@ -374,18 +397,7 @@ def run_checks_with_deadline(
             # run_id receipt - so a late failure audits on the ledger
             # instead of dying in this unread holder.
             if gave_up.is_set():
-                _audit_late_failure(
-                    agent_id,
-                    name,
-                    kind,
-                    checks,
-                    run_id,
-                    started_at,
-                    exc,
-                    pr_number=pr_number,
-                    files=files,
-                    tree=tree,
-                )
+                _maybe_audit(exc)
         finally:
             _inflight_release(agent_id, run_id)
             done.set()
@@ -396,6 +408,11 @@ def run_checks_with_deadline(
         if exc_holder:
             raise exc_holder[0]
         return result_holder[0], False, started_at, run_id
+    # Check-then-set closes the handoff race: an exception already appended
+    # audits here; a later one sees gave_up set and audits in the worker;
+    # _maybe_audit's flag makes either order exactly-once.
+    if exc_holder:
+        _maybe_audit(exc_holder[0])
     gave_up.set()
     return None, True, started_at, run_id
 
@@ -730,6 +747,7 @@ def run_checks(
                 }
                 if _run_id is not None:
                     conflict_detail["run_id"] = _run_id
+                    payload["run_id"] = _run_id
                 try:
                     events.log_event(
                         kind_event,
