@@ -147,6 +147,15 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         logutil.log("restart_complete", restart_count=rc, uptime_s=0)
     except Exception:  # domain: degrade-silently - metrics must not block boot
         pass
+    # Tool inventory snapshot for agentland://tools/changes: record the
+    # post-deploy registry state (best-effort; a missed boot only coarsens
+    # change/removal timing, visible on the page as snapshot age).
+    try:
+        from server import tool_directory as _tool_directory
+
+        db.record_tool_inventory(_tool_directory._inventory_items())
+    except Exception:  # domain: degrade-silently - snapshot must not block boot
+        pass
     poller = asyncio.create_task(_pr_outcome_poller())
     ci_poller = asyncio.create_task(_ci_failure_poller())
     asyncio.create_task(_auto_link_similar_poller())
