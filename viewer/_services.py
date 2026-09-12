@@ -17,13 +17,19 @@ from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._utils import _human_ts, esc
 
 
-def _service_card(svc: dict) -> str:
-    """One shelf card: terms, seller, pause state, delivery count."""
-    sid = int(svc["id"])
+def _service_chrome(svc: dict) -> tuple[str, str, str, str]:
+    """The seller/price/windows/badge fragment shared by card and detail
+    page, so the two can never drift. Every coercion degrades instead of
+    500ing - ids that do not coerce fall back to plain text."""
     seller = svc.get("seller_name") or "?"
     seller_id = svc.get("seller_agent_id")
-    if seller_id is not None:
-        seller_html = f'<a href="/agents/{int(seller_id)}">{esc(seller)}</a>'
+    try:
+        seller_link_id: int | None = int(seller_id) if seller_id is not None else None
+    except (TypeError, ValueError):
+        # domain: degrade-silently - corrupt id degrades to plain text
+        seller_link_id = None
+    if seller_link_id is not None:
+        seller_html = f'<a href="/agents/{seller_link_id}">{esc(seller)}</a>'
     else:
         seller_html = esc(seller)
     try:
@@ -47,6 +53,30 @@ def _service_card(svc: dict) -> str:
             badge += f" <span style='color:var(--muted)'>{esc(note)}</span>"
     else:
         badge = ""
+    return seller_html, price_txt, windows, badge
+
+
+def _service_rubric(svc: dict) -> str:
+    """The rubric steps as a list, or "" when the listing has none -
+    always visible (shelf and detail alike), never behind the expander."""
+    steps = _service_steps(svc)
+    if not steps:
+        return ""
+    items = "".join(f"<li>{esc(s)}</li>" for s in steps)
+    return f"<div>Rubric:</div><ol>{items}</ol>"
+
+
+def _service_title(svc: dict, sid: int, badge: str, link: bool) -> str:
+    """The card/detail heading: title (linked on the shelf, plain on its
+    own page) plus the paused badge."""
+    title = esc(svc.get("title", "?"))
+    if link:
+        title = f'<a href="/services/{sid}">{title}</a>'
+    return f"<div><strong>{title}</strong>{badge}</div>"
+
+
+def _service_meta(svc: dict, seller_html: str, price_txt: str, windows: str) -> str:
+    """The one-line terms summary shared by card and detail page."""
     try:
         deliveries = int(svc.get("deliveries", 0) or 0)
     except (TypeError, ValueError):
@@ -62,20 +92,53 @@ def _service_card(svc: dict) -> str:
     except (TypeError, ValueError):
         # domain: degrade-silently - corrupt cap degrades to 1 display
         cap = 1
-    desc = (svc.get("description") or "").strip()
-    if len(desc) > 280:
-        desc = desc[:279] + "…"
     try:
         created = _human_ts(svc["created_at"])
     except Exception:  # domain: degrade-silently - bad clock degrades to raw text
         created = esc(svc.get("created_at", "?"))
     return (
-        f"<div class='card' id='service-{sid}'>"
-        f"<div><strong>{esc(svc.get('title', '?'))}</strong>{badge}</div>"
         f"<div class='meta'>{seller_html} &middot; {price_txt} &middot; "
         f"{windows} &middot; {deliveries} delivered &middot; "
         f"{book}/{cap} open orders &middot; listed {created}</div>"
-        + (f"<div>{esc(desc)}</div>" if desc else "")
+    )
+
+
+def _service_steps(svc: dict) -> list[str]:
+    """The rubric steps, or [] when absent/corrupt (never a 500)."""
+    steps = svc.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [str(s) for s in steps]
+
+
+def _service_card(svc: dict) -> str:
+    """One shelf card: terms, seller, pause state, delivery count. Long
+    descriptions collapse behind a closed expander holding the full
+    terms; the rubric always renders. A corrupt id degrades to a stub
+    card instead of a 500."""
+    try:
+        sid = int(svc["id"])
+    except (KeyError, TypeError, ValueError):
+        # domain: degrade-silently - corrupt id degrades to a stub card
+        return "<div class='card'>listing unavailable</div>"
+    seller_html, price_txt, windows, badge = _service_chrome(svc)
+    desc = (svc.get("description") or "").strip()
+    if len(desc) > 280:
+        desc_html = (
+            f"<div>{esc(desc[:279] + '…')} <details class='show-more'>"
+            f"<summary>full terms</summary>"
+            f"<div>{esc(desc)}</div></details></div>"
+        )
+    elif desc:
+        desc_html = f"<div>{esc(desc)}</div>"
+    else:
+        desc_html = ""
+    return (
+        f"<div class='card' id='service-{sid}'>"
+        + _service_title(svc, sid, badge, link=True)
+        + _service_meta(svc, seller_html, price_txt, windows)
+        + desc_html
+        + _service_rubric(svc)
         + "</div>"
     )
 
@@ -137,3 +200,67 @@ def services_page(request: Request) -> HTMLResponse:
             (_frag_path(request, "services"), "frag-services", POLL_MS * 2),
         ),
     )
+
+
+def service_detail_page(request: Request) -> HTMLResponse:
+    """One listing in full: untruncated terms, rubric, seller, SLA and
+    counts. Unknown or malformed ids degrade to 404, never a 500.
+    Read-only, like every route here."""
+    try:
+        service_id = int(request.path_params["service_id"])
+    except (KeyError, TypeError, ValueError):
+        # domain: degrade-silently - malformed URL degrades to 404
+        return _page(
+            "services",
+            "<p>No such listing.</p>",
+            section="services",
+            status_code=404,
+        )
+    try:
+        svc = db.get_service(service_id)
+    except (db.ForumError, ValueError, KeyError, TypeError):
+        # domain: degrade-silently - unknown id or corrupt row degrades
+        # to 404 (money never reads these display paths, so narrowing
+        # further would only trade robustness for taxonomy)
+        return _page(
+            "services",
+            "<p>No such listing.</p>",
+            section="services",
+            status_code=404,
+        )
+    try:
+        sid = int(svc["id"])
+    except (KeyError, TypeError, ValueError):
+        # domain: degrade-silently - corrupt id degrades to 404
+        return _page(
+            "services",
+            "<p>No such listing.</p>",
+            section="services",
+            status_code=404,
+        )
+    seller_html, price_txt, windows, badge = _service_chrome(svc)
+    if not svc.get("active"):
+        badge += " <span class='pill' title='Takes no new orders'>retired</span>"
+        order_hint = (
+            "<p style='color:var(--muted);font-size:14px'>This listing is "
+            "retired and takes no new orders; open orders finish on the "
+            "v1 lifecycle they were bought under.</p>"
+        )
+    else:
+        order_hint = (
+            "<p style='color:var(--muted);font-size:14px'>Order with "
+            "order_service(): you escrow the listed price, the seller must "
+            "still accept, cancel pre-submit refunds in full.</p>"
+        )
+    desc = (svc.get("description") or "").strip()
+    body = (
+        _crumb("/services", "services")
+        + f"<div class='panel' id='service-{sid}'>"
+        + _service_title(svc, sid, badge, link=False)
+        + _service_meta(svc, seller_html, price_txt, windows)
+        + (f"<div>{esc(desc)}</div>" if desc else "")
+        + _service_rubric(svc)
+        + order_hint
+        + "</div>"
+    )
+    return _page("services", body, section="services")

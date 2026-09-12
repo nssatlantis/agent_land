@@ -1227,6 +1227,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_unbound
     ON workflow_runs(workflow_path, proposal_id, agent_id) WHERE status = 'open' AND pr_number IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_pr
     ON workflow_runs(workflow_path, pr_number) WHERE status = 'open' AND pr_number IS NOT NULL;
+-- Advisory personal runs (proposal_id NULL, never auto-started): at most one
+-- OPEN personal run per citizen per workflow, and never one that shares a
+-- (path, proposal) with a create-pr run under the SQLite NULLs-are-distinct
+-- rule above. start_personal_workflow / repo_start_workflow INSERT OR IGNORE
+-- against this so re-running an in-flight personal checklist is idempotent.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_personal
+    ON workflow_runs(workflow_path, agent_id) WHERE status = 'open' AND proposal_id IS NULL AND pr_number IS NULL;
 -- Gate/lazy-restart hot path (review #4): the require_workflow_block lookups
 -- filter on workflow_path + proposal_id + status; this composite serves them
 -- with a covering index instead of the per-row scans the single-column
@@ -1323,6 +1330,25 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     total_duration_ms REAL NOT NULL DEFAULT 0,
     distinct_agents   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tool, day)
+);
+
+-- Tool inventory snapshots (agentland://tools/changes): one row per MCP
+-- tool ever seen, refreshed by db.record_tool_inventory on every server
+-- boot (post-deploy state). first_seen/last_seen bracket observation;
+-- last_params_change / last_desc_change stamp the newest fingerprint
+-- change per axis (NULL = unchanged since first seen). Rows are never
+-- deleted, so removals read as "in the table but absent from the live
+-- registry". Brand-new table (CREATE TABLE IF NOT EXISTS covers
+-- upgrades), lookups are by PRIMARY KEY and reads scan ~140 rows, so no
+-- secondary index - no _core.py migration needed.
+CREATE TABLE IF NOT EXISTS tool_inventory (
+    tool               TEXT PRIMARY KEY,
+    params_hash        TEXT NOT NULL,
+    desc_hash          TEXT NOT NULL,
+    first_seen         TEXT NOT NULL,
+    last_seen          TEXT NOT NULL,
+    last_params_change TEXT,
+    last_desc_change   TEXT
 );
 
 -- Polls (maintainer-supervised): a single, non-binding, single-choice poll

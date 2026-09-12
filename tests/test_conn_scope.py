@@ -55,6 +55,7 @@ _PROD_MODULES = [
     "server/ci_runner/_runs.py",
     "server/repo_helpers.py",
     "server/repo_search.py",
+    "server/tool_directory.py",
     "db/__init__.py",
     "db/_agent.py",
     "db/_aggregates.py",
