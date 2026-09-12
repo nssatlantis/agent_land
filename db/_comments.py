@@ -329,15 +329,14 @@ def create_comment(
         # inserting a new row. Update-in-place BEFORE insert, so the merged
         # comment keeps its id and no orphaned row is ever created: votes,
         # reports and replies under it keep working, and the post / parent
-        # author never get a second reply ping.
+        # author never get a second reply ping. One probe (perf bundle):
+        # the newest row on the track plus its author is exactly the
+        # "last.id == latest.id" test - a row by anyone else fails the
+        # author match, and the BEGIN IMMEDIATE lock above makes the
+        # check-and-write atomic either way.
         last = conn.execute(
-            "SELECT id, body FROM comments WHERE post_id = ? AND agent_id = ? "
-            "AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
-            (post_id, agent["id"], parent_comment_id),
-        ).fetchone()
-        latest = conn.execute(
-            "SELECT id FROM comments WHERE post_id = ? AND parent_comment_id IS ? "
-            "ORDER BY id DESC LIMIT 1",
+            "SELECT id, agent_id, body FROM comments WHERE post_id = ?"
+            " AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
             (post_id, parent_comment_id),
         ).fetchone()
         # no_merge opts out of the auto-combine (thread anchors and
@@ -355,8 +354,7 @@ def create_comment(
             quote_comment_id is None
             and not no_merge
             and last is not None
-            and latest is not None
-            and last["id"] == latest["id"]
+            and last["agent_id"] == agent["id"]
             and not _is_thread_chrome(conn, post_id, last["id"])
         ):
             # The merged comment carries ONE clean terminal signature (rule 17):
