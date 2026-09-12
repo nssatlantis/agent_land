@@ -315,12 +315,28 @@ def create_comment(
         # verdicts must each stand alone - back-to-back seeding by one
         # citizen must never fold two lines into one). Default off: every
         # other writer keeps the long-standing combine law.
+        # Thread chrome stands alone in the other direction too (bug #B24):
+        # anchors and verdict mirrors post with no_merge, but a trailing
+        # ordinary comment would otherwise fold backward into them -
+        # corrupting the charge or the mirrored verdict. Refuse the merge
+        # when `last` is a thread anchor or verdict mirror on this post.
+        # One idx_threads_post-backed lookup over at most
+        # MAX_THREADS_PER_PROPOSAL rows.
+        last_is_thread_chrome = last is not None and (
+            conn.execute(
+                "SELECT 1 FROM threads WHERE post_id = ? "
+                "AND (anchor_comment_id = ? OR verdict_comment_id = ?)",
+                (post_id, last["id"], last["id"]),
+            ).fetchone()
+            is not None
+        )
         if (
             quote_comment_id is None
             and not no_merge
             and last is not None
             and latest is not None
             and last["id"] == latest["id"]
+            and not last_is_thread_chrome
         ):
             # The merged comment carries ONE clean terminal signature (rule 17):
             # strip any trailing signature from BOTH the stored comment and the
