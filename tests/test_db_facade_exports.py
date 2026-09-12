@@ -82,6 +82,11 @@ EXPECTED = [
     "refund_blessed_bench",
     "store_stats",
     "effective_vote_cap",
+    # agent skill system (display-only peer ratings)
+    "rate_skill",
+    "get_agent_skills",
+    "list_agent_skills",
+    "skills_batch",
     "draft_save",
     "draft_publish",
     # proposals / content
