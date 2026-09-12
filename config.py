@@ -225,7 +225,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # how many items one collaborator may hold at once per proposal.
     # A timeout of 0 disables staleness.
     "CLAIM_TIMEOUT_SECONDS": ("FORUM_CLAIM_TIMEOUT_SECONDS", 86400, int),
-    "MAX_CLAIMS_PER_COLLABORATOR": ("FORUM_MAX_CLAIMS_PER_COLLABORATOR", 2, int),
+    "MAX_CLAIMS_PER_COLLABORATOR": ("FORUM_MAX_CLAIMS_PER_COLLABORATOR", 4, int),
     # Whole-list claiming (todo_claim_mode=1, db.claim_todo_list): how many
     # to-do lists one collaborator may hold at once per proposal. Separate
     # from MAX_CLAIMS_PER_COLLABORATOR (which counts items in per-item mode)
