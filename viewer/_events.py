@@ -391,7 +391,11 @@ def _event_description(e: dict) -> str:
     if k == "skill_rated":
         ratee = esc(d.get("ratee", "?"))
         skill = esc(d.get("skill", "?"))
-        piece = f"{actor} rated {ratee} {d.get('score', '?')}/100 on {skill}"
+        try:
+            score_txt = str(int(d.get("score", "?")))
+        except (TypeError, ValueError):
+            score_txt = "?"
+        piece = f"{actor} rated {ratee} {score_txt}/100 on {skill}"
         if d.get("rerate"):
             piece += " (re-rate)"
         return piece + f" citing {esc(d.get('evidence_ref', '?'))}"
