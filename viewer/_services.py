@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
-from viewer._feed_helpers import _crumb
+from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._utils import _human_ts, esc
 
@@ -130,7 +130,7 @@ def services_page(request: Request) -> HTMLResponse:
     every route here."""
     return _page(
         "services",
-        f'<div id="frag-services">{_services_body(request)}</div>',
+        _with_rail(f'<div id="frag-services">{_services_body(request)}</div>'),
         section="services",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
