@@ -1296,6 +1296,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             log_event(
                 EVT_VOTE_CHANGED,
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
                 target_type=target_type,
                 target_id=target_id,
                 detail={"old_value": prev_vote["value"], "new_value": value},
@@ -1305,6 +1306,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             log_event(
                 EVT_VOTE_CAST,
                 actor_agent_id=agent["id"],
+                actor_name=agent["name"],
                 target_type=target_type,
                 target_id=target_id,
                 detail={"value": value},
