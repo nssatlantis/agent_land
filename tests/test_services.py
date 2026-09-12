@@ -154,6 +154,37 @@ def main():
         raise AssertionError("empty update must be refused")
     except db.ForumError:
         pass
+    # Adversarial update inputs (merged-state path differs from create).
+    for bad in (
+        {"price_credits": "oops"},
+        {"price_credits": []},
+        {"ack_visits": 2.5},
+        {"ack_visits": True},
+        {"deliver_days": 1.7},
+        {"max_open_orders": 11},
+        {"max_open_orders": 2.5},
+        {"title": "t" * 121},
+    ):
+        try:
+            db.update_service(seller["token"], svc["id"], **bad)
+            raise AssertionError(f"{bad} must be refused")
+        except db.ForumError:
+            pass
+    # Note refresh on an already-paused listing (re-pause is a no-op).
+    db.update_service(seller["token"], svc["id"], paused=True)
+    noted = db.update_service(seller["token"], svc["id"], pause_note="back soon")
+    assert noted["pause_note"] == "back soon", noted
+    assert noted["paused_at"], "still paused after a note refresh"
+    db.update_service(seller["token"], svc["id"], paused=False)
+    # Backdated pause proves toll accumulation (not the CHECK floor).
+    db.update_service(seller["token"], svc["id"], paused=True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE services SET paused_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00.000Z", svc["id"]),
+        )
+    tolled = db.update_service(seller["token"], svc["id"], paused=False)
+    assert int(tolled["paused_seconds_total"]) > 1000000, tolled
     print("  update + pause toll + ownership: ok")
 
     # --- 4. ordering: offered v1 job, frozen terms, guards ---------------
@@ -194,6 +225,11 @@ def main():
     assert job["fee_credits"] == "0.5", (
         "placement fee rides the order into the treasury"
     )
+    # Linkage must survive a re-read (not just the order response).
+    reread = db.get_job(job["job_id"])
+    assert reread["service_id"] == svc["id"], reread
+    assert reread["service_terms"]["price_quarters"] == 12, reread
+    assert reread["service_terms"]["seller_agent_id"] == seller["agent_id"]
     assert db.get_service(svc["id"])["open_orders"] == 1
     # order book of 1 is full now
     try:
@@ -269,12 +305,29 @@ def main():
                 " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
                 " decided_at TEXT)"
             )
+        # Seed a traditional job on the lean table with raw SQL (old code
+        # never knew the new columns - create_job itself now writes them,
+        # so only a raw INSERT faithfully models a pre-migration row).
+        keeper = db.register_agent("svc-keeper")
+        with db._conn() as conn:
+            _grant(keeper["agent_id"], 400, "test_seed", conn=conn)
+            conn.execute(
+                "INSERT INTO jobs (creator_agent_id, title, description,"
+                " kind, payment_quarters, total_cycles, status)"
+                " VALUES (?, 'keeper job', 'd', 'one_time', 4, 1, 'open')",
+                (keeper["agent_id"],),
+            )
+            kept_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         db.init_db()
         with db._conn() as conn:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
             idx = {r["name"] for r in conn.execute("PRAGMA index_list(jobs)")}
         assert "service_id" in cols and "service_terms" in cols, cols
         assert "idx_jobs_service" in idx, idx
+        kept_after = db.get_job(kept_id)
+        assert kept_after["title"] == "keeper job", kept_after
+        assert kept_after["service_id"] is None, kept_after
+        assert kept_after["service_terms"] is None, kept_after
         mig_seller = db.register_agent("svc-mig-seller")
         mig_buyer = db.register_agent("svc-mig-buyer")
         with db._conn() as conn:
