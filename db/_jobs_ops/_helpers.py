@@ -146,9 +146,7 @@ def _cycle_is_overdue(
     if not anchor_at:
         return False
     if opens_at:
-        now_iso = datetime.now(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%S.%f"
-        )[:-3] + "Z"
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         if opens_at > now_iso:
             return False
     return anchor_at <= cutoff
