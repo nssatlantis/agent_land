@@ -294,7 +294,7 @@ def list_posts(
         scores = {} if sort == "top" else _post_score_batch(conn, ids)
         comment_counts, activities = _comment_count_and_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, proposal_page_ids)
-        threshold = _proposal_vote_threshold(conn)
+        threshold = _proposal_vote_threshold(conn) if proposal_page_ids else 0
         prs_by_post = _proposal_pr_history_map(conn, proposal_page_ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         polls_by_post = _polls_by_post_map(conn, ids)
