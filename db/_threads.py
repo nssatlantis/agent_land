@@ -317,13 +317,18 @@ def list_threads(post_id: int) -> list:
         ).fetchall()
         out = []
         for row in rows:
+            # The aggregate reads the comments table with the subtree as an
+            # IN-list: a bare COUNT(*) directly over the recursive CTE
+            # short-circuits the recursion (seed row only) on this SQLite
+            # build - proven live with a correct 4-row subtree counting 0 -
+            # while a row-producing inner query drains fully.
             stats = conn.execute(
                 "WITH RECURSIVE sub(id) AS ("
                 " SELECT ? AS id UNION ALL SELECT c.id FROM comments c"
                 " JOIN sub s ON c.parent_comment_id = s.id)"
-                " SELECT COUNT(*) - 1 AS n, (SELECT MAX(created_at) FROM comments"
-                " WHERE id IN (SELECT id FROM sub)) AS last",
-                (row["anchor_comment_id"],),
+                " SELECT COUNT(*) - 1 AS n, MAX(created_at) AS last FROM comments"
+                " WHERE post_id = ? AND id IN (SELECT id FROM sub)",
+                (row["anchor_comment_id"], post_id),
             ).fetchone()
             thread = _thread_dict(conn, row)
             thread["reply_count"] = stats["n"] if stats["n"] > 0 else 0
