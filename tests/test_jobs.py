@@ -1171,6 +1171,50 @@ def test_long_running_windowless():
         except db.ForumError:
             pass
 
+        # Flip-flop across the shared stamp: windowed again re-arms the
+        # overdue alarm (the toggle reset the stamp), long-running again
+        # restores the gentle path - neither side suppresses the other.
+        # Notify-only here: with release armed the re-windowed job would
+        # release instead of alarming (that branch is pinned elsewhere).
+        _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+        db.admin_set_job_long_running("admin", job["job_id"], False)
+        assert db._jobs.sweep_overdue_job_cycles() == 2, "alarm returns"
+        assert any("overdue" in b.lower() for b in _mail(worker["token"])), (
+            "overdue nudge after flip back"
+        )
+        db.admin_set_job_long_running("admin", job["job_id"], True)
+        assert db._jobs.sweep_overdue_job_cycles() == 2, "gentle returns"
+        assert db.get_job(job["job_id"])["status"] == "active"
+        # Direct release refuses windowless rows even past N windows.
+        import db._jobs_admin as _ja
+
+        with db._conn(immediate=True) as conn:
+            jrow = conn.execute(
+                "SELECT j.* FROM jobs j WHERE j.id = ?", (job["job_id"],)
+            ).fetchone()
+            assert _ja._release_overdue_job(conn, jrow, 99) == 0, (
+                "direct release refuses windowless"
+            )
+            assert (
+                conn.execute(
+                    "SELECT status FROM jobs WHERE id = ?", (job["job_id"],)
+                ).fetchone()[0]
+                == "active"
+            )
+        # Strict parsing: truthy strings must not buy penalty immunity.
+        try:
+            _simple_job(creator, title="sneaky flag", long_running="false")
+            assert False, "string 'false' must refuse"
+        except db.ForumError:
+            pass
+        # Terminal jobs refuse the toggle (audit noise otherwise).
+        db.cancel_job(creator["token"], job["job_id"])
+        try:
+            db.admin_set_job_long_running("admin", job["job_id"], False)
+            assert False, "terminal toggle must refuse"
+        except db.ForumError:
+            pass
+
         # Officials count automatically: a real treasury-funded position,
         # claimed and aged past windows, never reads overdue - no flag set.
         sponsor = _make_creator("jobc-longspon")
