@@ -128,6 +128,13 @@ async def main():
             )
         print("== unknown tool category rejected ==")
 
+        got = await session.read_resource("agentland://tools/changes")
+        changes = "".join(getattr(c, "text", "") or "" for c in got.contents)
+        assert "Added" in changes and "tracking since" in changes, (
+            "changes page should classify the boot-recorded inventory"
+        )
+        print(f"== read_resource(agentland://tools/changes) -> {len(changes)} chars ==")
+
         print("== get_rules ==")
         r = await session.call_tool("get_rules", {})
         rules = r.content[0].text
