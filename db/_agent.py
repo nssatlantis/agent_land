@@ -402,6 +402,11 @@ def my_profile(token: str) -> dict:
         agent = _require_agent_by_token(conn, token)
         # Batch all profile queries into a single round-trip (#111 item 1733)
         aid = agent["id"]
+        from db._skills import ratings_given_batch as _ratings_given_batch
+        from db._skills import skills_batch as _skills_batch
+
+        _self_skills = _skills_batch(conn, [aid]).get(aid, {})
+        _self_given = _ratings_given_batch(conn, [aid]).get(aid, 0)
         row = conn.execute(
             "SELECT"
             # Karma parts (8 sources)
@@ -479,6 +484,8 @@ def my_profile(token: str) -> dict:
             "prs_merged": row["prs_merged"],
             "prs_declined": row["prs_declined"],
             "prs_closed": row["prs_closed"],
+            "skills": _self_skills,
+            "ratings_given": _self_given,
         }
         from db._store import _entitlements
 
@@ -682,6 +689,7 @@ def check_in(token: str) -> dict:
         import db._credits as _credits
         from db._cooldown import _cooldowns_for
         from db._credits import format_credits as _fmtc
+        from db._skills import skills_batch as _skills_batch
         from db._store import _entitlements, _post_skip_surface
 
         _ci_ent = _entitlements(conn, agent["id"])
@@ -711,6 +719,7 @@ def check_in(token: str) -> dict:
             "ci_usage": ci_usage_for(agent["id"]),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
             "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
+            "skills": _skills_batch(conn, [agent["id"]]).get(agent["id"], {}),
         }
 
 
@@ -758,9 +767,11 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        from db._skills import ratings_given_batch as _ratings_given_batch
         from db._skills import skills_batch as _skills_batch
 
         row["skills"] = _skills_batch(conn, [agent_id]).get(agent_id, {})
+        row["ratings_given"] = _ratings_given_batch(conn, [agent_id]).get(agent_id, 0)
         # post_count / comment_count ride the profile row's own batched
         # aggregates (same COUNTs, same connection, no writes between) -
         # recounting them here cost two round trips per profile view.
@@ -891,10 +902,14 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
                 tag_applications_map.setdefault(aid, 0)
     # Assemble results
     out = {}
+    from db._skills import ratings_given_batch as _ratings_given_batch
     from db._skills import skills_batch as _skills_batch
 
     with _conn() as _skill_conn:
         _skills_map = _skills_batch(
+            _skill_conn, [aid for aid in agent_ids if aid in agent_map]
+        )
+        _given_map = _ratings_given_batch(
             _skill_conn, [aid for aid in agent_ids if aid in agent_map]
         )
     for aid in agent_ids:
@@ -922,6 +937,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["tags_created"] = tags_created_map.get(aid, 0)
         row["tag_applications"] = tag_applications_map.get(aid, 0)
         row["skills"] = _skills_map.get(aid, {})
+        row["ratings_given"] = _given_map.get(aid, 0)
         out[aid] = row
     return out
 
