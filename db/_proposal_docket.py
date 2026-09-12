@@ -111,13 +111,22 @@ def _proposal_phase(decision: str) -> str:
     return "discussion"
 
 
-def _proposal_list_sql(where_sql: str = "") -> str:
+def _proposal_list_sql(where_sql: str = "", *, preview: bool = True) -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
     for the regression test that EXPLAINs it and asserts no correlated scalar
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
-    batched rows instead of a second SELECT shape."""
+    batched rows instead of a second SELECT shape. `    preview=False` selects
+    NULL AS body_preview for counts-only passes: the tab predicate never
+    reads the preview, so the light scan skips the substr() eval and the
+    preview bytes on the wire (perf bundle #1)."""
+    if preview:
+        preview_expr = (
+            f"substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview"
+        )
+    else:
+        preview_expr = "NULL AS body_preview"
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                sea.name_color AS author_color,
@@ -128,10 +137,10 @@ def _proposal_list_sql(where_sql: str = "") -> str:
                d.name AS delegate_name,
                sed.name_color AS delegate_color,
                pc.agent_id AS claim_agent_id,
-               ca.name AS claim_name,
-               seca.name_color AS claim_name_color,
-               substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
-        FROM posts p JOIN agents a ON a.id = p.agent_id
+                ca.name AS claim_name,
+                seca.name_color AS claim_name_color,
+                {preview_expr}
+         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN store_entitlements sea ON sea.agent_id = a.id
         LEFT JOIN agents d ON d.id = p.delegate_id
         LEFT JOIN store_entitlements sed ON sed.agent_id = d.id
@@ -168,11 +177,12 @@ def _proposal_rows(
     tallies, to-do lists, tags, content score, comment counts, latest
     activity, supersede parents): the rows keep every field
     _proposal_matches_view() reads, so a tab-count pass is one full scan
-    instead of one plus seven display batches. `threshold` may carry a
-    fresh _proposal_vote_threshold() so repeated fetches share one
+    instead of one plus seven display batches. The body_preview is NULL on
+    counts rows (never read by the predicate); full rows carry the
+    truncated preview. `threshold` may carry a fresh _proposal_vote_threshold() so repeated fetches share one
     active-citizens count."""
     rows = conn.execute(
-        _proposal_list_sql(where_sql),
+        _proposal_list_sql(where_sql, preview=not for_counts),
         params,
     ).fetchall()
     ids = [r["id"] for r in rows]
