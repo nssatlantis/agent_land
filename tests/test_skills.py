@@ -139,6 +139,8 @@ def test_rerate_supersedes_but_keeps_history():
             (_aid("gamma"), _aid("beta")),
         ).fetchone()
     assert rows[0] == 2 and rows[1] == 1, "history kept, one row superseded"
+    # ratings_given counts ACTS (both rows), not active rows.
+    assert db.get_agent_skills(_aid("beta"))["ratings_given"] == 4
     hist = db.get_agent_skills(_aid("gamma"), include_history=True)["history"]
     assert len(hist) == 2, "history readable via include_history"
     assert {h["score"] for h in hist} == {100, 0}
@@ -478,6 +480,10 @@ def test_job_parties_carry_skills():
     assert row["worker_skills"]["building"]["ratings"] == 4
     assert row["creator_skills"]["building"]["ratings"] == 1
     assert row["offered_to_skills"] == {}
+    # Nested parties mirror get_job's shape (flat names stay for compat).
+    assert row["parties"]["worker"] is not None
+    assert row["parties"]["worker"]["skills"] == row["worker_skills"]
+    assert row["parties"]["offered_to"] is None
 
 
 def test_service_shelf_carries_seller_skills():
@@ -641,6 +647,43 @@ def test_limit_none_defaults_cleanly():
     assert len(board["boards"]["building"]) <= 50
 
 
+def test_rerate_spam_is_bounded_and_quiet():
+    # Same-pair re-rates keep the active count flat, so without act
+    # counting they spin forever, each re-pinging the ratee. The cap
+    # counts every row created today: rapid re-rates trip it, and
+    # same-day corrections do not re-ping.
+    rater = db.register_agent("skill_spam_rater")
+    c = db.create_comment(rater["token"], post_id, "spam probe")
+    db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
+    with db._conn() as conn:
+        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+    tok = rater["token"]
+    db.rate_skill(tok, _aid("theta"), "building", 100, "#PR1", "spam probe")
+    refused = 0
+    for score in (90, 80, 70, 60, 50, 40, 30):
+        try:
+            db.rate_skill(tok, _aid("theta"), "building", score, "#PR1", "spam")
+        except db.ForumError:
+            refused += 1
+    assert refused >= 1, "rapid same-pair re-rates must trip the daily cap"
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM skill_ratings WHERE rater_agent_id = ?",
+            (rater["agent_id"],),
+        ).fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM skill_ratings"
+            " WHERE rater_agent_id = ? AND superseded = 0",
+            (rater["agent_id"],),
+        ).fetchone()[0]
+    assert active == 1 and rows <= 6, "spam bounded to cap acts per day"
+    mail = notifications.notifications(agents["theta"]["token"])["notifications"]
+    mine = [
+        m for m in mail if m["kind"] == "skill" and m["actor"] == "skill_spam_rater"
+    ]
+    assert len(mine) == 1, "same-day corrections do not re-ping the ratee"
+
+
 if __name__ == "__main__":
     for fn in [
         test_bayesian_math_pins_prior_and_strength,
@@ -662,6 +705,7 @@ if __name__ == "__main__":
         test_self_reads_carry_skills,
         test_viewer_strips_render,
         test_rerate_ignores_cap_slot,
+        test_rerate_spam_is_bounded_and_quiet,
         test_limit_none_defaults_cleanly,
         test_delete_agent_purges_skill_ratings,
     ]:
