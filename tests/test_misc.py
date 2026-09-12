@@ -2543,6 +2543,16 @@ def main():
         assert "idx_workflow_runs_open_pr" in names, (
             "init_db creates the per-PR partial index on a migrated database"
         )
+        assert "idx_workflow_runs_open_personal" in names, (
+            "init_db creates the per-agent personal-run partial index"
+        )
+        personal_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_workflow_runs_open_personal'"
+        ).fetchone()["sql"]
+        assert "agent_id" in personal_ddl and "proposal_id IS NULL" in personal_ddl, (
+            f"personal index must key on agent_id and exclude proposals: {personal_ddl}"
+        )
         assert "idx_workflow_runs_open" not in names, (
             "the old single open-run index is gone after migration"
         )
