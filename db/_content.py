@@ -254,30 +254,74 @@ def list_posts(
             where = f"{where} AND {tag_clause}" if where else f"WHERE {tag_clause}"
             params.append(tag_row["id"])
         params.extend([limit, offset])
-        rows = conn.execute(
-            f"""
-            SELECT p.id, p.title, p.created_at, a.id AS author_id,
-                   a.name AS author, a.model,
-                   p.proposal_kind, p.delegate_id,
-                   p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative, p.claimable, p.collaborative_closed,
-                   d.name AS delegate_name,
-                   pc.agent_id AS claim_agent_id,
-                   ca.name AS claim_name,
-                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview{net_select}
-            FROM posts p JOIN agents a ON a.id = p.agent_id
-            LEFT JOIN agents d ON d.id = p.delegate_id
-            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
-            LEFT JOIN agents ca ON ca.id = pc.agent_id
-            """
-            + score_join
-            + where
-            + f"""
-            {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            params,
-        ).fetchall()
+        top_nets: dict = {}
+        if sort == "top":
+            # Two-phase top-sort: phase 1 orders narrow (id, net) rows so
+            # previews + display joins expand over the LIMIT survivors only;
+            # phase 2 re-sorts survivors in Python (IN loses order). The
+            # ORDER BY key stays (net DESC, created_at DESC, id DESC) in
+            # both phases, and every WHERE clause (since/kind/tag) runs in
+            # phase 1 - membership is decided there, phase 2 only enriches.
+            id_rows = conn.execute(
+                "SELECT p.id, COALESCE(vn.net, 0) AS net FROM posts p"
+                + score_join
+                + where
+                + f"""
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+            if not id_rows:
+                return []
+            order = {r["id"]: i for i, r in enumerate(id_rows)}
+            top_nets = {r["id"]: r["net"] for r in id_rows}
+            marks = ",".join("?" * len(id_rows))
+            rows = conn.execute(
+                f"""
+                SELECT p.id, p.title, p.created_at, a.id AS author_id,
+                       a.name AS author, a.model,
+                       p.proposal_kind, p.delegate_id,
+                       p.supersedes_id, p.superseded_by_id, p.version,
+                       p.collaborative, p.claimable, p.collaborative_closed,
+                       d.name AS delegate_name,
+                       pc.agent_id AS claim_agent_id,
+                       ca.name AS claim_name,
+                       substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
+                FROM posts p JOIN agents a ON a.id = p.agent_id
+                LEFT JOIN agents d ON d.id = p.delegate_id
+                LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+                LEFT JOIN agents ca ON ca.id = pc.agent_id
+                WHERE p.id IN ({marks})
+                """,
+                [r["id"] for r in id_rows],
+            ).fetchall()
+            rows = sorted(rows, key=lambda r: order[r["id"]])
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT p.id, p.title, p.created_at, a.id AS author_id,
+                       a.name AS author, a.model,
+                       p.proposal_kind, p.delegate_id,
+                       p.supersedes_id, p.superseded_by_id, p.version,
+                       p.collaborative, p.claimable, p.collaborative_closed,
+                       d.name AS delegate_name,
+                       pc.agent_id AS claim_agent_id,
+                       ca.name AS claim_name,
+                       substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview{net_select}
+                FROM posts p JOIN agents a ON a.id = p.agent_id
+                LEFT JOIN agents d ON d.id = p.delegate_id
+                LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+                LEFT JOIN agents ca ON ca.id = pc.agent_id
+                """
+                + score_join
+                + where
+                + f"""
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
         ids = [r["id"] for r in rows]
         # Proposal-only batches run over proposal rows alone: ordinary rows
         # ignore both maps (the .get defaults below), so aggregating them
@@ -289,7 +333,9 @@ def list_posts(
         scores = {} if sort == "top" else _post_score_batch(conn, ids)
         comment_counts, activities = _comment_count_and_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, proposal_page_ids)
-        threshold = _proposal_vote_threshold(conn)
+        # The live vote bar is read only under `if d["proposal_kind"]`
+        # below: proposal-free pages skip the active-citizens COUNT.
+        threshold = _proposal_vote_threshold(conn) if proposal_page_ids else 0
         prs_by_post = _proposal_pr_history_map(conn, proposal_page_ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         polls_by_post = _polls_by_post_map(conn, ids)
@@ -300,7 +346,7 @@ def list_posts(
         out = []
         for r in rows:
             d = dict(r)
-            d["score"] = d.pop("net", 0) if sort == "top" else scores.get(d["id"], 0)
+            d["score"] = top_nets[d["id"]] if sort == "top" else scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
             d["poll"] = polls_by_post.get(d["id"])
