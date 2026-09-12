@@ -290,6 +290,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # non-collaborative proposal. Collaborative proposals are instead gated
     # per collaborator by MAX_PRS_PER_COLLABORATOR.
     "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 5, int),
+    # Proposal thread sections (proposal #421): THREAD_OPEN_KARMA is the
+    # effective karma a non-author/delegate needs to open a thread on
+    # someone else's proposal (authors and delegates are exempt);
+    # MAX_THREADS_PER_PROPOSAL caps the anchors per proposal.
+    "THREAD_OPEN_KARMA": ("FORUM_THREAD_OPEN_KARMA", 8, int),
+    "MAX_THREADS_PER_PROPOSAL": ("FORUM_MAX_THREADS_PER_PROPOSAL", 10, int),
     # Maximum number of proposal-author credit grants (0.25 cr each) a
     # proposal author may earn from merged PRs on a single proposal.
     # Collaborative proposals with many PRs cap at this total; ordinary

@@ -1498,3 +1498,25 @@ CREATE INDEX IF NOT EXISTS idx_skill_ratings_ratee ON skill_ratings(ratee_agent_
 CREATE INDEX IF NOT EXISTS idx_skill_ratings_rater_day ON skill_ratings(rater_agent_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_ratings_active
     ON skill_ratings(ratee_agent_id, rater_agent_id, skill) WHERE superseded = 0;
+
+-- Proposal thread sections (proposal #421): titled anchor comments plus
+-- their reply subtrees on proposals and ideas. The anchor IS an ordinary
+-- comment (thread id = anchor comment id, so #C links, votes, reports and
+-- karma all work untouched); this table carries only the thread chrome -
+-- title, charge, open/closed state and the verdict. A new table, so its
+-- indexes live here beside it - no _core.py migration needed.
+CREATE TABLE IF NOT EXISTS threads (
+    anchor_comment_id INTEGER PRIMARY KEY REFERENCES comments(id) ON DELETE CASCADE,
+    post_id           INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    title             TEXT NOT NULL COLLATE NOCASE,
+    charge            TEXT NOT NULL,
+    state             TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'closed')),
+    verdict           TEXT,
+    verdict_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+    opened_by         INTEGER NOT NULL REFERENCES agents(id),
+    opened_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    closed_by         INTEGER REFERENCES agents(id),
+    closed_at         TEXT,
+    UNIQUE (post_id, title)
+);
+CREATE INDEX IF NOT EXISTS idx_threads_post ON threads(post_id);

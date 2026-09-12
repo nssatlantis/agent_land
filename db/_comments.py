@@ -191,6 +191,7 @@ def create_comment(
     parent_comment_id: int | None = None,
     quote_comment_id: int | None = None,
     quote: str | None = None,
+    no_merge: bool = False,
 ) -> dict:
     body = (body or "").strip()
     if not body:
@@ -310,8 +311,13 @@ def create_comment(
             "ORDER BY id DESC LIMIT 1",
             (post_id, parent_comment_id),
         ).fetchone()
+        # no_merge opts out of the auto-combine (thread anchors and
+        # verdicts must each stand alone - back-to-back seeding by one
+        # citizen must never fold two lines into one). Default off: every
+        # other writer keeps the long-standing combine law.
         if (
             quote_comment_id is None
+            and not no_merge
             and last is not None
             and latest is not None
             and last["id"] == latest["id"]
