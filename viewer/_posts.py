@@ -208,17 +208,18 @@ def render_post(
             thread_parts.append(
                 _thread_section(thread, rendered, reply_counts.get(c["id"], 0))
             )
-    if thread_parts or main_parts:
-        comments = ""
-        if thread_parts:
-            comments += f"<h3>Threads &middot; {len(thread_parts)}</h3>" + "".join(
-                thread_parts
-            )
-        comments += f"<h3>Main line &middot; {len(main_parts)}</h3>" + "".join(
-            main_parts
+    if thread_parts:
+        comments = f"<h3>Threads &middot; {len(thread_parts)}</h3>" + "".join(
+            thread_parts
         )
+        if main_parts:
+            comments += f"<h3>Main line &middot; {len(main_parts)}</h3>" + "".join(
+                main_parts
+            )
     else:
-        comments = ""
+        # No threads: the plain chronological join, byte-identical to the
+        # pre-sections render - ordinary posts gain no new chrome.
+        comments = "".join(main_parts)
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
