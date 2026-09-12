@@ -94,6 +94,14 @@ def _job_anchors_for(
     }
 
 
+def _is_windowless_job(row: sqlite3.Row) -> bool:
+    """Whether a job row has no due window: explicitly flagged long-running
+    work, or an official standing appointment (auto-treated as set - a
+    standing role has no window by definition). Callers must select both
+    `long_running` and `official` for this to read."""
+    return bool(row["long_running"]) or bool(row["official"])
+
+
 def job_overdue_cutoff(hours: int | None = None) -> str:
     """The ISO boundary for 'overdue', or '' when the feature is disabled.
 
@@ -132,6 +140,7 @@ def _cycle_is_overdue(
     cutoff: str,
     *,
     opens_at: str | None = None,
+    windowless: bool = False,
 ) -> bool:
     """True when a job's current cycle idles past the due window.
 
@@ -143,7 +152,11 @@ def _cycle_is_overdue(
     nothing to submit until it opens.  Once it opens, the due clock starts
     at the later of the accept and the opens_at, so a cadenced cycle keeps
     its full cadence x FORUM_JOB_CYCLE_DUE_HOURS window instead of reading
-    overdue the instant its opens_at passes."""
+    overdue the instant its opens_at passes.  Windowless work (long-running
+    flag or official standing role) never reads overdue - pass
+    windowless=True (see _is_windowless_job)."""
+    if windowless:
+        return False
     if not cutoff or status not in ("awaiting", "declined"):
         return False
     if not anchor_at:
@@ -195,15 +208,19 @@ def _overdue_flag(
     cutoff: str,
     *,
     opens_at: str | None = None,
+    windowless: bool = False,
 ) -> bool:
     """Board-level overdue flag: the job must be ACTIVE and its current
     cycle must idle past the due window.  Completed/expired/cancelled jobs
     never read overdue, even where a leftover cycle row still sits in a
     transitional status.  A future opens_at (cadenced cycle not yet open)
-    is never overdue."""
+    is never overdue.  Windowless work (see _is_windowless_job) never reads
+    overdue either."""
     if status != "active":
         return False
-    return _cycle_is_overdue(cur_cycle_status, anchor_at, cutoff, opens_at=opens_at)
+    return _cycle_is_overdue(
+        cur_cycle_status, anchor_at, cutoff, opens_at=opens_at, windowless=windowless
+    )
 
 
 def _all_prs_merged(pr_numbers: list[int]) -> bool:
