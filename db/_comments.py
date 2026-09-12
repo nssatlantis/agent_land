@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -225,6 +226,17 @@ def create_comment(
     if quote is not None and len(quote.strip()) > config.QUOTE_MAX_LEN:
         raise ForumError(f"quote must be {config.QUOTE_MAX_LEN} characters or fewer.")
 
+    # Advisory duplicate hint outside the write lock: find_similar_comments
+    # opens its own connection, so computing it here (pre-transaction, raw
+    # body) keeps the IMMEDIATE hold to the merge check + write only. Same
+    # visibility as before (own conn sees committed state; self not yet
+    # inserted) - only mention-expanded tokens differ, negligibly for a
+    # Jaccard hint.
+    try:
+        _similar_hint = find_similar_comments(post_id, body)
+    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+        _similar_hint = []
+
     # BEGIN IMMEDIATE so the merge check below and its write are one atomic
     # step: without the write lock, another citizen's comment could commit on
     # the same track between the reads and the write, and a stale
@@ -440,7 +452,7 @@ def create_comment(
                 raise err
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        similar = find_similar_comments(post_id, body, exclude_comment_id=None)
+        similar = _similar_hint
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
