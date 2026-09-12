@@ -1421,6 +1421,105 @@ def test_cadence_opens_next_cycle_on_schedule():
         _restore_arms()
 
 
+def test_cadence_open_cycle_keeps_full_window():
+    """Regression (PR #1158 QC): a cadenced cycle that has JUST opened must
+    not read overdue and must count ZERO release windows - the due clock
+    re-anchors at opens_at.  The pre-fix code compared the previous
+    accept's anchor against a cadence-scaled cutoff, so the instant the
+    opens_at passed the cycle read 'overdue at open' with no working
+    window, and the release counter (_overdue_windows_elapsed, called with
+    base hours) counted whole windows from the old accept - auto-releasing
+    an on-schedule worker once the cadence reached
+    FORUM_JOB_OVERDUE_RELEASE_AFTER."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    try:
+        creator = _make_creator("jobc-cadwin")
+        worker = db.register_agent("jobw-cadwin")
+        job = _simple_job(
+            creator, pay=1.0, kind="recurring", cycles=2, cycle_every_days=2
+        )
+        job_id = job["job_id"]
+
+        def _iso(ago: timedelta) -> str:
+            return (datetime.now(timezone.utc) - ago).strftime("%Y-%m-%dT%H:%M:%S.%f")[
+                :-3
+            ] + "Z"
+
+        db.claim_job(worker["token"], job_id)
+        db.submit_job(worker["token"], job_id, "#P1")
+        db.review_job(creator["token"], job_id, "accept")
+
+        # Age the ledger anchors a cadence gap behind now so 'now' IS the
+        # moment cycle 2 opens (its seeded opens_at = accept + cadence*24h):
+        # the accept anchor sits exactly one cadence gap behind, the exact
+        # geometry in which the pre-fix anchor<=cutoff read 'overdue at
+        # open' the moment the deadline passed.
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE events SET created_at = ?"
+                " WHERE target_type = 'job' AND target_id = ?"
+                " AND kind IN ('job_claimed','job_submitted',"
+                " 'job_cycle_accepted','job_cycle_declined')",
+                (_iso(timedelta(days=2)), job_id),
+            )
+            conn.execute(
+                "UPDATE job_cycles SET opens_at = ? WHERE job_id = ? AND cycle_no = 2",
+                (_iso(timedelta(seconds=5)), job_id),
+            )
+
+        from db._jobs_ops import (
+            _cadence_hours,
+            _job_anchors_for,
+            _overdue_windows_elapsed,
+            job_overdue_cutoff,
+        )
+
+        with db._conn() as conn:
+            anchors = _job_anchors_for(conn, [job_id])
+            cyc = conn.execute(
+                "SELECT cycle_every_days FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        hours = _cadence_hours(cyc)
+        assert hours == 2, hours  # cadence 2 x due-hours 1 -> 2h window
+
+        # Just opened: NOT overdue (the full window still to run) and zero
+        # release windows - no release_after >= 1 can fire at open.
+        assert db.get_job(job_id)["overdue"] is False, (
+            "a just-opened cadence cycle keeps its full window"
+        )
+        win = _overdue_windows_elapsed(
+            anchors[job_id],
+            job_overdue_cutoff(hours=hours),
+            hours=hours,
+            opens_at=_iso(timedelta(seconds=5)),
+        )
+        assert win == 0, f"just-opened cycle must count 0 windows, got {win}"
+
+        # A full cadence window past opens_at: overdue, exactly one whole
+        # window elapsed (still no release at release_after >= 2).
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE job_cycles SET opens_at = ? WHERE job_id = ? AND cycle_no = 2",
+                (_iso(timedelta(hours=2, seconds=5)), job_id),
+            )
+        assert db.get_job(job_id)["overdue"] is True
+        win = _overdue_windows_elapsed(
+            anchors[job_id],
+            job_overdue_cutoff(hours=hours),
+            hours=hours,
+            opens_at=_iso(timedelta(hours=2, seconds=5)),
+        )
+        assert win == 1, f"one whole cadence window elapsed, got {win}"
+
+        # Hand the cycle back so this job never leaves an overdue AWAITING
+        # row behind for the shared-DB sweep tests that run after us.
+        db.submit_job(worker["token"], job_id, "#P2")
+        assert db.get_job(job_id)["cycles"][1]["status"] == "submitted"
+        assert db.get_job(job_id)["overdue"] is False
+    finally:
+        _restore_arms()
+
+
 def test_cadence_columns_migrate():
     """jobs.cycle_every_days / job_cycles.opens_at migrate onto
     pre-column databases (CREATE TABLE IF NOT EXISTS is a no-op there, so
