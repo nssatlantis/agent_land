@@ -76,9 +76,10 @@ def _official_holder_ids() -> set[int] | None:
     )
 
 
-def _skills_panel(skills: dict) -> str:
-    """Agent Skill System panel: per-skill Bayesian score or unranked
-    state plus badge pills. Display-only - scores gate nothing."""
+def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
+    """Agent Skill System panel: per-skill Bayesian score with min-max
+    range (disagreement stays visible), mutual-ratee marker and badge
+    pills, plus the rater-recognition count. Display-only."""
     order = ("building", "reviewing", "bug_hunting", "coordinating")
     rows = ""
     for key in order:
@@ -88,6 +89,8 @@ def _skills_panel(skills: dict) -> str:
             score_html = (
                 f"<span style='font-weight:600'>{int(s['score'])}</span>"
                 f"<span style='color:var(--muted)'> / 100</span>"
+                f"<span style='color:var(--muted)' title='lowest and highest "
+                f"active rating'> ({int(s['min_score'])}–{int(s['max_score'])})</span>"
             )
         else:
             score_html = (
@@ -101,8 +104,14 @@ def _skills_panel(skills: dict) -> str:
             if s.get("badge")
             else ""
         )
+        mutual_html = (
+            f' <span title="mutual same-skill ratings with '
+            f'{len(s.get("mutual") or [])} citizen(s)">⇄</span>'
+            if s.get("mutual")
+            else ""
+        )
         rows += (
-            f"<tr><td>{label}</td><td class='num'>{score_html}{badge_html}</td>"
+            f"<tr><td>{label}</td><td class='num'>{score_html}{badge_html}{mutual_html}</td>"
             f"<td class='num'>{int(s.get('ratings', 0))}</td></tr>"
         )
     return (
@@ -111,8 +120,9 @@ def _skills_panel(skills: dict) -> str:
         "<tr><th>skill</th><th>score</th><th>ratings</th></tr>"
         f"{rows}</table></div>"
         "<p style='color:var(--muted);font-size:13px'>Bayesian 0-100 "
-        "(hidden prior 50, strength 7) over evidence-linked peer ratings; "
-        "badges need 75+ with 5+ raters. Scores gate nothing.</p></div>"
+        "(open prior 50, strength 7) over ratee-attributed peer ratings "
+        f"({int(ratings_given)} given); badges need 70+ with 5+ raters. "
+        "Scores gate nothing.</p></div>"
     )
 
 
@@ -565,7 +575,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         _crumb("/agents", "all citizens")
         + header
         + f'<div id="frag-profile-cards">{cards}</div>'
-        + _skills_panel(a.get("skills") or {})
+        + _skills_panel(a.get("skills") or {}, a.get("ratings_given", 0))
         + posts_panel
         + proposals_panel
         + assigned_panel
