@@ -874,9 +874,14 @@ async def admin_set_job_long_running(request):
         ValueError,
     ):  # domain: fail-loudly - bad path param surfaces as flash
         return _flash(request, "bad job id.")
+    raw_value = form.get("value")
+    if raw_value not in ("0", "1"):
+        # domain: fail-loudly - a malformed POST must never silently flip
+        # a job back to windowed (re-arming due windows and penalties).
+        return _flash(request, "bad value - pass '1' or '0'.")
     try:
         result = db.admin_set_job_long_running(
-            _admin_user(request), job_id, str(form.get("value") or "") == "1"
+            _admin_user(request), job_id, raw_value == "1"
         )
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
