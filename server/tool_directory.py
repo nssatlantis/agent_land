@@ -215,3 +215,20 @@ def tools_resource() -> str:
 )
 def tool_category_resource(category: str) -> str:
     return _category_page(category)
+
+
+def _inventory_items() -> list[tuple[str, str, str]]:
+    """Current registry as (name, params_json, description) snapshot rows.
+
+    Feeds db.record_tool_inventory (called once per server boot). The JSON
+    schema dump is sort-keyed so key order never counts as a change.
+    """
+    registry = _registry_tools()
+    items = []
+    for name in sorted(registry):
+        tool = registry[name]
+        params_json = json.dumps(
+            getattr(tool, "parameters", None) or {}, sort_keys=True, default=str
+        )
+        items.append((name, params_json, getattr(tool, "description", None) or ""))
+    return items
