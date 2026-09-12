@@ -456,7 +456,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # ratings per skill, Bayesian 0-100 scores. PRIOR is the hidden neutral
     # assumption (never displayed; unranked shows until MIN_DISPLAY
     # distinct raters). C is the prior strength in pseudocounts: with
-    # PRIOR 50 and BADGE 75, exactly C perfect-100s reach badge. RATE_FEE
+    # PRIOR 50 and BADGE 70, five perfect-100s reach badge ((350+500)/12
+    # = 70.83 -> 71). RATE_FEE
     # is the per-rating treasury sink (spam throttle, not paid praise);
     # DAILY_CAP bounds ratings per rater per UTC day.
     "SKILL_PRIOR": ("FORUM_SKILL_PRIOR", 50, int),

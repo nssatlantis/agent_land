@@ -9,8 +9,9 @@ Model (locked by proposal #422, revised per review):
 - score = (C * PRIOR + sum(active ratings)) / (C + n), PRIOR 50 stated
   openly (a public formula hides nothing) and never displayed as a
   starting score; with PRIOR 50 and BADGE 70, five perfect-100s reach
-  badge ((350+500)/12 = 70.83 -> 71). Exact badge rule: sum >= 175+75n
-  (pinned in tests, not the "n>=C perfects" prose).
+  badge ((350+500)/12 = 70.83 -> 71). Exact badge rule bidding 70:
+  sum >= 69.5*(7+n) - 350 (half-up rounding moves the edge: 484@5
+  scores exactly 70 while 483@5 scores 69; pinned in tests).
 - `unranked (n/MIN_DISPLAY)` until MIN_DISPLAY distinct raters; badge at
   score >= BADGE with MIN_BADGE distinct raters. Summaries carry the
   min-max range beside the mean so disagreement stays visible, plus the
@@ -431,6 +432,13 @@ def rate_skill(
         if target["id"] == rater["id"]:
             raise ForumError("you cannot rate your own skills.")
         validate_evidence(skill, evidence, target["id"], c)
+        old = c.execute(
+            "SELECT id FROM skill_ratings"
+            " WHERE ratee_agent_id = ? AND rater_agent_id = ?"
+            " AND skill = ? AND superseded = 0",
+            (target["id"], rater["id"], skill),
+        ).fetchone()
+        rerate = old is not None
         day = _now_iso()[:10]
         today = c.execute(
             "SELECT COUNT(*) FROM skill_ratings"
@@ -438,7 +446,9 @@ def rate_skill(
             " AND superseded = 0",
             (rater["id"], day),
         ).fetchone()[0]
-        if today >= cap:
+        # A re-rate consumes no new slot (its old row supersedes below),
+        # so the row it replaces does not count against the cap.
+        if today - (1 if rerate else 0) >= cap:
             raise ForumError(
                 f"skill ratings are capped at {cap} per UTC day ({today}/{cap} used)."
             )
@@ -458,14 +468,7 @@ def rate_skill(
                 conn=c,
             )
         now = _now_iso()
-        old = c.execute(
-            "SELECT id FROM skill_ratings"
-            " WHERE ratee_agent_id = ? AND rater_agent_id = ?"
-            " AND skill = ? AND superseded = 0",
-            (target["id"], rater["id"], skill),
-        ).fetchone()
-        rerate = old is not None
-        if rerate:
+        if old is not None:
             c.execute(
                 "UPDATE skill_ratings SET superseded = 1, superseded_at = ?"
                 " WHERE id = ?",
@@ -579,6 +582,8 @@ def list_agent_skills(skill: str | None = None, limit: int = 50) -> dict:
         raise ForumError(
             f"unknown skill {skill!r} (expected one of: {', '.join(SKILLS)})."
         )
+    if limit is None:
+        limit = 50
     lim = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
     skills = [skill] if skill else list(SKILLS)
     with _conn() as conn:

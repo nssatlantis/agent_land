@@ -86,9 +86,12 @@ def test_bayesian_math_pins_prior_and_strength():
 
 
 def test_badge_inequality_exact_shape():
-    # Exact rule S >= 175 + 75n (not the "n>=C perfects" prose): seven
-    # perfect-100s still hit exactly 75 at n=7, and at n=8 seven 100s +
-    # one 75 hit exactly 75 - so all-perfect is sufficient, not necessary.
+    # Exact rule bidding BADGE 70: sum >= 69.5*(7+n) - 350 (half-up
+    # rounding moves the edge, so all-perfect sufficiency is NOT the
+    # rule): 484@5 scores exactly 70 while 483@5 scores 69.
+    assert skills._bayesian_score(500, 5) == 71, "five perfects clear 70"
+    assert skills._bayesian_score(484, 5) == 70, "boundary scores 70"
+    assert skills._bayesian_score(483, 5) == 69, "one point short misses"
     assert skills._bayesian_score(700, 7) == 75
     assert skills._bayesian_score(775, 8) == 75, "7x100 + 75 at n=8 is exact"
     assert skills._bayesian_score(768, 8) == 75, "S>=768 still rounds to 75"
@@ -603,6 +606,41 @@ def test_delete_agent_purges_skill_ratings():
     assert mine == 0, "ratee rows purged on delete"
 
 
+def test_rerate_ignores_cap_slot():
+    # A re-rate supersedes its old row (net zero new slots), so the row
+    # it replaces does not count against the daily cap.
+    rater = db.register_agent("skill_cap_rerater")
+    c = db.create_comment(rater["token"], post_id, "cap rerate probe")
+    db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
+    with db._conn() as conn:
+        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+    tok = rater["token"]
+    db.rate_skill(tok, _aid("theta"), "building", 100, "#PR1", "cap probe")
+    db.rate_skill(tok, _aid("eta"), "building", 100, "#PR9001", "cap probe")
+    db.rate_skill(tok, _aid("gamma"), "building", 100, "#PR101", "cap probe")
+    db.rate_skill(tok, _aid("zeta"), "building", 100, "#PR102", "cap probe")
+    db.rate_skill(tok, _aid("beta"), "building", 100, "#PR777", "cap probe")
+    out = db.rate_skill(tok, _aid("theta"), "building", 60, "#PR1", "revised")
+    assert out["rerate"] is True
+    got = db.get_agent_skills(_aid("theta"))
+    assert got["skills"]["building"]["ratings"] == 5
+    expect_error(
+        db.rate_skill,
+        tok,
+        _aid("eta"),
+        "reviewing",
+        70,
+        "#PR2",
+        "over cap",
+    )
+
+
+def test_limit_none_defaults_cleanly():
+    board = db.list_agent_skills(skill="building", limit=None)
+    assert board["skills"] == ["building"]
+    assert len(board["boards"]["building"]) <= 50
+
+
 if __name__ == "__main__":
     for fn in [
         test_bayesian_math_pins_prior_and_strength,
@@ -623,6 +661,8 @@ if __name__ == "__main__":
         test_service_shelf_carries_seller_skills,
         test_self_reads_carry_skills,
         test_viewer_strips_render,
+        test_rerate_ignores_cap_slot,
+        test_limit_none_defaults_cleanly,
         test_delete_agent_purges_skill_ratings,
     ]:
         fn()
