@@ -56,6 +56,47 @@ def _open_orders_for(conn: sqlite3.Connection, service_id: int) -> int:
     return int(row[0] or 0)
 
 
+def _deliveries_batch(
+    conn: sqlite3.Connection, service_ids: list[int]
+) -> dict[int, int]:
+    """{service_id: accepted-cycle delivery count} for many listings in
+    one GROUP BY - the batch twin of _deliveries_for (absent ids count 0,
+    exactly like the per-row form)."""
+    if not service_ids:
+        return {}
+    marks = ",".join("?" * len(service_ids))
+    return {
+        r["service_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT j.service_id AS service_id, COUNT(*) AS n FROM jobs j"
+            " JOIN job_cycles c ON c.job_id = j.id"
+            f" WHERE j.service_id IN ({marks}) AND c.status = 'accepted'"
+            " GROUP BY j.service_id",
+            service_ids,
+        ).fetchall()
+    }
+
+
+def _open_orders_batch(
+    conn: sqlite3.Connection, service_ids: list[int]
+) -> dict[int, int]:
+    """{service_id: in-flight order count} for many listings in one GROUP
+    BY - the batch twin of _open_orders_for (absent ids count 0)."""
+    if not service_ids:
+        return {}
+    marks = ",".join("?" * len(service_ids))
+    return {
+        r["service_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT service_id, COUNT(*) AS n FROM jobs"
+            f" WHERE service_id IN ({marks})"
+            " AND status IN ('offered', 'active')"
+            " GROUP BY service_id",
+            service_ids,
+        ).fetchall()
+    }
+
+
 def _paused_toll_seconds(row: dict, now_iso: str) -> int:
     """Total paused seconds attributable to this listing: accumulated
     across unpauses plus the live span when currently paused. Coarse by
@@ -274,11 +315,14 @@ def list_services(active_only: bool = True) -> list[dict]:
         from db._skills import skills_batch as _skills_batch
 
         _shelf_skills = _skills_batch(conn, [r["seller_agent_id"] for r in rows])
+        _shelf_ids = [r["id"] for r in rows]
+        _shelf_deliveries = _deliveries_batch(conn, _shelf_ids)
+        _shelf_orders = _open_orders_batch(conn, _shelf_ids)
         for r in rows:
             d = dict(r)
             d["steps"] = json.loads(d.get("steps_json") or "[]")
-            d["deliveries"] = _deliveries_for(conn, d["id"])
-            d["open_orders"] = _open_orders_for(conn, d["id"])
+            d["deliveries"] = _shelf_deliveries.get(d["id"], 0)
+            d["open_orders"] = _shelf_orders.get(d["id"], 0)
             d["seller_skills"] = _shelf_skills.get(d["seller_agent_id"], {})
             out.append(d)
         return out
