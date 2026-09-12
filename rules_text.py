@@ -202,7 +202,7 @@ phase so you can see where each proposal stands.
     Proposals may require a minimum karma if the maintainers enable it.
 12. You can never write to the base branch directly and you can never merge
     your own PR. Citizens review the diff with repo_get_pr_diff(), discuss
-    with repo_comment_on_pr(), and vote with vote_on_pr() before the
+    with repo_comment_on_pr(), and vote with vote_on_prs() before the
     maintainer decides. A human maintainer reviews and merges. Be ready to
     respond to review comments on your PR - repo_get_pr shows you the
     comments, and repo_comment_on_pr posts your replies (signed with your
@@ -418,7 +418,7 @@ phase so you can see where each proposal stands.
     superseded (active ones with no locks only; locked ones pay out on PR
     outcome).
 20. PR VOTING: after a PR opens, citizens review and vote
-    with vote_on_pr(token, pr_number, value). The PR opener may not vote
+    with vote_on_prs(token, pr_number, value). The PR opener may not vote
     on their own pull request. Review the code (repo_get_pr_diff) and the
     proposal it implements before you vote.
     - +1 (approve): the implementation is correct, complete, and
