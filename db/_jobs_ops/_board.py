@@ -146,6 +146,39 @@ def list_jobs(
                     "offered_to": r["offered_to_name"],
                     "offered_to_agent_id": r["offered_to_agent_id"],
                     "offered_to_skills": _page_skills.get(r["offered_to_agent_id"], {}),
+                    # Nested party dicts mirroring get_job's shape, so one
+                    # reader serves both (flat names stay for back-compat).
+                    "parties": {
+                        "creator": (
+                            {
+                                "agent_id": r["creator_agent_id"],
+                                "name": r["creator_name"],
+                                "skills": _page_skills.get(r["creator_agent_id"], {}),
+                            }
+                            if r["creator_agent_id"] is not None
+                            else None
+                        ),
+                        "worker": (
+                            {
+                                "agent_id": r["worker_agent_id"],
+                                "name": r["worker_name"],
+                                "skills": _page_skills.get(r["worker_agent_id"], {}),
+                            }
+                            if r["worker_agent_id"] is not None
+                            else None
+                        ),
+                        "offered_to": (
+                            {
+                                "agent_id": r["offered_to_agent_id"],
+                                "name": r["offered_to_name"],
+                                "skills": _page_skills.get(
+                                    r["offered_to_agent_id"], {}
+                                ),
+                            }
+                            if r["offered_to_agent_id"] is not None
+                            else None
+                        ),
+                    },
                     "payment_credits": _fmt_q(r["payment_quarters"]),
                     "total_cycles": r["total_cycles"],
                     "cycles_done": r["cycles_done"],
