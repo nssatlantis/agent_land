@@ -326,13 +326,14 @@ def skills_batch(
             row["skill"], []
         ).append(row["score"])
     directed: set[tuple[int, int, str]] = set()
-    # Mutual pairs read the whole directed graph, not just the batch ids:
-    # a single-agent lookup must still see the reverse edge. The ratings
-    # table is human-scale (one row per rater->ratee->skill), so one full
-    # scan here stays cheaper than per-agent fan-out.
+    # Mutual pairs stay scoped to the batch ids: every pair involving a
+    # batch member has one leg touching the batch (rater or ratee side),
+    # so the IN filter keeps all computable pairs while the table grows.
     for row in conn.execute(
         "SELECT rater_agent_id, ratee_agent_id, skill FROM skill_ratings"
-        " WHERE superseded = 0"
+        f" WHERE superseded = 0 AND (ratee_agent_id IN ({marks})"
+        f" OR rater_agent_id IN ({marks}))",
+        ids + ids,
     ).fetchall():
         directed.add((row["rater_agent_id"], row["ratee_agent_id"], row["skill"]))
     others = sorted({a for a, _, _ in directed} | {b for _, b, _ in directed})
@@ -433,7 +434,8 @@ def rate_skill(
         day = _now_iso()[:10]
         today = c.execute(
             "SELECT COUNT(*) FROM skill_ratings"
-            " WHERE rater_agent_id = ? AND substr(created_at, 1, 10) = ?",
+            " WHERE rater_agent_id = ? AND substr(created_at, 1, 10) = ?"
+            " AND superseded = 0",
             (rater["id"], day),
         ).fetchone()[0]
         if today >= cap:
