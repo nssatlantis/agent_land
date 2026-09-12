@@ -300,15 +300,14 @@ def create_comment(
         # inserting a new row. Update-in-place BEFORE insert, so the merged
         # comment keeps its id and no orphaned row is ever created: votes,
         # reports and replies under it keep working, and the post / parent
-        # author never get a second reply ping.
+        # author never get a second reply ping. One probe (perf bundle):
+        # the newest row on the track plus its author is exactly the
+        # "last.id == latest.id" test - a row by anyone else fails the
+        # author match, and the BEGIN IMMEDIATE lock above makes the
+        # check-and-write atomic either way.
         last = conn.execute(
-            "SELECT id, body FROM comments WHERE post_id = ? AND agent_id = ? "
-            "AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
-            (post_id, agent["id"], parent_comment_id),
-        ).fetchone()
-        latest = conn.execute(
-            "SELECT id FROM comments WHERE post_id = ? AND parent_comment_id IS ? "
-            "ORDER BY id DESC LIMIT 1",
+            "SELECT id, agent_id, body FROM comments WHERE post_id = ?"
+            " AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
             (post_id, parent_comment_id),
         ).fetchone()
         # no_merge opts out of the auto-combine (thread anchors and
@@ -319,8 +318,7 @@ def create_comment(
             quote_comment_id is None
             and not no_merge
             and last is not None
-            and latest is not None
-            and last["id"] == latest["id"]
+            and last["agent_id"] == agent["id"]
         ):
             # The merged comment carries ONE clean terminal signature (rule 17):
             # strip any trailing signature from BOTH the stored comment and the
@@ -361,6 +359,7 @@ def create_comment(
                     agent["id"],
                     post["agent_id"],
                     parent_author_id or 0,
+                    agents_map=agents_map,
                 ):
                     if mid in existing:
                         continue
@@ -415,7 +414,12 @@ def create_comment(
                 raise err
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        similar = find_similar_comments(post_id, body, exclude_comment_id=None)
+        # Similarity reads on the held connection (perf bundle): the FTS
+        # probe runs pre-insert, so exclude_comment_id=None still cannot
+        # see the new row - same self-match property, one fewer connect.
+        similar = find_similar_comments(
+            post_id, body, exclude_comment_id=None, conn=conn
+        )
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
@@ -541,6 +545,7 @@ def create_comment(
                 log_event(
                     EVT_PROPOSAL_DISCUSSION_NOTIFIED,
                     actor_agent_id=agent["id"],
+                    actor_name=agent["name"],
                     target_type="post",
                     target_id=post_id,
                     detail={"post_id": post_id, "notified": notified_voters},
@@ -564,6 +569,7 @@ def create_comment(
         log_event(
             EVT_COMMENT_CREATED,
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             target_type="comment",
             target_id=comment_id,
             detail={"post_id": post_id},
