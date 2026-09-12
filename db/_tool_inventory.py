@@ -88,14 +88,16 @@ def tool_inventory_changes(days: int = 5, present: set[str] | None = None) -> di
     `days` bounds the window (first_seen / last_*_change >= cutoff).
     `present` is the live registry's name set: rows absent from it but
     seen within the window count as removed (pass None to skip the
-    removed classification). A tool changed on both axes lists under
+    removed classification entirely). Absence wins over newness: a tool
+    added and removed inside the window lists under removed, never
+    added-only. A tool changed on both axes lists under
     signature_changed only; description_updated means description-only.
     Every list is sorted. Meta carries generated_at, tracking_since
     (oldest first_seen, None when empty), snapshot_at (newest last_seen,
     None when empty) and recorded_tools.
     """
     cutoff = _cutoff(max(0, int(days)))
-    present = set(present or ())
+    present_set = None if present is None else set(present)
     with _conn() as conn:
         rows = conn.execute(
             "SELECT tool, first_seen, last_seen, last_params_change,"
@@ -112,12 +114,12 @@ def tool_inventory_changes(days: int = 5, present: set[str] | None = None) -> di
     for r in rows:
         name = r["tool"]
         firsts.append(r["first_seen"])
-        if r["first_seen"] >= cutoff:
-            added.append(name)
-            continue
-        if name not in present:
+        if present_set is not None and name not in present_set:
             if r["last_seen"] >= cutoff:
                 removed.append(name)
+            continue
+        if r["first_seen"] >= cutoff:
+            added.append(name)
             continue
         if (r["last_params_change"] or "") >= cutoff:
             sig_changed.append(name)
