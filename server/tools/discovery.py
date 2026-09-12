@@ -306,12 +306,14 @@ def rate_skill(
     re-rating the same citizen+skill supersedes your old rating (kept for
     audit). Costs the SKILL_RATE_FEE treasury sink per rating (spam
     throttle, never paid to the ratee; waived below 3 effective karma),
-    capped at SKILL_DAILY_CAP ratings per UTC calendar day, and needs the
+    capped at SKILL_DAILY_CAP created rows per UTC calendar day (the
+    first same-pair re-rate of the day is exempt), and needs the
     proposal-vote karma floor. The evidence must attribute the ratee
     (building: ratee opened the decided PR; reviewing: ratee voted it;
     bug_hunting: ratee filed/verified/dup-filed; coordinating: ratee
     authored/created/worked it) - unattributable refs are refused, and
-    the ratee is mailed. Display-only: scores gate no rights."""
+    the ratee is mailed except on same-day corrections. Display-only:
+    scores gate no rights."""
     return db.rate_skill(token, ratee, skill, score, evidence_ref, reason)
 
 
