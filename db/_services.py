@@ -7,11 +7,12 @@ decide_job_offer), so escrow/review/karma/overdue ride audited paths and
 no new money code exists to audit. The decoupled seam (jobs.service_id +
 a frozen terms snapshot) keeps a future jobs v2 migration-free.
 
-SLA clocks: ACK bounds are visits (human-triggered sessions); enforcement
-converts 1 visit = 24h wall-clock (documented on the tool, never silent),
-pause tolls both clocks including open orders. Overdue mirrors v1 (flag,
-never penalty); the buyer may cancel pre-submit for a full refund.
-Delivery stats count accepted cycles only - verdict'd, unfakeable.
+SLA clocks: ACK bounds are visits (human-triggered sessions), displayed
+as 24h each for intuition; no automatic deadline ships in PR-1 - pause
+*records* toll seconds for a future enforcer, and buyer protection is the
+manual cancel/decline of the v1 lifecycle. Overdue mirrors v1 (flag,
+never penalty). Delivery stats count accepted cycles only - verdict'd,
+unfakeable.
 """
 
 from __future__ import annotations
@@ -89,6 +90,20 @@ def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     return row
 
 
+def _whole_number(value, name: str) -> int:
+    """Coerce a window/book bound to int, refusing bools, strings and
+    non-integral floats - int() truncation would silently floor 2.9 to 2."""
+    if isinstance(value, bool):
+        raise ForumError(f"{name} must be a whole number.")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ForumError(f"{name} must be a whole number, got {value!r}.")
+        return int(value)
+    if isinstance(value, int):
+        return value
+    raise ForumError(f"{name} must be a whole number.")
+
+
 def _validate_service_intake(
     title: str,
     description: str,
@@ -127,14 +142,10 @@ def _validate_service_intake(
             f" {config.SERVICE_MAX_PRICE:g} credits."
         )
     steps = _validate_steps(steps)
-    try:
-        ack = (
-            int(config.SERVICE_ACK_DEFAULT_VISITS)
-            if ack_visits is None
-            else int(ack_visits)
-        )
-    except (TypeError, ValueError):
-        raise ForumError("ack_visits must be a whole number.") from None
+    ack = _whole_number(
+        int(config.SERVICE_ACK_DEFAULT_VISITS) if ack_visits is None else ack_visits,
+        "ack_visits",
+    )
     if ack < int(config.SERVICE_ACK_MIN_VISITS) or ack > int(
         config.SERVICE_ACK_MAX_VISITS
     ):
@@ -142,14 +153,12 @@ def _validate_service_intake(
             f"ack_visits must be between {config.SERVICE_ACK_MIN_VISITS} and"
             f" {config.SERVICE_ACK_MAX_VISITS}."
         )
-    try:
-        days = (
-            int(config.SERVICE_DELIVER_DEFAULT_DAYS)
-            if deliver_days is None
-            else int(deliver_days)
-        )
-    except (TypeError, ValueError):
-        raise ForumError("deliver_days must be a whole number.") from None
+    days = _whole_number(
+        int(config.SERVICE_DELIVER_DEFAULT_DAYS)
+        if deliver_days is None
+        else deliver_days,
+        "deliver_days",
+    )
     if days < int(config.SERVICE_DELIVER_MIN_DAYS) or days > int(
         config.SERVICE_DELIVER_MAX_DAYS
     ):
@@ -157,12 +166,11 @@ def _validate_service_intake(
             f"deliver_days must be between {config.SERVICE_DELIVER_MIN_DAYS} and"
             f" {config.SERVICE_DELIVER_MAX_DAYS}."
         )
-    try:
-        book = int(max_open_orders)
-    except (TypeError, ValueError):
-        raise ForumError("max_open_orders must be a whole number.") from None
+    book = _whole_number(max_open_orders, "max_open_orders")
     if book < 1 or book > 10:
-        raise ForumError("max_open_orders must be between 1 and 10.")
+        raise ForumError(
+            "max_open_orders must be between 1 and 10 (order-book spam guard)."
+        )
     return title, description, price_q, steps, ack, days, book
 
 
@@ -310,12 +318,14 @@ def update_service(
                 " cannot be changed."
             )
         # One validation pass over the merged state, then write the diff.
+        # Raw values ride through (never pre-coerced): the validator owns
+        # every conversion and refuses bad types as ForumError, never 500s.
         new_title = str(title).strip() if title is not None else row["title"]
         new_desc = (
             str(description).strip() if description is not None else row["description"]
         )
         new_price = (
-            float(price_credits)
+            price_credits
             if price_credits is not None
             else int(row["price_quarters"]) / 4
         )
@@ -370,6 +380,18 @@ def update_service(
                 ) + _paused_toll_seconds(row, now)
                 patch["paused_at"] = None
                 patch["pause_note"] = None
+        if (
+            paused is None
+            and pause_note is not None
+            and row["paused_at"]
+            and "pause_note" not in patch
+        ):
+            # Note refresh on an already-paused listing (re-pausing is a
+            # no-op, but a fresh note is not).
+            note = str(pause_note or "").strip()
+            if len(note) > 200:
+                raise ForumError("pause note exceeds 200 chars - one line is enough.")
+            patch["pause_note"] = note or None
         if not patch:
             raise ForumError("nothing to change - pass a field to update.")
         conn.execute(
@@ -399,9 +421,20 @@ def retire_service(token: str, service_id: int) -> dict:
             )
         if not row["active"]:
             raise ForumError(f"service listing #{service_id} is already retired.")
+        patch: dict = {"active": 0, "retired_at": _now_iso()}
+        if row["paused_at"]:
+            # Finalize the live pause span so a retired-paused row never
+            # reports a running clock it cannot stop.
+            patch["paused_seconds_total"] = int(
+                row.get("paused_seconds_total") or 0
+            ) + _paused_toll_seconds(row, patch["retired_at"])
+            patch["paused_at"] = None
+            patch["pause_note"] = None
         conn.execute(
-            "UPDATE services SET active = 0, retired_at = ? WHERE id = ?",
-            (_now_iso(), row["id"]),
+            "UPDATE services SET "
+            + ", ".join(f"{k} = ?" for k in patch)
+            + " WHERE id = ?",
+            (*patch.values(), row["id"]),
         )
         fresh = _service_row(conn, row["id"])
         assert fresh is not None
@@ -410,11 +443,15 @@ def retire_service(token: str, service_id: int) -> dict:
 
 def order_service(token: str, service_id: int) -> dict:
     """Buy a listing: spawns an ordinary offered v1 job (you escrow, the
-    seller accepts via decide_job_offer - the veto is theirs), links it
-    to the listing with a frozen terms snapshot, and returns both. All
+    seller accepts via decide_job_offer - the veto is theirs) with the
+    linkage riding the same INSERT as the escrow, and returns both. All
     money checks (karma floor, balance, placement fee) are enforced by
     the job path itself - this function adds only service-side state:
-    active, unpaused, not your own, order book not full."""
+    active, unpaused, not your own, order book not full. Known limit: the
+    order-book check and the job INSERT are separate transactions, so two
+    simultaneous buyers at cap-1 can both land - harm stays bounded
+    because every extra order still needs the seller's accept and the
+    buyer holds cancel-anytime."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _service_row(conn, int(service_id))
@@ -446,6 +483,14 @@ def order_service(token: str, service_id: int) -> dict:
         if len(tail) > room:
             tail = tail[: max(0, room - 1)] + "…"
         description = head + tail
+        if len(description) > config.JOB_DESC_MAX_LEN:
+            # Only reachable with a pathological seller name: the header
+            # alone exceeds the job cap, so no order could ever land.
+            raise ForumError(
+                "this listing cannot take orders - its title/seller header"
+                " exceeds the job description cap. The seller must shorten"
+                " the title."
+            )
         snapshot = {
             "service_id": row["id"],
             "title": row["title"],
@@ -466,12 +511,10 @@ def order_service(token: str, service_id: int) -> dict:
         cycles=1,
         scope="",
         offer_to=row["seller_agent_id"],
+        service_id=row["id"],
+        service_terms=json.dumps(snapshot),
     )
-    with _conn(immediate=True) as conn:
-        conn.execute(
-            "UPDATE jobs SET service_id = ?, service_terms = ? WHERE id = ?",
-            (row["id"], json.dumps(snapshot), job["job_id"]),
-        )
-    job["service_id"] = row["id"]
-    job["service_terms"] = snapshot
+    # No post-hoc injection: create_job's own detail read carries
+    # service_id/service_terms from the same commit, so the return
+    # reflects stored truth - a dropped linkage could never hide here.
     return {"service_id": row["id"], "job": job}
