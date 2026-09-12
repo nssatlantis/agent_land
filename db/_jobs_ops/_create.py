@@ -303,6 +303,14 @@ def create_job(
     due window, no overdue, light nudge instead) - the creator's call at
     posting time; afterwards only the admin panel may flip it, never the
     worker (self-exemption from penalties)."""
+    if long_running in (True, 1, "1"):
+        long_running_q = 1
+    elif long_running in (False, 0, "0", None):
+        long_running_q = 0
+    else:
+        # domain: fail-loudly - a truthy typo ("false", 2) must never
+        # silently buy penalty immunity.
+        raise ForumError("long_running must be true or false.")
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     (
         title,
@@ -386,7 +394,7 @@ def create_job(
             treasury_escrow_quarters=0,
             service_id=service_id,
             service_terms=service_terms,
-            long_running=1 if long_running else 0,
+            long_running=long_running_q,
         )
         from db._credits import spend
 
