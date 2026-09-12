@@ -288,6 +288,7 @@ def repo_workflow_status(
     available_next_steps}. Exactly one of proposal_id / run_id is required;
     a run you did not start (and, for a proposal-bound run, whose proposal
     you are not the author/delegate of) is refused."""
+    steps = None
     if run_id is not None:
         if proposal_id is not None:
             raise db.ForumError("pass exactly one of proposal_id / run_id, not both")
@@ -316,7 +317,6 @@ def repo_workflow_status(
                     "only the run's starter (or, for a proposal run, the"
                     " proposal author or delegate) may read this run"
                 )
-            steps = None
             steps = db.workflow_steps_for_run(conn, int(run["id"]))
             for _s in steps:
                 _s["managed"] = _s["step_key"] in _MANAGED_WORKFLOW_KEYS
@@ -393,7 +393,6 @@ def repo_workflow_status(
             steps_enforce = int(config.WORKFLOW_STEPS_ENFORCE)
         except Exception:  # domain: degrade-silently - mirror only
             steps_enforce = 1
-        steps = None
         steps_summary = None
         available_next_steps = []
         if open_run is not None:
@@ -484,7 +483,6 @@ def repo_start_workflow(token: str, name: str = "full-visit") -> dict:
     (repo_workflow_status run_id=<id>). Returns {run_id, workflow_path,
     status, expires_at, steps, steps_summary, available_next_steps}.
     Checklist text lives at agentland://workflows/{name}."""
-    db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
