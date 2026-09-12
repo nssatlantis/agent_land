@@ -1553,7 +1553,11 @@ def test_conflict_path_stamps_run_id_on_payload_and_event():
         with _mock.patch.object(
             ci_runner._trees,
             "_prepare_br_tree",
-            return_value=("treex", "deadbeef", {"conflict": True, "files": ["a.py"]}),
+            return_value=(
+                "treex",
+                "deadbeef",
+                {"conflict": True, "files": ["a.py"]},
+            ),
         ):
             result = ci_runner.run_checks(
                 uid, "t", "tests", pr_number=7, _run_id=rid
