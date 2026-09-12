@@ -1540,6 +1540,98 @@ def test_ci_run_status_running_completed_unknown():
         assert "run_id" in str(exc)
 
 
+def test_conflict_path_stamps_run_id_on_payload_and_event():
+    """A merge-conflict short-circuit stamps run_id on BOTH the returned
+    payload and the ledger event, so the receipt resolves either way."""
+    import unittest.mock as _mock
+
+    uid = _uid()
+    rid = "c" * 32
+    saved_docker = ci_runner._sandbox._docker_available
+    ci_runner._sandbox._docker_available = lambda: True
+    try:
+        with _mock.patch.object(
+            ci_runner._trees,
+            "_prepare_br_tree",
+            return_value=("treex", "deadbeef", {"conflict": True, "files": ["a.py"]}),
+        ):
+            result = ci_runner.run_checks(
+                uid, "t", "tests", pr_number=7, _run_id=rid
+            )
+    finally:
+        ci_runner._sandbox._docker_available = saved_docker
+    assert result.get("merge_conflict") is True
+    assert result.get("run_id") == rid, result
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_BRANCH_RUN, limit=20)
+    hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == rid
+    ]
+    assert len(hits) == 1, f"exactly one stamped conflict event, got {len(hits)}"
+
+
+def test_audit_late_failure_modes_and_status_kinds():
+    """_audit_late_failure maps local/tree/pr_number to modes, carries
+    pr_number without head_sha (poller-cache invisible), and ci_run_status
+    resolves bench-kind stamps too."""
+    runs = ci_runner._runs
+    uid = _uid()
+    local_rid = "d" * 32
+    runs._audit_late_failure(
+        uid,
+        "t",
+        events.EVT_CI_LOCAL_RUN,
+        "tests",
+        local_rid,
+        "2026-09-12T00:00:00.000Z",
+        db.ForumError("x"),
+        files=[{"path": "a.py", "content": "b"}],
+    )
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_LOCAL_RUN, limit=20)
+    local_hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == local_rid
+    ]
+    assert len(local_hits) == 1
+    assert local_hits[0]["detail"]["mode"] == "local"
+    assert local_hits[0]["detail"]["run_failed"] is True
+    branch_rid = "e" * 32
+    runs._audit_late_failure(
+        uid,
+        "t",
+        events.EVT_CI_BRANCH_RUN,
+        "tests",
+        branch_rid,
+        "2026-09-12T00:00:00.000Z",
+        RuntimeError("y"),
+        pr_number=9,
+    )
+    rows = events.query_events(agent_id=uid, kind=events.EVT_CI_BRANCH_RUN, limit=20)
+    branch_hits = [
+        r
+        for r in rows
+        if isinstance(r.get("detail"), dict)
+        and (r.get("detail") or {}).get("run_id") == branch_rid
+    ]
+    assert len(branch_hits) == 1
+    assert branch_hits[0]["detail"]["pr_number"] == 9
+    assert "head_sha" not in branch_hits[0]["detail"]
+    bench_rid = "f" * 32
+    events.log_event(
+        events.EVT_CI_DB_BENCH_RUN,
+        actor_agent_id=uid,
+        actor_name="t",
+        detail={"checks": "db_benchmark", "ok": True, "run_id": bench_rid},
+    )
+    seen = runs.ci_run_status(uid, bench_rid)
+    assert seen["status"] == "completed", seen
+    assert seen["kind"] == events.EVT_CI_DB_BENCH_RUN
+
+
 def test_fast_run_stamps_run_id_on_result_and_event():
     """Through the real run_checks (stub tree), a within-deadline run
     returns run_id on the result and stamps it on the ledger event."""
@@ -1626,6 +1718,8 @@ def main():
     test_late_worker_failure_audits_failure_event()
     test_ci_run_status_running_completed_unknown()
     test_fast_run_stamps_run_id_on_result_and_event()
+    test_conflict_path_stamps_run_id_on_payload_and_event()
+    test_audit_late_failure_modes_and_status_kinds()
     print("test_ci_runner: all ok")
 
 
