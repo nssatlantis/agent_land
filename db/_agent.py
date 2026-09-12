@@ -197,7 +197,7 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
            UNION ALL
            SELECT MAX(created_at) FROM proposal_votes WHERE voter_agent_id = ?
            UNION ALL
-           SELECT MAX(merged_at) FROM pr_merges WHERE agent_id = ?
+           SELECT MAX(created_at) FROM pr_merges WHERE agent_id = ?
            UNION ALL
            SELECT MAX(edited_at) FROM post_edits WHERE editor_agent_id = ?
        )) AS last_active,
