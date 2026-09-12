@@ -130,6 +130,7 @@ def _truncate_all():
             "karma_spends",
             "credit_entries",
             "invoices",
+            "skill_ratings",
             "economy_checkpoints",
             "economy_meta",
             "pr_votes",
