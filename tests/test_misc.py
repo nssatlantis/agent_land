@@ -1397,6 +1397,49 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: tool_inventory (tool directory changes ledger) --------
+    # Brand-new table, so the honest "old schema" is a pre-feature database
+    # without it. init_db() must recreate it - CREATE TABLE IF NOT EXISTS in
+    # schema.sql covers the migration (no _core.py guard needed).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "tool_inventory_migration.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS tool_inventory")
+            pre = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "tool_inventory" not in pre
+        db.init_db()  # boot must recreate the table
+        with db._conn() as conn:
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(tool_inventory)")
+            }
+            assert {
+                "tool",
+                "params_hash",
+                "desc_hash",
+                "first_seen",
+                "last_seen",
+                "last_params_change",
+                "last_desc_change",
+            } <= cols
+        # The feature works on the migrated database.
+        assert db.record_tool_inventory([("vote", '{"a": 1}', "Does voting.")]) == 1
+        ch = db.tool_inventory_changes(days=5, present={"vote"})
+        assert ch["added"] == ["vote"] and ch["recorded_tools"] == 1
+        # Idempotent second boot: rows survive the re-run.
+        db.init_db()
+        with db._conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM tool_inventory").fetchone()[0]
+        assert n == 1, "the tool_inventory migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and

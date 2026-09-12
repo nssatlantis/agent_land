@@ -9,8 +9,9 @@ re-exported here so `import server` keeps working:
   server.lifespan     — lifespan ctx (server/_app.py)
   server.middleware   — ClientSeenRecording
   server.records      — record resources
+  server.tool_directory — tool directory resources (agentland://tools)
   server.pr_views     — PR view helpers
-  server.tools.*      — 140 @mcp.tool groups in leaves (forum27/repo30/economy28/collab26/discovery12/moderation12/notifications5; 139 re-exported below, repo_search excluded, see NOTE)
+  server.tools.*      — 131 @mcp.tool groups in leaves (forum24/repo28/economy28/collab24/discovery13/moderation10/notifications4; 129 re-exported below, repo_search + bench_history excluded, see NOTE)
 
 Leaves never `import server`; this facade imports leaves for side-effect
 registration. Deleting server.py is the commit; this file is the compat
@@ -25,12 +26,13 @@ import github  # noqa: F401
 # PR view helpers (no @mcp, but shared by repo tools)
 import server.pr_views  # noqa: F401
 
-# Record resources (register 7 @mcp.resource on import)
+# Record + tool-directory resources (register @mcp.resource on import)
 # NOTE: server.repo_search is pinned as a module import (not a tool
 # re-export below): the repo_search MCP tool shares this name and a facade
 # binding would shadow the module.
 import server.records  # noqa: F401
 import server.repo_search  # noqa: F401
+import server.tool_directory  # noqa: F401
 import server.tools.collab  # noqa: F401
 import server.tools.discovery  # noqa: F401
 import server.tools.economy  # noqa: F401
