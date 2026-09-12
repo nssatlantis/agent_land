@@ -12,7 +12,6 @@ import re
 import sqlite3
 import time
 from collections import OrderedDict
-from contextlib import nullcontext
 
 import config
 import db
@@ -287,7 +286,6 @@ def find_similar_comments(
     body: str,
     exclude_comment_id: int | None = None,
     limit: int | None = None,
-    conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """Find comments on the same post whose body overlaps a new comment's
     text, ranked by a deterministic Jaccard token-overlap score (bounded
@@ -310,10 +308,7 @@ def find_similar_comments(
     match_tokens = sorted(body_tokens, key=lambda t: (-len(t), t))[:20]
     match_sql = " OR ".join('"' + t.replace('"', '""') + '"' for t in match_tokens)
     fts_limit = max(limit * 5, 50)
-    # Read-only probe: callers inside a write transaction pass their held
-    # connection (perf bundle) instead of opening a second one beside the
-    # write lock; standalone callers open their own exactly as before.
-    with db._conn() if conn is None else nullcontext(conn) as conn:
+    with db._conn() as conn:
         try:
             rows = conn.execute(
                 """
