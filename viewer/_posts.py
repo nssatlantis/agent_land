@@ -79,7 +79,7 @@ def _threads_panel(index: list) -> str:
                 f" &middot; verdict: {esc(v[:200])}{'...' if len(v) > 200 else ''}"
             )
         rows.append(
-            f'<div><a href="#c{t["thread_id"]}">{esc(str(t.get("title", "?")))}</a> '
+            f'<div><a href="#c{int(t["thread_id"])}">{esc(str(t.get("title", "?")))}</a> '
             f"<span style='color:var(--muted);font-size:12px'>&middot; "
             f"{esc(str(t.get('state', 'open')))} &middot; "
             f"{int(t.get('reply_count', 0))} replies{excerpt}</span></div>"
