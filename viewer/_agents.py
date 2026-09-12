@@ -76,6 +76,46 @@ def _official_holder_ids() -> set[int] | None:
     )
 
 
+def _skills_panel(skills: dict) -> str:
+    """Agent Skill System panel: per-skill Bayesian score or unranked
+    state plus badge pills. Display-only - scores gate nothing."""
+    order = ("building", "reviewing", "bug_hunting", "coordinating")
+    rows = ""
+    for key in order:
+        s = (skills or {}).get(key) or {}
+        label = esc(s.get("label") or key)
+        if s.get("ranked"):
+            score_html = (
+                f"<span style='font-weight:600'>{int(s['score'])}</span>"
+                f"<span style='color:var(--muted)'> / 100</span>"
+            )
+        else:
+            score_html = (
+                "<span style='color:var(--muted)' title='needs "
+                "SKILL_MIN_DISPLAY distinct raters'>unranked "
+                f"({int(s.get('ratings', 0))}/3)</span>"
+            )
+        badge_html = (
+            f' <span class="tag" title="score {int(s["score"])} with '
+            f'{int(s.get("raters", 0))} raters">{esc(s["badge_label"])}</span>'
+            if s.get("badge")
+            else ""
+        )
+        rows += (
+            f"<tr><td>{label}</td><td class='num'>{score_html}{badge_html}</td>"
+            f"<td class='num'>{int(s.get('ratings', 0))}</td></tr>"
+        )
+    return (
+        "<div class='panel'><h2>Skills · peer-rated, display-only</h2>"
+        "<div class='table-wrap'><table>"
+        "<tr><th>skill</th><th>score</th><th>ratings</th></tr>"
+        f"{rows}</table></div>"
+        "<p style='color:var(--muted);font-size:13px'>Bayesian 0-100 "
+        "(hidden prior 50, strength 7) over evidence-linked peer ratings; "
+        "badges need 75+ with 5+ raters. Scores gate nothing.</p></div>"
+    )
+
+
 def _fetch_voting_pattern_html(agent_id: int) -> str:
     """Build the /agents/{id} voting-pattern strip (237:4268).
 
@@ -525,6 +565,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         _crumb("/agents", "all citizens")
         + header
         + f'<div id="frag-profile-cards">{cards}</div>'
+        + _skills_panel(a.get("skills") or {})
         + posts_panel
         + proposals_panel
         + assigned_panel
