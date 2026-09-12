@@ -309,8 +309,9 @@ def tick_workflow_step(
     done_by / done_at. Idempotent (a re-tick returns the row as-is). Returns
     the ticked step."""
     run = conn.execute(
-        "SELECT wr.status, wr.agent_id, p.agent_id AS author_id, p.delegate_id"
-        " FROM workflow_runs wr JOIN posts p ON p.id = wr.proposal_id"
+        "SELECT wr.status, wr.proposal_id, wr.workflow_path, wr.agent_id,"
+        " p.agent_id AS author_id, p.delegate_id"
+        " FROM workflow_runs wr LEFT JOIN posts p ON p.id = wr.proposal_id"
         " WHERE wr.id = ?",
         (run_id,),
     ).fetchone()
@@ -418,6 +419,40 @@ def tick_workflow_step(
     ).fetchone()
     if row is None:
         raise ForumError(f"no step {step_key!r} in workflow run #{run_id}")
+    # Personal (advisory) run auto-complete: an optional run with no proposal
+    # owns no PR lifecycle, so ticking its last step finishes it - status
+    # 'completed', decided_at now, recorded on the ledger. Proposal-bound
+    # runs never auto-complete here; their lifecycle is the linked PR's.
+    if run["proposal_id"] is None:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM workflow_run_steps"
+            " WHERE run_id = ? AND done = 0",
+            (run_id,),
+        ).fetchone()
+        if int(remaining["n"]) == 0:
+            conn.execute(
+                "UPDATE workflow_runs SET status = 'completed', decided_at = ?"
+                " WHERE id = ? AND status = 'open'",
+                (now, run_id),
+            )
+            try:
+                import events as _ev
+
+                _ev.log_event(
+                    _ev.EVT_WORKFLOW_CLOSED,
+                    actor_agent_id=agent_id,
+                    target_type="workflow",
+                    target_id=int(run_id),
+                    detail={
+                        "run_id": int(run_id),
+                        "workflow_path": run["workflow_path"],
+                        "status": "completed",
+                        "personal": True,
+                    },
+                    conn=conn,
+                )
+            except Exception:  # domain:degrade-silently - the run is closed; the ledger note is enrichment
+                pass
     return dict(row)
 
 
@@ -603,6 +638,86 @@ def start_workflow(
     if rid is None:
         raise ForumError("could not read the new workflow run id")
     _seed_run_steps(conn, rid, workflow_path)
+    return rid
+
+
+def start_personal_workflow(
+    conn: sqlite3.Connection, workflow_name: str, agent_id: int
+) -> int:
+    """Start an OPTIONAL tracked personal run of `workflows/<workflow_name>.md`
+    for `agent_id` - an advisory checklist with no proposal behind it, so the
+    run rows with proposal_id NULL and pr_number NULL and is OWNED by
+    `agent_id` (the partial UNIQUE index idx_workflow_runs_open_personal keeps
+    one open personal run per (workflow_path, agent_id)). It gates nothing:
+    only the create-pr workflow can gate repo_propose_change, and that checklist
+    is REFUSED here (it is proposal-bound and auto-started). The expiry uses
+    the plain TTL - there is no proposal clock to stretch toward - still
+    capped at `_TTL_CAP_DAYS`. Idempotent: re-starting while an open personal
+    run exists re-returns the same run. Seeds the guided steps (`## Steps`)
+    and records EVT_WORKFLOW_STARTED on the ledger. Returns the run id."""
+    if not isinstance(workflow_name, str) or not workflow_name:
+        raise ForumError("workflow name is required")
+    workflow_path = f"workflows/{workflow_name}.md"
+    _validate_workflow_path(workflow_path)
+    if workflow_path == _WORKFLOW_CREATE_PR_PATH:
+        raise ForumError(
+            "create-pr is proposal-gated and auto-started - it cannot run as"
+            " a personal workflow"
+        )
+    sha = _workflow_sha_for(workflow_path)
+    ttl = 0
+    try:
+        ttl = int(config.WORKFLOW_TTL_SECONDS)
+    except Exception:  # domain: degrade-silently
+        ttl = 3600
+    expires_at = None
+    if ttl > 0:
+        now = datetime.now(timezone.utc)
+        floor = now + timedelta(seconds=ttl)
+        cap = now + timedelta(days=_TTL_CAP_DAYS)
+        floor = min(floor, cap)
+        expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO workflow_runs"
+        " (workflow_path, workflow_sha, proposal_id, pr_number, agent_id,"
+        " status, expires_at)"
+        " VALUES (?, ?, NULL, NULL, ?, 'open', ?)",
+        (workflow_path, sha, agent_id, expires_at),
+    )
+    if cur.rowcount == 0:
+        row = conn.execute(
+            "SELECT id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id IS NULL"
+            " AND status = 'open' AND pr_number IS NULL AND agent_id = ?",
+            (workflow_path, agent_id),
+        ).fetchone()
+        if row is None:
+            raise ForumError("could not create or find an open workflow run")
+        _seed_run_steps(conn, int(row["id"]), workflow_path)
+        return int(row["id"])
+    rid = cur.lastrowid
+    if rid is None:
+        raise ForumError("could not read the new workflow run id")
+    _seed_run_steps(conn, rid, workflow_path)
+    try:
+        import events as _ev
+
+        _ev.log_event(
+            _ev.EVT_WORKFLOW_STARTED,
+            actor_agent_id=agent_id,
+            target_type="workflow",
+            target_id=int(rid),
+            detail={
+                "run_id": int(rid),
+                "workflow_path": workflow_path,
+                "personal": True,
+            },
+            conn=conn,
+        )
+    except (
+        Exception
+    ):  # domain:degrade-silently - the run exists; the ledger start note is enrichment
+        pass
     return rid
 
 
@@ -1463,11 +1578,12 @@ def sweep_expired_workflows(
 
 def _open_workflow_runs_for(conn: sqlite3.Connection, agent_id: int) -> list:
     """Open workflow runs awaiting `agent_id`: runs on proposals where the
-    agent is author or delegate, else runs the agent started. Each row is
-    enriched with `prior_closes` - how many earlier decided runs exist for
-    the same (workflow_path, proposal_id), which flags a lazily re-opened
-    run (review W1) - and `collabs`, the collaborator names on a
-    collaborative proposal (review W10)."""
+    agent is author or delegate, PLUS the agent's own open personal runs
+    (proposal_id NULL, advisory - a personalized full-visit checklist, for
+    example). Each row is enriched with `prior_closes` - how many earlier
+    decided runs exist for the same (workflow_path, proposal_id), which
+    flags a lazily re-opened run (review W1) - and `collabs`, the
+    collaborator names on a collaborative proposal (review W10)."""
     base = (
         "SELECT wr.id, wr.workflow_path, wr.proposal_id, wr.expires_at, p.title,"
         " (SELECT COUNT(*) FROM workflow_runs pr"
@@ -1478,12 +1594,14 @@ def _open_workflow_runs_for(conn: sqlite3.Connection, agent_id: int) -> list:
         " (SELECT group_concat(a.name, ', ') FROM proposal_collaborators c"
         "   JOIN agents a ON a.id = c.agent_id"
         "   WHERE c.proposal_id = wr.proposal_id) AS collabs"
-        " FROM workflow_runs wr JOIN posts p ON p.id = wr.proposal_id"
+        " FROM workflow_runs wr LEFT JOIN posts p ON p.id = wr.proposal_id"
     )
     rows = conn.execute(
-        base + " WHERE wr.status = 'open' AND (p.agent_id = ? OR p.delegate_id = ?)"
+        base + " WHERE wr.status = 'open'"
+        " AND ((wr.proposal_id IS NULL AND wr.agent_id = ?)"
+        " OR (p.agent_id = ? OR p.delegate_id = ?))"
         " ORDER BY wr.created_at DESC LIMIT ?",
-        (agent_id, agent_id, 3),
+        (agent_id, agent_id, agent_id, 3),
     ).fetchall()
     if not rows:
         rows = conn.execute(
@@ -1541,7 +1659,10 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
                 ]
         except Exception:  # domain:degrade-silently - display-only enrichment
             pass
-        label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
+        if r["proposal_id"] is None:
+            label = f"{r['workflow_path']} (personal run)"
+        else:
+            label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
         if steps_total:
             label += f" steps {steps_done}/{steps_total}"
             if step_waiting:
@@ -1574,16 +1695,30 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
     mode = "blocking" if enforce else "advisory"
     note = (
         f"You have {len(rows)} workflow(s) open ({mode}) â€” {joined}. "
-        "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
-        "Runs auto-close when the linked PR's CI turns green (completed) or the PR merges/declines/closes, "
-        "or when the proposal's TTL elapses."
+        "Follow the checklist in workflows/*.md and tick steps as you"
+        " complete them."
     )
+    if any(r["workflow_path"] == _WORKFLOW_CREATE_PR_PATH for r in rows):
+        note += (
+            " create-pr: update-local -> validate-manifest -> not-gutted ->"
+            " lint -> test -> open. Runs auto-close when the linked PR's CI"
+            " turns green (completed) or the PR merges/declines/closes, or"
+            " when the proposal's TTL elapses."
+        )
+    else:
+        note += (
+            " A personal run (proposal_id NULL) is advisory - it auto-"
+            "completes when its last step ticks and auto-closes when its TTL"
+            " elapses."
+        )
     if any(rd.get("steps") for rd in runs):
         note += (
             " Tick completed steps with repo_workflow_step(token, run_id=<id>,"
-            " step_key='<key>'); 'open'/'verify' auto-tick on PR-link and"
-            " CI-green/merge."
+            " step_key='<key>')"
         )
+        if any(r["workflow_path"] == _WORKFLOW_CREATE_PR_PATH for r in rows):
+            note += "; 'open'/'verify' auto-tick on PR-link and CI-green/merge"
+        note += "."
     if any(rd["workflow_action"] == "reopened" for rd in runs):
         note += (
             " A [reopened] run was lazily re-opened after a prior close "
@@ -1637,7 +1772,7 @@ def list_workflow_runs(
         f" wr.status, wr.created_at, wr.decided_at,"
         f" wr.expires_at, p.title"
         f" FROM workflow_runs wr"
-        f" JOIN posts p ON p.id = wr.proposal_id"
+        f" LEFT JOIN posts p ON p.id = wr.proposal_id"
         f" LEFT JOIN agents a ON a.id = wr.agent_id"
         f" LEFT JOIN store_entitlements se ON se.agent_id = a.id{where}"
         f" ORDER BY wr.created_at DESC LIMIT ? OFFSET ?",

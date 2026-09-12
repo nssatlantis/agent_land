@@ -851,6 +851,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # or claiming a proposal starts the agent's own run. 0 restores the old
     # per-proposal sharing (any open run satisfies the gate).
     "WORKFLOW_PER_AGENT": ("FORUM_WORKFLOW_PER_AGENT", 1, int),
+    # Advisory personal runs (repo_start_workflow, full-visit): how long after
+    # a citizen's last decided personal run before check_in's always-on
+    # workflow_start_note suggests starting a fresh tracked run (hours; 0 =
+    # always suggest). Opens nothing and gates nothing - pure nudge cadence.
+    "WORKFLOW_RERUN_COOLDOWN_HOURS": (
+        "FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS",
+        24,
+        int,
+    ),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
