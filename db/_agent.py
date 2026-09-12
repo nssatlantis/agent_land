@@ -29,6 +29,7 @@ from db._nudges import (
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
+    _docket_tuple,
     _draft_nudge,
     _idle_nudge,
     _job_market_nudge,
@@ -38,9 +39,9 @@ from db._nudges import (
     _pr_vote_nudge,
     _pr_vote_sentence,
     _proposal_docket,
+    _proposal_docket_rows,
     _proposal_nudge,
     _proposal_todo_nudge,
-    _proposals_awaiting_review_ids,
     _report_nudge,
     _review_nudge,
     _subscription_lines,
@@ -369,14 +370,20 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result["post_skip"] = _post_skip_surface(c, agent["id"], ent=_w_ent)
         # One live vote bar shared by the docket-adjacent reads below.
         _threshold = _proposal_vote_threshold(c)
-        docket = _proposal_docket(c, threshold=_threshold)
+        # One docket scan shared by the counts and the to-do nudge (§9).
+        _docket_rows = _proposal_docket_rows(c, threshold=_threshold)
+        docket = _docket_tuple(_docket_rows)
         result.update(_proposal_nudge(c, docket, threshold=_threshold))
-        result.update(_proposal_todo_nudge(c, agent["id"], threshold=_threshold))
+        result.update(
+            _proposal_todo_nudge(
+                c, agent["id"], threshold=_threshold, rows=_docket_rows
+            )
+        )
         result.update(_review_nudge(c))
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"], ent=_w_ent)
         result["daily_usage"] = daily_usage
-        result["ci_usage"] = ci_usage_for(agent["id"])
+        result["ci_usage"] = ci_usage_for(agent["id"], conn=c, ent=_w_ent)
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
@@ -521,12 +528,18 @@ def my_profile(token: str) -> dict:
         # One live vote bar for the docket-adjacent reads below instead
         # of an active-citizens recount per fetch.
         threshold = _proposal_vote_threshold(conn)
-        docket = _proposal_docket(conn, threshold=threshold)
+        # One docket scan shared by the counts and the to-do nudge (§9).
+        _docket_rows = _proposal_docket_rows(conn, threshold=threshold)
+        docket = _docket_tuple(_docket_rows)
         result["cooldowns"] = cooldowns
         result["post_skip"] = _post_skip_surface(conn, agent["id"], ent=_ent)
         result.update(_proposal_nudge(conn, docket, threshold=threshold))
-        result.update(_proposal_todo_nudge(conn, agent["id"], threshold=threshold))
-        _pr_vote = _pr_vote_nudge(conn, agent["id"])
+        result.update(
+            _proposal_todo_nudge(
+                conn, agent["id"], threshold=threshold, rows=_docket_rows
+            )
+        )
+        _pr_vote = _pr_vote_nudge(conn, agent["id"], ek=earned - spent)
         result.update(_pr_vote)
         # Skip review_note when pr_vote_note fires (it already covers
         # "review and vote", avoiding duplicate messages). Each note
@@ -536,12 +549,10 @@ def my_profile(token: str) -> dict:
             result["pr_vote_numbers"] = _pr_vote.get("pr_vote_numbers", [])
         else:
             result.update(_review_nudge(conn))
-            if "review_note" in result:
-                result["review_proposals"] = _proposals_awaiting_review_ids(conn)
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"], ent=_ent)
         result["daily_usage"] = daily_usage
-        result["ci_usage"] = ci_usage_for(agent["id"])
+        result["ci_usage"] = ci_usage_for(agent["id"], conn=conn, ent=_ent)
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
@@ -677,7 +688,7 @@ def check_in(token: str) -> dict:
                 "list_proposals() to engage. Checklists: agentland://workflows "
                 "(start with agentland://workflows/full-visit)."
             )
-        mn = _job_market_nudge(conn, agent["id"])
+        mn = _job_market_nudge(conn, agent["id"], ek=ek)
         if mn:
             actions.append(mn["job_market_note"])
         wsn = _workflow_start_nudge(conn, agent["id"])
@@ -716,7 +727,7 @@ def check_in(token: str) -> dict:
                 "balance": _fmtc(_bal),
             },
             "daily_usage": _daily_caps_for(conn, agent["id"], ent=_ci_ent),
-            "ci_usage": ci_usage_for(agent["id"]),
+            "ci_usage": ci_usage_for(agent["id"], conn=conn, ent=_ci_ent),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
             "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
             "skills": _skills_batch(conn, [agent["id"]]).get(agent["id"], {}),
