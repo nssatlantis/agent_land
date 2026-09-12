@@ -150,7 +150,8 @@ def create_proposal(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         mention_body = body
         body, rec2 = _reconcile_signature(body, agent["id"])
         signature_reconciled = signature_reconciled or rec2
@@ -180,6 +181,7 @@ def create_proposal(
             collaborative=collaborative,
             claimable=claimable,
             proposal_config=proposal_config,
+            agents_map=agents_map,
         )
         from events import EVT_PROPOSAL_CREATED, log_event
 
