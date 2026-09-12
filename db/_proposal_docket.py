@@ -111,13 +111,30 @@ def _proposal_phase(decision: str) -> str:
     return "discussion"
 
 
-def _proposal_list_sql(where_sql: str = "") -> str:
+def _proposal_list_sql(where_sql: str = "", *, lean: bool = False) -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
     for the regression test that EXPLAINs it and asserts no correlated scalar
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
-    batched rows instead of a second SELECT shape."""
+    batched rows instead of a second SELECT shape. `lean` is the counts-only
+    shape: the same rows with slim columns (no body_preview, no display
+    names/colors and their JOINs) for `for_counts` passes - the tab
+    predicate never reads the dropped columns, while tallies, PR history
+    and stake totals still batch afterwards in _proposal_rows."""
+    if lean:
+        return f"""
+        SELECT p.id, p.title, p.created_at,
+               p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
+               p.supersedes_id, p.superseded_by_id, p.version,
+               p.collaborative, p.claimable,
+               p.collaborative_closed, p.pr_goal,
+               pc.agent_id AS claim_agent_id
+        FROM posts p
+        LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+        WHERE p.proposal_kind IS NOT NULL{where_sql}
+        ORDER BY p.created_at DESC, p.id ASC
+        """
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                sea.name_color AS author_color,
@@ -172,7 +189,7 @@ def _proposal_rows(
     fresh _proposal_vote_threshold() so repeated fetches share one
     active-citizens count."""
     rows = conn.execute(
-        _proposal_list_sql(where_sql),
+        _proposal_list_sql(where_sql, lean=for_counts),
         params,
     ).fetchall()
     ids = [r["id"] for r in rows]
