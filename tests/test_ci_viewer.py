@@ -271,6 +271,33 @@ def test_bench_badge_variants():
     assert "clean" in _bench_badge({}).lower()
 
 
+def test_bench_row_medians_sort_highest_first():
+    """Per-query medians render in ms-descending order, not alphabetical."""
+    from viewer._ci import _bench_row
+
+    # Alphabetical order is list_posts, list_proposals, my_profile - which is
+    # NOT descending-ms (29.3, 21.5, 3.4), so this pins the ms-first sort.
+    e = {
+        "created_at": "2026-09-12T00:00:00.000Z",
+        "detail": {
+            "checks": "db_benchmark",
+            "head_sha": "beef0123456789abcdef0123456789abcdef",
+            "duration_seconds": 20.0,
+            "summary": {
+                "regressions": 0,
+                "timings_median_ms": {
+                    "list_posts": 3.4,
+                    "list_proposals": 21.5,
+                    "my_profile": 29.3,
+                },
+            },
+        },
+    }
+    html = _bench_row(e, {}, "vs window-best")
+    assert html.index("my_profile") < html.index("list_proposals")
+    assert html.index("list_proposals") < html.index("list_posts")
+
+
 def _reset_bench_ledger():
     # Hermetic anchor tests: bless rows and bench runs accumulate in-file,
     # so clear both kinds before and after (mirrors the no_reference DELETE).
@@ -365,4 +392,5 @@ if __name__ == "__main__":
     test_ci_page_bench_anchor_head_and_label()
     test_ci_page_bench_anchor_drift_summary()
     test_bench_badge_variants()
+    test_bench_row_medians_sort_highest_first()
     print("test_ci_viewer: all assertions passed")
