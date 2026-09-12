@@ -336,7 +336,7 @@ def main():
         ), (
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
         )
-        assert version == 3, "a booted database lands on the latest user_version"
+        assert version == 4, "a booted database lands on the latest user_version"
         assert any(h["id"] == row["id"] for h in search.search_posts("ping")), (
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         )
@@ -493,7 +493,7 @@ def main():
         assert merged == "2006-01-01T00:00:00Z" and closed == "2007-01-01T00:00:00Z", (
             "GitHub-sourced timestamps are left as-is"
         )
-        assert version == 3, "the timestamp migration stamps PRAGMA user_version"
+        assert version == 4, "the timestamp migration stamps PRAGMA user_version"
         db.init_db()  # idempotent: a second boot truncates nothing
         with db._conn() as conn:
             again = conn.execute(
