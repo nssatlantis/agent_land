@@ -91,10 +91,9 @@ def main():
     # --- 3. activity parity + votes_cast fix -----------------------------
     p = db.create_post(alpha["token"], "Trim pin post", "Body.")
     db.create_comment(beta["token"], p["post_id"], "Trim pin comment.")
-    try:
-        db.vote(beta["token"], "post", p["post_id"], 1)
-    except Exception:
-        pass
+    # Correct dispatcher, no karma floor or cap on content votes: a failure
+    # here must fail the pin, never hide behind try/except.
+    db.vote(beta["token"], "post", p["post_id"], 1)
     db.edit_post(alpha["token"], p["post_id"], body="Trim pin post (edited).")
     slow, fast = _rows(alpha["agent_id"])
     for k in _KEYS_17 - {"votes_cast"}:
@@ -113,19 +112,21 @@ def main():
     print("  activity parity + votes_cast fix: ok")
 
     # --- 4. proposal-votes-only agent counts ------------------------------
+    # Proposal votes go through vote_on_proposal (db.vote refuses them) and
+    # need 1 effective karma: seed it with two content upvotes first.
     pv = db.register_agent("bench-trim-pvonly")
     prop = db.create_proposal(alpha["token"], "Trim pin proposal", "Body.")
-    try:
-        db.vote(pv["token"], "proposal", prop["post_id"], 1)
-    except Exception:
-        pass
+    _pv_post = db.create_post(pv["token"], "Trim pv post", "Body.")
+    db.vote(alpha["token"], "post", _pv_post["post_id"], 1)
+    db.vote(beta["token"], "post", _pv_post["post_id"], 1)
+    db.vote_on_proposal(pv["token"], prop["post_id"], 1)
     _, fast_pv = _rows(pv["agent_id"])
     with db._conn() as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?",
             (pv["agent_id"],),
         ).fetchone()[0]
-    assert fast_pv["votes_cast"] == n and (n >= 1 or fast_pv["votes_cast"] == 0)
+    assert n >= 1 and fast_pv["votes_cast"] == n, (fast_pv["votes_cast"], n)
     print("  proposal-votes-only count: ok")
 
     # --- 5. jobs predicate: worker+completed only --------------------------
@@ -152,6 +153,26 @@ def main():
         slow_alpha = _agent_row(conn, alpha["agent_id"])
     assert fast_alpha["jobs_completed"] == slow_alpha["jobs_completed"] == 0
     print("  jobs_completed predicate parity: ok")
+
+    # --- 5b. last_active reads detection time, not event time ---------------
+    # The fast leg must match the list path (MAX(created_at)): a backfilled
+    # merge whose event time predates detection must not move it backward
+    # (fails pre-fix: fast read merged_at 2020, slow read created_at now).
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO pr_merges (pr_number, agent_id, karma, merged_at)"
+            " VALUES (424243, ?, 1, '2020-01-01T00:00:00.000Z')",
+            (jr["agent_id"],),
+        )
+        conn.commit()
+        slow_jr = _agent_row(conn, jr["agent_id"])
+        fast_jr = _agent_row_fast(conn, jr["agent_id"])
+    assert slow_jr["last_active"] == fast_jr["last_active"], (
+        slow_jr["last_active"],
+        fast_jr["last_active"],
+    )
+    assert fast_jr["last_active"] != "2020-01-01T00:00:00.000Z", fast_jr
+    print("  last_active detection-time parity: ok")
 
     # --- 6. EXPLAIN: post_edits leg seeks the new index --------------------
     with db._conn() as conn:
@@ -234,10 +255,8 @@ def main():
         (pv["token"], t2["post_id"]),
         (beta["token"], t1["post_id"]),
     ):
-        try:
-            db.vote(tok, "post", tgt, 1)
-        except Exception:
-            pass
+        # Cross-agent content votes, no floor or cap in tests: unguarded.
+        db.vote(tok, "post", tgt, 1)
     with db._conn() as conn:
         expect = {
             r["id"]: r["s"]
@@ -326,6 +345,9 @@ def main():
     print("  digest gate fast-path parity: ok")
 
     # --- 12. F4 empty candidates: no gate query -----------------------------
+    # The offered-but-partyless job passes the existence probe yet matches
+    # no candidate leg (all three party columns NULL), so the candidates
+    # exit - not the jobs probe - is what skips the gate query.
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
@@ -333,6 +355,13 @@ def main():
             " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 1, 1, 0,"
             " 'completed')",
             (alpha["agent_id"],),
+        )
+        conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id,"
+            " offered_to_agent_id, title, description, scope, kind,"
+            " payment_quarters, total_cycles, cycles_done, official, status)"
+            " VALUES (NULL, NULL, NULL, 't', 'd', 's', 'one_time', 4, 1, 0,"
+            " 0, 'offered')"
         )
         conn.commit()
     dg_stmts: list[str] = []
@@ -396,15 +425,17 @@ def main():
         }
     assert _calls[0] <= len(hours), (_calls[0], hours)
     with db._conn() as conn:
-        plan = "\n".join(
+        plan_lines = [
             r[3]
             for r in conn.execute(
                 "EXPLAIN QUERY PLAN SELECT jc.job_id FROM job_cycles jc"
                 " JOIN jobs j ON j.id = jc.job_id WHERE j.id IN (1, 2)"
                 " AND jc.cycle_no = j.cycles_done + 1"
             ).fetchall()
-        )
-    assert "SCAN" not in plan and "USING COVERING INDEX" in plan, plan
+        ]
+    jc_lines = [ln for ln in plan_lines if "jc" in ln or "job_cycles" in ln]
+    assert "SCAN" not in "\n".join(plan_lines), plan_lines
+    assert jc_lines and all("SEARCH" in ln for ln in jc_lines), plan_lines
     print("  board exact-cycle + cutoff memo: ok")
 
     # --- 14. F6 similar hint: post-write == pre-transaction set ------------
@@ -445,16 +476,36 @@ def main():
     print("  no-@ zero agents-scan: ok")
 
     # --- 16. F6 merge dedup with gated map: one ping --------------------------
+    # The follow-up re-mentions the same citizen AND merges (same track,
+    # short). Guard pin: the merged write must ping once. The hole it
+    # guards is proven below - with an empty map the stored mention
+    # resolves to nothing, so without the conditional reload `existing`
+    # would miss and double-ping.
     _mb = db.register_agent("bench-trim-mentioned")
     _mp = db.create_post(alpha["token"], "Trim merge post", "Body.")
     db.create_comment(beta["token"], _mp["post_id"], f"Hello @{_mb['name']}.")
-    db.create_comment(beta["token"], _mp["post_id"], "one more line.")
+    _m2 = db.create_comment(
+        beta["token"], _mp["post_id"], f"Thanks @{_mb['name']} again."
+    )
+    assert _m2["merged"] is True, _m2
     with db._conn() as conn:
         pings = conn.execute(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
             " AND kind = 'mention'",
             (_mb["agent_id"],),
         ).fetchone()[0]
+        stored = conn.execute(
+            "SELECT body FROM comments ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        from db._text import _mention_targets as _mt
+
+        assert (
+            _mt(conn, stored, beta["agent_id"], alpha["agent_id"], 0, agents_map={})
+            == []
+        )
+        assert _mt(conn, stored, beta["agent_id"], alpha["agent_id"], 0) == [
+            (_mb["agent_id"], _mb["name"])
+        ]
     assert pings == 1, pings
     print("  merge-path mention dedup: ok")
 
@@ -484,13 +535,24 @@ def main():
     print("  auth twin parity: ok")
 
     # --- 18. F6 voter fold: decided proposals notify nobody ----------------------
+    # Proper dispatcher (db.vote refuses proposals) + karma-seeded voters:
+    # without live voters this pin would pass with an empty room.
     _vp = db.create_proposal(alpha["token"], "Trim voter proposal", "Body.")
     _gv = db.register_agent("bench-trim-gvoter")
-    for tok in (beta["token"], _gv["token"]):
-        try:
-            db.vote(tok, "proposal", _vp["post_id"], 1)
-        except Exception:
-            pass
+    _gv_post = db.create_post(_gv["token"], "Trim gv post", "Body.")
+    db.vote(alpha["token"], "post", _gv_post["post_id"], 1)
+    db.vote(pv["token"], "post", _gv_post["post_id"], 1)
+    _beta_post = db.create_post(beta["token"], "Trim beta post", "Body.")
+    db.vote(alpha["token"], "post", _beta_post["post_id"], 1)
+    db.vote(pv["token"], "post", _beta_post["post_id"], 1)
+    db.vote_on_proposal(beta["token"], _vp["post_id"], 1)
+    db.vote_on_proposal(_gv["token"], _vp["post_id"], 1)
+    with db._conn() as conn:
+        nv = conn.execute(
+            "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?",
+            (_vp["post_id"],),
+        ).fetchone()[0]
+    assert nv == 2, nv
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO proposal_outcomes (post_id, pr_number, status,"
