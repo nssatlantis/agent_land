@@ -73,6 +73,7 @@ EXPECTED = [
     # jobs board
     "create_job",
     "admin_review_job_as",
+    "admin_set_job_long_running",
     "list_jobs",
     # treasury
     "economy_overview",

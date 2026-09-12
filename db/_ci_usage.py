@@ -134,7 +134,9 @@ def ci_kind_status(agent_id: int, kind_event: str, now: datetime | None = None) 
     return _status_for_kinds(agent_id, (kind_event,), now)[kind_event]
 
 
-def ci_usage_for(agent_id: int) -> dict:
-    """{ledger kind: ci_kind_status(...)} for every gated CI kind."""
+def ci_usage_for(agent_id: int, conn=None) -> dict:
+    """{ledger kind: ci_kind_status(...)} for every gated CI kind. `conn`
+    may carry the caller's connection (my_profile) so the quota read shares
+    it instead of opening a second one; None opens one as before."""
     now = datetime.now(timezone.utc)
-    return _status_for_kinds(agent_id, CI_KINDS, now)
+    return _status_for_kinds(agent_id, CI_KINDS, now, conn=conn)

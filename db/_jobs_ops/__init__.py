@@ -62,6 +62,7 @@ from ._helpers import (  # noqa: F401
     _cadence_hours,
     _cycle_is_overdue,
     _fmt_q,
+    _is_windowless_job,
     _job_anchors_for,
     _job_overdue_anchor_sql,
     _overdue_flag,

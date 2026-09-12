@@ -267,6 +267,17 @@ def _render_jobs(request) -> str:
 
         review_form = ""
 
+        lr_form = ""
+        if j["status"] in ("open", "offered", "active"):
+            lr_is_set = bool(j.get("long_running"))
+            lr_form = (
+                f" <form method='post' action='/admin/jobs/{j['job_id']}/long-running'"
+                f" style='display:inline'>{_csrf_field(request)}"
+                f"<input type='hidden' name='value' value={'0' if lr_is_set else '1'}>"
+                f"<button type='submit' style='font-size:11px'>"
+                f"{'windowed' if lr_is_set else 'long-running'}</button></form>"
+            )
+
         if j["status"] == "active" and j["official"] and j["creator"] == "admin":
             review_form = (
                 f" <form method='post' action='/admin/jobs/{j['job_id']}/review'"
@@ -282,11 +293,12 @@ def _render_jobs(request) -> str:
 
         rows += (
             f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
-            f"{' <b>OFFICIAL</b>' if j['official'] else ''}</td>"
+            f"{' <b>OFFICIAL</b>' if j['official'] else ''}"
+            f"{' <b>LONG-RUNNING</b>' if j.get('long_running') else ''}</td>"
             f"<td>{esc(j['status'])}</td><td>{esc(j['creator'])}</td>"
             f"<td>{who}</td><td>{esc(j['payment_credits'])} cr x "
             f"{j['cycles_done']}/{j['total_cycles']}</td>"
-            f"<td>{close_form}{review_form}</td></tr>"
+            f"<td>{close_form}{review_form}{lr_form}</td></tr>"
         )
 
     jobs_table = (
@@ -847,6 +859,39 @@ async def admin_reactivate_job(request):
         f"Official position #{job_id} '{result['title']}' re-activated"
         f" ({result['status']}, remaining payout re-escrowed from treasury).",
     )
+
+
+async def admin_set_job_long_running(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        job_id = int(request.path_params["id"])
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: fail-loudly - bad path param surfaces as flash
+        return _flash(request, "bad job id.")
+    raw_value = form.get("value")
+    if raw_value not in ("0", "1"):
+        # domain: fail-loudly - a malformed POST must never silently flip
+        # a job back to windowed (re-arming due windows and penalties).
+        return _flash(request, "bad value - pass '1' or '0'.")
+    try:
+        result = db.admin_set_job_long_running(
+            _admin_user(request), job_id, raw_value == "1"
+        )
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    state = (
+        "long-running (no due window)"
+        if result["long_running"]
+        else "windowed (normal due windows apply)"
+    )
+    return _flash(request, f"Job #{job_id} '{result['title']}' marked {state}.")
 
 
 async def admin_review_job(request):

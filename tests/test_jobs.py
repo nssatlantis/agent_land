@@ -1106,6 +1106,139 @@ def test_overdue_cycles():
         _restore_arms()
 
 
+def test_long_running_windowless():
+    """Long-running flag: windowless work never reads overdue, accrues no
+    windows (no release, no karma penalty), and gets one gentle check-in
+    per cycle instead. Officials count automatically. Setter gates: creator
+    at creation, admin toggle afterwards - the worker has no path (a
+    test asserting so would need a tool that must not exist)."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "1")
+    try:
+        creator = _make_creator("jobc-long")
+        worker = db.register_agent("jobw-long")
+        job = _simple_job(creator, title="slow work", long_running=True)
+        assert db.get_job(job["job_id"])["long_running"] is True
+        db.claim_job(worker["token"], job["job_id"])
+
+        def _age(job_id: int) -> None:
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE events SET created_at = '2026-01-01T00:00:00.000Z'"
+                    " WHERE target_type = 'job' AND target_id = ?"
+                    " AND kind IN ('job_claimed','job_submitted',"
+                    "'job_cycle_accepted','job_cycle_declined')",
+                    (job_id,),
+                )
+
+        # Aged past many windows: still not overdue anywhere.
+        _age(job["job_id"])
+        assert db.get_job(job["job_id"])["overdue"] is False, "detail clears"
+        mine = db.list_jobs(view="mine", token=creator["token"])["jobs"]
+        row = next(j for j in mine if j["job_id"] == job["job_id"])
+        assert row["overdue"] is False, "board row clears"
+        assert row["long_running"] is True, "board carries the flag"
+        # Sweep: one gentle check-in, never a release, karma untouched.
+        assert db._jobs.sweep_overdue_job_cycles() == 2
+        assert db._jobs.sweep_overdue_job_cycles() == 0, "once per cycle"
+        assert db.get_job(job["job_id"])["status"] == "active", "never released"
+        assert _events_of("job_released", job["job_id"]) == [], "no release event"
+        bodies = _mail(worker["token"])
+        gentle = [b for b in bodies if "long-running" in b]
+        assert len(gentle) == 1, f"one gentle check-in: {bodies}"
+        assert "overdue" not in gentle[0].lower(), "no alarm language"
+        assert "penalty" not in gentle[0].lower() and "karma" not in gentle[0].lower()
+
+        # Admin toggle flips both ways; already-set refuses.
+        assert (
+            db.admin_set_job_long_running("admin", job["job_id"], False)["long_running"]
+            is False
+        )
+        assert db.get_job(job["job_id"])["overdue"] is True, "windowed again"
+        assert (
+            db.admin_set_job_long_running("admin", job["job_id"], True)["long_running"]
+            is True
+        )
+        assert db.get_job(job["job_id"])["overdue"] is False, "windowless again"
+        try:
+            db.admin_set_job_long_running("admin", job["job_id"], True)
+            assert False, "already-set must refuse"
+        except db.ForumError:
+            pass
+        try:
+            db.admin_set_job_long_running("admin", 424242, True)
+            assert False, "unknown job must refuse"
+        except db.ForumError:
+            pass
+
+        # Flip-flop across the shared stamp: windowed again re-arms the
+        # overdue alarm (the toggle reset the stamp), long-running again
+        # restores the gentle path - neither side suppresses the other.
+        # Notify-only here: with release armed the re-windowed job would
+        # release instead of alarming (that branch is pinned elsewhere).
+        _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+        db.admin_set_job_long_running("admin", job["job_id"], False)
+        assert db._jobs.sweep_overdue_job_cycles() == 2, "alarm returns"
+        assert any("overdue" in b.lower() for b in _mail(worker["token"])), (
+            "overdue nudge after flip back"
+        )
+        db.admin_set_job_long_running("admin", job["job_id"], True)
+        assert db._jobs.sweep_overdue_job_cycles() == 2, "gentle returns"
+        assert db.get_job(job["job_id"])["status"] == "active"
+        # Direct release refuses windowless rows even past N windows.
+        import db._jobs_admin as _ja
+
+        with db._conn(immediate=True) as conn:
+            jrow = conn.execute(
+                "SELECT j.* FROM jobs j WHERE j.id = ?", (job["job_id"],)
+            ).fetchone()
+            assert _ja._release_overdue_job(conn, jrow, 99) == 0, (
+                "direct release refuses windowless"
+            )
+            assert (
+                conn.execute(
+                    "SELECT status FROM jobs WHERE id = ?", (job["job_id"],)
+                ).fetchone()[0]
+                == "active"
+            )
+        # Strict parsing: truthy strings must not buy penalty immunity.
+        try:
+            _simple_job(creator, title="sneaky flag", long_running="false")
+            assert False, "string 'false' must refuse"
+        except db.ForumError:
+            pass
+        # Terminal jobs refuse the toggle (audit noise otherwise).
+        db.cancel_job(creator["token"], job["job_id"])
+        try:
+            db.admin_set_job_long_running("admin", job["job_id"], False)
+            assert False, "terminal toggle must refuse"
+        except db.ForumError:
+            pass
+
+        # Officials count automatically: a real treasury-funded position,
+        # claimed and aged past windows, never reads overdue - no flag set.
+        sponsor = _make_creator("jobc-longspon")
+        off = db.create_job_official(
+            "maintainer",
+            sponsor["name"],
+            "Standing watch",
+            "watch desc",
+            1.0,
+            ["watch step"],
+        )
+        assert db.get_job(off["job_id"])["long_running"] is False
+        assert db.get_job(off["job_id"])["official"] is True
+        db.claim_job(worker["token"], off["job_id"])
+        _age(off["job_id"])
+        assert db.get_job(off["job_id"])["overdue"] is False, (
+            "official standing role never overdue"
+        )
+        assert db._jobs.sweep_overdue_job_cycles() >= 0
+        assert db.get_job(off["job_id"])["status"] == "active"
+    finally:
+        _restore_arms()
+
+
 def test_overdue_release():
     """Overdue release (FORUM_JOB_OVERDUE_RELEASE_AFTER + JOB_MISSED_KARMA):
     a current cycle left overdue for N consecutive due windows closes the
@@ -1539,6 +1672,28 @@ def test_cadence_columns_migrate():
     assert "opens_at" in cyc_cols, "init_db re-adds job_cycles.opens_at"
     nxt = _simple_job(creator, kind="recurring", cycles=2, cycle_every_days=2)
     assert nxt["cycle_every_days"] == 2, "cadence create works after migration"
+
+
+def test_long_running_column_migrates():
+    """jobs.long_running migrates onto pre-column databases and flagged
+    creation still works after the upgrade (default windowed)."""
+    creator = _make_creator("jobc-lrmig")
+    with db._conn(immediate=True) as conn:
+        conn.execute("ALTER TABLE jobs DROP COLUMN long_running")
+    db.init_db()
+    with db._conn() as conn:
+        jobs_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    assert "long_running" in jobs_cols, "init_db re-adds jobs.long_running"
+    assert (
+        db.get_job(_simple_job(creator, title="mig windowed")["job_id"])["long_running"]
+        is False
+    ), "default windowed after migration"
+    assert (
+        db.get_job(_simple_job(creator, title="mig slow", long_running=True)["job_id"])[
+            "long_running"
+        ]
+        is True
+    ), "flagged create works after migration"
 
 
 if __name__ == "__main__":

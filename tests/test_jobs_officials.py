@@ -596,9 +596,9 @@ def test_reactivate_cancelled_official_keeps_worker_and_reescrows_remainder():
 
 
 def test_overdue_official_is_nudged_never_released():
-    """Overdue release spares officials: an engaged worker's missed cycle
-    still nudges (and still flags overdue on the board), but the standing
-    role is never auto-cancelled and no penalty lands."""
+    """Officials are windowless standing roles: an idle cycle never reads
+    overdue anywhere, but the standing role still gets one gentle check-in
+    per cycle - and is never auto-cancelled with no penalty landing."""
     import importlib
 
     import config as live_config
@@ -635,9 +635,9 @@ def test_overdue_official_is_nudged_never_released():
                 (past, jid),
             )
         sent = db._jobs.sweep_overdue_job_cycles()
-        assert sent >= 1, "the overdue worker is still nudged"
+        assert sent >= 1, "the idle worker still gets a check-in"
         assert db.get_job(jid)["status"] == "active"
-        assert db.get_job(jid)["overdue"] is True
+        assert db.get_job(jid)["overdue"] is False, "standing role never overdue"
         with db._conn() as conn:
             pen = conn.execute(
                 "SELECT amount FROM job_penalties WHERE job_id = ?", (jid,)
@@ -645,11 +645,12 @@ def test_overdue_official_is_nudged_never_released():
             nudge = conn.execute(
                 "SELECT body FROM notifications WHERE agent_id = ?"
                 " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
-                " AND body LIKE '%submit your work%'",
+                " AND body LIKE '%long-running%'",
                 (worker["agent_id"], jid),
             ).fetchall()
         assert pen is None, "no penalty lands on officials"
-        assert len(nudge) == 1, "worker nudged exactly once"
+        assert len(nudge) == 1, "worker checked in exactly once, gently"
+        assert "overdue" not in nudge[0][0].lower(), "no alarm language"
         assert db._jobs.sweep_overdue_job_cycles() == 0, "no repeat traffic"
     finally:
         if old_due is None:

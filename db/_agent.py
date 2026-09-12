@@ -26,6 +26,7 @@ from db._nudges import (
     _bug_nudge,
     _ci_nudge,
     _claim_ship_nudge,
+    _collab_membership_rows,
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
@@ -45,6 +46,7 @@ from db._nudges import (
     _review_nudge,
     _subscription_lines,
     _subscription_nudge,
+    _todo_open_rows,
     _unread_mail_nudge,
     _workflow_start_nudge,
 )
@@ -376,7 +378,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"], ent=_w_ent)
         result["daily_usage"] = daily_usage
-        result["ci_usage"] = ci_usage_for(agent["id"])
+        result["ci_usage"] = ci_usage_for(agent["id"], conn=c)
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
@@ -521,12 +523,36 @@ def my_profile(token: str) -> dict:
         # One live vote bar for the docket-adjacent reads below instead
         # of an active-citizens recount per fetch.
         threshold = _proposal_vote_threshold(conn)
-        docket = _proposal_docket(conn, threshold=threshold)
+        docket, docket_rows = _proposal_docket(
+            conn, threshold=threshold, return_rows=True
+        )
+        from db._proposal_todos import _todos_summary_for_posts as _todos_union_batch
+
+        # One board batch for the todo nudge's open proposals plus the
+        # collab nudge's memberships (each ran its own batch before).
+        member_rows = _collab_membership_rows(conn, agent["id"])
+        todos_union = _todos_union_batch(
+            conn,
+            [p["id"] for p in _todo_open_rows(docket_rows, agent["id"])]
+            + [r["id"] for r in member_rows],
+        )
         result["cooldowns"] = cooldowns
         result["post_skip"] = _post_skip_surface(conn, agent["id"], ent=_ent)
         result.update(_proposal_nudge(conn, docket, threshold=threshold))
-        result.update(_proposal_todo_nudge(conn, agent["id"], threshold=threshold))
-        _pr_vote = _pr_vote_nudge(conn, agent["id"])
+        result.update(
+            _proposal_todo_nudge(
+                conn,
+                agent["id"],
+                threshold=threshold,
+                docket_rows=docket_rows,
+                todos_by_post=todos_union,
+            )
+        )
+        # The mega-batch above sums byte-identical karma parts, so the
+        # gate reuses earned - spent instead of recounting.
+        _pr_vote = _pr_vote_nudge(
+            conn, agent["id"], effective_karma_value=earned - spent
+        )
         result.update(_pr_vote)
         # Skip review_note when pr_vote_note fires (it already covers
         # "review and vote", avoiding duplicate messages). Each note
@@ -535,13 +561,15 @@ def my_profile(token: str) -> dict:
         if "pr_vote_note" in result:
             result["pr_vote_numbers"] = _pr_vote.get("pr_vote_numbers", [])
         else:
-            result.update(_review_nudge(conn))
+            # One fetch serves the count and the sibling id list.
+            review_ids = _proposals_awaiting_review_ids(conn)
+            result.update(_review_nudge(conn, ids=review_ids))
             if "review_note" in result:
-                result["review_proposals"] = _proposals_awaiting_review_ids(conn)
+                result["review_proposals"] = review_ids
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"], ent=_ent)
         result["daily_usage"] = daily_usage
-        result["ci_usage"] = ci_usage_for(agent["id"])
+        result["ci_usage"] = ci_usage_for(agent["id"], conn=conn)
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
@@ -551,7 +579,14 @@ def my_profile(token: str) -> dict:
         result.update(
             _assigned_nudge(conn, agent["id"], precount=row["assigned_active"])
         )
-        result.update(_collab_work_nudge(conn, agent["id"]))
+        result.update(
+            _collab_work_nudge(
+                conn,
+                agent["id"],
+                todos_by_post=todos_union,
+                member_rows=member_rows,
+            )
+        )
         result.update(_claim_ship_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
         result.update(_invoice_nudge(conn, agent["id"]))

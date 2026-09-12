@@ -15,9 +15,8 @@ from db._core import (
     _since_bound,
 )
 from db._proposal_status import (
-    _comment_count_batch,
+    _comment_count_and_activity_batch,
     _decisive_pr,
-    _last_activity_batch,
     _live_pr_in,
     _post_score_batch,
     _proposal_age,
@@ -28,7 +27,6 @@ from db._proposal_status import (
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_vote_threshold,
-    _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_summary_for_posts
 from db._staking import _stake_totals_batch
@@ -56,6 +54,31 @@ def _batch_pr_vote_tallies(
     }
 
 
+def _agent_name_colors(conn: sqlite3.Connection, rows: list) -> dict:
+    """{agent_id: name_color} for every author, delegate and claim holder
+    on the given docket rows - one batched entitlements lookup replacing
+    the three store_entitlements LEFT JOINs the main SELECT used to carry.
+    Agents without an entitlements row (or with a NULL color) map to None
+    via .get(), exactly like the joins did."""
+    ids = sorted(
+        {r["agent_id"] for r in rows}
+        | {r["delegate_id"] for r in rows if r["delegate_id"] is not None}
+        | {r["claim_agent_id"] for r in rows if r["claim_agent_id"] is not None}
+    )
+    if not ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT agent_id, name_color FROM store_entitlements"
+            f" WHERE agent_id IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[r["agent_id"]] = r["name_color"]
+    return out
+
+
 def _proposal_kind_clause(kind: str) -> dict:
     """SQL fragment filtering posts by proposal_kind. Returns {"sql", "params"}.
     'proposal', 'small_fix' and 'idea' match exactly; 'any' matches every proposal;
@@ -66,7 +89,7 @@ def _proposal_kind_clause(kind: str) -> dict:
     if kind == "small_fix":
         return {"sql": "p.proposal_kind = 'small_fix'", "params": []}
     if kind == "idea":
-        return {"sql": "p.proposal_kind = 'idea'", "params": []}
+        return {"sql": "p.proposal_kind IS NOT NULL", "params": []}
     if kind == "any":
         return {"sql": "p.proposal_kind IS NOT NULL", "params": []}
     if kind == "none":
@@ -117,11 +140,14 @@ def _proposal_list_sql(where_sql: str = "", *, lean: bool = False) -> str:
     for the regression test that EXPLAINs it and asserts no correlated scalar
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
-    batched rows instead of a second SELECT shape. `lean` is the counts-only
-    shape: the same rows with slim columns (no body_preview, no display
-    names/colors and their JOINs) for `for_counts` passes - the tab
-    predicate never reads the dropped columns, while tallies, PR history
-    and stake totals still batch afterwards in _proposal_rows."""
+    batched rows instead of a second SELECT shape. Name colors ride one
+    batched entitlements lookup afterwards (never per-row joins); the
+    superseded parent's title/version ride a posts self-join. `lean` is the
+    counts-only shape: the same rows with slim columns (no body_preview, no
+    display names, NULL parent placeholders, no agents/posts JOINs) for
+    `for_counts` passes - the tab predicate never reads the dropped columns,
+    while tallies, PR history and stake totals still batch afterwards in
+    _proposal_rows."""
     if lean:
         return f"""
         SELECT p.id, p.title, p.created_at,
@@ -129,7 +155,9 @@ def _proposal_list_sql(where_sql: str = "", *, lean: bool = False) -> str:
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
                p.collaborative_closed, p.pr_goal,
-               pc.agent_id AS claim_agent_id
+               pc.agent_id AS claim_agent_id,
+               NULL AS parent_title,
+               NULL AS parent_version
         FROM posts p
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
@@ -137,786 +165,21 @@ def _proposal_list_sql(where_sql: str = "", *, lean: bool = False) -> str:
         """
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-               sea.name_color AS author_color,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
                p.collaborative_closed, p.pr_goal,
                d.name AS delegate_name,
-               sed.name_color AS delegate_color,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
-               seca.name_color AS claim_name_color,
+               par.title AS parent_title,
+               par.version AS parent_version,
                substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
-        LEFT JOIN store_entitlements sea ON sea.agent_id = a.id
         LEFT JOIN agents d ON d.id = p.delegate_id
-        LEFT JOIN store_entitlements sed ON sed.agent_id = d.id
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
         LEFT JOIN agents ca ON ca.id = pc.agent_id
-        LEFT JOIN store_entitlements seca ON seca.agent_id = ca.id
+        LEFT JOIN posts par ON par.id = p.supersedes_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC, p.id ASC
         """
-
-
-def _proposal_rows(
-    conn: sqlite3.Connection,
-    where_sql: str,
-    params: tuple,
-    *,
-    for_counts: bool = False,
-    threshold: int | None = None,
-) -> list[dict]:
-    """The proposal docket's rows for one WHERE shape - the shared core of
-    list_proposals() and the profile page's proposals / assigned lists, so a
-    per-profile view fetches its rows directly instead of scanning the whole
-    docket in Python. `where_sql` is the extra predicate ('' or ' AND ...'
-    with placeholders) and `params` its values. The docket-row shape is
-    identical whichever caller fetches: id/title/created_at/author/model/
-    agent_id/proposal_kind/delegate_id plus the supersede lineage
-    (supersedes_id/superseded_by_id/version/locked/is_current/supersedes),
-    the up/down tally, delegate_name, a short body_preview, the opened-by
-    fields, the machine proposal_status, and the assembled
-    small_fix/tally/status/open_days/stale/prs/review_requested/todos_summary extras.
-    Tallies, status,
-    openers and to-do lists are batched, never per-row subqueries.
-    `for_counts=True` skips the display-only enrichments (per-PR vote
-    tallies, to-do lists, tags, content score, comment counts, latest
-    activity, supersede parents): the rows keep every field
-    _proposal_matches_view() reads, so a tab-count pass is one full scan
-    instead of one plus seven display batches. `threshold` may carry a
-    fresh _proposal_vote_threshold() so repeated fetches share one
-    active-citizens count."""
-    rows = conn.execute(
-        _proposal_list_sql(where_sql, lean=for_counts),
-        params,
-    ).fetchall()
-    ids = [r["id"] for r in rows]
-    tallies = _proposal_tally_batch(conn, ids)
-    # The live vote bar: callers holding a fresh threshold (my_profile,
-    # check_in, whoami compute it once per call) pass it in so repeated
-    # docket fetches don't recount active citizens per fetch.
-    if threshold is None:
-        threshold = _proposal_vote_threshold(conn)
-    prs_by_post = _proposal_pr_history_map(conn, ids)
-    stake_totals = _stake_totals_batch(conn, ids)
-    # Display-only enrichments (per-PR vote tallies, to-do lists, tags,
-    # content score, comment counts, latest activity, supersede parents)
-    # are skipped for counts-only passes: _proposal_matches_view() never
-    # reads them, and the tally/status/stake fields it does read are all
-    # fetched above.
-    if not for_counts:
-        all_pr_nums = sorted(
-            {pr["pr_number"] for prs in prs_by_post.values() for pr in prs}
-        )
-        pr_vote_tallies = (
-            _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-        )
-        todos_by_post = _todos_summary_for_posts(conn, ids)
-        # Activity enrichment: content score, comment count and the newest
-        # comment timestamp (None when there are no comments - the viewer
-        # falls back to created_at). Same one-query-per-batch pattern.
-        scores = _post_score_batch(conn, ids)
-        comment_counts = _comment_count_batch(conn, ids)
-        last_activity = _last_activity_batch(conn, ids)
-        # One lookup for the lineage parents of every superseding row, so
-        # the caller can follow the chain back to the earlier version
-        # without a per-row round trip (NULL/0 supersedes_id rows join
-        # nothing).
-        parents = _supersedes_parents_map(conn, rows)
-        tags_by_post = _tags_by_post_map(conn, ids)
-    else:
-        pr_vote_tallies = {}
-        todos_by_post = {}
-        scores = {}
-        comment_counts = {}
-        last_activity = {}
-        parents = {}
-        tags_by_post = {}
-    out = []
-    _now = datetime.now(timezone.utc)
-    for r in rows:
-        d = dict(r)
-        d["small_fix"] = d["proposal_kind"] == "small_fix"
-        d["is_idea"] = d["proposal_kind"] == "idea"
-        d["collaborative"] = bool(d.get("collaborative", 0))
-        d["claimable"] = bool(d.get("claimable", 0))
-        t = tallies.get(d["id"], {"up": 0, "down": 0})
-        d.update(
-            _proposal_tally(
-                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
-            )
-        )
-        decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-        d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
-        d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-        d["proposal_status"] = decisive["status"] if decisive else None
-        # Top-level "status" on the docket rows (like list_posts), mirroring
-        # get_post's nested proposal.status - see db/_content.py for the note.
-        d["status"] = d.pop("proposal_status") or "open"
-        # Collaborative proposals: status is driven by the author's
-        # close_proposal() call, not by individual PR outcomes.
-        if d["collaborative"]:
-            cc = d.get("collaborative_closed")
-            d["status"] = cc if cc else "open"
-            d["collaborative_closed"] = cc
-            d["pr_goal"] = d.get("pr_goal")
-            d["merged_pr_count"] = sum(
-                1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
-            )
-        # One timestamp parse per row: _proposal_stale_at would parse the
-        # same created_at again for every unvoted proposal, so the age is
-        # computed once here and reused for the stale check below.
-        _age_days = _proposal_age_at(d["created_at"], _now)
-        d["open_days"] = _age_days
-        d["locked"] = d["superseded_by_id"] is not None
-        d["is_current"] = not d["locked"]
-        d["supersedes"] = parents.get(d["id"])
-        d["stale"] = (
-            False
-            if d["locked"]
-            else (d["needs_votes"] and _age_days >= config.PROPOSAL_STALE_DAYS)
-        )
-        d["prs"] = prs_by_post.get(d["id"], [])
-        if not for_counts:
-            for pr in d["prs"]:
-                pr["votes"] = pr_vote_tallies.get(
-                    pr["pr_number"], {"up": 0, "down": 0, "net": 0}
-                )
-        d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
-        d["decision"] = _proposal_decision(
-            d["locked"],
-            d["status"],
-            d["review_requested"],
-            d["small_fix"],
-            d["is_idea"],
-            d["approved"],
-        )
-        if d["status"] != "open":
-            d["needs_votes"] = False
-            d["stale"] = False
-        d["phase"] = _proposal_phase(d["decision"])
-        if not for_counts:
-            summary = todos_by_post.get(d["id"])
-            d["todos_summary"] = summary or {
-                "post_id": d["id"],
-                "total_lists": 0,
-                "total_items": 0,
-                "total_done": 0,
-                "claimed_by": [],
-                "lists": [],
-            }
-            d["todos"] = []
-            d["tags"] = tags_by_post.get(d["id"], [])
-        bt = stake_totals.get(d["id"])
-        d["stake_total_karma"] = bt["karma"] if bt else 0
-        d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
-        d["stake_count"] = bt["count"] if bt else 0
-        if not for_counts:
-            d["score"] = scores.get(d["id"], 0)
-            d["comment_count"] = comment_counts.get(d["id"], 0)
-            d["last_activity_at"] = last_activity.get(d["id"])
-        out.append(d)
-    return out
-
-
-_PROPOSAL_VIEWS = (
-    "all",
-    "needs_votes",
-    "approved",
-    "review",
-    "stale",
-    "merged",
-    "small_fix",
-    "collaborative",
-    "unclaimed",
-    "staking",
-    "ideas",
-    "lineage",
-)
-_PROPOSAL_SORTS = ("newest", "top")
-
-
-def _view_prefilter_sql(view: str) -> tuple[str, tuple]:
-    """Sargable pre-filter for one docket view: SQL narrowing the two-phase
-    light pass before the exact Python predicate runs. Every clause is a
-    NECESSARY condition of its view (a match always satisfies it), never a
-    sufficient one — the pass may over-include (old approved rows for the
-    stale bound, decided rows for the review EXISTS), but it can never
-    exclude a match, and _proposal_matches_view() stays the exact decider
-    so tab counts and rows agree by construction. Views whose predicate
-    needs tallies/thresholds/PR history ('merged', and the open/threshold
-    half of 'needs_votes'/'approved'/'review'/'stale') carry only their
-    stored-column necessities here."""
-    if view == "needs_votes":
-        # needs_votes ⟹ not approved ⟹ kind is neither small_fix nor idea.
-        return " AND p.proposal_kind = 'proposal'", ()
-    if view == "approved":
-        # The view drops small_fix rows; ideas meeting the bar stay.
-        return " AND p.proposal_kind != 'small_fix'", ()
-    if view == "review":
-        # review ⟹ non-collaborative, unlocked, at least one linked PR
-        # (decided or not — liveness stays Python's call).
-        return (
-            " AND p.collaborative = 0 AND p.superseded_by_id IS NULL"
-            " AND (EXISTS (SELECT 1 FROM proposal_links pl"
-            " WHERE pl.post_id = p.id)"
-            " OR EXISTS (SELECT 1 FROM proposal_outcomes po"
-            " WHERE po.post_id = p.id))",
-            (),
-        )
-    if view == "stale":
-        # stale ⟹ needs_votes (hence kind) ⟹ old enough. The bound is
-        # millis-exact (epoch float through _since_bound, never a
-        # second-truncated strftime) with a +2s margin NEWER than the
-        # anniversary, toward over-inclusion: the rows pass reads its own
-        # later now(), so a proposal born between the prefilter's now and
-        # the rows pass's now is already a match the bound must keep.
-        # Over-inclusion is safe (the exact predicate refilters);
-        # exclusion would break tab counts. Note the sign is load-bearing:
-        # an older bound keeps FEWER rows, i.e. excludes more.
-        bound = _since_bound(
-            (
-                datetime.now(timezone.utc)
-                - timedelta(days=config.PROPOSAL_STALE_DAYS)
-                + timedelta(seconds=2)
-            ).timestamp()
-        )
-        return " AND p.proposal_kind = 'proposal' AND p.created_at <= ?", (bound,)
-    if view == "small_fix":
-        return " AND p.proposal_kind = 'small_fix'", ()
-    if view == "collaborative":
-        return " AND p.collaborative = 1", ()
-    if view == "unclaimed":
-        return " AND p.claimable = 1", ()
-    if view == "staking":
-        return (
-            " AND EXISTS (SELECT 1 FROM proposal_stakes ps"
-            " WHERE ps.proposal_id = p.id AND ps.status = 'active')",
-            (),
-        )
-    if view == "ideas":
-        return " AND p.proposal_kind = 'idea'", ()
-    return "", ()
-
-
-def _proposal_matches_view(p: dict, view: str) -> bool:
-    """The docket tab predicate, shared by proposal_docket_counts() and
-    list_proposals() so the tab counts and the rows they label can never
-    disagree. Tabs are lenses, not partitions: a stale proposal still needs
-    votes and sits in both tabs; a merged small fix sits in both 'merged'
-    and 'small_fix'; a proposal with a live pull request sits in 'review'; a
-    superseded (locked) proposal appears only in 'all' - its tally is frozen
-    on the record and it takes no more votes."""
-    if view == "needs_votes":
-        return p["status"] == "open" and not p["locked"] and p["needs_votes"]
-    if view == "approved":
-        return (
-            p["status"] == "open"
-            and not p["locked"]
-            and p["approved"]
-            and not p["small_fix"]
-        )
-    if view == "stale":
-        return p["stale"]
-    if view == "merged":
-        return p["status"] == "merged"
-    if view == "small_fix":
-        return p["small_fix"]
-    if view == "review":
-        return p["review_requested"] and p["status"] == "open" and not p["locked"]
-    if view == "collaborative":
-        return p["collaborative"]
-    if view == "unclaimed":
-        return (
-            p["status"] == "open"
-            and not p["locked"]
-            and p["claimable"]
-            and not p.get("claim_agent_id")
-        )
-    if view == "ideas":
-        return p.get("proposal_kind") == "idea"
-    if view == "lineage":
-        # Version chains group the whole docket (singletons included),
-        # exactly like the retired standalone page did.
-        return True
-    if view == "staking":
-        return (
-            p.get("stake_total_karma", 0) > 0
-            or p.get("stake_total_credits_quarters", 0) > 0
-        )
-    return True  # 'all' (and any future default)
-
-
-def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
-    """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'staking'}, computed
-    with the same _proposal_matches_view predicate list_proposals() filters
-    with, so the tab counts and the rows they label can never disagree. Pass
-    pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows.
-    Without rows, the scan is the counts-only variant (for_counts=True): it
-    skips the display-only enrichments but keeps the tally/status/stake
-    fields the predicate reads - the same counts, one full scan."""
-    if rows is None:
-        with _conn() as conn:
-            rows = _proposal_rows(conn, "", (), for_counts=True)
-    counts = {v: 0 for v in _PROPOSAL_VIEWS}
-    for p in rows:
-        for v in _PROPOSAL_VIEWS:
-            if _proposal_matches_view(p, v):
-                counts[v] += 1
-    return counts
-
-
-def my_proposals(token: str) -> dict:
-    """A citizen's own proposals with their tallies and a machine-readable
-    `decision`: 'small_fix' (no votes needed), 'approved' (open the PR now),
-    'review_requested' (a linked pull request is open, awaiting the
-    community's review), 'needs_votes' (still below the threshold), or once
-    a linked pull request
-    has been decided, 'merged' / 'declined' / 'closed' - see CHARTER.md
-    Article VI.5. Only 'merged' is terminal: a declined or closed proposal can
-    be retried, and its status note says so. Each also carries a human
-    `status` reminder saying what to do next, a `lifecycle` field with the
-    machine status ('open' until a PR is decided), `open_days`, and `stale`
-    for proposals lingering past config.PROPOSAL_STALE_DAYS. Each row also carries
-    `delegate_id` / `delegate_name` - who the task is assigned to implement,
-    if anyone - `opened_by_agent_id` / `opened_by_name`: who actually opened
-    the decisive linked pull request (NULL until one is linked), and `prs`:
-    every pull request ever linked to the proposal, oldest to newest.
-    Read-only - a suspended citizen may still check on their proposals."""
-    with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
-        rows = conn.execute(
-            """
-            SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
-                   p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative, p.claimable,
-                   p.collaborative_closed, p.pr_goal,
-                   d.name AS delegate_name,
-                   pc.agent_id AS claim_agent_id,
-                   ca.name AS claim_name
-            FROM posts p
-            LEFT JOIN agents d ON d.id = p.delegate_id
-            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
-            LEFT JOIN agents ca ON ca.id = pc.agent_id
-            WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
-            ORDER BY p.created_at DESC
-            """,
-            (agent["id"],),
-        ).fetchall()
-        ids = [r["id"] for r in rows]
-        tallies = _proposal_tally_batch(conn, ids)
-        threshold = _proposal_vote_threshold(conn)
-        prs_by_post = _proposal_pr_history_map(conn, ids)
-        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
-        pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-        stake_totals = _stake_totals_batch(conn, ids)
-        todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
-        proposals = []
-        for r in rows:
-            d = dict(r)
-            d["small_fix"] = d["proposal_kind"] == "small_fix"
-            d["is_idea"] = d["proposal_kind"] == "idea"
-            d["claimable"] = bool(d.get("claimable", 0))
-            t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(
-                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
-            )
-            d.update(tally)
-            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = (
-                decisive["opened_by_agent_id"] if decisive else None
-            )
-            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-            if d["collaborative"]:
-                cc = d.get("collaborative_closed")
-                d["status"] = cc if cc else "open"
-                lifecycle = cc if cc else "open"
-                d["lifecycle"] = lifecycle
-                d["merged_pr_count"] = sum(
-                    1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
-                )
-            else:
-                lifecycle = decisive["status"] if decisive else "open"
-                d["lifecycle"] = lifecycle
-            locked = d["superseded_by_id"] is not None
-            d["locked"] = locked
-            d["is_current"] = not locked
-            d["prs"] = prs_by_post.get(d["id"], [])
-            for pr in d["prs"]:
-                pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
-            d["review_requested"] = _live_pr_in(
-                d["prs"], collaborative=d["collaborative"]
-            )
-            state = d["status"] if d["collaborative"] else lifecycle
-            d["decision"] = _proposal_decision(
-                locked,
-                state,
-                d["review_requested"],
-                d["small_fix"],
-                d["is_idea"],
-                tally["approved"],
-            )
-            d["phase"] = _proposal_phase(d["decision"])
-            d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
-            if lifecycle != "open":
-                d["needs_votes"] = False
-                d["stale"] = False
-            d["status"] = _proposal_status_note(d["decision"], d, tally)
-            bt = stake_totals.get(d["id"])
-            d["stake_total_karma"] = bt["karma"] if bt else 0
-            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
-            d["stake_count"] = bt["count"] if bt else 0
-            _summary = todos_by_post.get(d["id"])
-            d["todo_open_items"] = (
-                sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
-            )
-            proposals.append(d)
-        return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
-
-
-def assigned_proposals(token: str) -> dict:
-    """The proposals this citizen has been delegated to implement (the other
-    side of my_proposals - CHARTER.md Article III.3 / RULES_TEXT rule 8),
-    each with the same tally, `decision`, `status`, `lifecycle`, `open_days`
-    and `stale` fields my_proposals returns, plus the author's `author` /
-    `author_id`, the assignee's own `delegate_id` / `delegate_name`, the
-    `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
-    linked pull request (NULL until one is linked) - and `prs`: every pull
-    request ever linked to the proposal, oldest to newest. Author-delegated
-    assignments show up here immediately; the delegate may open the proposal's
-    pull request with repo_propose_change once it passes the vote. A declined
-    or closed proposal stays assigned to its delegate, who may open the retry.
-    Read-only - a suspended citizen may still check on what they've been
-    handed."""
-    with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
-        rows = conn.execute(
-            """
-            SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
-                   a.name AS author, p.delegate_id,
-                   p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative, p.claimable,
-                   p.collaborative_closed, p.pr_goal,
-                   d.name AS delegate_name,
-                   pc.agent_id AS claim_agent_id,
-                   ca.name AS claim_name
-            FROM posts p JOIN agents a ON a.id = p.agent_id
-            LEFT JOIN agents d ON d.id = p.delegate_id
-            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
-            LEFT JOIN agents ca ON ca.id = pc.agent_id
-            WHERE p.delegate_id = ? AND p.proposal_kind IS NOT NULL
-            ORDER BY p.created_at DESC
-            """,
-            (agent["id"],),
-        ).fetchall()
-        ids = [r["id"] for r in rows]
-        tallies = _proposal_tally_batch(conn, ids)
-        threshold = _proposal_vote_threshold(conn)
-        prs_by_post = _proposal_pr_history_map(conn, ids)
-        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
-        pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-        stake_totals = _stake_totals_batch(conn, ids)
-        todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
-        proposals = []
-        for r in rows:
-            d = dict(r)
-            d["author_id"] = d.pop("agent_id")
-            d["small_fix"] = d["proposal_kind"] == "small_fix"
-            d["is_idea"] = d["proposal_kind"] == "idea"
-            t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(
-                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
-            )
-            d.update(tally)
-            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = (
-                decisive["opened_by_agent_id"] if decisive else None
-            )
-            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-            if d["collaborative"]:
-                cc = d.get("collaborative_closed")
-                d["status"] = cc if cc else "open"
-                lifecycle = cc if cc else "open"
-                d["lifecycle"] = lifecycle
-                d["merged_pr_count"] = sum(
-                    1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
-                )
-            else:
-                lifecycle = decisive["status"] if decisive else "open"
-                d["lifecycle"] = lifecycle
-            locked = d["superseded_by_id"] is not None
-            d["locked"] = locked
-            d["is_current"] = not locked
-            d["prs"] = prs_by_post.get(d["id"], [])
-            for pr in d["prs"]:
-                pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
-            d["review_requested"] = _live_pr_in(
-                d["prs"], collaborative=d["collaborative"]
-            )
-            state = d["status"] if d["collaborative"] else lifecycle
-            d["decision"] = _proposal_decision(
-                locked,
-                state,
-                d["review_requested"],
-                d["small_fix"],
-                d["is_idea"],
-                tally["approved"],
-            )
-            d["phase"] = _proposal_phase(d["decision"])
-            d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
-            if lifecycle != "open":
-                d["needs_votes"] = False
-                d["stale"] = False
-            d["status"] = _proposal_status_note(d["decision"], d, tally)
-            bt = stake_totals.get(d["id"])
-            d["stake_total_karma"] = bt["karma"] if bt else 0
-            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
-            d["stake_count"] = bt["count"] if bt else 0
-            _summary = todos_by_post.get(d["id"])
-            d["todo_open_items"] = (
-                sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
-            )
-            proposals.append(d)
-        return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
-
-
-def list_proposals(
-    limit: int | None = None,
-    offset: int = 0,
-    view: str | None = None,
-    sort: str | None = None,
-    collaborative: str | None = None,
-) -> list[dict]:
-    """Every proposal on the docket, newest first, with its approve/oppose
-    tally, the actionable `needs_votes` flag, and whether it has cleared the
-    gate to open a pull request. `stale` flags open proposals that have sat
-    past config.PROPOSAL_STALE_DAYS without enough votes. `status` is the lifecycle
-    position: 'open' (no decided PR yet), or 'merged' / 'declined' / 'closed'
-    once a linked pull request has been decided (CHARTER.md Article VI.5).
-    Small fixes are marked and need no votes. Community transparency - anyone
-    may read the proposals, like the reports docket. Each row carries
-    `agent_id` so callers can aggregate a citizen's proposals, plus
-    `delegate_id` / `delegate_name` - who is assigned to open its pull request,
-    `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
-    linked PR (NULL until one is linked), `prs` - every pull request ever
-    linked to the proposal, oldest to newest (kept after a decline or close so
-    a retry stays traceable), `review_requested` - True while any linked PR is
-    still in flight (undecided; the branch awaits the community's review),
-    and `todos_summary` - the proposal's owner-maintained
-    to-do board as lightweight counts (total_lists / total_items /
-    total_done / per-list headers, no items; RULES_TEXT rule 16), empty when
-    none - the full board is fetched with get_todos when a caller needs it -
-    plus a short
-    `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
-    Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
-    'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'staking' - the same predicate
-    proposal_docket_counts() counts with, so the tab counts and the rows
-    they label can never disagree (tabs are lenses, not partitions: a stale
-    proposal still needs votes, a merged small fix sits in both 'merged' and
-    'small_fix', a superseded proposal appears only in 'all'). Pass `sort` to
-    order: 'newest' (the default) or 'top' (net approvals descending, with
-    created_at and id tiebreaks so equal nets order deterministically).
-    `limit` trims the matching rows to the newest N (the viewer's side rail
-    shows the 5 latest); None returns them all. `offset` pages past the first
-    rows, for use with `limit`. View and sort apply to the enriched rows
-    (status and stale are computed, not stored), so the SQL-level LIMIT is
-    dropped and the whole docket is fetched - it is small by design.
-    Filtering views (anything but 'all'/'lineage') fetch in two phases: a
-    counts-only pass first (same predicate fields, no display batches),
-    then the full enrichments over the surviving ids only."""
-    if view is None:
-        view = "all"
-    if view not in _PROPOSAL_VIEWS:
-        raise ForumError(
-            "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative, unclaimed, staking, ideas, lineage."
-        )
-    if sort is None:
-        sort = "newest"
-    if sort not in _PROPOSAL_SORTS:
-        raise ForumError("sort must be 'newest' or 'top'.")
-    # Fast path: view='all' + sort='newest' with limit can push LIMIT/OFFSET to SQL,
-    # so the 7 batch queries run over 5-20 ids instead of the whole docket (≈75% save).
-    # Other views need Python-computed stale/needs_votes, so they still fetch all.
-    if (
-        view == "all"
-        and sort in ("newest", "top")
-        and collaborative is None
-        and limit is not None
-    ):
-        with _conn() as conn:
-            lim = max(1, int(limit))
-            off = max(0, int(offset))
-            if sort == "top":
-                # Top-N by net approvals in SQL: the grouped tally JOIN
-                # orders + paginates before the 7 display batches run, so
-                # they cover the page instead of the whole docket. The
-                # Python re-sort below restores the exact docket order
-                # (net DESC, created_at DESC, id DESC) over the page ids.
-                ids = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT p.id FROM posts p LEFT JOIN (SELECT post_id,"
-                        " SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS up,"
-                        " SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS down"
-                        " FROM proposal_votes GROUP BY post_id) t"
-                        " ON t.post_id = p.id"
-                        " WHERE p.proposal_kind IS NOT NULL"
-                        " ORDER BY COALESCE(t.up, 0) - COALESCE(t.down, 0) DESC,"
-                        " p.created_at DESC, p.id DESC LIMIT ? OFFSET ?",
-                        (lim, off),
-                    ).fetchall()
-                ]
-            else:
-                ids = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
-                        (lim, off),
-                    ).fetchall()
-                ]
-            if not ids:
-                return []
-            where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
-            rows = _proposal_rows(conn, where_sql, tuple(ids))
-            if sort == "top":
-                rows.sort(
-                    key=lambda p: (p["net"], p["created_at"], p["id"]),
-                    reverse=True,
-                )
-            else:
-                rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
-            return rows
-    with _conn() as conn:
-        if view in ("all", "lineage"):
-            rows = _proposal_rows(conn, "", ())
-        else:
-            # Two-phase: the counts-only pass keeps every field
-            # _proposal_matches_view() reads but skips the seven display
-            # batches, so filter first and enrich the survivors only. One
-            # shared threshold for both fetches (no active-citizens
-            # recount). 'all'/'lineage' match everything and keep the
-            # single full fetch - two phases there would pure-duplicate it.
-            threshold = _proposal_vote_threshold(conn)
-            pre_sql, pre_params = _view_prefilter_sql(view)
-            light = _proposal_rows(
-                conn, pre_sql, pre_params, for_counts=True, threshold=threshold
-            )
-            ids = [p["id"] for p in light if _proposal_matches_view(p, view)]
-            if not ids:
-                rows = []
-            else:
-                # Chunk the survivor fetch (SQLite's legacy 999-variable
-                # cap) and re-sort newest across chunks: each chunk comes
-                # back in base-SELECT order, but concatenation is not
-                # globally ordered. Top re-sorts below regardless.
-                rows = []
-                for chunk in _id_chunks(ids):
-                    where_sql = f" AND p.id IN ({','.join('?' * len(chunk))})"
-                    rows.extend(
-                        _proposal_rows(
-                            conn, where_sql, tuple(chunk), threshold=threshold
-                        )
-                    )
-                if sort != "top":
-                    rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
-    # view=="all" matches everything (_proposal_matches_view returns True),
-    # so skip the O(N) pass; the comprehensions below preserve SQL order.
-    if view != "all":
-        rows = [p for p in rows if _proposal_matches_view(p, view)]
-    if collaborative is not None:
-        val = collaborative.lower()
-        if val in ("any", "all"):
-            pass  # no filter - return all proposals
-        else:
-            collab_flag = val in ("true", "1", "yes", "collaborative")
-            rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
-    if sort == "top":
-        rows.sort(
-            key=lambda p: (p["net"], p["created_at"], p["id"]),
-            reverse=True,
-        )
-    # sort=="newest" needs no Python re-sort: the base SELECT already
-    # orders by created_at DESC, id ASC - exactly what the old
-    # (created_at, -id)/reverse=True key produced - and every filter
-    # above preserves that order.
-    offset = max(0, int(offset))
-    if limit is not None:
-        return rows[offset : offset + max(1, int(limit))]
-    return rows[offset:]
-
-
-def proposal_voters(post_id: int) -> list[dict]:
-    """Who approved and who opposed a proposal, newest first - the per-citizen
-    side of the docket's tally, for the viewer's 'who voted' ledger. Read-only:
-    proposal votes are a public matter of community record, like the tally and
-    the docket itself. Returns voter id, name, vote value (1 / -1) and
-    created_at timestamp."""
-    with _conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT a.id AS agent_id, a.name, se.name_color AS name_color,
-                   pv.value, pv.created_at
-            FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
-            WHERE pv.post_id = ?
-            ORDER BY pv.created_at DESC
-            """,
-            (post_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def proposal_voters_batch(
-    post_ids: list[int], *, conn: sqlite3.Connection | None = None
-) -> dict:
-    """{post_id: [{agent_id, name, value, created_at}, ...]} for many
-    proposals, newest first per proposal - the batch twin of
-    proposal_voters: one query per chunk of ids instead of one query
-    per post. Accepts an injected ``conn`` for testable query-count
-    guards."""
-    if not post_ids:
-        return {}
-    with _conn() if conn is None else nullcontext(conn) as c:
-        return _proposal_voters_batch(c, post_ids)
-
-
-def _proposal_voters_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
-    """{post_id: [{agent_id, name, value, created_at}, ...]} for a batch of
-    proposals. Newest first per proposal. One query per chunk."""
-    if not post_ids:
-        return {}
-    out: dict = {}
-    for chunk in _id_chunks(post_ids):
-        marks = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            f"""
-            SELECT pv.post_id, a.id AS agent_id,
-                   a.name, se.name_color AS name_color,
-                   pv.value, pv.created_at
-            FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
-            WHERE pv.post_id IN ({marks})
-            ORDER BY pv.post_id ASC, pv.created_at DESC
-            """,
-            chunk,
-        ).fetchall()
-        for r in rows:
-            out.setdefault(r["post_id"], []).append(
-                {
-                    k: r[k]
-                    for k in (
-                        "agent_id",
-                        "name",
-                        "name_color",
-                        "value",
-                        "created_at",
-                    )
-                }
-            )
-    return out
