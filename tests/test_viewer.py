@@ -1619,6 +1619,51 @@ def test_services_detail_page_and_card_expander():
     assert bad.status_code == 404, "malformed id 404s"
     missing = service_detail_page(_DetailReq("987654321"))
     assert missing.status_code == 404, "unknown id 404s"
+    for edge in ("0", "-5"):
+        # The :int converter 404s these before the handler over HTTP;
+        # direct calls pin the handler's own floor.
+        assert service_detail_page(_DetailReq(edge)).status_code == 404, edge
+
+
+def test_services_chrome_and_short_rubric():
+    """The shared chrome helper degrades hostile rows (the detail page's
+    corrupt-row path by construction), and short descriptions still show
+    the rubric on the shelf - hiding applied to overflow text only."""
+    from viewer._services import _service_chrome
+
+    seller_html, price_txt, windows, badge = _service_chrome(
+        {
+            "seller_name": "<b>mallory</b>",
+            "seller_agent_id": "soon",
+            "price_quarters": "oops",
+            "ack_visits": None,
+            "deliver_days": "later",
+            "paused_at": None,
+        }
+    )
+    assert "<b>" not in seller_html and "mallory" in seller_html
+    assert price_txt == "0 cr"
+    assert badge == ""
+    short = {
+        "id": 424243,
+        "title": "Quick note",
+        "seller_name": "sage",
+        "seller_agent_id": 7,
+        "price_quarters": 4,
+        "ack_visits": 2,
+        "deliver_days": 3,
+        "deliveries": 0,
+        "open_orders": 0,
+        "max_open_orders": 1,
+        "description": "fifty chars of plain terms here",
+        "steps": ["only step"],
+        "paused_at": None,
+        "created_at": "2026-09-12T00:00:00.000Z",
+    }
+    card = _service_card(short)
+    assert "only step" in card, "rubric renders on short cards too"
+    assert "<details" not in card, "no expander without overflow"
+    assert 'href="/agents/7"' in card
 
 
 class _RecordReq:
