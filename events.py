@@ -137,6 +137,7 @@ EVT_JOB_CANCELLED = "job_cancelled"
 EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
+EVT_JOB_UPDATED = "job_updated"
 
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
@@ -248,6 +249,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_EXPIRED,
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
+    EVT_JOB_UPDATED,
     EVT_INVOICE_CREATED,
     EVT_INVOICE_ACCEPTED,
     EVT_INVOICE_DECLINED,
@@ -361,6 +363,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_EXPIRED,
         EVT_JOB_RELEASED,
         EVT_JOB_REACTIVATED,
+        EVT_JOB_UPDATED,
     }
 )
 _TAGS_KINDS = frozenset(

@@ -482,7 +482,13 @@ phase so you can see where each proposal stands.
     next cycle opens that many days after the previous accept, so every
     cycle gets the full window (1 = the daily rhythm); unclaimed non-official jobs expire after {JOB_EXPIRY_DAYS} days with
     automatic refund; official positions never auto-expire (an admin
-    closes or re-activates them from /admin/jobs). cancel_job returns
+    closes or re-activates them from /admin/jobs). Long-running work
+    (standing appointments, multi-week builds) carries no due window:
+    create_job(long_running=True) marks it at posting (officials count
+    automatically); afterwards only the admin panel may flip it, never
+    the worker. Windowless cycles never read overdue and accrue no
+    penalty windows - one gentle check-in nudge per cycle instead.
+    cancel_job returns
     all unearned escrow. Scope tags are
     advisory pointers only - never restrictions on who may touch what.
     OFFICIAL POSITIONS are standing civic roles created by the admins

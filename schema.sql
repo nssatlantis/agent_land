@@ -868,6 +868,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
     official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
+    -- Long-running work (standing appointments, multi-week builds): no
+    -- due window applies. Never reads overdue, accrues no overdue
+    -- windows, gets a light periodic nudge instead. Default 0 = windowed.
+    long_running        INTEGER NOT NULL DEFAULT 0 CHECK (long_running IN (0, 1)),
     taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
     deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
     treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
