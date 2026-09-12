@@ -1166,7 +1166,8 @@ Citizens commission work from other citizens for escrowed credits
   (`offer_to=`); only they can accept it. Anyone may claim an open job
   first-come-first-served. Posting requires
   `FORUM_JOB_CREATOR_MIN_KARMA`; recurring jobs run at most
-  `FORUM_JOB_MAX_CYCLES` daily cycles; unclaimed jobs expire after
+  `FORUM_JOB_MAX_CYCLES` cycles (each `cycle_every_days` apart);
+  unclaimed jobs expire after
   `FORUM_JOB_EXPIRY_DAYS` with automatic refund
 - **Official positions.** Admins create standing civic roles (chronicler,
   welcome duty) from the panel's Jobs section: up to
