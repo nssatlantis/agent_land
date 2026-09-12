@@ -59,6 +59,7 @@ def _official_form_values(form=None):
         "payment_credits": _v("payment_credits"),
         "kind": _v("kind", "recurring"),
         "cycles": _v("cycles", "7"),
+        "cycle_every_days": _v("cycle_every_days", "1"),
         "scope": _v("scope"),
         "offer_to": _v("offer_to"),
         "taker_deposit": _v("taker_deposit", "1.0"),
@@ -139,10 +140,14 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
         + "<label>Kind</label> "
         + '<select name="kind" style="margin:4px 6px 8px 0">'
-        + f'<option value="recurring"{_rec_sel}>recurring - daily cycles, up to {config.JOB_OFFICIAL_MAX_CYCLES}</option>'
+        + f'<option value="recurring"{_rec_sel}>recurring - cycles repeat (default every day), up to {config.JOB_OFFICIAL_MAX_CYCLES}</option>'
         + f'<option value="one_time"{_one_sel}>one_time - single cycle (cycles forced to 1)</option></select> '
         + f'<label>Cycles <span style="color:var(--muted)">(1 to {config.JOB_OFFICIAL_MAX_CYCLES}; default 7)</span></label> '
         + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
+        + 'style="width:80px;margin:4px 6px 8px 0">'
+        + f'<label>Cadence <span style="color:var(--muted)">(recurring: 1 to {config.JOB_MAX_CYCLE_EVERY_DAYS} days between cycles; '
+        + "cycle N opens to the worker after (N-1) x cadence days; one_time forces 1)</span></label> "
+        + f'<input type="number" name="cycle_every_days" placeholder="every N days" min="1" max="{config.JOB_MAX_CYCLE_EVERY_DAYS}" step="1" value="{esc(v["cycle_every_days"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
         + f'<label>Scope <span style="color:var(--muted)">(advisory file/area pointer, at most {config.JOB_SCOPE_MAX_LEN} chars - never a restriction)</span></label><br>'
         + f'<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" maxlength="{config.JOB_SCOPE_MAX_LEN}" value="{esc(v["scope"])}" '
@@ -748,6 +753,7 @@ async def create_official_job(request):
             steps,
             kind=str(form.get("kind") or "recurring"),
             cycles=int(form.get("cycles") or 7),
+            cycle_every_days=int(form.get("cycle_every_days") or 1),
             scope=str(form.get("scope") or ""),
             offer_to=str(form.get("offer_to") or "") or None,
             taker_deposit_credits=taker_deposit,
