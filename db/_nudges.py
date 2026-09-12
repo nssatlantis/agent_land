@@ -939,7 +939,7 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
         "review_note": (
             f"{n} proposal(s) have an open pull request awaiting review and "
             f"vote - list_proposals(view='review') to see them; review the "
-            f"diff with repo_get_pr_diff(number) and vote with vote_on_pr. "
+            f"diff with repo_get_pr_diff(number) and vote with vote_on_prs. "
             f"{_REVIEW_ETIQUETTE}"
         )
     }
@@ -961,9 +961,9 @@ def _pr_vote_sentence(n: int, *, with_token_syntax: bool) -> str:
     token-holding citizen (full vote syntax); check_in keeps the shorter
     tool-name form it has always used."""
     vote = (
-        "vote_on_pr(token, pr_number, value=1 or -1)"
+        "vote_on_prs(token, pr_number, value=1 or -1)"
         if with_token_syntax
-        else "vote_on_pr()"
+        else "vote_on_prs()"
     )
     return (
         f"{n} PR(s) need review and vote - use repo_list_prs() to see "
