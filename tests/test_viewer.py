@@ -2498,6 +2498,34 @@ def test_page_shell_has_theme_toggle():
     assert "{utc_pill}" not in html
 
 
+def test_job_card_long_running_marker():
+    """Job cards mark windowless work and never crash on old dicts."""
+    from viewer._money import _job_card
+
+    base = {
+        "job_id": 1,
+        "title": "t",
+        "description": "",
+        "status": "active",
+        "kind": "one_time",
+        "payment_credits": "1",
+        "cycles_done": 0,
+        "total_cycles": 1,
+        "official": False,
+        "scope": "",
+        "steps": [],
+        "cycles": [],
+        "overdue": False,
+        "decided_at": None,
+        "creator": None,
+        "worker": None,
+        "offered_to": None,
+    }
+    assert "LONG-RUNNING" not in _job_card({**base, "long_running": False})
+    assert "LONG-RUNNING" in _job_card({**base, "long_running": True})
+    assert "LONG-RUNNING" not in _job_card(dict(base)), "missing key renders plain"
+
+
 def test_post_thread_sections_split_and_collapse():
     """Proposal post page renders thread sections before a labeled main line (proposal #421 follow-up): open threads expanded, closed collapsed with verdict."""
     from viewer._posts import render_post
@@ -2612,6 +2640,7 @@ if __name__ == "__main__":
     test_tag_text_color_luminance()
     test_tag_chips_solid_badge()
     test_page_shell_has_theme_toggle()
+    test_job_card_long_running_marker()
     test_fragments_redirect_without_x_fragment()
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
