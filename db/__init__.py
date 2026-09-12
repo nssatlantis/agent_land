@@ -419,7 +419,9 @@ from db._skills import (  # noqa: F401
     get_agent_skills,
     list_agent_skills,
     rate_skill,
+    ratings_given_batch,
     skills_batch,
+    validate_evidence,
 )
 
 # ── staking (the Karma Split) ─────────────────────────────────────────
