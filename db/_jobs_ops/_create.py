@@ -167,14 +167,18 @@ def _insert_job_with_steps(
     steps,
     taker_deposit_quarters: int = 0,
     treasury_escrow_quarters: int = 0,
+    service_id: int | None = None,
+    service_terms: str | None = None,
 ) -> int:
-    """Shared row insertion so both creators write identical shapes."""
+    """Shared row insertion so both creators write identical shapes. The
+    service linkage rides the same INSERT (and commit) as the escrow -
+    an order must never exist as escrowed-but-unlinked."""
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
         " title, description, scope, kind, payment_quarters,"
         " total_cycles, official, taker_deposit_quarters,"
-        " treasury_escrow_quarters, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " treasury_escrow_quarters, service_id, service_terms, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id,
             offered_to_id,
@@ -187,6 +191,8 @@ def _insert_job_with_steps(
             official,
             taker_deposit_quarters,
             treasury_escrow_quarters,
+            service_id,
+            service_terms,
             "offered" if offered_to_id is not None else "open",
         ),
     )
@@ -258,9 +264,13 @@ def create_job(
     scope: str = "",
     offer_to: str | int | None = None,
     taker_deposit_credits: float | None = None,
+    service_id: int | None = None,
+    service_terms: str | None = None,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
-    creator's wallet atomically with the post."""
+    creator's wallet atomically with the post. service_id/service_terms
+    (services orders only) ride the same INSERT - linkage and escrow
+    commit together, never apart."""
     taker_deposit_q = _validate_taker_deposit(taker_deposit_credits, kind)
     title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
         title,
@@ -331,6 +341,8 @@ def create_job(
             steps=steps,
             taker_deposit_quarters=taker_deposit_q,
             treasury_escrow_quarters=0,
+            service_id=service_id,
+            service_terms=service_terms,
         )
         from db._credits import spend
 

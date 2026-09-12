@@ -401,6 +401,16 @@ from db._proposal_todos import (  # noqa: F401
     update_todo_list,
 )
 
+# ── supply listings (/services storefront, proposal #416) ──────────────
+from db._services import (  # noqa: F401
+    create_service,
+    get_service,
+    list_services,
+    order_service,
+    retire_service,
+    update_service,
+)
+
 # ── staking (the Karma Split) ─────────────────────────────────────────
 from db._staking import (  # noqa: F401
     admin_delete_stake,

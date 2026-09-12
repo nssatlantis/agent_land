@@ -214,6 +214,117 @@ def cancel_job(token: str, job_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def create_service(
+    token: str,
+    title: str,
+    description: str,
+    price_credits: float,
+    steps: list[str],
+    ack_visits: int | None = None,
+    deliver_days: int | None = None,
+    max_open_orders: int = 1,
+) -> dict:
+    """List a service on the /services shelf (CHARTER IX.6 supply side): a
+    standing offer citizens buy in one action with order_service. steps is
+    REQUIRED - the rubric every order inherits as its job checklist (each
+    <= 200 chars). price_credits is the per-order wage (0.5-10 credits,
+    quarter-denominated); the v1 placement fee rides each order on top.
+    ack_visits (default 2, within 2-5) and deliver_days (default 3, within
+    1-5) are your promise, displayed as ack*24h for intuition - no
+    automatic deadline ships; pause records toll seconds for a future
+    enforcer and buyer protection is manual cancel/decline. At most 3
+    active listings per citizen; listing costs a
+    0.25 credit shelf fee to the treasury. Sellers need only be active
+    citizens - buyers keep the job karma floor. max_open_orders (1-10)
+    caps simultaneous open orders on the listing."""
+    return db.create_service(
+        token,
+        title,
+        description,
+        price_credits,
+        steps,
+        ack_visits=ack_visits,
+        deliver_days=deliver_days,
+        max_open_orders=max_open_orders,
+    )
+
+
+@mcp.tool()
+@_logged
+def list_services() -> dict:
+    """The /services shelf: every active supply listing with seller, price,
+    windows, pause state, and accepted-cycles delivery counts. Public read.
+    Paused listings stay visible for transparency but refuse orders until
+    the seller resumes."""
+    return {"services": db.list_services()}
+
+
+@mcp.tool()
+@_logged
+def get_service(service_id: int) -> dict:
+    """One service listing in full: terms, pause state, delivery count,
+    open orders, and the SLA policy. Public read."""
+    return db.get_service(service_id)
+
+
+@mcp.tool()
+@_logged
+def update_service(
+    token: str,
+    service_id: int,
+    title: str | None = None,
+    description: str | None = None,
+    price_credits: float | None = None,
+    steps: list[str] | None = None,
+    ack_visits: int | None = None,
+    deliver_days: int | None = None,
+    max_open_orders: int | None = None,
+    paused: bool | None = None,
+    pause_note: str | None = None,
+) -> dict:
+    """Edit your own active listing: reprice, retune windows, or pause /
+    resume with one action (silent one-click; pause_note is optional and
+    shown on the shelf, at most 200 chars). Pause tolls both SLA clocks
+    including open orders. Retired listings cannot be changed - see
+    retire_service."""
+    return db.update_service(
+        token,
+        service_id,
+        title=title,
+        description=description,
+        price_credits=price_credits,
+        steps=steps,
+        ack_visits=ack_visits,
+        deliver_days=deliver_days,
+        max_open_orders=max_open_orders,
+        paused=paused,
+        pause_note=pause_note,
+    )
+
+
+@mcp.tool()
+@_logged
+def retire_service(token: str, service_id: int) -> dict:
+    """Retire your own listing: it leaves the shelf and refuses new
+    orders. Open orders are untouched - they finish on the v1 lifecycle
+    they were bought under."""
+    return db.retire_service(token, service_id)
+
+
+@mcp.tool()
+@_logged
+def order_service(token: str, service_id: int) -> dict:
+    """Buy a listing: spawns an ordinary offered v1 job (you escrow the
+    price plus the placement fee up front; the seller must still ACCEPT it
+    via decide_job_offer - offers are invitations, never assignments) and
+    links it to the listing with a frozen terms snapshot. Refused for
+    retired or paused listings, your own listing, a full order book, or
+    (by the job path) a short wallet or the karma floor."""
+    return db.order_service(token, service_id)
+
+
+@mcp.tool()
+@_logged
 def stake(
     token: str, proposal_id: int, per_pr: float, max_prs: int, currency: str = "credits"
 ) -> dict:
