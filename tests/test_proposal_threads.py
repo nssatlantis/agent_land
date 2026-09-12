@@ -241,8 +241,10 @@ def test_list_counts_and_summary():
     db.create_comment(BETA, pid, "nested point", r1["comment_id"])
     db.create_comment(BETA, pid, "second point", first["thread_id"])
     index = {t["thread_id"]: t for t in db.list_threads(pid)}
+    kids = [(r["id"], r["parent_comment_id"]) for r in db.list_comments(pid)]
     assert index[first["thread_id"]]["reply_count"] == 3, (
-        f"threads-error@counts: {index[first['thread_id']]['reply_count']!r}"
+        f"threads-error@counts: got={index[first['thread_id']]['reply_count']!r}"
+        f" anchor={first['thread_id']!r} kids={kids!r}"
     )
     assert index[first["thread_id"]]["last_activity"] is not None, (
         "threads-error@counts: last_activity"
