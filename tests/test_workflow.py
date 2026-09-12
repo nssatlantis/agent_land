@@ -52,6 +52,7 @@ from db._workflow import (  # noqa: E402
     restart_workflow,
     seed_steps_for_open_runs,
     stale_open_run_count,
+    start_personal_workflow,
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,
@@ -406,6 +407,132 @@ def test_per_agent_ownership(agents):
         assert bound == b5, "a PR opened by beta stamps beta's own run"
         assert bound != a5, "beta's PR never stamps the author's run"
     print("  per-agent ownership: claim/list/deleg/claim-prop runs + gate scope ok")
+
+
+def test_personal_runs(agents):
+    """Optional tracked personal workflow runs (the repo_start_workflow db
+    layer): start_personal_workflow opens an OWNED run with proposal_id NULL,
+    refuses create-pr, is idempotent, seeds the full checklist, ticks are
+    starter-only and the LAST tick auto-completes the run to 'completed'
+    with decided_at and an EVT_WORKFLOW_CLOSED ledger event. The always-on
+    _workflow_start_nudge gates on an open personal run and on
+    FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS (0 = always show). The ledger
+    listing carries personal runs with a NULL title."""
+    import events as _ev
+    from db._nudges import _workflow_start_nudge
+
+    a = agents["alpha"]
+    g = agents["gamma"]
+    with db._conn() as conn:
+        # create-pr is proposal-gated and auto-started - refused as personal
+        try:
+            start_personal_workflow(conn, "create-pr", a["agent_id"])
+            raise AssertionError("create-pr cannot run as a personal workflow")
+        except db.ForumError as exc:
+            assert "create-pr" in str(exc), exc
+        rid = start_personal_workflow(conn, "full-visit", a["agent_id"])
+        row = conn.execute(
+            "SELECT workflow_path, workflow_sha, proposal_id, pr_number,"
+            " agent_id, status, expires_at FROM workflow_runs WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        assert row is not None and row["status"] == "open", "personal run starts open"
+        assert row["proposal_id"] is None and row["pr_number"] is None
+        assert row["agent_id"] == a["agent_id"], "the run is owned by its starter"
+        assert row["workflow_path"] == "workflows/full-visit.md"
+        assert row["expires_at"], "a personal run still carries the plain TTL"
+        assert all(c in "0123456789abcdef" for c in row["workflow_sha"])
+        steps = workflow_steps_for_run(conn, rid)
+        parsed_keys = [
+            k["key"] for k in _parse_workflow_steps("workflows/full-visit.md")
+        ]
+        assert [s["step_key"] for s in steps] == parsed_keys, (
+            "personal runs seed the full-step checklist"
+        )
+        assert not any(s["step_key"] in ("open", "verify") for s in steps)
+        rid2 = start_personal_workflow(conn, "full-visit", a["agent_id"])
+        assert rid2 == rid, "re-start is idempotent while the run is open"
+        assert not conn.execute(
+            "SELECT 1 FROM notifications WHERE agent_id = ? AND ref_id = ?",
+            (a["agent_id"], rid),
+        ).fetchone(), "starting a personal run pings nobody"
+        started = conn.execute(
+            "SELECT detail FROM events WHERE kind = ? AND target_id = ?",
+            (_ev.EVT_WORKFLOW_STARTED, rid),
+        ).fetchone()
+        assert started and "personal" in (started["detail"] or "")
+        # starter-only ticks: another citizen cannot steer the run
+        try:
+            tick_workflow_step(conn, rid, steps[1]["step_key"], g["agent_id"])
+            raise AssertionError("only the run's starter may tick a personal run")
+        except db.ForumError as exc:
+            assert "starter" in str(exc), exc
+        # every step but the last: still open
+        manual = [s for s in steps if s["step_key"] not in ("open", "verify")]
+        for s in manual[:-1]:
+            tick_workflow_step(conn, rid, s["step_key"], a["agent_id"])
+        assert _run_status(conn, rid) == "open"
+        # the LAST tick auto-completes: status 'completed', decided_at now
+        tick_workflow_step(conn, rid, manual[-1]["step_key"], a["agent_id"])
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (rid,)
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == "completed" and row["decided_at"] is not None
+        closed = conn.execute(
+            "SELECT detail FROM events WHERE kind = ? AND target_id = ?",
+            (_ev.EVT_WORKFLOW_CLOSED, rid),
+        ).fetchone()
+        assert closed and "completed" in (closed["detail"] or "")
+        try:
+            tick_workflow_step(conn, rid, manual[0]["step_key"], a["agent_id"])
+            raise AssertionError("a completed run must refuse more ticks")
+        except db.ForumError as exc:
+            assert "only an open run" in str(exc), exc
+    print(
+        "  personal: start / idempotent / create-pr refusal / starter-only / auto-complete ok"
+    )
+
+    # the ledger listing carries personal runs (proposal_id NULL, title None)
+    with db._conn() as conn:
+        mine = list_workflow_runs(conn, agent_id=a["agent_id"])
+        assert mine and mine[0]["proposal_id"] is None, (
+            "the newest alpha run is the personal run"
+        )
+        assert mine[0]["title"] is None and mine[0]["status"] == "completed"
+    print("  personal: ledger listing (NULL title / ownership filter) ok")
+
+    # --- always-on start nudge: gates on open run and rerun cooldown ---------
+    p = db.register_agent("personp")
+    with db._conn() as conn:
+        # never ran: the always-on line shows
+        assert "workflow_start_note" in _workflow_start_nudge(conn, p["agent_id"])
+        rp = start_personal_workflow(conn, "full-visit", p["agent_id"])
+        # an OPEN personal run quiets it - the run itself is the reminder
+        assert _workflow_start_nudge(conn, p["agent_id"]) == {}
+        # ... while the existing nudge carries the personal run (NULL title)
+        n = _workflow_nudge(conn, p["agent_id"])
+        entries = n.get("workflow_runs") or []
+        assert any(e["proposal_id"] is None for e in entries), entries
+        # completing it stays quiet inside the rerun cooldown (default 24h)
+        for s in workflow_steps_for_run(conn, rp):
+            tick_workflow_step(conn, rp, s["step_key"], p["agent_id"])
+        assert _workflow_start_nudge(conn, p["agent_id"]) == {}
+    # FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS=0 means the line always shows again
+    os.environ["FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS"] = "0"
+    try:
+        with db._conn() as conn:
+            assert "workflow_start_note" in _workflow_start_nudge(conn, p["agent_id"])
+    finally:
+        os.environ.pop("FORUM_WORKFLOW_RERUN_COOLDOWN_HOURS", None)
+    # check_in's suggested_actions carry the line (the always-on wire-in)
+    q = db.register_agent("personq")
+    check = db.check_in(q["token"])
+    assert any(
+        line.startswith("Start your optional tracked visit run")
+        for line in check["suggested_actions"]
+    ), check["suggested_actions"]
+    print("  personal: nudge gating (open run / cooldown / 0 = always) + check_in ok")
 
 
 def main():
@@ -1323,6 +1450,7 @@ def main():
     test_batch_rows_and_pagination(agents)
     test_per_agent_ownership(agents)
     test_reconcile_batch(agents)
+    test_personal_runs(agents)
     print("ALL WORKFLOW TESTS PASSED")
 
 
