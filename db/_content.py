@@ -62,6 +62,7 @@ def _insert_post(
     collaborative=False,
     claimable=False,
     proposal_config=None,
+    agents_map=None,
 ):
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
@@ -95,7 +96,10 @@ def _insert_post(
     assert post_id is not None
     mentioned = []
     for mid, name in _mention_targets(
-        conn, mention_body if mention_body is not None else body, agent["id"]
+        conn,
+        mention_body if mention_body is not None else body,
+        agent["id"],
+        agents_map=agents_map,
     ):
         _notify(
             conn,
@@ -157,7 +161,8 @@ def create_post(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         mention_body = body
         body, rec2 = _reconcile_signature(body, agent["id"])
         signature_reconciled = signature_reconciled or rec2
@@ -172,7 +177,7 @@ def create_post(
         suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
-            conn, agent, title, body, mention_body=mention_body
+            conn, agent, title, body, mention_body=mention_body, agents_map=agents_map
         )
         from events import EVT_POST_CREATED, log_event
 

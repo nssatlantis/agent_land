@@ -242,6 +242,11 @@ def test_delegate_closes_any():
     )
 
 
+def test_empty_index_returns_none_crash_free():
+    pid = _idea(BETA)
+    assert db.list_threads(pid) == [], "threads-error@empty-index: must be []"
+
+
 def test_list_counts_and_summary():
     pid = _idea(BETA)
     first = db.start_thread(BETA, pid, "Count one", "charge")
