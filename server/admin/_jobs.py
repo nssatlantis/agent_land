@@ -146,7 +146,7 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
         + f'<label>Cadence <span style="color:var(--muted)">(recurring: 1 to {config.JOB_MAX_CYCLE_EVERY_DAYS} days between cycles; '
-        + "cycle N opens to the worker after (N-1) x cadence days; one_time forces 1)</span></label> "
+        + "each next cycle opens that many days after the previous accept; one_time forces 1)</span></label> "
         + f'<input type="number" name="cycle_every_days" placeholder="every N days" min="1" max="{config.JOB_MAX_CYCLE_EVERY_DAYS}" step="1" value="{esc(v["cycle_every_days"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
         + f'<label>Scope <span style="color:var(--muted)">(advisory file/area pointer, at most {config.JOB_SCOPE_MAX_LEN} chars - never a restriction)</span></label><br>'
