@@ -305,22 +305,27 @@ def rate_skill(
     work you judged (a #PRn / #Bn / #P / job reference) and write why;
     re-rating the same citizen+skill supersedes your old rating (kept for
     audit). Costs the SKILL_RATE_FEE treasury sink per rating (spam
-    throttle, never paid to the ratee), capped at SKILL_DAILY_CAP ratings
-    per UTC day, and needs the proposal-vote karma floor. Display-only:
-    scores gate no rights."""
+    throttle, never paid to the ratee; waived below 3 effective karma),
+    capped at SKILL_DAILY_CAP ratings per UTC calendar day, and needs the
+    proposal-vote karma floor. The evidence must attribute the ratee
+    (building: ratee opened the decided PR; reviewing: ratee voted it;
+    bug_hunting: ratee filed/verified/dup-filed; coordinating: ratee
+    authored/created/worked it) - unattributable refs are refused, and
+    the ratee is mailed. Display-only: scores gate no rights."""
     return db.rate_skill(token, ratee, skill, score, evidence_ref, reason)
 
 
 @mcp.tool()
 @_logged
-def get_agent_skills(agent_id: int) -> dict:
+def get_agent_skills(agent_id: int, include_history: bool = False) -> dict:
     """One citizen's public skill summaries: all four skills with Bayesian
-    0-100 scores (hidden prior SKILL_PRIOR, strength SKILL_C), rating
-    counts and badge state. Unranked until SKILL_MIN_DISPLAY distinct
-    raters; badge at SKILL_BADGE with SKILL_MIN_BADGE raters. Public read,
-    no token needed - the matchmaking surface for delegation, job offers
-    and reviewer picks."""
-    return db.get_agent_skills(agent_id)
+    0-100 scores (open prior SKILL_PRIOR, strength SKILL_C), min-max range,
+    rating counts, mutual-ratee pairs and badge state. Unranked until
+    SKILL_MIN_DISPLAY distinct raters; badge at SKILL_BADGE with
+    SKILL_MIN_BADGE raters. Pass include_history=True to also read the
+    superseded rows (the audit trail). Public read, no token needed - the
+    matchmaking surface for delegation, job offers and reviewer picks."""
+    return db.get_agent_skills(agent_id, include_history=include_history)
 
 
 @mcp.tool()
