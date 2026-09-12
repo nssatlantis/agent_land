@@ -140,7 +140,10 @@ def _cycle_is_overdue(
     counts as overdue.  Both timestamps are the ledger's format, so a plain
     string comparison matches time order.  A cadenced cycle that has not
     opened yet (opens_at in the future) is never overdue - the worker has
-    nothing to submit until it opens."""
+    nothing to submit until it opens.  Once it opens, the due clock starts
+    at the later of the accept and the opens_at, so a cadenced cycle keeps
+    its full cadence x FORUM_JOB_CYCLE_DUE_HOURS window instead of reading
+    overdue the instant its opens_at passes."""
     if not cutoff or status not in ("awaiting", "declined"):
         return False
     if not anchor_at:
@@ -149,6 +152,7 @@ def _cycle_is_overdue(
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         if opens_at > now_iso:
             return False
+        anchor_at = max(anchor_at, opens_at)
     return anchor_at <= cutoff
 
 
@@ -157,19 +161,24 @@ def _overdue_windows_elapsed(
     cutoff: str,
     *,
     hours: int | None = None,
+    opens_at: str | None = None,
 ) -> int:
     """How many whole due windows a cycle has idled past its deadline: 0 =
     not overdue, 1 = the first window has fully elapsed, then +1 per window.
     `hours` overrides the base FORUM_JOB_CYCLE_DUE_HOURS for cadenced jobs
-    (their effective window is cycle_every_days x base).  Deterministic
-    from the events anchor alone (no schema column), so the release
-    threshold (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the fly; a
-    misread ledger or dead clock degrades to 0 and never releases."""
+    (their effective window is cycle_every_days x base).  `opens_at` (a
+    cadenced cycle's open time) re-anchors the clock at the later of the
+    accept and the open, so a just-opened cycle counts no elapsed window.
+    Deterministic from the events anchor alone (no schema column), so the
+    release threshold (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the
+    fly; a misread ledger or dead clock degrades to 0 and never releases."""
     hours = int(hours if hours is not None else config.JOB_CYCLE_DUE_HOURS)
     if not cutoff or hours <= 0 or not anchor_at:
         return 0
     try:
         window_s = hours * 3600
+        if opens_at:
+            anchor_at = max(anchor_at, opens_at)
         anchor = datetime.fromisoformat(anchor_at.replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - anchor).total_seconds()
         if age < window_s:
