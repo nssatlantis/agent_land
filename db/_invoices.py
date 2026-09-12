@@ -101,10 +101,29 @@ def _overdue_seconds(row: sqlite3.Row, now_iso: str) -> float:
     return (_parse_iso(now_iso) - _parse_iso(row["due_at"])).total_seconds()
 
 
-def _public_invoice(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+def _agent_names_for(conn: sqlite3.Connection, ids: set[int]) -> dict[int, str]:
+    """Batched agent id->name for invoice cards: one IN query for the page."""
+    clean = [int(i) for i in ids if i is not None]
+    if not clean:
+        return {}
+    marks = ",".join("?" * len(clean))
+    return {
+        r["id"]: r["name"]
+        for r in conn.execute(
+            f"SELECT id, name FROM agents WHERE id IN ({marks})", clean
+        ).fetchall()
+    }
+
+
+def _public_invoice(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    now_iso: str | None = None,
+    names: dict[int, str] | None = None,
+) -> dict:
     from db._credits import format_credits
 
-    now_iso = _now_iso()
+    now_iso = now_iso or _now_iso()
     late_s = _overdue_seconds(row, now_iso)
     overdue = bool(
         row["status"] == "accepted" and row["remaining_quarters"] > 0 and late_s > 0
@@ -113,25 +132,38 @@ def _public_invoice(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         days_left = int(((-late_s) + 86399) // 86400)  # ceil, friendly
     else:
         days_left = -int((late_s + 86399) // 86400)
-    issuer = conn.execute(
-        "SELECT name FROM agents WHERE id = ?", (row["issuer_agent_id"],)
-    ).fetchone()
-    payer = conn.execute(
-        "SELECT name FROM agents WHERE id = ?", (row["payer_agent_id"],)
-    ).fetchone()
-    creator = conn.execute(
-        "SELECT id, name FROM agents WHERE id = ?", (row["created_by_agent_id"],)
-    ).fetchone()
-    from_treasury = row["issuer_agent_id"] is None
+    if names is not None:
+        _issuer_id = row["issuer_agent_id"]
+        _issuer_name = names.get(_issuer_id) if _issuer_id is not None else None
+        _payer_name = names.get(row["payer_agent_id"])
+        _creator_name = names.get(row["created_by_agent_id"])
+        from_treasury = _issuer_id is None
+        _issuer_display = _issuer_name if _issuer_name else "Treasury"
+        _creator_display = _creator_name
+        _payer_display = _payer_name
+    else:
+        issuer = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (row["issuer_agent_id"],)
+        ).fetchone()
+        payer = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (row["payer_agent_id"],)
+        ).fetchone()
+        creator = conn.execute(
+            "SELECT id, name FROM agents WHERE id = ?", (row["created_by_agent_id"],)
+        ).fetchone()
+        from_treasury = row["issuer_agent_id"] is None
+        _issuer_display = issuer["name"] if issuer else "Treasury"
+        _creator_display = creator["name"] if creator else None
+        _payer_display = payer["name"] if payer else None
     return {
         "invoice_id": row["id"],
         "issuer_agent_id": row["issuer_agent_id"],
-        "issuer_name": issuer["name"] if issuer else "Treasury",
+        "issuer_name": _issuer_display,
         "from_treasury": from_treasury,
         "created_by_agent_id": row["created_by_agent_id"],
-        "created_by_name": creator["name"] if creator else None,
+        "created_by_name": _creator_display,
         "payer_agent_id": row["payer_agent_id"],
-        "payer_name": payer["name"] if payer else None,
+        "payer_name": _payer_display,
         "amount_quarters": row["amount_quarters"],
         "amount_credits": format_credits(row["amount_quarters"]),
         "remaining_quarters": row["remaining_quarters"],
@@ -557,15 +589,11 @@ def open_invoice_stats(limit: int = 50) -> dict:
     _open_marks = ",".join("?" * len(_OPEN_STATUSES))
     _now = _now_iso()
     with _conn() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM invoices"
-            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
-            _OPEN_STATUSES,
-        ).fetchone()[0]
-        # Totals accumulate over the FULL open set, not the capped page -
-        # past the cap the header must never silently understate.
+        # Single scan: COUNT + totals share one WHERE over the FULL open set,
+        # not the capped page - past the cap the header must never understate.
         _totals = conn.execute(
-            "SELECT COALESCE(SUM(remaining_quarters), 0) AS out_q,"
+            "SELECT COUNT(*) AS n,"
+            " COALESCE(SUM(remaining_quarters), 0) AS out_q,"
             " SUM(CASE WHEN status = 'accepted' AND due_at < ?"
             " THEN 1 ELSE 0 END) AS over_n,"
             " COALESCE(SUM(CASE WHEN status = 'accepted' AND due_at < ?"
@@ -574,16 +602,24 @@ def open_invoice_stats(limit: int = 50) -> dict:
             f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
             (_now, _now, *_OPEN_STATUSES),
         ).fetchone()
+        total = _totals["n"]
         rows = conn.execute(
             "SELECT * FROM invoices"
             f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0"
             " ORDER BY due_at ASC, id ASC LIMIT ?",
             (*_OPEN_STATUSES, limit),
         ).fetchall()
+        _ids: set[int] = set()
+        for r in rows:
+            for _k in ("issuer_agent_id", "payer_agent_id", "created_by_agent_id"):
+                _v = r[_k]
+                if _v is not None:
+                    _ids.add(_v)
+        _names = _agent_names_for(conn, _ids) if _ids else {}
         awaiting: list[dict] = []
         committed: list[dict] = []
         for r in rows:
-            pub = _public_invoice(conn, r)
+            pub = _public_invoice(conn, r, now_iso=_now, names=_names)
             if pub["status"] == "accepted":
                 committed.append(pub)
             else:

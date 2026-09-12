@@ -775,7 +775,9 @@ def list_proposals(
     dropped and the whole docket is fetched - it is small by design.
     Filtering views (anything but 'all'/'lineage') fetch in two phases: a
     counts-only pass first (same predicate fields, no display batches),
-    then the full enrichments over the surviving ids only."""
+    then the full enrichments over the surviving ids only. 'review' is
+    the exception: its prefilter is already narrow, so one enriched fetch
+    plus one filter pass returns the same rows with one fewer scan."""
     if view is None:
         view = "all"
     if view not in _PROPOSAL_VIEWS:
@@ -842,6 +844,23 @@ def list_proposals(
     with _conn() as conn:
         if view in ("all", "lineage"):
             rows = _proposal_rows(conn, "", ())
+        elif view == "review":
+            # Single-phase: the review prefilter is already narrow
+            # (non-collaborative, unlocked, PR-linked rows only) and the
+            # display enrichments never touch a predicate field, so one
+            # enriched fetch plus one filter pass returns the same rows
+            # as the light-then-survivors two-phase. Other views keep two
+            # phases: their prefilters are wide, and enriching the whole
+            # prefilter set would cost more than the light pass saves.
+            threshold = _proposal_vote_threshold(conn)
+            pre_sql, pre_params = _view_prefilter_sql(view)
+            rows = [
+                p
+                for p in _proposal_rows(conn, pre_sql, pre_params, threshold=threshold)
+                if _proposal_matches_view(p, view)
+            ]
+            if sort != "top":
+                rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
         else:
             # Two-phase: the counts-only pass keeps every field
             # _proposal_matches_view() reads but skips the seven display

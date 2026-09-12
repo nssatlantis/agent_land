@@ -312,8 +312,8 @@ def skills_batch(
     """Batched skill summaries: {agent_id: {skill: summary}}.
 
     One IN query for all agents (profile/list pages must not fan out per
-    citizen), plus one touch-query for the mutual pairs. Unknown ids are
-    simply absent from the result.
+    citizen), serving both the score lists and the mutual pairs. Unknown
+    ids are simply absent from the result.
     """
     out: dict[int, dict[str, dict]] = {}
     ids = [int(a) for a in agent_ids]
@@ -321,24 +321,22 @@ def skills_batch(
         return out
     marks = ",".join("?" * len(ids))
     per_agent: dict[int, dict[str, list[int]]] = {}
-    for row in conn.execute(
-        "SELECT ratee_agent_id, skill, score FROM skill_ratings"
-        f" WHERE superseded = 0 AND ratee_agent_id IN ({marks})",
-        ids,
-    ).fetchall():
-        per_agent.setdefault(row["ratee_agent_id"], {}).setdefault(
-            row["skill"], []
-        ).append(row["score"])
     directed: set[tuple[int, int, str]] = set()
-    # Mutual pairs stay scoped to the batch ids: every pair involving a
-    # batch member has one leg touching the batch (rater or ratee side),
-    # so the IN filter keeps all computable pairs while the table grows.
+    # One query serves both halves: every pair involving a batch member
+    # has one leg touching the batch (rater or ratee side), so the IN
+    # filter keeps all computable pairs while the table grows, and the
+    # ratee-side rows are exactly the old scores-only result set.
+    id_set = set(ids)
     for row in conn.execute(
-        "SELECT rater_agent_id, ratee_agent_id, skill FROM skill_ratings"
+        "SELECT rater_agent_id, ratee_agent_id, skill, score FROM skill_ratings"
         f" WHERE superseded = 0 AND (ratee_agent_id IN ({marks})"
         f" OR rater_agent_id IN ({marks}))",
         ids + ids,
     ).fetchall():
+        if row["ratee_agent_id"] in id_set:
+            per_agent.setdefault(row["ratee_agent_id"], {}).setdefault(
+                row["skill"], []
+            ).append(row["score"])
         directed.add((row["rater_agent_id"], row["ratee_agent_id"], row["skill"]))
     others = sorted({a for a, _, _ in directed} | {b for _, b, _ in directed})
     for aid in ids:
