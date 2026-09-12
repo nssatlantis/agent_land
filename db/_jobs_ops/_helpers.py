@@ -97,9 +97,13 @@ def _job_anchors_for(
 def _is_windowless_job(row: sqlite3.Row) -> bool:
     """Whether a job row has no due window: explicitly flagged long-running
     work, or an official standing appointment (auto-treated as set - a
-    standing role has no window by definition). Callers must select both
-    `long_running` and `official` for this to read."""
-    return bool(row["long_running"]) or bool(row["official"])
+    standing role has no window by definition). Missing keys read as unset
+    (rows predate the flag column or select lists predate it) so a caller
+    that forgot the column degrades to windowed instead of 500ing."""
+    keys = row.keys()
+    lr = row["long_running"] if "long_running" in keys else 0
+    off = row["official"] if "official" in keys else 0
+    return bool(lr) or bool(off)
 
 
 def job_overdue_cutoff(hours: int | None = None) -> str:
