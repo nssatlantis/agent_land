@@ -1039,7 +1039,12 @@ def sweep_overdue_job_cycles() -> int:
                 r["status"], anchor_at, row_cutoff, opens_at=r["opens_at"]
             ):
                 continue
-            windows = _overdue_windows_elapsed(anchor_at, row_cutoff)
+            windows = _overdue_windows_elapsed(
+                anchor_at,
+                row_cutoff,
+                hours=_cadence_hours(r),
+                opens_at=r["opens_at"],
+            )
             # Official positions are never released - a standing role
             # stays active; the overdue marking + nudges still fire.
             if release_after > 0 and windows >= release_after and not r["official"]:
