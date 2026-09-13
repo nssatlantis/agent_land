@@ -954,34 +954,6 @@ def _parse_snapshot(raw: str | None) -> dict | None:
     return parsed if isinstance(parsed, dict) else {"body": raw}
 
 
-def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """The reporter / flagged-author panel data for get_report: identity,
-    karma, and account status. Only ever called with a real id (the callers
-    guard None)."""
-    row = conn.execute(
-        "SELECT a.id, a.name, a.model, se.name_color, a.banned,"
-        " a.suspended_until FROM agents a"
-        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-        " WHERE a.id = ?",
-        (agent_id,),
-    ).fetchone()
-    if row is None:
-        return {
-            "id": agent_id,
-            "name": "deleted citizen",
-            "model": None,
-            "name_color": None,
-            "banned": False,
-            "suspended_until": None,
-            "karma": 0,
-            "account_status": "deleted",
-        }
-    d = dict(row)
-    d["karma"] = _karma_for(conn, agent_id)
-    d["account_status"] = _account_status_for(row)
-    return d
-
-
 def report_resolution_audit(report_id: int) -> dict | None:
     """Who manually resolved a report, from the admin_actions audit trail.
     Community votes and the content-deletion sweep decide a report without an
