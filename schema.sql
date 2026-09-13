@@ -735,6 +735,10 @@ CREATE TABLE IF NOT EXISTS post_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+-- Tag-first board access (small_fix #449): covering composite so the
+-- tag-driven join reads tag-first instead of probing per post row.
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag_post
+    ON post_tags(tag_id, post_id);
 -- Adoption lookups (profile tag stats): applications made by a citizen.
 CREATE INDEX IF NOT EXISTS idx_post_tags_applied_by ON post_tags(applied_by);
 
