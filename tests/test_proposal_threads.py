@@ -373,6 +373,28 @@ def test_summaries_batch_parity_and_missing():
     assert t1["thread_id"] != t2["thread_id"]
 
 
+def test_batch_attach_keeps_get_posts_error_strings():
+    pid = _idea(BETA)
+    db.start_thread(BETA, pid, "Attach line", "charge")
+    res = db.get_posts([pid, 999999999])
+    assert isinstance(res[999999999], str) and res[999999999].startswith(
+        "error: no post"
+    ), f"threads-error@attach-missing: {res[999999999]!r}"
+    summaries = db.threads_summaries_for(
+        [p for p, r in res.items() if isinstance(r, dict)]
+    )
+    for p, r in res.items():
+        if isinstance(r, dict):
+            # Same .get-with-zeroes shape the get_posts tool uses: a post
+            # deleted mid-batch keeps zeroes, never a KeyError.
+            r["threads_summary"] = summaries.get(
+                p, {"post_id": p, "total": 0, "open": 0, "closed": 0}
+            )
+    assert res[pid]["threads_summary"] == db.threads_summary_for(pid), (
+        "threads-error@attach-parity"
+    )
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
