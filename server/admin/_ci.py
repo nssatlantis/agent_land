@@ -122,7 +122,7 @@ def _ci_dashboard_snapshot() -> dict:
             eff = cr._effective_cpus()
 
         except Exception:  # domain: degrade-silently - dashboard best-effort, adaptive
-            host = 0
+            host = None
             eff = snap["ci_cpus"]
 
         ci_details = []
@@ -432,7 +432,7 @@ def _render_ci_dashboard(request) -> str:
 
         if "age" in s:
             fetch_in = s.get("fetch_in", -1)
-            fetch_cell = f"<td>{fetch_in}s</td>" if fetch_in >= 0 else "<td>—</td>"
+            fetch_cell = f"<td>{fetch_in}s</td>" if fetch_in >= 0 else "<td>-</td>"
             extra = (
                 f"<td>{s['age']}s</td><td>{'dirty' if s['dirty'] else 'clean'}</td>"
                 f"<td>{esc(str(s.get('size', '?')))}</td>" + fetch_cell
@@ -445,7 +445,7 @@ def _render_ci_dashboard(request) -> str:
 
     ci_html = (
         '<div class="panel"><h2>CI Runner Pool (Docker sandboxed)</h2>'
-        f'<p style="color:var(--muted)">desired {ci.get("desired", "?")} ┬╖ avail {ci.get("avail", "?")} ┬╖ busy {ci.get("busy", "?")} ┬╖ effective_cpus {ci.get("effective_cpus", "?")} (host {ci.get("host_cpus", "?")}c; ceil when <=1 busy, host/busy - 0.1 reserve when contended) ┬╖ docker {"yes" if ci.get("docker") else "no"} ┬╖ mem {snap.get("ci_mem")}M+{snap.get("ci_swap")}M swap ┬╖ timeout {snap.get("ci_timeout")}s</p>'
+        f'<p style="color:var(--muted)">desired {ci.get("desired", "?")} | avail {ci.get("avail", "?")} | busy {ci.get("busy", "?")} | effective_cpus {ci.get("effective_cpus", "?")} (host {ci.get("host_cpus") or "?"}c; ceil when <=1 busy, host/busy - 0.1 reserve when contended) | docker {"yes" if ci.get("docker") else "no"} | mem {snap.get("ci_mem")}M+{snap.get("ci_swap")}M swap | timeout {snap.get("ci_timeout")}s</p>'
         '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>size</th><th>git</th></tr>'
         + "".join(_slot_row(s) for s in ci.get("slots", []))
         + "</table></div>"
@@ -459,7 +459,7 @@ def _render_ci_dashboard(request) -> str:
 
     ws_html = (
         '<div class="panel"><h2>Git Workspace Pool (persistent host git)</h2>'
-        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} ┬╖ desired {ws.get("desired", "?")} ┬╖ avail {ws.get("avail", "?")} ┬╖ busy {ws.get("busy", "?")} ┬╖ fetch_ttl {esc(str(ws.get("fetch_ttl", "?")))}s ┬╖ lock_timeout {esc(str(ws.get("lock_timeout", "?")))}s</p>'
+        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} | desired {ws.get("desired", "?")} | avail {ws.get("avail", "?")} | busy {ws.get("busy", "?")} | fetch_ttl {esc(str(ws.get("fetch_ttl", "?")))}s | lock_timeout {esc(str(ws.get("lock_timeout", "?")))}s</p>'
         '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>age</th><th>dirty</th><th>size</th><th>fetch in</th></tr>'
         + "".join(_slot_row(s) for s in ws.get("slots", []))
         + "</table></div>"
@@ -588,7 +588,7 @@ def _render_ci_dashboard(request) -> str:
 
     ticker_html = (
         '<div class="panel"><h2>Ticker Coalesce (file-at-a-time)</h2>'
-        f'<p style="color:var(--muted)">alive {ticker.get("alive")} ┬╖ in_flight {esc(str(inflight))} ┬╖ poll 5s base, 10s when backlog ┬╖ coalesce 15s ┬╖ max 5 requeues</p>'
+        f'<p style="color:var(--muted)">alive {ticker.get("alive")} | in_flight {esc(str(inflight))} | poll 5s base, 10s when backlog | coalesce 15s | max 5 requeues</p>'
         '<div class="table-wrap"><table><tr><th>PR</th><th>deadline in</th><th>requeues</th></tr>'
         + pending_rows
         + "</table></div>"
@@ -644,8 +644,8 @@ def _render_ci_dashboard(request) -> str:
 
     cfg_html = (
         '<div class="panel"><h2>Live Config & Poller</h2>'
-        f'<p style="color:var(--muted)">conc {snap.get("ci_concurrency")} ┬╖ cpus {snap.get("ci_cpus")} (eff {ci.get("effective_cpus")}) ┬╖ mem {snap.get("ci_mem")}+{snap.get("ci_swap")} ┬╖ host {esc(snap.get("host", ""))} ┬╖ poll {esc(snap.get("poll_interval", ""))}</p>'
-        f'<p style="color:var(--muted)">cooldown {snap.get("ci_cooldown")}s ┬╖ daily cap {snap.get("ci_cap")} ┬╖ nudge window {config.CI_NUDGE_WINDOW_SECONDS // 3600}h ┬╖ workflows TTL {config.WORKFLOW_TTL_SECONDS}s</p>'
+        f'<p style="color:var(--muted)">conc {snap.get("ci_concurrency")} | cpus {snap.get("ci_cpus")} (eff {ci.get("effective_cpus")}) | mem {snap.get("ci_mem")}+{snap.get("ci_swap")} | host {esc(snap.get("host", ""))} | poll {esc(snap.get("poll_interval", ""))}</p>'
+        f'<p style="color:var(--muted)">cooldown {snap.get("ci_cooldown")}s | daily cap {snap.get("ci_cap")} | nudge window {config.CI_NUDGE_WINDOW_SECONDS // 3600}h | workflows TTL {config.WORKFLOW_TTL_SECONDS}s</p>'
         "</div>"
     )
 
@@ -667,7 +667,7 @@ def _render_ci_dashboard(request) -> str:
 
     refresh = 5 if (pending or inflight) else 10
 
-    refresh_html = f'<p style="color:var(--muted)">auto-refresh {refresh}s ┬╖ <a href="/admin/ci">refresh now</a></p><script>setTimeout(()=>location.reload(),{refresh * 1000})</script>'
+    refresh_html = f'<p style="color:var(--muted)">auto-refresh {refresh}s | <a href="/admin/ci">refresh now</a></p><script>setTimeout(()=>location.reload(),{refresh * 1000})</script>'
 
     return (
         "<h1>CI / Workspaces</h1>"
