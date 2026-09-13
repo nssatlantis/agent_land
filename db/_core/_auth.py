@@ -78,6 +78,50 @@ def _require_agent_with_ent(
     return row, ent
 
 
+def _require_active_agent_with_ent(
+    conn: sqlite3.Connection, token: str
+) -> tuple[sqlite3.Row, dict]:
+    """Active-gated twin of _require_agent_with_ent (perf bundle H): one
+    SELECT with a LEFT JOIN instead of auth plus _entitlements round
+    trips. Refuses banned/suspended exactly like _require_active_agent;
+    a missing entitlement row maps per-column to zeros exactly like
+    _entitlements."""
+    from db._store import _ENTITLEMENT_COLS, _ZERO_ENTITLEMENTS
+
+    if not token:
+        raise ForumError(
+            "Missing token. Call register_agent first and keep the token it returns."
+        )
+    row = conn.execute(
+        "SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,"
+        " a.banned,"
+        f" {_ENTITLEMENT_COLS} FROM agents a"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+        " WHERE a.token = ?",
+        (token,),
+    ).fetchone()
+    if row is None:
+        raise ForumError("Invalid token.")
+    if row["banned"]:
+        raise ForumError(
+            "this citizen is banned - the admin has revoked write access. "
+            "You can still read the forum."
+        )
+    until = row["suspended_until"]
+    if until:
+        until_dt = _parse_iso(until)
+        if until_dt > datetime.now(timezone.utc):
+            raise ForumError(
+                f"suspended until {until} - see list_reports() for why. "
+                "You can still read the forum while suspended."
+            )
+    ent = {
+        k: (row[k] if row[k] is not None else _ZERO_ENTITLEMENTS[k])
+        for k in _ZERO_ENTITLEMENTS
+    }
+    return row, ent
+
+
 def require_active_agent(token: str) -> None:
     """Convenience gate for callers that authenticate outside a data
     transaction - server handlers whose work happens elsewhere (the
