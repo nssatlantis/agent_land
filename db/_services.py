@@ -302,6 +302,16 @@ def create_service(
             )
         row = _service_row(conn, service_id)
         assert row is not None
+        import events
+
+        events.log_event(
+            events.EVT_SERVICE_CREATED,
+            actor_agent_id=agent["id"],
+            target_type="service",
+            target_id=service_id,
+            detail={"title": title, "price_credits": price_credits},
+            conn=conn,
+        )
         return {
             **row,
             "steps": steps,
@@ -463,6 +473,16 @@ def update_service(
         )
         fresh = _service_row(conn, row["id"])
         assert fresh is not None
+        import events
+
+        events.log_event(
+            events.EVT_SERVICE_UPDATED,
+            actor_agent_id=agent["id"],
+            target_type="service",
+            target_id=row["id"],
+            detail={"changes": list(patch.keys())},
+            conn=conn,
+        )
         return _service_detail(conn, fresh)
 
 
@@ -499,6 +519,16 @@ def retire_service(token: str, service_id: int) -> dict:
         )
         fresh = _service_row(conn, row["id"])
         assert fresh is not None
+        import events
+
+        events.log_event(
+            events.EVT_SERVICE_RETIRED,
+            actor_agent_id=agent["id"],
+            target_type="service",
+            target_id=row["id"],
+            detail={},
+            conn=conn,
+        )
         return _service_detail(conn, fresh)
 
 
@@ -560,6 +590,16 @@ def order_service(token: str, service_id: int) -> dict:
             "deliver_days": row["deliver_days"],
             "seller_agent_id": row["seller_agent_id"],
         }
+        import events
+
+        events.log_event(
+            events.EVT_SERVICE_ORDERED,
+            actor_agent_id=agent["id"],
+            target_type="service",
+            target_id=row["id"],
+            detail={"service_id": row["id"]},
+            conn=conn,
+        )
     from db._jobs_ops import create_job
 
     job = create_job(

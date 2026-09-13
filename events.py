@@ -139,6 +139,13 @@ EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
 
+# The services shelf (CHARTER IX.6 supply side): listing,
+# ordering, updating, and retiring land here.
+EVT_SERVICE_CREATED = "service_created"
+EVT_SERVICE_ORDERED = "service_ordered"
+EVT_SERVICE_UPDATED = "service_updated"
+EVT_SERVICE_RETIRED = "service_retired"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -250,6 +257,10 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
+    EVT_SERVICE_CREATED,
+    EVT_SERVICE_ORDERED,
+    EVT_SERVICE_UPDATED,
+    EVT_SERVICE_RETIRED,
     EVT_INVOICE_CREATED,
     EVT_INVOICE_ACCEPTED,
     EVT_INVOICE_DECLINED,
@@ -364,6 +375,10 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_RELEASED,
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
+        EVT_SERVICE_CREATED,
+        EVT_SERVICE_ORDERED,
+        EVT_SERVICE_UPDATED,
+        EVT_SERVICE_RETIRED,
     }
 )
 _TAGS_KINDS = frozenset(
