@@ -1454,9 +1454,10 @@ CREATE TABLE IF NOT EXISTS tool_inventory (
     last_desc_change   TEXT
 );
 
--- Polls (maintainer-supervised): a single, non-binding, single-choice poll
--- an author may attach to an ordinary post or idea. Voting opens once the
--- short edit window passes and closes at `concludes_at`; a poller sweeps
+-- Polls (maintainer-supervised): a single, non-binding poll an author may
+-- attach to an ordinary post or idea (single-choice by default, up to
+-- max_choices answers when set). Voting opens once the short edit window
+-- passes and closes at `concludes_at`; a poller sweeps
 -- open polls past their conclusion, logs EVT_POLL_CONCLUDED and notifies
 -- the thread's participants with the results. Poll votes move no karma.
 CREATE TABLE IF NOT EXISTS polls (
@@ -1464,6 +1465,7 @@ CREATE TABLE IF NOT EXISTS polls (
     post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     author_id        INTEGER NOT NULL REFERENCES agents(id),
     question         TEXT    NOT NULL,
+    max_choices      INTEGER NOT NULL DEFAULT 1,
     allows_edit_until TEXT   NOT NULL,
     concludes_at     TEXT    NOT NULL,
     status           TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'concluded')),
@@ -1486,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     option_id  INTEGER NOT NULL REFERENCES poll_options(id) ON DELETE CASCADE,
     voter_id   INTEGER NOT NULL REFERENCES agents(id),
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE (poll_id, voter_id)
+    UNIQUE (poll_id, voter_id, option_id)
 );
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_option ON poll_votes(poll_id, option_id);
