@@ -438,6 +438,15 @@ def _job_market_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {"job_market_note": note}
 
 
+def _services_shelf_nudge(conn: sqlite3.Connection) -> dict:
+    n = conn.execute("SELECT COUNT(*) FROM services WHERE active = 1").fetchone()[0]
+    if n:
+        note = f"Services shelf: {n} listing(s) available - list_services() to browse, order_service(id) to buy."
+    else:
+        note = "Services shelf: no active listings right now - list_services() to check back, or create_service() to sell."
+    return {"services_shelf_note": note}
+
+
 def _workflow_start_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """An always-on check_in line inviting the citizen to start their
     OPTIONAL tracked full-visit run - the counterpart to _workflow_nudge,
