@@ -343,6 +343,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GIT_WORKSPACE_POOL": ("FORUM_GIT_WORKSPACE_POOL", 2, int),
     "GIT_WORKSPACE_FETCH_TTL": ("FORUM_GIT_WORKSPACE_FETCH_TTL", 60, int),
     "GIT_WORKSPACE_LOCK_TIMEOUT": ("FORUM_GIT_WORKSPACE_LOCK_TIMEOUT", 30, int),
+    # Claimable git workspaces (proposal #472): server-held per-agent trees
+    # bound to a proposal, worked via MCP file ops, rehearsed through the
+    # standard CI sandbox, pushed as a single-commit PR when green.
+    "WORKSPACE_CLAIM_MAX_PER_AGENT": ("FORUM_WORKSPACE_CLAIM_MAX_PER_AGENT", 3, int),
+    "WORKSPACE_CLAIM_TTL_HOURS": ("FORUM_WORKSPACE_CLAIM_TTL_HOURS", 72, int),
+    "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 256, int),
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.

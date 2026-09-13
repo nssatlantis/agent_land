@@ -301,6 +301,42 @@ def test_detect_clean_merge():
     mc.assert_called_once_with(fake_repo)
 
 
+def test_workspace_unwritable_home_falls_back_to_temp():
+    """Persistent mode with an unwritable pool home degrades to the legacy
+    temp path instead of raising (read-only DATA_DIR, e.g. the CI sandbox
+    after the persistent default landed)."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=0)
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="")
+        if "merge" in cmd and "--abort" in cmd:
+            return _fake_completed()
+        return _fake_completed()
+
+    with (
+        patch("config.GIT_WORKSPACE_MODE", "persistent"),
+        patch("github._gitops._ws_root", side_effect=OSError(30, "Read-only")),
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._cleanup") as mc,
+    ):
+        result = github.detect_merge_conflicts(42)
+    assert result["status"] == "clean", result
+    mc.assert_called_once_with(fake_repo)
+
+
 def test_detect_conflicts_with_regions():
     """detect_merge_conflicts returns structured conflict data."""
     fake_dir = tempfile.mkdtemp()
@@ -627,6 +663,14 @@ def test_rebase_skips_already_current_branch():
 
 
 def main():
+    # These integration tests assert the legacy clone-per-call contract
+    # (mocked _clone_repo + _cleanup called once), which only the temp
+    # path provides - pin it for the run. Persistent-mode mechanics live
+    # in tests/test_git_workspace.py; the unwritable-home fallback has
+    # its own test below.
+    import config
+
+    config.GIT_WORKSPACE_MODE = "temp"
     test_parse_no_markers()
     test_parse_single_conflict()
     test_parse_multiple_conflicts()
@@ -646,6 +690,7 @@ def main():
     test_repo_url_with_special_chars_in_token()
     test_push_ref()
     test_detect_clean_merge()
+    test_workspace_unwritable_home_falls_back_to_temp()
     test_detect_conflicts_with_regions()
     test_detect_unreadable_file_graceful()
     test_resolve_partial_coverage_rejected()

@@ -504,6 +504,7 @@ from db._text import (  # noqa: F401
 # proposal threads (anchored discussions, proposal #421)
 from db._threads import (  # noqa: F401
     close_thread,
+    get_thread,
     list_threads,
     reopen_thread,
     start_thread,
