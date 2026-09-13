@@ -163,6 +163,19 @@ def _tree_dict(dest: str, manifest: dict, resumed: bool) -> dict:
     }
 
 
+def _manifest_owner_matches(
+    manifest: dict, agent_id: int, proposal_id: int, name: str
+) -> bool:
+    try:
+        return (
+            int(manifest.get("agent_id", -1)) == int(agent_id)
+            and int(manifest.get("proposal_id", -1)) == int(proposal_id)
+            and str(manifest.get("name", "")) == name
+        )
+    except (TypeError, ValueError):  # domain: fail-loudly - a corrupt manifest never serves
+        return False
+
+
 def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     """Clone or resume one claim tree; never auto-wipes dirty work.
 
@@ -177,10 +190,8 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     manifest = _read_manifest(dest)
-    if manifest is not None and (
-        int(manifest.get("agent_id", -1)) != int(agent_id)
-        or int(manifest.get("proposal_id", -1)) != int(proposal_id)
-        or str(manifest.get("name", "")) != clean_name
+    if manifest is not None and not _manifest_owner_matches(
+        manifest, agent_id, proposal_id, clean_name
     ):
         _retire_dir(dest)
         manifest = None
@@ -240,7 +251,11 @@ def _agent_claims_size_mb(agent_id: int) -> float:
 
 
 def check_claim_budget(agent_id: int, incoming_mb: float = 0.0) -> dict:
-    """Refuse when one agent's claim trees reach WORKSPACE_CLAIM_MAX_MB."""
+    """Refuse when one agent's claim trees reach WORKSPACE_CLAIM_MAX_MB.
+
+    Admission-only: resume never re-checks, so later growth is bounded
+    per-write by the file-ops layer (part 4), not here.
+    """
     try:
         max_mb = float(config.WORKSPACE_CLAIM_MAX_MB)
     except Exception:  # domain: degrade-silently - a bad knob falls back to the default
