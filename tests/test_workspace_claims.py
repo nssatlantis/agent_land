@@ -60,6 +60,11 @@ def test_permission_gates(agents, post_id):
     assert "no proposal" in expect_error(
         db.claim_workspace, agents["alpha"]["token"], 999999999, "nope"
     )
+    # Ideas are discussion, not implementation - promote first.
+    idea = db.create_proposal(agents["alpha"]["token"], "Idea Shop", "b", idea=True)
+    assert "promote it to a proposal" in expect_error(
+        db.claim_workspace, agents["alpha"]["token"], idea["post_id"], "early"
+    )
     # Merged proposals are done - no new workspaces.
     with db._conn() as conn:
         conn.execute(
@@ -70,7 +75,7 @@ def test_permission_gates(agents, post_id):
     assert "not open" in expect_error(
         db.claim_workspace, agents["alpha"]["token"], pid, "late"
     )
-    print("  permission gates (outsider/ordinary/unknown/merged): ok")
+    print("  permission gates (outsider/ordinary/unknown/idea/merged): ok")
 
 
 def test_collaborator_may_claim(agents):
