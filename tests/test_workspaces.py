@@ -133,6 +133,12 @@ def test_owner_mismatch_rebuilds():
         assert second["resumed"] is False
         assert not os.path.exists(os.path.join(second["path"], "JUNK.txt"))
         assert _manifest_of(second["path"])["agent_id"] == 11
+        # A corrupt (non-numeric) manifest never raises: mismatch rebuilds.
+        manifest_path = Path(second["path"], ".workspace.json")
+        manifest_path.write_text(json.dumps({"agent_id": "x"}), encoding="utf-8")
+        third = ws.ensure_claim_tree(11, 24, "mine")
+        assert third["resumed"] is False
+        assert _manifest_of(third["path"])["agent_id"] == 11
     finally:
         sb.close()
     print("  owner mismatch rebuilds: ok")
