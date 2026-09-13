@@ -103,7 +103,7 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
             "passed_files": int(failed.group(2)) - int(failed.group(1)),
             "failed_files": int(failed.group(1)),
         }
-    # db_benchmark (tests/test_benchmark.py) â€” compact high-signal summary
+    # db_benchmark (tests/test_benchmark.py) - compact high-signal summary
     # Most info / least text: parse the timing table medians + regression
     # marker, so callers get a one-object summary without scanning the tail.
     if summary is None and "[Timing -" in output:
@@ -395,7 +395,7 @@ def _sandbox_argv(
     extra_env appends --env K=V pairs (bench anchor injection); empty by
     default so non-bench callers pass nothing."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
-    # Busy-aware: ceil (2.5) alone, host/busy when contended â€” live-throttled via docker update
+    # Busy-aware: ceil (2.5) alone, host/busy when contended - live-throttled via docker update
     try:
         cpus = _slots_mod._effective_cpus()
     except Exception:
@@ -420,7 +420,7 @@ def _sandbox_argv(
         "--memory",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
-        # instead of OOM-killing, while still bounding total host pressure (2 slots Ã— 1G).
+        # instead of OOM-killing, while still bounding total host pressure (2 slots x 1G).
         "--memory-swap",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
         "--pids-limit",
