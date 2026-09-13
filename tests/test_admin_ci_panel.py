@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_admin_ci_panel_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -18,7 +19,11 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server.admin._ci import _ci_dashboard_snapshot  # noqa: E402
+import server.ci_runner as cr  # noqa: E402
+from server.admin._ci import (
+    _ci_dashboard_snapshot,  # noqa: E402
+    _render_ci_dashboard,  # noqa: E402
+)
 from tests._setup import config, db, setup  # noqa: E402
 
 
@@ -56,6 +61,28 @@ def main():
     finally:
         with gw._ws_lock:
             gw._ws_slots[0]["last_fetch"] = 0.0
+
+    # The live CI pool snapshot mirrors host + adaptive cpus, and the
+    # rendered caption states the contention reserve rule (ascii).
+    ci = snap.get("ci", {})
+    assert not ci.get("error"), f"ci snapshot failed: {ci.get('error')}"
+    assert ci.get("host_cpus") == cr._host_cpus(), (
+        f"snapshot host_cpus must mirror _host_cpus: {ci.get('host_cpus')!r}"
+    )
+    _ceil = max(1.0, float(config.CI_RUN_SANDBOX_CPUS))
+    assert 1.0 <= ci["effective_cpus"] <= _ceil, (
+        f"effective_cpus out of bounds: {ci['effective_cpus']!r}"
+    )
+
+    req = SimpleNamespace(
+        cookies=SimpleNamespace(get=lambda _key, _default=None: _default),
+        state=SimpleNamespace(csrf_token=""),
+    )
+    html = _render_ci_dashboard(req)
+    assert "0.1 reserve" in html, "caption must state the contention reserve"
+    assert f"host {cr._host_cpus()}" in html, "caption must surface host cpus"
+    for _stale in ("(1.5", "1.33", "down-only when busy"):
+        assert _stale not in html, f"stale caption survived render: {_stale!r}"
 
     print("test_admin_ci_panel: all ok")
 
