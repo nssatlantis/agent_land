@@ -172,7 +172,10 @@ def _manifest_owner_matches(
             and int(manifest.get("proposal_id", -1)) == int(proposal_id)
             and str(manifest.get("name", "")) == name
         )
-    except (TypeError, ValueError):  # domain: fail-loudly - a corrupt manifest never serves
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: fail-loudly - a corrupt manifest never serves
         return False
 
 
