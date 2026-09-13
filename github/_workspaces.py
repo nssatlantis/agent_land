@@ -246,6 +246,7 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
 
 
 def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+    """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
     dest = _claim_dir(agent_id, proposal_id, name)
     manifest = _read_manifest(dest)
     if manifest is None or not os.path.isdir(dest):
@@ -257,11 +258,84 @@ def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
 
 
 def claim_tree_status(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Live git status for one claim tree (missing reads empty)."""
     dest = _claim_dir(agent_id, proposal_id, name)
     exists = os.path.isdir(dest)
     if not exists:
         return {"exists": False, "path": dest}
-    return {"exists": True, "path": dest, "dirty": _is_dirty(dest)}
+    return {
+        "exists": True,
+        "path": dest,
+        "dirty": _is_dirty(dest),
+        "head_sha": _head_sha(dest),
+        "size_mb": round(_dir_size_mb(dest), 2),
+        "changes": _porcelain_changes(dest),
+    }
+
+
+def _porcelain_changes(dest: str) -> list:
+    res = _git(dest, "status", "--porcelain=v1", check=False)
+    if res.returncode != 0:
+        raise RepoError("workspace tree has no readable git status.")
+    out = []
+    for line in res.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        check = line[3:].split(" -> ")[-1]
+        if check in _MANAGED:
+            continue
+        out.append({"path": line[3:], "index": line[0], "worktree": line[1]})
+    return out
+
+
+def claim_tree_diff(
+    agent_id: int, proposal_id: int, name: str, path: str | None = None
+) -> dict:
+    """Uncommitted diff vs HEAD, optionally scoped to one path."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    args = ["diff", "HEAD", "--"]
+    if path is not None:
+        args.append(_validate_path(path, allow_protected=True))
+    res = _git(dest, *args, check=False)
+    if res.returncode != 0:
+        raise RepoError("could not diff the workspace tree.")
+    return {"diff": res.stdout, "head_sha": _head_sha(dest)}
+
+
+def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Fetch origin/<base> and hard-reset a CLEAN tree onto it."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    if _is_dirty(dest):
+        raise RepoError("workspace has uncommitted work - sync only clean trees.")
+    old = _head_sha(dest)
+    fetch = _git(dest, "fetch", "--force", "origin", GITHUB_BASE_BRANCH, check=False)
+    if fetch.returncode != 0:
+        raise RepoError("sync fetch failed.")
+    reset = _git(dest, "reset", "--hard", "FETCH_HEAD", check=False)
+    if reset.returncode != 0:  # domain: fail-loudly - a half-synced tree must surface
+        raise RepoError("workspace sync reset failed; reclaim the workspace.")
+    _git(dest, "clean", "-fdq", "-e", _MANIFEST, check=False)
+    manifest = _read_manifest(dest) or {}
+    manifest.update(
+        {
+            "agent_id": int(agent_id),
+            "proposal_id": int(proposal_id),
+            "name": _validate_claim_name(name),
+            "updated_at": time.time(),
+            "head_sha": _head_sha(dest),
+        }
+    )
+    _write_manifest(dest, manifest)
+    return {
+        "path": dest,
+        "old_sha": old,
+        "new_sha": _head_sha(dest),
+        "base": GITHUB_BASE_BRANCH,
+    }
 
 
 def _agent_claims_size_mb(agent_id: int) -> float:
