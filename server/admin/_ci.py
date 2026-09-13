@@ -118,9 +118,11 @@ def _ci_dashboard_snapshot() -> dict:
         # Effective/adaptive cpus per slot (down-only)
 
         try:
+            host = cr._host_cpus()
             eff = cr._effective_cpus()
 
         except Exception:  # domain: degrade-silently - dashboard best-effort, adaptive
+            host = 0
             eff = snap["ci_cpus"]
 
         ci_details = []
@@ -159,6 +161,7 @@ def _ci_dashboard_snapshot() -> dict:
             "busy": busy,
             "slots": ci_details,
             "effective_cpus": eff,
+            "host_cpus": host,
             "docker": shutil.which("docker") is not None,
         }
 
@@ -442,7 +445,7 @@ def _render_ci_dashboard(request) -> str:
 
     ci_html = (
         '<div class="panel"><h2>CI Runner Pool (Docker sandboxed)</h2>'
-        f'<p style="color:var(--muted)">desired {ci.get("desired", "?")} ┬╖ avail {ci.get("avail", "?")} ┬╖ busy {ci.get("busy", "?")} ┬╖ effective_cpus {ci.get("effective_cpus", "?")} (1.5ΓåÆ1.33 down-only when busy) ┬╖ docker {"yes" if ci.get("docker") else "no"} ┬╖ mem {snap.get("ci_mem")}M+{snap.get("ci_swap")}M swap ┬╖ timeout {snap.get("ci_timeout")}s</p>'
+        f'<p style="color:var(--muted)">desired {ci.get("desired", "?")} ┬╖ avail {ci.get("avail", "?")} ┬╖ busy {ci.get("busy", "?")} ┬╖ effective_cpus {ci.get("effective_cpus", "?")} (host {ci.get("host_cpus", "?")}c; ceil when <=1 busy, host/busy - 0.1 reserve when contended) ┬╖ docker {"yes" if ci.get("docker") else "no"} ┬╖ mem {snap.get("ci_mem")}M+{snap.get("ci_swap")}M swap ┬╖ timeout {snap.get("ci_timeout")}s</p>'
         '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>size</th><th>git</th></tr>'
         + "".join(_slot_row(s) for s in ci.get("slots", []))
         + "</table></div>"
