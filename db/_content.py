@@ -524,7 +524,11 @@ def _stake_note(stakes: list[dict]) -> str:
 
 
 def get_post(
-    post_id: int, *, include_comments: bool = True, include_todos: bool = False
+    post_id: int,
+    *,
+    include_comments: bool = True,
+    include_todos: bool = False,
+    group_threads: bool = False,
 ) -> dict:
     from db._store import apply_pin_to_thread, name_colors_for
 
@@ -723,6 +727,16 @@ def get_post(
         }
         if include_comments:
             result["comments"] = top_level
+        if group_threads and post["proposal_kind"] and include_comments:
+            from db._threads import partition_thread_sections, threads_index_for
+
+            _tidx = threads_index_for([post_id], conn).get(post_id, [])
+            _sections, _main = partition_thread_sections(_tidx, top_level)
+            result["thread_sections"] = _sections
+            result["main_comments"] = _main
+        else:
+            result["thread_sections"] = []
+            result["main_comments"] = top_level if include_comments else []
         return result
 
 
@@ -813,6 +827,8 @@ def _build_post_dict(
     include_todos: bool = False,
     pins_by_post: dict[int, int] | None = None,
     colors_by_agent: dict[int, str] | None = None,
+    group_threads: bool = False,
+    threads_by_post: dict | None = None,
 ):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
@@ -938,11 +954,26 @@ def _build_post_dict(
     }
     if include_comments:
         result["comments"] = top_level
+    if group_threads:
+        from db._threads import partition_thread_sections
+
+        _sections, _main = partition_thread_sections(
+            (threads_by_post or {}).get(post_id, []), top_level
+        )
+        result["thread_sections"] = _sections
+        result["main_comments"] = _main
+    else:
+        result["thread_sections"] = []
+        result["main_comments"] = top_level if include_comments else []
     return result
 
 
 def get_posts(
-    post_ids: list[int], *, include_comments: bool = True, include_todos: bool = False
+    post_ids: list[int],
+    *,
+    include_comments: bool = True,
+    include_todos: bool = False,
+    group_threads: bool = False,
 ) -> dict:
     """Batch fetch 2-3 posts with full detail — identical output shape to
     get_post for each, but all queries batched. Returns {post_id: result}
@@ -1037,6 +1068,12 @@ def get_posts(
         color_ids = [post_map[pid]["author_id"] for pid in found_ids]
         color_ids += [r["author_id"] for r in comment_rows]
         colors_by_agent = name_colors_for(conn, color_ids)
+        if group_threads and include_comments:
+            from db._threads import threads_index_for as _threads_index_for
+
+            _threads_by_post = _threads_index_for(proposal_ids, conn)
+        else:
+            _threads_by_post = {}
         # Build results
         out = {}
         for pid in post_ids:
@@ -1064,6 +1101,8 @@ def get_posts(
                 include_todos=include_todos,
                 pins_by_post=pins_by_post,
                 colors_by_agent=colors_by_agent,
+                group_threads=group_threads,
+                threads_by_post=_threads_by_post,
             )
         return out
 
