@@ -416,6 +416,16 @@ def test_get_thread_subtree_beats_single_level():
         r3["comment_id"]
     ], "threads-error@one-deep"
     assert all("score" in c for c in got["comments"]), "threads-error@one-score"
+    assert all("pinned" in c for c in got["comments"]), "threads-error@one-pin"
+    assert "replies" not in got["anchor"], "threads-error@one-anchor-shape"
+    assert not any(c.get("merged") for c in (r1, r2, r3)), (
+        "threads-error@one-nomerge"
+    )
+    idx = {t["thread_id"]: t for t in db.list_threads(pid)}
+    assert idx[tid]["reply_count"] == 3, "threads-error@one-agree-count"
+    assert idx[tid]["last_activity"] == got["last_activity"], (
+        "threads-error@one-agree-last"
+    )
     # The single-level read this tool replaces sees only the top reply.
     flat = db.list_comments(pid, parent_comment_id=tid)
     assert [c["id"] for c in flat] == [r1["comment_id"]], (
@@ -427,6 +437,30 @@ def test_get_thread_subtree_beats_single_level():
     assert "no thread #" in expect_error(db.get_thread, pid, 999999999), (
         "threads-error@one-unknown-thread"
     )
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO pinned_comments (post_id, comment_id) VALUES (?, ?)",
+            (pid, tid),
+        )
+    pinned = db.get_thread(pid, tid)
+    assert pinned["anchor"]["pinned"] is True, "threads-error@one-pin-true"
+    assert [c["pinned"] for c in pinned["comments"]] == [False], (
+        "threads-error@one-pin-child"
+    )
+    with db._conn() as conn:
+        conn.execute("DELETE FROM pinned_comments WHERE post_id = ?", (pid,))
+    stamp = "2026-01-01T00:00:00.000Z"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE comments SET created_at = ? WHERE post_id = ?", (stamp, pid)
+        )
+    tied = db.get_thread(pid, tid)
+    assert [c["id"] for c in tied["comments"]] == [r1["comment_id"]], (
+        "threads-error@one-tie-top"
+    )
+    assert [c["id"] for c in tied["comments"][0]["replies"][0]["replies"]] == [
+        r3["comment_id"]
+    ], "threads-error@one-tie-deep"
 
 
 def test_list_threads_sort_and_state():
@@ -449,6 +483,14 @@ def test_list_threads_sort_and_state():
     active = [t["thread_id"] for t in db.list_threads(pid, sort="active")]
     assert active == [a["thread_id"], b["thread_id"]], (
         f"threads-error@sort-active: {active!r}"
+    )
+    empty = db.get_thread(pid, b["thread_id"])
+    brow = {t["thread_id"]: t for t in db.list_threads(pid)}[b["thread_id"]]
+    assert empty["reply_count"] == 0 == brow["reply_count"], (
+        "threads-error@sort-empty-count"
+    )
+    assert empty["last_activity"] == brow["last_activity"], (
+        "threads-error@sort-empty-last"
     )
     db.close_thread(BETA, pid, b["thread_id"], "done here")
     assert [t["thread_id"] for t in db.list_threads(pid, state="open")] == [
@@ -478,7 +520,11 @@ def test_get_thread_explain_uses_indexes():
                 (tid, pid),
             ).fetchall()
         )
-        assert "SCAN threads" not in troot, f"threads-error@plan-root: {troot!r}"
+        troot_lines = [ln.strip() for ln in troot.splitlines()]
+        # Bare SCAN only: covering-index forms (SCAN x USING ...) pass.
+        assert "SCAN threads" not in troot_lines, (
+            f"threads-error@plan-root: {troot!r}"
+        )
         sub = "\n".join(
             r[3]
             for r in conn.execute(
@@ -495,7 +541,10 @@ def test_get_thread_explain_uses_indexes():
         assert "idx_comments_post_parent_created" in sub, (
             f"threads-error@plan-sub: {sub!r}"
         )
-        assert "SCAN comments" not in sub, f"threads-error@plan-scan: {sub!r}"
+        sub_lines = [ln.strip() for ln in sub.splitlines()]
+        assert not any(ln in ("SCAN threads", "SCAN c") for ln in sub_lines), (
+            f"threads-error@plan-scan: {sub!r}"
+        )
 
 
 if __name__ == "__main__":
