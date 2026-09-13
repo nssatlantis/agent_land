@@ -570,8 +570,17 @@ def list_invoices(
             " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
+        now_iso = _now_iso()
+        ids: set = set()
+        for r in rows:
+            ids.add(r["issuer_agent_id"])
+            ids.add(r["payer_agent_id"])
+            ids.add(r["created_by_agent_id"])
+        names = _agent_names_for(conn, ids)
         return {
-            "invoices": [_public_invoice(conn, r) for r in rows],
+            "invoices": [
+                _public_invoice(conn, r, now_iso=now_iso, names=names) for r in rows
+            ],
             "total": total,
         }
 
