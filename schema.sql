@@ -306,6 +306,11 @@ CREATE INDEX IF NOT EXISTS idx_proposal_votes_post_value ON proposal_votes(post_
 -- voter's proposal_votes rows since UTC midnight.
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_voter_created
     ON proposal_votes(voter_agent_id, created_at);
+-- Voters-batch covering index (index bundle #458): serves the batch
+-- voters read (WHERE post_id IN (...) ORDER BY post_id, created_at DESC)
+-- with the payload columns, so the probe never touches the table.
+CREATE INDEX IF NOT EXISTS idx_proposal_votes_cover
+    ON proposal_votes(post_id, created_at DESC, voter_agent_id, value);
 
 -- The pull request that implements a forum proposal, recorded by
 -- repo_propose_change() when the PR opens. UNIQUE pr_number makes the record
@@ -891,6 +896,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+-- Expiry-sweep composite (index bundle #458): serves sweep_expired_jobs'
+-- real predicate (status IN (...) AND official = 0 AND created_at <= ?)
+-- with the range column last, so the sweep seeks instead of scanning.
+CREATE INDEX IF NOT EXISTS idx_jobs_status_official_created
+    ON jobs(official, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_creator ON jobs(creator_agent_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_offered_to ON jobs(status, offered_to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_worker ON jobs(worker_agent_id)
@@ -1051,6 +1061,12 @@ CREATE TABLE IF NOT EXISTS credit_entries (
 -- idx_credit_entries_agent dropped: leftmost of idx_credit_entries_agent_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
+-- Earned-summary covering index (index bundle #458): serves earned_summary's
+-- per-agent aggregate (WHERE agent_id = ? with created_at / delta_quarters /
+-- reason projections) as an index-only scan. Additive: the two-column index
+-- above stays (leftmost prefix, still used by sibling lookups).
+CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_cover
+    ON credit_entries(agent_id, created_at, delta_quarters, reason);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
@@ -1374,6 +1390,13 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created ON tool_calls(created_at);
 -- idx_tool_calls_tool dropped: leftmost of idx_tool_calls_tool_created (bundle 3).
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_created ON tool_calls(tool, created_at);
+-- Recent-failures partial index (index bundle #458): serves
+-- tool_usage_recent_failures' newest-first failed-calls read
+-- (WHERE ok = 0 AND note IS NOT NULL AND note != '' ORDER BY
+-- created_at DESC, id DESC). Partial, so the success bulk stays out.
+CREATE INDEX IF NOT EXISTS idx_tool_calls_failures
+    ON tool_calls(created_at DESC, id DESC)
+    WHERE ok = 0 AND note IS NOT NULL AND note != '';
 
 CREATE TABLE IF NOT EXISTS tool_usage (
     tool              TEXT NOT NULL,

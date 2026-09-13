@@ -1413,6 +1413,7 @@ _perf_indexes = (
     "idx_report_votes_target_action",
     "idx_proposal_votes_post_value",
     "idx_proposal_votes_voter_created",
+    "idx_proposal_votes_cover",
     "idx_proposal_links_opener",
     "idx_proposal_links_post_pr",
     "idx_proposal_outcomes_post_pr",
@@ -1440,6 +1441,7 @@ _perf_indexes = (
     "idx_stake_locks_pr",
     "idx_stake_rewards_agent",
     "idx_jobs_status",
+    "idx_jobs_status_official_created",
     "idx_jobs_creator",
     "idx_jobs_offered_to",
     "idx_jobs_worker",
@@ -1449,6 +1451,7 @@ _perf_indexes = (
     "idx_job_rewards_agent",
     "idx_job_penalties_agent",
     "idx_credit_entries_agent_created",
+    "idx_credit_entries_agent_cover",
     "idx_credit_entries_treasury",
     "idx_credit_entries_agent_account",
     "idx_credit_entries_treasury_flows",
@@ -1484,6 +1487,7 @@ _perf_indexes = (
     "idx_workflow_run_steps_run",
     "idx_tool_calls_created",
     "idx_tool_calls_tool_created",
+    "idx_tool_calls_failures",
     "idx_polls_post",
     "idx_polls_concludes",
     "idx_poll_options_poll",
@@ -1571,15 +1575,20 @@ def _check_explain_search_posts() -> bool:
 
 def _check_explain_jobs() -> bool:
     # Real: the board's open view is IN ('open','offered'), not = 'open'.
-    # Either status-led index serves it: the single-column idx_jobs_status
-    # or the #1093 composite idx_jobs_offered_to (planners disagree across
+    # Any status-led index serves it: the single-column idx_jobs_status,
+    # the #1093 composite idx_jobs_offered_to, or the #458 sweep composite
+    # idx_jobs_status_official_created (planners disagree across
     # SQLite versions - same complexity class, covering + sort either way).
     # Pin "no full scan" instead of one index name; EXPLAIN prints
     # "SCAN jobs", never "SCAN TABLE jobs". Bare form only: a covering-index
     # scan (same class 3.50.4 emits for sibling queries) must not fail.
     sql = "SELECT id FROM jobs WHERE status IN ('open', 'offered') ORDER BY id DESC LIMIT 20"
     plan = _explain(sql)
-    ok_index = "idx_jobs_status" in plan or "idx_jobs_offered_to" in plan
+    ok_index = (
+        "idx_jobs_status" in plan
+        or "idx_jobs_offered_to" in plan
+        or "idx_jobs_status_official_created" in plan
+    )
     return ok_index and _no_full_scan(plan, "jobs")
 
 
