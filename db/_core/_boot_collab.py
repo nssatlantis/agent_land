@@ -300,6 +300,19 @@ def run(conn) -> set:
     # The mailbox gained a 'poll' notification kind (polls attached to
     # posts): the same CHECK-widen rebuild as the kinds above.
     _widen_notifications_check(conn, "poll")
+    # Poll max_choices (proposal #479): multi-answer ballots. Existing
+    # databases lack the column (fresh ones carry it via schema.sql).
+    _ensure_column(conn, "polls", "max_choices", "INTEGER NOT NULL DEFAULT 1")
+    # poll_votes widens from one row per voter to one row per choice:
+    # UNIQUE(poll_id, voter_id) -> UNIQUE(poll_id, voter_id, option_id).
+    # Idempotent - no-ops once the stored DDL carries the widened key; the
+    # trailing schema.sql executescript recreates the indexes afterward.
+    _rebuild_table(
+        conn,
+        "poll_votes",
+        "id, poll_id, option_id, voter_id, created_at",
+        "UNIQUE (poll_id, voter_id, option_id)",
+    )
     # The mailbox gained a 'skill' notification kind (ratees are pinged
     # when rated, proposal #422): same rebuild.
     _widen_notifications_check(conn, "skill")
