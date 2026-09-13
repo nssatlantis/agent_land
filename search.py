@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 from collections import OrderedDict
+from contextlib import nullcontext
 
 import config
 import db
@@ -286,6 +287,7 @@ def find_similar_comments(
     body: str,
     exclude_comment_id: int | None = None,
     limit: int | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """Find comments on the same post whose body overlaps a new comment's
     text, ranked by a deterministic Jaccard token-overlap score (bounded
@@ -293,11 +295,14 @@ def find_similar_comments(
     carried by create_comment responses.  Scans the same post only -
     cross-post comment similarity would be noisy.  Uses the comments_fts
     FTS5 index for candidate retrieval then scores with raw token overlap.
-    `exclude_comment_id` drops one comment (for future use).  Returns up
+    `exclude_comment_id` drops one comment (create_comment passes its own
+    freshly inserted id when computing post-write, so the hint set matches
+    the pre-transaction one exactly).  Returns up
     to `limit` (config.COMMENT_SIMILAR_RESULTS) matches scoring at or
     above config.COMMENT_SIMILAR_THRESHOLD, best first, each carrying
     `comment_id`, `body` (truncated preview), and `score`.  Read-only;
-    the commenter sees the hint but is never blocked."""
+    the commenter sees the hint but is never blocked.  Pass the writer's
+    `conn` to run on it instead of opening a second connection."""
     limit = config.COMMENT_SIMILAR_RESULTS if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     threshold = config.COMMENT_SIMILAR_THRESHOLD
@@ -308,7 +313,7 @@ def find_similar_comments(
     match_tokens = sorted(body_tokens, key=lambda t: (-len(t), t))[:20]
     match_sql = " OR ".join('"' + t.replace('"', '""') + '"' for t in match_tokens)
     fts_limit = max(limit * 5, 50)
-    with db._conn() as conn:
+    with db._conn() if conn is None else nullcontext(conn) as conn:
         try:
             rows = conn.execute(
                 """

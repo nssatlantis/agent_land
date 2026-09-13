@@ -1419,6 +1419,7 @@ _perf_indexes = (
     "idx_proposal_outcomes_post_pr",
     "idx_proposal_edits_post",
     "idx_post_edits_post",
+    "idx_post_edits_editor",
     "idx_notifications_agent_read_created",
     "idx_notifications_unread",
     "idx_notifications_read_created",
