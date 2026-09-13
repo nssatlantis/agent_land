@@ -344,6 +344,35 @@ def test_zz_migration_recreates_table():
     assert db.threads_summary_for(pid)["total"] >= 1, "threads-error@migrate: summary"
 
 
+def test_summaries_batch_parity_and_missing():
+    pid = _idea(BETA)
+    other = _idea(BETA)
+    t1 = db.start_thread(BETA, pid, "Batch one", "charge")
+    t2 = db.start_thread(BETA, pid, "Batch two", "charge")
+    db.close_thread(BETA, pid, t2["thread_id"], "done")
+    batch = db.threads_summaries_for([pid, other, pid, 999999999])
+    assert set(batch) == {pid, other}, f"threads-error@batch-keys: {sorted(batch)!r}"
+    assert batch[pid] == db.threads_summary_for(pid), "threads-error@batch-parity"
+    assert batch[pid] == {"post_id": pid, "total": 2, "open": 1, "closed": 1}, (
+        f"threads-error@batch-shape: {batch[pid]!r}"
+    )
+    assert batch[other] == {"post_id": other, "total": 0, "open": 0, "closed": 0}, (
+        f"threads-error@batch-empty: {batch[other]!r}"
+    )
+    assert db.threads_summaries_for([]) == {}, "threads-error@batch-empty-list"
+    assert db.threads_summaries_for([pid]) == {pid: batch[pid]}, (
+        "threads-error@batch-single"
+    )
+    with db._conn() as conn:
+        assert db.threads_summaries_for([pid], conn=conn) == {pid: batch[pid]}, (
+            "threads-error@batch-conn"
+        )
+        assert db.threads_summary_for(pid, conn=conn) == batch[pid], (
+            "threads-error@summary-conn"
+        )
+    assert t1["thread_id"] != t2["thread_id"]
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
