@@ -61,6 +61,11 @@ def _require_workspace_permission(
     ).fetchone()
     if prow is None or prow["proposal_kind"] is None:
         raise ForumError(f"no proposal with id {post_id}.")
+    if prow["proposal_kind"] == "idea":
+        raise ForumError(
+            f"post #{post_id} is an idea - promote it to a proposal first;"
+            " workspaces bind to proposals, not discussion threads."
+        )
     if agent_id == prow["agent_id"] or agent_id == prow["delegate_id"]:
         return
     if prow["collaborative"]:
