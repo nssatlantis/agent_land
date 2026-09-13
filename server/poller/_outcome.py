@@ -87,6 +87,16 @@ def _collaborative_digest_sweep() -> None:
             ).fetchall()
         }
         now = _parse_iso(_now_iso())
+        # Batch the per-member work-list reads across the gated set: one
+        # membership IN plus one todos/merged batch over the union of post
+        # ids, sliced per citizen below (the same dicts _collab_work_list
+        # builds per member). The 24h gate, the text and the notify write
+        # stay per-member inside the existing try/except shape; if any
+        # batch read fails, the loop below falls back to the exact
+        # pre-batch per-member reads, so error isolation is unchanged.
+        from db._proposal_todos import _todos_summary_for_posts
+
+        gated: list[int] = []
         for ag in agents:
             try:
                 aid = int(ag["id"])
@@ -97,7 +107,60 @@ def _collaborative_digest_sweep() -> None:
                     last = _parse_iso(newest)
                     if now - last < timedelta(hours=24):
                         continue
-                items = _collab_work_list(conn, aid)
+                gated.append(aid)
+            except (
+                Exception
+            ):  # domain: degrade-silently - one bad gate stamp skips only them
+                pass
+        member_rows: dict[int, list] = {aid: [] for aid in gated}
+        todos_map: dict = {}
+        merged_map: dict = {}
+        batched = False
+        try:
+            if gated:
+                marks_g = ",".join("?" * len(gated))
+                for r in conn.execute(
+                    "SELECT pc.agent_id AS agent_id, p.id, p.title, p.pr_goal"
+                    " FROM posts p"
+                    " JOIN proposal_collaborators pc ON pc.proposal_id = p.id"
+                    f" WHERE pc.agent_id IN ({marks_g})"
+                    " AND p.collaborative = 1"
+                    " AND p.collaborative_closed IS NULL"
+                    " AND p.superseded_by_id IS NULL",
+                    gated,
+                ).fetchall():
+                    member_rows[int(r["agent_id"])].append(r)
+            union_pids = sorted(
+                {r["id"] for rows in member_rows.values() for r in rows}
+            )
+            if union_pids:
+                todos_map = _todos_summary_for_posts(conn, union_pids)
+                marks_u = ",".join("?" * len(union_pids))
+                merged_map = {
+                    r["post_id"]: r["merged"]
+                    for r in conn.execute(
+                        "SELECT pl.post_id, COUNT(*) AS merged FROM proposal_outcomes po"
+                        " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
+                        f" WHERE pl.post_id IN ({marks_u})"
+                        " AND po.status = 'merged' GROUP BY pl.post_id",
+                        union_pids,
+                    ).fetchall()
+                }
+            batched = True
+        except Exception:  # domain: degrade-silently - batch is an optimization; the loop below falls back to the pre-batch per-member reads
+            batched = False
+        for aid in gated:
+            try:
+                if batched:
+                    items = _collab_work_list(
+                        conn,
+                        aid,
+                        todos_by_post=todos_map,
+                        member_rows=member_rows[aid],
+                        merged_by_post=merged_map,
+                    )
+                else:
+                    items = _collab_work_list(conn, aid)
                 if not items:
                     continue
                 summaries = []
@@ -114,7 +177,7 @@ def _collaborative_digest_sweep() -> None:
                     joined += f" and {len(items) - 3} more"
                 notifications._notify(
                     conn,
-                    ag["id"],
+                    aid,
                     "collab_digest",
                     None,
                     None,

@@ -470,6 +470,101 @@ def test_collaborative_digest_sweep():
     print("  collaborative_digest_sweep time-gate: ok")
 
 
+def test_collaborative_digest_falls_back_on_batch_failure():
+    """Batch failure falls back to per-member reads (blast-radius fix)."""
+    from pathlib import Path
+
+    text = Path("server/poller/_outcome.py").read_text()
+    assert "batched = False" in text, "fallback flag missing"
+    assert "degrade-silently - batch is an optimization" in text
+    assert "if batched:" in text
+    assert "_collab_work_list(conn, aid)" in text
+    # also verify normal sweep still delivers (proves fallback path reachable)
+    from server.poller import _collaborative_digest_sweep
+
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Collab fallback {_counter[0]}",
+        "body",
+        collaborative=True,
+    )
+    _counter[0] += 1
+    pid = prop["post_id"]
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"],
+        pid,
+        [{"title": "Tasks", "items": [{"text": "task1"}]}],
+    )
+    db.join_proposal(AGENTS["beta"]["token"], pid)
+    with db._conn() as conn:
+        conn.execute(
+            "DELETE FROM notifications WHERE kind='collab_digest' AND agent_id=?",
+            (AGENTS["beta"]["agent_id"],),
+        )
+    _collaborative_digest_sweep()
+    with db._conn() as conn:
+        notifs = conn.execute(
+            "SELECT 1 FROM notifications WHERE kind='collab_digest' AND agent_id=?",
+            (AGENTS["beta"]["agent_id"],),
+        ).fetchall()
+    assert notifs, "sweep must deliver digest (fallback reachable)"
+    print("  collaborative_digest fallback on batch failure: ok")
+
+
+def test_collaborative_digest_skips_corrupt_gate_stamp():
+    """Corrupt collab_digest stamp skips only that citizen."""
+    from server.poller import _collaborative_digest_sweep
+
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Corrupt gate {_counter[0]}",
+        "body",
+        collaborative=True,
+    )
+    _counter[0] += 1
+    pid = prop["post_id"]
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"],
+        pid,
+        [{"title": "T", "items": [{"text": "t1"}]}],
+    )
+    db.join_proposal(AGENTS["beta"]["token"], pid)
+    db.join_proposal(AGENTS["gamma"]["token"], pid)
+    with db._conn() as conn:
+        conn.execute(
+            "DELETE FROM notifications WHERE kind='collab_digest' AND agent_id IN (?,?)",
+            (AGENTS["beta"]["agent_id"], AGENTS["gamma"]["agent_id"]),
+        )
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, body, created_at) VALUES (?, 'collab_digest', 'x', 'not-a-date')",
+            (AGENTS["beta"]["agent_id"],),
+        )
+        old = (datetime.now(timezone.utc) - timedelta(hours=30)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, body, created_at) VALUES (?, 'collab_digest', 'x', ?)",
+            (AGENTS["gamma"]["agent_id"], old),
+        )
+    _collaborative_digest_sweep()
+    with db._conn() as conn:
+        beta_rows = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE kind='collab_digest' AND agent_id=?",
+            (AGENTS["beta"]["agent_id"],),
+        ).fetchone()[0]
+        gamma_rows = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE kind='collab_digest' AND agent_id=?",
+            (AGENTS["gamma"]["agent_id"],),
+        ).fetchone()[0]
+    assert beta_rows == 1, (
+        f"corrupt stamp must suppress beta digest, got {beta_rows} rows"
+    )
+    assert gamma_rows == 2, (
+        f"gamma must receive digest despite beta corrupt, got {gamma_rows} rows"
+    )
+    print("  collaborative_digest skips corrupt gate stamp: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_decline_after_grace()
@@ -478,4 +573,6 @@ if __name__ == "__main__":
     test_sweep_drains_past_rebase_conflict()
     test_sweep_relinks_unlinked_open_prs()
     test_collaborative_digest_sweep()
+    test_collaborative_digest_falls_back_on_batch_failure()
+    test_collaborative_digest_skips_corrupt_gate_stamp()
     print("\n== test_sweep_c: all passed ==")

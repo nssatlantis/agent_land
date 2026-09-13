@@ -643,10 +643,13 @@ def list_reports(
     a citizen, their own `my_vote` on the target ('suspend' / 'clear' /
     None) so triage never needs a get_report per row."""
     where = ""
+    tally_where = ""
     if status == "open":
         where = "WHERE r.status = 'open'"
+        tally_where = "WHERE status = 'open'"
     elif status == "resolved":
         where = "WHERE r.status IN ('suspended', 'cleared', 'removed')"
+        tally_where = "WHERE status IN ('suspended', 'cleared', 'removed')"
     elif status != "all":
         raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
@@ -673,6 +676,9 @@ def list_reports(
                        COALESCE(SUM(CASE WHEN action = 'suspend' THEN 1 ELSE 0 END), 0) AS suspend_votes,
                        COALESCE(SUM(CASE WHEN action = 'clear' THEN 1 ELSE 0 END), 0) AS clear_votes
                 FROM report_votes
+                WHERE (target_type, target_id) IN (
+                    SELECT target_type, target_id FROM reports {tally_where}
+                )
                 GROUP BY target_type, target_id
             )
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
