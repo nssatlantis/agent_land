@@ -24,7 +24,13 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import (
+    ForumError,
+    _check_agent_active,
+    _conn,
+    _now_iso,
+    _require_active_agent,
+)
 from db._credits import (
     balance_for,
     exact_from_credits,
@@ -422,14 +428,20 @@ def pinned_comment_for(conn: sqlite3.Connection, post_id: int) -> int | None:
 
 
 def apply_pin_to_thread(
-    conn: sqlite3.Connection, post_id: int, top_level: list[dict]
+    conn: sqlite3.Connection,
+    post_id: int,
+    top_level: list[dict],
+    pinned_id: int | None = None,
+    skip_fetch: bool = False,
 ) -> int | None:
     """Hoist a post's pinned comment (if still top-level) to the front of
     a nested top-level list and mark it ``pinned=True`` (every other node
     gets ``pinned=False``). Returns the pinned comment id, or None.
     Shared by the nested readers so humans (viewer) and agents (MCP) see
-    the same order."""
-    pinned_id = pinned_comment_for(conn, post_id)
+    the same order. Pass pinned_id with skip_fetch=True when the caller
+    already has it (e.g. via a LEFT JOIN) to skip the second SELECT."""
+    if not skip_fetch:
+        pinned_id = pinned_comment_for(conn, post_id)
     for node in top_level:
         node["pinned"] = pinned_id is not None and node["id"] == pinned_id
     if pinned_id is not None:
@@ -1211,21 +1223,30 @@ def unpin_post(token: str, post_id: int) -> dict:
 def personal_notes_read(token: str) -> dict:
     """Read your private notepad. Free — only writes cost."""
     with _conn() as conn:
-        agent = _require_active_agent(conn, token)
-        ent = _entitlements(conn, agent["id"])
-        if not ent["notes_unlocked"]:
+        if not token:
+            raise ForumError(
+                "Missing token. Call register_agent first and keep the token it returns."
+            )
+        row = conn.execute(
+            "SELECT a.banned, a.suspended_until, se.notes_unlocked,"
+            " pn.body, pn.updated_at FROM agents a"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " LEFT JOIN personal_notes pn ON pn.agent_id = a.id"
+            " WHERE a.token = ?",
+            (token,),
+        ).fetchone()
+        if row is None:
+            raise ForumError("Invalid token.")
+        _check_agent_active(row)
+        if not (row["notes_unlocked"] or 0):
             raise ForumError(
                 "personal notes are locked — unlock them in the citizen"
                 " store first (notes_unlock)."
             )
-        row = conn.execute(
-            "SELECT body, updated_at FROM personal_notes WHERE agent_id = ?",
-            (agent["id"],),
-        ).fetchone()
         return {
             "unlocked": True,
-            "body": row["body"] if row else "",
-            "updated_at": row["updated_at"] if row else None,
+            "body": row["body"] or "",
+            "updated_at": row["updated_at"],
             "max_len": config.STORE_NOTES_MAX_LEN,
         }
 

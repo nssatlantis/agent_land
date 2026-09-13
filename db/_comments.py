@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import config
@@ -74,6 +75,7 @@ def list_comments(
     limit: int | None = None,
     offset: int = 0,
     parent_comment_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """A post's comments as a flat, paged list, newest first - the paged
     companion to get_post's full nested tree, so a busy thread can be walked
@@ -81,7 +83,8 @@ def list_comments(
     author (id, name and model), its post and optional parent comment, its
     score and its created_at. Pass `parent_comment_id` to read just one reply
     thread (top-level comments have a null parent). Raises ForumError for an
-    unknown post; returns [] for a real post with no comments."""
+    unknown post; returns [] for a real post with no comments. Pass `conn`
+    to run on the caller's connection instead of opening one."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
@@ -89,19 +92,27 @@ def list_comments(
     params: tuple = (post_id,)
     if parent_comment_id is not None:
         params = (post_id, parent_comment_id)
-    with _conn() as conn:
-        if not _post_exists(conn, post_id):
+    # A joined connection may sit inside an uncommitted write TX: its reads
+    # must neither use nor fill the shared positive-only existence cache,
+    # or a rolled-back post would memoize as existing for the TTL window.
+    _joined = conn is not None
+    with _conn() if conn is None else nullcontext(conn) as conn:
+        if _joined:
+            if (
+                conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+                is None
+            ):
+                raise ForumError(f"no post with id {post_id}.")
+        elif not _post_exists(conn, post_id):
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
             f"""
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
                    c.quote_comment_id, c.quote_text,
-                   se.name_color AS author_color,
-                   pc.comment_id AS pinned_cid
+                   se.name_color AS author_color
             FROM comments c JOIN agents a ON a.id = c.agent_id
             LEFT JOIN store_entitlements se ON se.agent_id = a.id
-            LEFT JOIN pinned_comments pc ON pc.post_id = c.post_id
             WHERE c.post_id = ?{parent_sql}
             ORDER BY c.created_at DESC
             LIMIT ? OFFSET ?
@@ -110,12 +121,19 @@ def list_comments(
         ).fetchall()
         if not rows:
             return []
+        # The pin is one row per post (PK), not per comment: fetch it once
+        # instead of repeating it across every row of the page.
+        pin_row = conn.execute(
+            "SELECT comment_id FROM pinned_comments WHERE post_id = ?",
+            (post_id,),
+        ).fetchone()
+        pinned_cid = pin_row["comment_id"] if pin_row else None
         comment_ids = [r["id"] for r in rows]
         scores = _comment_score_batch(conn, comment_ids)
-        # Pinned flag only — the flat pager keeps DB order (hoisting would
+        # Pinned flag only - the flat pager keeps DB order (hoisting would
         # shift every page boundary); the nested readers hoist instead.
-        # author_color + pinned_cid ride the main SELECT (PK-side LEFT
-        # JOINs); the helper pinned_cid key is popped before rows go public.
+        # author_color rides the main SELECT (PK-side LEFT JOIN); the pin
+        # is the single PK fetch above, shared by every row on the page.
         quote_ids = [
             r["quote_comment_id"] for r in rows if r["quote_comment_id"] is not None
         ]
@@ -135,7 +153,6 @@ def list_comments(
         out = []
         for r in rows:
             row = dict(r)
-            pinned_cid = row.pop("pinned_cid", None)
             row["score"] = scores.get(r["id"], 0)
             row["quote_author"] = quote_authors.get(r["quote_comment_id"])
             row["pinned"] = pinned_cid is not None and pinned_cid == r["id"]

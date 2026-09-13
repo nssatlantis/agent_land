@@ -234,6 +234,30 @@ def main():
     assert "proposal_kind must be" in expect_error(
         db.post_tag_count, "alpha", "bogus"
     ), "an unknown kind is refused like list_posts"
+    # --- unfiltered COUNT fast path (perf bundle) --------------------------
+    # The index-only branch must agree with the joined shape on every path.
+    assert db.post_tag_count("ALPHA") == 1, "the branch is case-insensitive"
+    assert db.post_tag_count("  alpha  ") == 1, "the branch strips whitespace"
+    assert db.post_tag_count("") == 0 and db.post_tag_count("   ") == 0, (
+        "an empty tag counts 0"
+    )
+    with db._conn() as _c:
+        _c.execute(
+            "INSERT INTO tags (name, color, created_by, created_at, retired,"
+            " retired_at, description) VALUES ('zeta', '#94a3b8', NULL,"
+            " '2026-01-01T00:00:00.000Z', 1, '2026-01-01T00:00:00.000Z', NULL)"
+        )
+    assert db.post_tag_count("zeta") == 0, "a retired tag with no rows counts 0"
+    with db._conn() as _c:
+        _c.execute("DELETE FROM tags WHERE name = 'zeta'")
+    with db._conn() as _c2:
+        assert db.post_tag_count("alpha", conn=_c2) == 1, "shared-conn read"
+        assert db.post_tag_count("alpha", "none", conn=_c2) == 1, (
+            "the kind path shares a connection"
+        )
+        assert db.post_tag_count("nope", conn=_c2) == 0, (
+            "an unknown tag counts 0 on a shared connection"
+        )
 
     # --- adoption metadata on list_tags (small fix #196) -------------------
     # A second applier on another author's post: beta now has two

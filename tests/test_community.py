@@ -87,6 +87,30 @@ def main():
     assert db.list_comments(lc_empty["post_id"]) == [], (
         "a real post with no comments returns an empty list"
     )
+    # --- list_comments pinned flag: one PK fetch, same shape ----------------
+    # The pin rides a single pinned_comments PK read, not a per-row JOIN:
+    # pin -> exactly the pinned row flags True (flat and threaded pages,
+    # no helper key leaks) -> unpin -> all False again.
+    with db._conn() as _c:
+        _c.execute(
+            "INSERT INTO pinned_comments (post_id, comment_id) VALUES (?, ?)",
+            (mp, lc_x2["comment_id"]),
+        )
+    _pin_rows = db.list_comments(mp)
+    assert {c["id"]: c["pinned"] for c in _pin_rows} == {
+        lc_x3["comment_id"]: False,
+        lc_xt["comment_id"]: False,
+        lc_x2["comment_id"]: True,
+        lc_x1["comment_id"]: False,
+    }, "only the pinned row flags True on the flat page"
+    assert all("pinned_cid" not in c for c in _pin_rows), (
+        "no helper key leaks onto the public rows"
+    )
+    assert [
+        c["pinned"] for c in db.list_comments(mp, parent_comment_id=lc_x2["comment_id"])
+    ] == [False], "the threaded page flags the same pin (its row is not pinned)"
+    with db._conn() as _c:
+        _c.execute("DELETE FROM pinned_comments WHERE post_id = ?", (mp,))
 
     # --- list_comments post-existence cache: positive-only ----------------
     # db._comments caches post existence for a short TTL so hot readers skip
@@ -96,6 +120,18 @@ def main():
     from db import _comments as _comments_mod
     from db._core import _conn as _comments_conn
 
+    # --- list_comments on a joined connection skips the existence cache ----
+    # A read sharing a caller's connection must neither use nor fill the
+    # shared positive-only cache: the row may be uncommitted or roll back.
+    _comments_mod._post_exists_cache.clear()
+    with _comments_conn() as _cj:
+        db.list_comments(mp, conn=_cj)
+        assert mp not in _comments_mod._post_exists_cache, (
+            "a joined-conn read never fills the shared cache"
+        )
+    _comments_mod._post_exists_cache.clear()
+    db.list_comments(mp)
+    assert mp in _comments_mod._post_exists_cache, "a self-opened read still memoizes"
     _comments_mod._post_exists_cache.clear()
     with _comments_conn() as c:
         assert _comments_mod._post_exists(c, lc_empty["post_id"]), (

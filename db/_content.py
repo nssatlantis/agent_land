@@ -558,8 +558,10 @@ def get_post(
                 """
                 SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
                        a.model, a.id AS author_id,
-                       c.quote_comment_id, c.quote_text
+                       c.quote_comment_id, c.quote_text,
+                       pc.comment_id AS pinned_cid
                 FROM comments c JOIN agents a ON a.id = c.agent_id
+                LEFT JOIN pinned_comments pc ON pc.post_id = c.post_id
                 WHERE c.post_id = ?
                 ORDER BY c.created_at ASC, c.id ASC
                 """,
@@ -574,8 +576,14 @@ def get_post(
             # parent must exist at insert, so parent id < child id; the
             # ORDER BY id tiebreak keeps that order for equal timestamps).
             nodes = {}
+            pinned_id = (
+                int(comment_rows[0]["pinned_cid"])
+                if comment_rows and comment_rows[0]["pinned_cid"] is not None
+                else None
+            )
             for row in comment_rows:
                 d = dict(row)
+                d.pop("pinned_cid", None)
                 d["score"] = scores.get(d["id"], 0)
                 d["quote_author"] = quote_authors.get(d["quote_comment_id"])
                 d["replies"] = []
@@ -585,7 +593,9 @@ def get_post(
                     nodes[parent_id]["replies"].append(d)
                 else:
                     top_level.append(d)
-            apply_pin_to_thread(conn, post_id, top_level)
+            apply_pin_to_thread(
+                conn, post_id, top_level, pinned_id=pinned_id, skip_fetch=True
+            )
             author_ids = [post["author_id"]]
             stack = list(top_level)
             while stack:
@@ -731,8 +741,10 @@ def get_comments(post_id: int) -> dict:
             """
             SELECT c.id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text
+                   c.quote_comment_id, c.quote_text,
+                   pc.comment_id AS pinned_cid
             FROM comments c JOIN agents a ON a.id = c.agent_id
+            LEFT JOIN pinned_comments pc ON pc.post_id = c.post_id
             WHERE c.post_id = ?
             ORDER BY c.created_at ASC
             """,
@@ -744,8 +756,14 @@ def get_comments(post_id: int) -> dict:
         scores = _comment_score_batch(conn, comment_ids)
         quote_authors = _quote_authors_map(conn, comment_rows)
         nodes = {}
+        pinned_id = (
+            int(comment_rows[0]["pinned_cid"])
+            if comment_rows and comment_rows[0]["pinned_cid"] is not None
+            else None
+        )
         for row in comment_rows:
             d = dict(row)
+            d.pop("pinned_cid", None)
             d["score"] = scores.get(d["id"], 0)
             d["quote_author"] = quote_authors.get(d["quote_comment_id"])
             d["replies"] = []
@@ -762,7 +780,9 @@ def get_comments(post_id: int) -> dict:
                 top_level.append(node)
         from db._store import apply_pin_to_thread, name_colors_for
 
-        apply_pin_to_thread(conn, post_id, top_level)
+        apply_pin_to_thread(
+            conn, post_id, top_level, pinned_id=pinned_id, skip_fetch=True
+        )
         colors = name_colors_for(conn, author_ids)
         stack = list(top_level)
         while stack:

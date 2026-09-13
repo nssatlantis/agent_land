@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import config
@@ -143,7 +144,9 @@ def list_tags() -> list:
     return [dict(r) for r in rows]
 
 
-def post_tag_count(tag: str, proposal_kind: str | None = None) -> int:
+def post_tag_count(
+    tag: str, proposal_kind: str | None = None, conn: sqlite3.Connection | None = None
+) -> int:
     """How many posts carry a tag - the /posts?tag= pager's total. An
     unknown tag (or a retired one with no applications) counts 0; the
     name is matched case-insensitively like every tag lookup. With
@@ -152,7 +155,8 @@ def post_tag_count(tag: str, proposal_kind: str | None = None) -> int:
     totals (one COUNT instead of a full enriched fetch, and exact past
     20 rows). The kind predicate mirrors _proposal_kind_clause inline
     so this module gains no new import cycle; an unknown kind raises
-    ForumError like list_posts does."""
+    ForumError like list_posts does. Pass `conn` to run on the caller's
+    connection instead of opening one."""
     name = tag.strip()
     if not name:
         return 0
@@ -172,8 +176,23 @@ def post_tag_count(tag: str, proposal_kind: str | None = None) -> int:
         raise ForumError(
             "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
         )
-    with _conn() as conn:
-        row = conn.execute(
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if kind in (None, "all"):
+            # Unfiltered fast path: every post_tags row has its post (FK
+            # cascade), so the posts join filters nothing - resolve the tag
+            # once, then COUNT index-only over idx_post_tags_tag_post.
+            trow = c.execute(
+                "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+                (name,),
+            ).fetchone()
+            if trow is None:
+                return 0
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM post_tags WHERE tag_id = ?",
+                (trow["id"],),
+            ).fetchone()
+            return row["n"]
+        row = c.execute(
             """
             SELECT COUNT(*) AS n FROM post_tags pt
             JOIN tags t ON t.id = pt.tag_id

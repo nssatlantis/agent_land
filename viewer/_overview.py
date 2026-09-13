@@ -98,7 +98,12 @@ async def _render_overview_uncached() -> str:
     )
     with db._conn() as _c:
         jobs_open, _jobs_offered, _jobs_active = db._jobs.open_active_job_counts(_c)
-    headline = db.headline_balances()
+    try:
+        from db._economy import day_dt_to_iso
+
+        _delta_bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
+    except Exception:  # domain: degrade-silently - delta is optional enrichment
+        _delta_bound = None
 
     _sync = {}
     # GitHub stale state (237:4374) — degrade-silently (viewer_status._git_sync_status has 60s fetch cache)
@@ -120,19 +125,21 @@ async def _render_overview_uncached() -> str:
     if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
         _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
-    treasury_delta_quarters = None
+    with db._conn() as _c:
+        headline = db.headline_balances(conn=_c)
+        treasury_delta_quarters = None
+        if _delta_bound is not None:
+            try:
+                treasury_delta_quarters = db.treasury_delta_quarters(
+                    _delta_bound, conn=_c
+                )
+            except Exception:  # domain: degrade-silently - delta is optional enrichment
+                treasury_delta_quarters = None
     supply_quarters = (
         headline["treasury_quarters"]
         + headline["circulating_quarters"]
         + headline.get("escrow_quarters", 0)
     )
-    try:
-        from db._economy import day_dt_to_iso
-
-        bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
-        treasury_delta_quarters = db.treasury_delta_quarters(bound)
-    except Exception:  # domain: degrade-silently - delta is optional enrichment
-        treasury_delta_quarters = None
 
     open_by_agent = _open_prs_by_agent(all_prs)
 
