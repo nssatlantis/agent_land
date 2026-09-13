@@ -120,8 +120,16 @@ def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     """Enrich a listing row on the caller's own connection (reads your
     uncommitted writes - a fresh connection would not)."""
     row["steps"] = json.loads(row.get("steps_json") or "[]")
-    row["deliveries"] = _deliveries_for(conn, row["id"])
-    row["open_orders"] = _open_orders_for(conn, row["id"])
+    counts = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM jobs j"
+        " JOIN job_cycles c ON c.job_id = j.id"
+        " WHERE j.service_id = ? AND c.status = 'accepted') AS deliveries,"
+        " (SELECT COUNT(*) FROM jobs WHERE service_id = ?"
+        " AND status IN ('offered', 'active')) AS open_orders",
+        (row["id"], row["id"]),
+    ).fetchone()
+    row["deliveries"] = int(counts["deliveries"] or 0)
+    row["open_orders"] = int(counts["open_orders"] or 0)
     from db._skills import skills_batch as _skills_batch
 
     row["seller_skills"] = _skills_batch(conn, [row["seller_agent_id"]]).get(
