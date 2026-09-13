@@ -64,6 +64,11 @@ from ._ticker import (  # noqa: F401
     pending_snapshot_with_deadlines,
     requeue_attempts_snapshot,
 )
+from ._workspace import (  # noqa: F401
+    claim_workspace,
+    list_workspaces,
+    release_workspace,
+)
 
 
 def __getattr__(name: str):
