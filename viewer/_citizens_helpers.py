@@ -61,33 +61,38 @@ def _skill_sort_value(a: dict, skill: str) -> int:
     return -1
 
 
-def _skills_cell(a: dict) -> str:
-    """One compact skills cell: per-skill short code + score (or dash),
-    badge pills inline. Display-only."""
-    parts = []
-    for key in ("building", "reviewing", "bug_hunting", "coordinating"):
-        s = (a.get("skills") or {}).get(key) or {}
-        short = _SKILL_SHORT[key]
-        if s.get("ranked"):
-            star = "★" if s.get("badge") else ""
-            parts.append(
-                f"<span title='{esc(s.get('label') or key)}: "
-                f"{int(s['score'])}/100 (range {int(s['min_score'])}–"
-                f"{int(s['max_score'])}) over {int(s.get('raters', 0))} raters"
-                f'{"; " + esc(s["badge_label"]) if s.get("badge") else ""}">'
-                f"{short} {int(s['score'])}{star}</span>"
-            )
-        else:
-            parts.append(
-                f"<span style='color:var(--muted)' title='{esc(s.get('label') or key)}: "
-                f"unranked'>{short} –</span>"
-            )
-    return f'<td class="num">{" · ".join(parts)}</td>'
+def _skill_cell(a: dict, key: str) -> str:
+    """One narrow per-skill cell matching one B/R/H/C header. Display-only."""
+    s = (a.get("skills") or {}).get(key) or {}
+    short = _SKILL_SHORT[key]
+    if s.get("ranked"):
+        star = "★" if s.get("badge") else ""
+        inner = (
+            f"<span title='{esc(s.get('label') or key)}: "
+            f"{int(s['score'])}/100 (range {int(s['min_score'])}–"
+            f"{int(s['max_score'])}) over {int(s.get('raters', 0))} raters"
+            f'{"; " + esc(s["badge_label"]) if s.get("badge") else ""}">'
+            f"{short} {int(s['score'])}{star}</span>"
+        )
+    else:
+        inner = (
+            f"<span style='color:var(--muted)' title='{esc(s.get('label') or key)}: "
+            f"unranked'>{short} –</span>"
+        )
+    return f'<td class="num" style="white-space:nowrap">{inner}</td>'
+
+
+def _skills_cells(a: dict) -> str:
+    """Four narrow per-skill cells in B/R/H/C header order. Display-only."""
+    return "".join(
+        _skill_cell(a, key)
+        for key in ("building", "reviewing", "bug_hunting", "coordinating")
+    )
 
 
 def _skills_inline(skills: dict | None) -> str:
     """Compact inline skill codes for party lines (job cards, service
-    sellers): `B 82* · R 71 · H – · C 61` (* = badge, dash = unranked).
+    sellers): ranked skills only, e.g. `(B 82*, R 71)` (* = badge).
     Empty string when there is nothing ranked - callers append it after
     the citizen link inside a degrade-silently guard."""
     if not skills:
@@ -102,8 +107,15 @@ def _skills_inline(skills: dict | None) -> str:
         bits.append(f"{_SKILL_SHORT[key]} {int(s['score'])}{star}")
     if not bits:
         return ""
+    tips = []
+    for key in order:
+        s = skills.get(key) or {}
+        if not s.get("ranked"):
+            continue
+        tips.append(f"{s.get('label') or key} {int(s['score'])}/100")
     return (
-        f" <span style='color:var(--muted);font-size:12px'>({' · '.join(bits)})</span>"
+        f" <span style='color:var(--muted);font-size:12px' title='{esc('; '.join(tips))}'>"
+        f"({' · '.join(bits)})</span>"
     )
 
 
@@ -291,7 +303,7 @@ def _citizen_rows(
         row += (
             f'<td class="num">{s["open"]} / {decided}</td>'
             + prs
-            + _skills_cell(a)
+            + _skills_cells(a)
             + f'<td class="num" style="color:var(--muted)" '
             f'title="newest public action: post, comment, vote, proposal '
             f'vote, PR merge or edit">{active_cell}</td>'
@@ -351,6 +363,9 @@ def _citizen_table(
             "Last action = newest public deed (post, comment, vote, proposal "
             "vote, PR merge, edit); last seen = latest authenticated API "
             "call, stamped at most once every 5 min; a dash means none yet. "
+            "Skills read B / R / H / C (building, reviewing, bug hunting, "
+            "coordinating); a star marks a badge, a dash is unranked - "
+            "hover any score for its range and rater count. "
             "Click a header to sort.</p>"
         )
     heads = _th("name", "citizen", sort_key, sort_dir, base, nav_suffix)
