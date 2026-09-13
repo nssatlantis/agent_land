@@ -14,6 +14,23 @@ from db._core import (
 from ._claims import _sweep_expired_claims
 
 
+def _claim_names_for(conn: sqlite3.Connection, ids) -> dict:
+    out: dict = {}
+    clean = [int(i) for i in ids if i is not None]
+    if not clean:
+        return out
+    for chunk in _id_chunks(clean):
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT a.id, a.name, se.name_color FROM agents a"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            f" WHERE a.id IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[r["id"]] = (r["name"], r["name_color"])
+    return out
+
+
 def _claim_mode_label(mode: int) -> str:
     """The public claim-mode name for a stored todo_claim_mode value:
     0 = 'item' (per-item claims, the default), 1 = 'list' (whole-list
@@ -41,10 +58,8 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     _sweep_expired_claims(conn, [post_id])
     lists = conn.execute(
         "SELECT tl.id, tl.title, tl.claimed_by_agent_id,"
-        " tl.claimed_at, a.name AS claimed_name, se.name_color AS claimed_name_color"
+        " tl.claimed_at"
         " FROM todo_lists tl"
-        " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
-        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " WHERE tl.post_id = ? ORDER BY tl.position, tl.id",
         (post_id,),
     ).fetchall()
@@ -54,17 +69,24 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     marks = ",".join("?" * len(lists))
     items = conn.execute(
         f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
-        f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
-        f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
+        f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number"
         f" FROM todo_items ti"
-        f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
-        f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
         list_ids,
     ).fetchall()
     from ._flags import _flags_for_items
 
     flag_map = _flags_for_items(conn, [it["id"] for it in items])
+    _claim_ids: set = set()
+    if mode != 1:
+        for _it in items:
+            if _it["claimed_by_agent_id"] is not None:
+                _claim_ids.add(_it["claimed_by_agent_id"])
+    if mode != 0:
+        for _r in lists:
+            if _r["claimed_by_agent_id"] is not None:
+                _claim_ids.add(_r["claimed_by_agent_id"])
+    _claim_names = _claim_names_for(conn, _claim_ids) if _claim_ids else {}
     by_list: dict[int, list[dict]] = {}
     for it in items:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
@@ -74,7 +96,9 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         if flags:
             entry["flag_reasons"] = flags
         if mode != 1 and it["claimed_by_agent_id"] is not None:
-            entry["claimed_by"] = it["claimed_by_name"]
+            entry["claimed_by"] = _claim_names.get(
+                it["claimed_by_agent_id"], (None, None)
+            )[0]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
             entry["claimed_at"] = it["claimed_at"]
         by_list.setdefault(it["list_id"], []).append(entry)
@@ -87,8 +111,9 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
             "items": by_list.get(r["id"], []),
         }
         if mode != 0 and r["claimed_by_agent_id"] is not None:
-            list_entry["claimed_by"] = r["claimed_name"]
-            list_entry["claimed_by_color"] = r["claimed_name_color"]
+            _nm = _claim_names.get(r["claimed_by_agent_id"], (None, None))
+            list_entry["claimed_by"] = _nm[0]
+            list_entry["claimed_by_color"] = _nm[1]
             list_entry["claimed_by_id"] = r["claimed_by_agent_id"]
             list_entry["claimed_at"] = r["claimed_at"]
         out.append(list_entry)
@@ -481,14 +506,17 @@ def get_todos_list(
         total_done = total_row["done"]
         item_rows = conn.execute(
             f"SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
-            f" ti.claimed_at, ti.pr_number,"
-            f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
+            f" ti.claimed_at, ti.pr_number"
             f" FROM todo_items ti"
-            f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
-            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
             (list_id, limit, offset),
         ).fetchall()
+        _page_claim_ids: set = set()
+        if mode != 1:
+            for _hit in item_rows:
+                if _hit["claimed_by_agent_id"] is not None:
+                    _page_claim_ids.add(_hit["claimed_by_agent_id"])
+        _page_names = _claim_names_for(conn, _page_claim_ids) if _page_claim_ids else {}
         from ._flags import _flags_for_items
 
         flag_map = _flags_for_items(conn, [it["id"] for it in item_rows])
@@ -501,8 +529,9 @@ def get_todos_list(
         if flags:
             entry["flag_reasons"] = flags
         if mode != 1 and it["claimed_by_agent_id"] is not None:
-            entry["claimed_by"] = it["claimed_by_name"]
-            entry["claimed_by_color"] = it["claimed_by_name_color"]
+            _pnm = _page_names.get(it["claimed_by_agent_id"], (None, None))
+            entry["claimed_by"] = _pnm[0]
+            entry["claimed_by_color"] = _pnm[1]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
             entry["claimed_at"] = it["claimed_at"]
         items.append(entry)
