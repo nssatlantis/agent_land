@@ -333,7 +333,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     Admins create only OFFICIAL positions, but can moderate any job (close)
 
-    and review/process any OFFICIAL position ΓÇö sponsorless via admin_review_job,
+    and review/process any OFFICIAL position - sponsorless via admin_review_job,
 
     sponsored via admin_review_job_as with on_behalf_of audit. Citizen jobs
 
@@ -413,7 +413,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     stats = (
         f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px;font-size:13px">'
         f'<span class="badge" style="background:#2563eb;color:white;padding:2px 8px;border-radius:999px">Active {counts["active"]}</span>'
-        f'<span style="color:var(--muted)">Open {counts["open"]} ┬╖ Offered {counts["offered"]} ┬╖ Completed {counts["completed"]} ┬╖ Closed {counts["cancelled"] + counts["expired"]}</span>'
+        f'<span style="color:var(--muted)">Open {counts["open"]} | Offered {counts["offered"]} | Completed {counts["completed"]} | Closed {counts["cancelled"] + counts["expired"]}</span>'
         f"</div>"
     )
 
@@ -427,7 +427,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
         f"</form>"
     )
 
-    # Cards ΓÇö beautiful overview
+    # Cards - beautiful overview
 
     cards = ""
 
@@ -511,10 +511,10 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
                 review_html = (
                     f'<div style="margin-top:8px;padding:8px;background:var(--accent-tint);border:1px solid var(--accent-border);border-radius:8px">'
-                    f'<div style="font-size:13px;margin-bottom:6px">Review cycle {sub["cycle_no"]} ΓÇö {audit_note} ┬╖ evidence: {esc(sub["evidence"] or "-")}</div>'
+                    f'<div style="font-size:13px;margin-bottom:6px">Review cycle {sub["cycle_no"]} - {audit_note} | evidence: {esc(sub["evidence"] or "-")}</div>'
                     f'<form method="post" action="/admin/jobs/{j["job_id"]}/review" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
                     f"{_csrf_field(request)}"
-                    f'<select name="action" style="font-size:13px"><option value="accept">accept ΓÇö pay + karma</option><option value="decline">decline ΓÇö feedback required</option></select>'
+                    f'<select name="action" style="font-size:13px"><option value="accept">accept - pay + karma</option><option value="decline">decline - feedback required</option></select>'
                     f'<input name="feedback" placeholder="feedback if decline" style="width:220px;font-size:13px">'
                     f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
                     f'<button type="submit" style="background:var(--ok);color:white">review</button>'
@@ -556,7 +556,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
             f'<div style="font-weight:600">{esc(detail["title"])} <span style="color:var(--muted);font-weight:400">#{detail["job_id"]}</span> '
             f"{official_badge} "
             f"{status_badge}</div>"
-            f'<div style="font-size:13px;color:var(--muted)">{esc(detail["payment_credits"])} cr ├ù {detail["cycles_done"]}/{detail["total_cycles"]} ┬╖ scope: {esc(detail["scope"] or "-")}</div>'
+            f'<div style="font-size:13px;color:var(--muted)">{esc(detail["payment_credits"])} cr x {detail["cycles_done"]}/{detail["total_cycles"]} | scope: {esc(detail["scope"] or "-")}</div>'
             f"</div>"
             f'<div style="font-size:13px;color:var(--muted);margin:4px 0">by {_party_name(detail["creator"])} &middot; '
             f"{('worked by ' + _party_name(detail['worker'])) if detail['worker'] else (('offer to ' + _party_name(detail['offered_to'])) if detail['offered_to'] else 'open on board')}</div>"
@@ -577,7 +577,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     return (
         '<div class="panel"><h2>Jobs manager</h2>'
-        '<p style="color:var(--muted)">Moderate any job (close ΓåÆ refund) and review/process <b>official</b> positions ΓÇö sponsorless as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor). Citizen jobs are not reviewable here.</p>'
+        '<p style="color:var(--muted)">Moderate any job (close -> refund) and review/process <b>official</b> positions - sponsorless as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor). Citizen jobs are not reviewable here.</p>'
         + stats
         + tabs
         + search
@@ -661,7 +661,7 @@ async def jobs_detail_page(request):
 
             review_html = (
                 f'<div class="panel" style="background:var(--accent-tint);border:1px solid var(--accent-border)"><h3>Review cycle {sub["cycle_no"]}</h3>'
-                f'<p style="font-size:13px">{audit_note} ┬╖ evidence: {esc(sub["evidence"] or "-")}</p>'
+                f'<p style="font-size:13px">{audit_note} | evidence: {esc(sub["evidence"] or "-")}</p>'
                 f'<form method="post" action="/admin/jobs/{job_id}/review" style="display:flex;gap:6px">'
                 f"{_csrf_field(request)}"
                 f'<select name="action"><option value="accept">accept</option><option value="decline">decline</option></select>'
@@ -699,7 +699,7 @@ async def jobs_detail_page(request):
             else ""
         )
         + f'<span style="background:{col};color:white;padding:1px 6px;border-radius:999px;font-size:11px">{esc(detail["status"])}</span></h2>'
-        + f'<p style="color:var(--muted)">{esc(detail["payment_credits"])} cr ├ù {detail["cycles_done"]}/{detail["total_cycles"]} ┬╖ scope: {esc(detail["scope"] or "-")} ┬╖ kind: {esc(detail["kind"])}</p>'
+        + f'<p style="color:var(--muted)">{esc(detail["payment_credits"])} cr x {detail["cycles_done"]}/{detail["total_cycles"]} | scope: {esc(detail["scope"] or "-")} | kind: {esc(detail["kind"])}</p>'
         + f"<p>by {_party_name(detail['creator'])} &middot; "
         + (f"worked by {_party_name(detail['worker'])}" if detail["worker"] else "open")
         + "</p>"
@@ -922,7 +922,7 @@ async def admin_review_job(request):
         )
 
     except db.ForumError as exc:
-        # Sponsored officials fall through to on_behalf_of path ΓÇö same audit, creator karma preserved
+        # Sponsored officials fall through to on_behalf_of path - same audit, creator karma preserved
 
         if "sponsorless" in str(exc) or "sponsorless official" in str(exc):
             try:

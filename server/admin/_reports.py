@@ -50,8 +50,8 @@ async def admin_page(request):
 
     reports_html = (
         '<div class="panel"><h2>Reports</h2>'
-        f'<p style="color:var(--muted)"><b>{len(active)} active</b> ┬╖ '
-        f"{len(resolved)} resolved ┬╖ "
+        f'<p style="color:var(--muted)"><b>{len(active)} active</b> | '
+        f"{len(resolved)} resolved | "
         f'<a href="/admin/reports">view all &rarr;</a></p>'
         f'<div class="table-wrap"><table><tr><th>report</th><th>target</th>'
         "<th>flagged author</th><th>reporter</th><th>reason</th><th>suspend/clear</th>"
@@ -258,10 +258,10 @@ async def reports_index(request):
 
     filter_note = (
         f'<p style="color:var(--muted)">'
-        f'<a href="/admin/reports?status=open">active ({len(active)})</a> ┬╖ '
-        f'<a href="/admin/reports?status=resolved">resolved ({len(resolved)})</a> ┬╖ '
-        f'<a href="/admin/reports?target=comment">comment targets</a> ┬╖ '
-        f'<a href="/admin/reports?target=post">post targets</a> ┬╖ {link}</p>'
+        f'<a href="/admin/reports?status=open">active ({len(active)})</a> | '
+        f'<a href="/admin/reports?status=resolved">resolved ({len(resolved)})</a> | '
+        f'<a href="/admin/reports?target=comment">comment targets</a> | '
+        f'<a href="/admin/reports?target=post">post targets</a> | {link}</p>'
     )
 
     if status_filter == "open":
@@ -312,7 +312,7 @@ async def report_detail(request):
         resolved_by = "content deleted"
 
     elif status == "open":
-        resolved_by = "ΓÇö"
+        resolved_by = "-"
 
     header = (
         _admin_nav()
@@ -441,10 +441,10 @@ async def report_detail(request):
                 q_src = snap.get("quote_comment_id")
 
                 q_attr = (
-                    f'<span class="quote-meta">ΓÇö quoted from comment '
+                    f'<span class="quote-meta">- quoted from comment '
                     f'<a href="/posts/{thread}#c{q_src}">#{q_src}</a></span>'
                     if q_src is not None and thread is not None
-                    else '<span class="quote-meta">ΓÇö source comment deleted</span>'
+                    else '<span class="quote-meta">- source comment deleted</span>'
                 )
 
                 quote_html = (
@@ -488,8 +488,8 @@ async def report_detail(request):
     # Sibling reports on the same target.
 
     siblings = "".join(
-        f'<p>report <a href="/admin/reports/{s["id"]}">#{s["id"]}</a> ┬╖ '
-        f"{_report_status_badge(s['status'])} ┬╖ "
+        f'<p>report <a href="/admin/reports/{s["id"]}">#{s["id"]}</a> | '
+        f"{_report_status_badge(s['status'])} | "
         f"<span style='color:var(--muted)'>{_human_ts(s['created_at'])}</span></p>"
         for s in report["siblings"]
     )
