@@ -353,31 +353,29 @@ def _backfill_bug_report_links(conn: sqlite3.Connection) -> int:
     every proposal post from its stored body, reusing _expand_references
     (same validation as the live write path). Chunked like the mention
     rewrite so a large forum never holds every body in memory."""
-    from db._text import _expand_references
+    saved_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        from db._text import _expand_references
 
-    count = 0
-    last_id = 0
-    while True:
-        rows = conn.execute(
-            "SELECT id, body FROM posts WHERE id > ? AND proposal_kind IS NOT NULL"
-            " ORDER BY id LIMIT 500",
-            (last_id,),
-        ).fetchall()
-        if not rows:
-            break
-        for row in rows:
-            # _run_foundation() passes a plain tuple cursor (no Row factory),
-            # while direct callers may have Row — handle both.
-            try:
-                pid = row["id"]
-                body = row["body"]
-            except (TypeError, KeyError, IndexError):
-                pid, body = row[0], row[1]
-            last_id = pid
-            _, referenced, _ = _expand_references(conn, body or "")
-            _sync_bug_report_links(conn, pid, referenced)
-            count += 1
-    return count
+        count = 0
+        last_id = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, body FROM posts WHERE id > ? AND proposal_kind IS NOT NULL"
+                " ORDER BY id LIMIT 500",
+                (last_id,),
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                last_id = row["id"]
+                _, referenced, _ = _expand_references(conn, row["body"] or "")
+                _sync_bug_report_links(conn, row["id"], referenced)
+                count += 1
+        return count
+    finally:
+        conn.row_factory = saved_factory
 
 
 def get_bug_report(report_id: int) -> dict:
