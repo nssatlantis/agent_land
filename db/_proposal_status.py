@@ -416,45 +416,64 @@ def _comment_count_and_activity_batch(
     return counts, activity
 
 
+def _posts_flags_many(
+    conn: sqlite3.Connection, post_ids: list[int]
+) -> dict[int, sqlite3.Row]:
+    """{post_id: posts row} for a batch - one fused IN query per chunk for
+    the id/supersede/collab columns the reconcile sweep reads twice
+    (supersede gate + lifecycle flags). Absent pids are simply missing,
+    like both single-row reads. Chunked like every other batch lister."""
+    out: dict[int, sqlite3.Row] = {}
+    if not post_ids:
+        return out
+    for marks, chunk in _chunked_marks(post_ids):
+        for r in conn.execute(
+            "SELECT id, superseded_by_id, collaborative, collaborative_closed"
+            f" FROM posts WHERE id IN ({marks})",
+            chunk,
+        ).fetchall():
+            out[int(r["id"])] = r
+    return out
+
+
 def _superseded_by_many(
     conn: sqlite3.Connection, post_ids: list[int]
 ) -> dict[int, int | None]:
     """{post_id: superseded_by_id|None} for a batch - one IN query per chunk
     instead of one posts lookup per proposal (reconcile sweep). Absent pids
     read None, like the single (missing row means still current)."""
-    out: dict[int, int | None] = {}
-    if not post_ids:
-        return out
-    for marks, chunk in _chunked_marks(post_ids):
-        for r in conn.execute(
-            f"SELECT id, superseded_by_id FROM posts WHERE id IN ({marks})",
-            chunk,
-        ).fetchall():
-            out[int(r["id"])] = r["superseded_by_id"]
-    return out
+    return {
+        pid: r["superseded_by_id"]
+        for pid, r in _posts_flags_many(conn, post_ids).items()
+    }
 
 
 def _proposal_status_for_many(
-    conn: sqlite3.Connection, post_ids: list[int]
+    conn: sqlite3.Connection, post_ids: list[int], flags: dict | None = None
 ) -> dict[int, str]:
     """{post_id: lifecycle status} for a batch - one collab-flags IN query
     plus one links/outcomes UNION-IN query per chunk, decided in Python
     through _decisive_pr. A NULL outcome (live PR, no outcome row yet) reads
     'open', exactly the single-row CASE; no-PR proposals read 'open', and
-    collaborative flags short-circuit first, both like the single."""
+    collaborative flags short-circuit first, both like the single. Callers
+    holding a fresh _posts_flags_many() map pass it as `flags` so the
+    flags leg costs no second round trip; the UNION leg then scopes to
+    non-collaborative pids (collaborative outcomes never read it)."""
     out: dict[int, str] = {}
     if not post_ids:
         return out
-    flags: dict[int, sqlite3.Row] = {}
-    for marks, chunk in _chunked_marks(post_ids):
-        for r in conn.execute(
-            "SELECT id, collaborative, collaborative_closed FROM posts"
-            f" WHERE id IN ({marks})",
-            chunk,
-        ).fetchall():
-            flags[int(r["id"])] = r
+    if flags is None:
+        flags = _posts_flags_many(conn, post_ids)
     pairs: dict[int, list] = {}
-    for marks, chunk in _chunked_marks(post_ids):
+    # Collaborative pids short-circuit to open/collaborative_closed below
+    # without ever reading pairs: keep them out of the UNION's IN lists
+    # (missing flags still fetch - absent means non-collaborative).
+    pair_pids = []
+    for pid in post_ids:
+        flag = flags.get(pid)
+        if flag is None or not flag["collaborative"]:
+            pair_pids.append(pid)
+    for marks, chunk in _chunked_marks(pair_pids):
         for r in conn.execute(
             "SELECT x.post_id, x.pr_number, po.status FROM"
             " (SELECT post_id, pr_number FROM proposal_links"

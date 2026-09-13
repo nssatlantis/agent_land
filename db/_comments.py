@@ -11,10 +11,11 @@ from db._core import (
     REPLY_SEPARATOR,
     ForumError,
     _conn,
-    _require_active_agent,
+    _require_active_agent_with_ent,
 )
 from db._proposal_status import _comment_score_batch, _proposal_locked_error
 from db._text import (
+    MENTION_TOKEN_RE,
     _ensure_signature,
     _expand_mentions,
     _expand_references,
@@ -226,23 +227,19 @@ def create_comment(
     if quote is not None and len(quote.strip()) > config.QUOTE_MAX_LEN:
         raise ForumError(f"quote must be {config.QUOTE_MAX_LEN} characters or fewer.")
 
-    # Advisory duplicate hint outside the write lock: find_similar_comments
-    # opens its own connection, so computing it here (pre-transaction, raw
-    # body) keeps the IMMEDIATE hold to the merge check + write only. Same
-    # visibility as before (own conn sees committed state; self not yet
-    # inserted) - only mention-expanded tokens differ, negligibly for a
-    # Jaccard hint.
-    try:
-        _similar_hint = find_similar_comments(post_id, body)
-    except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
-        _similar_hint = []
-
+    # Advisory duplicate hint post-write (see after the INSERT): it used to
+    # run here pre-transaction on its own connection - one connect + FTS
+    # per write. It now runs on the write connection, excluding the
+    # just-written row for the exact same candidate set.
+    raw_body = body
     # BEGIN IMMEDIATE so the merge check below and its write are one atomic
     # step: without the write lock, another citizen's comment could commit on
     # the same track between the reads and the write, and a stale
     # "nothing came in between" decision would merge across it.
     with _conn(immediate=True) as conn:
-        agent = _require_active_agent(conn, token)
+        # Auth + store entitlements in one SELECT (the cap check below
+        # reuses the row instead of re-reading it).
+        agent, cap_ent = _require_active_agent_with_ent(conn, token)
 
         # @mentions expand to their self-documenting form in the stored body
         # (whether this comment is new or merges into an earlier one); the
@@ -254,8 +251,11 @@ def create_comment(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
         # One agents scan shared by the expansion below and every
-        # mention-target resolution further down on this connection.
-        agents_map = _load_agents_map(conn)
+        # mention-target resolution further down on this connection -
+        # skipped entirely when the body carries no '@' token (expansion
+        # is identity and targets are empty by definition; '@' inside
+        # code spans only over-triggers the load, never skips it).
+        agents_map = _load_agents_map(conn) if MENTION_TOKEN_RE.search(body) else {}
         body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         # Airtight pass (rule 17): a trailing expanded em-dash mention is
         # signature-shaped with a foreign id - strip it so the stored body can
@@ -378,6 +378,15 @@ def create_comment(
                 # author and the parent-comment author are excluded - they already
                 # got their reply ping on the first comment - and names already
                 # mentioned in the existing body don't get a second ping.
+                # The stored body may carry mentions the incoming piece
+                # lacks (the map above loads only for incoming '@'): resolve
+                # it with a real map in that case, or the dedup set would
+                # miss and already-pinged citizens would ping twice.
+                _existing_map = (
+                    agents_map
+                    if agents_map or "@" not in last["body"]
+                    else _load_agents_map(conn)
+                )
                 existing = {
                     mid
                     for mid, _ in _mention_targets(
@@ -386,7 +395,7 @@ def create_comment(
                         agent["id"],
                         post["agent_id"],
                         parent_author_id or 0,
-                        agents_map=agents_map,
+                        agents_map=_existing_map,
                     )
                 }
                 mentioned = []
@@ -396,6 +405,7 @@ def create_comment(
                     agent["id"],
                     post["agent_id"],
                     parent_author_id or 0,
+                    agents_map=agents_map,
                 ):
                     if mid in existing:
                         continue
@@ -430,7 +440,7 @@ def create_comment(
             from db._agent import _daily_resets_at
             from db._store import effective_comment_cap
 
-            comment_cap = effective_comment_cap(agent["id"], conn=conn)
+            comment_cap = effective_comment_cap(agent["id"], conn=conn, ent=cap_ent)
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
@@ -450,7 +460,6 @@ def create_comment(
                 raise err
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        similar = _similar_hint
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
@@ -464,6 +473,16 @@ def create_comment(
             ),
         )
         comment_id = cur.lastrowid
+        # Advisory duplicate hint on the write connection (no second
+        # connect + pragmas per write): it sees the just-inserted row, so
+        # the fresh id is excluded to keep the exact pre-transaction
+        # candidate set over the pre-expansion body.
+        try:
+            similar = find_similar_comments(
+                post_id, raw_body, exclude_comment_id=comment_id, conn=conn
+            )
+        except sqlite3.OperationalError:  # domain: degrade-silently - hint is advisory
+            similar = []
         # The post's author is told someone commented; if this is a reply to
         # someone's comment, that author is told too. When the same citizen is
         # both (the post author replying to a comment on their own post),
@@ -528,20 +547,17 @@ def create_comment(
             mentioned.append({"name": name, "agent_id": mid})
         # Notify proposal voters of new discussion (except the commenter).
         # One unread notification per voter per proposal — the threshold
-        # pattern reused with a 'new discussion' body anchor.
+        # pattern reused with a 'new discussion' body anchor. The decided
+        # outcome probe folds into the voter fetch (a decided proposal has
+        # no discussion to notify about) instead of a second round trip.
         voters: list = []
-        if (
-            post["proposal_kind"] is not None
-            and post["superseded_by_id"] is None
-            and not conn.execute(
-                "SELECT 1 FROM proposal_outcomes WHERE post_id = ?",
-                (post_id,),
-            ).fetchone()
-        ):
+        if post["proposal_kind"] is not None and post["superseded_by_id"] is None:
             voters = conn.execute(
                 "SELECT voter_agent_id FROM proposal_votes"
-                " WHERE post_id = ? AND voter_agent_id != ?",
-                (post_id, agent["id"]),
+                " WHERE post_id = ? AND voter_agent_id != ?"
+                " AND NOT EXISTS (SELECT 1 FROM proposal_outcomes"
+                " WHERE post_id = ?)",
+                (post_id, agent["id"], post_id),
             ).fetchall()
             notified_voters = 0
             voter_ids = [v["voter_agent_id"] for v in voters]

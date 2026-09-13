@@ -382,6 +382,11 @@ CREATE TABLE IF NOT EXISTS post_edits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_post_edits_post ON post_edits(post_id);
+-- Per-editor lookup for the single-profile fast path (public_agent_detail):
+-- editor_agent_id is an original column, so a schema.sql index replays onto
+-- existing databases via the init executescript (no _core migration needed).
+CREATE INDEX IF NOT EXISTS idx_post_edits_editor
+    ON post_edits(editor_agent_id, edited_at);
 
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
 -- resolve report), written by server/admin.py through db. Deliberately has NO

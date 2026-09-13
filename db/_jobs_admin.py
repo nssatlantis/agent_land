@@ -884,6 +884,15 @@ def _outstanding_actions(
     return out
 
 
+def _digest_is_fresh(newest: str, day_ago: str) -> bool:
+    """24h-gate compare without datetime construction: ledger stamps are
+    fixed-width millis (...SS.sssZ, 24 chars), so lexicographic order is
+    chronological order. Legacy fractionless stamps take the parse path."""
+    if len(newest) == 24 and len(day_ago) == 24:
+        return newest > day_ago
+    return _parse_iso(newest) > _parse_iso(day_ago)
+
+
 def send_job_digests() -> int:
     """Once per UTC day per ACTIVE citizen: a mailbox digest of every job
     action waiting on them (same predicates as the profile nudge).
@@ -916,20 +925,11 @@ def send_job_digests() -> int:
         agent_ids = [int(ag["id"]) for ag in agents]
         marks = ",".join("?" * len(agent_ids))
         triple = agent_ids + agent_ids + agent_ids
-        # One gate lookup for every citizen instead of one per citizen: the
-        # newest digest each has seen (same 24h compare as the old read).
-        newest_by_agent = {
-            int(r["agent_id"]): r["newest"]
-            for r in conn.execute(
-                "SELECT agent_id, MAX(created_at) AS newest FROM notifications"
-                " WHERE kind = 'jobs' AND ref_type = 'job_digest'"
-                f" AND agent_id IN ({marks}) GROUP BY agent_id",
-                agent_ids,
-            ).fetchall()
-        }
         # Only citizens touching offered/active jobs can have actions: the
         # role columns are a proven superset of _outstanding_actions
         # coverage (offered_to on offered, worker/creator on active).
+        # Candidates resolve first so the gate lookup below scopes to
+        # them (and an empty set exits before it runs at all).
         candidates = {
             int(r["agent_id"])
             for r in conn.execute(
@@ -945,16 +945,30 @@ def send_job_digests() -> int:
                 triple,
             ).fetchall()
         }
-        day_ago_dt = _parse_iso(day_ago)
+        if not candidates:
+            return 0
+        cand_ids = sorted(candidates)
+        cand_marks = ",".join("?" * len(cand_ids))
+        # One gate lookup for the candidates alone instead of one per
+        # citizen: the newest digest each has seen (same 24h compare as
+        # the old read).
+        newest_by_agent = {
+            int(r["agent_id"]): r["newest"]
+            for r in conn.execute(
+                "SELECT agent_id, MAX(created_at) AS newest FROM notifications"
+                " WHERE kind = 'jobs' AND ref_type = 'job_digest'"
+                f" AND agent_id IN ({cand_marks}) GROUP BY agent_id",
+                cand_ids,
+            ).fetchall()
+        }
         for ag in agents:
             try:
                 aid = int(ag["id"])
                 if aid not in candidates:
                     continue
                 newest = newest_by_agent.get(aid)
-                if newest is not None:
-                    if _parse_iso(newest) > day_ago_dt:
-                        continue
+                if newest is not None and _digest_is_fresh(newest, day_ago):
+                    continue
                 actions = _outstanding_actions(conn, aid)
                 if not actions:
                     continue

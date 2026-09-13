@@ -296,8 +296,9 @@ def test_reconcile_batch(agents):
         assert oracle[pids["collabclosed"]] == ("closed", "proposal_decided")
         for key in ("live", "collab", "retry", "branchlive"):
             assert pids[key] not in oracle, f"{key} proposals stay live"
-        assert len(new_stmts) <= 6, (
+        assert len(new_stmts) <= 4, (
             f"batched sweep issued {len(new_stmts)} statements for 11 pids"
+            " (fused posts fetch + scoped UNION + ghost anti-join)"
         )
         assert len(new_stmts) < len(old_stmts), (
             f"batch ({len(new_stmts)}) must beat per-pid ({len(old_stmts)})"

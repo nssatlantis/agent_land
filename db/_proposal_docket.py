@@ -222,7 +222,43 @@ def _proposal_rows(
         _proposal_list_sql(where_sql, for_counts=for_counts),
         params,
     ).fetchall()
-    ids = [r["id"] for r in rows]
+    return _assemble_proposal_rows(
+        conn, [rows], for_counts=for_counts, threshold=threshold
+    )[0]
+
+
+def _proposal_rows_many(
+    conn: sqlite3.Connection,
+    specs: list[tuple[str, tuple]],
+    *,
+    for_counts: bool = False,
+    threshold: int | None = None,
+) -> list[list[dict]]:
+    """Batched sibling of _proposal_rows for several WHERE shapes at once
+    (the profile page's authored + delegated lists): each main SELECT stays
+    its own index-friendly query, but tallies, the live vote bar and every
+    display batch run once over the union of ids; each spec's rows then
+    assemble in order. Returns one row-list per spec, in spec order - a pid
+    present in several specs assembles into each (no dedup), so overlapping
+    lists keep byte-identical membership."""
+    mains = [
+        conn.execute(_proposal_list_sql(where_sql), params).fetchall()
+        for where_sql, params in specs
+    ]
+    return _assemble_proposal_rows(
+        conn, mains, for_counts=for_counts, threshold=threshold
+    )
+
+
+def _assemble_proposal_rows(
+    conn: sqlite3.Connection,
+    mains: list[list],
+    *,
+    for_counts: bool = False,
+    threshold: int | None = None,
+) -> list[list[dict]]:
+    ids = [r["id"] for rows in mains for r in rows]
+    rows_all = [r for rows in mains for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
     # The live vote bar: callers holding a fresh threshold (my_profile,
     # check_in, whoami compute it once per call) pass it in so repeated
@@ -255,7 +291,7 @@ def _proposal_rows(
         # without a per-row round trip (NULL/0 supersedes_id rows join
         # nothing).
         tags_by_post = _tags_by_post_map(conn, ids)
-        colors = _agent_name_colors(conn, rows)
+        colors = _agent_name_colors(conn, rows_all)
     else:
         pr_vote_tallies = {}
         todos_by_post = {}
@@ -264,8 +300,46 @@ def _proposal_rows(
         last_activity = {}
         colors = {}
         tags_by_post = {}
-    out = []
     _now = datetime.now(timezone.utc)
+    return [
+        _assemble_proposal_list(
+            rows,
+            for_counts=for_counts,
+            threshold=threshold,
+            tallies=tallies,
+            prs_by_post=prs_by_post,
+            stake_totals=stake_totals,
+            pr_vote_tallies=pr_vote_tallies,
+            todos_by_post=todos_by_post,
+            scores=scores,
+            comment_counts=comment_counts,
+            last_activity=last_activity,
+            tags_by_post=tags_by_post,
+            colors=colors,
+            now=_now,
+        )
+        for rows in mains
+    ]
+
+
+def _assemble_proposal_list(
+    rows: list,
+    *,
+    for_counts: bool,
+    threshold: int,
+    tallies: dict,
+    prs_by_post: dict,
+    stake_totals: dict,
+    pr_vote_tallies: dict,
+    todos_by_post: dict,
+    scores: dict,
+    comment_counts: dict,
+    last_activity: dict,
+    tags_by_post: dict,
+    colors: dict,
+    now: datetime,
+) -> list[dict]:
+    out = []
     for r in rows:
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
@@ -301,7 +375,7 @@ def _proposal_rows(
         # One timestamp parse per row: _proposal_stale_at would parse the
         # same created_at again for every unvoted proposal, so the age is
         # computed once here and reused for the stale check below.
-        _age_days = _proposal_age_at(d["created_at"], _now)
+        _age_days = _proposal_age_at(d["created_at"], now)
         d["open_days"] = _age_days
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
