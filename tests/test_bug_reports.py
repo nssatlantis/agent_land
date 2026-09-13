@@ -418,6 +418,70 @@ def test_sweep_confirms_all_qualifying_in_one_statement(helpers):
     print("  sweep confirms all qualifying in one statement: ok")
 
 
+def test_bug_links_roundtrip(helpers):
+    """bug_report_links tracks validated #B refs: create links, edit
+    unlinks, re-edit relinks; the read serves them without a body scan."""
+    alpha, beta = helpers["alpha"], helpers["beta"]
+    r = bug_mod.file_bug_report(alpha["token"], "Link bug", "body", None)
+    p = db.create_proposal(beta["token"], "Link proposal", f"Fixes #B{r['id']} please")
+    assert [x["id"] for x in bug_mod.get_bug_report(r["id"])["linked_proposals"]] == [
+        p["post_id"]
+    ]
+    db.edit_proposal(beta["token"], p["post_id"], body="No more refs here")
+    assert bug_mod.get_bug_report(r["id"])["linked_proposals"] == []
+    db.edit_proposal(beta["token"], p["post_id"], body=f"Refs #B{r['id']} again")
+    assert [x["id"] for x in bug_mod.get_bug_report(r["id"])["linked_proposals"]] == [
+        p["post_id"]
+    ]
+    print("  bug links roundtrip: ok")
+
+
+def test_bug_links_exact_validated_ids(helpers):
+    """Only validated exact ids link: prefix over-matches, code spans and
+    nonexistent ids link nothing (pins the LIKE divergences as fixed)."""
+    alpha, beta = helpers["alpha"], helpers["beta"]
+    r = bug_mod.file_bug_report(alpha["token"], "Exact bug", "body", None)
+    ghost = r["id"] + 100000
+    db.create_proposal(
+        beta["token"],
+        "Exact pin",
+        f"See #B{r['id']}0 and `#B{r['id']}` and #B{ghost}",
+    )
+    assert bug_mod.get_bug_report(r["id"])["linked_proposals"] == []
+    print("  bug links exact validated ids: ok")
+
+
+def test_bug_duplicate_of_via_read(helpers):
+    """duplicate_of still resolves after the parent-lookup fold."""
+    import uuid
+
+    alpha, beta = helpers["alpha"], helpers["beta"]
+    url = f"https://example.com/dup-read-{uuid.uuid4()}"
+    r1 = bug_mod.file_bug_report(alpha["token"], "Dup read one", "b1", url)
+    r2 = bug_mod.file_bug_report(beta["token"], "Dup read two", "b2", url)
+    assert r2["duplicate_of"] == r1["id"]
+    assert bug_mod.get_bug_report(r2["id"])["duplicate_of"] == r1["id"]
+    assert bug_mod.get_bug_report(r1["id"])["duplicate_of"] is None
+    print("  bug duplicate_of via read: ok")
+
+
+def test_bug_links_backfill(helpers):
+    """_backfill_bug_report_links rebuilds links for pre-migration posts."""
+    alpha, beta = helpers["alpha"], helpers["beta"]
+    r = bug_mod.file_bug_report(alpha["token"], "Backfill bug", "body", None)
+    p = db.create_proposal(beta["token"], "Backfill proposal", f"Fixes #B{r['id']}")
+    with db._conn() as conn:
+        conn.execute("DELETE FROM bug_report_links WHERE post_id = ?", (p["post_id"],))
+    assert bug_mod.get_bug_report(r["id"])["linked_proposals"] == []
+    with db._conn() as conn:
+        n = bug_mod._backfill_bug_report_links(conn)
+    assert n >= 1
+    assert [x["id"] for x in bug_mod.get_bug_report(r["id"])["linked_proposals"]] == [
+        p["post_id"]
+    ]
+    print("  bug links backfill: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -438,4 +502,8 @@ if __name__ == "__main__":
     test_confirm_and_fix_audit(helpers)
     test_mcp_admin_auth(helpers)
     test_sweep_confirms_all_qualifying_in_one_statement(helpers)
+    test_bug_links_roundtrip(helpers)
+    test_bug_links_exact_validated_ids(helpers)
+    test_bug_duplicate_of_via_read(helpers)
+    test_bug_links_backfill(helpers)
     print("All bug report tests passed.")

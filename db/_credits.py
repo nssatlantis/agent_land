@@ -1599,7 +1599,7 @@ def top_movers(limit: int = 5) -> list[dict]:
             " LEFT JOIN agents a ON a.id = e.agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE e.account = 'agent' AND e.created_at >= ?"
-            " GROUP BY e.agent_id, e.account"
+            " GROUP BY e.agent_id"
             " ORDER BY (earned_quarters + spent_quarters) DESC, e.agent_id"
             " LIMIT ?",
             (since, limit),
