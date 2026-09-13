@@ -20,6 +20,7 @@ from db._workflow import (  # noqa: E402
     tick_workflow_step,
     workflow_steps_for_run,
 )
+from server.ci_runner._runs import _NO_TICK_CHECKS  # noqa: E402
 from tests._setup import db, setup  # noqa: E402
 
 setup()
@@ -51,6 +52,7 @@ def _done_map(conn, run_id):
 
 
 def test_manual_tick_sibling_isolation():
+    # Pins the already-correct manual path (never the #B27 fan-out site).
     ag = _fresh("tiso-man")
     p1 = db.create_proposal(ag["token"], "Tick iso A", "body A")["post_id"]
     p2 = db.create_proposal(ag["token"], "Tick iso B", "body B")["post_id"]
@@ -201,6 +203,30 @@ def test_temporal_and_permission_guards():
             tick_stamp=db._now_iso(),
         )
         assert out2 == [], out2
+        d = _done_map(conn, r)
+        for k in TRIPLE:
+            assert d[k] is False, (k, d)
+
+
+def test_no_tick_harness_set_and_branch_none():
+    assert "benchmarks" in _NO_TICK_CHECKS, _NO_TICK_CHECKS
+    assert "db_benchmark" in _NO_TICK_CHECKS
+    assert "db_bench" in _NO_TICK_CHECKS
+    assert "tests" not in _NO_TICK_CHECKS
+    ag = _fresh("tiso-nonedef")
+    p = db.create_proposal(ag["token"], "Tick none def", "body")["post_id"]
+    with db._conn() as conn:
+        r = _open_run_id(conn, p, ag["agent_id"])
+        out = auto_tick_ci_steps(
+            conn,
+            agent_id=ag["agent_id"],
+            pr_number=None,
+            local_mode=False,
+            branch_mode=True,
+            ci_started_iso=db._now_iso(),
+            tick_stamp=db._now_iso(),
+        )
+        assert out == [], out
         d = _done_map(conn, r)
         for k in TRIPLE:
             assert d[k] is False, (k, d)
