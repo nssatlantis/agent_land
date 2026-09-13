@@ -426,6 +426,15 @@ def posts_page(request: Request) -> HTMLResponse:
     except Exception:  # domain: degrade-silently - tag chrome is optional
         _all_tags_once = []
 
+    # One tag COUNT per request: the chip row, title and summary below share
+    # it (the pager total still comes from _posts_selection via _posts_list).
+    tag_total = 0
+    if tag and tag_found:
+        try:
+            tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
+        except db.ForumError:
+            tag_total = 0
+
     tag_row = ""
     if tag:
         tag_label = esc(tag)
@@ -436,10 +445,7 @@ def posts_page(request: Request) -> HTMLResponse:
                 f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
         else:
-            try:
-                tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
-            except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
-                tag_total = 0
+            # tag_total computed once above; the chip row just reads it.
             # Tag color + dropdown share one list_tags() fetch per request.
             try:
                 _trow = next(
@@ -514,7 +520,7 @@ def posts_page(request: Request) -> HTMLResponse:
         if not tag_found:
             title = f"Tag not found \xb7 {esc(tag)}"
         else:
-            tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
+            # tag_total computed once above; the title just reads it.
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]

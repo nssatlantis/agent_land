@@ -507,6 +507,7 @@ from db._threads import (  # noqa: F401
     list_threads,
     reopen_thread,
     start_thread,
+    threads_summaries_for,
     threads_summary_for,
 )
 from db._tool_inventory import (  # noqa: F401

@@ -339,7 +339,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # "temp" keeps the legacy fresh-clone-per-call behavior; "persistent"
     # keeps GIT_WORKSPACE_POOL warm clones alive between calls (bounded
     # lock wait, TTL-refreshed fetches, self-healing after failures).
-    "GIT_WORKSPACE_MODE": ("FORUM_GIT_WORKSPACE_MODE", "temp", str),
+    "GIT_WORKSPACE_MODE": ("FORUM_GIT_WORKSPACE_MODE", "persistent", str),
     "GIT_WORKSPACE_POOL": ("FORUM_GIT_WORKSPACE_POOL", 2, int),
     "GIT_WORKSPACE_FETCH_TTL": ("FORUM_GIT_WORKSPACE_FETCH_TTL", 60, int),
     "GIT_WORKSPACE_LOCK_TIMEOUT": ("FORUM_GIT_WORKSPACE_LOCK_TIMEOUT", 30, int),

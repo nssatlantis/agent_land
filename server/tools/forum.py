@@ -177,9 +177,17 @@ def get_posts(
         results = db.get_posts(
             post_ids, include_comments=include_comments, include_todos=True
         )
+        summaries = db.threads_summaries_for(
+            [_pid for _pid, _r in results.items() if isinstance(_r, dict)]
+        )
         for _pid, _result in results.items():
             if isinstance(_result, dict):
-                _result["threads_summary"] = db.threads_summary_for(_pid)
+                # .get, never []: a post deleted between the read and the
+                # probe is absent from the batch - it keeps zeroes, not a
+                # KeyError, while its error string still lands via get_posts.
+                _result["threads_summary"] = summaries.get(
+                    _pid, {"post_id": _pid, "total": 0, "open": 0, "closed": 0}
+                )
         if include_voters:
             voters_by_pid = db.proposal_voters_batch(list(results.keys()))
             for pid, result in results.items():

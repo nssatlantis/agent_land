@@ -24,10 +24,11 @@ needs no new baseline entry for this module.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
 
 import config
 from db._comments import create_comment
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 from db._karma import effective_karma
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 
@@ -402,23 +403,64 @@ def list_threads(post_id: int) -> list:
         return out
 
 
-def threads_summary_for(post_id: int) -> dict:
+def threads_summaries_for(
+    post_ids: list[int], conn: sqlite3.Connection | None = None
+) -> dict[int, dict]:
+    """Lightweight thread counts for a batch of posts: {post_id: {post_id,
+    total, open, closed}}. One existence probe plus one GROUP BY over
+    WHERE post_id IN (chunked), so batch readers never pay a per-post
+    round trip. Posts with no threads read zeroes; unknown ids are simply
+    absent - callers with their own missing-post shape (e.g. get_posts'
+    per-id error strings) keep it by skipping absent keys, never by
+    catching. Pass `conn` to run on the caller's connection instead of
+    opening one."""
+    ids = list(dict.fromkeys(post_ids))
+    if not ids:
+        return {}
+    with _conn() if conn is None else nullcontext(conn) as c:
+        found: list[int] = []
+        for chunk in _id_chunks(ids):
+            marks = ",".join("?" * len(chunk))
+            found += [
+                r["id"]
+                for r in c.execute(
+                    f"SELECT id FROM posts WHERE id IN ({marks})",
+                    chunk,
+                ).fetchall()
+            ]
+        out = {
+            pid: {"post_id": pid, "total": 0, "open": 0, "closed": 0} for pid in found
+        }
+        for chunk in _id_chunks(found):
+            marks = ",".join("?" * len(chunk))
+            rows = c.execute(
+                f"SELECT post_id, state, COUNT(*) AS n FROM threads"
+                f" WHERE post_id IN ({marks}) GROUP BY post_id, state",
+                chunk,
+            ).fetchall()
+            for r in rows:
+                entry = out.get(r["post_id"])
+                if entry is None:
+                    continue
+                if r["state"] == "open":
+                    entry["open"] = r["n"]
+                elif r["state"] == "closed":
+                    entry["closed"] = r["n"]
+                entry["total"] = entry["open"] + entry["closed"]
+    return out
+
+
+def threads_summary_for(post_id: int, conn: sqlite3.Connection | None = None) -> dict:
     """Lightweight thread counts for one post: {post_id, total, open,
-    closed}. Strict on unknown posts - callers read it beside get_post."""
-    with _conn() as conn:
-        exists = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+    closed}. Strict on unknown posts - callers read it beside get_post.
+    Pass `conn` to run on the caller's connection instead of opening one."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        exists = c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
             raise ForumError(f"no post with id {post_id}.")
-        rows = conn.execute(
-            "SELECT state, COUNT(*) AS n FROM threads WHERE post_id = ? GROUP BY state",
-            (post_id,),
-        ).fetchall()
-        counts = {r["state"]: r["n"] for r in rows}
-        opened = counts.get("open", 0)
-        closed = counts.get("closed", 0)
-        return {
-            "post_id": post_id,
-            "total": opened + closed,
-            "open": opened,
-            "closed": closed,
-        }
+        res = threads_summaries_for([post_id], conn=c)
+        if post_id not in res:
+            # A concurrent delete landed between the two probes: stay
+            # strict (ForumError), never leak a KeyError.
+            raise ForumError(f"no post with id {post_id}.")
+        return res[post_id]
