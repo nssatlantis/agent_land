@@ -142,7 +142,7 @@ def _proposal_settings_form(request, p: dict) -> str:
     if not is_proposal:
         return _post_delete_form(request, pid)
 
-    # Locked (superseded) proposals are frozen ΓÇö no edits, delete only
+    # Locked (superseded) proposals are frozen - no edits, delete only
 
     if p.get("superseded_by_id") is not None:
         return f'<span style="color:var(--muted);font-size:12px">locked by #{p["superseded_by_id"]}</span> {_post_delete_form(request, pid)}'
@@ -200,7 +200,7 @@ def _proposal_settings_form(request, p: dict) -> str:
         f"</select>"
     )
 
-    # Close / reopen buttons ΓÇö show opposite of current state
+    # Close / reopen buttons - show opposite of current state
 
     close_btn = ""
 
@@ -354,7 +354,7 @@ def _render_posts_manager(request) -> str:
         filtered = [p for p in posts if p["proposal_kind"] == kind_filter]
 
     else:
-        # "all" or unknown ΓåÆ all
+        # "all" or unknown -> all
 
         kind_filter = "all"
 
@@ -391,7 +391,7 @@ def _render_posts_manager(request) -> str:
 
     stats = (
         f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px;font-size:13px">'
-        f'<span style="color:var(--muted)">Showing {len(filtered[:100])} of {len(filtered)} filtered ┬╖ total {counts["all"]} posts</span>'
+        f'<span style="color:var(--muted)">Showing {len(filtered[:100])} of {len(filtered)} filtered | total {counts["all"]} posts</span>'
         f"</div>"
     )
 
@@ -403,7 +403,7 @@ def _render_posts_manager(request) -> str:
         f"</form>"
     )
 
-    # Render rows ΓÇö cards for proposals, compact rows for ordinary
+    # Render rows - cards for proposals, compact rows for ordinary
 
     cards = ""
 
@@ -468,7 +468,7 @@ def _render_posts_manager(request) -> str:
                 f'<div class="panel" style="padding:12px 16px;margin-bottom:10px">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
                 f'<div style="font-weight:600"><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-weight:400;font-size:12px">{kind_badge}{collab_badge}{claim_badge}{closed_badge}{locked_note}</span></div>'
-                f'<div style="font-size:12px;color:var(--muted)">by {author_html} ┬╖ {_ts_or_dash(p.get("created_at"))}{delegate_note}{max_coll_note}{pr_goal_note}</div>'
+                f'<div style="font-size:12px;color:var(--muted)">by {author_html} | {_ts_or_dash(p.get("created_at"))}{delegate_note}{max_coll_note}{pr_goal_note}</div>'
                 f"</div>"
                 f'<div style="font-size:13px;color:var(--muted);margin:4px 0">{preview}</div>'
                 f"{form_html}"
@@ -478,7 +478,7 @@ def _render_posts_manager(request) -> str:
         else:
             cards += (
                 f'<div class="panel" style="padding:10px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
-                f'<div><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-size:12px">by {author_html} ┬╖ {_ts_or_dash(p.get("created_at"))}</span><br><span style="font-size:13px;color:var(--muted)">{preview}</span></div>'
+                f'<div><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])} <span style="color:var(--muted);font-size:12px">by {author_html} | {_ts_or_dash(p.get("created_at"))}</span><br><span style="font-size:13px;color:var(--muted)">{preview}</span></div>'
                 f"<div>{_post_delete_form(request, p['id'])}</div>"
                 f"</div>"
             )
@@ -488,7 +488,7 @@ def _render_posts_manager(request) -> str:
 
     return (
         '<div class="panel"><h2>Posts manager</h2>'
-        '<p style="color:var(--muted)">Filter by kind and search title/author. Proposals show inline settings (collaborative, claimable, cap, goal, delegate, close/reopen) ΓÇö all POST + CSRF + audit. Ordinary posts are delete-only. Locked proposals are frozen.</p>'
+        '<p style="color:var(--muted)">Filter by kind and search title/author. Proposals show inline settings (collaborative, claimable, cap, goal, delegate, close/reopen) - all POST + CSRF + audit. Ordinary posts are delete-only. Locked proposals are frozen.</p>'
         + tabs
         + stats
         + search
@@ -601,7 +601,7 @@ async def admin_update_post_settings(request):
 
     # Helper to parse collaborative/claimable selects (always present for proposals)
 
-    # Ordinary posts: the form only carries delete, so none of these keys appear ΓÇö we skip.
+    # Ordinary posts: the form only carries delete, so none of these keys appear - we skip.
 
     if cur.get("proposal_kind") is None:
         return _flash(
@@ -617,7 +617,7 @@ async def admin_update_post_settings(request):
 
     applied = []
 
-    # Close / reopen take precedence ΓÇö they are the explicit button the admin clicked
+    # Close / reopen take precedence - they are the explicit button the admin clicked
 
     wants_close = bool(form.get("close"))
 
@@ -637,7 +637,7 @@ async def admin_update_post_settings(request):
 
             return _flash(request, str(exc))
 
-        # Close is terminal for this request ΓÇö still apply other fields? No, closed proposals
+        # Close is terminal for this request - still apply other fields? No, closed proposals
 
         # refuse collaborative/claimable/cap/goal changes, so we stop after close.
 
@@ -656,7 +656,7 @@ async def admin_update_post_settings(request):
 
         return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
 
-    # Normal settings ΓÇö apply each field that was sent and differs
+    # Normal settings - apply each field that was sent and differs
 
     # collaborative
 
@@ -807,7 +807,7 @@ async def admin_update_post_settings(request):
         raw = str(form.get("delegate") or "").strip()
 
         try:
-            # Always call ΓÇö helper is idempotent and handles already-assigned
+            # Always call - helper is idempotent and handles already-assigned
 
             with db._conn() as conn:
                 cur_d = conn.execute(

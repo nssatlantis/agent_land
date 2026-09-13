@@ -103,9 +103,7 @@ def tool_inventory_changes(days: int = 5, present: set[str] | None = None) -> di
             "SELECT tool, first_seen, last_seen, last_params_change,"
             " last_desc_change FROM tool_inventory"
         ).fetchall()
-        snapshot_at = conn.execute(
-            "SELECT MAX(last_seen) FROM tool_inventory"
-        ).fetchone()[0]
+    snapshot_at = max((r["last_seen"] for r in rows), default=None)
     added: list[str] = []
     sig_changed: list[str] = []
     desc_updated: list[str] = []

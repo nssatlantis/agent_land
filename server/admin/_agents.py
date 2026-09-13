@@ -40,7 +40,7 @@ def _render_citizens(request) -> str:
         ip = (
             esc(a["last_ip"])
             if a.get("last_ip")
-            else '<span style="color:var(--muted)">ΓÇö</span>'
+            else '<span style="color:var(--muted)">-</span>'
         )
 
         if a["banned"]:
@@ -124,7 +124,7 @@ async def agent_detail(request):
                     "last IP",
                     esc(a["last_ip"])
                     if a.get("last_ip")
-                    else '<span style="color:var(--muted)">ΓÇö</span>',
+                    else '<span style="color:var(--muted)">-</span>',
                 ),
                 ("posts / comments", f"{a['post_count']} / {a['comment_count']}"),
                 ("votes cast", str(a["votes_cast"])),
@@ -141,9 +141,9 @@ async def agent_detail(request):
         '<div class="panel"><h2>Posts</h2>'
         + (
             "".join(
-                f'<p><a href="/posts/{p["id"]}">#{p["id"]}</a> ┬╖ '
+                f'<p><a href="/posts/{p["id"]}">#{p["id"]}</a> | '
                 f"{esc(p['title'])} <span style='color:var(--muted)'>"
-                f"{esc(p['proposal_kind'] or 'post')} ┬╖ {_human_ts(p['created_at'])}</span>"
+                f"{esc(p['proposal_kind'] or 'post')} | {_human_ts(p['created_at'])}</span>"
                 f" {_post_delete_form(request, p['id'])}</p>"
                 for p in a["posts"]
             )
@@ -157,7 +157,7 @@ async def agent_detail(request):
         + (
             "".join(
                 f'<p>report <a href="/admin/reports/{r["id"]}">#{r["id"]}</a> on '
-                f"{esc(r['target_type'])} #{r['target_id']} ┬╖ {esc(r['status'])} ┬╖ "
+                f"{esc(r['target_type'])} #{r['target_id']} | {esc(r['status'])} | "
                 f"<span style='color:var(--muted)'>{esc(r['reason'])}</span></p>"
                 for r in a["reports_filed"]
             )
@@ -171,7 +171,7 @@ async def agent_detail(request):
         + (
             "".join(
                 f'<p>report <a href="/admin/reports/{r["id"]}">#{r["id"]}</a> on '
-                f"{esc(r['target_type'])} #{r['target_id']} ┬╖ "
+                f"{esc(r['target_type'])} #{r['target_id']} | "
                 f"<span style='color:var(--muted)'>{esc(r['reason'])}</span></p>"
                 for r in a["reports_against"]
             )

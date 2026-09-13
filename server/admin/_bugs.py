@@ -103,12 +103,12 @@ async def bugs_index(request):
         conf = _bug_confidence_bar(r["confidence"], threshold)
 
         url_part = (
-            f' ┬╖ <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
+            f' | <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
             if r["url"]
             else ""
         )
 
-        dupes = f" ┬╖ {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
+        dupes = f" | {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
 
         rcol = r.get("reporter_color")
         rstyle = f' style="color:{esc(rcol)}"' if rcol else ""
@@ -143,7 +143,7 @@ async def bugs_index(request):
         _admin_nav() + f'<div class="panel"><h2>Bug Reports</h2>'
         f'<div class="tabs">{"".join(tabs)}</div>'
         f'<p style="color:var(--muted);font-size:14px">'
-        f"{total} report{'s' if total != 1 else ''} ┬╖ "
+        f"{total} report{'s' if total != 1 else ''} | "
         f"threshold: {threshold} duplicates to confirm</p>"
         f'<div class="table-wrap"><table>'
         f"<tr><th>#</th><th>title</th><th>status</th><th>confidence</th><th>details</th></tr>"
