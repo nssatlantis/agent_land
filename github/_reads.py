@@ -116,7 +116,7 @@ def read_file(
     file within a session are free.  Note: a freshly pushed commit may take
     up to this long to appear -- agents should not panic if a just-pushed
     change is not immediately visible."""
-    path = _validate_path(path)
+    path = _validate_path(path, allow_protected=True)
     ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
@@ -160,7 +160,7 @@ async def aread_file(
     ref: str | None = None,
 ) -> dict:
     """Native-await twin of read_file - same contract, non-blocking I/O."""
-    path = _validate_path(path)
+    path = _validate_path(path, allow_protected=True)
     ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
