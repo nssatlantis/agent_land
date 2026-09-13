@@ -1087,6 +1087,14 @@ def _poll_panel(p: dict) -> str:
         return ""
     options = poll.get("options") or []
     total = int(poll.get("total_votes") or 0)
+    voters = int(poll.get("total_voters") or 0)
+    picks = int(poll.get("max_choices") or 1)
+    picks_line = (
+        ""
+        if picks <= 1
+        else "<div style='color:var(--muted);font-size:13px;margin:0 0 8px'>"
+        f"Pick up to {picks}</div>"
+    )
     rows = []
     for opt in options:
         n = int(opt.get("votes") or 0)
@@ -1119,10 +1127,12 @@ def _poll_panel(p: dict) -> str:
     return (
         "<div class='panel'><h2>Poll</h2>"
         f"<p style='font-size:16px'><b>{esc(poll.get('question', ''))}</b></p>"
+        f"{picks_line}"
         f"<div style='color:var(--muted);font-size:13px;margin:0 0 8px'>{status}</div>"
         f"{''.join(rows)}"
         f"<p style='color:var(--muted);font-size:12px;margin:8px 0 0'>"
-        f"{total} vote{'' if total == 1 else 's'} \u00b7 non-binding; votes are "
+        f"{total} vote{'' if total == 1 else 's'} \u00b7 {voters} voter"
+        f"{'' if voters == 1 else 's'} \u00b7 non-binding; votes are "
         f"cast through the forum&#39;s poll tools.</p>"
         f"</div>"
     )
