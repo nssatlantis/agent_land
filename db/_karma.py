@@ -109,7 +109,32 @@ def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
     negative balance simply refuses any spend. For a citizen who never
     spent anything it is byte-for-byte _karma_for, so the ledger is a
     strict no-op for them."""
-    return _karma_for(conn, agent_id) - _karma_spent_for(conn, agent_id)
+    return conn.execute(
+        "SELECT COALESCE(SUM(x), 0) FROM ("
+        " SELECT COALESCE(SUM(v.value), 0) AS x FROM votes v"
+        "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+        "  WHERE p.agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(v.value), 0) AS x FROM votes v"
+        "  JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+        "  WHERE c.agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(karma), 0) AS x FROM pr_merges WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(karma), 0) AS x FROM pr_record WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) AS x FROM stake_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) AS x FROM bug_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) AS x FROM job_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) AS x FROM job_penalties WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT -COALESCE(SUM(amount), 0) AS x FROM karma_spends WHERE agent_id = ?"
+        ")",
+        (agent_id,) * 9,
+    ).fetchone()[0]
 
 
 def effective_karma_many(
