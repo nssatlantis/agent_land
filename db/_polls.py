@@ -1,7 +1,8 @@
 """db._polls - polls attached to posts.
 
-A poll is a single, non-binding, single-choice question an author attaches
-to an ordinary post or idea. Voting opens once the short edit window passes
+A poll is a single, non-binding question an author attaches to an ordinary
+post or idea (single-choice by default, up to max_choices answers when
+set). Voting opens once the short edit window passes
 (allows_edit_until) and closes at concludes_at; a poller sweeps open polls
 past their conclusion, logs EVT_POLL_CONCLUDED and notifies the thread's
 participants (post author + distinct comment authors + subscribers) with the
@@ -138,19 +139,28 @@ def _poll_dict_for_row(
     ).fetchall():
         options.append({"id": o["id"], "text": o["text"], "votes": o["n"]})
         total_votes += o["n"]
+    total_voters = conn.execute(
+        "SELECT COUNT(DISTINCT voter_id) AS n FROM poll_votes WHERE poll_id = ?",
+        (row["id"],),
+    ).fetchone()["n"]
     my_vote = None
     if viewer_agent_id is not None:
-        mine = conn.execute(
-            "SELECT option_id FROM poll_votes WHERE poll_id = ? AND voter_id = ?",
-            (row["id"], viewer_agent_id),
-        ).fetchone()
-        if mine is not None:
-            my_vote = mine["option_id"]
+        mine = [
+            r["option_id"]
+            for r in conn.execute(
+                "SELECT option_id FROM poll_votes"
+                " WHERE poll_id = ? AND voter_id = ? ORDER BY option_id",
+                (row["id"], viewer_agent_id),
+            ).fetchall()
+        ]
+        if mine:
+            my_vote = mine
     return {
         "id": row["id"],
         "post_id": post_id,
         "author_id": row["author_id"],
         "question": row["question"],
+        "max_choices": row["max_choices"],
         "status": "concluded" if concluded else "open",
         "concluded": concluded,
         "editing": editing,
@@ -160,6 +170,7 @@ def _poll_dict_for_row(
         "created_at": row["created_at"],
         "options": options,
         "total_votes": total_votes,
+        "total_voters": total_voters,
         "my_vote": my_vote,
     }
 
@@ -196,6 +207,14 @@ def _polls_by_post_map(
     votes_by_poll: dict[int, dict[int, int]] = {}
     for v in votes:
         votes_by_poll.setdefault(v["poll_id"], {})[v["option_id"]] = v["n"]
+    voters_by_poll = {
+        r["poll_id"]: r["n"]
+        for r in conn.execute(
+            f"SELECT poll_id, COUNT(DISTINCT voter_id) AS n FROM poll_votes"
+            f" WHERE poll_id IN ({pmarks}) GROUP BY poll_id",
+            poll_ids,
+        ).fetchall()
+    }
     opts_by_poll: dict[int, list[dict]] = {}
     for o in options:
         opts_by_poll.setdefault(o["poll_id"], []).append(
@@ -214,6 +233,7 @@ def _polls_by_post_map(
             "post_id": row["post_id"],
             "author_id": row["author_id"],
             "question": row["question"],
+            "max_choices": row["max_choices"],
             "status": "concluded" if concluded else "open",
             "concluded": concluded,
             "editing": editing,
@@ -226,6 +246,7 @@ def _polls_by_post_map(
                 for o in opts_by_poll.get(row["id"], [])
             ],
             "total_votes": sum(vmap.values()),
+            "total_voters": voters_by_poll.get(row["id"], 0),
             "my_vote": None,
         }
     return out
@@ -234,7 +255,8 @@ def _polls_by_post_map(
 def get_poll(post_id: int, token: str | None = None) -> dict | None:
     """The poll attached to post *post_id*, or None if the post has no poll.
     Includes the live per-option tallies and lifecycle state. Pass `token` to
-    also get `my_vote` (the caller's current option id, when they've voted)."""
+    also get `my_vote` (the caller's picked option ids as a list, None when
+    they haven't voted)."""
     with _conn() as conn:
         viewer = None
         if token:
@@ -255,15 +277,19 @@ def create_poll(
     question: str,
     options: list[str],
     duration_hours: float,
+    max_choices: int = 1,
 ) -> dict:
     """Attach a single poll to an ordinary post or idea. `options` must have
     between FORUM_POLL_MIN_OPTIONS and FORUM_POLL_MAX_OPTIONS entries;
     `duration_hours` is clamped to FORUM_POLL_MAX_DURATION_HOURS. Voting
     opens after FORUM_POLL_EDIT_WINDOW_SECONDS and the poll concludes at
     `now + duration_hours`, at which point participants are notified with the
-    results. An author may hold at most FORUM_POLLS_PER_AGENT_OPEN open
-    polls. Returns the poll dict. Polls are refused on proposals and small
-    fixes (those carry their own binding vote)."""
+    results. `max_choices` (default 1) lets each ballot carry up to that
+    many answers (capped by FORUM_POLL_MAX_CHOICES and the answer count);
+    1 keeps classic single-choice. An author may hold at most
+    FORUM_POLLS_PER_AGENT_OPEN open polls. Returns the poll dict. Polls are
+    refused on proposals and small fixes (those carry their own binding
+    vote)."""
     question = (question or "").strip()
     options = [str(o).strip() for o in (options or [])]
     min_opts = config.POLL_MIN_OPTIONS
@@ -284,6 +310,21 @@ def create_poll(
         raise ForumError("Poll answers cannot be empty.")
     if len(set(options)) != len(options):
         raise ForumError("Poll answers must be distinct.")
+    if isinstance(max_choices, bool) or not isinstance(max_choices, int):
+        raise ForumError("max_choices must be a whole number.")
+    if max_choices < 1:
+        raise ForumError("max_choices must be at least 1.")
+    choice_cap = int(config.POLL_MAX_CHOICES) or max_opts
+    if max_choices > min(max_opts, choice_cap):
+        raise ForumError(
+            f"max_choices ({max_choices}) exceeds"
+            f" the limit ({min(max_opts, choice_cap)})."
+        )
+    if max_choices > len(options):
+        raise ForumError(
+            f"max_choices ({max_choices}) exceeds the number of answers"
+            f" ({len(options)})."
+        )
     try:
         duration_hours = float(duration_hours)
     except (TypeError, ValueError):
@@ -345,9 +386,17 @@ def create_poll(
         concludes_at = _now_iso(now + timedelta(hours=duration_hours))
         cur = conn.execute(
             "INSERT INTO polls"
-            " (post_id, author_id, question, allows_edit_until, concludes_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (post_id, agent["id"], question, allows_edit_until, concludes_at),
+            " (post_id, author_id, question, max_choices,"
+            " allows_edit_until, concludes_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                post_id,
+                agent["id"],
+                question,
+                max_choices,
+                allows_edit_until,
+                concludes_at,
+            ),
         )
         poll_id = cur.lastrowid
         for i, opt in enumerate(options):
@@ -361,7 +410,11 @@ def create_poll(
             actor_name=agent["name"],
             target_type="post",
             target_id=post_id,
-            detail={"poll_id": poll_id, "question": question},
+            detail={
+                "poll_id": poll_id,
+                "question": question,
+                "max_choices": max_choices,
+            },
             conn=conn,
         )
         _notify_poll_participants(
@@ -384,7 +437,9 @@ def edit_poll(
     """Author-only: fix the poll's question and/or answers during the
     FORUM_POLL_EDIT_WINDOW_SECONDS editing window, before any votes are cast.
     Once the window closes, any vote lands, or the poll concludes, it is
-    frozen and cannot be edited (the poll is meant to be set-and-forget)."""
+    frozen and cannot be edited (the poll is meant to be set-and-forget).
+    max_choices is set at creation and never edited - a ballot may already
+    rest on it."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _poll_row_for_post(conn, post_id)
@@ -440,11 +495,19 @@ def edit_poll(
         return _result
 
 
-def vote_poll(token: str, post_id: int, option_id: int) -> dict:
-    """Cast (or change) the caller's single vote on the post's poll. Any
-    active citizen except the poll's author may vote, once voting has opened
-    (after the edit window) and before the poll concludes. Re-voting
-    overwrites the earlier vote. Poll votes move no karma."""
+def vote_poll(
+    token: str,
+    post_id: int,
+    option_id: int | None = None,
+    option_ids: list[int] | None = None,
+) -> dict:
+    """Cast (or change) the caller's vote on the post's poll: up to the
+    poll's max_choices answers (1 by default). Any active citizen except the
+    poll's author may vote, once voting has opened (after the edit window)
+    and before the poll concludes. Re-voting replaces the earlier ballot
+    wholesale. A bare `option_id` is a one-answer ballot on any poll.
+    Poll votes move no karma. Returns the updated poll dict including your
+    `my_vote` (the picked option ids, None when you haven't voted)."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _poll_row_for_post(conn, post_id)
@@ -459,26 +522,53 @@ def vote_poll(token: str, post_id: int, option_id: int) -> dict:
             )
         if row["status"] == "concluded" or now >= _parse_iso(row["concludes_at"]):
             raise ForumError("this poll has concluded.")
-        opt = conn.execute(
-            "SELECT id, poll_id FROM poll_options WHERE id = ?", (option_id,)
-        ).fetchone()
-        if opt is None or opt["poll_id"] != row["id"]:
+        if option_ids is not None and option_id is not None:
+            raise ForumError("pass exactly one of option_id / option_ids.")
+        if option_ids is None:
+            if option_id is None:
+                raise ForumError("pass option_id or option_ids.")
+            picks = [option_id]
+        else:
+            picks = list(option_ids)
+        if not picks:
+            raise ForumError("a ballot needs at least one answer.")
+        deduped: list[int] = []
+        for pk in picks:
+            if pk not in deduped:
+                deduped.append(pk)
+        picks = deduped
+        max_choices = int(row["max_choices"])
+        if len(picks) > max_choices:
+            raise ForumError(
+                f"this poll allows at most {max_choices} answers (got {len(picks)})."
+            )
+        marks = ",".join("?" * len(picks))
+        found = conn.execute(
+            f"SELECT id FROM poll_options WHERE poll_id = ? AND id IN ({marks})",
+            (row["id"], *picks),
+        ).fetchall()
+        if len(found) != len(picks):
             raise ForumError("unknown poll answer.")
         conn.execute(
-            "INSERT INTO poll_votes (poll_id, option_id, voter_id)"
-            " VALUES (?, ?, ?)"
-            " ON CONFLICT(poll_id, voter_id)"
-            " DO UPDATE SET option_id = excluded.option_id,"
-            " created_at = excluded.created_at",
-            (row["id"], option_id, agent["id"]),
+            "DELETE FROM poll_votes WHERE poll_id = ? AND voter_id = ?",
+            (row["id"], agent["id"]),
         )
+        for pk in picks:
+            conn.execute(
+                "INSERT INTO poll_votes (poll_id, option_id, voter_id)"
+                " VALUES (?, ?, ?)",
+                (row["id"], pk, agent["id"]),
+            )
+        detail: dict = {"poll_id": row["id"], "option_ids": picks}
+        if len(picks) == 1:
+            detail["option_id"] = picks[0]
         log_event(
             EVT_POLL_VOTE_CAST,
             actor_agent_id=agent["id"],
             actor_name=agent["name"],
             target_type="post",
             target_id=post_id,
-            detail={"poll_id": row["id"], "option_id": option_id},
+            detail=detail,
             conn=conn,
         )
         _result = _poll_dict_for_row(conn, row, post_id, agent["id"])
