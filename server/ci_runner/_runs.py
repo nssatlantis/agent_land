@@ -576,6 +576,7 @@ def run_checks(
         valid = ", ".join(sorted(_CHECKS))
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
     script_rel = entry[1]
+    ci_started_iso = db._now_iso()
     # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
     # Shares the runner pool with branch/native, but has its own daily cap (ci_local_run) so a
     # branch-mode budget exhaustion never blocks rehearsal, per user direction.
@@ -932,7 +933,7 @@ def run_checks(
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
-        # Auto-tick workflow lint/test/not-gutted on CI green (B)
+        # Scoped CI-green auto-tick (#B27 fix)
         try:
             _ok_ci = (
                 detail.get("ok")
@@ -950,32 +951,23 @@ def run_checks(
                 import db as _dbw
 
                 with _dbw._conn() as _c:
-                    _rows_w = _c.execute(
-                        "SELECT id, workflow_path FROM workflow_runs WHERE agent_id = ? AND status = 'open'",
-                        (agent_id,),
-                    ).fetchall()
-                    for _rw in _rows_w:
-                        try:
-                            _steps_w = _dbw.workflow_steps_for_run(_c, int(_rw["id"]))
-                            for _sk in ("not-gutted", "lint", "test"):
-                                for _st in _steps_w:
-                                    if _st["step_key"] == _sk and not _st["done"]:
-                                        try:
-                                            _c.execute(
-                                                "UPDATE workflow_run_steps SET done = 1, done_at = ?, done_by = ? WHERE run_id = ? AND step_key = ? AND done = 0",
-                                                (
-                                                    _dbw._now_iso(),
-                                                    agent_id,
-                                                    int(_rw["id"]),
-                                                    _sk,
-                                                ),
-                                            )
-                                        except Exception:  # domain:degrade-silently - per-step auto-tick best-effort
-                                            pass
-                        except (
-                            Exception
-                        ):  # domain:degrade-silently - per-run auto-tick best-effort
-                            pass
+                    try:
+                        _dbw.auto_tick_ci_steps(
+                            _c,
+                            agent_id=agent_id,
+                            pr_number=pr_number,
+                            local_mode=local_mode,
+                            branch_mode=branch_mode,
+                            is_bench=(checks in _BENCH_CHECKS),
+                            is_native=(not local_mode and not branch_mode),
+                            is_system=_system,
+                            ci_started_iso=ci_started_iso,
+                            tick_stamp=_dbw._now_iso(),
+                        )
+                    except (
+                        Exception
+                    ):  # domain:degrade-silently - scoped auto-tick best-effort
+                        pass
         except Exception:  # domain: degrade-silently - auto-tick best-effort
             pass
         if branch_mode:
