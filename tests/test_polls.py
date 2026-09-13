@@ -143,6 +143,9 @@ def main():
     assert "exactly one of" in expect_error(
         lambda: db.vote_poll(tb, mp, option_id=ma, option_ids=[ma, mb])
     )
+    assert "list of answer ids" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_ids=ma)
+    )
     assert "at most 2 answers" in expect_error(
         lambda: db.vote_poll(tb, mp, option_ids=[ma, mb, mc])
     )
@@ -203,6 +206,21 @@ def main():
     assert "editing window has closed" in expect_error(
         lambda: db.edit_poll(ta, p, question="nope")
     )
+
+    # --- edits cannot shrink answers below max_choices --------------------
+    saved_win2 = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
+    try:
+        os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = "300"
+        se = db.create_post(ta, "poll edit shrink", "b")["post_id"]
+        db.create_poll(ta, se, "SQ", ["A", "B", "C"], 1, max_choices=3)
+        assert "exceeds the new" in expect_error(
+            lambda: db.edit_poll(ta, se, options=["A", "B"])
+        )
+    finally:
+        if saved_win2 is None:
+            os.environ.pop("FORUM_POLL_EDIT_WINDOW_SECONDS", None)
+        else:
+            os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = saved_win2
 
     # --- conclusion sweep notifies participants, idempotent ------------------
     cpost = db.create_post(ta, "poll conclude", "b")["post_id"]
