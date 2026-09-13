@@ -146,3 +146,121 @@ def _resolve_claim_tree(token: str, proposal_id: int, name: str) -> tuple[dict, 
             "- release it and claim again."
         )
     return record, info["path"]
+
+
+@mcp.tool()
+@_logged
+def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
+    """List one workspace tree's files as {path, size}, .git excluded."""
+    _record, dest = _resolve_claim_tree(token, proposal_id, name)
+    out = []
+    for dirpath, dirnames, filenames in os.walk(dest):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            try:
+                size = os.path.getsize(full)
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+            rel = os.path.relpath(full, dest).replace(os.sep, "/")
+            out.append({"path": rel, "size": size})
+    out.sort(key=lambda r: str(r["path"]))
+    return out
+
+
+@mcp.tool()
+@_logged
+def workspace_read_file(
+    token: str,
+    proposal_id: int,
+    name: str,
+    path: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+) -> dict:
+    """Read one file from a workspace tree (text, undecodables replaced).
+
+    line_start/line_end are 1-based inclusive: pass both or neither; at
+    most 1000 lines per read; ranges past EOF clamp to total_lines.
+    """
+    _record, dest = _resolve_claim_tree(token, proposal_id, name)
+    clean, full = _guard_tree_path(dest, path, write=False)
+    if (line_start is None) != (line_end is None):
+        raise db.ForumError("pass line_start and line_end together, or neither.")
+    try:
+        with open(full, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    lines = text.splitlines()
+    total = len(lines)
+    start, end = 1, total
+    if line_start is not None and line_end is not None:
+        try:
+            start = int(line_start)
+            end = int(line_end)
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:  # domain: fail-loudly - ranges are caller bugs
+            raise db.ForumError("line numbers must be integers.") from exc
+        if start < 1:
+            raise db.ForumError("line_start is below 1.")
+        if end < start:
+            raise db.ForumError("line_end is below line_start.")
+        if end - start + 1 > 1000:
+            raise db.ForumError("range covers over 1000 lines.")
+    _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
+    return {
+        "path": clean,
+        "content": "\n".join(lines[start - 1 : end]),
+        "total_lines": total,
+        "line_start": start,
+        "line_end": min(end, total),
+    }
+
+
+@mcp.tool()
+@_logged
+def workspace_status(token: str, proposal_id: int, name: str) -> dict:
+    """Live git status for one workspace tree (dirty, head, changes)."""
+    record, _dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    st = github.claim_tree_status(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname)
+    return st
+
+
+@mcp.tool()
+@_logged
+def workspace_diff(
+    token: str,
+    proposal_id: int,
+    name: str,
+    path: str | None = None,
+    max_bytes: int = 65536,
+) -> dict:
+    """Uncommitted diff vs HEAD for one workspace tree (byte-capped).
+
+    path scopes to one file; max_bytes caps the payload (1KB..1MB).
+    """
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    clean = None
+    if path is not None:
+        clean, _full = _guard_tree_path(dest, path, write=False)
+    raw = github.claim_tree_diff(agent_id, proposal_id, cname, path=clean)
+    try:
+        cap = max(1024, min(int(max_bytes), 1 << 20))
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:  # domain: fail-loudly - caps are caller bugs
+        raise db.ForumError("max_bytes must be an integer.") from exc
+    text = raw["diff"]
+    _touch_clocks(agent_id, proposal_id, cname)
+    if len(text) > cap:
+        return {"diff": text[:cap], "truncated": True, "head_sha": raw["head_sha"]}
+    return {"diff": text, "truncated": False, "head_sha": raw["head_sha"]}
