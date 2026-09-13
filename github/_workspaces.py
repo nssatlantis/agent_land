@@ -288,13 +288,32 @@ def _porcelain_changes(dest: str) -> list:
     return out
 
 
+def _stage_intents(dest: str) -> None:
+    """Intent-to-add every untracked file so `git diff HEAD` shows new
+    files with full content (porcelain alone lists them, diff hides them)."""
+    res = _git(dest, "status", "--porcelain=v1", check=False)
+    if res.returncode != 0:
+        return
+    for line in res.stdout.splitlines():
+        if not line.startswith("??") or len(line) < 4:
+            continue
+        if line[3:] in _MANAGED:
+            continue
+        _git(dest, "add", "-N", "--", line[3:], check=False)
+
+
 def claim_tree_diff(
     agent_id: int, proposal_id: int, name: str, path: str | None = None
 ) -> dict:
-    """Uncommitted diff vs HEAD, optionally scoped to one path."""
+    """Uncommitted diff vs HEAD, optionally scoped to one path.
+
+    Untracked files are intent-to-add staged first, so new files appear
+    with full content instead of being silently omitted.
+    """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
+    _stage_intents(dest)
     args = ["diff", "HEAD", "--"]
     if path is not None:
         args.append(_validate_path(path, allow_protected=True))
