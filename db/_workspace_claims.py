@@ -63,7 +63,9 @@ def _require_workspace_permission(
         raise ForumError(f"no proposal with id {post_id}.")
     if prow["superseded_by_id"] is not None:
         raise ForumError(
-            _proposal_locked_error(post_id, prow["superseded_by_id"], "claim a workspace on")
+            _proposal_locked_error(
+                post_id, prow["superseded_by_id"], "claim a workspace on"
+            )
         )
     if prow["proposal_kind"] == "idea":
         raise ForumError(
