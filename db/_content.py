@@ -246,18 +246,21 @@ def list_posts(
     # select it once so the page need not re-aggregate the same GROUP BY.
     net_select = ", COALESCE(vn.net, 0) AS net" if sort == "top" else ""
     with _conn() as conn:
+        tag_join = ""
+        tag_join_params: list = []
         if tag is not None:
             tag_row = conn.execute(
                 "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (tag,)
             ).fetchone()
             if tag_row is None:
                 raise ForumError(f"no tag named '{tag}'.")
-            tag_clause = (
-                "EXISTS (SELECT 1 FROM post_tags pt"
-                " WHERE pt.post_id = p.id AND pt.tag_id = ?)"
-            )
-            where = f"{where} AND {tag_clause}" if where else f"WHERE {tag_clause}"
-            params.append(tag_row["id"])
+            # Drive from the small tag side: the covering (tag_id, post_id)
+            # composite serves tag-first access, replacing the per-row
+            # EXISTS probe. Same row set: PK(post_id, tag_id) keeps the
+            # join to-one per post for a fixed tag_id, and every ordering
+            # path below is untouched.
+            tag_join = " JOIN post_tags pt ON pt.post_id = p.id AND pt.tag_id = ?"
+            tag_join_params.append(tag_row["id"])
         params.extend([limit, offset])
         rows = conn.execute(
             f"""
@@ -275,13 +278,14 @@ def list_posts(
             LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
             LEFT JOIN agents ca ON ca.id = pc.agent_id
             """
+            + tag_join
             + score_join
             + where
             + f"""
             {order_by}
             LIMIT ? OFFSET ?
             """,
-            params,
+            tag_join_params + params,
         ).fetchall()
         ids = [r["id"] for r in rows]
         # Proposal-only batches run over proposal rows alone: ordinary rows
