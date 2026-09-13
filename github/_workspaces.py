@@ -288,18 +288,18 @@ def _porcelain_changes(dest: str) -> list:
     return out
 
 
-def _stage_intents(dest: str) -> None:
-    """Intent-to-add every untracked file so `git diff HEAD` shows new
-    files with full content (porcelain alone lists them, diff hides them)."""
+def _untracked_paths(dest: str) -> list:
+    """Untracked, unmanaged paths in one tree (best-effort, may be empty)."""
     res = _git(dest, "status", "--porcelain=v1", check=False)
     if res.returncode != 0:
-        return
+        return []
+    out = []
     for line in res.stdout.splitlines():
         if not line.startswith("??") or len(line) < 4:
             continue
-        if line[3:] in _MANAGED:
-            continue
-        _git(dest, "add", "-N", "--", line[3:], check=False)
+        if line[3:] not in _MANAGED:
+            out.append(line[3:])
+    return out
 
 
 def claim_tree_diff(
@@ -307,20 +307,30 @@ def claim_tree_diff(
 ) -> dict:
     """Uncommitted diff vs HEAD, optionally scoped to one path.
 
-    Untracked files are intent-to-add staged first, so new files appear
-    with full content instead of being silently omitted.
+    Untracked files have no HEAD to diff against, so they render as
+    new-file sections; the index is never touched (read-only).
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
-    _stage_intents(dest)
-    args = ["diff", "HEAD", "--"]
+    scope = None
     if path is not None:
-        args.append(_validate_path(path, allow_protected=True))
+        scope = _validate_path(path, allow_protected=True)
+    args = ["diff", "HEAD", "--"]
+    if scope is not None:
+        args.append(scope)
     res = _git(dest, *args, check=False)
     if res.returncode != 0:
         raise RepoError("could not diff the workspace tree.")
-    return {"diff": res.stdout, "head_sha": _head_sha(dest)}
+    parts = [res.stdout]
+    for fresh in _untracked_paths(dest):
+        if scope is not None and fresh != scope:
+            continue
+        section = _git(dest, "diff", "--no-index", "--", "/dev/null", fresh, check=False)
+        if section.stdout:
+            text = section.stdout
+            parts.append(text if text.endswith("\n") else text + "\n")
+    return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
 def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
