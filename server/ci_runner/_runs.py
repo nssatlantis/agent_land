@@ -641,11 +641,11 @@ def run_checks(
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
     sandboxed = False  # native host-fallback default; branch/local set True
-    # Acquire a sharded runner slot â€” 3Ã—1.5c on 4c host. User path waits
+    # Acquire a sharded runner slot - 3x1.5c on 4c host. User path waits
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
     # held, treat as saturated.
-    if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod â€” real gate is _ci_acquire_slot (same point MiMo #2)
+    if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
     try:
@@ -693,7 +693,7 @@ def run_checks(
                     )
                 except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
-            # Local rehearsal is the overlay on top of main â€” same sandbox as branch, never native.
+            # Local rehearsal is the overlay on top of main - same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
@@ -853,7 +853,7 @@ def run_checks(
             # static tooling (mypy/ruff from requirements-dev.txt): tests/run_ci.py
             # then executes the whole surface and reports PASS/FAIL. Only when the
             # tools are genuinely absent does it loudly skip static, so the flag is
-            # keyed on the actual parsed static result â€” never on how the command
+            # keyed on the actual parsed static result - never on how the command
             # was dispatched (sandboxed vs host interpreter). A machine-readable
             # marker so that degraded run is never mistaken for the real thing.
             static_result = (
@@ -1000,7 +1000,7 @@ def run_checks(
         except Exception:
             # domain: degrade-silently - releasing a retired slot is best-effort
             pass
-        # Legacy lock release for tests that still hold it â€” no-op normally
+        # Legacy lock release for tests that still hold it - no-op normally
         if (
             _slots_mod._RUN_LOCK.locked()
         ):  # legacy: release test-held lock if any; always False in prod
@@ -1065,9 +1065,9 @@ def run_heartbeat_bench(
 
 
 def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
-    """Poller-side branch CI â€” same Docker sandbox as repo_ci_run(branch)
+    """Poller-side branch CI - same Docker sandbox as repo_ci_run(branch)
     but without per-agent cooldown/cap. Used when GitHub Actions is
-    unreachable and CI_FALLBACK_ENABLED=1 â€” either CI passing is sufficient
+    unreachable and CI_FALLBACK_ENABLED=1 - either CI passing is sufficient
     per user direction. Respects CI_RUN_CONCURRENCY via the same slot pool."""
     entry = _CHECKS.get(checks)
     if entry is None:
@@ -1085,7 +1085,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     kind_event = events.EVT_CI_BRANCH_RUN
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
     started = time.monotonic()
-    if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests; always False in prod â€” real gate is _ci_acquire_slot
+    if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests; always False in prod - real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
     try:
