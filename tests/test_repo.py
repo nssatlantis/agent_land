@@ -1626,6 +1626,25 @@ def main():
             assert "path" in str(exc), (bad, exc)
         else:
             raise AssertionError(f"_validate_path must reject {bad!r}")
+    # Protected prefixes: writes refuse, reads allow, hygiene never lifts.
+    for protected in (
+        ".github/workflows/ci.yml",
+        ".github/actions/setup-ci/action.yml",
+    ):
+        try:
+            github._validate_path(protected)
+        except github.RepoError as exc:
+            assert "protected" in str(exc), (protected, exc)
+        else:
+            raise AssertionError(f"_validate_path must refuse {protected!r}")
+        assert github._validate_path(protected, allow_protected=True) == protected
+    for bad in ("../x", "/abs", ".github/../x"):
+        try:
+            github._validate_path(bad, allow_protected=True)
+        except github.RepoError:
+            pass
+        else:
+            raise AssertionError(f"_validate_path must reject {bad!r} even allowed")
     # _escape_md: backslash-escape the markdown-significant chars so a title
     # with stars/underscores/brackets/backticks renders as plain text.
     assert github._escape_md("a*b_c[d]e`f`g\\h") == "a\\*b\\_c\\[d\\]e\\`f\\`g\\\\h", (
