@@ -834,7 +834,7 @@ def _outstanding_actions(
         " WHERE j.creator_agent_id = ? AND j.status = 'active'"
         " AND jc.status IN ('awaiting', 'declined')"
         " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
-        " ORDER BY (role = 'stale'), j.id",
+        " ORDER BY j.id",
         (agent_id, _now_iso(), agent_id, _now_iso()),
     ).fetchall()
     todo = [r for r in todo_stale if r["role"] == "todo"]
