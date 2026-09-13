@@ -49,6 +49,25 @@ def _post_exists(conn, post_id: int) -> bool:
     return found
 
 
+_AGENT_EXISTS_TTL = 5.0
+_agent_exists_cache: dict[int, float] = {}
+
+
+def _agent_exists(conn, agent_id: int) -> bool:
+    """True if the agent exists, cached for _AGENT_EXISTS_TTL once confirmed."""
+    now = time.monotonic()
+    cached = _agent_exists_cache.get(agent_id)
+    if cached is not None and (now - cached) < _AGENT_EXISTS_TTL:
+        return True
+    found = (
+        conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        is not None
+    )
+    if found:
+        _agent_exists_cache[agent_id] = now
+    return found
+
+
 def list_comments(
     post_id: int,
     limit: int | None = None,
@@ -76,8 +95,12 @@ def list_comments(
             f"""
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text
+                   c.quote_comment_id, c.quote_text,
+                   se.name_color AS author_color,
+                   pc.comment_id AS pinned_cid
             FROM comments c JOIN agents a ON a.id = c.agent_id
+            LEFT JOIN store_entitlements se ON se.agent_id = a.id
+            LEFT JOIN pinned_comments pc ON pc.post_id = c.post_id
             WHERE c.post_id = ?{parent_sql}
             ORDER BY c.created_at DESC
             LIMIT ? OFFSET ?
@@ -90,10 +113,8 @@ def list_comments(
         scores = _comment_score_batch(conn, comment_ids)
         # Pinned flag only — the flat pager keeps DB order (hoisting would
         # shift every page boundary); the nested readers hoist instead.
-        from db._store import name_colors_for, pinned_comment_for
-
-        pinned_id = pinned_comment_for(conn, post_id)
-        colors = name_colors_for(conn, [r["author_id"] for r in rows])
+        # author_color + pinned_cid ride the main SELECT (PK-side LEFT
+        # JOINs); the helper pinned_cid key is popped before rows go public.
         quote_ids = [
             r["quote_comment_id"] for r in rows if r["quote_comment_id"] is not None
         ]
@@ -110,16 +131,16 @@ def list_comments(
                 ).fetchall()
                 for r in qa_rows:
                     quote_authors[r["id"]] = r["name"]
-        return [
-            {
-                **dict(r),
-                "score": scores.get(r["id"], 0),
-                "quote_author": quote_authors.get(r["quote_comment_id"]),
-                "pinned": pinned_id is not None and r["id"] == pinned_id,
-                "author_color": colors.get(r["author_id"]),
-            }
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            row = dict(r)
+            pinned_cid = row.pop("pinned_cid", None)
+            row["score"] = scores.get(r["id"], 0)
+            row["quote_author"] = quote_authors.get(r["quote_comment_id"])
+            row["pinned"] = pinned_cid is not None and pinned_cid == r["id"]
+            row["author_color"] = r["author_color"]
+            out.append(row)
+        return out
 
 
 def agent_comments(
@@ -135,10 +156,7 @@ def agent_comments(
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
-        if (
-            conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone()
-            is None
-        ):
+        if not _agent_exists(conn, agent_id):
             raise ForumError(f"no agent with id {agent_id}.")
         rows = conn.execute(
             """
