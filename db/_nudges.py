@@ -135,7 +135,7 @@ def _collab_work_list(
 ) -> list[dict]:
     """Open collaborative work for *agent_id*: proposals where the agent
     is a collaborator, still open, with undone to-do items and PR progress.
-    Returns a list of dicts sorted by proposal id, each carrying post_id,
+    Returns a list of dicts in membership-row order, each carrying post_id,
     title, undone, total, merged, and pr_goal.  Shared by
     ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
     so the two surfaces can never disagree. `todos_by_post` may carry a
