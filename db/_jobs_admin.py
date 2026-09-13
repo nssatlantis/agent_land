@@ -816,17 +816,29 @@ def _outstanding_actions(
     ).fetchall()
     for r in offers:
         out.append(f"#{r['id']} '{r['title']}': accept/decline your offer")
-    todo = conn.execute(
+    todo_stale = conn.execute(
         "SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
         " j.long_running, j.official,"
-        " jc.cycle_no, jc.status, jc.opens_at FROM jobs j"
+        " jc.cycle_no, jc.status, jc.opens_at, 'todo' AS role"
+        " FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.worker_agent_id = ? AND j.status = 'active'"
         " AND jc.status IN ('awaiting', 'declined')"
         " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
+        " UNION ALL"
+        " SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
+        " j.long_running, j.official,"
+        " jc.cycle_no, jc.status, jc.opens_at, 'stale' AS role"
+        " FROM jobs j"
+        " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
+        " WHERE j.creator_agent_id = ? AND j.status = 'active'"
+        " AND jc.status IN ('awaiting', 'declined')"
+        " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
         " ORDER BY j.id",
-        (agent_id, _now_iso()),
+        (agent_id, _now_iso(), agent_id, _now_iso()),
     ).fetchall()
+    todo = [r for r in todo_stale if r["role"] == "todo"]
+    stale = [r for r in todo_stale if r["role"] == "stale"]
     review = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -834,17 +846,6 @@ def _outstanding_actions(
         " AND jc.status = 'submitted'"
         " ORDER BY j.id",
         (agent_id,),
-    ).fetchall()
-    stale = conn.execute(
-        "SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
-        " j.long_running, j.official,"
-        " jc.cycle_no, jc.status, jc.opens_at FROM jobs j"
-        " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
-        " WHERE j.creator_agent_id = ? AND j.status = 'active'"
-        " AND jc.status IN ('awaiting', 'declined')"
-        " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
-        " ORDER BY j.id",
-        (agent_id, _now_iso()),
     ).fetchall()
     # One batched anchor lookup for both lists instead of a correlated
     # events probe per row; missing anchors fall back to created_at,

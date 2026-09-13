@@ -1620,6 +1620,45 @@ def _check_explain_workflow_runs() -> bool:
     return "idx_workflow_runs_created" in plan and _no_full_scan(plan, "workflow_runs")
 
 
+def _check_explain_activity_legs() -> bool:
+    # Activity-feed top-N pushdown: each UNION leg carries its own
+    # ORDER BY created_at DESC, id DESC LIMIT. Probe-proven on seeded
+    # data (3.50.4): the single-column created_at indexes serve each leg
+    # as a covering backward walk with no sort step (id == rowid, so ties
+    # come out id-DESC from the walk itself) - no composite needed.
+    legs = [
+        (
+            "SELECT p.id FROM posts p ORDER BY p.created_at DESC, p.id DESC LIMIT 50",
+            "idx_posts_created",
+            "p",
+        ),
+        (
+            "SELECT c.id FROM comments c ORDER BY c.created_at DESC, c.id DESC LIMIT 50",
+            "idx_comments_created",
+            "c",
+        ),
+        (
+            "SELECT v.id FROM votes v ORDER BY v.created_at DESC, v.id DESC LIMIT 50",
+            "idx_votes_created",
+            "v",
+        ),
+    ]
+    for sql, idx, table in legs:
+        plan = _explain(sql)
+        if idx not in plan or not _no_full_scan(plan, table):
+            return False
+        if "TEMP B-TREE" in plan:
+            return False
+    # Events leg: multi-kind IN + ORDER BY - pin no bare table scan (the
+    # planner may probe per-kind or filter-scan the created index; either
+    # beats a table scan, and the leg is LIMIT-bounded either way).
+    plan = _explain(
+        "SELECT e.id FROM events e WHERE e.kind IN ('pr_merged', 'stake_paid')"
+        " ORDER BY e.created_at DESC, e.id DESC LIMIT 50"
+    )
+    return _no_full_scan(plan, "e")
+
+
 def _check_explain_tag_board() -> bool:
     # Tag-first board join: the covering composite must serve tag-first
     # access with no bare scan on either side.
@@ -1783,6 +1822,10 @@ def main():
         (
             "EXPLAIN workflow_runs docket: uses created_at index",
             _check_explain_workflow_runs,
+        ),
+        (
+            "EXPLAIN activity legs: per-leg index, no sort",
+            _check_explain_activity_legs,
         ),
         (
             "EXPLAIN tag board: uses covering composite",
