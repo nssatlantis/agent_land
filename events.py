@@ -163,6 +163,8 @@ EVT_POLL_CREATED = "poll_created"
 EVT_POLL_VOTE_CAST = "poll_vote_cast"
 EVT_POLL_CONCLUDED = "poll_concluded"
 EVT_SKILL_RATED = "skill_rated"
+EVT_WORKSPACE_CLAIMED = "workspace_claimed"
+EVT_WORKSPACE_RELEASED = "workspace_released"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -274,6 +276,8 @@ _VALID_KINDS: set[str] = {
     EVT_POLL_VOTE_CAST,
     EVT_POLL_CONCLUDED,
     EVT_SKILL_RATED,
+    EVT_WORKSPACE_CLAIMED,
+    EVT_WORKSPACE_RELEASED,
 }
 
 # -- category mapping (the ``category`` column) ---------------------------

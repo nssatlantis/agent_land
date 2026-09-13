@@ -148,6 +148,15 @@ from ._reads import (  # noqa: F401
     strip_trailing_proposal,
 )
 
+# ── workspaces: server-held per-claim trees ─────────────────────────────
+from ._workspaces import (  # noqa: F401
+    check_claim_budget,
+    claim_tree_info,
+    ensure_claim_tree,
+    retire_claim_tree,
+    sweep_idle_claim_trees,
+)
+
 # ── writes: proposals, updates, lifecycle, edit engine ──────────────────
 from ._writes import (  # noqa: F401
     _apply_edits,
