@@ -312,3 +312,11 @@ def run(conn) -> None:
         "idx_comments_parent",
     ):
         conn.execute(f"DROP INDEX IF EXISTS {_dropped}")
+    # 9. Tag-first composite (small_fix #449): covering (tag_id,
+    # post_id) serves the tag-driven board join. Declared in schema.sql
+    # for fresh databases; created here too so upgraded databases
+    # converge (schema.sql only adds on fresh init).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_tags_tag_post"
+        " ON post_tags(tag_id, post_id)"
+    )
