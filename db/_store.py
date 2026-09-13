@@ -620,6 +620,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    max_choices: int | None = None,
     text: str | None = None,
 ) -> dict:
     """Buy one store item. The spend and the entitlement land atomically;
@@ -642,6 +643,7 @@ def buy_store_item(
             question=question,
             options=options,
             duration_hours=duration_hours,
+            max_choices=max_choices,
         )
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
@@ -898,6 +900,7 @@ def _buy_poll(
     question: str | None,
     options: list[str] | None,
     duration_hours: float | None,
+    max_choices: int | None = None,
 ) -> dict:
     """Attach a poll to your own ordinary post or idea for
     FORUM_STORE_POLL_PRICE. Ordering matters: create_poll runs its own
@@ -926,7 +929,14 @@ def _buy_poll(
                 f"insufficient credits: this costs {format_credits(spent_q)}"
                 f" but you have {format_credits(bal)}."
             )
-    poll = create_poll(token, post_id, question, options, duration_hours)
+    poll = create_poll(
+        token,
+        post_id,
+        question,
+        options,
+        duration_hours,
+        max_choices=max_choices if max_choices is not None else 1,
+    )
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         try:
