@@ -1496,6 +1496,7 @@ _perf_indexes = (
     "idx_report_votes_archive_report",
     "idx_todo_item_flags_item",
     "idx_credit_entries_escrow",
+    "idx_credit_entries_store_buyers",
 )
 
 
