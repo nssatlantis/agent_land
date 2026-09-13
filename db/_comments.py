@@ -99,9 +99,7 @@ def list_comments(
     with _conn() if conn is None else nullcontext(conn) as conn:
         if _joined:
             if (
-                conn.execute(
-                    "SELECT 1 FROM posts WHERE id = ?", (post_id,)
-                ).fetchone()
+                conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
                 is None
             ):
                 raise ForumError(f"no post with id {post_id}.")
