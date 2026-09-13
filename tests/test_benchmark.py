@@ -1659,6 +1659,22 @@ def _check_explain_activity_legs() -> bool:
     return _no_full_scan(plan, "e")
 
 
+def _check_explain_tag_board() -> bool:
+    # Tag-first board join: the covering composite must serve tag-first
+    # access with no bare scan on either side.
+    sql = (
+        "SELECT p.id FROM posts p JOIN post_tags pt"
+        " ON pt.post_id = p.id AND pt.tag_id = 1"
+        " ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
+    )
+    plan = _explain(sql)
+    return (
+        "idx_post_tags_tag_post" in plan
+        and _no_full_scan(plan, "post_tags")
+        and _no_full_scan(plan, "posts")
+    )
+
+
 def _check_explain_notifications_unread(agent_id: int) -> bool:
     # per-whoami unread count — must use a covering index, never scan.
     # Either the unread-partial or the agent/read composite serves it;
@@ -1810,6 +1826,10 @@ def main():
         (
             "EXPLAIN activity legs: per-leg index, no sort",
             _check_explain_activity_legs,
+        ),
+        (
+            "EXPLAIN tag board: uses covering composite",
+            _check_explain_tag_board,
         ),
     ]
     if sample_post:
