@@ -6,6 +6,7 @@ import os
 import platform
 import sqlite3
 import time
+from typing import Any
 
 from db._core import (
     DB_PATH,
@@ -17,6 +18,15 @@ from db._core import (
 # Captured when this module first loads (seconds after true process start):
 # the denominator for process_info()'s uptime figure.
 _LOADED_MONO = time.monotonic()
+
+# Short-TTL memo for the creation-time constants in storage_stats()
+# (page_size / journal_mode / auto_vacuum never change at runtime;
+# page_count / freelist_count / wal_bytes stay fresh every call).
+# 5s matches the /status + event_total windows, so worst-case staleness
+# across a restore/VACUUM is one page refresh. Keyed by DB path so test
+# suites switching files never read another file's constants.
+_STATIC_TTL_SECONDS = 5.0
+_static_cache: tuple[float, str, dict[str, Any]] | None = None
 
 
 def schema_version() -> int:
@@ -38,11 +48,26 @@ def storage_stats() -> dict:
     journaled, and sqlite_version names the engine actually linked into this
     process (the ground truth after a library or OS upgrade).
     Protocol-agnostic - it is just numbers and one string."""
+    global _static_cache
+    now = time.monotonic()
+    db_path_str = str(DB_PATH)
+    static: dict[str, Any] | None = None
+    if _static_cache is not None:
+        ts, cached_path, cached = _static_cache
+        if cached_path == db_path_str and (now - ts) < _STATIC_TTL_SECONDS:
+            static = cached
     with _conn() as conn:
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        if static is None:
+            static = {
+                "page_size": conn.execute("PRAGMA page_size").fetchone()[0],
+                "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
+                "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
+            }
+            _static_cache = (now, db_path_str, static)
+        page_size = int(static["page_size"])
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         try:
-            wal_bytes: int | None = os.path.getsize(str(DB_PATH) + "-wal")
+            wal_bytes: int | None = os.path.getsize(db_path_str + "-wal")
         except OSError:
             # domain: degrade-silently - no -wal file right now is the normal
             # steady state; /status shows a dash and nothing is lost.
@@ -50,11 +75,11 @@ def storage_stats() -> dict:
         return {
             "sqlite_version": sqlite3.sqlite_version,
             "wal_bytes": wal_bytes,
-            "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
+            "journal_mode": static["journal_mode"],
             "page_size": page_size,
             "page_count": page_count,
             "freelist_count": conn.execute("PRAGMA freelist_count").fetchone()[0],
-            "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
+            "auto_vacuum": static["auto_vacuum"],
             "size": page_count * page_size,
         }
 
