@@ -418,9 +418,7 @@ def test_get_thread_subtree_beats_single_level():
     assert all("score" in c for c in got["comments"]), "threads-error@one-score"
     assert all("pinned" in c for c in got["comments"]), "threads-error@one-pin"
     assert "replies" not in got["anchor"], "threads-error@one-anchor-shape"
-    assert not any(c.get("merged") for c in (r1, r2, r3)), (
-        "threads-error@one-nomerge"
-    )
+    assert not any(c.get("merged") for c in (r1, r2, r3)), "threads-error@one-nomerge"
     idx = {t["thread_id"]: t for t in db.list_threads(pid)}
     assert idx[tid]["reply_count"] == 3, "threads-error@one-agree-count"
     assert idx[tid]["last_activity"] == got["last_activity"], (
@@ -522,9 +520,7 @@ def test_get_thread_explain_uses_indexes():
         )
         troot_lines = [ln.strip() for ln in troot.splitlines()]
         # Bare SCAN only: covering-index forms (SCAN x USING ...) pass.
-        assert "SCAN threads" not in troot_lines, (
-            f"threads-error@plan-root: {troot!r}"
-        )
+        assert "SCAN threads" not in troot_lines, f"threads-error@plan-root: {troot!r}"
         sub = "\n".join(
             r[3]
             for r in conn.execute(
