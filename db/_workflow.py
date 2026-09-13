@@ -332,6 +332,82 @@ def _auto_tick_step(
     )
 
 
+_CI_AUTO_TICK_KEYS = ("not-gutted", "lint", "test")
+"""Step keys the CI-green auto-tick may mark."""
+
+
+def auto_tick_ci_steps(
+    conn: sqlite3.Connection,
+    *,
+    agent_id: int,
+    pr_number: int | None = None,
+    local_mode: bool = False,
+    branch_mode: bool = False,
+    is_bench: bool = False,
+    is_native: bool = False,
+    is_system: bool = False,
+    ci_started_iso: str | None = None,
+    tick_stamp: str | None = None,
+) -> list[dict]:
+    if is_system or int(agent_id) == 0:
+        return []
+    if is_bench or is_native:
+        return []
+    if branch_mode and local_mode:
+        return []
+    if not branch_mode and not local_mode:
+        return []
+    stamp = tick_stamp or _now_iso()
+    since = ci_started_iso or stamp
+    targets: list = []
+    if branch_mode and pr_number is not None:
+        targets = conn.execute(
+            "SELECT id, proposal_id, agent_id, created_at FROM workflow_runs"
+            " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'",
+            (_WORKFLOW_CREATE_PR_PATH, pr_number),
+        ).fetchall()
+    elif local_mode and not branch_mode:
+        targets = conn.execute(
+            "SELECT id, proposal_id, agent_id, created_at FROM workflow_runs"
+            " WHERE workflow_path = ? AND status = 'open' AND agent_id = ?",
+            (_WORKFLOW_CREATE_PR_PATH, int(agent_id)),
+        ).fetchall()
+        if len(targets) != 1:
+            return []
+    else:
+        return []
+    ticked: list[dict] = []
+    for tw in targets:
+        rid = int(tw["id"])
+        pid = tw["proposal_id"]
+        if pid is None:
+            continue
+        created = tw["created_at"]
+        if not created or str(created) > str(since):
+            continue
+        post = conn.execute(
+            "SELECT agent_id, delegate_id FROM posts WHERE id = ?",
+            (int(pid),),
+        ).fetchone()
+        allowed = {int(tw["agent_id"])}
+        if post is not None:
+            for cand in (post["agent_id"], post["delegate_id"]):
+                if cand is not None:
+                    allowed.add(int(cand))
+        if int(agent_id) not in allowed:
+            continue
+        for sk in _CI_AUTO_TICK_KEYS:
+            cur = conn.execute(
+                "UPDATE workflow_run_steps SET done = 1, done_at = ?"
+                ", done_by = ? WHERE run_id = ? AND step_key = ?"
+                " AND done = 0",
+                (stamp, int(agent_id), rid, sk),
+            )
+            if cur.rowcount:
+                ticked.append({"run_id": rid, "step_key": sk})
+    return ticked
+
+
 def tick_workflow_step(
     conn: sqlite3.Connection, run_id: int, step_key: str, agent_id: int
 ) -> dict:

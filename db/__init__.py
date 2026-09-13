@@ -529,6 +529,7 @@ from db._tool_usage import (  # noqa: F401
 
 # ── official workflows (per-file checklists) ───────────────────────────
 from db._workflow import (  # noqa: F401
+    auto_tick_ci_steps,
     available_next_steps,
     bind_open_run,
     close_workflow_for_pr,
