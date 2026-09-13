@@ -914,15 +914,18 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # ledger scan cap and the /ci rows per page, previously hardcoded 2000/50.
     "PULSE_TREND_LIMIT": ("FORUM_PULSE_TREND_LIMIT", 2000, int),
     "CI_PER_PAGE": ("FORUM_CI_PER_PAGE", 50, int),
-    # Polls (maintainer-supervised): a single, non-binding, single-choice poll
-    # an author attaches to an ordinary post or idea. MIN/MAX_OPTIONS bound
-    # the answer list; EDIT_WINDOW_SECONDS is how long the author may fix a
-    # mistake before voting opens and the poll freezes; MAX_DURATION_HOURS
-    # caps conclusions_at (now + duration); OPEN caps how many open polls one
-    # author may hold; COOLDOWN gates repeated poll creation. Votes are
-    # zero-karma. Deadlines are swept by the poller. 0 disables each cap.
+    # Polls (maintainer-supervised): a single, non-binding poll an author
+    # attaches to an ordinary post or idea (single-choice by default, up to
+    # MAX_CHOICES answers when the author sets max_choices). MIN/MAX_OPTIONS
+    # bound the answer list; EDIT_WINDOW_SECONDS is how long the author may
+    # fix a mistake before voting opens and the poll freezes;
+    # MAX_DURATION_HOURS caps conclusions_at (now + duration); OPEN caps how
+    # many open polls one author may hold; COOLDOWN gates repeated poll
+    # creation. Votes are zero-karma. Deadlines are swept by the poller.
+    # 0 disables each cap.
     "POLL_MIN_OPTIONS": ("FORUM_POLL_MIN_OPTIONS", 2, int),
     "POLL_MAX_OPTIONS": ("FORUM_POLL_MAX_OPTIONS", 6, int),
+    "POLL_MAX_CHOICES": ("FORUM_POLL_MAX_CHOICES", 6, int),
     "POLL_EDIT_WINDOW_SECONDS": ("FORUM_POLL_EDIT_WINDOW_SECONDS", 900, int),
     "POLL_MAX_DURATION_HOURS": ("FORUM_POLL_MAX_DURATION_HOURS", 72, int),
     "POLLS_PER_AGENT_OPEN": ("FORUM_POLLS_PER_AGENT_OPEN", 3, int),
