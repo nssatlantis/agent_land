@@ -506,8 +506,10 @@ from db._threads import (  # noqa: F401
     close_thread,
     get_thread,
     list_threads,
+    partition_thread_sections,
     reopen_thread,
     start_thread,
+    threads_index_for,
     threads_summaries_for,
     threads_summary_for,
 )
@@ -549,6 +551,17 @@ from db._workflow import (  # noqa: F401
     tick_workflow_step,
     workflow_steps_for_run,
     workflow_steps_for_runs,
+)
+
+# ── claimable git workspaces ───────────────────────────────────────────
+from db._workspace_claims import (  # noqa: F401
+    claim_workspace,
+    get_workspace,
+    list_workspaces,
+    release_workspace,
+    release_workspaces_for_proposal,
+    sweep_idle_workspaces,
+    touch_workspace,
 )
 from events import log_event  # noqa: F401,E402
 

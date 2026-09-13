@@ -543,6 +543,103 @@ def test_get_thread_explain_uses_indexes():
         )
 
 
+def test_group_threads_sections_parity():
+    def _walk(nodes):
+        for n in nodes:
+            yield n["id"]
+            yield from _walk(n["replies"])
+
+    pid = _idea(BETA)
+    t1 = db.start_thread(BETA, pid, "First line", "charge words")
+    t2 = db.start_thread(BETA, pid, "Second line", "charge words")
+    r1 = db.create_comment(BETA, pid, "thread reply point", t1["thread_id"])
+    r2 = db.create_comment(BETA, pid, "nested reply point", r1["comment_id"])
+    m1 = db.create_comment(ALPHA, pid, "main line point")
+    got = db.get_post(pid, group_threads=True)
+    assert [s["thread_id"] for s in got["thread_sections"]] == [
+        t1["thread_id"],
+        t2["thread_id"],
+    ], "threads-error@sections-index"
+    assert [c["id"] for c in got["main_comments"]] == [m1["comment_id"]], (
+        "threads-error@sections-main"
+    )
+    assert [c["id"] for c in got["thread_sections"][0]["comments"]] == [
+        r1["comment_id"]
+    ], "threads-error@sections-nested-top"
+    assert [c["id"] for c in got["thread_sections"][0]["comments"][0]["replies"]] == [
+        r2["comment_id"]
+    ], "threads-error@sections-nested-deep"
+    assert got["thread_sections"][0]["title"] == "First line", (
+        "threads-error@sections-row"
+    )
+    assert sorted(_walk(got["comments"])) == sorted(
+        [s["anchor"]["id"] for s in got["thread_sections"]]
+        + [c for s in got["thread_sections"] for c in _walk(s["comments"])]
+        + [c["id"] for c in got["main_comments"]]
+    ), "threads-error@sections-union"
+    plain = db.get_post(pid)
+    assert plain["thread_sections"] == [], "threads-error@sections-off"
+    assert plain["main_comments"] == plain["comments"], (
+        "threads-error@sections-off-main"
+    )
+
+
+def test_group_threads_batch_and_unknown():
+    pid = _idea(BETA)
+    t = db.start_thread(BETA, pid, "Batch line", "charge words")
+    db.create_comment(BETA, pid, "batch reply point", t["thread_id"])
+    res = db.get_posts([pid, 999999999], group_threads=True)
+    assert isinstance(res[999999999], str) and res[999999999].startswith(
+        "error: no post"
+    ), "threads-error@sections-missing"
+    got = res[pid]
+    assert [s["thread_id"] for s in got["thread_sections"]] == [t["thread_id"]], (
+        "threads-error@sections-batch"
+    )
+    assert got["main_comments"] == [], "threads-error@sections-batch-main"
+
+
+def test_threads_index_for_batch_parity():
+    pid = _idea(BETA)
+    other = _idea(BETA)
+    t = db.start_thread(BETA, pid, "Index line", "charge words")
+    db.create_comment(BETA, pid, "index reply point", t["thread_id"])
+    with db._conn() as conn:
+        idx = db.threads_index_for([pid, other, 999999999], conn)
+    assert idx[pid] == db.list_threads(pid), "threads-error@index-parity"
+    assert idx[other] == [], "threads-error@index-empty"
+    assert idx[999999999] == [], "threads-error@index-unknown"
+    with db._conn() as conn:
+        assert db.threads_index_for([], conn) == {}, "threads-error@index-empty-list"
+
+
+def test_quiet_threads_row_and_checkin():
+    pid = _idea(BETA)
+    t1 = db.start_thread(BETA, pid, "Quiet one", "charge words")
+    t2 = db.start_thread(BETA, pid, "Loud one", "charge words")
+    db.subscribe_post(BETA, pid)
+    old = "2020-01-01T00:00:00.000Z"
+    with db._conn() as conn:
+        conn.execute("UPDATE comments SET created_at = ? WHERE post_id = ?", (old, pid))
+        conn.execute("UPDATE threads SET opened_at = ? WHERE post_id = ?", (old, pid))
+    r1 = db.create_comment(ALPHA, pid, "fresh reply point", t2["thread_id"])
+    assert not r1.get("merged")
+    rows = db.check_in(BETA)["quiet_threads"]
+    assert [r["thread_id"] for r in rows] == [t1["thread_id"]], (
+        f"threads-error@quiet-rows: {rows!r}"
+    )
+    assert rows[0]["post_id"] == pid and rows[0]["reply_count"] == 0, (
+        "threads-error@quiet-shape"
+    )
+    out = db.check_in(BETA)
+    assert out["quiet_threads"] == rows, "threads-error@quiet-key"
+    assert any("quiet thread" in a for a in out["suggested_actions"]), (
+        "threads-error@quiet-line"
+    )
+    db.close_thread(BETA, pid, t1["thread_id"], "done here")
+    assert db.check_in(BETA)["quiet_threads"] == [], "threads-error@quiet-closed"
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
