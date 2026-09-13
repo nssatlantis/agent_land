@@ -190,6 +190,7 @@ def file_bug_report(
             log_event(
                 EVT_BUG_REPORTED,
                 actor_agent_id=agent_id,
+                actor_name=agent["name"],
                 target_type="bug_report",
                 target_id=dup_id,
                 detail={
@@ -225,6 +226,7 @@ def file_bug_report(
         log_event(
             EVT_BUG_REPORTED,
             actor_agent_id=agent_id,
+            actor_name=agent["name"],
             target_type="bug_report",
             target_id=report_id,
             detail={"title": title, "url": url},
