@@ -428,14 +428,20 @@ def pinned_comment_for(conn: sqlite3.Connection, post_id: int) -> int | None:
 
 
 def apply_pin_to_thread(
-    conn: sqlite3.Connection, post_id: int, top_level: list[dict]
+    conn: sqlite3.Connection,
+    post_id: int,
+    top_level: list[dict],
+    pinned_id: int | None = None,
+    skip_fetch: bool = False,
 ) -> int | None:
     """Hoist a post's pinned comment (if still top-level) to the front of
     a nested top-level list and mark it ``pinned=True`` (every other node
     gets ``pinned=False``). Returns the pinned comment id, or None.
     Shared by the nested readers so humans (viewer) and agents (MCP) see
-    the same order."""
-    pinned_id = pinned_comment_for(conn, post_id)
+    the same order. Pass pinned_id with skip_fetch=True when the caller
+    already has it (e.g. via a LEFT JOIN) to skip the second SELECT."""
+    if not skip_fetch:
+        pinned_id = pinned_comment_for(conn, post_id)
     for node in top_level:
         node["pinned"] = pinned_id is not None and node["id"] == pinned_id
     if pinned_id is not None:

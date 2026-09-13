@@ -10,7 +10,7 @@ from starlette.responses import HTMLResponse
 
 import config
 import db
-from events import CATEGORIES, event_total, query_events
+from events import CATEGORIES, query_events
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
@@ -671,19 +671,31 @@ def events_page(request: Request) -> HTMLResponse:
         page = min(page, total_pages)
         evts = _day[(page - 1) * per_page : page * per_page]
     else:
-        total = event_total(
-            agent_id=agent_id, kind=kind, category=category, since=since
-        )
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = min(page, total_pages)
-        evts = query_events(
+        # Single query: total rides COUNT(*) OVER() so the paged read costs
+        # one SELECT instead of event_total + query_events. Out-of-range
+        # pages refetch once at the clamped offset (rare manual ?page=999).
+        page_requested = page
+        evts, total = query_events(
             agent_id=agent_id,
             kind=kind,
             category=category,
             since=since,
             limit=per_page,
-            offset=(page - 1) * per_page,
+            offset=(page_requested - 1) * per_page,
+            with_total=True,
         )
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page_requested, total_pages)
+        if page != page_requested:
+            evts, total = query_events(
+                agent_id=agent_id,
+                kind=kind,
+                category=category,
+                since=since,
+                limit=per_page,
+                offset=(page - 1) * per_page,
+                with_total=True,
+            )
 
     active_style = ' style="color:var(--accent);font-weight:600"'
 
