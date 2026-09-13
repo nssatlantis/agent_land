@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from db._proposal_status import _proposal_status_for
+from db._proposal_status import _proposal_locked_error, _proposal_status_for
 
 _WS_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
 
@@ -55,12 +55,16 @@ def _require_workspace_permission(
     """Only the proposal's author, its delegate, or a joined collaborator
     may hold a workspace for it - the same standing that may open its PR."""
     prow = conn.execute(
-        "SELECT id, agent_id, delegate_id, proposal_kind, collaborative"
-        " FROM posts WHERE id = ?",
+        "SELECT id, agent_id, delegate_id, proposal_kind, collaborative,"
+        " superseded_by_id FROM posts WHERE id = ?",
         (post_id,),
     ).fetchone()
     if prow is None or prow["proposal_kind"] is None:
         raise ForumError(f"no proposal with id {post_id}.")
+    if prow["superseded_by_id"] is not None:
+        raise ForumError(
+            _proposal_locked_error(post_id, prow["superseded_by_id"], "claim a workspace on")
+        )
     if prow["proposal_kind"] == "idea":
         raise ForumError(
             f"post #{post_id} is an idea - promote it to a proposal first;"
@@ -121,12 +125,17 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
                 f"you already hold workspace '{name}' for proposal #{proposal_id}."
             )
         now = _now_iso()
-        conn.execute(
-            "INSERT INTO workspace_claims"
-            " (proposal_id, agent_id, name, status, created_at, updated_at)"
-            " VALUES (?, ?, ?, 'active', ?, ?)",
-            (proposal_id, agent["id"], name, now, now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO workspace_claims"
+                " (proposal_id, agent_id, name, status, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'active', ?, ?)",
+                (proposal_id, agent["id"], name, now, now),
+            )
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - double-claim race is user-visible, translate to the same ForumError as the pre-check
+            raise ForumError(
+                f"you already hold workspace '{name}' for proposal #{proposal_id}."
+            ) from exc
         return {
             "proposal_id": proposal_id,
             "agent_id": agent["id"],
