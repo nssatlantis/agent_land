@@ -898,6 +898,64 @@ def test_is_pool_quiet_tracks_slots():
     assert slots.is_pool_quiet() == before
 
 
+def test_ci_status_snapshot():
+    """ci_status_snapshot flips ci_busy while the slot pool is held and when
+    the branch-CI ticker has work pending/in flight, and returns to its prior
+    value on release - verified relative, never assuming idle."""
+    slots = ci_runner._slots
+    before = slots.ci_status_snapshot()
+    assert isinstance(before["ci_busy"], bool)
+    assert set(before) >= {
+        "ci_busy",
+        "pool",
+        "user_runs",
+        "branch_pending",
+        "branch_in_flight",
+    }
+    assert set(before["pool"]) >= {"desired", "available", "busy"}
+
+    held = []
+    try:
+        for _ in range(8):
+            try:
+                held.append(slots._ci_acquire_slot(reserve=False, timeout=1))
+            except Exception:
+                break
+        assert held, "could not acquire even one slot"
+        snap = slots.ci_status_snapshot()
+        assert snap["ci_busy"] is True
+        assert snap["pool"]["busy"] >= 1
+    finally:
+        for idx in held:
+            slots._ci_release_slot(idx)
+
+    # branch CI debounced: a queued PR flips branch_pending
+    from server.tools.repo import _IN_FLIGHT, _PENDING, _PENDING_LOCK
+
+    with _PENDING_LOCK:
+        _PENDING[424242] = time.monotonic() + 15
+    try:
+        snap = slots.ci_status_snapshot()
+        assert snap["ci_busy"] is True
+        assert snap["branch_pending"] >= 1
+    finally:
+        with _PENDING_LOCK:
+            _PENDING.pop(424242, None)
+
+    # branch CI running: a held PR flips branch_in_flight
+    with _PENDING_LOCK:
+        _IN_FLIGHT.add(424243)
+    try:
+        snap = slots.ci_status_snapshot()
+        assert snap["ci_busy"] is True
+        assert snap["branch_in_flight"] == 1
+    finally:
+        with _PENDING_LOCK:
+            _IN_FLIGHT.discard(424243)
+
+    assert slots.ci_status_snapshot()["ci_busy"] == before["ci_busy"]
+
+
 def test_wait_for_quiet_zero_timeout_is_instant():
     """Zero timeout never sleeps: returns the live answer with ~0 waited."""
     slots = ci_runner._slots
@@ -1674,6 +1732,7 @@ def main():
     test_parse_summary_db_benchmark_errors_surfaced()
     test_bench_quiet_knob_defaults()
     test_is_pool_quiet_tracks_slots()
+    test_ci_status_snapshot()
     test_wait_for_quiet_zero_timeout_is_instant()
     test_wait_for_quiet_unblocks_on_release()
     test_bench_slot_freeze_membership()
