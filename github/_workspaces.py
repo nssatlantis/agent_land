@@ -22,7 +22,7 @@ import time
 
 import config
 
-from ._core import GITHUB_REPO, RepoError
+from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
 from ._gitops import (
     _git,
     _repo_url,
@@ -243,6 +243,25 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
         "dirty": _is_dirty(dest) if exists else False,
         "head_sha": _head_sha(dest) if exists else None,
     }
+
+
+def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+    dest = _claim_dir(agent_id, proposal_id, name)
+    manifest = _read_manifest(dest)
+    if manifest is None or not os.path.isdir(dest):
+        return False
+    manifest["updated_at"] = time.time()
+    manifest["head_sha"] = _head_sha(dest)
+    _write_manifest(dest, manifest)
+    return True
+
+
+def claim_tree_status(agent_id: int, proposal_id: int, name: str) -> dict:
+    dest = _claim_dir(agent_id, proposal_id, name)
+    exists = os.path.isdir(dest)
+    if not exists:
+        return {"exists": False, "path": dest}
+    return {"exists": True, "path": dest, "dirty": _is_dirty(dest)}
 
 
 def _agent_claims_size_mb(agent_id: int) -> float:
