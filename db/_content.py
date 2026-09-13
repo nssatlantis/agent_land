@@ -179,6 +179,9 @@ def create_post(
         post_id, mentioned = _insert_post(
             conn, agent, title, body, mention_body=mention_body, agents_map=agents_map
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, post_id, referenced)
         from events import EVT_POST_CREATED, log_event
 
         log_event(
@@ -1128,6 +1131,9 @@ def edit_post(
             "UPDATE posts SET title = ?, body = ? WHERE id = ?",
             (final_title, final_body, post_id),
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, post_id, referenced)
         conn.execute(
             """INSERT INTO post_edits (post_id, editor_agent_id, old_title,
                new_title, old_body, new_body, edited_at)
