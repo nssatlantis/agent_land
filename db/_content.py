@@ -294,7 +294,7 @@ def list_posts(
         scores = {} if sort == "top" else _post_score_batch(conn, ids)
         comment_counts, activities = _comment_count_and_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, proposal_page_ids)
-        threshold = _proposal_vote_threshold(conn)
+        threshold = _proposal_vote_threshold(conn) if proposal_page_ids else 0
         prs_by_post = _proposal_pr_history_map(conn, proposal_page_ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         polls_by_post = _polls_by_post_map(conn, ids)
@@ -696,8 +696,10 @@ def get_comments(post_id: int) -> dict:
             d["replies"] = []
             nodes[d["id"]] = d
         top_level = []
+        author_ids: list[int] = []
         for row in comment_rows:
             node = nodes[row["id"]]
+            author_ids.append(node["author_id"])
             parent_id = row["parent_comment_id"]
             if parent_id is not None and parent_id in nodes:
                 nodes[parent_id]["replies"].append(node)
@@ -706,12 +708,6 @@ def get_comments(post_id: int) -> dict:
         from db._store import apply_pin_to_thread, name_colors_for
 
         apply_pin_to_thread(conn, post_id, top_level)
-        author_ids: list[int] = []
-        stack = list(top_level)
-        while stack:
-            node = stack.pop()
-            author_ids.append(node["author_id"])
-            stack.extend(node["replies"])
         colors = name_colors_for(conn, author_ids)
         stack = list(top_level)
         while stack:

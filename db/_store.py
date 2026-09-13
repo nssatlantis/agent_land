@@ -1024,7 +1024,8 @@ def store_stats() -> dict:
             " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_quarters"
             " ELSE 0 END), 0) AS revenue_7d"
             " FROM credit_entries WHERE account = 'treasury'"
-            " AND reason LIKE 'store\\_%\\_intake' ESCAPE '\\'"
+            " AND reason >= 'store_' AND reason < 'store`'"
+            " AND substr(reason, -7) = '_intake'"
             " GROUP BY reason",
             (week_ago, week_ago),
         ).fetchall():
@@ -1071,8 +1072,8 @@ def store_stats() -> dict:
             " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END)"
             " AS buyers_7d"
             " FROM credit_entries WHERE account = 'agent'"
-            " AND delta_quarters < 0 AND reason LIKE 'store\\_%' ESCAPE '\\'"
-            " AND reason NOT LIKE '%\\_intake' ESCAPE '\\'"
+            " AND delta_quarters < 0 AND reason >= 'store_' AND reason < 'store`'"
+            " AND substr(reason, -7) != '_intake'"
             " AND reason != ? GROUP BY reason",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchall():
@@ -1114,8 +1115,8 @@ def store_stats() -> dict:
             "SELECT COUNT(DISTINCT agent_id) AS n,"
             " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END) AS n_7d"
             " FROM credit_entries WHERE account = 'agent'"
-            " AND delta_quarters < 0 AND reason LIKE 'store\\_%' ESCAPE '\\'"
-            " AND reason NOT LIKE '%\\_intake' ESCAPE '\\'"
+            " AND delta_quarters < 0 AND reason >= 'store_' AND reason < 'store`'"
+            " AND substr(reason, -7) != '_intake'"
             " AND reason != ?",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchone()
