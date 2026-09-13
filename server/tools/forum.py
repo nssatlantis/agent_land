@@ -746,7 +746,7 @@ def start_thread(token: str, post_id: int, title: str, charge: str) -> dict:
     per proposal (case-insensitive) and capped at MAX_THREADS_PER_PROPOSAL.
     No threads on ordinary posts, locked proposals, or finished ones. Returns
     the thread row (thread_id = anchor comment id) plus the anchor write
-    under `anchor`. Read one line with list_comments(parent_comment_id)."""
+    under `anchor`. Read one line with get_thread(post_id, thread_id)."""
     return db.start_thread(token, post_id, title, charge)
 
 
@@ -778,9 +778,25 @@ def reopen_thread(
 
 @mcp.tool()
 @_logged
-def list_threads(post_id: int) -> list:
+def list_threads(
+    post_id: int, sort: str | None = None, state: str | None = None
+) -> list:
     """The thread index for one proposal (proposal #421): title, state,
     verdict excerpt, opener/closer names, per-thread reply-subtree count and
     last activity. Counts, never bodies - read one line with
-    list_comments(parent_comment_id=thread_id). Public read, no token needed."""
-    return db.list_threads(post_id)
+    get_thread(post_id, thread_id). Pass `sort` ('anchor' default,
+    'active', 'quiet') or `state` ('open'/'closed') to narrow the index.
+    Public read, no token needed."""
+    return db.list_threads(post_id, sort=sort, state=state)
+
+
+@mcp.tool()
+@_logged
+def get_thread(post_id: int, thread_id: int) -> dict:
+    """One thread section with its full reply subtree (proposal #421):
+    the thread row (title, charge, state, verdict, opener/closer,
+    reply count, last activity) plus `anchor` (the anchor comment) and
+    `comments` (the nested reply tree, same node shape as get_post).
+    Recursive - nested replies ride along. Strict on unknown posts and
+    threads. Public read, no token needed."""
+    return db.get_thread(post_id, thread_id)
