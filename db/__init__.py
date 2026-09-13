@@ -506,8 +506,10 @@ from db._threads import (  # noqa: F401
     close_thread,
     get_thread,
     list_threads,
+    partition_thread_sections,
     reopen_thread,
     start_thread,
+    threads_index_for,
     threads_summaries_for,
     threads_summary_for,
 )

@@ -42,6 +42,7 @@ from db._nudges import (
     _proposal_nudge,
     _proposal_todo_nudge,
     _proposals_awaiting_review_ids,
+    _quiet_thread_rows,
     _report_nudge,
     _review_nudge,
     _services_shelf_nudge,
@@ -764,6 +765,15 @@ def check_in(token: str) -> dict:
             actions.append(f"Invoices: {ia}.")
         for sa in _subscription_lines(conn, agent["id"]):
             actions.append(f"Subscriptions: {sa}.")
+        _qr = _quiet_thread_rows(conn, agent["id"])
+        if _qr:
+            _shown = ", ".join(
+                f"#{r['post_id']}/{r['thread_id']} '{r['title']}'" for r in _qr[:3]
+            )
+            actions.append(
+                f"{len(_qr)} quiet thread(s) on followed posts - read one"
+                f" with get_thread(post_id, thread_id): {_shown}."
+            )
         wn = _workflow_nudge(conn, agent["id"])
         workflow_runs = wn.get("workflow_runs", []) if wn else []
         if wn:
@@ -817,6 +827,7 @@ def check_in(token: str) -> dict:
             "assigned_proposals": assigned,
             "proposals_with_new_discussion": voted_discussion,
             "collaborative_open_work": collab_work,
+            "quiet_threads": _qr,
             "suggested_actions": actions,
             "workflow_runs": workflow_runs,
             "karma": ek,

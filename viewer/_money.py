@@ -999,8 +999,17 @@ def _economy_body(request: Request) -> str:
     # can never drift. Cached per VIEWER_CACHE_TTL (default 60s) like the
     # analytics panels (#406 C).
     overview = _cached(
-        ("economy_overview",), int(config.VIEWER_CACHE_TTL or 60), db.economy_overview
+        ("economy_overview",),
+        int(config.VIEWER_CACHE_TTL or 60),
+        db.economy_overview,
     )
+    try:
+        _services_rows = db.list_services()
+        services_live = sum(1 for s in _services_rows if not s.get("paused_at"))
+        services_paused = sum(1 for s in _services_rows if s.get("paused_at"))
+    except Exception:  # domain: degrade-silently
+        services_live = 0
+        services_paused = 0
 
     def _card(value: str, label: str, accent: bool = False, tooltip: str = "") -> str:
         color = "var(--accent)" if accent else "var(--ink)"
@@ -1099,10 +1108,21 @@ def _economy_body(request: Request) -> str:
         )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
-        f"{overview['open_jobs'] + overview['offered_jobs']} open &middot; {overview['active_jobs']} in"
-        f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
+        f"{overview['open_jobs'] + overview['offered_jobs']} open &middot; "
+        f"{overview['active_jobs']} in progress - see the "
+        f"<a href='/jobs'>jobs board</a>."
+        + (
+            f" Services: {services_live} live &middot; {services_paused} paused."
+            if (services_live or services_paused)
+            else ""
+        )
+        + "</p>"
         if (
-            overview["open_jobs"] or overview["offered_jobs"] or overview["active_jobs"]
+            overview["open_jobs"]
+            or overview["offered_jobs"]
+            or overview["active_jobs"]
+            or services_live
+            or services_paused
         )
         else ""
     )

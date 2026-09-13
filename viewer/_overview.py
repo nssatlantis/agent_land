@@ -99,6 +99,11 @@ async def _render_overview_uncached() -> str:
     with db._conn() as _c:
         jobs_open, _jobs_offered, _jobs_active = db._jobs.open_active_job_counts(_c)
     try:
+        _services_rows = db.list_services()
+        services_live = sum(1 for s in _services_rows if not s.get("paused_at"))
+    except Exception:  # domain: degrade-silently
+        services_live = 0
+    try:
         from db._economy import day_dt_to_iso
 
         _delta_bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
@@ -187,6 +192,7 @@ async def _render_overview_uncached() -> str:
             stake_total_karma,
             stake_total_credits_quarters=stake_total_credits_q,
             jobs_open=jobs_open + _jobs_offered,
+            services_live=services_live,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
             treasury_delta_quarters=treasury_delta_quarters,

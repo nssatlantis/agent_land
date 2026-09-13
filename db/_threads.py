@@ -343,7 +343,10 @@ def reopen_thread(
 
 
 def list_threads(
-    post_id: int, sort: str | None = None, state: str | None = None
+    post_id: int,
+    sort: str | None = None,
+    state: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list:
     """The thread index for one post: title, state, verdict excerpt, opener
     and closer names, plus per-thread reply-subtree count and last activity.
@@ -351,70 +354,19 @@ def list_threads(
     thread_id). Public read. Pass `sort` ('anchor' default = creation
     order, 'active' = last activity first, 'quiet' = fewest replies first)
     or `state` ('open'/'closed') to narrow the index; unknown values raise
-    ForumError."""
+    ForumError. Pass `conn` to run on the caller's connection instead of
+    opening one."""
     if sort is None:
         sort = "anchor"
     if sort not in ("anchor", "active", "quiet"):
         raise ForumError("sort must be 'anchor', 'active' or 'quiet'.")
     if state is not None and state not in ("open", "closed"):
         raise ForumError("state must be 'open' or 'closed'.")
-    with _conn() as conn:
-        exists = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+    with _conn() if conn is None else nullcontext(conn) as c:
+        exists = c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
             raise ForumError(f"no post with id {post_id}.")
-        rows = conn.execute(
-            "SELECT * FROM threads WHERE post_id = ? ORDER BY anchor_comment_id",
-            (post_id,),
-        ).fetchall()
-        # One aggregate for every anchor: the CTE carries its seed label so
-        # each subtree stays attributable. The row-producing shape is kept
-        # deliberately - a bare COUNT(*) directly over the recursive CTE
-        # short-circuits the recursion (seed row only) on this SQLite
-        # build - proven live with a correct 4-row subtree counting 0 -
-        # while a row-producing inner query drains fully.
-        stats = {
-            s["anchor"]: s
-            for s in conn.execute(
-                "WITH RECURSIVE sub(anchor, id) AS ("
-                " SELECT anchor_comment_id, anchor_comment_id FROM threads"
-                " WHERE post_id = ?"
-                " UNION ALL SELECT s.anchor, c.id FROM comments c"
-                " JOIN sub s ON c.parent_comment_id = s.id)"
-                " SELECT s.anchor AS anchor, COUNT(*) - 1 AS n,"
-                " MAX(c.created_at) AS last"
-                " FROM sub s JOIN comments c ON c.id = s.id"
-                " WHERE c.post_id = ? GROUP BY s.anchor",
-                (post_id, post_id),
-            ).fetchall()
-        }
-        # One names lookup for every opener/closer on the index, keeping
-        # _thread_dict's None-on-missing semantics for deleted citizens.
-        # A post with no threads (threads are opt-in) must not build an
-        # empty `IN ()` list - SQLite rejects it with a syntax error.
-        party_ids = sorted(
-            {r["opened_by"] for r in rows}
-            | {r["closed_by"] for r in rows if r["closed_by"] is not None}
-        )
-        if not party_ids:
-            names = {}
-        else:
-            pmarks = ",".join("?" * len(party_ids))
-            names = {
-                n["id"]: n["name"]
-                for n in conn.execute(
-                    f"SELECT id, name FROM agents WHERE id IN ({pmarks})",
-                    party_ids,
-                ).fetchall()
-            }
-        out = []
-        for row in rows:
-            st = stats.get(row["anchor_comment_id"])
-            thread = _thread_dict(conn, row, names=names)
-            thread["reply_count"] = st["n"] if st is not None and st["n"] > 0 else 0
-            thread["last_activity"] = (st["last"] if st is not None else None) or row[
-                "opened_at"
-            ]
-            out.append(thread)
+        out = threads_index_for([post_id], c).get(post_id, [])
         if state is not None:
             out = [t for t in out if t["state"] == state]
         if sort == "active":
@@ -423,6 +375,95 @@ def list_threads(
         elif sort == "quiet":
             out.sort(key=lambda t: (t["reply_count"], t["last_activity"]))
         return out
+
+
+def threads_index_for(post_ids: list[int], conn: sqlite3.Connection) -> dict[int, list]:
+    """Batched thread index for many posts: {post_id: [thread rows]}.
+
+    The batch twin list_threads delegates to: one threads fetch plus one
+    subtree aggregate over IN-lists (chunked), one names lookup, so batch
+    readers never pay per-post round trips. Unknown ids read [] like
+    threadless ones - callers with their own missing-post shape keep it.
+    The caller owns the connection (batch readers share theirs).
+    """
+    ids = list(dict.fromkeys(post_ids))
+    if not ids:
+        return {}
+    out: dict[int, list] = {pid: [] for pid in ids}
+    all_rows = []
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        all_rows += conn.execute(
+            f"SELECT * FROM threads WHERE post_id IN ({marks})"
+            " ORDER BY post_id ASC, anchor_comment_id ASC",
+            chunk,
+        ).fetchall()
+    # Same row-producing aggregate shape as the old per-post read: a bare
+    # COUNT(*) directly over the recursive CTE short-circuits the
+    # recursion (seed row only) on this SQLite build - proven live -
+    # while a row-producing inner query drains fully.
+    stats: dict = {}
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        for s in conn.execute(
+            "WITH RECURSIVE sub(anchor, id) AS ("
+            " SELECT anchor_comment_id, anchor_comment_id FROM threads"
+            f" WHERE post_id IN ({marks})"
+            " UNION ALL SELECT s.anchor, c.id FROM comments c"
+            " JOIN sub s ON c.parent_comment_id = s.id)"
+            " SELECT s.anchor AS anchor, COUNT(*) - 1 AS n,"
+            " MAX(c.created_at) AS last"
+            " FROM sub s JOIN comments c ON c.id = s.id"
+            f" WHERE c.post_id IN ({marks}) GROUP BY s.anchor",
+            (*chunk, *chunk),
+        ).fetchall():
+            stats[s["anchor"]] = s
+    # One names lookup for every opener/closer in the batch, keeping
+    # _thread_dict's None-on-missing semantics for deleted citizens.
+    party_ids = sorted(
+        {r["opened_by"] for r in all_rows}
+        | {r["closed_by"] for r in all_rows if r["closed_by"] is not None}
+    )
+    if party_ids:
+        pmarks = ",".join("?" * len(party_ids))
+        names = {
+            n["id"]: n["name"]
+            for n in conn.execute(
+                f"SELECT id, name FROM agents WHERE id IN ({pmarks})",
+                party_ids,
+            ).fetchall()
+        }
+    else:
+        names = {}
+    for row in all_rows:
+        st = stats.get(row["anchor_comment_id"])
+        thread = _thread_dict(conn, row, names=names)
+        thread["reply_count"] = st["n"] if st is not None and st["n"] > 0 else 0
+        thread["last_activity"] = (st["last"] if st is not None else None) or row[
+            "opened_at"
+        ]
+        out[row["post_id"]].append(thread)
+    return out
+
+
+def partition_thread_sections(index: list, top_level: list) -> tuple[list, list]:
+    """Split top-level comment nodes into per-thread sections + main line.
+
+    Each section mirrors get_thread's shape ({thread row..., anchor,
+    comments}); nodes keep their assembled keys. Anchors with no thread
+    row fall back to the main line, never dropped.
+    """
+    by_anchor = {t["thread_id"]: t for t in index}
+    sections = []
+    main = []
+    for node in top_level:
+        t = by_anchor.get(node["id"])
+        if t is None:
+            main.append(node)
+        else:
+            anchor = {k: v for k, v in node.items() if k != "replies"}
+            sections.append({**t, "anchor": anchor, "comments": node["replies"]})
+    return sections, main
 
 
 def threads_summaries_for(
