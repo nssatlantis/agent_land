@@ -75,7 +75,15 @@ def test_permission_gates(agents, post_id):
     assert "not open" in expect_error(
         db.claim_workspace, agents["alpha"]["token"], pid, "late"
     )
-    print("  permission gates (outsider/ordinary/unknown/idea/merged): ok")
+    # Superseded (locked) proposals refuse claims even with no PR attached.
+    sprop = db.create_proposal(agents["alpha"]["token"], "Superseded Shop", "b")[
+        "post_id"
+    ]
+    db.supersede_proposal(agents["alpha"]["token"], sprop, "Superseded Shop v2", "b2")
+    assert "superseded" in expect_error(
+        db.claim_workspace, agents["alpha"]["token"], sprop, "stale"
+    )
+    print("  permission gates (outsider/ordinary/unknown/idea/merged/superseded): ok")
 
 
 def test_collaborator_may_claim(agents):
