@@ -74,13 +74,41 @@ def main():
         f"effective_cpus out of bounds: {ci['effective_cpus']!r}"
     )
 
+    # Host-fallback pin: an adaptive-cpus exception must degrade to None (so
+    # the caption renders "?") and the config floor, never a false 0.
+    _real_host, _real_eff = cr._host_cpus, cr._effective_cpus
+
+    def _boom():
+        raise RuntimeError("adaptive probe failed")
+
+    try:
+        cr._host_cpus = _boom
+        cr._effective_cpus = _boom
+        snap3 = _ci_dashboard_snapshot()
+        ci3 = snap3.get("ci", {})
+        assert not ci3.get("error"), f"fallback snapshot failed: {ci3.get('error')}"
+        assert ci3.get("host_cpus") is None, (
+            f"host fallback must degrade to None: {ci3.get('host_cpus')!r}"
+        )
+        assert ci3["effective_cpus"] == float(config.CI_RUN_SANDBOX_CPUS), (
+            f"eff fallback must be the config floor: {ci3['effective_cpus']!r}"
+        )
+    finally:
+        cr._host_cpus = _real_host
+        cr._effective_cpus = _real_eff
+
     req = SimpleNamespace(
         cookies=SimpleNamespace(get=lambda _key, _default=None: _default),
         state=SimpleNamespace(csrf_token=""),
     )
     html = _render_ci_dashboard(req)
+    assert html.isascii(), "dashboard must render pure ascii (mojibake seps banned)"
+    assert "\u252c" not in html and "\u2556" not in html, (
+        "box-drawing separator glyphs must not survive render"
+    )
     assert "0.1 reserve" in html, "caption must state the contention reserve"
     assert f"host {cr._host_cpus()}" in html, "caption must surface host cpus"
+    assert "host ?c" not in html, "healthy-path caption must not show the ? fallback"
     for _stale in ("(1.5", "1.33", "down-only when busy"):
         assert _stale not in html, f"stale caption survived render: {_stale!r}"
 
