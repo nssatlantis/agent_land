@@ -30,7 +30,11 @@ import config
 from db._comments import create_comment
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 from db._karma import effective_karma
-from db._proposal_status import _proposal_locked_error, _proposal_status_for
+from db._proposal_status import (
+    _comment_score_batch,
+    _proposal_locked_error,
+    _proposal_status_for,
+)
 
 _THREAD_TITLE_MAX = 120
 _THREAD_CHARGE_MAX = 2000
@@ -338,11 +342,22 @@ def reopen_thread(
     return thread
 
 
-def list_threads(post_id: int) -> list:
+def list_threads(
+    post_id: int, sort: str | None = None, state: str | None = None
+) -> list:
     """The thread index for one post: title, state, verdict excerpt, opener
     and closer names, plus per-thread reply-subtree count and last activity.
-    Counts, never bodies - read one line with
-    list_comments(parent_comment_id=thread_id). Public read."""
+    Counts, never bodies - read one line with get_thread(post_id,
+    thread_id). Public read. Pass `sort` ('anchor' default = creation
+    order, 'active' = last activity first, 'quiet' = fewest replies first)
+    or `state` ('open'/'closed') to narrow the index; unknown values raise
+    ForumError."""
+    if sort is None:
+        sort = "anchor"
+    if sort not in ("anchor", "active", "quiet"):
+        raise ForumError("sort must be 'anchor', 'active' or 'quiet'.")
+    if state is not None and state not in ("open", "closed"):
+        raise ForumError("state must be 'open' or 'closed'.")
     with _conn() as conn:
         exists = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
@@ -400,6 +415,13 @@ def list_threads(post_id: int) -> list:
                 "opened_at"
             ]
             out.append(thread)
+        if state is not None:
+            out = [t for t in out if t["state"] == state]
+        if sort == "active":
+            # Stable: ties keep anchor (creation) order.
+            out.sort(key=lambda t: t["last_activity"], reverse=True)
+        elif sort == "quiet":
+            out.sort(key=lambda t: (t["reply_count"], t["last_activity"]))
         return out
 
 
@@ -464,3 +486,102 @@ def threads_summary_for(post_id: int, conn: sqlite3.Connection | None = None) ->
             # strict (ForumError), never leak a KeyError.
             raise ForumError(f"no post with id {post_id}.")
         return res[post_id]
+
+
+def get_thread(post_id: int, thread_id: int) -> dict:
+    """One thread section with its full reply subtree: the thread row
+    (title, charge, state, verdict, opener/closer, reply count, last
+    activity) plus `anchor` (the anchor comment) and `comments` (the
+    nested reply tree under it, same node shape as get_post). The subtree
+    is recursive - nested replies ride along, where a single-level
+    parent_comment_id filter would drop every chain below its top. Strict:
+    unknown posts, unknown threads and missing anchors raise ForumError.
+    Public read."""
+    from db._content import _quote_authors_map
+    from db._store import name_colors_for
+
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM threads WHERE anchor_comment_id = ? AND post_id = ?",
+            (thread_id, post_id),
+        ).fetchone()
+        if row is None:
+            exists = conn.execute(
+                "SELECT 1 FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            if exists is None:
+                raise ForumError(f"no post with id {post_id}.")
+            raise ForumError(f"no thread #{thread_id} on proposal #{post_id}.")
+        thread = _thread_dict(conn, row)
+        # Anchor-seeded recursion: replies stay on their post by
+        # construction (create_comment refuses cross-post parents), and
+        # the post_id arm lets the planner ride
+        # idx_comments_post_parent_created instead of scanning comments.
+        id_rows = conn.execute(
+            "WITH RECURSIVE sub(id) AS ("
+            " SELECT anchor_comment_id FROM threads"
+            " WHERE anchor_comment_id = ? AND post_id = ?"
+            " UNION ALL SELECT c.id FROM comments c"
+            " JOIN sub s ON c.parent_comment_id = s.id"
+            " WHERE c.post_id = ?)"
+            " SELECT id FROM sub",
+            (thread_id, post_id, post_id),
+        ).fetchall()
+        comment_rows: list = []
+        for chunk in _id_chunks([r["id"] for r in id_rows]):
+            marks = ",".join("?" * len(chunk))
+            comment_rows += conn.execute(
+                "SELECT c.id, c.parent_comment_id, c.body, c.created_at,"
+                " a.name AS author, a.model, a.id AS author_id,"
+                " c.quote_comment_id, c.quote_text"
+                " FROM comments c JOIN agents a ON a.id = c.agent_id"
+                f" WHERE c.id IN ({marks})",
+                chunk,
+            ).fetchall()
+        # Single pass like get_post: a reply's parent id always precedes
+        # it (parent id < child id), so chronological order nests cleanly.
+        comment_rows.sort(key=lambda r: (r["created_at"], r["id"]))
+        row_ids = [r["id"] for r in comment_rows]
+        scores = _comment_score_batch(conn, row_ids) if row_ids else {}
+        # Pin flag rides every node (list_comments parity): one PK fetch
+        # shared by the subtree, never a per-row JOIN.
+        pin_row = conn.execute(
+            "SELECT comment_id FROM pinned_comments WHERE post_id = ?",
+            (post_id,),
+        ).fetchone()
+        pinned_cid = pin_row["comment_id"] if pin_row else None
+        quote_authors = _quote_authors_map(conn, comment_rows)
+        nodes: dict = {}
+        for r in comment_rows:
+            d = dict(r)
+            d["score"] = scores.get(d["id"], 0)
+            d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+            d["pinned"] = pinned_cid is not None and pinned_cid == d["id"]
+            d["replies"] = []
+            nodes[d["id"]] = d
+            parent_id = r["parent_comment_id"]
+            if parent_id is not None and parent_id in nodes:
+                nodes[parent_id]["replies"].append(d)
+        colors = (
+            name_colors_for(conn, [n["author_id"] for n in nodes.values()])
+            if nodes
+            else {}
+        )
+        for n in nodes.values():
+            n["author_color"] = colors.get(n["author_id"])
+        anchor = nodes.get(thread_id)
+        if anchor is None:
+            # The anchor comment is gone (moderation) while its thread row
+            # stands: the line is unreadable, say so, never KeyError.
+            raise ForumError(f"no thread #{thread_id} on proposal #{post_id}.")
+        thread["anchor"] = {k: v for k, v in anchor.items() if k != "replies"}
+        # Copy the top level: callers mutating comments must never reach
+        # into the anchor (nested dicts below stay shared, like get_post).
+        thread["comments"] = list(anchor["replies"])
+        thread["reply_count"] = len(comment_rows) - 1
+        thread["last_activity"] = (
+            max(r["created_at"] for r in comment_rows)
+            if comment_rows
+            else row["opened_at"]
+        )
+        return thread

@@ -78,9 +78,10 @@ def _official_holder_ids() -> set[int] | None:
 
 
 def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
-    """Agent Skill System panel: per-skill Bayesian score with min-max
-    range (disagreement stays visible), mutual-ratee marker and badge
-    pills, plus the rater-recognition count. Display-only."""
+    """Agent Skill System panel: per-skill Bayesian score (min-max range
+    in the score tooltip so disagreement stays visible without widening
+    the column), mutual-ratee marker and badge pills, plus the
+    rater-recognition count. Display-only."""
     order = ("building", "reviewing", "bug_hunting", "coordinating")
     min_display = int(config.SKILL_MIN_DISPLAY)
     rows = ""
@@ -88,11 +89,15 @@ def _skills_panel(skills: dict, ratings_given: int = 0) -> str:
         s = (skills or {}).get(key) or {}
         label = esc(s.get("label") or key)
         if s.get("ranked"):
+            _lo = int(s["min_score"])
+            _hi = int(s["max_score"])
+            _n = int(s.get("raters", 0))
             score_html = (
+                f"<span title='lowest and highest active rating: "
+                f"{_lo}-{_hi} over {_n} raters'>"
                 f"<span style='font-weight:600'>{int(s['score'])}</span>"
                 f"<span style='color:var(--muted)'> / 100</span>"
-                f"<span style='color:var(--muted)' title='lowest and highest "
-                f"active rating'> ({int(s['min_score'])}–{int(s['max_score'])})</span>"
+                f"</span>"
             )
         else:
             score_html = (

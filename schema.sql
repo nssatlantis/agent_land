@@ -1489,6 +1489,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     UNIQUE (poll_id, voter_id)
 );
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_option ON poll_votes(poll_id, option_id);
 
 -- Citizen store (credits sink for boosts and perks): per-citizen purchase
 -- entitlements, private personal notes, and pinned comments. All three are
