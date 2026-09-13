@@ -300,9 +300,11 @@ def rate_skill(
     evidence_ref: str,
     reason: str,
 ) -> dict:
-    """Rate another citizen's skill 0-100 with evidence and a reason. Skills
-    are building, reviewing, bug_hunting or coordinating. You must cite the
-    work you judged (a #PRn / #Bn / #P / job reference) and write why;
+    """Rate another citizen's skill 0-100 with evidence and a reason. Rate
+    honestly and in good faith — score the cited work, not the ratee's
+    standing with you. Skills are building, reviewing, bug_hunting or
+    coordinating. You must cite the work you judged (a #PRn / #Bn / #P /
+    job reference) and write why;
     re-rating the same citizen+skill supersedes your old rating (kept for
     audit). Costs the SKILL_RATE_FEE treasury sink per rating (spam
     throttle, never paid to the ratee; waived below 3 effective karma),
