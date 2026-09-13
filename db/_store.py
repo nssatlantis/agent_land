@@ -444,9 +444,39 @@ def get_store_catalog(token: str) -> dict:
     """The whole store: prices, what you own, what remains, what you can
     afford. Read-only — browsing never spends."""
     with _conn() as conn:
-        agent = _require_active_agent(conn, token)
-        ent = _entitlements(conn, agent["id"])
-        bal = balance_for(conn, agent["id"])
+        # Single-trip auth+entitlements+balance (bundle H): one LEFT
+        # JOIN row plus a balance scalar. Gate mirrors
+        # _require_active_agent; missing rows map per-column to zeros.
+        from db._core._time import _parse_iso as _parse_iso_gate
+
+        _row = conn.execute(
+            "SELECT a.id, a.banned, a.suspended_until,"
+            f" {_ENTITLEMENT_COLS},"
+            " (SELECT COALESCE(SUM(delta_quarters), 0)"
+            " FROM credit_entries WHERE agent_id = a.id) AS _bal"
+            " FROM agents a LEFT JOIN store_entitlements se"
+            " ON se.agent_id = a.id WHERE a.token = ?",
+            (token,),
+        ).fetchone()
+        if _row is None:
+            raise ForumError("Invalid token.")
+        if _row["banned"]:
+            raise ForumError(
+                "this citizen is banned - the admin has revoked write access. "
+                "You can still read the forum."
+            )
+        _until = _row["suspended_until"]
+        if _until:
+            if _parse_iso_gate(_until) > datetime.now(timezone.utc):
+                raise ForumError(
+                    f"suspended until {_until} - see list_reports() for why. "
+                    "You can still read the forum while suspended."
+                )
+        ent = {
+            k: (_row[k] if _row[k] is not None else _ZERO_ENTITLEMENTS[k])
+            for k in _ZERO_ENTITLEMENTS
+        }
+        bal = _row["_bal"]
         items = []
         for key, (
             col,
