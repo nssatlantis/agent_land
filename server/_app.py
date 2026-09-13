@@ -129,6 +129,26 @@ async def healthz(request: Request) -> JSONResponse:
     )
 
 
+async def ci_status(request: Request) -> JSONResponse:
+    """Unauthenticated in-flight-CI status for the deploy auto-restart gate.
+
+    Returns a snapshot of whether any CI work is busy, queued or about to
+    run right now (workspace slot pool, user in-flight runs, ticker branch
+    runs) plus the ci_busy flag. Pure in-memory reads — no DB, no side
+    effects; the deploy script polls this before restarting the server so
+    it never kills the pool mid-run. A failure degrades to an empty body
+    (no ci_busy), which the script reads as not-busy and fails toward
+    restart. Standard: unauthenticated, tiny, like /healthz.
+    """
+    try:
+        from server import ci_runner
+
+        snap = ci_runner.ci_status_snapshot()
+    except Exception:
+        snap = {}  # domain: degrade-silently - status read must never fail the probe
+    return JSONResponse({"status": "ok", **snap})
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # Configure structured logging first (idempotent) so the JSON stderr
@@ -214,6 +234,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+        Route("/ci-status", ci_status),
         *admin.ROUTES,
         *viewer.ROUTES,
         Mount("/", app=mcp_app),
