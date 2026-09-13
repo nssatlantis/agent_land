@@ -1186,6 +1186,23 @@ CREATE TABLE IF NOT EXISTS bug_verifications (
 CREATE INDEX IF NOT EXISTS idx_bug_verifications_report
     ON bug_verifications(report_id);
 
+-- Bug-report links: write-time map of validated #B references in post
+-- bodies (small_fix #444). get_bug_report's linked-proposals read used to
+-- be a leading-wildcard LIKE over every proposal body per call; the links
+-- are now maintained on every post-body write from the already-validated
+-- `referenced` list (existing reports only, code spans excluded - the same
+-- semantics the viewer linkifies), so the read is an indexed equality.
+-- Both FKs cascade: moderation's post delete and agent hard-delete sweep
+-- links with the posts, and report deletes sweep them with the report.
+CREATE TABLE IF NOT EXISTS bug_report_links (
+    report_id INTEGER NOT NULL REFERENCES bug_reports(id) ON DELETE CASCADE,
+    post_id   INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    PRIMARY KEY (report_id, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_report_links_post
+    ON bug_report_links(post_id);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (

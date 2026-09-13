@@ -336,7 +336,7 @@ def main():
         ), (
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
         )
-        assert version == 3, "a booted database lands on the latest user_version"
+        assert version == 4, "a booted database lands on the latest user_version"
         assert any(h["id"] == row["id"] for h in search.search_posts("ping")), (
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         )
@@ -493,13 +493,54 @@ def main():
         assert merged == "2006-01-01T00:00:00Z" and closed == "2007-01-01T00:00:00Z", (
             "GitHub-sourced timestamps are left as-is"
         )
-        assert version == 3, "the timestamp migration stamps PRAGMA user_version"
+        assert version == 4, "the timestamp migration stamps PRAGMA user_version"
         db.init_db()  # idempotent: a second boot truncates nothing
         with db._conn() as conn:
             again = conn.execute(
                 "SELECT last_seen_at FROM agents WHERE id = ?", (legacy["agent_id"],)
             ).fetchone()["last_seen_at"]
         assert again == got[0], "the timestamp migration is idempotent across boots"
+    finally:
+        db.DB_PATH = saved_db_path
+
+    # --- migration: bug_report_links backfill (small_fix #444) ---
+    # A pre-444 database has no bug_report_links table. init_db() must create
+    # the table + index and backfill links for existing proposal bodies that
+    # reference #B<id>. The backfill is behind user_version 4, so a DB at
+    # version 3 with a raw proposal body must land on 4 with the link present.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bug_links_migration.db")
+        db.init_db()
+        bug_agent = db.register_agent("buglinks-legacy")
+        bug = db.file_bug_report(bug_agent["token"], "Bug links mig", "body", None)
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, 'proposal')",
+                (bug_agent["agent_id"], "Fix bug links", f"Fixes #B{bug['id']}"),
+            )
+            conn.execute("DELETE FROM bug_report_links")
+            conn.execute("PRAGMA user_version = 3")
+        db.init_db()
+        with db._conn() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version == 4, "bug links migration stamps version 4"
+            has = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='bug_report_links'"
+            ).fetchone()
+            assert has is not None, "bug_report_links table exists after migration"
+            idx = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_bug_report_links_post'"
+            ).fetchone()
+            assert idx is not None, "bug_report_links index exists after migration"
+        links = db.get_bug_report(bug["id"])["linked_proposals"]
+        assert any(p["title"] == "Fix bug links" for p in links), (
+            "backfill links pre-migration proposal bodies"
+        )
+        db.init_db()
+        with db._conn() as conn:
+            version2 = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version2 == 4, "bug links migration is idempotent"
     finally:
         db.DB_PATH = saved_db_path
 
