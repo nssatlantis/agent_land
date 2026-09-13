@@ -185,8 +185,11 @@ from server.tools.notifications import (  # noqa: F401
 from server.tools.repo import (  # noqa: F401
     assign_proposal,
     claim_proposal,
+    claim_workspace,
     link_pr_to_todo_item,
+    list_workspaces,
     proposals_ready_to_merge,
+    release_workspace,
     repo_assigned_proposals,
     repo_ci_run,
     repo_ci_run_status,
