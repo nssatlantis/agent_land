@@ -550,6 +550,17 @@ from db._workflow import (  # noqa: F401
     workflow_steps_for_run,
     workflow_steps_for_runs,
 )
+
+# ── claimable git workspaces ───────────────────────────────────────────
+from db._workspace_claims import (  # noqa: F401
+    claim_workspace,
+    get_workspace,
+    list_workspaces,
+    release_workspace,
+    release_workspaces_for_proposal,
+    sweep_idle_workspaces,
+    touch_workspace,
+)
 from events import log_event  # noqa: F401,E402
 
 # ── cross-package re-exports (keep internal callers working) ───────────
