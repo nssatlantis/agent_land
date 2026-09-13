@@ -49,6 +49,11 @@ def main():
         raise AssertionError("invalid token must raise")
     except db.ForumError:
         pass
+    try:
+        db.get_store_catalog("")
+        raise AssertionError("empty token must raise Missing token")
+    except db.ForumError as exc:
+        assert "Missing token" in str(exc), str(exc)
     print("  catalog balance + refusal parity: ok")
 
     # --- 2. subscribe: already-before-cap, not-found kept -------------
@@ -78,6 +83,13 @@ def main():
     rst = db.proposal_vote_state(reg["post_id"])
     assert rst["small_fix"] is False and rst["net"] == 0, rst
     assert rst["threshold"] >= 1, rst
+    db.vote_on_proposal(_tok("beta"), reg["post_id"], 1)
+    db.vote_on_proposal(_tok("gamma"), reg["post_id"], -1)
+    voted = db.proposal_vote_state(reg["post_id"])
+    assert voted["net"] == 0, voted
+    db.vote_on_proposal(_tok("delta"), reg["post_id"], 1)
+    voted2 = db.proposal_vote_state(reg["post_id"])
+    assert voted2["net"] == 1, voted2
     print("  vote_state unknown/fix/regular: ok")
 
     # --- 4. skills: given counts ACTS incl superseded -----------------
