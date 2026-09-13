@@ -11,7 +11,7 @@ from db._core import (
     ForumError,
     _conn,
     _parse_iso,
-    _require_agent_by_token,
+    _require_agent_with_ent,
 )
 
 
@@ -183,14 +183,17 @@ def cooldown_status(token: str) -> dict:
     planning info (the same numbers appear in a rate-limit error when
     blocked); readable while suspended, like whoami."""
     with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
+        # Auth + entitlements in one SELECT (read twin: no active gate, so
+        # suspended citizens keep the readable-while-suspended promise);
+        # the skip surface reuses the row instead of re-reading it.
+        agent, ent = _require_agent_with_ent(conn, token)
         from db._store import _post_skip_surface
 
         return {
             "agent_id": agent["id"],
             "name": agent["name"],
             "cooldowns": _cooldowns_for(conn, agent["id"]),
-            "post_skip": _post_skip_surface(conn, agent["id"]),
+            "post_skip": _post_skip_surface(conn, agent["id"], ent=ent),
         }
 
 

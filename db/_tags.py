@@ -375,12 +375,6 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
                 f"tag applications are capped at {config.TAG_APPLY_DAILY_CAP} per day; "
                 "the cap resets at UTC midnight."
             )
-        existing = conn.execute(
-            "SELECT 1 FROM post_tags WHERE post_id = ? AND tag_id = ?",
-            (post_id, tag["id"]),
-        ).fetchone()
-        if existing is not None:
-            raise ForumError(f"post #{post_id} already carries tag '{tag['name']}'.")
         count = conn.execute(
             "SELECT COUNT(*) FROM post_tags WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
@@ -417,6 +411,7 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
         log_event(
             EVT_TAG_APPLIED,
             actor_agent_id=agent["id"],
+            actor_name=agent["name"],
             target_type="post",
             target_id=post_id,
             detail={

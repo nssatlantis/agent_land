@@ -271,9 +271,17 @@ def run(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows"
             " ON credit_entries(created_at, reason, delta_quarters)"
             " WHERE account = 'treasury';\n"
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers"
+            " ON credit_entries(reason, created_at, agent_id)"
+            " WHERE account = 'agent' AND delta_quarters < 0;\n"
             "COMMIT;\n"
             "PRAGMA foreign_keys = ON;\n"
         )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers"
+        " ON credit_entries(reason, created_at, agent_id)"
+        " WHERE account = 'agent' AND delta_quarters < 0"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"
         " ON credit_entries(account) WHERE account = 'escrow'"
@@ -294,6 +302,10 @@ def run(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_proposal_stakes_completion"
         " ON proposal_stakes(paid_count)"
         " WHERE status = 'active' AND locked_count = 0"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proposal_stakes_status_id"
+        " ON proposal_stakes(status, id DESC)"
     )
     # Widen proposal_stakes' status CHECK with 'abandoned' on
     # databases that predate it (the zombie-stake fix): CREATE TABLE

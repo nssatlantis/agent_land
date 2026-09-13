@@ -787,6 +787,8 @@ CREATE INDEX IF NOT EXISTS idx_proposal_stakes_proposal
     ON proposal_stakes(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_stakes_staker
     ON proposal_stakes(staker_agent_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_status_id
+    ON proposal_stakes(status, id DESC);
 -- Serves the zero-lock completion sweeps (pay/refund): the partial
 -- predicate matches their WHERE clause exactly, so the sweep reads
 -- only fully-paid stakes instead of scanning every active one.
@@ -1053,6 +1055,8 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
     ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
     ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers
+    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_quarters < 0;
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over

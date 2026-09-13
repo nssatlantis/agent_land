@@ -793,26 +793,36 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
     x unsettled cycles on live jobs, official treasury reservations on
     live positions, and taker-deposit bonus pools on live jobs."""
     live = "status IN ('open', 'offered', 'active')"
-    citizen = conn.execute(
-        "SELECT COALESCE(SUM(payment_quarters *"
-        f" (total_cycles - cycles_done)), 0) FROM jobs WHERE official = 0 AND {live}",
-    ).fetchone()[0]
-    official = conn.execute(
-        "SELECT COALESCE(SUM(treasury_escrow_quarters), 0) FROM jobs"
-        f" WHERE official = 1 AND {live}",
-    ).fetchone()[0]
-    pools = conn.execute(
-        f"SELECT COALESCE(SUM(deposit_bonus_quarters), 0) FROM jobs WHERE {live}",
-    ).fetchone()[0]
+    # One scan, three conditional slices (headline_balances idiom): the
+    # predicates partition live rows citizen/official, pools ride all live
+    # rows. COALESCE stays per slice. Deliberately no max() clamp on the
+    # citizen slice: a corrupt over-done live row reads negative here, as
+    # it always has (backfill's clamp is its own repair path - unifying
+    # them would change Rule-B verdicts).
+    citizen, official, pools = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN official = 0"
+        " THEN payment_quarters * (total_cycles - cycles_done) ELSE 0 END), 0),"
+        " COALESCE(SUM(CASE WHEN official = 1"
+        " THEN treasury_escrow_quarters ELSE 0 END), 0),"
+        " COALESCE(SUM(deposit_bonus_quarters), 0)"
+        f" FROM jobs WHERE {live}",
+    ).fetchone()
     return int(citizen) + int(official) + int(pools)
 
 
 def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
     cutover = _escrow_cutover_id(c)
-    escrow_q = c.execute(
-        "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-        " WHERE account = 'escrow'"
-    ).fetchone()[0]
+    # Grand escrow sum + Rule-C bare-row count in one pass over the escrow
+    # slice (same partial index): the cutover stays a CASE parameter, never
+    # a WHERE clause, so pre-cutover rows still count toward the sum.
+    # Double COALESCE: an empty escrow table must read (0, 0), not a false
+    # trip on None == 0.
+    escrow_q, null_tx_rows = c.execute(
+        "SELECT COALESCE(SUM(delta_quarters), 0),"
+        " COALESCE(SUM(CASE WHEN id > ? AND tx_id IS NULL THEN 1 ELSE 0 END), 0)"
+        " FROM credit_entries WHERE account = 'escrow'",
+        (cutover,),
+    ).fetchone()
     recomputed = _live_escrow_holdings(c)
     # Rule A: per-tx zero-sum over post-cutover escrow-touching txs -
     # every escrow move is paired legs under one tx_id, so each such tx
@@ -847,12 +857,7 @@ def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
         ]
     # Rule C: no bare (NULL-tx) escrow rows past the cutover - every new
     # escrow leg belongs to a tx; legacy single-sided rows sit at or
-    # below the cutover by construction.
-    null_tx_rows = c.execute(
-        "SELECT COUNT(*) FROM credit_entries WHERE account = 'escrow'"
-        " AND id > ? AND tx_id IS NULL",
-        (cutover,),
-    ).fetchone()[0]
+    # below the cutover by construction. Counted in the fused query above.
     # Rule B: the ledger sum equals the jobs-table recompute.
     ok = not tx_violations and null_tx_rows == 0 and escrow_q == recomputed
     return {

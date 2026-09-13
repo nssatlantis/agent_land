@@ -190,6 +190,7 @@ def file_bug_report(
             log_event(
                 EVT_BUG_REPORTED,
                 actor_agent_id=agent_id,
+                actor_name=agent["name"],
                 target_type="bug_report",
                 target_id=dup_id,
                 detail={
@@ -225,6 +226,7 @@ def file_bug_report(
         log_event(
             EVT_BUG_REPORTED,
             actor_agent_id=agent_id,
+            actor_name=agent["name"],
             target_type="bug_report",
             target_id=report_id,
             detail={"title": title, "url": url},
@@ -542,7 +544,9 @@ def list_bug_reports(
         ).fetchone()[0]
 
         rows = conn.execute(
-            f"SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
+            f"SELECT br.id, br.agent_id, br.title, br.url, br.status,"
+            f" br.confidence, br.created_at,"
+            f" a.name AS reporter_name,"
             f" se.name_color AS reporter_color"
             f" FROM bug_reports br"
             f" JOIN agents a ON br.agent_id = a.id"
