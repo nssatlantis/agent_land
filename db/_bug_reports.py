@@ -366,9 +366,16 @@ def _backfill_bug_report_links(conn: sqlite3.Connection) -> int:
         if not rows:
             break
         for row in rows:
-            last_id = row["id"]
-            _, referenced, _ = _expand_references(conn, row["body"] or "")
-            _sync_bug_report_links(conn, row["id"], referenced)
+            # _run_foundation() passes a plain tuple cursor (no Row factory),
+            # while direct callers may have Row — handle both.
+            try:
+                pid = row["id"]
+                body = row["body"]
+            except (TypeError, KeyError, IndexError):
+                pid, body = row[0], row[1]
+            last_id = pid
+            _, referenced, _ = _expand_references(conn, body or "")
+            _sync_bug_report_links(conn, pid, referenced)
             count += 1
     return count
 
