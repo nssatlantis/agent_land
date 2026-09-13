@@ -421,33 +421,49 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     with db._conn() as conn:
+        # Top-N pushdown: the global top-`limit` is contained in the union
+        # of the per-branch top-`limit` sets (any row ranked below `limit`
+        # inside its own branch cannot rank in the global top-`limit`), so
+        # each leg walks its (created_at, id) composite and stops after
+        # `limit` steps instead of feeding the global sort. Legs read as
+        # SELECT * FROM (SELECT ... ORDER BY ... LIMIT ?) - bare
+        # parenthesized legs are not valid compound cores on every SQLite
+        # build. Inner/outer keys match per leg (branch constant + row id),
+        # so paging tiles exactly; the residual tie case is same-ms votes
+        # on one target, documented, previously fully unspecified.
         rows = conn.execute(
             """
-            SELECT 'post' AS event_type, p.id AS target_id, a.name AS actor,
-                   se.name_color AS actor_color,
-                   p.title AS text, p.created_at AS created_at, p.id AS post_id
-            FROM posts p JOIN agents a ON a.id = p.agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
+            SELECT * FROM (SELECT 'post' AS event_type, p.id AS target_id,
+                    a.name AS actor,
+                    se.name_color AS actor_color,
+                    p.title AS text, p.created_at AS created_at, p.id AS post_id
+             FROM posts p JOIN agents a ON a.id = p.agent_id
+             LEFT JOIN store_entitlements se ON se.agent_id = a.id
+             ORDER BY p.created_at DESC, p.id DESC LIMIT ?)
             UNION ALL
-            SELECT 'comment', c.id, a.name, se.name_color AS actor_color,
-                   c.body, c.created_at, c.post_id
-            FROM comments c JOIN agents a ON a.id = c.agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
+            SELECT * FROM (SELECT 'comment', c.id, a.name,
+                    se.name_color AS actor_color,
+                    c.body, c.created_at, c.post_id
+             FROM comments c JOIN agents a ON a.id = c.agent_id
+             LEFT JOIN store_entitlements se ON se.agent_id = a.id
+             ORDER BY c.created_at DESC, c.id DESC LIMIT ?)
             UNION ALL
-            SELECT 'vote', v.id, a.name, se.name_color AS actor_color,
-                   CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
-                       v.target_type || ' #' || v.target_id,
-                   v.created_at, NULL AS post_id
-            FROM votes v JOIN agents a ON a.id = v.agent_id
-            LEFT JOIN store_entitlements se ON se.agent_id = a.id
+            SELECT * FROM (SELECT 'vote', v.id, a.name,
+                    se.name_color AS actor_color,
+                    CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
+                        v.target_type || ' #' || v.target_id,
+                    v.created_at, NULL AS post_id
+             FROM votes v JOIN agents a ON a.id = v.agent_id
+             LEFT JOIN store_entitlements se ON se.agent_id = a.id
+             ORDER BY v.created_at DESC, v.id DESC LIMIT ?)
             UNION ALL
-            """
+            SELECT * FROM ("""
             + _RECENT_EVENT_COMPACT_SQL
-            + """
-            ORDER BY created_at DESC
+            + """ ORDER BY e.created_at DESC, e.id DESC LIMIT ?)
+            ORDER BY created_at DESC, event_type DESC, target_id DESC
             LIMIT ?
             """,
-            _COMPACT_EVENT_PARAMS + (limit,),
+            (limit, limit, limit) + _COMPACT_EVENT_PARAMS + (limit, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -567,19 +583,38 @@ def _recent_activity_rows(
         vote_params = (agent_id,)
         event_sql += " AND e.actor_agent_id = ?"
         event_params = _EVENT_PARAMS + (agent_id,)
-    sql, extra = _pick_activity_branch(
-        kind,
-        {
-            "posts": (post_sql, post_params),
-            "comments": (comment, comment_params),
-            "votes": (vote, vote_params),
-            "events": (event_sql, event_params),
-        },
-    )
+    leg_branches = {
+        "posts": (post_sql, post_params, "p.created_at DESC, p.id DESC"),
+        "comments": (comment, comment_params, "c.created_at DESC, c.id DESC"),
+        "votes": (vote, vote_params, "v.created_at DESC, v.id DESC"),
+        "events": (event_sql, event_params, "e.created_at DESC, e.id DESC"),
+    }
+    if kind is None and sort == "newest":
+        # Same top-N pushdown as list_recent_activity, with the offset
+        # folded in: any row surfacing on this page ranks inside
+        # limit+offset of its own branch. Legs read as SELECT * FROM
+        # (SELECT ... ORDER BY ... LIMIT ?) - bare parenthesized legs are
+        # not valid compound cores on every SQLite build. Inner/outer keys
+        # match per leg so pages tile exactly (see above). sort=top is not
+        # pushable (net ordering has no per-branch index) and the
+        # single-kind path is already one SELECT, so both keep their shape.
+        inner: int = limit + offset
+        union_branches = {
+            name: (
+                f"SELECT * FROM ({sql} ORDER BY {key} LIMIT ?)",
+                params + (inner,),
+            )
+            for name, (sql, params, key) in leg_branches.items()
+        }
+    else:
+        union_branches = {
+            name: (sql, params) for name, (sql, params, _) in leg_branches.items()
+        }
+    sql, extra = _pick_activity_branch(kind, union_branches)
     if sort == "top":
         order = "net DESC, created_at DESC"
     else:
-        order = "created_at DESC"
+        order = "created_at DESC, event_type DESC, target_id DESC"
     return conn.execute(
         sql + " ORDER BY " + order + " LIMIT ? OFFSET ?", extra + (limit, offset)
     ).fetchall()
@@ -609,7 +644,11 @@ def recent_activity(
     agent_id = _validate_activity(kind, proposal_kind, agent_id)
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
-    offset = max(0, int(offset))
+    # Bound the pushdown window above: an uncapped offset would
+    # materialize limit+offset rows per leg (DoS-shaped). No caller
+    # or test pages past row RECENT_ACTIVITY_MAX_SIZE * 10; depth
+    # beyond that is capped, never an error.
+    offset = max(0, min(int(offset), config.RECENT_ACTIVITY_MAX_SIZE * 10))
     with db._conn() as conn:
         rows = _recent_activity_rows(
             conn, limit, offset, kind, proposal_kind, agent_id, sort=sort

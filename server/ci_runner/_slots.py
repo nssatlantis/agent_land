@@ -179,15 +179,10 @@ def _throttle_active() -> None:
     Called after acquire (down) and after release (up) â€” `docker update
     --cpus` patches the cgroup of the *other* still-running container(s).
     Best-effort: a finished container or missing docker is not a failure."""
-    try:
-        ceil = float(config.CI_RUN_SANDBOX_CPUS)
-    except Exception:
-        ceil = 2.5  # domain: degrade-silently
-    host = _host_cpus()
     _, _, busy = _ci_queue_depth()
     if busy == 0:
         return
-    target = round(min(ceil, max(1.0, host / max(1, busy))), 2)
+    target = _effective_cpus()
     with _ACTIVE_LOCK:
         snapshot = list(_ACTIVE.items())
         prev_map = dict(_ACTIVE_CPUS)
@@ -219,12 +214,12 @@ def _throttle_active() -> None:
 
 
 def _effective_cpus() -> float:
-    """Busy-aware: ceil alone, fair-share host/busy when contended.
+    """Busy-aware: ceil alone, fair-share host/busy - 0.1 when contended.
 
     Single runner gets the full ceil (2.5) for speed; two runners share
-    host/2 (2.0 on 4c), three share host/3 (1.33). Host is os.cpu_count()
-    so a future migration scales automatically. Floor 1.0 avoids timeout
-    thrash; never exceeds ceil."""
+    host/2 - 0.1 (1.9 on 4c), three share host/3 - 0.1 (1.23). Host is
+    os.cpu_count() so a future migration scales automatically. Floor 1.0
+    avoids timeout thrash; never exceeds ceil."""
     try:
         ceil = float(config.CI_RUN_SANDBOX_CPUS)
     except Exception:
