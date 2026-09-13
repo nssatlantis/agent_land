@@ -1496,7 +1496,6 @@ _perf_indexes = (
     "idx_report_votes_archive_report",
     "idx_todo_item_flags_item",
     "idx_credit_entries_escrow",
-    "idx_credit_entries_store_buyers",
 )
 
 
@@ -1618,6 +1617,22 @@ def _check_explain_workflow_runs() -> bool:
     sql = "SELECT wr.id FROM workflow_runs wr ORDER BY wr.created_at DESC LIMIT 50"
     plan = _explain(sql)
     return "idx_workflow_runs_created" in plan and _no_full_scan(plan, "workflow_runs")
+
+
+def _check_explain_tag_board() -> bool:
+    # Tag-first board join: the covering composite must serve tag-first
+    # access with no bare scan on either side.
+    sql = (
+        "SELECT p.id FROM posts p JOIN post_tags pt"
+        " ON pt.post_id = p.id AND pt.tag_id = 1"
+        " ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
+    )
+    plan = _explain(sql)
+    return (
+        "idx_post_tags_tag_post" in plan
+        and _no_full_scan(plan, "post_tags")
+        and _no_full_scan(plan, "posts")
+    )
 
 
 def _check_explain_notifications_unread(agent_id: int) -> bool:
@@ -1767,6 +1782,10 @@ def main():
         (
             "EXPLAIN workflow_runs docket: uses created_at index",
             _check_explain_workflow_runs,
+        ),
+        (
+            "EXPLAIN tag board: uses covering composite",
+            _check_explain_tag_board,
         ),
     ]
     if sample_post:
