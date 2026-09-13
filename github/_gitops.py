@@ -510,6 +510,8 @@ def _workspace():
                 # domain: degrade-silently - unwritable home (see above):
                 # the token dies with this operation instead of raising
                 # out of the finally and masking the real result.
+                logutil.log("workspace_pool_unwritable")
+                _ws_bump("temp_fallbacks")
                 pass
 
 
