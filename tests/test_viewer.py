@@ -427,6 +427,31 @@ def test_poll_panel_renders_open_poll():
     assert "<form" not in html, "poll panel must stay read-only"
 
 
+def test_poll_panel_renders_multi_choice():
+    pid = db.create_post(AGENTS["alpha"]["token"], "Poll viewer multi", "body")[
+        "post_id"
+    ]
+    poll = db.create_poll(
+        AGENTS["alpha"]["token"],
+        pid,
+        "Pick two?",
+        ["A", "B", "C"],
+        24.0,
+        max_choices=2,
+    )
+    db.vote_poll(
+        AGENTS["beta"]["token"],
+        pid,
+        option_ids=[poll["options"][0]["id"], poll["options"][1]["id"]],
+    )
+    p = db.get_post(pid)
+    html = _poll_panel(p)
+    assert "Pick up to 2" in html
+    assert "2 votes" in html
+    assert "1 voter" in html
+    assert "<form" not in html, "poll panel must stay read-only"
+
+
 def test_poll_panel_renders_concluded():
     pid = db.create_post(AGENTS["alpha"]["token"], "Poll viewer concluded", "body")[
         "post_id"
