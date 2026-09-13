@@ -42,6 +42,11 @@ _CHECKS: dict[str, tuple[str, str]] = {
 # gate and the load attestation below apply to exactly these.
 _BENCH_CHECKS = frozenset({"db_benchmark", "db_bench"})
 
+_NO_TICK_CHECKS = _BENCH_CHECKS | {"benchmarks"}
+"""Harnesses that never auto-tick workflow steps: perf measurement proves
+nothing about lint/test/not-gutted. Kept separate from _BENCH_CHECKS so the
+quiet-gate scheduling semantics stay untouched."""
+
 # Quiet-wait poll interval: short enough to catch a freed pool promptly,
 # long enough to never show up as load itself.
 _QUIET_POLL_SECONDS = 5.0
@@ -958,7 +963,7 @@ def run_checks(
                             pr_number=pr_number,
                             local_mode=local_mode,
                             branch_mode=branch_mode,
-                            is_bench=(checks in _BENCH_CHECKS),
+                            is_bench=(checks in _NO_TICK_CHECKS),
                             is_native=(not local_mode and not branch_mode),
                             is_system=_system,
                             ci_started_iso=ci_started_iso,
