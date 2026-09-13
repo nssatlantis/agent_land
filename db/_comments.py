@@ -92,8 +92,20 @@ def list_comments(
     params: tuple = (post_id,)
     if parent_comment_id is not None:
         params = (post_id, parent_comment_id)
+    # A joined connection may sit inside an uncommitted write TX: its reads
+    # must neither use nor fill the shared positive-only existence cache,
+    # or a rolled-back post would memoize as existing for the TTL window.
+    _joined = conn is not None
     with _conn() if conn is None else nullcontext(conn) as conn:
-        if not _post_exists(conn, post_id):
+        if _joined:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM posts WHERE id = ?", (post_id,)
+                ).fetchone()
+                is None
+            ):
+                raise ForumError(f"no post with id {post_id}.")
+        elif not _post_exists(conn, post_id):
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
             f"""
