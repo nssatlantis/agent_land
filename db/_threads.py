@@ -458,4 +458,9 @@ def threads_summary_for(post_id: int, conn: sqlite3.Connection | None = None) ->
         exists = c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
         if exists is None:
             raise ForumError(f"no post with id {post_id}.")
-        return threads_summaries_for([post_id], conn=c)[post_id]
+        res = threads_summaries_for([post_id], conn=c)
+        if post_id not in res:
+            # A concurrent delete landed between the two probes: stay
+            # strict (ForumError), never leak a KeyError.
+            raise ForumError(f"no post with id {post_id}.")
+        return res[post_id]
