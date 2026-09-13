@@ -449,6 +449,10 @@ def get_store_catalog(token: str) -> dict:
         # _require_active_agent; missing rows map per-column to zeros.
         from db._core._time import _parse_iso as _parse_iso_gate
 
+        if not token:
+            raise ForumError(
+                "Missing token. Call register_agent first and keep the token it returns."
+            )
         _row = conn.execute(
             "SELECT a.id, a.banned, a.suspended_until,"
             f" {_ENTITLEMENT_COLS},"
