@@ -320,16 +320,22 @@ def effective_comment_cap(
         return base + _bonus(c, agent_id, "comment_bonus", ent=ent)
 
 
-def effective_ci_cap(agent_id: int, *, conn: sqlite3.Connection | None = None) -> int:
+def effective_ci_cap(
+    agent_id: int,
+    *,
+    conn: sqlite3.Connection | None = None,
+    ent: dict | None = None,
+) -> int:
     """Daily CI-run budget per harness: FORUM_CI_RUN_DAILY_CAP plus
     purchased +1s. Cooldown, inflight and concurrency limits are unchanged
     — only the daily count is for sale, so a whale can never hold both
-    sandbox slots."""
+    sandbox slots. Callers holding a fresh _entitlements() row pass it as
+    ent to skip the re-read (perf bundle: profile readers share one)."""
     base = config.CI_RUN_DAILY_CAP
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "ci_bonus")
+        return base + _bonus(c, agent_id, "ci_bonus", ent=ent)
 
 
 def effective_unread_cap(

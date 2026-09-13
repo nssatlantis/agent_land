@@ -248,25 +248,26 @@ def get_todos_summary(post_id: int) -> dict:
             " a.name AS claimed_name, se.name_color AS claimed_name_color,"
             " COUNT(ti.id) AS total_items,"
             " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
-            "   AS done_items"
+            "   AS done_items,"
+            " GROUP_CONCAT(DISTINCT ia.name) AS item_claimer_names"
             " FROM todo_lists tl"
             " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " LEFT JOIN agents ia ON ia.id = ti.claimed_by_agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE tl.post_id = ? GROUP BY tl.id"
             " ORDER BY tl.position, tl.id",
             (post_id,),
         ).fetchall()
-        claimed_by = [
-            r["name"]
-            for r in conn.execute(
-                "SELECT DISTINCT a.name FROM todo_items ti"
-                " JOIN agents a ON a.id = ti.claimed_by_agent_id"
-                " WHERE ti.list_id IN (SELECT id FROM todo_lists WHERE post_id = ?)"
-                " AND a.name IS NOT NULL ORDER BY a.name",
-                (post_id,),
+        # Item claimers ride the main GROUP BY (one name per item row, so
+        # the grain - and every COUNT/SUM - is unchanged); the final
+        # sorted() below makes the set-union order moot. Names admit no
+        # commas (registration charset), so the comma split is exact.
+        claimed_by = list(
+            dict.fromkeys(
+                n for r in rows for n in (r["item_claimer_names"] or "").split(",") if n
             )
-        ]
+        )
         if mode != 0:
             list_claimers = [
                 r["claimed_name"] for r in rows if r["claimed_by_agent_id"] is not None
@@ -333,10 +334,12 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             " a.name AS claimed_name, se.name_color AS claimed_name_color,"
             " COUNT(ti.id) AS total_items,"
             " COALESCE(SUM(CASE WHEN ti.done = 1 THEN 1 ELSE 0 END), 0)"
-            "   AS done_items"
+            "   AS done_items,"
+            " GROUP_CONCAT(DISTINCT ia.name) AS item_claimer_names"
             " FROM todo_lists tl"
             " LEFT JOIN todo_items ti ON ti.list_id = tl.id"
             " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " LEFT JOIN agents ia ON ia.id = ti.claimed_by_agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             f" WHERE tl.post_id IN ({marks}) GROUP BY tl.id"
             " ORDER BY tl.post_id, tl.position, tl.id",
@@ -346,16 +349,11 @@ def _todos_summary_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             continue
         for lr in lists:
             rows_by_post.setdefault(lr["post_id"], []).append(lr)
-        for cr in conn.execute(
-            "SELECT DISTINCT tl.post_id AS post_id, a.name AS name"
-            " FROM todo_items ti"
-            " JOIN todo_lists tl ON tl.id = ti.list_id"
-            " JOIN agents a ON a.id = ti.claimed_by_agent_id"
-            f" WHERE tl.post_id IN ({marks}) AND a.name IS NOT NULL"
-            " ORDER BY tl.post_id, a.name",
-            chunk,
-        ).fetchall():
-            names_by_post.setdefault(cr["post_id"], []).append(cr["name"])
+        for lr in lists:
+            dst = names_by_post.setdefault(lr["post_id"], [])
+            for n in (lr["item_claimer_names"] or "").split(","):
+                if n and n not in dst:
+                    dst.append(n)
     for post_id in post_ids:
         mode = mode_by_post.get(post_id, 0)
         rows = rows_by_post.get(post_id)

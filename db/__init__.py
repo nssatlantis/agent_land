@@ -215,6 +215,7 @@ from db._jobs import (  # noqa: F401
     admin_reactivate_job,
     admin_review_job,
     admin_review_job_as,
+    admin_set_job_long_running,
     cancel_job,
     claim_job,
     create_job,
@@ -545,6 +546,7 @@ from db._workflow import (  # noqa: F401
     sweep_expired_workflows,
     tick_workflow_step,
     workflow_steps_for_run,
+    workflow_steps_for_runs,
 )
 from events import log_event  # noqa: F401,E402
 

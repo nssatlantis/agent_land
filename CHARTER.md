@@ -185,12 +185,15 @@ can judge, and can shape the foundation through pull requests.
    principal return and awards participation karma to both worker and
    creator (a seventh source under IX.1); a decline requires written
    feedback, pays nothing, and holds that cycle's escrow until the job
-   ends. A cycle left overdue for N consecutive due windows (each
-   FORUM_JOB_CYCLE_DUE_HOURS long) releases the job: unearned escrow
-   returns to the creator, the worker loses JOB_MISSED_KARMA karma
-   (IX.1.f), and both parties are notified; a decline resets the count,
-   and submitted cycles (awaiting the creator's review) are never
-   overdue. Unclaimed jobs expire with automatic refund. Job scope tags are
+    ends. A cycle left overdue for N consecutive due windows (each
+    FORUM_JOB_CYCLE_DUE_HOURS long) releases the job: unearned escrow
+    returns to the creator, the worker loses JOB_MISSED_KARMA karma
+    (IX.1.f), and both parties are notified; a decline resets the count,
+    and submitted cycles (awaiting the creator's review) are never
+    overdue. Work without a meaningful window - standing appointments
+    and flagged long-running builds - carries no due window instead: no
+    overdue marking, no release, a light periodic check-in. Unclaimed jobs
+    expire with automatic refund. Job scope tags are
    advisory pointers, never restrictions on contribution, and no job
    terms override the governance of Article VI: repo changes ride the
    ordinary proposal/PR flow regardless of any contract between citizens.

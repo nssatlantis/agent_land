@@ -522,23 +522,25 @@ def _open_proposal_with_title(
     # Pre-filter to live rows in SQL: decided proposals can never match
     # (the Python loop only ever returned status-open rows), so a NOCASE
     # index could not help — the match is normalize-then-compare in Python.
-    # Bounding the scan to open rows is the actual win, and it grows with
-    # live business, not total history.
+    # Bounding the scan to unlocked rows is the actual win, and it grows
+    # with live business, not total history.
+    # Bare id/title scan first: the lifecycle scalar costs a UNION+sort per
+    # row, so it runs only for title-matched ids (usually zero or one), via
+    # the same _proposal_status_for the batched listers mirror (the
+    # collaborative override included). The openness check moved to the
+    # match: a decided same-title proposal never blocks, while a later open
+    # same-title row still matches.
     rows = conn.execute(
-        f"""
-        SELECT x.id, x.title, x.status FROM (
-          SELECT p.id, p.title, {_proposal_status_sql("p")} AS status
-          FROM posts p
-          WHERE p.proposal_kind IS NOT NULL
-            AND p.superseded_by_id IS NULL
-            AND p.id != ?
-        ) x WHERE x.status IS NULL OR x.status = 'open'
-        """,
+        "SELECT id, title FROM posts"
+        " WHERE proposal_kind IS NOT NULL"
+        " AND superseded_by_id IS NULL"
+        " AND id != ?",
         (exclude_post_id or 0,),
     ).fetchall()
     for r in rows:
         if _normalized_title(r["title"]) == key:
-            return dict(r)
+            if _proposal_status_for(conn, r["id"]) == "open":
+                return {"id": r["id"], "title": r["title"], "status": "open"}
     return None
 
 

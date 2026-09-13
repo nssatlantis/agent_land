@@ -134,7 +134,7 @@ def _proposal_phase(decision: str) -> str:
     return "discussion"
 
 
-def _proposal_list_sql(where_sql: str = "") -> str:
+def _proposal_list_sql(where_sql: str = "", *, for_counts: bool = False) -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
     for the regression test that EXPLAINs it and asserts no correlated scalar
@@ -142,7 +142,29 @@ def _proposal_list_sql(where_sql: str = "") -> str:
     placeholders, or '') so the profile page's targeted lists fetch the same
     batched rows instead of a second SELECT shape. Name colors ride one
     batched entitlements lookup afterwards (never per-row joins); the
-    superseded parent's title/version ride a posts self-join."""
+    superseded parent's title/version ride a posts self-join.
+    `for_counts=True` selects the counts-only shape: NULL AS body_preview,
+    no display LEFT JOINs (delegate/claim names, lineage parent) and no
+    ORDER BY - the tab predicate reads none of those, and every for_counts
+    caller filters to ids (re-sorting survivors itself when order matters),
+    so the light scan is one join-narrow pass instead of substr+joins+sort.
+    The claim join stays: the unclaimed tab reads claim_agent_id. Row
+    cardinality is unchanged (every dropped join is to-one-or-none, and the
+    kept joins are byte-identical to the full shape)."""
+    if for_counts:
+        return f"""
+        SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+               p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
+               p.supersedes_id, p.superseded_by_id, p.version,
+               p.collaborative, p.claimable,
+               p.collaborative_closed, p.pr_goal,
+               pc.agent_id AS claim_agent_id,
+               NULL AS body_preview
+        FROM posts p JOIN agents a ON a.id = p.agent_id
+        LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+        WHERE p.proposal_kind IS NOT NULL{where_sql}
+        """
+    preview_expr = f"substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview"
     return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
@@ -152,9 +174,9 @@ def _proposal_list_sql(where_sql: str = "") -> str:
                d.name AS delegate_name,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
-               par.title AS parent_title,
-               par.version AS parent_version,
-               substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
+                par.title AS parent_title,
+                par.version AS parent_version,
+                {preview_expr}
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
@@ -190,11 +212,14 @@ def _proposal_rows(
     tallies, to-do lists, tags, content score, comment counts, latest
     activity, supersede parents): the rows keep every field
     _proposal_matches_view() reads, so a tab-count pass is one full scan
-    instead of one plus seven display batches. `threshold` may carry a
-    fresh _proposal_vote_threshold() so repeated fetches share one
+    instead of one plus seven display batches. Counts rows carry the
+    join-narrow shape (no preview, no display joins, no ORDER BY - never
+    read by the predicate); full rows carry the truncated preview plus
+    delegate/claim/lineage display columns. `threshold` may carry a fresh
+    _proposal_vote_threshold() so repeated fetches share one
     active-citizens count."""
     rows = conn.execute(
-        _proposal_list_sql(where_sql),
+        _proposal_list_sql(where_sql, for_counts=for_counts),
         params,
     ).fetchall()
     return _assemble_proposal_rows(
@@ -356,9 +381,11 @@ def _assemble_proposal_list(
         d["is_current"] = not d["locked"]
         # Lineage parent rides the main SELECT's posts self-join (same
         # {id, title, version} shape the parents map built); a dangling
-        # supersedes_id reads None, exactly like a map miss.
-        parent_title = d.pop("parent_title")
-        parent_version = d.pop("parent_version")
+        # supersedes_id reads None, exactly like a map miss. Counts rows
+        # carry no parent columns (join dropped), so default to None -
+        # the predicate never reads supersedes either way.
+        parent_title = d.pop("parent_title", None)
+        parent_version = d.pop("parent_version", None)
         if d["supersedes_id"] is not None and parent_title is not None:
             d["supersedes"] = {
                 "id": d["supersedes_id"],
@@ -822,7 +849,9 @@ def list_proposals(
     dropped and the whole docket is fetched - it is small by design.
     Filtering views (anything but 'all'/'lineage') fetch in two phases: a
     counts-only pass first (same predicate fields, no display batches),
-    then the full enrichments over the surviving ids only."""
+    then the full enrichments over the surviving ids only. 'review' is
+    the exception: its prefilter is already narrow, so one enriched fetch
+    plus one filter pass returns the same rows with one fewer scan."""
     if view is None:
         view = "all"
     if view not in _PROPOSAL_VIEWS:
@@ -889,6 +918,23 @@ def list_proposals(
     with _conn() as conn:
         if view in ("all", "lineage"):
             rows = _proposal_rows(conn, "", ())
+        elif view == "review":
+            # Single-phase: the review prefilter is already narrow
+            # (non-collaborative, unlocked, PR-linked rows only) and the
+            # display enrichments never touch a predicate field, so one
+            # enriched fetch plus one filter pass returns the same rows
+            # as the light-then-survivors two-phase. Other views keep two
+            # phases: their prefilters are wide, and enriching the whole
+            # prefilter set would cost more than the light pass saves.
+            threshold = _proposal_vote_threshold(conn)
+            pre_sql, pre_params = _view_prefilter_sql(view)
+            rows = [
+                p
+                for p in _proposal_rows(conn, pre_sql, pre_params, threshold=threshold)
+                if _proposal_matches_view(p, view)
+            ]
+            if sort != "top":
+                rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
         else:
             # Two-phase: the counts-only pass keeps every field
             # _proposal_matches_view() reads but skips the seven display

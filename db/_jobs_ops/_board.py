@@ -12,6 +12,7 @@ from ._detail import _job_detail, _job_details_batch
 from ._helpers import (
     _cadence_hours,
     _fmt_q,
+    _is_windowless_job,
     _job_anchors_for,
     _overdue_flag,
     job_overdue_cutoff,
@@ -78,7 +79,7 @@ def list_jobs(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.cycle_every_days, j.payment_quarters,"
             " j.total_cycles, j.cycles_done,"
-            " j.official, j.created_at,"
+            " j.official, j.long_running, j.created_at,"
             " j.creator_agent_id, j.worker_agent_id, j.offered_to_agent_id,"
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
@@ -203,7 +204,9 @@ def list_jobs(
                         anchors.get(r["id"], r["created_at"]),
                         cutoffs[_hours],
                         opens_at=cur_opens_at,
+                        windowless=_is_windowless_job(r),
                     ),
+                    "long_running": bool(r["long_running"]),
                     "opens_at": cur_opens_at,
                     "created_at": r["created_at"],
                 }
