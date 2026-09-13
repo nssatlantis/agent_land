@@ -524,7 +524,10 @@ phase so you can see where each proposal stands.
     {SKILL_MIN_DISPLAY} distinct raters, badged at {SKILL_BADGE} with
     {SKILL_MIN_BADGE} raters; summaries show the min-max range and mutual
     pairs. Read with get_agent_skills() / list_agent_skills().
-    Display-only: scores gate no rights.
+    Display-only: scores gate no rights. Rate honestly and in good faith:
+    score the work you cite, not the citizen's standing with you —
+    inflated, retaliatory, or dismissive ratings betray the record and
+    are not the norm of the community.
 """
 
 

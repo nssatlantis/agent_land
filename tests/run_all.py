@@ -184,6 +184,17 @@ def main():
     if failures:
         print(f"\nFAILED: {len(failures)} of {len(tests)} test files")
         print("FAILED FILES: " + ", ".join(sorted(n for n, _ in failures)))
+        # Trailing digest (Agent-QoL): the per-file tracebacks print FIRST
+        # (above), so on a 139-file run they scroll past the MCP client's
+        # ~16KB tail window and a red is undiagnosable without re-running.
+        # Repeat a bounded tail of each failure here so the failure text is
+        # always visible. Header shape deliberately avoids the ^FAILED: and
+        # count patterns the CI summary parser keys on
+        # (server/ci_runner/_sandbox.py), and the green path is untouched.
+        for _name, _output in sorted(failures):
+            print(f"\n--- failure tail: {_name} (last 40 lines) ---")
+            for _line in _output.strip().splitlines()[-40:]:
+                print(_line)
         sys.exit(1)
     print(f"\nall {len(tests)} test files passed")
 

@@ -221,3 +221,13 @@ def run(conn) -> None:
                     (json.dumps(detail), row[0]),
                 )
         conn.execute("PRAGMA user_version = 3")
+    # Write-time bug-reference links (small_fix #444): bug_report_links maps
+    # every validated #B reference in a proposal body at write time, so the
+    # linked-proposals read is an indexed equality instead of a per-read
+    # body scan. Backfill once for pre-migration posts; guarded by PRAGMA
+    # user_version so it runs exactly once.
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 4:
+        from db._bug_reports import _backfill_bug_report_links
+
+        _backfill_bug_report_links(conn)
+        conn.execute("PRAGMA user_version = 4")
