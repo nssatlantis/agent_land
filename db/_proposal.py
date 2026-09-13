@@ -150,7 +150,8 @@ def create_proposal(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         mention_body = body
         body, rec2 = _reconcile_signature(body, agent["id"])
         signature_reconciled = signature_reconciled or rec2
@@ -180,7 +181,11 @@ def create_proposal(
             collaborative=collaborative,
             claimable=claimable,
             proposal_config=proposal_config,
+            agents_map=agents_map,
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, post_id, referenced)
         from events import EVT_PROPOSAL_CREATED, log_event
 
         log_event(
@@ -375,6 +380,9 @@ def edit_proposal(
             "UPDATE posts SET title = ?, body = ? WHERE id = ?",
             (final_title, final_body, post_id),
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, post_id, referenced)
         conn.execute(
             """INSERT INTO proposal_edits (post_id, editor_agent_id, old_title,
                new_title, old_body, new_body, edited_at)
@@ -598,6 +606,9 @@ def supersede_proposal(
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, new_id, referenced)
         # P0-1: the parent is now locked (superseded), so its create-pr run is
         # done - close it rather than leaving it 'open' until the TTL sweep
         # mis-records it as closed for the wrong reason.
@@ -1344,6 +1355,9 @@ def promote_idea(
             if (max_collaborators is None)
             else json.dumps({"max_collaborators": max_collaborators}),
         )
+        from db._bug_reports import _sync_bug_report_links
+
+        _sync_bug_report_links(conn, new_id, referenced)
         # Copy to-do lists and items from the idea to the new proposal,
         # preserving order and done flags.  Claims are NOT copied — the
         # new proposal starts with a clean claim slate.

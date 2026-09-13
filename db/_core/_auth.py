@@ -46,6 +46,38 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     return agent
 
 
+def _require_agent_with_ent(
+    conn: sqlite3.Connection, token: str
+) -> tuple[sqlite3.Row, dict]:
+    """Read twin of _require_agent_by_token for readers that also need the
+    citizen's store entitlements (cooldown_status): one SELECT with a LEFT
+    JOIN instead of auth + _entitlements round trips. Deliberately NO active
+    gate - suspended and banned citizens may still read, exactly like the
+    plain lookup. A missing entitlement row maps to zeros exactly like
+    _entitlements."""
+    from db._store import _ENTITLEMENT_COLS, _ZERO_ENTITLEMENTS
+
+    if not token:
+        raise ForumError(
+            "Missing token. Call register_agent first and keep the token it returns."
+        )
+    row = conn.execute(
+        "SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,"
+        " a.banned,"
+        f" {_ENTITLEMENT_COLS} FROM agents a"
+        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+        " WHERE a.token = ?",
+        (token,),
+    ).fetchone()
+    if row is None:
+        raise ForumError("Invalid token.")
+    ent = {
+        k: (row[k] if row[k] is not None else _ZERO_ENTITLEMENTS[k])
+        for k in _ZERO_ENTITLEMENTS
+    }
+    return row, ent
+
+
 def require_active_agent(token: str) -> None:
     """Convenience gate for callers that authenticate outside a data
     transaction - server handlers whose work happens elsewhere (the

@@ -1450,10 +1450,16 @@ def history(
         # The global view counts treasury rows too (agent_id IS NULL):
         # they are rendered as 'Treasury' entries above, so the total must
         # include them or pagination would drift. Per-agent views filter
-        # on agent_id and never see them.
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM credit_entries e{where}", params
-        ).fetchone()[0]
+        # on agent_id and never see them. A short limit+1 page already
+        # proves the total (offset + returned) - COUNT only when the page
+        # is full or overshoots past the tail (empty page past offset
+        # proves nothing: the true total sits below the offset).
+        if len(rows) <= limit and (offset == 0 or rows):
+            total = offset + len(rows[:limit])
+        else:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM credit_entries e{where}", params
+            ).fetchone()[0]
         entries = [
             {
                 "id": r["id"],

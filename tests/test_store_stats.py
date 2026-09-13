@@ -139,6 +139,46 @@ def main():
     assert bench["revenue_quarters"] == 0, f"refund nets revenue ({bench})"
     assert bench["held"] == 0, "taken bank stays spent"
 
+    # Predicate-shape pins (sargable rewrite): unknown future reasons still
+    # bucket under Other, uppercase reasons stay excluded (BINARY range -
+    # all ledger writers emit lowercase literals only).
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            " account) VALUES (?, ?, 'store_future_gadget', 'agent')",
+            (buyer_a["agent_id"], -vote_q),
+        )
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            " account) VALUES (NULL, ?, 'store_future_gadget_intake', 'treasury')",
+            (vote_q,),
+        )
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            " account) VALUES (?, ?, 'STORE_vote', 'agent')",
+            (buyer_a["agent_id"], -vote_q),
+        )
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            " account) VALUES (NULL, ?, 'STORE_vote_intake', 'treasury')",
+            (vote_q,),
+        )
+    stats2 = db.store_stats()
+    future = _row(stats2, "store_future_gadget")
+    assert future["label"].startswith("Other ("), "unknown reason buckets Other"
+    assert (future["units"], future["buyers"]) == (1, 1), "future reason counted"
+    assert future["revenue_quarters"] == vote_q, "future revenue exact"
+    assert not any(i["reason"] == "STORE_vote" for i in stats2["items"]), (
+        "uppercase reason excluded from buyers"
+    )
+    assert _row(stats2, "store_vote")["units"] == 2, "uppercase intake excluded"
+    assert stats2["totals"]["units"] == stats["totals"]["units"] + 1, (
+        "only the future intake adds a unit"
+    )
+    assert stats2["totals"]["buyers"] == stats["totals"]["buyers"], (
+        "uppercase buyer leg excluded"
+    )
+
     totals = stats["totals"]
     assert totals["units"] == sum(i["units"] for i in stats["items"]), "units add up"
     assert totals["revenue_quarters"] == sum(
@@ -162,6 +202,16 @@ def main():
         assert empty["totals"]["buyers"] == 0
         assert empty["installed"]["citizens_served"] == 0
         assert all(i["units"] == 0 and i["held"] == 0 for i in empty["items"])
+        with db._conn() as conn:
+            fresh_idx = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+        assert "idx_credit_entries_store_buyers" in fresh_idx, (
+            "fresh boot creates the store-buyers covering index"
+        )
     finally:
         db.DB_PATH = saved_db_path
 
