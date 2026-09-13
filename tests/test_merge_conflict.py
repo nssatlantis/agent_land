@@ -253,6 +253,18 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
     )
 
 
+def _force_temp_workspace():
+    """Pin the temp workspace path for tests that mock the temp-path seam.
+
+    `detect_merge_conflicts`/`apply_merge_resolutions` acquire their dir
+    via `_workspace()`, which only touches `_clone_repo`/`_cleanup` on the
+    temp path — under FORUM_GIT_WORKSPACE_MODE=persistent the pool-slot
+    path never calls them, so `_cleanup` mocks record 0 calls (#B26).
+    Tests below mock that seam, so they pin temp mode and stay green in
+    either env."""
+    return patch("github._gitops._ws_mode_persistent", return_value=False)
+
+
 def test_detect_clean_merge():
     """detect_merge_conflicts returns clean when merge succeeds."""
     fake_dir = tempfile.mkdtemp()
@@ -276,6 +288,7 @@ def test_detect_clean_merge():
 
     with (
         patch("github._core._request", return_value=pr_data),
+        _force_temp_workspace(),
         patch("github._gitops._clone_repo", return_value=fake_repo),
         patch("github._gitops._git", side_effect=fake_git),
         patch("github._gitops._cleanup") as mc,
@@ -315,6 +328,7 @@ def test_detect_conflicts_with_regions():
 
     with (
         patch("github._core._request", return_value=pr_data),
+        _force_temp_workspace(),
         patch("github._gitops._clone_repo", return_value=fake_repo),
         patch("github._gitops._git", side_effect=fake_git),
         patch("github._gitops._safe_path", side_effect=fake_sp),
@@ -357,6 +371,7 @@ def test_detect_unreadable_file_graceful():
 
     with (
         patch("github._core._request", return_value=pr_data),
+        _force_temp_workspace(),
         patch("github._gitops._clone_repo", return_value=fake_repo),
         patch("github._gitops._git", side_effect=fake_git),
         patch("github._gitops._safe_path", side_effect=fake_sp),
@@ -392,6 +407,7 @@ def test_resolve_partial_coverage_rejected():
     with (
         patch("github._core._ensure_token"),
         patch("github._core._request", return_value=pr_data),
+        _force_temp_workspace(),
         patch("github._gitops._clone_repo", return_value=fake_repo),
         patch("github._gitops._git", side_effect=fake_git),
         patch("github._gitops._cleanup"),
@@ -462,6 +478,7 @@ def test_resolve_success():
     with (
         patch("github._core._ensure_token"),
         patch("github._core._request", return_value=pr_data),
+        _force_temp_workspace(),
         patch("github._gitops._clone_repo", return_value=fake_repo),
         patch("github._gitops._git", side_effect=fake_git),
         patch("github._gitops._cleanup"),
@@ -561,6 +578,7 @@ def test_rebase_skips_already_current_branch():
     """rebase_pr_onto_main fast-paths when the head already contains main
     (no rebase, no push, no invalidation, same sha) - and rebases normally
     once behind."""
+    import config as _config
     import github._gitops as gitops
 
     tmp, bare = _mk_rebase_fixture()
@@ -579,6 +597,9 @@ def test_rebase_skips_already_current_branch():
             patch("github._gitops._repo_url", return_value=bare),
             patch("github._gitops._git", side_effect=spy_git),
             patch("github._core._invalidate_pr") as mock_inv,
+            # Hermetic pool root: persistent slots live under DATA_DIR,
+            # read-only in some CI sandboxes (#B26).
+            patch.object(_config, "DATA_DIR", tmp),
         ):
             res = github.rebase_pr_onto_main(42)
             assert res["status"] == "ok", res
