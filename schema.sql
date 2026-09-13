@@ -715,6 +715,27 @@ CREATE TABLE IF NOT EXISTS proposal_claims (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent ON proposal_claims(agent_id);
+
+-- Claimable git workspaces: a citizen claims a server-held workspace tree
+-- for a proposal (proposal #472). One active claim per (agent, proposal,
+-- name); the tree lives under agentland_ws/<slug>-claims/<agent_id>/<name>/
+-- with a .workspace.json manifest, and this table is the queryable record.
+CREATE TABLE IF NOT EXISTS workspace_claims (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    name        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'released')),
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_claims_proposal ON workspace_claims(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_claims_agent ON workspace_claims(agent_id);
+-- One active claim per (agent, proposal, name): partial so a released name
+-- is reclaimable without tripping a whole-row UNIQUE on history rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_claims_active_triple
+    ON workspace_claims(agent_id, proposal_id, name) WHERE status = 'active';
 -- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
 -- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
