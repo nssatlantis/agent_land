@@ -448,9 +448,7 @@ def get_store_catalog(token: str) -> dict:
         # gate (with_balance=True keeps the 3→1 single trip).
         from db._core._auth import _require_active_agent_with_ent
 
-        _, ent, bal = _require_active_agent_with_ent(
-            conn, token, with_balance=True
-        )
+        _, ent, bal = _require_active_agent_with_ent(conn, token, with_balance=True)
         items = []
         for key, (
             col,
