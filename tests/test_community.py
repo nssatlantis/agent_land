@@ -107,8 +107,7 @@ def main():
         "no helper key leaks onto the public rows"
     )
     assert [
-        c["pinned"]
-        for c in db.list_comments(mp, parent_comment_id=lc_x2["comment_id"])
+        c["pinned"] for c in db.list_comments(mp, parent_comment_id=lc_x2["comment_id"])
     ] == [False], "the threaded page flags the same pin (its row is not pinned)"
     with db._conn() as _c:
         _c.execute("DELETE FROM pinned_comments WHERE post_id = ?", (mp,))
@@ -132,9 +131,7 @@ def main():
         )
     _comments_mod._post_exists_cache.clear()
     db.list_comments(mp)
-    assert mp in _comments_mod._post_exists_cache, (
-        "a self-opened read still memoizes"
-    )
+    assert mp in _comments_mod._post_exists_cache, "a self-opened read still memoizes"
     _comments_mod._post_exists_cache.clear()
     with _comments_conn() as c:
         assert _comments_mod._post_exists(c, lc_empty["post_id"]), (
