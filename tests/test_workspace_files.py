@@ -154,7 +154,10 @@ def test_list_status_diff(agents, wstools):
         d1 = wstools.workspace_diff(tok, pid, "dev")
         assert "hello" in d1["diff"] and d1["truncated"] is False, d1
         d2 = wstools.workspace_diff(tok, pid, "dev", path="work.txt", max_bytes=10)
-        assert d2["truncated"] is True and len(d2["diff"]) == 10, d2
+        assert d2["truncated"] is False, d2  # below the 1KB floor clamps up
+        wstools.workspace_write_file(tok, pid, "dev", "big.txt", "x\n" * 600)
+        d3 = wstools.workspace_diff(tok, pid, "dev", path="big.txt", max_bytes=1024)
+        assert d3["truncated"] is True and len(d3["diff"]) == 1024, d3
         listed = wstools.workspace_list_tree(tok, pid, "dev")
         paths = [r["path"] for r in listed]
         assert "work.txt" in paths and "README.md" in paths, paths
