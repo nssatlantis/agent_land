@@ -320,3 +320,11 @@ def run(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_post_tags_tag_post"
         " ON post_tags(tag_id, post_id)"
     )
+    # 10. Poll-votes composite (small_fix #467): (poll_id, option_id)
+    # serves get_poll per-option tallies + _votes_for_poll GROUP BY.
+    # Declared in schema.sql for fresh databases; created here too so
+    # upgraded databases converge.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_option"
+        " ON poll_votes(poll_id, option_id)"
+    )
