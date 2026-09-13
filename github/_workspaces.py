@@ -1,0 +1,305 @@
+"""github._workspaces — server-held per-claim working trees (proposal #472).
+
+One directory per (agent, proposal, name) under
+``agentland_ws/<slug>-claims/`` carrying a ``.workspace.json`` manifest.
+This module owns the bytes only: the queryable record lives in
+``db._workspace_claims`` and the MCP tools in
+``server.tools.repo._workspace`` orchestrate the two (record first, tree
+second, with a compensating release when the tree fails).
+
+Contract: ``ensure_claim_tree`` clones or resumes but never auto-wipes
+dirty work; a manifest owned by someone else rebuilds; every failure
+raises ``RepoError`` (the ``_logged`` decorator maps it to a tool error).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import time
+
+import config
+
+from ._core import GITHUB_REPO, RepoError
+from ._gitops import (
+    _git,
+    _repo_url,
+    _rm_readonly,
+    _seed_identity,
+    _try_clone_from_local,
+)
+
+_WS_CLAIM_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
+_MANIFEST = ".workspace.json"
+_MANAGED = (_MANIFEST, _MANIFEST + ".tmp")
+
+
+def _validate_claim_name(name: str) -> str:
+    """Same shape as the record layer and the CI rehearsal trees."""
+    name = str(name or "").strip()
+    if not _WS_CLAIM_RE.fullmatch(name):
+        raise RepoError(
+            "workspace name must be 1-40 chars of letters, digits, '-' or '_'."
+        )
+    return name
+
+
+def _claims_root() -> str:
+    """Durable home for claim trees (sibling of the pool and CI trees)."""
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-claims")
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError as exc:  # domain: fail-loudly - without a home no tree can exist
+        raise RepoError(f"workspace home is not writable: {root}") from exc
+    return root
+
+
+def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
+    name = _validate_claim_name(name)
+    try:
+        agent_id = int(agent_id)
+        proposal_id = int(proposal_id)
+    except (TypeError, ValueError) as exc:  # domain: fail-loudly - ids are caller bugs
+        raise RepoError("agent and proposal ids must be integers.") from exc
+    if agent_id <= 0 or proposal_id <= 0:
+        raise RepoError("agent and proposal ids must be positive integers.")
+    return os.path.join(_claims_root(), str(agent_id), str(proposal_id), name)
+
+
+def _read_manifest(dest: str) -> dict | None:
+    try:
+        with open(os.path.join(dest, _MANIFEST), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        if not isinstance(manifest, dict):
+            return None
+        return manifest
+    except Exception:  # domain: degrade-silently - a corrupt manifest reads as fresh
+        return None
+
+
+def _write_manifest(dest: str, manifest: dict) -> None:
+    try:
+        os.makedirs(dest, exist_ok=True)
+        tmp = os.path.join(dest, _MANIFEST + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            json.dump(manifest, fh)
+        os.replace(tmp, os.path.join(dest, _MANIFEST))
+    except (
+        OSError
+    ) as exc:  # domain: fail-loudly - an unwritable tree cannot back a claim
+        raise RepoError(f"could not write workspace manifest in {dest}") from exc
+
+
+def _has_git(dest: str) -> bool:
+    return os.path.isdir(os.path.join(dest, ".git"))
+
+
+def _head_sha(dest: str) -> str | None:
+    if not _has_git(dest):
+        return None
+    res = _git(dest, "rev-parse", "HEAD", check=False)
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
+
+
+def _is_dirty(dest: str) -> bool:
+    if not _has_git(dest):
+        return False
+    res = _git(dest, "status", "--porcelain", check=False)
+    if res.returncode != 0:
+        return True  # unknown state reads dirty: the safe direction
+    # The manifest is our bookkeeping, not user work: a fresh tree reads clean.
+    return any(line[3:] not in _MANAGED for line in res.stdout.splitlines())
+
+
+def _dir_size_mb(dest: str) -> float:
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(dest):
+        for fn in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, fn))
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+    return total / (1024 * 1024)
+
+
+def _retire_dir(dest: str) -> bool:
+    if not os.path.isdir(dest):
+        return False
+    try:
+        shutil.rmtree(dest, onerror=_rm_readonly)
+    except OSError:  # domain: degrade-silently - a leftover converges on later sweeps
+        pass
+    return not os.path.isdir(dest)
+
+
+def _clone_claim_tree(dest: str) -> None:
+    parent = os.path.dirname(dest)
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:  # domain: fail-loudly - without parents no tree can exist
+        raise RepoError(f"workspace home is not writable: {parent}") from exc
+    if _try_clone_from_local(parent, os.path.basename(dest)):
+        _seed_identity(dest)
+        return
+    _git(parent, "clone", _repo_url(with_token=False), os.path.basename(dest))
+    _seed_identity(dest)
+
+
+def _tree_dict(dest: str, manifest: dict, resumed: bool) -> dict:
+    return {
+        "path": dest,
+        "agent_id": manifest.get("agent_id"),
+        "proposal_id": manifest.get("proposal_id"),
+        "name": manifest.get("name"),
+        "resumed": resumed,
+        "dirty": _is_dirty(dest),
+        "head_sha": manifest.get("head_sha"),
+        "size_mb": round(_dir_size_mb(dest), 2),
+    }
+
+
+def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Clone or resume one claim tree; never auto-wipes dirty work.
+
+    A missing tree clones (local seed preferred, origin fallback) and
+    records a fresh manifest. An existing tree with a foreign manifest
+    (restored backup, tampering) rebuilds instead of serving another
+    citizen's bytes. A clean tree resumes as-is; a dirty tree resumes
+    untouched so in-progress work is never lost. Refreshing onto
+    origin/main happens at rehearse/push time, not here, so ensure stays
+    cheap and offline-safe.
+    """
+    clean_name = _validate_claim_name(name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    manifest = _read_manifest(dest)
+    if manifest is not None and (
+        int(manifest.get("agent_id", -1)) != int(agent_id)
+        or int(manifest.get("proposal_id", -1)) != int(proposal_id)
+        or str(manifest.get("name", "")) != clean_name
+    ):
+        _retire_dir(dest)
+        manifest = None
+    if manifest is None and not _has_git(dest):
+        check_claim_budget(agent_id)
+        _clone_claim_tree(dest)
+        manifest = {
+            "agent_id": int(agent_id),
+            "proposal_id": int(proposal_id),
+            "name": clean_name,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "head_sha": _head_sha(dest),
+        }
+        _write_manifest(dest, manifest)
+        return _tree_dict(dest, manifest, resumed=False)
+    if manifest is None:
+        manifest = {
+            "agent_id": int(agent_id),
+            "proposal_id": int(proposal_id),
+            "name": clean_name,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "head_sha": _head_sha(dest),
+        }
+    manifest["updated_at"] = time.time()
+    manifest["head_sha"] = _head_sha(dest)
+    _write_manifest(dest, manifest)
+    return _tree_dict(dest, manifest, resumed=True)
+
+
+def retire_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+    """Best-effort removal of one claim tree. True when gone."""
+    return _retire_dir(_claim_dir(agent_id, proposal_id, name))
+
+
+def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Manifest plus live stats for one claim tree (missing reads empty)."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    exists = os.path.isdir(dest)
+    return {
+        "exists": exists,
+        "path": dest,
+        "manifest": _read_manifest(dest),
+        "size_mb": round(_dir_size_mb(dest), 2) if exists else 0.0,
+        "dirty": _is_dirty(dest) if exists else False,
+        "head_sha": _head_sha(dest) if exists else None,
+    }
+
+
+def _agent_claims_size_mb(agent_id: int) -> float:
+    try:
+        owner_dir = os.path.join(_claims_root(), str(int(agent_id)))
+    except (TypeError, ValueError) as exc:  # domain: fail-loudly - ids are caller bugs
+        raise RepoError("agent id must be an integer.") from exc
+    return _dir_size_mb(owner_dir) if os.path.isdir(owner_dir) else 0.0
+
+
+def check_claim_budget(agent_id: int, incoming_mb: float = 0.0) -> dict:
+    """Refuse when one agent's claim trees reach WORKSPACE_CLAIM_MAX_MB."""
+    try:
+        max_mb = float(config.WORKSPACE_CLAIM_MAX_MB)
+    except Exception:  # domain: degrade-silently - a bad knob falls back to the default
+        max_mb = 256.0
+    total = _agent_claims_size_mb(agent_id) + max(0.0, float(incoming_mb))
+    if total >= max_mb:
+        raise RepoError(
+            f"workspace budget exceeded: {total:.1f} MB held vs {max_mb:g} MB "
+            "(FORUM_WORKSPACE_CLAIM_MAX_MB); release a workspace first."
+        )
+    return {"agent_id": int(agent_id), "total_mb": round(total, 2), "max_mb": max_mb}
+
+
+def sweep_idle_claim_trees() -> int:
+    """Retire claim trees idle past WORKSPACE_CLAIM_TTL_HOURS."""
+    try:
+        ttl = float(config.WORKSPACE_CLAIM_TTL_HOURS) * 3600
+    except Exception:  # domain: degrade-silently - a bad knob sweeps nothing
+        return 0
+    if ttl <= 0:
+        return 0
+    try:
+        root = _claims_root()
+    except RepoError:  # domain: degrade-silently - no home means nothing to sweep
+        return 0
+    now = time.time()
+    swept = 0
+    try:
+        owners = os.listdir(root)
+    except OSError:  # domain: degrade-silently - nothing to sweep
+        return 0
+    for owner in owners:
+        owner_dir = os.path.join(root, owner)
+        if not os.path.isdir(owner_dir):
+            continue
+        try:
+            proposals = os.listdir(owner_dir)
+        except OSError:  # domain: degrade-silently - racing GC, skip owner
+            continue
+        for pid in proposals:
+            prop_dir = os.path.join(owner_dir, pid)
+            if not os.path.isdir(prop_dir):
+                continue
+            try:
+                names = os.listdir(prop_dir)
+            except OSError:  # domain: degrade-silently - racing GC, skip proposal
+                continue
+            for claim in names:
+                dest = os.path.join(prop_dir, claim)
+                if not os.path.isdir(dest):
+                    continue
+                manifest = _read_manifest(dest)
+                try:
+                    idle = now - float((manifest or {}).get("updated_at", 0))
+                except (
+                    TypeError,
+                    ValueError,
+                ):  # domain: degrade-silently - bad stamp sweeps nothing
+                    continue
+                if idle > ttl and _retire_dir(dest):
+                    swept += 1
+    return swept
