@@ -155,6 +155,7 @@ from ._workspaces import (  # noqa: F401
     ensure_claim_tree,
     retire_claim_tree,
     sweep_idle_claim_trees,
+    touch_claim_tree,
 )
 
 # ── writes: proposals, updates, lifecycle, edit engine ──────────────────
