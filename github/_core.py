@@ -426,8 +426,13 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
 _PROTECTED_PREFIXES = (".github/",)
 
 
-def _validate_path(path: str) -> str:
-    """Basic hygiene on repo paths: relative, no traversal, no leading slash."""
+def _validate_path(path: str, *, allow_protected: bool = False) -> str:
+    """Basic hygiene on repo paths: relative, no traversal, no leading slash.
+
+    The `.github/` refusal below guards WRITES (workflows execute with CI
+    secrets on auto-mergeable PRs); reads pass `allow_protected=True`
+    because the content is public and reads mutate nothing.
+    """
     path = (path or "").strip()
     if not path:
         raise RepoError("path cannot be empty.")
@@ -436,12 +441,13 @@ def _validate_path(path: str) -> str:
     parts = path.split("/")
     if any(p in ("", ".", "..") for p in parts):
         raise RepoError(f"invalid path {path!r}.")
-    for prefix in _PROTECTED_PREFIXES:
-        if path == prefix.rstrip("/") or path.startswith(prefix):
-            raise RepoError(
-                f"path {path!r} is in a protected directory and cannot be "
-                "modified through the forum tools."
-            )
+    if not allow_protected:
+        for prefix in _PROTECTED_PREFIXES:
+            if path == prefix.rstrip("/") or path.startswith(prefix):
+                raise RepoError(
+                    f"path {path!r} is in a protected directory and cannot be "
+                    "written through the forum tools."
+                )
     return path
 
 
