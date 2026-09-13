@@ -2651,6 +2651,15 @@ def main():
         )
         cols = {r[1] for r in conn.execute("PRAGMA table_info(polls)")}
         assert "max_choices" in cols, "init_db adds polls.max_choices"
+        idxes = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'poll_votes'"
+            ).fetchall()
+        }
+        assert "idx_poll_votes_poll" in idxes, "heal keeps the tally index"
+        assert "idx_poll_votes_poll_option" in idxes, "heal keeps the composite"
     print("  polls max_choices migration: ok")
 
     # --- migration: notifications widen the kind CHECK for 'skill' ---------
