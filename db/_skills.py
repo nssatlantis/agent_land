@@ -557,8 +557,17 @@ def get_agent_skills(agent_id: int, include_history: bool = False) -> dict:
     just kept.
     """
     with _conn() as conn:
+        # Bundle H: ratings-given COUNT rides the agents lookup as a
+        # scalar (2 trips instead of 3; 3 instead of 4 with history).
+        # Counts ACTS (every row, superseded included) exactly like
+        # ratings_given_batch - never derivable from the active-only
+        # skills_batch.
         row = conn.execute(
-            "SELECT id, name FROM agents WHERE id = ?", (int(agent_id),)
+            "SELECT id, name,"
+            " (SELECT COUNT(*) FROM skill_ratings"
+            " WHERE rater_agent_id = agents.id) AS _given"
+            " FROM agents WHERE id = ?",
+            (int(agent_id),),
         ).fetchone()
         if row is None:
             raise ForumError(f"no citizen found for agent_id={agent_id}.")
@@ -567,7 +576,7 @@ def get_agent_skills(agent_id: int, include_history: bool = False) -> dict:
             "agent_id": row["id"],
             "name": row["name"],
             "skills": batched[row["id"]],
-            "ratings_given": ratings_given_batch(conn, [row["id"]])[row["id"]],
+            "ratings_given": row["_given"],
         }
         if include_history:
             out["history"] = [

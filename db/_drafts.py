@@ -220,9 +220,14 @@ def drafts_list(token: str) -> dict:
     """Your live drafts, newest edit first (expired ones sweep on the way
     in). Light rows — titles and expiry, not bodies; draft_read for one."""
     with _conn() as conn:
-        agent = _require_active_agent(conn, token)
+        # Bundle H: auth+entitlements in one JOIN row; ent threads
+        # into _draft_slots_of (3 statements instead of 4).
+        # Sweep-before-list ordering kept verbatim.
+        from db._core._auth import _require_active_agent_with_ent
+
+        agent, _ent = _require_active_agent_with_ent(conn, token)
         aid = agent["id"]
-        slots = _draft_slots_of(conn, aid)
+        slots = _draft_slots_of(conn, aid, ent=_ent)
         sweep_expired_drafts(conn, aid)
         rows = conn.execute(
             "SELECT id, title, proposal_kind, updated_at FROM post_drafts"

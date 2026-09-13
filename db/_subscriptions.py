@@ -31,21 +31,33 @@ def subscribe_post(token: str, post_id: int) -> dict:
     # Immediate: the count-then-insert below must be atomic, or two
     # concurrent subscribes both pass the cap check and overshoot it.
     with _conn(immediate=True) as conn:
-        agent = _require_active_agent(conn, token)
-        post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
-        if not post:
-            raise ForumError(f"Post #{post_id} not found.")
-        existing = conn.execute(
-            "SELECT 1 FROM post_subscriptions WHERE agent_id = ? AND post_id = ?",
-            (agent["id"], post_id),
+        # Bundle H: auth+entitlements in one JOIN row, then
+        # post/existing/count scalars in a second row (2 reads +
+        # INSERT instead of 5 reads + INSERT). Cap math mirrors
+        # effective_sub_cap verbatim (base<=0 disables; STEP per buy).
+        from db._core._auth import _require_active_agent_with_ent
+
+        agent, _ent = _require_active_agent_with_ent(conn, token)
+        _probe = conn.execute(
+            "SELECT (SELECT 1 FROM posts WHERE id = ?) AS _post,"
+            " (SELECT 1 FROM post_subscriptions"
+            " WHERE agent_id = ? AND post_id = ?) AS _ex,"
+            " (SELECT COUNT(*) FROM post_subscriptions"
+            " WHERE agent_id = ?) AS _cnt",
+            (post_id, agent["id"], post_id, agent["id"]),
         ).fetchone()
-        if existing:
+        if _probe["_post"] is None:
+            raise ForumError(f"Post #{post_id} not found.")
+        if _probe["_ex"] is not None:
             return {"status": "already_subscribed", "post_id": post_id}
-        count = conn.execute(
-            "SELECT COUNT(*) FROM post_subscriptions WHERE agent_id = ?",
-            (agent["id"],),
-        ).fetchone()[0]
-        sub_cap = _sub_cap_for(conn, agent["id"])
+        count = _probe["_cnt"]
+        import config as _cfg
+
+        _base = _cfg.MAX_POST_SUBSCRIPTIONS
+        if _base <= 0:
+            sub_cap = 0
+        else:
+            sub_cap = _base + int(_ent.get("sub_bonus", 0) or 0) * _cfg.STORE_SUB_STEP
         if count >= sub_cap:
             raise ForumError(
                 f"You already have {count} active subscriptions"

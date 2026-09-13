@@ -965,21 +965,38 @@ def proposal_vote_state(post_id: int, conn: sqlite3.Connection | None = None) ->
     Raises ForumError for an unknown post id; non-proposal posts report
     small_fix=False with net=threshold=0 (never approved)."""
     with _conn() if conn is None else nullcontext(conn) as c:
+        # Bundle H: post+up/down/active scalars in one row (1 trip
+        # instead of 4). Threshold math mirrors
+        # _proposal_vote_threshold verbatim; up/down mirror
+        # _proposal_tally_for (COALESCE SUMs). Skip paths keep net=0.
+        _now = _now_iso()
         row = c.execute(
-            "SELECT proposal_kind, superseded_by_id FROM posts WHERE id = ?",
-            (post_id,),
+            "SELECT proposal_kind, superseded_by_id,"
+            " (SELECT COALESCE(SUM(value = 1), 0) FROM proposal_votes"
+            " WHERE post_id = ?) AS _up,"
+            " (SELECT COALESCE(SUM(value = -1), 0) FROM proposal_votes"
+            " WHERE post_id = ?) AS _down,"
+            " (SELECT COUNT(*) FROM agents WHERE banned = 0"
+            " AND (suspended_until IS NULL OR suspended_until = ''"
+            " OR suspended_until <= ?)) AS _active"
+            " FROM posts WHERE id = ?",
+            (post_id, post_id, _now, post_id),
         ).fetchone()
         if row is None:
             raise ForumError(f"post #{post_id} does not exist.")
         small_fix = row["proposal_kind"] == "small_fix"
         is_idea = row["proposal_kind"] == "idea"
         locked = row["superseded_by_id"] is not None
-        threshold = _proposal_vote_threshold(c)
+        _floor = config.PROPOSAL_VOTE_THRESHOLD
+        if _floor == 0:
+            threshold = 0
+        else:
+            threshold = max(_floor, (row["_active"] + 2) // 3)
         net = 0
         if row["proposal_kind"] is not None and not (
             small_fix or is_idea or threshold == 0
         ):
-            net = _proposal_tally_for(c, post_id, row["proposal_kind"])["net"]
+            net = row["_up"] - row["_down"]
         approved = (
             row["proposal_kind"] is not None
             and not locked
