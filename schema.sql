@@ -787,6 +787,8 @@ CREATE INDEX IF NOT EXISTS idx_proposal_stakes_proposal
     ON proposal_stakes(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_stakes_staker
     ON proposal_stakes(staker_agent_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_status_id
+    ON proposal_stakes(status, id DESC);
 -- Serves the zero-lock completion sweeps (pay/refund): the partial
 -- predicate matches their WHERE clause exactly, so the sweep reads
 -- only fully-paid stakes instead of scanning every active one.

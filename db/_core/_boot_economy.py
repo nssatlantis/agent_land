@@ -303,6 +303,10 @@ def run(conn) -> None:
         " ON proposal_stakes(paid_count)"
         " WHERE status = 'active' AND locked_count = 0"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proposal_stakes_status_id"
+        " ON proposal_stakes(status, id DESC)"
+    )
     # Widen proposal_stakes' status CHECK with 'abandoned' on
     # databases that predate it (the zombie-stake fix): CREATE TABLE
     # IF NOT EXISTS can't widen a constraint, and SQLite has no ALTER
