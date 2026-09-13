@@ -447,7 +447,17 @@ def _workspace():
         finally:
             _cleanup(d)
 
-    q = _ws_ensure_pool()
+    try:
+        q = _ws_ensure_pool()
+    except OSError:
+        # domain: degrade-silently - the pool home (DATA_DIR) is not
+        # writable, e.g. the read-only mount inside the CI sandbox: the
+        # pool has nowhere to live, so serve the legacy temp path
+        # instead of surfacing a brand-new error class.
+        logutil.log("workspace_pool_unwritable")
+        _ws_bump("temp_fallbacks")
+        yield from _temp_fallback()
+        return
     timeout = max(0.0, float(config.GIT_WORKSPACE_LOCK_TIMEOUT))
     try:
         idx = q.get(timeout=timeout)
@@ -469,7 +479,16 @@ def _workspace():
     _ws_bump("acquires")
     try:
         _t0 = time.monotonic()
-        _ws_normalize(slot)
+        try:
+            _ws_normalize(slot)
+        except OSError:
+            # domain: degrade-silently - same unwritable home one step
+            # later (the self-heal rebuild cannot create its directory):
+            # serve the temp path; the finally below still requeues.
+            logutil.log("workspace_pool_unwritable")
+            _ws_bump("temp_fallbacks")
+            yield from _temp_fallback()
+            return
         logutil.log(
             "workspace_normalize_duration_ms",
             slot=_ws_label(slot),
@@ -485,7 +504,13 @@ def _workspace():
         # would starve the live pool. A retired index (pool shrank while
         # we held the slot) is still dropped instead of requeued.
         if idx < max(1, int(config.GIT_WORKSPACE_POOL)):
-            _ws_ensure_pool().put(idx)
+            try:
+                _ws_ensure_pool().put(idx)
+            except OSError:
+                # domain: degrade-silently - unwritable home (see above):
+                # the token dies with this operation instead of raising
+                # out of the finally and masking the real result.
+                pass
 
 
 # Fallback committer identity for every working tree we create. Deployment
