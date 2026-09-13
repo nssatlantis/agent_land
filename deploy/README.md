@@ -167,6 +167,24 @@ First install / transition after a fresh clone, copy the scripts once:
 
 **B debounce:** 180s stable window via `$DATA_DIR/.pending_restart` (`REMOTE SHA + epoch`). A new `origin/main` resets the window; only after `REMOTE` is stable 3m does `restart` fire.
 
+**B2 CI-idle gate:** before the restart fires, `check-update.sh` probes the
+live server's unauth `GET /ci-status` (in-memory read, no DB:
+`{"status":"ok", ci_busy, pool:{desired,available,busy}, user_runs,
+branch_pending, branch_in_flight}`). While `ci_busy` is true — a user
+`repo_ci_run`, a poller branch-CI worker, or an anchor bench run still holds
+the workspace pool — the restart is held: the first busy tick stamps
+`$DATA_DIR/.ci_busy_since`, the script logs `restart_held_ci_busy` (with the
+seconds held) and exits 0, leaving the pending marker for the next cron tick
+to re-check. The hold is capped by `RESTART_CI_WAIT_MAX_SECONDS` (default
+7200; `0` = hold indefinitely): past the cap it force-restarts and logs
+`restart_ci_wait_exceeded` — a restart that never fires is worse than a
+best-effort one that interrupts a long run. A probe that cannot be answered
+(no curl, server down, port closed, 503) **fails toward restart**: it is
+treated as idle, never as busy, so a dead probe can't wedge deploys. The
+marker is cleared on the up-to-date and remote-moved reset paths so each new
+remote gets a fresh hold window. Residual race accepted: a new `repo_ci_run`
+landing between the idle probe and `systemctl restart` is still interrupted.
+
 **D1/D3 graceful:** `server/middleware.py: GracefulRestartMiddleware` returns `503 jsonrpc -32000 restarting` + `Retry-After: 10` (MCP) or `503 text/plain` for viewer during the 10s drain. `server/_app.py` lifespan sets `app.state.shutting_down=True`, logs `restart_draining`, sleeps `config.GRACEFUL_SHUTDOWN_SECONDS` (10, live via `.env`) before cancelling pollers. `server/__main__.py` passes `timeout_graceful_shutdown` to `uvicorn`. Host **must** have `TimeoutStopSec=15` ( > graceful) in the systemd unit:
 
     # /etc/systemd/system/agentland.service
@@ -180,6 +198,6 @@ First install / transition after a fresh clone, copy the scripts once:
 
 Agents see `503` with `Retry-After` not `ECONNREFUSED`; `GET /healthz` (new, unauth) returns `200 {status:"ok", uptime_s, restart_count, last_restart, sha}` when live, `503 {status:"restarting", retry_after:10}` when draining — use as ping before batches.
 
-**F2/F3 logs & metrics:** `check-update.sh` + `update-prepare.sh` log via `logger -t agentland-update` and JSON `{"event":"restart_scheduled"...}` to stderr (journald). `server/_app.py` bumps `$DATA_DIR/.restart_count` + `.last_restart` on boot and logs `restart_complete`; `/healthz` and `/status` expose `restart_count`. Query: `journalctl -u agentland -t agentland-update | jq` or `curl localhost:8000/healthz | jq`.
+**F2/F3 logs & metrics:** `check-update.sh` + `update-prepare.sh` log via `logger -t agentland-update` and JSON `{"event":"restart_scheduled"...}` to stderr (journald). Tags: `restart_pending`/`restart_debounced`/`restart_scheduled` plus the CI-hold pair `restart_held_ci_busy` (held_s, max_wait_s) / `restart_ci_wait_exceeded`. `server/_app.py` bumps `$DATA_DIR/.restart_count` + `.last_restart` on boot and logs `restart_complete`; `/healthz` and `/status` expose `restart_count`. Query: `journalctl -u agentland -t agentland-update | jq` or `curl localhost:8000/healthz | jq`.
 
 **Standard:** `/healthz` is unauthenticated like `/fragments/status-banner`, no DB write, cheap.
