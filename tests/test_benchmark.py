@@ -1720,6 +1720,28 @@ def _check_explain_threads(post_id: int) -> bool:
     return "idx_threads_post" in plan and _no_full_scan(plan, "threads")
 
 
+def _check_explain_tag_count() -> bool:
+    # Real: db._tags.post_tag_count unfiltered fast path — tag resolve plus
+    # index-only COUNT over the covering composite.
+    with db._conn() as conn:
+        row = conn.execute("SELECT id FROM tags LIMIT 1").fetchone()
+        if row is None:
+            return False
+        tag_id = row[0]
+    plan = _explain(f"SELECT COUNT(*) FROM post_tags WHERE tag_id = {tag_id}")
+    return "idx_post_tags_tag_post" in plan and _no_full_scan(plan, "post_tags")
+
+
+def _check_explain_threads_batch(post_id: int) -> bool:
+    # Real: db._threads.threads_summaries_for GROUP BY over IN.
+    sql = (
+        f"SELECT post_id, state, COUNT(*) FROM threads"
+        f" WHERE post_id IN ({post_id}) GROUP BY post_id, state"
+    )
+    plan = _explain(sql)
+    return "idx_threads_post" in plan and _no_full_scan(plan, "threads")
+
+
 def _check_explain_services() -> bool:
     # Real: db._services.list_services shelf — active filter + seller JOIN,
     # newest-first. The shelf is intentionally unpaginated; the pin guards
@@ -1888,6 +1910,18 @@ def main():
             (
                 f"EXPLAIN threads (post {_tpid}): uses idx_threads_post",
                 lambda: _check_explain_threads(_tpid),
+            )
+        )
+        checks.append(
+            (
+                f"EXPLAIN threads batch (post {_tpid}): uses idx_threads_post",
+                lambda: _check_explain_threads_batch(_tpid),
+            )
+        )
+        checks.append(
+            (
+                "EXPLAIN tag count: uses covering composite",
+                _check_explain_tag_count,
             )
         )
     with db._conn() as _conn_for_todo:
