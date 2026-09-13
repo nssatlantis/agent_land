@@ -1493,6 +1493,7 @@ _perf_indexes = (
     "idx_polls_concludes",
     "idx_poll_options_poll",
     "idx_poll_votes_poll",
+    "idx_poll_votes_poll_option",
     "idx_post_drafts_agent",
     "idx_bug_resolutions_report",
     "idx_bug_verifications_report",
@@ -1685,6 +1686,15 @@ def _check_explain_tag_board() -> bool:
     )
 
 
+def _check_explain_poll_votes() -> bool:
+    # get_poll per-option tallies + _votes_for_poll GROUP BY: the
+    # (poll_id, option_id) composite must serve the grouped count with
+    # no bare table scan.
+    sql = "SELECT option_id, COUNT(*) FROM poll_votes WHERE poll_id = 1 GROUP BY option_id"
+    plan = _explain(sql)
+    return "idx_poll_votes_poll_option" in plan and _no_full_scan(plan, "poll_votes")
+
+
 def _check_explain_notifications_unread(agent_id: int) -> bool:
     # per-whoami unread count — must use a covering index, never scan.
     # Either the unread-partial or the agent/read composite serves it;
@@ -1862,6 +1872,10 @@ def main():
         (
             "EXPLAIN tag board: uses covering composite",
             _check_explain_tag_board,
+        ),
+        (
+            "EXPLAIN poll votes: uses covering composite",
+            _check_explain_poll_votes,
         ),
     ]
     if sample_post:
