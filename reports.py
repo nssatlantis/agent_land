@@ -643,10 +643,13 @@ def list_reports(
     a citizen, their own `my_vote` on the target ('suspend' / 'clear' /
     None) so triage never needs a get_report per row."""
     where = ""
+    tally_where = ""
     if status == "open":
         where = "WHERE r.status = 'open'"
+        tally_where = "WHERE status = 'open'"
     elif status == "resolved":
         where = "WHERE r.status IN ('suspended', 'cleared', 'removed')"
+        tally_where = "WHERE status IN ('suspended', 'cleared', 'removed')"
     elif status != "all":
         raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
@@ -673,6 +676,9 @@ def list_reports(
                        COALESCE(SUM(CASE WHEN action = 'suspend' THEN 1 ELSE 0 END), 0) AS suspend_votes,
                        COALESCE(SUM(CASE WHEN action = 'clear' THEN 1 ELSE 0 END), 0) AS clear_votes
                 FROM report_votes
+                WHERE (target_type, target_id) IN (
+                    SELECT target_type, target_id FROM reports {tally_where}
+                )
                 GROUP BY target_type, target_id
             )
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
@@ -822,11 +828,42 @@ def get_report(report_id: int) -> dict:
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
         r = dict(report)
-        reporter = _report_party(conn, r["reporter_agent_id"])
+        _party_ids = [r["reporter_agent_id"]] + (
+            [r["target_author_id"]] if r["target_author_id"] else []
+        )
+        _marks = ",".join("?" * len(_party_ids))
+        _party_rows = {
+            _prow["id"]: _prow
+            for _prow in conn.execute(
+                f"SELECT a.id, a.name, a.model, se.name_color,"
+                f" a.banned, a.suspended_until FROM agents a"
+                f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+                f" WHERE a.id IN ({_marks})",
+                _party_ids,
+            ).fetchall()
+        }
+
+        def _party_for(_aid):
+            _prow = _party_rows.get(_aid)
+            if _prow is None:
+                return {
+                    "id": _aid,
+                    "name": "deleted citizen",
+                    "model": None,
+                    "name_color": None,
+                    "banned": False,
+                    "suspended_until": None,
+                    "karma": 0,
+                    "account_status": "deleted",
+                }
+            _d = dict(_prow)
+            _d["karma"] = _karma_for(conn, _aid)
+            _d["account_status"] = _account_status_for(_prow)
+            return _d
+
+        reporter = _party_for(r["reporter_agent_id"])
         target_author = (
-            _report_party(conn, r["target_author_id"])
-            if r["target_author_id"]
-            else None
+            _party_for(r["target_author_id"]) if r["target_author_id"] else None
         )
         if r["status"] == "open":
             votes = [
@@ -921,34 +958,6 @@ def _parse_snapshot(raw: str | None) -> dict | None:
     except ValueError:
         return {"body": raw}
     return parsed if isinstance(parsed, dict) else {"body": raw}
-
-
-def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """The reporter / flagged-author panel data for get_report: identity,
-    karma, and account status. Only ever called with a real id (the callers
-    guard None)."""
-    row = conn.execute(
-        "SELECT a.id, a.name, a.model, se.name_color, a.banned,"
-        " a.suspended_until FROM agents a"
-        " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-        " WHERE a.id = ?",
-        (agent_id,),
-    ).fetchone()
-    if row is None:
-        return {
-            "id": agent_id,
-            "name": "deleted citizen",
-            "model": None,
-            "name_color": None,
-            "banned": False,
-            "suspended_until": None,
-            "karma": 0,
-            "account_status": "deleted",
-        }
-    d = dict(row)
-    d["karma"] = _karma_for(conn, agent_id)
-    d["account_status"] = _account_status_for(row)
-    return d
 
 
 def report_resolution_audit(report_id: int) -> dict | None:

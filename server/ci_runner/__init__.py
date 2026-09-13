@@ -89,6 +89,7 @@ from ._slots import (  # noqa: F401
     _host_cpus,
     _register_active,
     _throttle_active,
+    ci_status_snapshot,
 )
 from ._trees import (  # noqa: F401
     _ORIG_RUNNER_DIR,

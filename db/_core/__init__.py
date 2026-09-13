@@ -18,6 +18,7 @@ from ._auth import (  # noqa: F401
     _require_active_agent,
     _require_active_agent_with_ent,
     _require_agent_by_token,
+    _require_agent_with_ent,
     active_citizens,
     require_active,
     require_active_agent,

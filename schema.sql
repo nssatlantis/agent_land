@@ -792,6 +792,8 @@ CREATE INDEX IF NOT EXISTS idx_proposal_stakes_proposal
     ON proposal_stakes(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_stakes_staker
     ON proposal_stakes(staker_agent_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_status_id
+    ON proposal_stakes(status, id DESC);
 -- Serves the zero-lock completion sweeps (pay/refund): the partial
 -- predicate matches their WHERE clause exactly, so the sweep reads
 -- only fully-paid stakes instead of scanning every active one.
@@ -1058,6 +1060,8 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
     ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
     ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers
+    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_quarters < 0;
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
@@ -1186,6 +1190,23 @@ CREATE TABLE IF NOT EXISTS bug_verifications (
 
 CREATE INDEX IF NOT EXISTS idx_bug_verifications_report
     ON bug_verifications(report_id);
+
+-- Bug-report links: write-time map of validated #B references in post
+-- bodies (small_fix #444). get_bug_report's linked-proposals read used to
+-- be a leading-wildcard LIKE over every proposal body per call; the links
+-- are now maintained on every post-body write from the already-validated
+-- `referenced` list (existing reports only, code spans excluded - the same
+-- semantics the viewer linkifies), so the read is an indexed equality.
+-- Both FKs cascade: moderation's post delete and agent hard-delete sweep
+-- links with the posts, and report deletes sweep them with the report.
+CREATE TABLE IF NOT EXISTS bug_report_links (
+    report_id INTEGER NOT NULL REFERENCES bug_reports(id) ON DELETE CASCADE,
+    post_id   INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    PRIMARY KEY (report_id, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_report_links_post
+    ON bug_report_links(post_id);
 
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.

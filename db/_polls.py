@@ -108,7 +108,17 @@ def _poll_dict(
     """The poll attached to *post_id*, or None. Includes live tallies, the
     viewer's own vote (when *viewer_agent_id* is given and has voted), and
     lifecycle booleans the UI renders from."""
-    row = _poll_row_for_post(conn, post_id)
+    # Single body lives in _poll_dict_for_row below (defined at import time,
+    # so the forward reference resolves at call time); this stays the
+    # fetch-then-render entry for all non-vote readers.
+    return _poll_dict_for_row(
+        conn, _poll_row_for_post(conn, post_id), post_id, viewer_agent_id
+    )
+
+
+def _poll_dict_for_row(
+    conn: sqlite3.Connection, row, post_id: int, viewer_agent_id: int | None = None
+) -> dict | None:
     if row is None:
         return None
     now = datetime.now(timezone.utc)
@@ -117,9 +127,6 @@ def _poll_dict(
     concluded = row["status"] == "concluded" or now >= concludes_at
     voting_open = not concluded and now >= allows_edit_until
     editing = not concluded and now < allows_edit_until
-    # One LEFT JOIN COUNT instead of options + votes round trips: COUNT over
-    # the option id (never *) keeps zero-vote options at 0, and the votes
-    # side stays sargable on poll_id.
     options = []
     total_votes = 0
     for o in conn.execute(
@@ -474,7 +481,7 @@ def vote_poll(token: str, post_id: int, option_id: int) -> dict:
             detail={"poll_id": row["id"], "option_id": option_id},
             conn=conn,
         )
-        _result = _poll_dict(conn, post_id, agent["id"])
+        _result = _poll_dict_for_row(conn, row, post_id, agent["id"])
         assert _result is not None  # the poll just written always exists
         return _result
 

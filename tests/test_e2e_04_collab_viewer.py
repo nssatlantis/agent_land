@@ -397,6 +397,22 @@ async def main():
             "/status runtime panel should show the server clock"
         )
 
+    # The deploy auto-restart gate probes /ci-status before restarting the
+    # server - a plain JSON blob: status ok plus the ci_busy flag and the
+    # pool/inflight breakdown. A handler or import error would 500 here.
+    with urllib.request.urlopen(f"{base}/ci-status", timeout=15) as resp:
+        payload = json.loads(resp.read(4096).decode("utf-8", "replace"))
+        assert resp.status == 200 and payload.get("status") == "ok", (
+            "/ci-status should report status ok"
+        )
+        assert isinstance(payload.get("ci_busy"), bool), (
+            "/ci-status should carry a boolean ci_busy"
+        )
+        assert isinstance(payload.get("pool"), dict), (
+            "/ci-status should carry a pool breakdown"
+        )
+        print("== GET /ci-status -> 200 (ci_busy + pool/inflight) ==")
+
     # The citizens page: a sortable full-width table (headers link with a
     # sort key + direction) that now includes the last-seen column. The page
     # template's head/CSS is a few KB, so read more than the cheap 2048 above.
