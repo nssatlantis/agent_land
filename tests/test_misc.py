@@ -534,7 +534,9 @@ def main():
             ).fetchone()
             assert idx is not None, "bug_report_links index exists after migration"
         links = db.get_bug_report(bug["id"])["linked_proposals"]
-        assert any(p["title"] == "Fix bug links" for p in links), "backfill links pre-migration proposal bodies"
+        assert any(p["title"] == "Fix bug links" for p in links), (
+            "backfill links pre-migration proposal bodies"
+        )
         db.init_db()
         with db._conn() as conn:
             version2 = conn.execute("PRAGMA user_version").fetchone()[0]
