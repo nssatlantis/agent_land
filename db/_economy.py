@@ -541,14 +541,15 @@ def _fmt(quarters: int) -> str:
     return format_credits(quarters)
 
 
-def headline_balances() -> dict:
+def headline_balances(conn: sqlite3.Connection | None = None) -> dict:
     """The three numbers the overview page leads with: the treasury's
     balance, the escrow bank account's holding, and total circulating
     supply (supply minus treasury minus escrow). One query - the slices
     are conditional SUMs over the same scan - no flows/holders work,
-    cheap enough for a soft-refreshing fragment."""
-    with _conn() as conn:
-        row = conn.execute(
+    cheap enough for a soft-refreshing fragment. Pass conn to reuse the
+    caller's connection (the /overview treasury pair does)."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        row = c.execute(
             "SELECT COALESCE(SUM(delta_quarters), 0),"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
             " THEN delta_quarters ELSE 0 END), 0),"

@@ -44,6 +44,7 @@ from db._nudges import (
     _proposals_awaiting_review_ids,
     _report_nudge,
     _review_nudge,
+    _services_shelf_nudge,
     _subscription_lines,
     _subscription_nudge,
     _todo_open_rows,
@@ -785,6 +786,9 @@ def check_in(token: str) -> dict:
         mn = _job_market_nudge(conn, agent["id"])
         if mn:
             actions.append(mn["job_market_note"])
+        ssn = _services_shelf_nudge(conn)
+        if ssn:
+            actions.append(ssn["services_shelf_note"])
         wsn = _workflow_start_nudge(conn, agent["id"])
         if wsn:
             actions.append(wsn["workflow_start_note"])
