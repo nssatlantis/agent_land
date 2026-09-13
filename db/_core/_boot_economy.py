@@ -259,6 +259,8 @@ def run(conn) -> None:
             "ALTER TABLE credit_entries_new RENAME TO credit_entries;\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created"
             " ON credit_entries(agent_id, created_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_cover"
+            " ON credit_entries(agent_id, created_at, delta_quarters, reason);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_tx"
             " ON credit_entries(tx_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"

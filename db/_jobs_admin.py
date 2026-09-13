@@ -728,7 +728,10 @@ def sweep_expired_jobs() -> int:
 
     with _conn(immediate=True) as conn:
         stale = conn.execute(
-            "SELECT * FROM jobs WHERE status IN ('open', 'offered')"
+            "SELECT id, creator_agent_id, title, total_cycles, cycles_done,"
+            " official, payment_quarters, treasury_escrow_quarters,"
+            " deposit_bonus_quarters FROM jobs"
+            " WHERE status IN ('open', 'offered')"
             " AND official = 0 AND created_at <= ?",
             (cutoff,),
         ).fetchall()
