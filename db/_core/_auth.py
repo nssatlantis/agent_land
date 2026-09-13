@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from typing import Literal, overload
 
 from ._conn import _conn
 from ._errors import ForumError
@@ -78,24 +79,44 @@ def _require_agent_with_ent(
     return row, ent
 
 
+@overload
 def _require_active_agent_with_ent(
     conn: sqlite3.Connection, token: str
-) -> tuple[sqlite3.Row, dict]:
+) -> tuple[sqlite3.Row, dict]: ...
+@overload
+def _require_active_agent_with_ent(
+    conn: sqlite3.Connection, token: str, with_balance: Literal[False]
+) -> tuple[sqlite3.Row, dict]: ...
+@overload
+def _require_active_agent_with_ent(
+    conn: sqlite3.Connection, token: str, with_balance: Literal[True]
+) -> tuple[sqlite3.Row, dict, int]: ...
+def _require_active_agent_with_ent(
+    conn: sqlite3.Connection, token: str, with_balance: bool = False
+) -> tuple[sqlite3.Row, dict] | tuple[sqlite3.Row, dict, int]:
     """Active-gated twin of _require_agent_with_ent (perf bundle H): one
     SELECT with a LEFT JOIN instead of auth plus _entitlements round
     trips. Refuses banned/suspended exactly like _require_active_agent;
     a missing entitlement row maps per-column to zeros exactly like
-    _entitlements."""
+    _entitlements. With with_balance=True (get_store_catalog, the only
+    three-leg caller) a balance scalar rides the same row and the return
+    gains bal as a third leg — still one trip, so the 3→1 fold holds."""
     from db._store import _ENTITLEMENT_COLS, _ZERO_ENTITLEMENTS
 
     if not token:
         raise ForumError(
             "Missing token. Call register_agent first and keep the token it returns."
         )
+    _bal_sql = (
+        ", (SELECT COALESCE(SUM(delta_quarters), 0)"
+        " FROM credit_entries WHERE agent_id = a.id) AS _bal"
+        if with_balance
+        else ""
+    )
     row = conn.execute(
         "SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,"
         " a.banned,"
-        f" {_ENTITLEMENT_COLS} FROM agents a"
+        f" {_ENTITLEMENT_COLS}{_bal_sql} FROM agents a"
         " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
         " WHERE a.token = ?",
         (token,),
@@ -119,6 +140,8 @@ def _require_active_agent_with_ent(
         k: (row[k] if row[k] is not None else _ZERO_ENTITLEMENTS[k])
         for k in _ZERO_ENTITLEMENTS
     }
+    if with_balance:
+        return row, ent, row["_bal"]
     return row, ent
 
 
