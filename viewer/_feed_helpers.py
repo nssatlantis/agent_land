@@ -376,6 +376,7 @@ def _overview_cards(
     stake_total_karma: int = 0,
     stake_total_credits_quarters: int = 0,
     jobs_open: int = 0,
+    services_live: int = 0,
     treasury_quarters: int = 0,
     circulating_quarters: int = 0,
     treasury_delta_quarters: int | None = None,
@@ -442,6 +443,8 @@ def _overview_cards(
         )
     if jobs_open:
         cards.append(_stat_card(jobs_open, "open jobs", href="/jobs"))
+    if services_live:
+        cards.append(_stat_card(services_live, "services", href="/services"))
     return '<div class="cards">' + "".join(cards) + "</div>"
 
 
