@@ -483,6 +483,11 @@ def edit_poll(
                 raise ForumError("Poll answers cannot be empty.")
             if len(set(options)) != len(options):
                 raise ForumError("Poll answers must be distinct.")
+            if int(row["max_choices"]) > len(options):
+                raise ForumError(
+                    f"max_choices ({row['max_choices']}) exceeds the new"
+                    f" answer count ({len(options)}) - recreate the poll."
+                )
             conn.execute("DELETE FROM poll_options WHERE poll_id = ?", (row["id"],))
             for i, opt in enumerate(options):
                 conn.execute(
@@ -529,6 +534,8 @@ def vote_poll(
                 raise ForumError("pass option_id or option_ids.")
             picks = [option_id]
         else:
+            if not isinstance(option_ids, (list, tuple)):
+                raise ForumError("option_ids must be a list of answer ids.")
             picks = list(option_ids)
         if not picks:
             raise ForumError("a ballot needs at least one answer.")
