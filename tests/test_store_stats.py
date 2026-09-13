@@ -162,6 +162,16 @@ def main():
         assert empty["totals"]["buyers"] == 0
         assert empty["installed"]["citizens_served"] == 0
         assert all(i["units"] == 0 and i["held"] == 0 for i in empty["items"])
+        with db._conn() as conn:
+            fresh_idx = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+        assert "idx_credit_entries_store_buyers" in fresh_idx, (
+            "fresh boot creates the store-buyers covering index"
+        )
     finally:
         db.DB_PATH = saved_db_path
 
