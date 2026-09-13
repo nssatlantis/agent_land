@@ -1018,6 +1018,7 @@ def _seed():
                 f"Benchmark poll {i}?",
                 [f"Option {k}" for k in range(3)],
                 72,
+                max_choices=2 if i == 0 else 1,
             )
             poll_ids.append(poll["poll_id"] if "poll_id" in poll else poll["id"])
             prow = db.get_poll(pid)
@@ -1030,6 +1031,16 @@ def _seed():
                         tokens[(i + v + 1) % len(tokens)],
                         pid,
                         opts[v % len(opts)]["id"],
+                    )
+                except Exception:
+                    pass
+            if i == 0 and len(opts) >= 2:
+                # one multi-answer ballot exercises the per-choice rows
+                try:
+                    db.vote_poll(
+                        tokens[(i + 5) % len(tokens)],
+                        pid,
+                        option_ids=[opts[0]["id"], opts[1]["id"]],
                     )
                 except Exception:
                     pass
