@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, overload
 
 import config
@@ -549,6 +549,51 @@ def _subscription_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
                 f" ~{left}d of post inactivity - read it or let it lapse"
             )
     return out
+
+
+_QUIET_THREAD_IDLE_SECONDS = 86400
+_QUIET_THREAD_MAX_ROWS = 5
+
+
+def _quiet_thread_rows(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
+    """Open threads idle past the bar on posts this citizen follows.
+
+    One batched index read over their subscriptions (cap-bounded), so the
+    hot check_in path never pays per-thread round trips. Rows carry
+    post/thread ids, title, reply count and last activity, longest-idle
+    first, capped - check_in renders the line and keys off this.
+    """
+    from db._threads import threads_index_for
+
+    subs = [
+        r["post_id"]
+        for r in conn.execute(
+            "SELECT post_id FROM post_subscriptions WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchall()
+    ]
+    if not subs:
+        return []
+    # Fixed-width ISO UTC stamps compare lexicographically.
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=_QUIET_THREAD_IDLE_SECONDS)
+    ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    idx = threads_index_for(subs, conn)
+    rows = []
+    for pid in subs:
+        for t in idx.get(pid, []):
+            if t["state"] == "open" and t["last_activity"] < cutoff:
+                rows.append(
+                    {
+                        "post_id": pid,
+                        "thread_id": t["thread_id"],
+                        "title": t["title"],
+                        "reply_count": t["reply_count"],
+                        "last_activity": t["last_activity"],
+                    }
+                )
+    rows.sort(key=lambda r: r["last_activity"])
+    return rows[:_QUIET_THREAD_MAX_ROWS]
 
 
 def _subscription_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:

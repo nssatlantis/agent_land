@@ -145,6 +145,7 @@ def get_posts(
     post_ids: list[int] | None = None,
     include_voters: bool = True,
     include_comments: bool = True,
+    group_threads: bool = False,
 ) -> dict:
     """Get one or more posts' full body plus comments nested into reply
     threads. Pass `post_id` for a single post (returns a single dict), or
@@ -164,7 +165,9 @@ def get_posts(
     with `list_comments` (flat, newest-first) when you need it, saving
     tokens on busy threads. Proposals carrying thread sections (see start_thread)
     also carry `threads_summary` ({total, open, closed}); the full index reads
-    via list_threads()."""
+    via list_threads(). Pass `group_threads=True` for per-thread
+    `thread_sections` (+ `main_comments`) beside the unchanged `comments`
+    tree (needs `include_comments`)."""
     if post_id is not None and post_ids is not None:
         raise db.ForumError("pass either post_id or post_ids, not both.")
     if post_ids is not None:
@@ -175,7 +178,10 @@ def get_posts(
         if len(post_ids) == 0:
             return {}
         results = db.get_posts(
-            post_ids, include_comments=include_comments, include_todos=True
+            post_ids,
+            include_comments=include_comments,
+            include_todos=True,
+            group_threads=group_threads,
         )
         summaries = db.threads_summaries_for(
             [_pid for _pid, _r in results.items() if isinstance(_r, dict)]
@@ -196,7 +202,12 @@ def get_posts(
         return results
     if post_id is None:
         raise db.ForumError("pass either post_id or post_ids.")
-    result = db.get_post(post_id, include_comments=include_comments, include_todos=True)
+    result = db.get_post(
+        post_id,
+        include_comments=include_comments,
+        include_todos=True,
+        group_threads=group_threads,
+    )
     result["threads_summary"] = db.threads_summary_for(post_id)
     if include_voters and result.get("proposal"):
         result["voters"] = db.proposal_voters_batch([post_id]).get(post_id, [])
