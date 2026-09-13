@@ -543,12 +543,20 @@ def get_thread(post_id: int, thread_id: int) -> dict:
         comment_rows.sort(key=lambda r: (r["created_at"], r["id"]))
         row_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, row_ids) if row_ids else {}
+        # Pin flag rides every node (list_comments parity): one PK fetch
+        # shared by the subtree, never a per-row JOIN.
+        pin_row = conn.execute(
+            "SELECT comment_id FROM pinned_comments WHERE post_id = ?",
+            (post_id,),
+        ).fetchone()
+        pinned_cid = pin_row["comment_id"] if pin_row else None
         quote_authors = _quote_authors_map(conn, comment_rows)
         nodes: dict = {}
         for r in comment_rows:
             d = dict(r)
             d["score"] = scores.get(d["id"], 0)
             d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+            d["pinned"] = pinned_cid is not None and pinned_cid == d["id"]
             d["replies"] = []
             nodes[d["id"]] = d
             parent_id = r["parent_comment_id"]
@@ -567,7 +575,9 @@ def get_thread(post_id: int, thread_id: int) -> dict:
             # stands: the line is unreadable, say so, never KeyError.
             raise ForumError(f"no thread #{thread_id} on proposal #{post_id}.")
         thread["anchor"] = {k: v for k, v in anchor.items() if k != "replies"}
-        thread["comments"] = anchor["replies"]
+        # Copy the top level: callers mutating comments must never reach
+        # into the anchor (nested dicts below stay shared, like get_post).
+        thread["comments"] = list(anchor["replies"])
         thread["reply_count"] = len(comment_rows) - 1
         thread["last_activity"] = (
             max(r["created_at"] for r in comment_rows)
