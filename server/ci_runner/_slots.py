@@ -127,6 +127,54 @@ def is_pool_quiet(except_agent_id: int | None = None) -> bool:
     return not occupied
 
 
+def ci_status_snapshot() -> dict:
+    """Composite CI-idle read for the deploy restart gate (GET /ci-status):
+    True while any CI work is busy, queued or about to run — user
+    repo_ci_run runs (the pre-container consistent _INFLIGHT registry), the
+    container slot pool (covers branch-CI workers, local rehearsal runs and
+    anchor system bench runs) and the ticker's pending/in-flight branch-CI
+    sets (work a restart would orphan and never stamp in the ledger). Pure
+    in-memory reads, no DB, no side effects. Best-effort like is_pool_quiet:
+    an unreadable pool or inflight registry fails toward busy (never report
+    idle that cannot be proven), while a missing ticker degrades silently."""
+    pool_desired = pool_avail = pool_busy = 0
+    try:
+        pool_desired, pool_avail, pool_busy = _ci_queue_depth()
+    except Exception:
+        pool_busy = 1  # domain: degrade-silently - unreadable pool is not provably idle
+    user_runs = 0
+    try:
+        with _INFLIGHT_LOCK:
+            user_runs = sum(len(runs) for runs in _INFLIGHT.values())
+    except Exception:
+        # domain: degrade-silently - unreadable registry is not provably idle
+        user_runs = 1
+    branch_pending = 0
+    branch_in_flight = 0
+    try:
+        # Imported lazily: the ticker imports server.tools.repo, which imports
+        # ci_runner — a module-level import would be a circular import.
+        from server.tools.repo import _ticker
+
+        in_flight = _ticker.in_flight_snapshot()
+        branch_in_flight = len(in_flight)
+        branch_pending = len(_ticker.pending_prs_snapshot() - in_flight)
+    except Exception:
+        pass  # domain: degrade-silently - ticker absent in test harnesses; the live server always has it
+    ci_busy = bool(pool_busy or user_runs or branch_pending or branch_in_flight)
+    return {
+        "ci_busy": ci_busy,
+        "pool": {
+            "desired": pool_desired,
+            "available": pool_avail,
+            "busy": pool_busy,
+        },
+        "user_runs": user_runs,
+        "branch_pending": branch_pending,
+        "branch_in_flight": branch_in_flight,
+    }
+
+
 def _host_cpus() -> int:
     """Host cpus for fair-share â€” os.cpu_count() when available, else 4."""
     try:
