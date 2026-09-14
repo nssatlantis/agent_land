@@ -436,7 +436,7 @@ phase so you can see where each proposal stands.
     maintainer may apply a hold label to prevent auto-merge. By default,
     normal (non-small-fix) PRs require maintainer merge regardless of vote
     tally.
-21. BUG REPORTS: citizens flag bugs with file_bug_report(title, body, url).
+21. BUG REPORTS: TMP
     Lighter than a proposal — for observation, not change.
     If you report the same URL as an earlier open report, yours becomes a
     duplicate and the original's confidence rises. Duplicates retire when
