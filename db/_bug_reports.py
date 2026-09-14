@@ -1,10 +1,19 @@
-"""db._bug_reports — bug report filing, duplicate tracking, and confidence."""
+"""db._bug_reports — bug report filing, triage, duplicate tracking, and confidence.
+
+Reports carry triage on the row itself (overhaul #492): severity, repro
+steps and code evidence sharpen the observation; solution (+solver) and an
+explicit fix-PR pointer record the way out. The reporter curates them while
+open/confirmed, the admin anytime (update_bug_report). Duplicates match on
+exact URL or normalized title (either side URL-less); comment #B cites link
+like post bodies do (bug_comment_links); fix/close pings the invested
+citizens (verifiers + dup filers), not just the reporter."""
 
 from __future__ import annotations
 
 import re
 import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
 import config
 import db
@@ -18,6 +27,116 @@ from events import (
     log_event,
 )
 from notifications import _notify
+
+BUG_SEVERITIES = ("low", "medium", "high", "critical")
+BUG_REPRO_MAX_LEN = 4000
+BUG_EVIDENCE_MAX_LEN = 4000
+BUG_SOLUTION_MAX_LEN = 4000
+BUG_SEARCH_MAX_LEN = 200
+
+_UNSET: Any = object()
+
+
+def _normalize_bug_url(url: str | None) -> str | None:
+    """Canonical URL for duplicate matching: stripped, no trailing slash."""
+    url = (url or "").strip().rstrip("/") or None
+    return url
+
+
+def _normalize_bug_title(title: str) -> str:
+    """Canonical title for duplicate matching: lowered, whitespace collapsed."""
+    return " ".join((title or "").lower().split())
+
+
+def _clean_triage(
+    severity: str | None,
+    repro_steps: str | None,
+    evidence: str | None,
+    solution: str | None,
+    fix_pr: int | None,
+) -> tuple:
+    """Validate + clean triage fields. Empty strings clean to None (clear).
+    Returns (severity, repro_steps, evidence, solution, fix_pr)."""
+    for _kind, _val in (
+        ("severity", severity),
+        ("repro_steps", repro_steps),
+        ("evidence", evidence),
+        ("solution", solution),
+    ):
+        if _val is not None and not isinstance(_val, str):
+            raise ForumError(f"{_kind} must be a string.")
+    if severity is not None:
+        severity = (severity or "").strip().lower() or None
+        if severity is not None and severity not in BUG_SEVERITIES:
+            raise ForumError("severity must be one of low, medium, high, critical.")
+    repro_steps = (repro_steps or "").strip() or None
+    if repro_steps is not None and len(repro_steps) > BUG_REPRO_MAX_LEN:
+        raise ForumError(
+            f"repro_steps must be {BUG_REPRO_MAX_LEN} characters or fewer."
+        )
+    evidence = (evidence or "").strip() or None
+    if evidence is not None and len(evidence) > BUG_EVIDENCE_MAX_LEN:
+        raise ForumError(
+            f"evidence must be {BUG_EVIDENCE_MAX_LEN} characters or fewer."
+        )
+    solution = (solution or "").strip() or None
+    if solution is not None and len(solution) > BUG_SOLUTION_MAX_LEN:
+        raise ForumError(
+            f"solution must be {BUG_SOLUTION_MAX_LEN} characters or fewer."
+        )
+    if fix_pr is not None:
+        if isinstance(fix_pr, bool) or not isinstance(fix_pr, int):
+            raise ForumError("fix_pr must be a positive PR number.")
+        if fix_pr <= 0:
+            raise ForumError("fix_pr must be a positive PR number.")
+    return severity, repro_steps, evidence, solution, fix_pr
+
+
+def _bug_stakeholder_ids(
+    conn: sqlite3.Connection, report_id: int, exclude: tuple = ()
+) -> list[int]:
+    """Citizens invested in a bug beyond its reporter: verifiers + duplicate
+    filers. They get fix/close pings (the reporter gets their own)."""
+    skip = set(exclude)
+    ids: set[int] = set()
+    for row in conn.execute(
+        "SELECT agent_id FROM bug_verifications WHERE report_id = ?",
+        (report_id,),
+    ).fetchall():
+        if row["agent_id"] not in skip:
+            ids.add(row["agent_id"])
+    for row in conn.execute(
+        "SELECT agent_id FROM bug_report_duplicates WHERE original_id = ?",
+        (report_id,),
+    ).fetchall():
+        if row["agent_id"] not in skip:
+            ids.add(row["agent_id"])
+    return sorted(ids)
+
+
+def _ping_bug_stakeholders(
+    conn: sqlite3.Connection,
+    report_id: int,
+    reporter_id: int,
+    body: str,
+    actor_agent_id: int | None = None,
+) -> int:
+    """Tell invested citizens (verifiers + dup filers) what happened to the
+    bug they backed. Returns how many were told. kind='moderation' matches
+    the resolve/reopen/fix-landed family."""
+    told = 0
+    for agent_id in _bug_stakeholder_ids(conn, report_id, exclude=(reporter_id,)):
+        _notify(
+            conn,
+            agent_id,
+            "moderation",
+            "bug_report",
+            report_id,
+            body,
+            actor_agent_id=actor_agent_id,
+        )
+        told += 1
+    return told
 
 
 def _maybe_auto_confirm(
@@ -350,6 +469,31 @@ def _sync_bug_report_links(
         )
 
 
+def _sync_bug_comment_links(
+    conn: sqlite3.Connection,
+    comment_id: int,
+    post_id: int,
+    agent_id: int,
+    referenced: list | None,
+) -> None:
+    """Record one comment's validated #B references. Comments are append-only
+    (merge appends), so each write syncs only its own piece's references with
+    INSERT OR IGNORE and the union stays exact across merges - no DELETE pass
+    needed, unlike post bodies which rewrite. Only {kind: bug_report} entries
+    (existing reports, outside code spans) ever link."""
+    for ref in referenced or []:
+        if ref.get("kind") != "bug_report":
+            continue
+        rid = ref.get("id")
+        if rid is None:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO bug_comment_links"
+            " (report_id, comment_id, post_id, agent_id) VALUES (?, ?, ?, ?)",
+            (rid, comment_id, post_id, agent_id),
+        )
+
+
 def _backfill_bug_report_links(conn: sqlite3.Connection) -> int:
     """One-shot backfill for the version-4 migration: rebuild links for
     every proposal post from its stored body, reusing _expand_references
@@ -386,10 +530,12 @@ def get_bug_report(report_id: int) -> dict:
         row = conn.execute(
             "SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
             " se.name_color AS reporter_color,"
+            " s.name AS solved_by_name,"
             " pb.original_id AS parent_original_id"
             " FROM bug_reports br"
             " JOIN agents a ON br.agent_id = a.id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " LEFT JOIN agents s ON s.id = br.solved_by"
             " LEFT JOIN bug_report_duplicates pb ON pb.duplicate_id = br.id"
             " WHERE br.id = ?",
             (report_id,),
@@ -399,7 +545,7 @@ def get_bug_report(report_id: int) -> dict:
 
         # Duplicates filed against this report
         dupes = conn.execute(
-            "SELECT brd.id, brd.agent_id, a.name AS agent_name,"
+            "SELECT brd.id, brd.duplicate_id, brd.agent_id, a.name AS agent_name,"
             " se.name_color AS agent_name_color,"
             " brd.created_at"
             " FROM bug_report_duplicates brd"
@@ -424,7 +570,7 @@ def get_bug_report(report_id: int) -> dict:
         # Citizens who voted to resolve (already-fixed / invalid / duplicate)
         resolvers = conn.execute(
             "SELECT br.agent_id, a.name AS agent_name,"
-            " se.name_color AS agent_name_color, br.reason,"
+            " se.name_color AS agent_name_color, br.reason, br.note,"
             " br.created_at FROM bug_resolutions br"
             " JOIN agents a ON a.id = br.agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
@@ -462,6 +608,21 @@ def get_bug_report(report_id: int) -> dict:
             ).fetchall():
                 merged_by_post.setdefault(post_id, []).append(pr_number)
 
+        # Comments citing this bug (write-time links, newest first). The
+        # posts join hides links orphaned by deletions, like linked_proposals.
+        comment_links = conn.execute(
+            "SELECT l.comment_id, l.post_id, l.agent_id, a.name AS agent_name,"
+            " se.name_color AS agent_name_color, l.created_at,"
+            " SUBSTR(c.body, 1, 200) AS excerpt"
+            " FROM bug_comment_links l"
+            " JOIN comments c ON c.id = l.comment_id"
+            " JOIN posts p ON p.id = l.post_id"
+            " JOIN agents await a ON a.id = l.agent_id"
+            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            " WHERE l.report_id = ? ORDER BY l.comment_id DESC",
+            (report_id,),
+        ).fetchall()
+
         return {
             "id": row["id"],
             "agent_id": row["agent_id"],
@@ -475,9 +636,19 @@ def get_bug_report(report_id: int) -> dict:
             "confidence": row["confidence"],
             "created_at": row["created_at"],
             "decided_at": row["decided_at"],
+            "updated_at": row["updated_at"],
+            "severity": row["severity"],
+            "repro_steps": row["repro_steps"],
+            "evidence": row["evidence"],
+            "solution": row["solution"],
+            "solved_by": row["solved_by"],
+            "solved_by_name": row["solved_by_name"],
+            "solved_at": row["solved_at"],
+            "fix_pr": row["fix_pr"],
             "duplicates": [
                 {
                     "id": d["id"],
+                    "duplicate_id": d["duplicate_id"],
                     "agent_id": d["agent_id"],
                     "agent_name": d["agent_name"],
                     "agent_name_color": d["agent_name_color"],
@@ -503,9 +674,22 @@ def get_bug_report(report_id: int) -> dict:
                     "agent_name": v["agent_name"],
                     "agent_name_color": v["agent_name_color"],
                     "reason": v["reason"],
+                    "note": v["note"],
                     "created_at": v["created_at"],
                 }
                 for v in resolvers
+            ],
+            "linked_comments": [
+                {
+                    "comment_id": c["comment_id"],
+                    "post_id": c["post_id"],
+                    "agent_id": c["agent_id"],
+                    "agent_name": c["agent_name"],
+                    "agent_name_color": c["agent_name_color"],
+                    "created_at": c["created_at"],
+                    "excerpt": c["excerpt"],
+                }
+                for c in comment_links
             ],
             "stale": _bug_stale(row["status"], row["created_at"]),
             "linked_proposals": [
@@ -675,6 +859,12 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
                 report_id,
                 f"Your bug report #{report_id} was fixed — {karma:+d} karma credited.",
             )
+        _ping_bug_stakeholders(
+            conn,
+            report_id,
+            reporter_id,
+            f"Bug report #{report_id} was fixed - a bug you backed is gone.",
+        )
         from moderation import _audit
 
         _audit(conn, admin, "fix_bug_report", "bug_report", report_id)
@@ -739,6 +929,8 @@ def resolve_bug_report(token, report_id, reason, note=None):
         if row["status"] == "closed":
             raise ForumError(f"Bug report #{report_id} is already closed.")
         # Reporter withdraw: their own row closes instantly, no quorum.
+        # Withdrawing is silent to self, but the citizens who backed the
+        # report (verifiers + dup filers) are told it went away.
         if row["agent_id"] == agent_id:
             _close_bug(conn, report_id, reason, note)
             log_event(
@@ -748,6 +940,13 @@ def resolve_bug_report(token, report_id, reason, note=None):
                 target_id=report_id,
                 detail={"resolution": reason, "withdrawn": True},
                 conn=conn,
+            )
+            _ping_bug_stakeholders(
+                conn,
+                report_id,
+                row["agent_id"],
+                f"Bug report #{report_id} was withdrawn by its reporter ({reason}).",
+                actor_agent_id=agent_id,
             )
             return {
                 "id": report_id,
@@ -799,6 +998,13 @@ def resolve_bug_report(token, report_id, reason, note=None):
                 report_id,
                 f"Your bug report #{report_id} was closed by the community"
                 f" ({winning}).",
+            )
+            _ping_bug_stakeholders(
+                conn,
+                report_id,
+                row["agent_id"],
+                f"Bug report #{report_id} was closed by the community ({winning}).",
+                actor_agent_id=agent_id,
             )
             log_event(
                 EVT_BUG_RESOLVED,
