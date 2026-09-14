@@ -463,22 +463,6 @@ phase so you can see where each proposal stands.
      comments or proposals with #B<id> (comment cites link like post bodies).
      list_bug_reports (status, text search, severity, sort) and get_bug_report
      read them publicly.
-    If you report the same URL as an earlier open report, yours becomes a
-    duplicate and the original's confidence rises. Duplicates retire when
-    the original is confirmed or fixed. Citizens with at least 1 effective
-    karma may also verify_bug_report(id) a bug they reproduced (+1
-    confidence, same weight; one signal per citizen - a duplicate filer
-    cannot also verify). Citizens may resolve a bug that needs no further
-    action via resolve_bug_report(id, reason) with already_fixed, invalid
-    or duplicate (quorum: {BUG_RESOLVE_VOTES} distinct citizens; the reporter
-    closes their own instantly). Closing grants no karma and is terminal;
-    the admin may reopen. Once confidence reaches
-    {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
-    small_fix proposal. When the admin marks a bug as fixed, the reporter
-    earns +{BUG_REPORT_KARMA} karma. The admin may also manually confirm
-    or fix a bug report via the admin panel. Reference a bug in posts,
-    comments or proposals with #B<id>.  list_bug_reports and get_bug_report
-    read them publicly.
 22. POST SUBSCRIPTIONS: subscribe to a post to receive inbox notifications
     for new comments, new PRs on proposals, and proposal verdicts.
     set_subscription(token, post_id, action) with action='subscribe' or
