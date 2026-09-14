@@ -335,7 +335,57 @@ def claim_tree_diff(
 
 
 def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
-    stub = True
+    """Read one claim tree into a files-overlay ({path, content} entries).
+
+    Skips .git, the managed manifest, empty files (the files overlay
+    refuses empty content), and non-UTF-8 files (counted as
+    skipped_binaries, never executed). Refuses trees over
+    _SNAPSHOT_MAX_MB so a hostile tree cannot OOM the worker.
+    """
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    files: list = []
+    skipped_binaries = 0
+    skipped_empty = 0
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(dest):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for fn in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fn), dest).replace(os.sep, "/")
+            if rel in _MANAGED:
+                continue
+            try:
+                with open(os.path.join(dirpath, fn), "rb") as fh:
+                    data = fh.read()
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+            if not data:
+                skipped_empty += 1
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:  # domain: degrade-silently - skip binaries
+                skipped_binaries += 1
+                continue
+            total += len(data)
+            if total > _SNAPSHOT_MAX_MB * 1024 * 1024:
+                raise RepoError(
+                    "workspace tree exceeds the 32MB snapshot cap - release it."
+                )
+            files.append({"path": rel, "content": text})
+    files.sort(key=lambda r: str(r["path"]))
+    return {
+        "head_sha": _head_sha(dest),
+        "files": files,
+        "skipped_binaries": skipped_binaries,
+        "skipped_empty": skipped_empty,
+        "total_bytes": total,
+    }
+
+
+_SNAPSHOT_MAX_MB = 32.0
 
 
 def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
