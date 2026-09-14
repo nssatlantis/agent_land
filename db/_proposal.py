@@ -618,6 +618,15 @@ def supersede_proposal(
             close_workflow_for_proposal(conn, post_id, "closed")
         except Exception:  # domain: degrade-silently - workflow is enrichment
             pass
+        # Claimable workspaces (proposal #472 follow-up): the parent is
+        # locked - release its workspace claims so names stop being held.
+        # Record-only; trees converge via the admin GC sweep.
+        try:
+            from db._workspace_claims import release_workspaces_for_proposal
+
+            release_workspaces_for_proposal(conn, post_id)
+        except Exception:  # domain: degrade-silently - release advisory
+            pass
         voters = conn.execute(
             "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
             (post_id,),
