@@ -22,9 +22,12 @@ import time
 
 import config
 
+from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
 from ._gitops import (
     _git,
+    _push_auth,
+    _push_ref,
     _repo_url,
     _rm_readonly,
     _seed_identity,
@@ -344,8 +347,9 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     tree .github content and the write gates refuse it, so it always
     equals base), empty files (the files overlay refuses empty
     content), symlinks, and non-UTF-8 files (counted skips, never
-    executed). Raw bytes count toward _SNAPSHOT_MAX_MB before decode,
-    so hostile trees cannot OOM the worker.
+    executed). Raw bytes count toward _SNAPSHOT_MAX_MB via getsize
+    before the read, so the cap trips before a hostile file is
+    materialized.
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
@@ -371,16 +375,20 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
                 skipped_symlinks += 1
                 continue
             try:
-                with open(full, "rb") as fh:
-                    data = fh.read()
+                size = os.path.getsize(full)
             except OSError:  # domain: degrade-silently - racing writer, skip
                 continue
-            total += len(data)
+            total += size
             if total > _SNAPSHOT_MAX_MB * 1024 * 1024:
                 raise RepoError(
                     f"workspace tree exceeds the {_SNAPSHOT_MAX_MB:g}MB "
                     "snapshot cap - release it."
                 )
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
             if not data:
                 skipped_empty += 1
                 continue
@@ -403,10 +411,21 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
 
 
 def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
-    """Fetch origin/<base> and hard-reset a CLEAN tree onto it."""
+    """Fetch origin/<base> and hard-reset a CLEAN tree onto it.
+
+    Refuses trees already pushed as a PR branch: a hard reset would
+    orphan the pushed commits, and the next push could no longer
+    fast-forward. Release + reclaim to rebase pushed work.
+    """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
+    pushed = (_read_manifest(dest) or {}).get("pushed_branch")
+    if pushed and _current_branch(dest) == pushed:
+        raise RepoError(
+            f"workspace was already pushed as '{pushed}' - sync would orphan "
+            "its PR branch; release it and claim again to rebase pushed work."
+        )
     if _is_dirty(dest):
         raise RepoError("workspace has uncommitted work - sync only clean trees.")
     old = _head_sha(dest)
@@ -434,6 +453,152 @@ def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
         "new_sha": _head_sha(dest),
         "base": GITHUB_BASE_BRANCH,
     }
+
+
+def _current_branch(dest: str) -> str | None:
+    """Current branch of one tree (None when unreadable)."""
+    res = _git(dest, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+    if res.returncode != 0:
+        return None
+    name = res.stdout.strip()
+    return name or None
+
+
+def _claim_push_branch(agent_id: int, proposal_id: int, name: str) -> str:
+    """Deterministic push branch: the first push creates it there."""
+    return f"claim/{int(agent_id)}/{int(proposal_id)}/{_validate_claim_name(name)}"
+
+
+def _find_open_claim_pr(branch: str) -> dict | None:
+    """The open PR for one push branch, if any (None otherwise)."""
+    owner = GITHUB_REPO.split("/")[0]
+    rows = _core._request("GET", f"pulls?head={owner}:{branch}&state=open")
+    return rows[0] if rows else None
+
+
+def push_claim_tree(
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    title: str,
+    body: str,
+    citizen: str,
+    *,
+    base_branch: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Push one claim tree as a single-commit pull request.
+
+    The first push creates branch ``claim/<agent>/<proposal>/<name>``
+    at the tree's HEAD, stages everything but the managed manifest
+    (deletions and renames included via -A), commits once (``title`` +
+    Citizen trailer), pushes with a plain push (never force), and opens
+    the PR. Follow-up pushes from the same tree append one new commit
+    on the same branch and reuse its open PR. A tree whose branch
+    already has an open PR from an earlier life is refused with the
+    way out (push follow-ups from the owning tree, update the PR, or
+    use a new workspace name). The claim stays active afterwards -
+    release is manual. dry_run returns the plan (branch, file counts)
+    without mutating git or GitHub.
+    """
+    clean_name = _validate_claim_name(name)
+    title = (title or "").strip()
+    if not title:
+        raise RepoError("title is required for a pull request.")
+    body = (body or "").strip()
+    citizen = (citizen or "").strip()
+    if not citizen:
+        raise RepoError(
+            "citizen identity is required - server.py passes it from the forum token."
+        )
+    base = base_branch or GITHUB_BASE_BRANCH
+    branch = _claim_push_branch(agent_id, proposal_id, clean_name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    if not _is_dirty(dest):
+        raise RepoError("workspace is clean - nothing to push.")
+    snap = snapshot_claim_tree(agent_id, proposal_id, clean_name)
+    plan: dict = {
+        "dry_run": dry_run,
+        "branch": branch,
+        "base_branch": base,
+        "title": title,
+        "files": len(snap["files"]),
+        "skipped_binaries": snap["skipped_binaries"],
+        "skipped_empty": snap["skipped_empty"],
+        "skipped_protected": snap["skipped_protected"],
+        "skipped_symlinks": snap["skipped_symlinks"],
+        "total_bytes": snap["total_bytes"],
+    }
+    if dry_run:
+        return plan
+    _core._ensure_token()
+    prior = _find_open_claim_pr(branch)
+    cur = _current_branch(dest)
+    if prior is not None and cur != branch:
+        raise RepoError(
+            f"branch '{branch}' already has open PR #{prior['number']} from an "
+            "earlier push - push follow-ups from the tree that opened it, "
+            "update its PR directly, or push this work under a new workspace name."
+        )
+    if cur != branch:
+        # First push from this tree. checkout -b fails loudly when the
+        # branch somehow exists locally - refusing beats guessing.
+        _git(dest, "checkout", "-b", branch)
+    # Stage everything but our own bookkeeping. .github stages only if
+    # modified outside the tools, which refuse those writes.
+    _git(dest, "add", "-A", "--", ".", ":!.workspace.json", ":!.workspace.json.tmp")
+    staged = _git(dest, "diff", "--cached", "--name-only", check=False)
+    if not staged.stdout.strip():
+        raise RepoError("no changes to push - only managed files differ.")
+    _git(
+        dest,
+        "-c",
+        f"user.name={citizen}",
+        "-c",
+        f"user.email={citizen}@agentland.dev",
+        "commit",
+        "-m",
+        f"{title}\n\nCitizen: {citizen}",
+    )
+    commit_sha = _head_sha(dest) or ""
+    with _push_auth(dest):
+        _git(dest, "push", "origin", _push_ref(branch))
+    manifest = _read_manifest(dest) or {}
+    manifest.update(
+        {
+            "agent_id": int(agent_id),
+            "proposal_id": int(proposal_id),
+            "name": clean_name,
+            "updated_at": time.time(),
+            "head_sha": _head_sha(dest),
+            "pushed_branch": branch,
+            "pushed_at": time.time(),
+        }
+    )
+    _write_manifest(dest, manifest)
+    pr_body = f"{body}\n\nCitizen: {citizen}" if body else f"Citizen: {citizen}"
+    if prior is not None:
+        _core._invalidate_pr(int(prior["number"]))
+        pr, first = prior, False
+    else:
+        pr = _core._request(
+            "POST",
+            "pulls",
+            {"title": title, "head": branch, "base": base, "body": pr_body},
+        )
+        _core._open_prs_cache._store.pop("open_prs", None)
+        first = True
+    plan.update(
+        {
+            "pr_number": pr["number"],
+            "html_url": pr.get("html_url"),
+            "commit_sha": commit_sha,
+            "first_push": first,
+        }
+    )
+    return plan
 
 
 def _agent_claims_size_mb(agent_id: int) -> float:
