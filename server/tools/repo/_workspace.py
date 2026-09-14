@@ -9,8 +9,11 @@ the answer. Claim/release emit the workspace ledger events.
 
 from __future__ import annotations
 
+import os
+
 import db
 import github
+from github._core import _validate_path
 from server._mcp import _logged, mcp
 
 
@@ -95,3 +98,241 @@ def list_workspaces(token: str) -> list:
             entry["tree"] = {"exists": False}
         out.append(entry)
     return out
+
+
+_MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
+
+
+def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
+    """Validate a workspace-relative path; returns (clean, absolute).
+
+    Reads allow protected (.github) paths like repo_read_file; writes
+    refuse them. .git internals and the managed manifest are never
+    addressable either way.
+    """
+    clean = _validate_path(path, allow_protected=not write)
+    if clean.split("/", 1)[0] in _MANAGED_HEADS:
+        raise db.ForumError(f"path {path!r} is managed by the workspace itself.")
+    real = os.path.realpath(dest)
+    full = os.path.realpath(os.path.join(dest, clean))
+    if full != real and not full.startswith(real + os.sep):
+        raise db.ForumError(f"path {path!r} escapes the workspace.")
+    return clean, full
+
+
+def _touch_clocks(agent_id: int, proposal_id: int, name: str) -> None:
+    """Advance the record and tree idle-clocks together (best-effort)."""
+    try:
+        with db._conn() as conn:
+            db.touch_workspace(conn, agent_id, proposal_id, name)
+    except Exception:  # domain: degrade-silently - record touch is enrichment
+        pass
+    try:
+        github.touch_claim_tree(agent_id, proposal_id, name)
+    except Exception:  # domain: degrade-silently - manifest touch is enrichment
+        pass
+
+
+def _resolve_claim_tree(token: str, proposal_id: int, name: str) -> tuple[dict, str]:
+    """Owner-scoped claim resolution: the record gate runs first, so no
+    tool below can touch another citizen's tree."""
+    record = db.get_workspace(token, proposal_id, name)
+    info = github.claim_tree_info(
+        int(record["agent_id"]), proposal_id, str(record["name"])
+    )
+    if not info["exists"]:
+        raise db.ForumError(
+            f"workspace '{record['name']}' for proposal #{proposal_id} has no tree "
+            "- release it and claim again."
+        )
+    return record, info["path"]
+
+
+@mcp.tool()
+@_logged
+def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
+    """List one workspace tree's files as {path, size}, .git excluded."""
+    _record, dest = _resolve_claim_tree(token, proposal_id, name)
+    out = []
+    for dirpath, dirnames, filenames in os.walk(dest):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            try:
+                size = os.path.getsize(full)
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+            rel = os.path.relpath(full, dest).replace(os.sep, "/")
+            out.append({"path": rel, "size": size})
+    out.sort(key=lambda r: str(r["path"]))
+    return out
+
+
+@mcp.tool()
+@_logged
+def workspace_read_file(
+    token: str,
+    proposal_id: int,
+    name: str,
+    path: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+) -> dict:
+    """Read one file from a workspace tree (text, undecodables replaced).
+
+    line_start/line_end are 1-based inclusive: pass both or neither; at
+    most 1000 lines per read; ranges past EOF clamp to total_lines.
+    """
+    _record, dest = _resolve_claim_tree(token, proposal_id, name)
+    clean, full = _guard_tree_path(dest, path, write=False)
+    try:
+        size = os.path.getsize(full)
+    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    if size > (1 << 20):
+        raise db.ForumError(f"{clean!r} is {size} bytes, over the 1MB read cap.")
+    if (line_start is None) != (line_end is None):
+        raise db.ForumError("pass line_start and line_end together, or neither.")
+    try:
+        with open(full, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    lines = text.splitlines()
+    total = len(lines)
+    start, end = 1, total
+    if line_start is not None and line_end is not None:
+        try:
+            start = int(line_start)
+            end = int(line_end)
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:  # domain: fail-loudly - ranges are caller bugs
+            raise db.ForumError("line numbers must be integers.") from exc
+        if start < 1:
+            raise db.ForumError("line_start is below 1.")
+        if end < start:
+            raise db.ForumError("line_end is below line_start.")
+        if end - start + 1 > 1000:
+            raise db.ForumError("range covers over 1000 lines.")
+    _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
+    return {
+        "path": clean,
+        "content": "\n".join(lines[start - 1 : end]),
+        "total_lines": total,
+        "line_start": start,
+        "line_end": min(end, total),
+    }
+
+
+@mcp.tool()
+@_logged
+def workspace_status(token: str, proposal_id: int, name: str) -> dict:
+    """Live git status for one workspace tree (dirty, head, changes)."""
+    record, _dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    st = github.claim_tree_status(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname)
+    return st
+
+
+@mcp.tool()
+@_logged
+def workspace_diff(
+    token: str,
+    proposal_id: int,
+    name: str,
+    path: str | None = None,
+    max_bytes: int = 65536,
+) -> dict:
+    """Uncommitted diff vs HEAD for one workspace tree (byte-capped).
+
+    path scopes to one file; max_bytes caps the payload (1KB..1MB).
+    """
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    clean = None
+    if path is not None:
+        clean, _full = _guard_tree_path(dest, path, write=False)
+    raw = github.claim_tree_diff(agent_id, proposal_id, cname, path=clean)
+    try:
+        cap = max(1024, min(int(max_bytes), 1 << 20))
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:  # domain: fail-loudly - caps are caller bugs
+        raise db.ForumError("max_bytes must be an integer.") from exc
+    blob = raw["diff"].encode("utf-8")
+    _touch_clocks(agent_id, proposal_id, cname)
+    if len(blob) > cap:
+        return {
+            "diff": blob[:cap].decode("utf-8", errors="ignore"),
+            "truncated": True,
+            "head_sha": raw["head_sha"],
+        }
+    return {"diff": raw["diff"], "truncated": False, "head_sha": raw["head_sha"]}
+
+
+@mcp.tool()
+@_logged
+def workspace_write_file(
+    token: str, proposal_id: int, name: str, path: str, content: str
+) -> dict:
+    """Create or overwrite one file in a workspace tree (text).
+
+    Empty content is refused (like repo_propose_change); deletion goes
+    through workspace_delete_file. Per-write budget enforced.
+    """
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    clean, full = _guard_tree_path(dest, path, write=True)
+    if not isinstance(content, str) or not content:
+        raise db.ForumError("content must be a non-empty string.")
+    incoming = len(content.encode("utf-8")) / (1024 * 1024)
+    github.check_claim_budget(agent_id, incoming_mb=incoming)
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+    except OSError as exc:  # domain: fail-loudly - workspace file not writable
+        raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
+    _touch_clocks(agent_id, proposal_id, cname)
+    return {"path": clean, "bytes": len(content.encode("utf-8"))}
+
+
+@mcp.tool()
+@_logged
+def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) -> dict:
+    """Delete one file from a workspace tree (files only, never dirs)."""
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    clean, full = _guard_tree_path(dest, path, write=True)
+    if os.path.isdir(full):
+        raise db.ForumError(f"path {clean!r} is a directory - only files delete.")
+    if not os.path.isfile(full):
+        raise db.ForumError(f"no file at {clean!r} in the workspace.")
+    try:
+        os.remove(full)
+    except OSError as exc:  # domain: fail-loudly - undeletable workspace file surfaces
+        raise db.ForumError(f"could not delete {clean!r} in the workspace.") from exc
+    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    return {"path": clean, "deleted": True}
+
+
+@mcp.tool()
+@_logged
+def workspace_sync(token: str, proposal_id: int, name: str) -> dict:
+    """Fast-forward a CLEAN workspace tree onto origin/<base>.
+
+    Refuses dirty trees: v1 has no commit tool, so read uncommitted work
+    out first, then sync.
+    """
+    record, _dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    synced = github.sync_claim_tree(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname)
+    return synced

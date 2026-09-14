@@ -22,7 +22,7 @@ import time
 
 import config
 
-from ._core import GITHUB_REPO, RepoError
+from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
 from ._gitops import (
     _git,
     _repo_url,
@@ -242,6 +242,129 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
         "size_mb": round(_dir_size_mb(dest), 2) if exists else 0.0,
         "dirty": _is_dirty(dest) if exists else False,
         "head_sha": _head_sha(dest) if exists else None,
+    }
+
+
+def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+    """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    manifest = _read_manifest(dest)
+    if manifest is None or not os.path.isdir(dest):
+        return False
+    manifest["updated_at"] = time.time()
+    manifest["head_sha"] = _head_sha(dest)
+    _write_manifest(dest, manifest)
+    return True
+
+
+def claim_tree_status(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Live git status for one claim tree (missing reads empty)."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    exists = os.path.isdir(dest)
+    if not exists:
+        return {"exists": False, "path": dest}
+    return {
+        "exists": True,
+        "path": dest,
+        "dirty": _is_dirty(dest),
+        "head_sha": _head_sha(dest),
+        "size_mb": round(_dir_size_mb(dest), 2),
+        "changes": _porcelain_changes(dest),
+    }
+
+
+def _porcelain_changes(dest: str) -> list:
+    res = _git(dest, "status", "--porcelain=v1", check=False)
+    if res.returncode != 0:
+        raise RepoError("workspace tree has no readable git status.")
+    out = []
+    for line in res.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        check = line[3:].split(" -> ")[-1]
+        if check in _MANAGED:
+            continue
+        out.append({"path": line[3:], "index": line[0], "worktree": line[1]})
+    return out
+
+
+def _untracked_paths(dest: str) -> list:
+    """Untracked, unmanaged files in one tree (best-effort, may be empty).
+
+    Uses `ls-files --others` (individual files) rather than porcelain
+    `??` lines, which collapse wholly-untracked directories to `dir/`
+    and would silently drop nested new files from diffs.
+    """
+    res = _git(dest, "ls-files", "--others", "--exclude-standard", "-z", check=False)
+    if res.returncode != 0:
+        return []
+    return [p for p in res.stdout.split("\0") if p and p not in _MANAGED]
+
+
+def claim_tree_diff(
+    agent_id: int, proposal_id: int, name: str, path: str | None = None
+) -> dict:
+    """Uncommitted diff vs HEAD, optionally scoped to one path.
+
+    Untracked files have no HEAD to diff against, so they render as
+    new-file sections; the index is never touched (read-only).
+    """
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    scope = None
+    if path is not None:
+        scope = _validate_path(path, allow_protected=True)
+    args = ["diff", "HEAD", "--"]
+    if scope is not None:
+        args.append(scope)
+    res = _git(dest, *args, check=False)
+    if res.returncode != 0:
+        raise RepoError("could not diff the workspace tree.")
+    parts = [res.stdout]
+    for fresh in _untracked_paths(dest):
+        if scope is not None and fresh != scope:
+            continue
+        section = _git(
+            dest, "diff", "--no-index", "--", "/dev/null", fresh, check=False
+        )
+        if section.stdout:
+            text = section.stdout
+            parts.append(text if text.endswith("\n") else text + "\n")
+    return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
+
+
+def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Fetch origin/<base> and hard-reset a CLEAN tree onto it."""
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    if _is_dirty(dest):
+        raise RepoError("workspace has uncommitted work - sync only clean trees.")
+    old = _head_sha(dest)
+    fetch = _git(dest, "fetch", "--force", "origin", GITHUB_BASE_BRANCH, check=False)
+    if fetch.returncode != 0:
+        raise RepoError("sync fetch failed.")
+    reset = _git(dest, "reset", "--hard", "FETCH_HEAD", check=False)
+    if reset.returncode != 0:  # domain: fail-loudly - a half-synced tree must surface
+        raise RepoError("workspace sync reset failed; reclaim the workspace.")
+    _git(dest, "clean", "-fdq", "-e", _MANIFEST, check=False)
+    manifest = _read_manifest(dest) or {}
+    manifest.update(
+        {
+            "agent_id": int(agent_id),
+            "proposal_id": int(proposal_id),
+            "name": _validate_claim_name(name),
+            "updated_at": time.time(),
+            "head_sha": _head_sha(dest),
+        }
+    )
+    _write_manifest(dest, manifest)
+    return {
+        "path": dest,
+        "old_sha": old,
+        "new_sha": _head_sha(dest),
+        "base": GITHUB_BASE_BRANCH,
     }
 
 
