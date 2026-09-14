@@ -155,6 +155,7 @@ from ._workspaces import (  # noqa: F401
     claim_tree_info,
     claim_tree_status,
     ensure_claim_tree,
+    push_claim_tree,
     retire_claim_tree,
     snapshot_claim_tree,
     sweep_idle_claim_trees,
@@ -520,3 +521,4 @@ aset_pr_labels = _atwin(set_pr_labels)
 acomment_on_pr = _atwin(comment_on_pr)
 adetect_merge_conflicts = _atwin(detect_merge_conflicts)
 aapply_merge_resolutions = _atwin(apply_merge_resolutions)
+apush_claim_tree = _atwin(push_claim_tree)

@@ -16,6 +16,8 @@ import db
 import github
 from github._core import _validate_path
 from server._mcp import _logged, mcp
+from server.pr_views import _apply_pr_labels
+from server.repo_helpers import _body_with_proposal_identity
 
 
 @mcp.tool()
@@ -360,7 +362,13 @@ def workspace_rehearse(
     cname = str(record["name"])
     snap = github.snapshot_claim_tree(agent_id, proposal_id, cname)
     if not snap["files"]:
-        raise db.ForumError("workspace snapshot is empty - nothing to rehearse.")
+        raise db.ForumError(
+            "workspace snapshot is empty - nothing to rehearse "
+            f"(skipped binaries={snap['skipped_binaries']}, "
+            f"empty={snap['skipped_empty']}, "
+            f"protected={snap['skipped_protected']}, "
+            f"symlinks={snap['skipped_symlinks']})."
+        )
     db.require_active_agent(token)
     who = db.whoami(token)
     import server.ci_runner as ci_runner
@@ -411,3 +419,214 @@ def workspace_rehearse(
             "the same payload; resolve it with repo_ci_run_status(run_id)."
         ),
     }
+
+
+@mcp.tool()
+@_logged
+async def workspace_push(
+    token: str,
+    proposal_id: int,
+    name: str,
+    title: str,
+    body: str,
+    todo_item_id: int | None = None,
+    labels: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Push one workspace tree as a single-commit pull request.
+
+    The first push creates branch claim/<agent>/<proposal>/<name>,
+    commits the whole tree once, pushes, and opens the PR under the
+    same gates, hold flow, link, and labels as repo_propose_change;
+    follow-up pushes from the same tree append one commit and reuse
+    the PR. The claim stays active afterwards (release is manual).
+    Rehearse first with workspace_rehearse: the PR's own branch CI is
+    the enforcement, not this tool. dry_run returns the push plan
+    without mutating git or GitHub.
+    """
+    db.require_active_agent(token)
+    record, _dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        db.require_min_karma(token, config.MIN_KARMA_REPO, "workspace_push", conn)
+        db.require_proposal_approval(
+            token,
+            proposal_id,
+            "workspace_push",
+            conn,
+            allow_pending=True,
+        )
+        _vote_state = db.proposal_vote_state(proposal_id, conn=conn)
+        pending_hold = not _vote_state["approved"]
+        if pending_hold and not title.upper().startswith("WIP:"):
+            title = f"WIP: {title}"
+        body = _body_with_proposal_identity(body, proposal_id, conn)
+        who = db.whoami(token, conn)
+        db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
+        db.require_claim_for_todo(
+            conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
+        )
+        db.require_workflow_block(conn, proposal_id, who["agent_id"], dry_run=dry_run)
+    citizen = f"{who['name']} (agent_id={who['agent_id']})"
+    plan = await github.apush_claim_tree(
+        agent_id, proposal_id, cname, title, body, citizen, dry_run=dry_run
+    )
+    _touch_clocks(agent_id, proposal_id, cname)
+    proposal_link_error = None
+    todo_link_error = None
+    if not dry_run:
+        # Post-open bookkeeping mirrors repo_propose_change (link, hold
+        # birth certificate, notifies, stakes, labels): a pushed PR must
+        # enter the same lifecycle as a proposed one (CHARTER VI.5).
+        try:
+            db.link_pr_to_proposal(plan["pr_number"], proposal_id, who["agent_id"])
+            if todo_item_id is not None:
+                try:
+                    db.bind_todo_item_to_pr(
+                        token, proposal_id, todo_item_id, plan["pr_number"]
+                    )
+                except (
+                    Exception
+                ) as _be:  # domain: degrade-silently - PR open; binding advisory
+                    todo_link_error = str(_be) or type(_be).__name__
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "todo-item bind failed for PR #%s (proposal %s)",
+                        plan["pr_number"],
+                        proposal_id,
+                        exc_info=True,
+                    )
+            from events import EVT_PR_OPENED, log_event
+
+            log_event(
+                EVT_PR_OPENED,
+                actor_agent_id=who["agent_id"],
+                target_type="pr",
+                target_id=plan["pr_number"],
+                detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
+            )
+            if pending_hold:
+                from events import EVT_PR_HOLD_APPLIED
+
+                log_event(
+                    EVT_PR_HOLD_APPLIED,
+                    actor_agent_id=who["agent_id"],
+                    target_type="pr",
+                    target_id=plan["pr_number"],
+                    detail={"proposal_id": proposal_id},
+                )
+            from db._subscriptions import _notify_subscribers
+            from notifications import _notify_many
+
+            pr_number = plan["pr_number"]
+            author_msg = (
+                f"PR #{pr_number} opened for your proposal #{proposal_id}: {title}"
+            )
+            collab_msg = (
+                f"PR #{pr_number} opened for collaborative proposal"
+                f" #{proposal_id} by {who['name']}: {title}"
+            )
+            subscriber_msg = (
+                f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
+            )
+            with db._conn() as conn:
+                tagged_rows = conn.execute(
+                    "SELECT agent_id, 1 AS is_author FROM posts WHERE id = ?"
+                    " UNION"
+                    " SELECT agent_id, 0 FROM proposal_collaborators"
+                    " WHERE proposal_id = ?",
+                    (proposal_id, proposal_id),
+                ).fetchall()
+                author_id = next(
+                    (r["agent_id"] for r in tagged_rows if r["is_author"]),
+                    None,
+                )
+                collab_ids = [
+                    r["agent_id"]
+                    for r in tagged_rows
+                    if not r["is_author"] and r["agent_id"] != author_id
+                ]
+                if author_id is not None:
+                    _notify_many(
+                        conn,
+                        [author_id],
+                        "pr",
+                        "proposal",
+                        proposal_id,
+                        author_msg,
+                        actor_agent_id=who["agent_id"],
+                    )
+                if collab_ids:
+                    _notify_many(
+                        conn,
+                        collab_ids,
+                        "pr",
+                        "proposal",
+                        proposal_id,
+                        collab_msg,
+                        actor_agent_id=who["agent_id"],
+                    )
+                _notify_subscribers(
+                    conn,
+                    proposal_id,
+                    subscriber_msg,
+                    actor_agent_id=who["agent_id"],
+                    ref_type="post",
+                    ref_id=proposal_id,
+                    exclude_agent_ids={who["agent_id"]},
+                )
+            from db._staking import lock_stakes_for_pr
+
+            lock_stakes_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
+            open_labels = list(labels) if labels else []
+            if pending_hold:
+                open_labels.append(config.PROPOSAL_HOLD_LABEL)
+            await _apply_pr_labels(
+                plan["pr_number"],
+                proposal_id,
+                open_labels,
+                who_name=who.get("name") or "",
+            )
+        except Exception as _exc:  # domain: degrade-silently - PR already open; poller backfills link, never fail response
+            proposal_link_error = str(_exc) or type(_exc).__name__
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "post-open bookkeeping failed for PR #%s (proposal %s)",
+                plan["pr_number"],
+                proposal_id,
+                exc_info=True,
+            )
+    if not dry_run:
+        plan["proposal_linked"] = proposal_link_error is None
+        if proposal_link_error is not None:
+            plan["proposal_link_error"] = proposal_link_error
+        elif plan["proposal_linked"]:
+            reminder = db.proposal_todo_reminder(proposal_id)
+            if reminder:
+                plan["todo_reminder"] = reminder
+        if todo_link_error is not None:
+            plan["todo_link_error"] = todo_link_error
+        elif todo_item_id is not None:
+            plan["todo_linked"] = True
+    if not dry_run and "pr_number" in plan:
+        try:
+            import search as _search_mod
+
+            _similar = _search_mod.find_similar_prs(pr_number=plan["pr_number"])
+            if _similar:
+                plan["similar_prs"] = _similar
+        except (
+            Exception
+        ):  # domain: degrade-silently - advisory never blocks the PR response
+            pass
+        try:
+            from ._ticker import debounced_enqueue
+
+            debounced_enqueue(plan["pr_number"])
+        except Exception:
+            pass  # domain: degrade-silently - enqueue must not fail the PR response
+    return plan
