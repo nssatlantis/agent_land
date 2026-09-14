@@ -97,14 +97,14 @@ def main():
     v = db.vote_poll(tb, p, opt0)
     assert v["total_votes"] == 1
     assert v["total_voters"] == 1
-    assert v["my_vote"] == [opt0]
+    assert v["my_vote"] == opt0
     v2 = db.vote_poll(tb, p, opt1)
     assert v2["total_votes"] == 1, "re-vote overwrites, no double count"
     assert v2["total_voters"] == 1
-    assert v2["my_vote"] == [opt1]
+    assert v2["my_vote"] == opt1
     db.vote_poll(tc, p, opt0)
     gv = db.get_poll(p, token=tb)
-    assert gv["my_vote"] == [opt1]
+    assert gv["my_vote"] == opt1
     assert gv["total_votes"] == 2
     assert gv["total_voters"] == 2
     assert gv["options"][1]["votes"] == 1
@@ -116,6 +116,8 @@ def main():
     assert "own poll" in expect_error(lambda: db.vote_poll(ta, p, opt0))
     # unknown option refused
     assert "unknown poll answer" in expect_error(lambda: db.vote_poll(tb, p, 999999))
+    # --- my_vote wire shape: scalar on single-choice, list on multi --------
+    assert isinstance(gv["my_vote"], int) and gv["my_vote"] == opt1, gv["my_vote"]
 
     # --- multi-answer ballots (max_choices=2) -------------------------------
     mp = db.create_post(ta, "poll multi", "b")["post_id"]
@@ -171,6 +173,7 @@ def main():
     assert sb["my_vote"] == [ma]
     gm = db.get_poll(mp, token=tb)
     assert gm["my_vote"] == [mc]
+    assert isinstance(gm["my_vote"], list), gm["my_vote"]
     assert gm["total_votes"] == 2
     assert gm["total_voters"] == 2
     assert [o["votes"] for o in gm["options"]] == [1, 0, 1]
