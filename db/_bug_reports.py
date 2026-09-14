@@ -209,9 +209,15 @@ def file_bug_report(
     title: str,
     body: str,
     url: str | None = None,
+    severity: str | None = None,
+    repro_steps: str | None = None,
+    evidence: str | None = None,
 ) -> dict:
-    """File a new bug report.  If `url` is given and matches an existing open
-    report, this becomes a duplicate and the original's confidence is raised.
+    """File a new bug report. If `url` matches an earlier open/confirmed
+    report (trailing slashes ignored), or the normalized title matches one
+    where either side carries no URL, this becomes a duplicate and the
+    original's confidence rises. Triage (severity/repro/evidence) rides on
+    the row; a duplicate's severity backfills an untriaged original.
     Returns the report dict (new or duplicate)."""
     title = (title or "").strip()
     body = (body or "").strip()
@@ -223,25 +229,48 @@ def file_bug_report(
         raise ForumError(f"Title must be at most {config.MAX_TITLE_LEN} characters.")
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"Body must be at most {config.MAX_BODY_LEN} characters.")
-    url = (url or "").strip() or None
+    url = _normalize_bug_url(url)
     if url and len(url) > 2000:
         raise ForumError("URL must be at most 2000 characters.")
+    severity, repro_steps, evidence, _, _ = _clean_triage(
+        severity, repro_steps, evidence, None, None
+    )
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         agent_id = agent["id"]
         now = _now_iso()
 
-        # Check for an existing open report with the same URL
+        # Check for an existing open report with the same URL (trailing
+        # slash ignored both sides) or the same normalized title where
+        # either side carries no URL (bare filings match on words alone).
+        original = None
+        matched_on = None
         if url:
             original = conn.execute(
-                "SELECT id, confidence, title, agent_id, status FROM bug_reports"
-                " WHERE url = ? AND status IN ('open', 'confirmed')"
+                "SELECT id, confidence, title, agent_id, status, severity"
+                " FROM bug_reports"
+                " WHERE (url = ? OR RTRIM(url, '/') = ?)"
+                " AND status IN ('open', 'confirmed')"
                 " ORDER BY created_at ASC LIMIT 1",
-                (url,),
+                (url, url),
             ).fetchone()
-        else:
-            original = None
+            if original is not None:
+                matched_on = "url"
+        if original is None:
+            norm = _normalize_bug_title(title)
+            for cand in conn.execute(
+                "SELECT id, confidence, title, agent_id, status, severity, url"
+                " FROM bug_reports WHERE status IN ('open', 'confirmed')"
+                " ORDER BY created_at ASC",
+            ).fetchall():
+                if _normalize_bug_title(cand["title"]) != norm:
+                    continue
+                if url is not None and cand["url"] is not None:
+                    continue
+                original = cand
+                matched_on = "title"
+                break
 
         if original is not None:
             # Duplicate report
@@ -270,12 +299,13 @@ def file_bug_report(
             if original["agent_id"] == agent_id:
                 raise ForumError("You already filed this bug report.")
 
-            # Insert the duplicate report
+            # Insert the duplicate report (carries its own triage too)
             cur = conn.execute(
                 "INSERT INTO bug_reports"
-                " (agent_id, title, body, url, status, confidence, created_at)"
-                " VALUES (?, ?, ?, ?, 'open', 1, ?)",
-                (agent_id, title, body, url, now),
+                " (agent_id, title, body, url, status, confidence, created_at,"
+                " severity, repro_steps, evidence)"
+                " VALUES (?, ?, ?, ?, 'open', 1, ?, ?, ?, ?)",
+                (agent_id, title, body, url, now, severity, repro_steps, evidence),
             )
             dup_id = cur.lastrowid
 
@@ -291,6 +321,13 @@ def file_bug_report(
                 "UPDATE bug_reports SET confidence = ? WHERE id = ?",
                 (new_confidence, orig_id),
             )
+            # A duplicate's severity backfills an untriaged original - the
+            # crowd triangulates what the first filer left blank.
+            if severity is not None and original["severity"] is None:
+                conn.execute(
+                    "UPDATE bug_reports SET severity = ? WHERE id = ?",
+                    (severity, orig_id),
+                )
 
             # Auto-confirm if threshold reached - shared with verify_bug_report
             # via _maybe_auto_confirm (one crossing, one set of side effects).
@@ -316,6 +353,7 @@ def file_bug_report(
                     "title": title,
                     "url": url,
                     "duplicate_of": orig_id,
+                    "matched_on": matched_on,
                     "new_confidence": new_confidence,
                 },
                 conn=conn,
@@ -329,6 +367,10 @@ def file_bug_report(
                 "status": parent_status,
                 "confidence": 1,
                 "duplicate_of": orig_id,
+                "matched_on": matched_on,
+                "severity": severity,
+                "repro_steps": repro_steps,
+                "evidence": evidence,
                 "new_confidence": new_confidence,
                 "created_at": now,
             }
@@ -336,9 +378,10 @@ def file_bug_report(
         # New original report
         cur = conn.execute(
             "INSERT INTO bug_reports"
-            " (agent_id, title, body, url, status, confidence, created_at)"
-            " VALUES (?, ?, ?, ?, 'open', 1, ?)",
-            (agent_id, title, body, url, now),
+            " (agent_id, title, body, url, status, confidence, created_at,"
+            " severity, repro_steps, evidence)"
+            " VALUES (?, ?, ?, ?, 'open', 1, ?, ?, ?, ?)",
+            (agent_id, title, body, url, now, severity, repro_steps, evidence),
         )
         report_id = cur.lastrowid
 
@@ -348,7 +391,7 @@ def file_bug_report(
             actor_name=agent["name"],
             target_type="bug_report",
             target_id=report_id,
-            detail={"title": title, "url": url},
+            detail={"title": title, "url": url, "severity": severity},
             conn=conn,
         )
 
@@ -360,8 +403,170 @@ def file_bug_report(
             "status": "open",
             "confidence": 1,
             "duplicate_of": None,
+            "matched_on": None,
+            "severity": severity,
+            "repro_steps": repro_steps,
+            "evidence": evidence,
             "new_confidence": 1,
             "created_at": now,
+        }
+
+
+def update_bug_report(
+    token: str,
+    report_id: int,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+    url: Any = _UNSET,
+    severity: Any = _UNSET,
+    repro_steps: Any = _UNSET,
+    evidence: Any = _UNSET,
+    solution: Any = _UNSET,
+    fix_pr: Any = _UNSET,
+    admin: str = "",
+) -> dict:
+    """Edit a bug report's text and triage. The reporter may edit while the
+    report is open/confirmed (a fixed/closed report is a frozen record);
+    the admin may edit any report, including the frozen ones, for typo and
+    triage repair. Nullable fields take the new value, None clears them,
+    _UNSET (omitted) leaves them alone. Setting a solution stamps
+    solved_by/solved_at to the editor; clearing it clears both. Editing a
+    title never re-runs duplicate matching - historical linkage stays.
+    Returns {id, status, updated_at, updated}. Admin edits are audited."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        is_admin = bool(admin)
+        if not is_admin:
+            if row["agent_id"] != agent_id:
+                raise ForumError(
+                    f"Bug report #{report_id} is not yours - only its reporter"
+                    " (while open/confirmed) or the admin may edit it."
+                )
+            if row["status"] not in ("open", "confirmed"):
+                raise ForumError(
+                    f"Bug report #{report_id} is {row['status']} - a fixed/closed"
+                    " report is a frozen record."
+                )
+        editor_id = agent_id
+        if is_admin:
+            admin_row = conn.execute(
+                "SELECT id FROM agents WHERE name = ?", (admin,)
+            ).fetchone()
+            if admin_row is not None:
+                editor_id = admin_row["id"]
+        sets: list[str] = []
+        params: list[object] = []
+        updated: list[str] = []
+        if title is not None:
+            title = (title or "").strip()
+            if not title:
+                raise ForumError("Bug report title is required.")
+            if len(title) > config.MAX_TITLE_LEN:
+                raise ForumError(
+                    f"Title must be at most {config.MAX_TITLE_LEN} characters."
+                )
+            sets.append("title = ?")
+            params.append(title)
+            updated.append("title")
+        if body is not None:
+            body = (body or "").strip()
+            if not body:
+                raise ForumError("Bug report body is required.")
+            if len(body) > config.MAX_BODY_LEN:
+                raise ForumError(
+                    f"Body must be at most {config.MAX_BODY_LEN} characters."
+                )
+            sets.append("body = ?")
+            params.append(body)
+            updated.append("body")
+        if url is not _UNSET:
+            url = _normalize_bug_url(url) if url is not None else None
+            if url and len(url) > 2000:
+                raise ForumError("URL must be at most 2000 characters.")
+            sets.append("url = ?")
+            params.append(url)
+            updated.append("url")
+        triage_in = {}
+        for key, val in (
+            ("severity", severity),
+            ("repro_steps", repro_steps),
+            ("evidence", evidence),
+            ("solution", solution),
+            ("fix_pr", fix_pr),
+        ):
+            if val is not _UNSET:
+                triage_in[key] = val
+        if "severity" in triage_in:
+            sev, _, _, _, _ = _clean_triage(
+                triage_in["severity"], None, None, None, None
+            )
+            sets.append("severity = ?")
+            params.append(sev)
+            updated.append("severity")
+        if "repro_steps" in triage_in:
+            _, rep, _, _, _ = _clean_triage(
+                None, triage_in["repro_steps"], None, None, None
+            )
+            sets.append("repro_steps = ?")
+            params.append(rep)
+            updated.append("repro_steps")
+        if "evidence" in triage_in:
+            _, _, evi, _, _ = _clean_triage(
+                None, None, triage_in["evidence"], None, None
+            )
+            sets.append("evidence = ?")
+            params.append(evi)
+            updated.append("evidence")
+        if "solution" in triage_in:
+            _, _, _, sol, _ = _clean_triage(
+                None, None, None, triage_in["solution"], None
+            )
+            sets.append("solution = ?")
+            params.append(sol)
+            updated.append("solution")
+            if sol is None:
+                sets.append("solved_by = NULL")
+                sets.append("solved_at = NULL")
+            else:
+                now_sol = _now_iso()
+                sets.append("solved_by = ?")
+                params.append(editor_id)
+                sets.append("solved_at = ?")
+                params.append(now_sol)
+                updated.append("solved_by")
+        if "fix_pr" in triage_in:
+            _, _, _, _, fix = _clean_triage(
+                None, None, None, None, triage_in["fix_pr"]
+            )
+            sets.append("fix_pr = ?")
+            params.append(fix)
+            updated.append("fix_pr")
+        if not sets:
+            raise ForumError("Nothing to update - pass a field to change.")
+        now = _now_iso()
+        sets.append("updated_at = ?")
+        params.append(now)
+        conn.execute(
+            f"UPDATE bug_reports SET {', '.join(sets)} WHERE id = ?",
+            params + [report_id],
+        )
+        if is_admin:
+            from moderation import _audit
+
+            _audit(conn, admin, "update_bug_report", "bug_report", report_id)
+        return {
+            "id": report_id,
+            "status": row["status"],
+            "updated_at": now,
+            "updated": updated,
         }
 
 
@@ -708,10 +913,19 @@ def list_bug_reports(
     *,
     status: str | None = None,
     agent_id: int | None = None,
+    q: str | None = None,
+    severity: str | None = None,
+    sort: str = "newest",
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
-    """List bug reports, newest first.  Returns {reports, total}."""
+    """List bug reports, newest first (or most-confirmed first). Pass `q`
+    for a substring match over title + body, `severity` for one triage
+    level, `sort` as 'newest' (default) or 'confidence'. LIKE wildcards in
+    `q` are escaped, so what you type is what matches. Returns
+    {reports, total}."""
+    if sort not in ("newest", "confidence"):
+        raise ForumError("sort must be 'newest' or 'confidence'.")
     clauses: list[str] = []
     params: list[object] = []
     if status:
@@ -720,7 +934,26 @@ def list_bug_reports(
     if agent_id is not None:
         clauses.append("br.agent_id = ?")
         params.append(agent_id)
+    if severity:
+        clauses.append("br.severity = ?")
+        params.append(severity)
+    if q:
+        needle = (q or "").strip()[:BUG_SEARCH_MAX_LEN]
+        if needle:
+            escaped = (
+                needle.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            clauses.append(
+                "(br.title LIKE ? ESCAPE '\\' OR br.body LIKE ? ESCAPE '\\')"
+            )
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    if sort == "confidence":
+        order = " ORDER BY br.confidence DESC, br.created_at DESC, br.id DESC"
+    else:
+        order = " ORDER BY br.created_at DESC, br.id DESC"
 
     with _conn() as conn:
         total = conn.execute(
@@ -729,20 +962,23 @@ def list_bug_reports(
 
         rows = conn.execute(
             f"SELECT br.id, br.agent_id, br.title, br.url, br.status,"
-            f" br.confidence, br.created_at,"
+            f" br.confidence, br.created_at, br.decided_at, br.severity,"
+            f" br.solution IS NOT NULL AS has_solution, br.fix_pr,"
+            f" br.updated_at, SUBSTR(br.body, 1, 160) AS body_preview,"
             f" a.name AS reporter_name,"
             f" se.name_color AS reporter_color"
             f" FROM bug_reports br"
             f" JOIN agents a ON br.agent_id = a.id"
             f" LEFT JOIN store_entitlements se ON se.agent_id = a.id{where}"
-            f" ORDER BY br.created_at DESC"
+            f"{order}"
             f" LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
 
-        # Batch-fetch duplicate counts
+        # Batch-fetch duplicate + comment-link counts
         ids = [r["id"] for r in rows]
         dupe_counts: dict[int, int] = {}
+        comment_counts: dict[int, int] = {}
         if ids:
             for row_id, cnt in conn.execute(
                 "SELECT original_id, COUNT(*) FROM bug_report_duplicates"
@@ -752,6 +988,14 @@ def list_bug_reports(
                 ids,
             ).fetchall():
                 dupe_counts[row_id] = cnt
+            for row_id, cnt in conn.execute(
+                "SELECT report_id, COUNT(*) FROM bug_comment_links"
+                " WHERE report_id IN ({}) GROUP BY report_id".format(
+                    ",".join("?" for _ in ids)
+                ),
+                ids,
+            ).fetchall():
+                comment_counts[row_id] = cnt
 
         return {
             "reports": [
@@ -765,7 +1009,14 @@ def list_bug_reports(
                     "status": r["status"],
                     "confidence": r["confidence"],
                     "duplicate_count": dupe_counts.get(r["id"], 0),
+                    "comment_count": comment_counts.get(r["id"], 0),
                     "created_at": r["created_at"],
+                    "decided_at": r["decided_at"],
+                    "updated_at": r["updated_at"],
+                    "severity": r["severity"],
+                    "has_solution": bool(r["has_solution"]),
+                    "fix_pr": r["fix_pr"],
+                    "body_preview": r["body_preview"],
                     "stale": _bug_stale(r["status"], r["created_at"]),
                 }
                 for r in rows
