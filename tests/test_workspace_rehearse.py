@@ -135,7 +135,8 @@ def test_tool_wiring(agents, wstools):
         seen["kwargs"] = kwargs
         if seen.pop("hand_off", False):
             return None, True, "2026-09-14T00:00:00.000Z", "run-9"
-        return {"ok": True, "checks": kwargs.get("checks", args[3])}, False, None, None
+        result = {"ok": True, "checks": kwargs.get("checks", args[3])}
+        return result, False, None, None
 
     ci_runner.run_checks_with_deadline = fake_run
     try:
