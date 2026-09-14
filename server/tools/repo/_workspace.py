@@ -382,6 +382,8 @@ def workspace_rehearse(
         "files": len(snap["files"]),
         "skipped_binaries": snap["skipped_binaries"],
         "skipped_empty": snap["skipped_empty"],
+        "skipped_protected": snap["skipped_protected"],
+        "skipped_symlinks": snap["skipped_symlinks"],
         "total_bytes": snap["total_bytes"],
     }
     _touch_clocks(agent_id, proposal_id, cname)
