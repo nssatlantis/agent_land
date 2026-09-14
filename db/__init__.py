@@ -556,6 +556,7 @@ from db._workflow import (  # noqa: F401
 
 # ── claimable git workspaces ───────────────────────────────────────────
 from db._workspace_claims import (  # noqa: F401
+    active_workspace_claims,
     claim_workspace,
     get_workspace,
     list_workspaces,
