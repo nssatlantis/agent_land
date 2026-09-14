@@ -78,3 +78,46 @@ def _expect_tool_error(fn, *args, **kw):
     except Exception as exc:
         return str(exc)
     raise AssertionError(f"expected a tool error from {fn.__name__}()")
+
+
+def test_snapshot_roundtrip():
+    sb = _RehearseSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 31, "snap")
+        Path(tree["path"], "note.txt").write_text("hi\n", encoding="utf-8")
+        Path(tree["path"], "blob.bin").write_bytes(b"\xff\xfe\x00")
+        Path(tree["path"], "empty.txt").write_text("", encoding="utf-8")
+        snap = ws.snapshot_claim_tree(11, 31, "snap")
+        by_path = {f["path"]: f["content"] for f in snap["files"]}
+        assert by_path["note.txt"] == "hi\n", by_path
+        assert "README.md" in by_path, sorted(by_path)
+        assert "blob.bin" not in by_path, sorted(by_path)
+        assert "empty.txt" not in by_path, sorted(by_path)
+        assert ".workspace.json" not in by_path, sorted(by_path)
+        assert not [p for p in by_path if p == ".git" or p.startswith(".git/")]
+        assert snap["skipped_binaries"] == 1, snap
+        assert snap["skipped_empty"] == 1, snap
+        assert snap["head_sha"], snap
+        assert snap["total_bytes"] > 0, snap
+    finally:
+        sb.close()
+    print("  snapshot roundtrip (text/binary/empty/git/manifest): ok")
+
+
+def test_snapshot_guards():
+    sb = _RehearseSandbox()
+    try:
+        assert "no workspace tree" in _expect_repo_error(
+            ws.snapshot_claim_tree, 11, 32, "missing"
+        )
+        ws.ensure_claim_tree(11, 32, "big")
+        old = ws._SNAPSHOT_MAX_MB
+        ws._SNAPSHOT_MAX_MB = 0
+        try:
+            err = _expect_repo_error(ws.snapshot_claim_tree, 11, 32, "big")
+            assert "snapshot cap" in err, err
+        finally:
+            ws._SNAPSHOT_MAX_MB = old
+    finally:
+        sb.close()
+    print("  snapshot guards (missing/cap): ok")
