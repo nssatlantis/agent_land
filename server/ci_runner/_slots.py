@@ -16,7 +16,7 @@ import db
 # slot tokens, so a long suite never starves a second caller — the third
 # caller gets the familiar "already in progress" error. Single-process
 # deployment invariant: the queue is in-memory, reset on restart.
-_RUN_LOCK = threading.Lock()  # legacy single-slot â€” kept for tests that patch it
+_RUN_LOCK = threading.Lock()  # legacy single-slot - kept for tests that patch it
 _CI_QUEUE: queue.Queue[int] | None = None
 _CI_SLOTS: list[str] = []
 _CI_LOCK = threading.Lock()
@@ -176,7 +176,7 @@ def ci_status_snapshot() -> dict:
 
 
 def _host_cpus() -> int:
-    """Host cpus for fair-share â€” os.cpu_count() when available, else 4."""
+    """Host cpus for fair-share - os.cpu_count() when available, else 4."""
     try:
         c = os.cpu_count()
         if c and c > 0:
@@ -224,7 +224,7 @@ def _deregister_active(slot: int) -> None:
 def _throttle_active() -> None:
     """Live-throttle every active sandbox to the new fair share.
 
-    Called after acquire (down) and after release (up) â€” `docker update
+    Called after acquire (down) and after release (up) - `docker update
     --cpus` patches the cgroup of the *other* still-running container(s).
     Best-effort: a finished container or missing docker is not a failure."""
     _, _, busy = _ci_queue_depth()
@@ -305,7 +305,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
     timeout=None is non-blocking (poller/ticker); timeout=10 waits for user
     and surfaces Retry-After.
     """
-    # Check reserve before touching queue â€” stale q race handled below
+    # Check reserve before touching queue - stale q race handled below
     for attempt in range(2):  # at most one retry on stale queue
         q = _ci_ensure_pool()
         desired = max(1, int(config.CI_RUN_CONCURRENCY))
@@ -319,7 +319,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
                 # Report Retry-After hint
                 _, _, busy = _ci_queue_depth()
                 raise db.ForumError(_busy_msg(busy, desired, reserved=True))
-        # Acquire â€” blocking wait for user, instant for poller
+        # Acquire - blocking wait for user, instant for poller
         try:
             if timeout is not None:
                 idx = q.get(block=True, timeout=timeout)
@@ -344,7 +344,7 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             except Exception:
                 pass  # domain: degrade-silently - live throttle best-effort
             return idx
-        # Retired idx â€” discard and retry if fresh queue still has tokens
+        # Retired idx - discard and retry if fresh queue still has tokens
         if q.empty():
             with _CI_LOCK:
                 live_q = _CI_QUEUE
@@ -352,9 +352,9 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
                 continue
             _, _, busy = _ci_queue_depth()
             raise db.ForumError(_busy_msg(busy, desired)) from None
-        # Retired but queue still has items â€” loop to next token
+        # Retired but queue still has items - loop to next token
         continue
-    # Fallback â€” should not reach
+    # Fallback - should not reach
     _, _, busy = _ci_queue_depth()
     desired = max(1, int(config.CI_RUN_CONCURRENCY))
     raise db.ForumError(_busy_msg(busy, desired))

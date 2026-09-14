@@ -18,7 +18,7 @@ from github._core import _validate_path
 
 
 def _runner_dir_impl(slot: int) -> str:
-    """Core path construction for runner trees â€” slot 0 is the historic
+    """Core path construction for runner trees - slot 0 is the historic
     base, slot N is sharded. Never patched directly; tests patch _runner_dir."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
     base = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci")
@@ -28,7 +28,7 @@ def _runner_dir_impl(slot: int) -> str:
 
 
 def _runner_dir() -> str:
-    """Legacy single runner checkout â€” kept for backwards compatibility in
+    """Legacy single runner checkout - kept for backwards compatibility in
     tests that import it directly. New code uses _runner_dir_for_slot()."""
     return _runner_dir_impl(0)
 
@@ -37,7 +37,7 @@ _ORIG_RUNNER_DIR = _runner_dir  # for mock detection
 
 
 def _runner_dir_for_slot(slot: int) -> str:
-    """Dedicated runner checkout for *slot* beside the rebase pool slots â€”
+    """Dedicated runner checkout for *slot* beside the rebase pool slots -
     same durable home (AGENTLAND_DATA_DIR/agentland_ws) but never a pool
     slot, so a long suite can never starve conflict/rebase flows. Two
     slots (CI_RUN_CONCURRENCY=2) give two independent -ci trees. NOTE:
@@ -45,7 +45,7 @@ def _runner_dir_for_slot(slot: int) -> str:
     the git workspace pool (agentland_ws/<slug>/slotN, github/_gitops.py)
     - independent lifecycles, never interchanged."""
     # If tests have monkeypatched _runner_dir to a stub, respect it for any
-    # slot â€” the fixture's tree is the same temp dir for all slots in that test.
+    # slot - the fixture's tree is the same temp dir for all slots in that test.
     if _runner_dir is not _ORIG_RUNNER_DIR:
         return _runner_dir()
     return _runner_dir_impl(slot)
@@ -83,7 +83,7 @@ def _try_clone_from_local(tree: str, base: str) -> bool:
     if not origin_url.startswith("https://github.com/"):
         return False
     local_path = str(config.REPO_DIR)
-    # Clone from local path (file://) â€” no network, always up-to-date
+    # Clone from local path (file://) - no network, always up-to-date
     try:
         res = subprocess.run(
             ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
@@ -110,7 +110,7 @@ def _ensure_clone(tree: str) -> None:
     base = github.base_branch()
     if os.path.isdir(os.path.join(tree, ".git")):
         return
-    # Prefer local seed (auto-update checkout) â€” always up-to-date, no network
+    # Prefer local seed (auto-update checkout) - always up-to-date, no network
     if _try_clone_from_local(tree, base):
         github._seed_identity(tree)
         return
@@ -207,18 +207,18 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
 
 
 def _apply_local_changes(tree: str, changes: list[dict]) -> None:
-    """Apply a `files` change list onto `tree` â€” content writes and
+    """Apply a `files` change list onto `tree` - content writes and
     find-replace edits resolved against the tree's current files. Mirrors
     github._writes._apply_edits but reads from the filesystem, not the API.
     Used by local rehearsal (repo_ci_run(files=...)) so an agent can test
     an unpushed diff without a PR."""
     for c in changes:
-        # Host-side write â€” must be gated like every other write path.
+        # Host-side write - must be gated like every other write path.
         # _changes_for_repo_propose is shape-only (see its docstring), so
         # validate here before any os.path.join / open.
         path = _validate_path(c["path"])
         full = os.path.join(tree, path)
-        # Content write â€” create/overwrite.
+        # Content write - create/overwrite.
         if "content" in c:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             import github._writes as _writes_c  # local import to avoid cycle
@@ -236,7 +236,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
             with open(full, "w", encoding="utf-8", newline="") as fh:
                 fh.write(content)
             continue
-        # Patch write â€” find-replace against the file on disk.
+        # Patch write - find-replace against the file on disk.
         if "edits" in c:
             if not os.path.isfile(full):
                 raise db.ForumError(
@@ -257,7 +257,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
                 raise db.ForumError(
                     f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
                 ) from None
-            # Reuse the strict engine from github._writes â€” same errors.
+            # Reuse the strict engine from github._writes - same errors.
             import github._writes as _writes  # local import to avoid cycle
 
             target = _writes._target_eol_for_text(text)
@@ -277,7 +277,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
             with open(full, "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
             continue
-        # Should not reach â€” validated earlier.
+        # Should not reach - validated earlier.
         raise db.ForumError(f"change for {path!r} has no content or edits.")
 
 
@@ -285,13 +285,13 @@ def _prepare_local_tree(
     changes: list[dict], slot: int | None = None
 ) -> tuple[str, str, dict]:
     """Refresh onto origin/main in `slot`'s runner tree, overlay `changes`,
-    and return (tree, head_sha, info). No merge, no fetch of a PR head â€”
+    and return (tree, head_sha, info). No merge, no fetch of a PR head -
     this is the pre-push rehearsal path. The tree is left dirty with the
     overlay; the next _refresh_main heals it."""
     tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
     main_sha = _refresh_main(tree)
-    # Overlay the draft changes â€” each path is gated by
+    # Overlay the draft changes - each path is gated by
     # github._core._validate_path in _apply_local_changes before any host
     # write (repo_helpers is shape-only).
     _apply_local_changes(tree, changes)
