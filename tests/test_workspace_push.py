@@ -1,0 +1,353 @@
+"""Push a claim tree as a single-commit PR (proposal #484, part 6)."""
+
+import asyncio
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_push_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config  # noqa: E402
+import github._gitops as gh  # noqa: E402
+import github._workspaces as ws  # noqa: E402
+from github._core import RepoError  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
+
+
+def _git(*args, cwd=None):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _mk_remote(tmp):
+    bare = os.path.join(tmp, "remote.git")
+    seed = os.path.join(tmp, "seed")
+    os.makedirs(seed)
+    _git("init", "--bare", "-b", "main", bare)
+    _git("init", "-b", "main", cwd=seed)
+    with open(os.path.join(seed, "README.md"), "w") as f:
+        f.write("seed\n")
+    with open(os.path.join(seed, "OLD.txt"), "w") as f:
+        f.write("old\n")
+    _git("-C", seed, "add", "-A")
+    _git(
+        "-C", seed, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "seed"
+    )
+    _git("-C", seed, "push", bare, "main")
+    return bare
+
+
+_SHARED_BARE = _mk_remote(tempfile.mkdtemp(prefix="agentland_ws_push_remote_"))
+
+
+@contextmanager
+def _no_auth(dest):
+    yield
+
+
+class _PushSandbox:
+    """Local-bare remote + stubbed transport (no network, no token)."""
+
+    def __init__(self):
+        self.tmp = tempfile.mkdtemp(prefix="agentland_ws_push_test_")
+        self.calls = []
+        self.open_prs = []
+        self._orig = {
+            "repo_url": ws._repo_url,
+            "claims_root": ws._claims_root,
+            "gitops_url": gh._repo_url,
+            "push_auth": ws._push_auth,
+            "ensure_token": ws._core._ensure_token,
+            "request": ws._core._request,
+            "invalidate": ws._core._invalidate_pr,
+        }
+        ws._repo_url = lambda with_token=False: _SHARED_BARE
+        ws._claims_root = lambda: os.path.join(self.tmp, "claims")
+        gh._repo_url = lambda with_token=False: _SHARED_BARE
+        ws._push_auth = _no_auth
+        ws._core._ensure_token = lambda: None
+
+        def _invalidate(number):
+            self.calls.append(("invalidate", number, None))
+
+        ws._core._invalidate_pr = _invalidate
+        ws._core._request = self._fake_request
+
+    def _fake_request(self, method, path, payload=None, **kw):
+        self.calls.append((method, path, payload))
+        if method == "GET" and path.startswith("pulls?head="):
+            return list(self.open_prs)
+        if method == "POST" and path == "pulls":
+            pr = {"number": 7, "html_url": "http://example/pr/7"}
+            self.open_prs.append(pr)
+            return pr
+        return {}
+
+    def close(self):
+        ws._repo_url = self._orig["repo_url"]
+        ws._claims_root = self._orig["claims_root"]
+        gh._repo_url = self._orig["gitops_url"]
+        ws._push_auth = self._orig["push_auth"]
+        ws._core._ensure_token = self._orig["ensure_token"]
+        ws._core._request = self._orig["request"]
+        ws._core._invalidate_pr = self._orig["invalidate"]
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def _expect_repo_error(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except RepoError as exc:
+        return str(exc)
+    raise AssertionError(f"expected RepoError from {fn.__name__}()")
+
+
+def _expect_tool_error(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except Exception as exc:
+        return str(exc)
+    raise AssertionError(f"expected a tool error from {fn.__name__}()")
+
+
+def _branch_files(tree, branch):
+    out = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", branch],
+        cwd=tree,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return out.stdout.split()
+
+
+def _branch_count(tree, branch):
+    out = subprocess.run(
+        ["git", "rev-list", "--count", f"main..{branch}"],
+        cwd=tree,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(out.stdout.strip())
+
+
+def test_push_single_commit():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 31, "ship")
+        dest = tree["path"]
+        Path(dest, "feat.txt").write_text("feat\n", encoding="utf-8")
+        Path(dest, "README.md").write_text("seed\nmore\n", encoding="utf-8")
+        res = ws.push_claim_tree(
+            11, 31, "ship", "Ship it", "does things", "tester (agent_id=11)"
+        )
+        assert res["pr_number"] == 7, res
+        assert res["first_push"] is True, res
+        assert res["branch"] == "claim/11/31/ship", res
+        assert res["commit_sha"], res
+        assert res["html_url"] == "http://example/pr/7", res
+        assert _branch_count(dest, res["branch"]) == 1, res
+        names = _branch_files(dest, res["branch"])
+        assert "feat.txt" in names, names
+        assert "README.md" in names, names
+        assert ".workspace.json" not in names, names
+        show = subprocess.run(
+            ["git", "show", f"{res['branch']}:feat.txt"],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert show.stdout == "feat\n", show.stdout
+        log = subprocess.run(
+            ["git", "log", "-1", "--format=%B", res["branch"]],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert "Ship it" in log.stdout, log.stdout
+        assert "Citizen: tester (agent_id=11)" in log.stdout, log.stdout
+        posts = [c for c in sb.calls if c[0] == "POST"]
+        assert posts and posts[0][1] == "pulls", sb.calls
+        assert posts[0][2]["head"] == res["branch"], posts
+        assert "Citizen: tester (agent_id=11)" in posts[0][2]["body"], posts
+    finally:
+        sb.close()
+    print("  push single commit (one commit, manifest out, trailer): ok")
+
+
+def test_push_followup_appends():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 32, "ship")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(
+            11, 32, "ship", "Ship it", "body", "tester (agent_id=11)"
+        )
+        sha1 = first["commit_sha"]
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        second = ws.push_claim_tree(
+            11, 32, "ship", "Ship more", "body", "tester (agent_id=11)"
+        )
+        assert second["pr_number"] == 7, second
+        assert second["first_push"] is False, second
+        assert _branch_count(dest, second["branch"]) == 2, second
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha1, second["branch"]],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+        )
+        assert ("invalidate", 7, None) in sb.calls, sb.calls
+        posts = [c for c in sb.calls if c[0] == "POST"]
+        assert len(posts) == 1, sb.calls
+    finally:
+        sb.close()
+    print("  push follow-up (appends, no reset, PR reused): ok")
+
+
+def test_push_stages_deletion():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 33, "del")
+        dest = tree["path"]
+        os.remove(os.path.join(dest, "OLD.txt"))
+        res = ws.push_claim_tree(
+            11, 33, "del", "Drop old", "body", "tester (agent_id=11)"
+        )
+        assert "OLD.txt" not in _branch_files(dest, res["branch"]), res
+    finally:
+        sb.close()
+    print("  push stages deletion: ok")
+
+
+def test_push_guards():
+    sb = _PushSandbox()
+    try:
+        assert "no workspace tree" in _expect_repo_error(
+            ws.push_claim_tree, 11, 34, "missing", "T", "b", "c (agent_id=11)"
+        )
+        ws.ensure_claim_tree(11, 34, "clean")
+        assert "nothing to push" in _expect_repo_error(
+            ws.push_claim_tree, 11, 34, "clean", "T", "b", "c (agent_id=11)"
+        )
+        assert "title is required" in _expect_repo_error(
+            ws.push_claim_tree, 11, 34, "clean", "  ", "b", "c (agent_id=11)"
+        )
+        sb.open_prs.append({"number": 9, "html_url": "http://example/pr/9"})
+        ws.ensure_claim_tree(11, 34, "ghost")
+        ghost = ws._claim_dir(11, 34, "ghost")
+        Path(ghost, "x.txt").write_text("x\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 34, "ghost", "T", "b", "c (agent_id=11)"
+        )
+        assert "open PR #9" in err, err
+    finally:
+        sb.close()
+    print("  push guards (missing/clean/title/past-life): ok")
+
+
+def test_sync_refuses_pushed_tree():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 35, "sync")
+        dest = tree["path"]
+        Path(dest, "f.txt").write_text("f\n", encoding="utf-8")
+        ws.push_claim_tree(11, 35, "sync", "T", "b", "c (agent_id=11)")
+        err = _expect_repo_error(ws.sync_claim_tree, 11, 35, "sync")
+        assert "already pushed" in err, err
+    finally:
+        sb.close()
+    print("  sync refuses pushed tree: ok")
+
+
+def test_tool_push_wiring(agents, wstools):
+    sb = _PushSandbox()
+    orig_block = db.require_workflow_block
+    orig_labels = wstools._apply_pr_labels
+    seen_labels = {}
+    # Workflow gate: covered by the propose-path tests; stubbed here to
+    # isolate the push bookkeeping (link, hold, labels).
+    db.require_workflow_block = lambda *a, **k: None
+
+    async def fake_labels(pr_number, proposal_id, labels, who_name=""):
+        seen_labels["args"] = (pr_number, proposal_id, list(labels), who_name)
+
+    wstools._apply_pr_labels = fake_labels
+    try:
+        tok = agents["beta"]["token"]
+        prop = db.create_proposal(tok, "Push Shop", "body")
+        pid = prop["post_id"]
+        claimed = wstools.claim_workspace(tok, pid, "dev")
+        assert claimed["claim"]["status"] == "active", claimed
+        dest = claimed["tree"]["path"]
+        wstools.workspace_write_file(tok, pid, "dev", "feat.txt", "feat\n")
+        plan = asyncio.run(
+            wstools.workspace_push(
+                tok, pid, "dev", "Push it", "does things", dry_run=True
+            )
+        )
+        assert plan["dry_run"] is True, plan
+        assert plan["branch"] == f"claim/{agents['beta']['agent_id']}/{pid}/dev"
+        assert plan["files"] >= 2, plan
+        assert not [c for c in sb.calls if c[0] == "POST"], sb.calls
+        empty = subprocess.run(
+            ["git", "branch", "--list", "claim/*"],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert empty.stdout.strip() == "", empty.stdout
+        live = asyncio.run(
+            wstools.workspace_push(tok, pid, "dev", "Push it", "does things")
+        )
+        assert live["pr_number"] == 7, live
+        assert live["proposal_linked"] is True, live
+        assert db.proposal_for_pr(7) == pid, live
+        posts = [c for c in sb.calls if c[0] == "POST"]
+        assert posts[0][2]["title"].startswith("WIP: "), posts
+        assert config.PROPOSAL_HOLD_LABEL in seen_labels["args"][2], seen_labels
+        assert "no active workspace" in _expect_tool_error(
+            _push_guard(wstools), agents["alpha"]["token"], pid, "dev", "T", "b"
+        )
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        db.require_workflow_block = orig_block
+        wstools._apply_pr_labels = orig_labels
+        sb.close()
+    print("  tool wiring (dry-run + live + hold + guards): ok")
+
+
+def _push_guard(wstools):
+    def _guard(*args, **kw):
+        return asyncio.run(wstools.workspace_push(*args, **kw))
+
+    return _guard
+
+
+def main():
+    from server.tools.repo import _workspace as wstools  # noqa: E402
+
+    agents, _post_id = setup()
+    test_push_single_commit()
+    test_push_followup_appends()
+    test_push_stages_deletion()
+    test_push_guards()
+    test_sync_refuses_pushed_tree()
+    test_tool_push_wiring(agents, wstools)
+    print("test_workspace_push: all scenarios passed")
+
+
+if __name__ == "__main__":
+    main()
