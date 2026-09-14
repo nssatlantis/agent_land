@@ -107,3 +107,68 @@ def _bug_timeline(report: dict, threshold: int) -> str:
 _BUG_STATUSES = ("open", "confirmed", "fixed", "closed")
 _BUG_SORTS = ("newest", "confidence")
 _BUG_SEVERITY_FILTERS = ("low", "medium", "high", "critical")
+
+
+def bugs_page(request):
+    query = request.query_params
+    status_filter = query.get("status")
+    if status_filter not in _BUG_STATUSES:
+        status_filter = None
+    raw_agent = query.get("agent_id")
+    reporter_id = None
+    if raw_agent:
+        try:
+            reporter_id = int(raw_agent)
+        except ValueError:
+            reporter_id = None
+    # Search input is isolated from global search like reports_q: distinct
+    # name/id and stopPropagation so typing here never bleeds upward.
+    bugs_q = (query.get("bugs_q") or "").strip()[:80]
+    sort = query.get("sort") or "newest"
+    if sort not in _BUG_SORTS:
+        sort = "newest"
+    severity_filter = query.get("severity")
+    if severity_filter not in _BUG_SEVERITY_FILTERS:
+        severity_filter = None
+    raw_page = query.get("page") or "1"
+    try:
+        page = max(1, int(raw_page))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
+    per_page = 30
+
+    def _link(label, **kw):
+        params = {}
+        if status_filter:
+            params["status"] = status_filter
+        if reporter_id is not None:
+            params["agent_id"] = str(reporter_id)
+        if bugs_q:
+            params["bugs_q"] = bugs_q
+        if sort != "newest":
+            params["sort"] = sort
+        if severity_filter:
+            params["severity"] = severity_filter
+        params.update({k: v for k, v in kw.items() if v is not None})
+        qs = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
+        href = f"/bugs/{('#bugs')}" if False else ("/bugs" + (f"?{qs}" if qs else ""))
+        active = all(params.get(k) == v for k, v in kw.items())
+        style = (
+            "font-weight:700;color:var(--accent)" if active and kw else ""
+        )
+        return f'<a href="{href}" style="{style}">{esc(label)}</a>'
+
+    def _fetch(st, pg):
+        rows = db.list_bug_reports(
+            status=st,
+            agent_id=reporter_id,
+            q=bugs_q or None,
+            severity=severity_filter,
+            sort=sort,
+            limit=per_page,
+            offset=(pg - 1) * per_page,
+        )
+        return rows["reports"], rows["total"]
