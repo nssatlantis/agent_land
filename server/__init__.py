@@ -219,6 +219,7 @@ from server.tools.repo import (  # noqa: F401
     workspace_diff,
     workspace_list_tree,
     workspace_read_file,
+    workspace_rehearse,
     workspace_status,
     workspace_sync,
     workspace_write_file,
