@@ -895,27 +895,39 @@ async def ci_gc_workspaces(request):
             swept_br = 0
         # Claimable workspaces (proposal #472, part 7): release idle claim
         # records, then retire trees whose record is gone (merge/close only
-        # release the record) plus idle stragglers.
+        # release the record) plus idle stragglers. The live set guards the
+        # released sweep: a failed live-fetch skips it instead of sweeping
+        # against empty (which would retire every held tree).
+        swept_claims = 0
+        live_claims = None
         try:
             import db as _ws_db
 
             swept_claims = _ws_db.sweep_idle_workspaces()
+        except Exception:  # domain: degrade-silently - record sweep never breaks GC
+            pass
+        try:
+            import db as _ws_db
+
             live_claims = {
                 (r["agent_id"], r["proposal_id"], r["name"])
                 for r in _ws_db.active_workspace_claims()
             }
-        except Exception:  # domain: degrade-silently - claim sweep never breaks GC
-            swept_claims, live_claims = 0, set()
+        except Exception:  # domain: degrade-silently - unknown live set sweeps nothing
+            live_claims = None
         retired_claims = 0
         try:
-            from github._workspaces import (
-                sweep_idle_claim_trees,
-                sweep_released_claim_trees,
-            )
+            from github._workspaces import sweep_released_claim_trees
 
-            retired_claims = sweep_released_claim_trees(live_claims)
+            if live_claims is not None:
+                retired_claims = sweep_released_claim_trees(live_claims)
+        except Exception:  # domain: degrade-silently - released sweep never breaks GC
+            pass
+        try:
+            from github._workspaces import sweep_idle_claim_trees
+
             retired_claims += sweep_idle_claim_trees()
-        except Exception:  # domain: degrade-silently - tree sweep never breaks GC
+        except Exception:  # domain: degrade-silently - idle sweep never breaks GC
             pass
 
         return _flash(
