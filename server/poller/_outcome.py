@@ -341,13 +341,13 @@ def _process_closed_pr(pr: dict) -> None:
                     agent_id,
                 )
             staking_mod.pay_stake_rewards(conn, pr["number"])
-            # Bug linkage: a merged PR against a proposal referencing #B bugs
-            # tells each live bug's reporter a fix may have landed.
+            # Claimable workspaces (proposal #472, part 7): merged work is
+            # done - release any active workspace claims on the proposal so
+            # names stop being held. Record-only; trees converge via GC.
             if proposal_post_id:
                 try:
-                    db.notify_bug_fix_landed(conn, pr["number"], proposal_post_id)
-                except Exception:
-                    # domain: degrade-silently - notify best-effort only
+                    db.release_workspaces_for_proposal(conn, proposal_post_id)
+                except Exception:  # domain: degrade-silently - release advisory
                     pass
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
