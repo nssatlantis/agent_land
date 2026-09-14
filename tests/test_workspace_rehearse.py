@@ -1,1 +1,1 @@
-placeholder
+"""Snapshot a claim tree into a CI files-overlay (proposal #482, part 5)."
