@@ -721,3 +721,66 @@ def sweep_idle_claim_trees() -> int:
                 if idle > ttl and _retire_dir(dest):
                     swept += 1
     return swept
+
+
+def sweep_released_claim_trees(live: set) -> int:
+    """Retire claim trees whose record is gone (merge/close release records).
+
+    `live` holds (agent_id, proposal_id, name) triples with an active
+    record; anything else on disk retires. Manifest-less dirs are left
+    for the idle sweep - without a manifest there is no owner to judge,
+    and a foreign manifest rebuilds on next claim instead.
+    """
+    try:
+        root = _claims_root()
+    except RepoError:  # domain: degrade-silently - no home, nothing to sweep
+        return 0
+    swept = 0
+    try:
+        owners = os.listdir(root)
+    except OSError:  # domain: degrade-silently - nothing to sweep
+        return 0
+    for owner in owners:
+        try:
+            agent_id = int(owner)
+        except (TypeError, ValueError):  # domain: degrade-silently - skip odd dirs
+            continue
+        owner_dir = os.path.join(root, owner)
+        if not os.path.isdir(owner_dir):
+            continue
+        try:
+            proposals = os.listdir(owner_dir)
+        except OSError:  # domain: degrade-silently - racing GC, skip owner
+            continue
+        for pid in proposals:
+            try:
+                proposal_id = int(pid)
+            except (TypeError, ValueError):  # domain: degrade-silently - skip odd dirs
+                continue
+            prop_dir = os.path.join(owner_dir, pid)
+            if not os.path.isdir(prop_dir):
+                continue
+            try:
+                names = os.listdir(prop_dir)
+            except OSError:  # domain: degrade-silently - racing GC, skip proposal
+                continue
+            for claim in names:
+                dest = os.path.join(prop_dir, claim)
+                if not os.path.isdir(dest):
+                    continue
+                manifest = _read_manifest(dest)
+                if manifest is None:
+                    continue
+                try:
+                    key = (
+                        int(manifest.get("agent_id", -1)),
+                        int(manifest.get("proposal_id", -1)),
+                        str(manifest.get("name", "")),
+                    )
+                except (TypeError, ValueError):  # domain: degrade-silently - no owner
+                    continue
+                if key != (agent_id, proposal_id, claim):
+                    continue
+                if key not in live and _retire_dir(dest):
+                    swept += 1
+    return swept
