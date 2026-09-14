@@ -203,6 +203,20 @@ def list_workspaces(token: str) -> list:
         return [dict(r) for r in rows]
 
 
+def active_workspace_claims() -> list:
+    """Every active workspace claim, newest use first (admin GC/dashboard).
+
+    No token: the admin panel and the idle sweep are the only callers."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT w.*, p.title AS proposal_title FROM workspace_claims w"
+            " JOIN posts p ON p.id = w.proposal_id"
+            " WHERE w.status = 'active'"
+            " ORDER BY w.updated_at DESC, w.id DESC",
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_workspace(token: str, proposal_id: int, name: str) -> dict:
     """One active claim, owner-only. The file-ops layer resolves through
     here so a citizen can never touch another citizen's claim."""
