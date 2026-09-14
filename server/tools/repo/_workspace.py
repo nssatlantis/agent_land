@@ -365,6 +365,7 @@ def workspace_rehearse(
     who = db.whoami(token)
     import server.ci_runner as ci_runner
     from server.repo_helpers import _changes_for_repo_propose
+
     normalized = _changes_for_repo_propose(None, None, snap["files"])
     for entry in normalized:
         _validate_path(entry["path"])
