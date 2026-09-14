@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 
+import config
 import db
 import github
 from github._core import _validate_path
