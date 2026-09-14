@@ -111,6 +111,10 @@ def test_write_read_roundtrip(agents, wstools):
         full = wstools.workspace_read_file(tok, pid, "dev", "notes/todo.txt")
         assert full["content"] == "hello", full
         assert full["total_lines"] == 1, full
+        unscoped = wstools.workspace_diff(tok, pid, "dev")
+        assert "hello" in unscoped["diff"], unscoped
+        scoped = wstools.workspace_diff(tok, pid, "dev", path="notes/todo.txt")
+        assert "hello" in scoped["diff"], scoped
         body = "l1\nl2\nl3\nl4\nl5\n"
         w(tok, pid, "dev", "lines.txt", body)
         part = wstools.workspace_read_file(tok, pid, "dev", "lines.txt", 2, 4)
