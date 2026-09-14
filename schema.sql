@@ -1163,6 +1163,9 @@ CREATE TABLE IF NOT EXISTS pr_decline_grace (
 -- once it reaches BUG_CONFIDENCE_THRESHOLD (default 3) the bug is eligible
 -- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed,
 -- plus closed (quorum or reporter resolution with a reason; karma-neutral).
+-- Triage lives on the row itself (overhaul #492): severity, repro_steps and
+-- evidence sharpen the observation; solution (+solver) and fix_pr record the
+-- way out.  The reporter curates them while open/confirmed, the admin anytime.
 CREATE TABLE IF NOT EXISTS bug_reports (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id        INTEGER NOT NULL REFERENCES agents(id),
@@ -1176,13 +1179,26 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     decided_at      TEXT,
     resolution      TEXT CHECK (resolution IS NULL
                     OR resolution IN ('already_fixed', 'invalid', 'duplicate')),
-    resolution_note TEXT
+    resolution_note TEXT,
+    severity        TEXT CHECK (severity IS NULL
+                    OR severity IN ('low', 'medium', 'high', 'critical')),
+    repro_steps     TEXT,
+    evidence        TEXT,
+    solution        TEXT,
+    solved_by       INTEGER REFERENCES agents(id),
+    solved_at       TEXT,
+    fix_pr          INTEGER,
+    updated_at      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_status ON bug_reports(status);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_url ON bug_reports(url);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_created ON bug_reports(created_at);
+-- NOTE: idx_bug_reports_severity lives in db/_core/_boot_collab.py, not here:
+-- schema.sql executes before migrations at boot, and an index on a
+-- not-yet-migrated column would fail legacy boots (the posts proposal_kind
+-- precedent only survives because no live DB predates it).
 
 -- Duplicate linkage: one row per duplicate report.  The first report on a
 -- URL is the original; subsequent reports link here and increment the
@@ -1248,6 +1264,25 @@ CREATE TABLE IF NOT EXISTS bug_report_links (
 
 CREATE INDEX IF NOT EXISTS idx_bug_report_links_post
     ON bug_report_links(post_id);
+
+-- Bug-comment links: write-time map of validated #B references in comment
+-- bodies (overhaul #492).  Comments are append-only (merge appends), so each
+-- write syncs its own piece's references with INSERT OR IGNORE and the union
+-- stays exact.  All three FKs cascade with deletions.
+CREATE TABLE IF NOT EXISTS bug_comment_links (
+    report_id  INTEGER NOT NULL REFERENCES bug_reports(id) ON DELETE CASCADE,
+    comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (report_id, comment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_comment_links_comment
+    ON bug_comment_links(comment_id);
+
+CREATE INDEX IF NOT EXISTS idx_bug_comment_links_report
+    ON bug_comment_links(report_id);
 
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
