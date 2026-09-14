@@ -334,6 +334,10 @@ def claim_tree_diff(
     return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
+def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+    stub = True
+
+
 def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     """Fetch origin/<base> and hard-reset a CLEAN tree onto it."""
     dest = _claim_dir(agent_id, proposal_id, name)
