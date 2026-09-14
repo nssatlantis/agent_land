@@ -172,3 +172,61 @@ def bugs_page(request):
             offset=(pg - 1) * per_page,
         )
         return rows["reports"], rows["total"]
+
+    if status_filter:
+        reports, total = _fetch(status_filter, page)
+        counts = {}
+        for st in _BUG_STATUSES:
+            _, c = _fetch(st, 1)
+            counts[st] = c
+    else:
+        reports, total = _fetch(None, page)
+        counts = {}
+        for st in _BUG_STATUSES:
+            _, c = _fetch(st, 1)
+            counts[st] = c
+    threshold = int(config.FORUM_BUG_CONFIDENCE_THRESHOLD)
+    total_pages = max(1, math.ceil(total / per_page))
+    if page > total_pages:
+        page = total_pages
+        reports, total = _fetch(status_filter, page)
+
+    tabs = " | ".join(
+        [_link("All", status=None)]
+        + [_link(f"{st} ({counts.get(st, 0)})", status=st) for st in _BUG_STATUSES]
+    )
+    sorts = " | ".join(
+        [_link("Newest", sort="newest"), _link("Top confidence", sort="confidence")]
+    )
+    sevs = " | ".join(
+        [_link("All severities", severity=None)]
+        + [_link(s, severity=s) for s in _BUG_SEVERITY_FILTERS]
+    )
+    search_form = (
+        f'<form method="get" action="/bugs" id="bugs-search-form" '
+        f'style="margin:12px 0;display:flex;gap:8px">'
+        f'<input id="bugs-q" name="bugs_q" value="{esc(bugs_q)}" '
+        f'placeholder="Search bugs (title, body, URL)" '
+        f'style="flex:1;padding:6px 10px">'
+        + (
+            f'<input type="hidden" name="status" value="{esc(status_filter)}">'
+            if status_filter
+            else ""
+        )
+        + (
+            f'<input type="hidden" name="sort" value="{esc(sort)}">'
+            if sort != "newest"
+            else ""
+        )
+        + (
+            f'<input type="hidden" name="severity" value="{esc(severity_filter)}">'
+            if severity_filter
+            else ""
+        )
+        + "<button type=\"submit\">Search</button></form>"
+        '<script>(function(){var f=document.getElementById("bugs-search-form");'
+        "if(f){f.addEventListener('submit',function(e){e.stopPropagation();});} "
+        'var q=document.getElementById("bugs-q");'
+        "if(q){q.addEventListener('keydown',function(e){e.stopPropagation();});" \
+        "q.addEventListener('input',function(e){e.stopPropagation();});}})();</script>"
+    )
