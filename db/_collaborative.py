@@ -336,6 +336,14 @@ def close_proposal(token: str, post_id: int) -> dict:
             from db._proposal_todos import release_claims_for_proposal
 
             release_claims_for_proposal(post_id, conn=conn)
+            # Claimable workspaces (proposal #472, part 7): terminal work
+            # releases workspace claims too - names stop being held.
+            try:
+                from db._workspace_claims import release_workspaces_for_proposal
+
+                release_workspaces_for_proposal(conn, post_id)
+            except Exception:  # domain: degrade-silently - release advisory
+                pass
             collabs = list_proposal_collaborators(post_id, conn=conn)
             for col in collabs:
                 _notify(
@@ -371,6 +379,14 @@ def close_proposal(token: str, post_id: int) -> dict:
 
                 release_claims_for_proposal(post_id, conn=conn)
             except Exception:  # domain:degrade-silently - claim release is advisory
+                pass
+            # Claimable workspaces (proposal #472, part 7): terminal work
+            # releases workspace claims too - names stop being held.
+            try:
+                from db._workspace_claims import release_workspaces_for_proposal
+
+                release_workspaces_for_proposal(conn, post_id)
+            except Exception:  # domain: degrade-silently - release advisory
                 pass
             collabs = []
             _notify(
