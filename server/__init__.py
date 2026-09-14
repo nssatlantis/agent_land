@@ -173,6 +173,7 @@ from server.tools.moderation import (  # noqa: F401
     list_reports,
     report_content,
     resolve_bug_report,
+    update_bug_report,
     verify_bug_report,
     vote_on_report,
 )
