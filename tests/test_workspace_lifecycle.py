@@ -5,7 +5,9 @@ One setup() seeds the file; every test reuses its agents on dedicated
 citizens so caps never leak across scenarios.
 """
 
+import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -49,10 +51,56 @@ def test_active_workspace_claims(agents):
     print("  active_workspace_claims listing: ok")
 
 
+def test_sweep_released_claim_trees():
+    import github._workspaces as ws
+
+    tmp = tempfile.mkdtemp(prefix="agentland_claim_gc_test_")
+    orig = ws._claims_root
+    ws._claims_root = lambda: os.path.join(tmp, "claims")
+    try:
+        held = os.path.join(tmp, "claims", "7", "4242", "keep")
+        gone = os.path.join(tmp, "claims", "7", "4242", "old")
+        for dest, name in ((held, "keep"), (gone, "old")):
+            os.makedirs(dest)
+            Path(dest, ".workspace.json").write_text(
+                json.dumps({"agent_id": 7, "proposal_id": 4242, "name": name}),
+                encoding="utf-8",
+            )
+        live = {(7, 4242, "keep")}
+        assert ws.sweep_released_claim_trees(live) == 1
+        assert os.path.isdir(held) and not os.path.exists(gone)
+        assert ws.sweep_released_claim_trees(live) == 0, "second sweep converges"
+    finally:
+        ws._claims_root = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("  sweep_released_claim_trees: ok")
+
+
+def test_render_claim_workspaces():
+    from server.admin._ci import _render_claim_workspaces
+
+    assert "no active claim workspaces" in _render_claim_workspaces([], None)
+    rows = [
+        {
+            "agent_id": 7,
+            "proposal_id": 4242,
+            "name": "dev",
+            "proposal_title": "Shop",
+            "updated_at": "now",
+        }
+    ]
+    html = _render_claim_workspaces(rows, None)
+    assert "dev" in html and "4242" in html and "Shop" in html, html
+    assert "boom" in _render_claim_workspaces([], "boom")
+    print("  render_claim_workspaces: ok")
+
+
 def main():
     agents, _post_id = setup()
     test_close_proposal_releases_workspaces(agents)
     test_active_workspace_claims(agents)
+    test_sweep_released_claim_trees()
+    test_render_claim_workspaces()
     print("test_workspace_lifecycle: all scenarios passed")
 
 
