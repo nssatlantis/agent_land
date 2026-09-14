@@ -32,6 +32,9 @@ def _mk_remote(tmp):
     _git("init", "-b", "main", cwd=seed)
     with open(os.path.join(seed, "README.md"), "w") as f:
         f.write("seed\n")
+    os.makedirs(os.path.join(seed, ".github", "workflows"), exist_ok=True)
+    with open(os.path.join(seed, ".github", "workflows", "ci.yml"), "w") as f:
+        f.write("jobs:\n")
     _git("-C", seed, "add", "-A")
     _git(
         "-C", seed, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "seed"
@@ -89,17 +92,6 @@ def _claim(agents, wstools, key, title):
     return pid, tok
 
 
-def _advance_remote():
-    work = tempfile.mkdtemp(prefix="agentland_claim_adv_")
-    _git("clone", _SHARED_BARE, "work", cwd=work)
-    w = os.path.join(work, "work")
-    Path(w, "NEW.txt").write_text("new\n", encoding="utf-8")
-    _git("-C", w, "add", "-A")
-    _git("-C", w, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "more")
-    _git("-C", w, "push", "origin", "main")
-    shutil.rmtree(work, ignore_errors=True)
-
-
 def test_snapshot_roundtrip():
     sb = _RehearseSandbox()
     try:
@@ -117,6 +109,20 @@ def test_snapshot_roundtrip():
         assert not [p for p in by_path if p == ".git" or p.startswith(".git/")]
         assert snap["skipped_binaries"] == 1, snap
         assert snap["skipped_empty"] == 1, snap
+        assert snap["skipped_protected"] == 1, snap
+        try:
+            os.symlink(
+                os.path.join(tree["path"], "note.txt"),
+                os.path.join(tree["path"], "link.txt"),
+            )
+        except (
+            OSError,
+            NotImplementedError,
+        ):  # domain: degrade-silently - no-symlink platforms skip pin
+            pass
+        else:
+            snap2 = ws.snapshot_claim_tree(11, 31, "snap")
+            assert "link.txt" not in {f["path"] for f in snap2["files"]}, snap2
         assert snap["head_sha"], snap
         assert snap["total_bytes"] > 0, snap
     finally:
@@ -160,11 +166,7 @@ def test_tool_wiring(agents, wstools):
 
     ci_runner.run_checks_with_deadline = fake_run
     try:
-        prop = db.create_proposal(agents["alpha"]["token"], "Rehearse Shop", "body")
-        pid = prop["post_id"]
-        tok = agents["alpha"]["token"]
-        claimed = wstools.claim_workspace(tok, pid, "dev")
-        assert claimed["claim"]["status"] == "active", claimed
+        pid, tok = _claim(agents, wstools, "alpha", "Rehearse Shop")
         wstools.workspace_write_file(tok, pid, "dev", "feat.txt", "feat\n")
         direct = wstools.workspace_rehearse(tok, pid, "dev")
         assert direct["ok"] is True, direct
@@ -190,13 +192,10 @@ def test_tool_wiring(agents, wstools):
 def test_tool_guards(agents, wstools):
     sb = _RehearseSandbox()
     try:
-        prop = db.create_proposal(agents["beta"]["token"], "Rehearse Guard", "body")
-        pid = prop["post_id"]
-        beta = agents["beta"]["token"]
+        pid, beta = _claim(agents, wstools, "beta", "Rehearse Guard")
         assert "no active workspace" in _expect_tool_error(
             wstools.workspace_rehearse, agents["alpha"]["token"], pid, "dev"
         )
-        wstools.claim_workspace(beta, pid, "dev")
         wstools.release_workspace(beta, pid, "dev")
     finally:
         sb.close()
