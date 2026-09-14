@@ -41,10 +41,12 @@ def _red_is_regressions_only(detail: dict) -> bool:
     """True when a red bench run's only defect is drift-vs-anchor regressions.
 
     Structural failures surface as detail["failed_files"] (the runner folds
-    structural FAIL lines and bench_errors into it, key absent when clean),
-    query errors land in summary["bench_errors"], and infra rows lack medians -
-    so missing/empty failed_files + empty bench_errors + present medians + not
-    timed out isolates "red solely because medians drifted from a stale
+    structural FAIL lines into it, plus bench_errors when no FAILED lines
+    are present; key absent when clean), query errors land in
+    summary["bench_errors"], and infra rows lack medians - so missing/empty
+    failed_files + empty bench_errors + a positive regressions counter +
+    present medians + not timed out isolates "red solely because medians
+    drifted from a stale
     anchor". Consulted only by the paid store path: regressions are drift
     judgment, which a bought run exists to render (ridden loud as
     drift_override). Never consulted on the free path.
@@ -59,6 +61,9 @@ def _red_is_regressions_only(detail: dict) -> bool:
     if not isinstance(summary, dict):
         return False
     if summary.get("bench_errors"):
+        return False
+    regs = summary.get("regressions")
+    if isinstance(regs, bool) or not isinstance(regs, int) or regs <= 0:
         return False
     if not _run_medians(detail):
         return False
@@ -166,7 +171,9 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
     medians still carry through. On the store path only, a red run whose
     sole defect is drift regressions is judged as drift, not failed quality
     (#491 - the harness reds on any regression, which would otherwise brick
-    paid re-blessing against a stale anchor). reason is heartbeat, store or bootstrap;
+    paid re-blessing against a stale anchor; partial timing tables still
+    hold so a truncated run can never shrink the anchor). reason is
+    heartbeat, store or bootstrap;
     blessed_by names the paying citizen on the store path, None otherwise.
     The spend/refund around paid runs lives with the caller (server layer);
     this function only judges and records."""
@@ -190,8 +197,17 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
         problem = _candidate_problem(detail, for_paid_judgment=(reason == "store"))
         if problem is not None:
             return f"held: ev{event_id} unblessable ({problem})"
+        waived = reason == "store" and (
+            detail.get("ok") is not True or detail.get("exit_code") != 0
+        )
         medians = _run_medians(detail)
         anchor = events.bench_anchor_for()
+        if (
+            waived
+            and anchor is not None
+            and any(q not in medians for q in (anchor.get("medians") or {}))
+        ):
+            return f"held: ev{event_id} unblessable (partial timing table)"
         drift_override: list[str] = []
         if anchor is not None:
             rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=50)
