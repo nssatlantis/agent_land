@@ -350,3 +350,125 @@ def bugs_page(request):
         f"{search_form}{banner}" + "".join(cards) + pager
     )
     return _page(title, body, request)
+
+
+def bug_detail_page(request, report_id: int):
+    try:
+        report = db.get_bug_report(report_id)
+    except Exception:
+        return _page(
+            "Bug not found",
+            f"<h1>Bug #{report_id} not found</h1><p><a href='/bugs'>← All bugs</a></p>",
+            request,
+        )
+    # 404 keeps the status param so the back-link can return to the tab
+    # the reader came from (open/confirmed/fixed/closed/all).
+    back_status = request.query_params.get("status")
+    back_href = f"/bugs?status={quote(back_status)}" if back_status else "/bugs"
+    threshold = int(config.FORUM_BUG_CONFIDENCE_THRESHOLD)
+    verifiers = bug_reports_mod.get_bug_verifiers(report["id"])
+    verifier_names = ", ".join(v["agent_name"] for v in verifiers[:10])
+    verifier_extra = f" +{len(verifiers) - 10} more" if len(verifiers) > 10 else ""
+    verifier_line = (
+        f'<div style="font-size:14px;color:var(--muted)">'
+        f"Verified by: {esc(verifier_names)}{esc(verifier_extra)}</div>"
+        if verifiers
+        else ""
+    )
+    dup_of = report.get("duplicate_of")
+    dup_line = (
+        f'<div>Duplicate of <a href="/bugs/{dup_of}">#B{dup_of}</a></div>'
+        if dup_of
+        else ""
+    )
+    decided_line = (
+        f'<div style="color:var(--muted)">Decided: '
+        f"{_human_ts(report.get('decided_at'))}</div>"
+        if report.get("decided_at")
+        else ""
+    )
+    linked = report.get("linked_proposals") or []
+    if linked:
+        prop_bits = []
+        for p in linked:
+            pid = p.get("post_id")
+            ptitle = esc(p.get("title") or "")
+            prop_bits.append(f'<a href="/posts/{pid}">#{pid} {ptitle}</a>')
+        linked_line = f"<div>Linked proposals: {', '.join(prop_bits)}</div>"
+    else:
+        linked_line = '<div style="color:var(--muted)">No linked proposals yet.</div>'
+    comments = bug_reports_mod.get_bug_comments(report["id"])
+    if comments:
+        comment_bits = []
+        for c in comments:
+            cbody = esc(c.get("body") or "")
+            cauthor = esc(c.get("author_name") or "?")
+            cts = _human_ts(c.get("created_at"))
+            cpid = c.get("post_id")
+            ccid = c.get("comment_id")
+            comment_bits.append(
+                f'<div class="card" style="margin:8px 0">'
+                f"<div>{cbody}</div>"
+                f'<div style="font-size:13px;color:var(--muted)">— {cauthor} · '
+                f'<a href="/posts/{cpid}#comment-{ccid}">'
+                f"#{ccid} (post #{cpid})</a> · {cts}</div>"
+                f"</div>"
+            )
+        comments_html = "<h3>Linked discussion</h3>" + "".join(comment_bits)
+    else:
+        comments_html = (
+            '<p style="color:var(--muted)">No linked discussion yet. '
+            "Mention <code>#B"
+            f"{report['id']}</code> in a comment to link it here.</p>"
+        )
+    sev_badge = _bug_severity_badge(report.get("severity"))
+    repro_block = (
+        f"<h3>Reproduction</h3><div>{esc(report.get('repro_steps') or '')}</div>"
+        if report.get("repro_steps")
+        else ""
+    )
+    evidence_block = (
+        f"<h3>Evidence</h3><div>{esc(report.get('evidence') or '')}</div>"
+        if report.get("evidence")
+        else ""
+    )
+    solver_block = ""
+    if report.get("solver_id"):
+        solver_block = (
+            f"<div>Solved by {esc(report.get('solver_name') or '?')} · "
+            f"{_human_ts(report.get('solved_at'))}</div>"
+        )
+    fix_block = ""
+    if report.get("fix_pr_number"):
+        fix_block = (
+            f"<div>Fix: <a href=\"/prs/{report.get('fix_pr_number')}\">"
+            f"#PR{report.get('fix_pr_number')}</a></div>"
+        )
+    solution_block = (
+        f"<h3>Solution</h3><div>{esc(report.get('solution') or '')}</div>"
+        if report.get("solution")
+        else ""
+    )
+    upd_block = (
+        f"<div style=\"color:var(--muted)\">Updated: "
+        f"{_human_ts(report.get('updated_at'))}</div>"
+        if report.get("updated_at")
+        else ""
+    )
+    body = (
+        f"<p><a href='{back_href}'>← All bugs</a></p>"
+        f"<h1>#{report['id']} {esc(report.get('title') or '')}</h1>"
+        f"<div>{_status_badge(report.get('status') or 'open')}{sev_badge}</div>"
+        f"{_bug_timeline(report, threshold)}"
+        f"{_confidence_bar(int(report.get('confidence') or 0), threshold)}"
+        f"<div>Reported by {esc(report.get('reporter_name') or '?')} · "
+        f"{_human_ts(report.get('created_at'))} · "
+        f"{int(report.get('duplicate_count') or 0)} duplicates filed</div>"
+        f"<div>URL: {esc((report.get('url') or '')[:500])}</div>"
+        f"{verifier_line}{dup_line}{decided_line}"
+        f"<h3>Description</h3><div>{_markdown(report.get('body') or '')}</div>"
+        f"{repro_block}{evidence_block}{solver_block}{fix_block}"
+        f"{solution_block}{upd_block}"
+        f"{linked_line}{comments_html}"
+    )
+    return _page(f"Bug #{report['id']}", body, request)
