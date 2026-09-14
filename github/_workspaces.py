@@ -334,6 +334,74 @@ def claim_tree_diff(
     return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
+_SNAPSHOT_MAX_MB = 32.0
+
+
+def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+    """Read one claim tree into a files-overlay ({path, content} entries).
+
+    Skips .git, the managed manifest, .github (no v1 path can modify
+    tree .github content and the write gates refuse it, so it always
+    equals base), empty files (the files overlay refuses empty
+    content), symlinks, and non-UTF-8 files (counted skips, never
+    executed). Raw bytes count toward _SNAPSHOT_MAX_MB before decode,
+    so hostile trees cannot OOM the worker.
+    """
+    dest = _claim_dir(agent_id, proposal_id, name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    files: list = []
+    skipped_binaries = 0
+    skipped_empty = 0
+    skipped_protected = 0
+    skipped_symlinks = 0
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(dest):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+        for fn in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fn), dest).replace(os.sep, "/")
+            if rel in _MANAGED:
+                continue
+            if rel == ".github" or rel.startswith(".github/"):
+                skipped_protected += 1
+                continue
+            full = os.path.join(dirpath, fn)
+            if os.path.islink(full):
+                skipped_symlinks += 1
+                continue
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:  # domain: degrade-silently - racing writer, skip
+                continue
+            total += len(data)
+            if total > _SNAPSHOT_MAX_MB * 1024 * 1024:
+                raise RepoError(
+                    f"workspace tree exceeds the {_SNAPSHOT_MAX_MB:g}MB "
+                    "snapshot cap - release it."
+                )
+            if not data:
+                skipped_empty += 1
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:  # domain: degrade-silently - skip binaries
+                skipped_binaries += 1
+                continue
+            files.append({"path": rel, "content": text})
+    files.sort(key=lambda r: str(r["path"]))
+    return {
+        "head_sha": _head_sha(dest),
+        "files": files,
+        "skipped_binaries": skipped_binaries,
+        "skipped_empty": skipped_empty,
+        "skipped_protected": skipped_protected,
+        "skipped_symlinks": skipped_symlinks,
+        "total_bytes": total,
+    }
+
+
 def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     """Fetch origin/<base> and hard-reset a CLEAN tree onto it."""
     dest = _claim_dir(agent_id, proposal_id, name)
