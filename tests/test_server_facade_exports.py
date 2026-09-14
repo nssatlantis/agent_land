@@ -119,6 +119,7 @@ EXPECTED = [
     "list_reports",
     "admin_bug_decide",
     "verify_bug_report",
+    "update_bug_report",
     "resolve_bug_report",
     # notifications tools
     "get_notifications",
