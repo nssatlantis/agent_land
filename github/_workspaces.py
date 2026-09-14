@@ -289,17 +289,16 @@ def _porcelain_changes(dest: str) -> list:
 
 
 def _untracked_paths(dest: str) -> list:
-    """Untracked, unmanaged paths in one tree (best-effort, may be empty)."""
-    res = _git(dest, "status", "--porcelain=v1", check=False)
+    """Untracked, unmanaged files in one tree (best-effort, may be empty).
+
+    Uses `ls-files --others` (individual files) rather than porcelain
+    `??` lines, which collapse wholly-untracked directories to `dir/`
+    and would silently drop nested new files from diffs.
+    """
+    res = _git(dest, "ls-files", "--others", "--exclude-standard", "-z", check=False)
     if res.returncode != 0:
         return []
-    out = []
-    for line in res.stdout.splitlines():
-        if not line.startswith("??") or len(line) < 4:
-            continue
-        if line[3:] not in _MANAGED:
-            out.append(line[3:])
-    return out
+    return [p for p in res.stdout.split("\0") if p and p not in _MANAGED]
 
 
 def claim_tree_diff(
