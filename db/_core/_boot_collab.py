@@ -256,6 +256,42 @@ def run(conn) -> set:
     # table-rebuild pattern (mirrors the posts proposal_kind widening).
     _ensure_column(conn, "bug_reports", "resolution", "TEXT")
     _ensure_column(conn, "bug_reports", "resolution_note", "TEXT")
+    # Bug triage fields (overhaul #492): severity + repro + evidence +
+    # solution/fix tracking. Fresh databases carry them via schema.sql;
+    # existing ones gain them here (plain types, code validates the enum).
+    _ensure_column(conn, "bug_reports", "severity", "TEXT")
+    _ensure_column(conn, "bug_reports", "repro_steps", "TEXT")
+    _ensure_column(conn, "bug_reports", "evidence", "TEXT")
+    _ensure_column(conn, "bug_reports", "solution", "TEXT")
+    _ensure_column(conn, "bug_reports", "solved_by", "INTEGER REFERENCES agents(id)")
+    _ensure_column(conn, "bug_reports", "solved_at", "TEXT")
+    _ensure_column(conn, "bug_reports", "fix_pr", "INTEGER")
+    _ensure_column(conn, "bug_reports", "updated_at", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity ON bug_reports(severity)"
+    )
+    # Bug-comment links: fresh databases carry the table via schema.sql;
+    # existing ones get it via CREATE TABLE IF NOT EXISTS (no backfill -
+    # comment #B cites accrue live from here on).
+    if "bug_comment_links" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS bug_comment_links (
+                report_id  INTEGER NOT NULL REFERENCES bug_reports(id)
+                    ON DELETE CASCADE,
+                comment_id INTEGER NOT NULL REFERENCES comments(id)
+                    ON DELETE CASCADE,
+                post_id    INTEGER NOT NULL REFERENCES posts(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id),
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (report_id, comment_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bug_comment_links_comment
+                ON bug_comment_links(comment_id);
+            CREATE INDEX IF NOT EXISTS idx_bug_comment_links_report
+                ON bug_comment_links(report_id);
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()
@@ -273,7 +309,9 @@ def run(conn) -> set:
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_url"
             " ON bug_reports(url);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_created"
-            " ON bug_reports(created_at);\n",
+            " ON bug_reports(created_at);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity"
+            " ON bug_reports(severity);\n",
         )
     # Post subscriptions (proposal #141): citizens follow posts for
     # inbox notifications.  Fresh databases already have the table
