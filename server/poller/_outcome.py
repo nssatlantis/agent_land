@@ -349,6 +349,14 @@ def _process_closed_pr(pr: dict) -> None:
                 except Exception:
                     # domain: degrade-silently - notify best-effort only
                     pass
+            # Claimable workspaces (proposal #472, part 7): merged work is
+            # done - release any active workspace claims on the proposal so
+            # names stop being held. Record-only; trees converge via GC.
+            if proposal_post_id:
+                try:
+                    db.release_workspaces_for_proposal(conn, proposal_post_id)
+                except Exception:  # domain: degrade-silently - release advisory
+                    pass
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
