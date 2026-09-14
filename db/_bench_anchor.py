@@ -37,9 +37,45 @@ def _run_medians(detail: dict) -> dict[str, float]:
     }
 
 
-def _candidate_problem(detail: dict) -> str | None:
+def _red_is_regressions_only(detail: dict) -> bool:
+    """True when a red bench run's only defect is drift-vs-anchor regressions.
+
+    Structural failures surface as detail["failed_files"] (the runner folds
+    structural FAIL lines into it, plus bench_errors when no FAILED lines
+    are present; key absent when clean), query errors land in
+    summary["bench_errors"], and infra rows lack medians - so missing/empty
+    failed_files + empty bench_errors + a positive regressions counter +
+    present medians + not timed out isolates "red solely because medians
+    drifted from a stale
+    anchor". Consulted only by the paid store path: regressions are drift
+    judgment, which a bought run exists to render (ridden loud as
+    drift_override). Never consulted on the free path.
+    """
+    if not isinstance(detail, dict):
+        return False
+    if detail.get("timed_out"):
+        return False
+    if detail.get("failed_files"):
+        return False
+    summary = detail.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    if summary.get("bench_errors"):
+        return False
+    regs = summary.get("regressions")
+    if isinstance(regs, bool) or not isinstance(regs, int) or regs <= 0:
+        return False
+    if not _run_medians(detail):
+        return False
+    return True
+
+
+def _candidate_problem(detail: dict, *, for_paid_judgment: bool = False) -> str | None:
     """None when the run qualifies as an anchor candidate, else the refusal
-    reason. Fail-closed: unprovable scheduling is not blessable."""
+    reason. Fail-closed: unprovable scheduling is not blessable. With
+    for_paid_judgment (store path only), a red run whose only defect is
+    drift regressions is not refused on the green clause - every other gate
+    still applies, and the drift override below judges the regressions."""
     if not _is_native_detail(detail):
         return "only bare origin/main runs (no pr_number, no local flag) may anchor"
     load = detail.get("bench_load") or {}
@@ -50,7 +86,10 @@ def _candidate_problem(detail: dict) -> str | None:
     if load.get("contended"):
         return "anchor runs must not be contended"
     if detail.get("ok") is not True or detail.get("exit_code") != 0:
-        return "anchor runs must be green (ok, exit 0)"
+        if for_paid_judgment and _red_is_regressions_only(detail):
+            pass  # drift judgment belongs to the paid override, not quality
+        else:
+            return "anchor runs must be green (ok, exit 0)"
     summary = detail.get("summary") or {}
     if "bench_errors" not in summary or summary.get("bench_errors"):
         return "anchor runs must carry zero bench errors"
@@ -129,7 +168,12 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
     medians through so a lone red stays visible). A store-bought run blesses
     through drift on paid explicit judgment (#381) — quality gates still
     apply, the overridden queries ride loud on the record, and prior
-    medians still carry through. reason is heartbeat, store or bootstrap;
+    medians still carry through. On the store path only, a red run whose
+    sole defect is drift regressions is judged as drift, not failed quality
+    (#491 - the harness reds on any regression, which would otherwise brick
+    paid re-blessing against a stale anchor; partial timing tables still
+    hold so a truncated run can never shrink the anchor). reason is
+    heartbeat, store or bootstrap;
     blessed_by names the paying citizen on the store path, None otherwise.
     The spend/refund around paid runs lives with the caller (server layer);
     this function only judges and records."""
@@ -150,11 +194,20 @@ def bless_heartbeat_run(event_id: int, *, reason: str, blessed_by: int | None) -
             detail = {}
         if not isinstance(detail, dict):
             detail = {}
-        problem = _candidate_problem(detail)
+        problem = _candidate_problem(detail, for_paid_judgment=(reason == "store"))
         if problem is not None:
             return f"held: ev{event_id} unblessable ({problem})"
+        waived = reason == "store" and (
+            detail.get("ok") is not True or detail.get("exit_code") != 0
+        )
         medians = _run_medians(detail)
         anchor = events.bench_anchor_for()
+        if (
+            waived
+            and anchor is not None
+            and any(q not in medians for q in (anchor.get("medians") or {}))
+        ):
+            return f"held: ev{event_id} unblessable (partial timing table)"
         drift_override: list[str] = []
         if anchor is not None:
             rows = events.query_events(kind=events.EVT_CI_DB_BENCH_RUN, limit=50)

@@ -233,6 +233,67 @@ def main():
         f"heartbeat still holds through drift ({out})"
     )
 
+    # Paid judgment covers drift-red runs (#491): the harness reds on ANY
+    # regression vs anchor, so against a stale anchor every run is red and
+    # the store override would be unreachable. A store run red ONLY on
+    # regressions (no failed_files, no bench errors, quiet, uncontended,
+    # medians present) blesses with the override ridden loud - while the
+    # same shape still holds on the free path, and any structural, error,
+    # or infra defect still holds on both paths - as do regressionless
+    # and partial-table reds on the store path.
+    for _ in range(6):
+        _seed_run(subject, drifted)
+    redflat = _seed_run(subject, FLAT, ok=False)
+    out = db.bless_heartbeat_run(redflat, reason="heartbeat", blessed_by=None)
+    assert out.startswith("held:") and "green" in out, (
+        f"free path still holds drift-red runs ({out})"
+    )
+    out = db.bless_heartbeat_run(redflat, reason="store", blessed_by=buyer["agent_id"])
+    assert out.startswith("blessed:") and "paid judgment" in out, (
+        f"store blesses drift-red runs ({out})"
+    )
+    structred = _seed_run(
+        subject, FLAT, ok=False, extra={"failed_files": ["EXPLAIN x"]}
+    )
+    out = db.bless_heartbeat_run(
+        structred, reason="store", blessed_by=buyer["agent_id"]
+    )
+    assert "unblessable" in out, f"structural red still held on store path ({out})"
+    errsummary = {
+        "bench": "db_benchmark",
+        "regressions": 1,
+        "bench_errors": ["w_broken"],
+        "timings_median_ms": dict(FLAT),
+    }
+    errred = _seed_run(subject, FLAT, ok=False, extra={"summary": errsummary})
+    out = db.bless_heartbeat_run(errred, reason="store", blessed_by=buyer["agent_id"])
+    assert "unblessable" in out, f"error red still held on store path ({out})"
+    timeoutred = _seed_run(subject, FLAT, ok=False, extra={"timed_out": True})
+    out = db.bless_heartbeat_run(
+        timeoutred, reason="store", blessed_by=buyer["agent_id"]
+    )
+    assert "unblessable" in out, f"timed-out red still held on store path ({out})"
+    zerored = _seed_run(
+        subject,
+        FLAT,
+        ok=False,
+        extra={
+            "summary": {
+                "bench": "db_benchmark",
+                "regressions": 0,
+                "bench_errors": [],
+                "timings_median_ms": dict(FLAT),
+            }
+        },
+    )
+    out = db.bless_heartbeat_run(zerored, reason="store", blessed_by=buyer["agent_id"])
+    assert "unblessable" in out, f"regressionless red still held ({out})"
+    partred = _seed_run(subject, {"a": 15.0, "c": 30.0}, ok=False)
+    out = db.bless_heartbeat_run(partred, reason="store", blessed_by=buyer["agent_id"])
+    assert "unblessable" in out and "partial" in out, (
+        f"partial-table red still held ({out})"
+    )
+
     import shutil
 
     shutil.rmtree(_TMP, ignore_errors=True)
