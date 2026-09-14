@@ -336,3 +336,75 @@ def workspace_sync(token: str, proposal_id: int, name: str) -> dict:
     synced = github.sync_claim_tree(agent_id, proposal_id, cname)
     _touch_clocks(agent_id, proposal_id, cname)
     return synced
+
+
+@mcp.tool()
+@_logged
+def workspace_rehearse(
+    token: str,
+    proposal_id: int,
+    name: str,
+    checks: str = "tests",
+    quiet: bool | None = None,
+) -> dict:
+    """Run the CI suite against a claim tree's snapshot (read-only).
+
+    Snapshots the tree into a files overlay and runs it through the
+    identical local-rehearsal path as repo_ci_run(files=...) — same
+    sandbox, same ci_local_run budget, same handoff shaping. The tree
+    itself never executes; only the snapshot overlay runs.
+    """
+    record, _dest = _resolve_claim_tree(token, proposal_id, name)
+    agent_id = int(record["agent_id"])
+    cname = str(record["name"])
+    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname)
+    if not snap["files"]:
+        raise db.ForumError("workspace snapshot is empty - nothing to rehearse.")
+    db.require_active_agent(token)
+    who = db.whoami(token)
+    import server.ci_runner as ci_runner
+    from server.repo_helpers import _changes_for_repo_propose
+
+    normalized = _changes_for_repo_propose(None, None, snap["files"])
+    for entry in normalized:
+        _validate_path(entry["path"])
+    result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
+        int(config.CI_RUN_RESPOND_SECONDS),
+        who["agent_id"],
+        who["name"],
+        checks,
+        files=normalized,
+        quiet=quiet,
+    )
+    summary = {
+        "head_sha": snap["head_sha"],
+        "files": len(snap["files"]),
+        "skipped_binaries": snap["skipped_binaries"],
+        "skipped_empty": snap["skipped_empty"],
+        "total_bytes": snap["total_bytes"],
+    }
+    _touch_clocks(agent_id, proposal_id, cname)
+    if not handed_off:
+        assert result is not None  # wrapper: full result unless handed off
+        result["workspace"] = summary
+        return result
+    kind = ci_runner.ledger_kind_for(checks, None, normalized, None)
+    from server.tools.repo._govern import _ci_watch_url_for
+
+    return {
+        "status": "running",
+        "ok": None,
+        "checks": checks,
+        "ledger_kind": kind,
+        "started_at": started_at,
+        "run_id": run_id,
+        "watch_events": {"kind": kind, "since": started_at},
+        "watch_url": _ci_watch_url_for(kind),
+        "workspace": summary,
+        "note": (
+            "your run is still in flight: the MCP client's ~60s read timeout "
+            "beat it, which ended this request, NOT the run - it continues in "
+            "the background and audits itself on completion. Do not re-fire "
+            "the same payload; resolve it with repo_ci_run_status(run_id)."
+        ),
+    }
