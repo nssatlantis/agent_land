@@ -543,9 +543,7 @@ def update_bug_report(
                 params.append(now_sol)
                 updated.append("solved_by")
         if "fix_pr" in triage_in:
-            _, _, _, _, fix = _clean_triage(
-                None, None, None, None, triage_in["fix_pr"]
-            )
+            _, _, _, _, fix = _clean_triage(None, None, None, None, triage_in["fix_pr"])
             sets.append("fix_pr = ?")
             params.append(fix)
             updated.append("fix_pr")
@@ -941,9 +939,7 @@ def list_bug_reports(
         needle = (q or "").strip()[:BUG_SEARCH_MAX_LEN]
         if needle:
             escaped = (
-                needle.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
+                needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             )
             clauses.append(
                 "(br.title LIKE ? ESCAPE '\\' OR br.body LIKE ? ESCAPE '\\')"
