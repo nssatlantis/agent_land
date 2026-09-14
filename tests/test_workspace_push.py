@@ -83,9 +83,14 @@ class _PushSandbox:
     def _fake_request(self, method, path, payload=None, **kw):
         self.calls.append((method, path, payload))
         if method == "GET" and path.startswith("pulls?head="):
-            return list(self.open_prs)
+            want = path.split("head=", 1)[1].split("&")[0].split(":", 1)[1]
+            return [pr for pr in self.open_prs if pr.get("branch") == want]
         if method == "POST" and path == "pulls":
-            pr = {"number": 7, "html_url": "http://example/pr/7"}
+            pr = {
+                "number": 7,
+                "html_url": "http://example/pr/7",
+                "branch": (payload or {}).get("head"),
+            }
             self.open_prs.append(pr)
             return pr
         return {}
@@ -180,6 +185,9 @@ def test_push_single_commit():
         assert posts and posts[0][1] == "pulls", sb.calls
         assert posts[0][2]["head"] == res["branch"], posts
         assert "Citizen: tester (agent_id=11)" in posts[0][2]["body"], posts
+        owner = ws.GITHUB_REPO.split("/")[0]
+        get = f"pulls?head={owner}:{res['branch']}&state=open"
+        assert ("GET", get, None) in sb.calls, sb.calls
     finally:
         sb.close()
     print("  push single commit (one commit, manifest out, trailer): ok")
@@ -244,7 +252,13 @@ def test_push_guards():
         assert "title is required" in _expect_repo_error(
             ws.push_claim_tree, 11, 34, "clean", "  ", "b", "c (agent_id=11)"
         )
-        sb.open_prs.append({"number": 9, "html_url": "http://example/pr/9"})
+        sb.open_prs.append(
+            {
+                "number": 9,
+                "html_url": "http://example/pr/9",
+                "branch": "claim/11/34/ghost",
+            }
+        )
         ws.ensure_claim_tree(11, 34, "ghost")
         ghost = ws._claim_dir(11, 34, "ghost")
         Path(ghost, "x.txt").write_text("x\n", encoding="utf-8")
@@ -255,6 +269,128 @@ def test_push_guards():
     finally:
         sb.close()
     print("  push guards (missing/clean/title/past-life): ok")
+
+
+def test_push_ignores_other_branch_prs():
+    sb = _PushSandbox()
+    try:
+        sb.open_prs.append(
+            {
+                "number": 9,
+                "html_url": "http://example/pr/9",
+                "branch": "claim/0/0/other",
+            }
+        )
+        tree = ws.ensure_claim_tree(11, 36, "mine")
+        dest = tree["path"]
+        Path(dest, "m.txt").write_text("m\n", encoding="utf-8")
+        res = ws.push_claim_tree(11, 36, "mine", "T", "b", "c (agent_id=11)")
+        assert res["pr_number"] == 7, res
+        assert res["first_push"] is True, res
+    finally:
+        sb.close()
+    print("  push ignores other branches' PRs: ok")
+
+
+def test_push_refuses_retained_branch():
+    sb = _PushSandbox()
+    try:
+        # Past life: branch pushed, its PR since closed (no open PR recorded).
+        clone = tempfile.mkdtemp(prefix="agentland_ws_push_kept_")
+        _git("clone", _SHARED_BARE, "w", cwd=clone)
+        w = os.path.join(clone, "w")
+        _git("-C", w, "checkout", "-b", "claim/11/37/kept")
+        _git(
+            "-C",
+            w,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "past",
+        )
+        _git("-C", w, "push", "origin", "claim/11/37/kept")
+        shutil.rmtree(clone, ignore_errors=True)
+        tree = ws.ensure_claim_tree(11, 37, "kept")
+        dest = tree["path"]
+        Path(dest, "k.txt").write_text("k\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 37, "kept", "T", "b", "c (agent_id=11)"
+        )
+        assert "already exists on origin" in err, err
+    finally:
+        sb.close()
+    print("  push refuses retained branch: ok")
+
+
+def test_push_failure_restores_dirty():
+    sb = _PushSandbox()
+    real_git = ws._git
+    seen = []
+    pushed = {"done": False}
+
+    def flaky_git(dest, *args, **kw):
+        seen.append(list(args))
+        if list(args)[:2] == ["push", "origin"] and not pushed["done"]:
+            pushed["done"] = True
+            raise RepoError("simulated push failure")
+        return real_git(dest, *args, **kw)
+
+    ws._git = flaky_git
+    try:
+        tree = ws.ensure_claim_tree(11, 38, "flaky")
+        dest = tree["path"]
+        Path(dest, "f.txt").write_text("f\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 38, "flaky", "T", "b", "c (agent_id=11)"
+        )
+        assert "simulated push failure" in err, err
+        assert ws._is_dirty(dest), "must read dirty after failed push"
+        res = ws.push_claim_tree(11, 38, "flaky", "T", "b", "c (agent_id=11)")
+        assert res["pr_number"] == 7, res
+        assert _branch_count(dest, res["branch"]) == 1, res
+        pushes = [a for a in seen if a[:2] == ["push", "origin"]]
+        assert len(pushes) == 2, seen
+        for argv in pushes:
+            assert not [a for a in argv if a.startswith("--force")], argv
+            assert argv[-1] == f"HEAD:{res['branch']}", argv
+    finally:
+        ws._git = real_git
+        sb.close()
+    print("  push failure restores dirty, retry single, no force: ok")
+
+
+def test_post_failure_finishes_on_retry():
+    sb = _PushSandbox()
+    orig_request = ws._core._request
+    state = {"fail_post": True}
+
+    def flaky_request(method, path, payload=None, **kw):
+        if method == "POST" and path == "pulls" and state["fail_post"]:
+            state["fail_post"] = False
+            raise RepoError("simulated POST failure")
+        return orig_request(method, path, payload, **kw)
+
+    ws._core._request = flaky_request
+    try:
+        tree = ws.ensure_claim_tree(11, 39, "unlinked")
+        dest = tree["path"]
+        Path(dest, "u.txt").write_text("u\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 39, "unlinked", "T", "b", "c (agent_id=11)"
+        )
+        assert "simulated POST failure" in err, err
+        res = ws.push_claim_tree(11, 39, "unlinked", "T", "b", "c (agent_id=11)")
+        assert res["pr_number"] == 7, res
+        assert res["already_pushed"] is True, res
+        assert _branch_count(dest, res["branch"]) == 1, res
+    finally:
+        ws._core._request = orig_request
+        sb.close()
+    print("  POST failure finishes on retry, still single commit: ok")
 
 
 def test_sync_refuses_pushed_tree():
@@ -344,6 +480,10 @@ def main():
     test_push_followup_appends()
     test_push_stages_deletion()
     test_push_guards()
+    test_push_ignores_other_branch_prs()
+    test_push_refuses_retained_branch()
+    test_push_failure_restores_dirty()
+    test_post_failure_finishes_on_retry()
     test_sync_refuses_pushed_tree()
     test_tool_push_wiring(agents, wstools)
     print("test_workspace_push: all scenarios passed")
