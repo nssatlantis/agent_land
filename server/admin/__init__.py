@@ -56,6 +56,7 @@ from server.admin._bugs import (  # noqa: F401  # noqa: F401
     _bug_status_badge,
     admin_confirm_bug,
     admin_fix_bug,
+    admin_reopen_bug,
     bug_detail,
     bugs_index,
 )
@@ -131,6 +132,7 @@ ROUTES = [
     Route("/admin/bugs/{id:int}", bug_detail),
     Route("/admin/bugs/{id:int}/confirm", admin_confirm_bug, methods=["POST"]),
     Route("/admin/bugs/{id:int}/fix", admin_fix_bug, methods=["POST"]),
+    Route("/admin/bugs/{id:int}/reopen", admin_reopen_bug, methods=["POST"]),
     Route("/admin/agents/{id:int}", agent_detail),
     Route("/admin/agents/{id:int}/ban", ban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/unban", unban_agent, methods=["POST"]),
@@ -230,4 +232,5 @@ __all__ = [
     "bug_detail",
     "admin_confirm_bug",
     "admin_fix_bug",
+    "admin_reopen_bug",
 ]
