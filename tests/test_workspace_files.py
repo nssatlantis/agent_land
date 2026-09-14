@@ -1,0 +1,312 @@
+"""File ops on claim trees plus both-clocks touch (proposal #478, part 4).
+
+Covers the seven workspace_* MCP tools against a claimed tree on a
+local bare remote (no network): write/read roundtrip with ranges,
+list without .git, status/diff pins, delete semantics, sync
+fast-forward plus dirty-refusal, both-clocks touch, per-write budget,
+path guards (.git/manifest/traversal/protected), and owner isolation.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_files_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config  # noqa: E402
+import github._gitops as gh  # noqa: E402
+import github._workspaces as ws  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
+
+
+def _git(*args, cwd=None):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _mk_remote(tmp):
+    bare = os.path.join(tmp, "remote.git")
+    seed = os.path.join(tmp, "seed")
+    os.makedirs(seed)
+    _git("init", "--bare", "-b", "main", bare)
+    _git("init", "-b", "main", cwd=seed)
+    with open(os.path.join(seed, "README.md"), "w") as f:
+        f.write("seed\n")
+    _git("-C", seed, "add", "-A")
+    _git(
+        "-C", seed, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "seed"
+    )
+    _git("-C", seed, "push", bare, "main")
+    return bare
+
+
+_SHARED_BARE = _mk_remote(tempfile.mkdtemp(prefix="agentland_ws_files_remote_"))
+
+
+def _expect_tool_error(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except Exception as exc:
+        return str(exc)
+    raise AssertionError(f"expected a tool error from {fn.__name__}()")
+
+
+class _FilesSandbox:
+    def __init__(self):
+        self.tmp = tempfile.mkdtemp(prefix="agentland_ws_files_test_")
+        self._orig = {
+            "repo_url": ws._repo_url,
+            "claims_root": ws._claims_root,
+            "gitops_url": gh._repo_url,
+            "max_mb": config.WORKSPACE_CLAIM_MAX_MB,
+            "ttl": config.WORKSPACE_CLAIM_TTL_HOURS,
+        }
+        ws._repo_url = lambda with_token=False: _SHARED_BARE
+        ws._claims_root = lambda: os.path.join(self.tmp, "claims")
+        gh._repo_url = lambda with_token=False: _SHARED_BARE
+
+    def close(self):
+        ws._repo_url = self._orig["repo_url"]
+        ws._claims_root = self._orig["claims_root"]
+        gh._repo_url = self._orig["gitops_url"]
+        config.WORKSPACE_CLAIM_MAX_MB = self._orig["max_mb"]
+        config.WORKSPACE_CLAIM_TTL_HOURS = self._orig["ttl"]
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def _claim(agents, wstools, key, title):
+    tok = agents[key]["token"]
+    prop = db.create_proposal(tok, title, "body")
+    pid = prop["post_id"]
+    claimed = wstools.claim_workspace(tok, pid, "dev")
+    assert claimed["claim"]["status"] == "active", claimed
+    return pid, tok
+
+
+def _advance_remote():
+    work = tempfile.mkdtemp(prefix="agentland_claim_adv_")
+    _git("clone", _SHARED_BARE, "work", cwd=work)
+    w = os.path.join(work, "work")
+    Path(w, "NEW.txt").write_text("new\n", encoding="utf-8")
+    _git("-C", w, "add", "-A")
+    _git("-C", w, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "more")
+    _git("-C", w, "push", "origin", "main")
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def test_write_read_roundtrip(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "File Shop")
+        w = wstools.workspace_write_file
+        got = w(tok, pid, "dev", "notes/todo.txt", "hello\n")
+        assert got["path"] == "notes/todo.txt", got
+        assert got["bytes"] == 6, got
+        full = wstools.workspace_read_file(tok, pid, "dev", "notes/todo.txt")
+        assert full["content"] == "hello", full
+        assert full["total_lines"] == 1, full
+        unscoped = wstools.workspace_diff(tok, pid, "dev")
+        assert "hello" in unscoped["diff"], unscoped
+        scoped = wstools.workspace_diff(tok, pid, "dev", path="notes/todo.txt")
+        assert "hello" in scoped["diff"], scoped
+        body = "l1\nl2\nl3\nl4\nl5\n"
+        w(tok, pid, "dev", "lines.txt", body)
+        part = wstools.workspace_read_file(tok, pid, "dev", "lines.txt", 2, 4)
+        assert part["content"] == "l2\nl3\nl4", part
+        assert (part["line_start"], part["line_end"]) == (2, 4), part
+        clamped = wstools.workspace_read_file(tok, pid, "dev", "lines.txt", 4, 99)
+        assert clamped["content"] == "l4\nl5", clamped
+        assert clamped["line_end"] == 5, clamped
+        assert "together" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "lines.txt", 1, None
+        )
+        assert "below line_start" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "lines.txt", 4, 2
+        )
+        assert "below 1" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "lines.txt", 0, 2
+        )
+        assert "1000" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "lines.txt", 1, 1001
+        )
+        assert "non-empty" in _expect_tool_error(w, tok, pid, "dev", "e.txt", "")
+        w(tok, pid, "dev", "big.txt", "z" * ((1 << 20) + 1))
+        assert "read cap" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "big.txt"
+        )
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  write/read roundtrip + ranges: ok")
+
+
+def test_list_status_diff(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "gamma", "List Shop")
+        st = wstools.workspace_status(tok, pid, "dev")
+        assert st["dirty"] is False and st["changes"] == [], st
+        assert st["head_sha"], st
+        d0 = wstools.workspace_diff(tok, pid, "dev")
+        assert d0["diff"] == "" and d0["truncated"] is False, d0
+        wstools.workspace_write_file(tok, pid, "dev", "work.txt", "hello\n")
+        st = wstools.workspace_status(tok, pid, "dev")
+        assert st["dirty"] is True, st
+        assert [c["path"] for c in st["changes"]] == ["work.txt"], st
+        d1 = wstools.workspace_diff(tok, pid, "dev")
+        assert "hello" in d1["diff"] and d1["truncated"] is False, d1
+        d2 = wstools.workspace_diff(tok, pid, "dev", path="work.txt", max_bytes=10)
+        assert d2["truncated"] is False, d2  # below the 1KB floor clamps up
+        wstools.workspace_write_file(tok, pid, "dev", "big.txt", "x\n" * 600)
+        d3 = wstools.workspace_diff(tok, pid, "dev", path="big.txt", max_bytes=1024)
+        assert d3["truncated"] is True and len(d3["diff"]) == 1024, d3
+        listed = wstools.workspace_list_tree(tok, pid, "dev")
+        paths = [r["path"] for r in listed]
+        assert "work.txt" in paths and "README.md" in paths, paths
+        assert not [p for p in paths if p == ".git" or p.startswith(".git/")]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  list/status/diff pins: ok")
+
+
+def test_path_guards(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "delta", "Guard Shop")
+        w = wstools.workspace_write_file
+        r = wstools.workspace_read_file
+        assert "invalid path" in _expect_tool_error(
+            w, tok, pid, "dev", "../evil.txt", "x"
+        )
+        assert "invalid path" in _expect_tool_error(r, tok, pid, "dev", "a/../../evil")
+        assert "relative" in _expect_tool_error(r, tok, pid, "dev", "/abs.txt")
+        assert "managed" in _expect_tool_error(w, tok, pid, "dev", ".git/config", "x")
+        assert "managed" in _expect_tool_error(r, tok, pid, "dev", ".git/HEAD")
+        assert "managed" in _expect_tool_error(
+            w, tok, pid, "dev", ".workspace.json", "x"
+        )
+        assert "managed" in _expect_tool_error(r, tok, pid, "dev", ".workspace.json")
+        assert "protected" in _expect_tool_error(
+            w, tok, pid, "dev", ".github/workflows/x.yml", "x"
+        )
+        assert "could not read" in _expect_tool_error(r, tok, pid, "dev", "missing.txt")
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  path guards: ok")
+
+
+def test_delete_semantics(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "epsilon", "Delete Shop")
+        wstools.workspace_write_file(tok, pid, "dev", "gone.txt", "bye\n")
+        done = wstools.workspace_delete_file(tok, pid, "dev", "gone.txt")
+        assert done == {"path": "gone.txt", "deleted": True}, done
+        assert "could not read" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "gone.txt"
+        )
+        assert "no file" in _expect_tool_error(
+            wstools.workspace_delete_file, tok, pid, "dev", "gone.txt"
+        )
+        wstools.workspace_write_file(tok, pid, "dev", "sub/f.txt", "x\n")
+        assert "directory" in _expect_tool_error(
+            wstools.workspace_delete_file, tok, pid, "dev", "sub"
+        )
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  delete semantics: ok")
+
+
+def test_sync_and_clocks_and_budget(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "zeta", "Sync Shop")
+        aid = agents["zeta"]["agent_id"]
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+        wstools.workspace_write_file(tok, pid, "dev", "a.txt", "a\n")
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        assert "uncommitted work" in _expect_tool_error(
+            wstools.workspace_sync, tok, pid, "dev"
+        )
+        wstools.workspace_delete_file(tok, pid, "dev", "a.txt")
+        old = wstools.workspace_status(tok, pid, "dev")["head_sha"]
+        _advance_remote()
+        synced = wstools.workspace_sync(tok, pid, "dev")
+        assert synced["old_sha"] == old, synced
+        assert synced["new_sha"] and synced["new_sha"] != old, synced
+        assert synced["base"] == "main", synced
+        old_cap = config.WORKSPACE_CLAIM_MAX_MB
+        config.WORKSPACE_CLAIM_MAX_MB = 0
+        try:
+            err = _expect_tool_error(
+                wstools.workspace_write_file, tok, pid, "dev", "big.txt", "x\n"
+            )
+            assert "MAX_MB" in err, err
+        finally:
+            config.WORKSPACE_CLAIM_MAX_MB = old_cap
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  sync + both clocks + budget: ok")
+
+
+def test_owner_isolation(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Isolation Shop")
+        beta = agents["beta"]["token"]
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_read_file, beta, pid, "dev", "README.md"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_write_file, beta, pid, "dev", "evil.txt", "x\n"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_sync, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_list_tree, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_status, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_diff, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_delete_file, beta, pid, "dev", "README.md"
+        )
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  owner isolation: ok")
+
+
+def main():
+    from server.tools.repo import _workspace as wstools  # noqa: E402
+
+    agents, _post_id = setup()
+    test_write_read_roundtrip(agents, wstools)
+    test_list_status_diff(agents, wstools)
+    test_path_guards(agents, wstools)
+    test_delete_semantics(agents, wstools)
+    test_sync_and_clocks_and_budget(agents, wstools)
+    test_owner_isolation(agents, wstools)
+    print("test_workspace_files: all scenarios passed")
+
+
+if __name__ == "__main__":
+    main()
