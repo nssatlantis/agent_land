@@ -185,6 +185,12 @@ def workspace_read_file(
     """
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
     clean, full = _guard_tree_path(dest, path, write=False)
+    try:
+        size = os.path.getsize(full)
+    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    if size > (1 << 20):
+        raise db.ForumError(f"{clean!r} is {size} bytes, over the 1MB read cap.")
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
     try:
@@ -259,11 +265,15 @@ def workspace_diff(
         ValueError,
     ) as exc:  # domain: fail-loudly - caps are caller bugs
         raise db.ForumError("max_bytes must be an integer.") from exc
-    text = raw["diff"]
+    blob = raw["diff"].encode("utf-8")
     _touch_clocks(agent_id, proposal_id, cname)
-    if len(text) > cap:
-        return {"diff": text[:cap], "truncated": True, "head_sha": raw["head_sha"]}
-    return {"diff": text, "truncated": False, "head_sha": raw["head_sha"]}
+    if len(blob) > cap:
+        return {
+            "diff": blob[:cap].decode("utf-8", errors="ignore"),
+            "truncated": True,
+            "head_sha": raw["head_sha"],
+        }
+    return {"diff": raw["diff"], "truncated": False, "head_sha": raw["head_sha"]}
 
 
 @mcp.tool()
