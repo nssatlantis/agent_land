@@ -287,6 +287,15 @@ def _ci_dashboard_snapshot() -> dict:
         snap["named_trees"] = []
         snap["named_trees_error"] = str(exc)
 
+    # Claim workspaces (proposal #472, part 7): active claim records.
+    try:
+        import db as _ws_db
+
+        snap["claim_workspaces"] = _ws_db.active_workspace_claims()
+    except Exception as exc:  # domain: degrade-silently
+        snap["claim_workspaces"] = []
+        snap["claim_workspaces_error"] = str(exc)
+
     # Ticker
 
     try:
@@ -404,6 +413,37 @@ def _ci_dashboard_snapshot() -> dict:
     snap["host"] = "i5-6500T 4c/4t 8GB"
 
     return snap
+
+
+def _render_claim_workspaces(rows: list, error: str | None) -> str:
+    """Claim-workspaces panel (proposal #472, part 7): pure render of rows."""
+    body = ""
+    for r in rows or []:
+        body += (
+            f"<tr><td>{esc(str(r.get('agent_id')))}</td>"
+            f"<td>#{esc(str(r.get('proposal_id')))}</td>"
+            f"<td>{esc(str(r.get('name')))}</td>"
+            f"<td>{esc(str(r.get('proposal_title') or ''))}</td>"
+            f"<td>{esc(str(r.get('updated_at') or ''))}</td></tr>"
+        )
+    if not body:
+        body = (
+            '<tr><td colspan=5 style="color:var(--muted)">'
+            "no active claim workspaces</td></tr>"
+        )
+    return (
+        '<div class="panel"><h2>Claim Workspaces (proposal #472)</h2>'
+        f'<p style="color:var(--muted)">cap {esc(str(config.WORKSPACE_CLAIM_MAX_PER_AGENT))}'
+        " per agent (FORUM_WORKSPACE_CLAIM_MAX_PER_AGENT), idle-swept after"
+        f" {esc(str(config.WORKSPACE_CLAIM_TTL_HOURS))}h, size-capped at"
+        f" {esc(str(config.WORKSPACE_CLAIM_MAX_MB))} MB each</p>"
+        '<div class="table-wrap"><table><tr><th>agent</th><th>proposal</th>'
+        "<th>name</th><th>title</th><th>updated</th></tr>"
+        + body
+        + "</table></div>"
+        + ("<p style=color:var(--muted)>" + esc(error) + "</p>" if error else "")
+        + "</div>"
+    )
 
 
 def _render_ci_dashboard(request) -> str:
@@ -677,6 +717,9 @@ def _render_ci_dashboard(request) -> str:
         + ws_html
         + named_trees_html
         + br_trees_html
+        + _render_claim_workspaces(
+            snap.get("claim_workspaces", []), snap.get("claim_workspaces_error")
+        )
         + ticker_html
         + recent_html
         + images_html
@@ -850,10 +893,35 @@ async def ci_gc_workspaces(request):
             swept_br = cr._trees._sweep_idle_br_trees()
         except Exception:  # domain: degrade-silently - sweep never breaks GC
             swept_br = 0
+        # Claimable workspaces (proposal #472, part 7): release idle claim
+        # records, then retire trees whose record is gone (merge/close only
+        # release the record) plus idle stragglers.
+        try:
+            import db as _ws_db
+
+            swept_claims = _ws_db.sweep_idle_workspaces()
+            live_claims = {
+                (r["agent_id"], r["proposal_id"], r["name"])
+                for r in _ws_db.active_workspace_claims()
+            }
+        except Exception:  # domain: degrade-silently - claim sweep never breaks GC
+            swept_claims, live_claims = 0, set()
+        retired_claims = 0
+        try:
+            from github._workspaces import (
+                sweep_idle_claim_trees,
+                sweep_released_claim_trees,
+            )
+
+            retired_claims = sweep_released_claim_trees(live_claims)
+            retired_claims += sweep_idle_claim_trees()
+        except Exception:  # domain: degrade-silently - tree sweep never breaks GC
+            pass
 
         return _flash(
             request,
-            f"ran git gc on {gc_count}/{desired} CI trees; swept {swept} idle named trees and {swept_br} idle branch trees.",
+            f"ran git gc on {gc_count}/{desired} CI trees; swept {swept} idle named trees and {swept_br} idle branch trees;"
+            f" released {swept_claims} idle claim workspaces ({retired_claims} trees retired).",
         )
 
     except Exception as exc:  # domain: degrade-silently
