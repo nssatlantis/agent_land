@@ -95,12 +95,27 @@ def test_render_claim_workspaces():
     print("  render_claim_workspaces: ok")
 
 
+def test_supersede_releases_workspaces(agents):
+    author = agents["gamma"]
+    old = db.create_proposal(author["token"], "Supersede Shop V1", "b")["post_id"]
+    db.claim_workspace(author["token"], old, "dev")
+    new = db.supersede_proposal(author["token"], old, "Supersede Shop V2", "b2")[
+        "post_id"
+    ]
+    assert db.list_workspaces(author["token"]) == [], "supersede must release the claim"
+    db.claim_workspace(author["token"], new, "dev")
+    assert len(db.list_workspaces(author["token"])) == 1
+    db.release_workspace(author["token"], new, "dev")
+    print("  supersede releases workspaces: ok")
+
+
 def main():
     agents, _post_id = setup()
     test_close_proposal_releases_workspaces(agents)
     test_active_workspace_claims(agents)
     test_sweep_released_claim_trees()
     test_render_claim_workspaces()
+    test_supersede_releases_workspaces(agents)
     print("test_workspace_lifecycle: all scenarios passed")
 
 
