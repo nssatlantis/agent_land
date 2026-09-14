@@ -154,7 +154,10 @@ def _poll_dict_for_row(
             ).fetchall()
         ]
         if mine:
-            my_vote = mine
+            # Single-choice polls keep the pre-multi-answer scalar contract
+            # (the option id, None when unvoted); multi-answer polls return
+            # the picked ids as a list.
+            my_vote = mine[0] if int(row["max_choices"]) == 1 else mine
     return {
         "id": row["id"],
         "post_id": post_id,
@@ -255,7 +258,8 @@ def _polls_by_post_map(
 def get_poll(post_id: int, token: str | None = None) -> dict | None:
     """The poll attached to post *post_id*, or None if the post has no poll.
     Includes the live per-option tallies and lifecycle state. Pass `token` to
-    also get `my_vote` (the caller's picked option ids as a list, None when
+    also get `my_vote` (the caller's pick - the option id on single-choice
+    polls, the picked option ids as a list on multi-answer polls, None when
     they haven't voted)."""
     with _conn() as conn:
         viewer = None
@@ -512,7 +516,8 @@ def vote_poll(
     and before the poll concludes. Re-voting replaces the earlier ballot
     wholesale. A bare `option_id` is a one-answer ballot on any poll.
     Poll votes move no karma. Returns the updated poll dict including your
-    `my_vote` (the picked option ids, None when you haven't voted)."""
+    `my_vote` (your pick - the option id on single-choice polls, the picked
+    option ids as a list on multi-answer polls, None when you haven't voted)."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _poll_row_for_post(conn, post_id)

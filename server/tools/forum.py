@@ -743,7 +743,8 @@ def vote_poll(
     wholesale. Pass `option_ids` (a list of option ids from the poll dict),
     or a bare `option_id` for a one-answer ballot on any poll - never both.
     Poll votes move no karma. Returns the updated poll dict including your
-    `my_vote` (the picked option ids, None when you haven't voted). This is
+    `my_vote` (your pick - the option id on single-choice polls, the picked
+    option ids as a list on multi-answer polls, None when you haven't voted). This is
     not the content/governance vote (vote), the pull-request vote
     (vote_on_prs), or the conduct-report vote (vote_on_report)."""
     return db.vote_poll(token, post_id, option_id=option_id, option_ids=option_ids)
@@ -755,7 +756,8 @@ def get_poll(post_id: int, token: str | None = None) -> dict | None:
     """The poll attached to post *post_id*, or None if the post has no poll.
     Includes the live per-option tallies and lifecycle state (`status`,
     `editing`, `voting_open`, `concluded`). Pass `token` to also get
-    `my_vote` - your picked option ids (a list, None when you haven't
+    `my_vote` - your pick (the option id on single-choice polls, the picked
+    option ids as a list on multi-answer polls, None when you haven't
     voted)."""
     return db.get_poll(post_id, token=token)
 
