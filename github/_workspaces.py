@@ -476,6 +476,20 @@ def _find_open_claim_pr(branch: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _open_or_reuse_claim_pr(
+    branch: str, base: str, title: str, body: str, prior: dict | None
+) -> tuple[dict, bool]:
+    """Open the PR for one pushed branch, or reuse its open one."""
+    if prior is not None:
+        _core._invalidate_pr(int(prior["number"]))
+        return prior, False
+    pr = _core._request(
+        "POST", "pulls", {"title": title, "head": branch, "base": base, "body": body}
+    )
+    _core._open_prs_cache._store.pop("open_prs", None)
+    return pr, True
+
+
 def push_claim_tree(
     agent_id: int,
     proposal_id: int,
@@ -498,8 +512,10 @@ def push_claim_tree(
     already has an open PR from an earlier life is refused with the
     way out (push follow-ups from the owning tree, update the PR, or
     use a new workspace name). The claim stays active afterwards -
-    release is manual. dry_run returns the plan (branch, file counts)
-    without mutating git or GitHub.
+    release is manual. Failures never strand the tree: a failed push
+    soft-resets (the retry re-commits once), and a pushed-but-unlinked
+    tree finishes opening its PR on retry. dry_run returns the plan
+    (branch, file counts) without mutating git or GitHub.
     """
     clean_name = _validate_claim_name(name)
     title = (title or "").strip()
@@ -516,7 +532,15 @@ def push_claim_tree(
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
-    if not _is_dirty(dest):
+    cur = _current_branch(dest)
+    dirty = _is_dirty(dest)
+    manifest_now = _read_manifest(dest) or {}
+    already = (
+        not dirty
+        and manifest_now.get("pushed_branch") == branch
+        and cur == branch
+    )
+    if not dirty and not already:
         raise RepoError("workspace is clean - nothing to push.")
     snap = snapshot_claim_tree(agent_id, proposal_id, clean_name)
     plan: dict = {
@@ -530,12 +554,29 @@ def push_claim_tree(
         "skipped_protected": snap["skipped_protected"],
         "skipped_symlinks": snap["skipped_symlinks"],
         "total_bytes": snap["total_bytes"],
+        "already_pushed": already,
     }
     if dry_run:
         return plan
     _core._ensure_token()
     prior = _find_open_claim_pr(branch)
-    cur = _current_branch(dest)
+    pr_body = f"{body}\n\nCitizen: {citizen}" if body else f"Citizen: {citizen}"
+    commit_sha = _head_sha(dest) or ""
+    if already:
+        # Retry after a pushed-but-unlinked outcome (commit + push +
+        # manifest landed while the PR POST failed): the tree already
+        # holds exactly the pushed state, so finish opening its PR
+        # instead of demanding new dirt or stacking a junk commit.
+        pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
+        plan.update(
+            {
+                "pr_number": pr["number"],
+                "html_url": pr.get("html_url"),
+                "commit_sha": commit_sha,
+                "first_push": first,
+            }
+        )
+        return plan
     if prior is not None and cur != branch:
         raise RepoError(
             f"branch '{branch}' already has open PR #{prior['number']} from an "
@@ -543,8 +584,17 @@ def push_claim_tree(
             "update its PR directly, or push this work under a new workspace name."
         )
     if cur != branch:
-        # First push from this tree. checkout -b fails loudly when the
-        # branch somehow exists locally - refusing beats guessing.
+        # First push from this tree: refuse a retained remote branch
+        # (past life whose PR is closed) before creating ours - a plain
+        # push would die non-fast-forward after the commit.
+        remote = _git(dest, "ls-remote", "--heads", "origin", branch, check=False)
+        if remote.returncode == 0 and remote.stdout.strip():
+            raise RepoError(
+                f"branch '{branch}' already exists on origin (its PR is "
+                "closed or missing) - push this work under a new workspace name."
+            )
+        # checkout -b fails loudly when the branch somehow exists
+        # locally - refusing beats guessing.
         _git(dest, "checkout", "-b", branch)
     # Stage everything but our own bookkeeping. .github stages only if
     # modified outside the tools, which refuse those writes.
@@ -563,8 +613,15 @@ def push_claim_tree(
         f"{title}\n\nCitizen: {citizen}",
     )
     commit_sha = _head_sha(dest) or ""
-    with _push_auth(dest):
-        _git(dest, "push", "origin", _push_ref(branch))
+    try:
+        with _push_auth(dest):
+            _git(dest, "push", "origin", _push_ref(branch))
+    except RepoError:
+        # Restore the dirty state the gate understands: without this the
+        # commit sits invisibly on the branch and every retry is refused
+        # as clean. The retry then re-commits once - no junk accumulates.
+        _git(dest, "reset", "--soft", "HEAD~1", check=False)
+        raise
     manifest = _read_manifest(dest) or {}
     manifest.update(
         {
@@ -578,18 +635,7 @@ def push_claim_tree(
         }
     )
     _write_manifest(dest, manifest)
-    pr_body = f"{body}\n\nCitizen: {citizen}" if body else f"Citizen: {citizen}"
-    if prior is not None:
-        _core._invalidate_pr(int(prior["number"]))
-        pr, first = prior, False
-    else:
-        pr = _core._request(
-            "POST",
-            "pulls",
-            {"title": title, "head": branch, "base": base, "body": pr_body},
-        )
-        _core._open_prs_cache._store.pop("open_prs", None)
-        first = True
+    pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
     plan.update(
         {
             "pr_number": pr["number"],
