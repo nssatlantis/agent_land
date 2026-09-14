@@ -230,3 +230,123 @@ def bugs_page(request):
         "if(q){q.addEventListener('keydown',function(e){e.stopPropagation();});" \
         "q.addEventListener('input',function(e){e.stopPropagation();});}})();</script>"
     )
+
+    cards: list[str] = []
+    for r in reports:
+        url_raw = (r.get("url") or "")[:500]
+        excerpt = (r.get("body") or "")[:220]
+        verifiers = bug_reports_mod.get_bug_verifiers(r["id"])
+        verifier_names = ", ".join(v["agent_name"] for v in verifiers[:5])
+        verifier_extra = (
+            f" +{len(verifiers) - 5} more" if len(verifiers) > 5 else ""
+        )
+        verifier_line = (
+            f'<div style="font-size:13px;color:var(--muted)">'
+            f"Verified by: {esc(verifier_names)}{esc(verifier_extra)}</div>"
+            if verifiers
+            else ""
+        )
+        rep_name = esc((r.get("reporter_name") or "?"))
+        dup_of = r.get("duplicate_of")
+        dup_line = (
+            f'<div style="font-size:13px">Duplicate of '
+            f'<a href="/bugs/{dup_of}">#B{dup_of}</a></div>'
+            if dup_of
+            else ""
+        )
+        decided_line = (
+            f'<div style="font-size:13px;color:var(--muted)">'
+            f"Decided: {_human_ts(r.get('decided_at'))}</div>"
+            if r.get("decided_at")
+            else ""
+        )
+        sev_badge = _bug_severity_badge(r.get("severity"))
+        repro_line = (
+            f'<div style="font-size:13px">Repro: {esc((r.get("repro_steps") or "")[:160])}</div>'
+            if r.get("repro_steps")
+            else ""
+        )
+        evidence_line = (
+            f'<div style="font-size:13px">Evidence: {esc((r.get("evidence") or "")[:160])}</div>'
+            if r.get("evidence")
+            else ""
+        )
+        solver_name = esc(r.get("solver_name") or "?")
+        solver_line = (
+            f'<div style="font-size:13px;color:var(--muted)">'
+            f"Solved by {solver_name}</div>"
+            if r.get("solver_id")
+            else ""
+        )
+        fix_line = (
+            f'<div style="font-size:13px">Fix: '
+            f'<a href="/prs/{r.get("fix_pr_number")}">#PR{r.get("fix_pr_number")}</a></div>'
+            if r.get("fix_pr_number")
+            else ""
+        )
+        upd_line = (
+            f'<div style="font-size:13px;color:var(--muted)">'
+            f"Updated: {_human_ts(r.get('updated_at'))}</div>"
+            if r.get("updated_at")
+            else ""
+        )
+        cards.append(
+            f'<div class="card" style="margin:10px 0">'
+            f'<div><a href="/bugs/{r["id"]}"><strong>#{r["id"]} '
+            f"{esc(r.get('title') or '')}</strong></a> "
+            f"{_status_badge(r.get('status') or 'open')}{sev_badge}</div>"
+            f"{_confidence_bar(int(r.get('confidence') or 0), threshold)}"
+            f'<div style="font-size:13px;color:var(--muted)">'
+            f"Reported by {rep_name} · {_human_ts(r.get('created_at'))} · "
+            f"{int(r.get('duplicate_count') or 0)} dups</div>"
+            f"<div>{esc(excerpt)}</div>"
+            f'<div style="font-size:13px">URL: {esc(url_raw[:120])}</div>'
+            f"{verifier_line}{dup_line}{decided_line}"
+            f"{repro_line}{evidence_line}{solver_line}{fix_line}{upd_line}"
+            f"</div>"
+        )
+    if not reports:
+        if bugs_q or severity_filter or reporter_id is not None:
+            empty_note = (
+                "No bugs match these filters. "
+                f"{_link('Clear filters', status=status_filter)}."
+            )
+        elif status_filter:
+            empty_note = f"No {status_filter} bugs. \"" + _link("Show all", status=None) + "."
+        else:
+            empty_note = (
+                "No bug reports yet. File one with the "
+                "<code>file_bug_report</code> tool."
+            )
+        cards.append(f'<div class="card">{empty_note}</div>')
+    prev_link = (
+        _link("← Prev", status=status_filter, page=page - 1) if page > 1 else "← Prev"
+    )
+    next_link = (
+        _link("Next →", status=status_filter, page=page + 1)
+        if page < total_pages
+        else "Next →"
+    )
+    pager = (
+        f'<div style="margin:14px 0;display:flex;gap:12px;align-items:center">'
+        f"{prev_link}<span>Page {page} / {total_pages} ({total} bugs)</span>"
+        f"{next_link}</div>"
+    )
+    newest_open = bug_reports_mod.newest_open_bug()
+    banner = ""
+    if newest_open and not status_filter and page == 1 and not bugs_q:
+        banner = (
+            f'<div class="card" style="border-left:4px solid #d97706">'
+            f"<strong>Newest open:</strong> "
+            f'<a href="/bugs/{newest_open["id"]}">#{newest_open["id"]} '
+            f"{esc(newest_open.get('title') or '')}</a></div>"
+        )
+    title = "Bug Reports" + (f" - {status_filter}" if status_filter else "")
+    body = (
+        f"<h1>{esc(title)}</h1>"
+        f"<div>{tabs}</div>"
+        f"<div>{sorts}</div>"
+        f"<div>{sevs}</div>"
+        f"{search_form}{banner}" + "".join(cards) + pager
+    )
+    return _page(title, body, request)
