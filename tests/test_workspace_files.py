@@ -132,6 +132,10 @@ def test_write_read_roundtrip(agents, wstools):
             wstools.workspace_read_file, tok, pid, "dev", "lines.txt", 1, 1001
         )
         assert "non-empty" in _expect_tool_error(w, tok, pid, "dev", "e.txt", "")
+        w(tok, pid, "dev", "big.txt", "z" * ((1 << 20) + 1))
+        assert "read cap" in _expect_tool_error(
+            wstools.workspace_read_file, tok, pid, "dev", "big.txt"
+        )
         wstools.release_workspace(tok, pid, "dev")
     finally:
         sb.close()
@@ -271,6 +275,15 @@ def test_owner_isolation(agents, wstools):
         )
         assert "no active workspace" in _expect_tool_error(
             wstools.workspace_list_tree, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_status, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_diff, beta, pid, "dev"
+        )
+        assert "no active workspace" in _expect_tool_error(
+            wstools.workspace_delete_file, beta, pid, "dev", "README.md"
         )
         wstools.release_workspace(tok, pid, "dev")
     finally:
