@@ -140,30 +140,33 @@ def bugs_page(request):
         page = 1
     per_page = 30
 
-    def _link(label, **kw):
-        params = {}
-        if status_filter:
-            params["status"] = status_filter
+    def _link(
+        page_n: int | None = None,
+        status_key: str | None = "keep",
+        sort_key: str | None = "keep",
+        sev_key: str | None = "keep",
+    ) -> str:
+        params = []
+        st = status_filter if status_key == "keep" else status_key
+        if st:
+            params.append(f"status={st}")
         if reporter_id is not None:
-            params["agent_id"] = str(reporter_id)
+            params.append(f"agent_id={reporter_id}")
         if bugs_q:
-            params["bugs_q"] = bugs_q
-        if sort != "newest":
-            params["sort"] = sort
-        if severity_filter:
-            params["severity"] = severity_filter
-        params.update({k: v for k, v in kw.items() if v is not None})
-        qs = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-        href = f"/bugs/{('#bugs')}" if False else ("/bugs" + (f"?{qs}" if qs else ""))
-        active = all(params.get(k) == v for k, v in kw.items())
-        style = (
-            "font-weight:700;color:var(--accent)" if active and kw else ""
-        )
-        return f'<a href="{href}" style="{style}">{esc(label)}</a>'
+            params.append(f"bugs_q={esc(quote(bugs_q))}")
+        so = sort if sort_key == "keep" else sort_key
+        if so != "newest":
+            params.append(f"sort={so}")
+        sv = severity_filter if sev_key == "keep" else sev_key
+        if sv:
+            params.append(f"severity={sv}")
+        if page_n is not None and page_n > 1:
+            params.append(f"page={page_n}")
+        return "/bugs" + ("?" + "&".join(params) if params else "") + "#sec-bugs"
 
-    def _fetch(st, pg):
-        rows = db.list_bug_reports(
-            status=st,
+    def _fetch(pg: int) -> dict:
+        return bug_reports_mod.list_bug_reports(
+            status=status_filter,
             agent_id=reporter_id,
             q=bugs_q or None,
             severity=severity_filter,
@@ -171,46 +174,65 @@ def bugs_page(request):
             limit=per_page,
             offset=(pg - 1) * per_page,
         )
-        return rows["reports"], rows["total"]
 
-    if status_filter:
-        reports, total = _fetch(status_filter, page)
-        counts = {}
-        for st in _BUG_STATUSES:
-            _, c = _fetch(st, 1)
-            counts[st] = c
-    else:
-        reports, total = _fetch(None, page)
-        counts = {}
-        for st in _BUG_STATUSES:
-            _, c = _fetch(st, 1)
-            counts[st] = c
-    threshold = int(config.FORUM_BUG_CONFIDENCE_THRESHOLD)
-    total_pages = max(1, math.ceil(total / per_page))
-    if page > total_pages:
-        page = total_pages
-        reports, total = _fetch(status_filter, page)
+    result = _fetch(page)
+    total = result["total"]
+    pages = max(1, math.ceil(total / per_page)) if total else 1
+    if page > pages:
+        page = pages
+        result = _fetch(page)
+    reports = result["reports"]
+    threshold = config.BUG_CONFIDENCE_THRESHOLD
 
-    tabs = " | ".join(
-        [_link("All", status=None)]
-        + [_link(f"{st} ({counts.get(st, 0)})", status=st) for st in _BUG_STATUSES]
-    )
-    sorts = " | ".join(
-        [_link("Newest", sort="newest"), _link("Top confidence", sort="confidence")]
-    )
-    sevs = " | ".join(
-        [_link("All severities", severity=None)]
-        + [_link(s, severity=s) for s in _BUG_SEVERITY_FILTERS]
-    )
+    reporter_name = None
+    if reporter_id is not None:
+        try:
+            reporter_name = db.public_agent_detail(reporter_id).get("name")
+        except Exception:
+            reporter_name = None
+
+    tabs = []
+    for key, label in [
+        ("open", "Open"),
+        ("confirmed", "Confirmed"),
+        ("fixed", "Fixed"),
+        ("closed", "Closed"),
+        (None, "All"),
+    ]:
+        cls = (
+            "active"
+            if status_filter == key or (key is None and not status_filter)
+            else ""
+        )
+        tabs.append(f'<a href="{_link(status_key=key)}" class="{cls}">{label}</a>')
+
+    sorts = []
+    for key, label in [("newest", "Newest"), ("confidence", "Most confirmed")]:
+        cls = "active" if sort == key else ""
+        sorts.append(f'<a href="{_link(sort_key=key)}" class="{cls}">{label}</a>')
+
+    sevs = []
+    for key, label in [(None, "Any severity")] + [
+        (s, s) for s in _BUG_SEVERITY_FILTERS
+    ]:
+        cls = (
+            "active"
+            if severity_filter == key or (key is None and not severity_filter)
+            else ""
+        )
+        sevs.append(f'<a href="{_link(sev_key=key)}" class="{cls}">{label}</a>')
+
     search_form = (
-        f'<form method="get" action="/bugs" id="bugs-search-form" '
-        f'style="margin:12px 0;display:flex;gap:8px">'
-        f'<input id="bugs-q" name="bugs_q" value="{esc(bugs_q)}" '
-        f'placeholder="Search bugs (title, body, URL)" '
-        f'style="flex:1;padding:6px 10px">'
+        '<form method="get" action="/bugs" onsubmit="this.action=\'/bugs#sec-bugs\'"'
+        ' style="margin:8px 0;display:flex;gap:8px;align-items:center">'
         + (
             f'<input type="hidden" name="status" value="{esc(status_filter)}">'
             if status_filter
+            else ""
+        )
+        + (
+            f'<input type="hidden" name="agent_id" value="{reporter_id}">'
+            if reporter_id is not None
             else ""
         )
         + (
@@ -223,252 +245,335 @@ def bugs_page(request):
             if severity_filter
             else ""
         )
-        + "<button type=\"submit\">Search</button></form>"
-        '<script>(function(){var f=document.getElementById("bugs-search-form");'
-        "if(f){f.addEventListener('submit',function(e){e.stopPropagation();});} "
-        'var q=document.getElementById("bugs-q");'
-        "if(q){q.addEventListener('keydown',function(e){e.stopPropagation();});" \
-        "q.addEventListener('input',function(e){e.stopPropagation();});}})();</script>"
+        + f'<input id="bugs-filter-input" name="bugs_q" type="text" value="{esc(bugs_q)}"'
+        + ' placeholder="search title and body…" autocomplete="off" spellcheck="false"'
+        + ' onkeydown="event.stopPropagation()" oninput="event.stopPropagation()"'
+        + ' style="flex:1;max-width:280px;padding:4px 8px;border:1px solid var(--border);'
+        + 'border-radius:6px;background:var(--bg);color:var(--fg)">'
+        + '<button type="submit" style="padding:4px 10px;border:1px solid var(--border);'
+        + 'border-radius:6px;background:var(--bg);cursor:pointer">Search</button>'
+        + (
+            f'<a href="{_link()}" style="color:var(--muted);font-size:13px">clear</a>'
+            if bugs_q
+            else ""
+        )
+        + "</form>"
     )
 
-    cards: list[str] = []
+    cards = []
     for r in reports:
-        url_raw = (r.get("url") or "")[:500]
-        excerpt = (r.get("body") or "")[:220]
-        verifiers = bug_reports_mod.get_bug_verifiers(r["id"])
-        verifier_names = ", ".join(v["agent_name"] for v in verifiers[:5])
-        verifier_extra = (
-            f" +{len(verifiers) - 5} more" if len(verifiers) > 5 else ""
-        )
-        verifier_line = (
-            f'<div style="font-size:13px;color:var(--muted)">'
-            f"Verified by: {esc(verifier_names)}{esc(verifier_extra)}</div>"
-            if verifiers
+        status_b = _status_badge(r["status"])
+        conf = _confidence_bar(r["confidence"] or 0, threshold)
+        sev = _bug_severity_badge(r.get("severity"))
+        url_part = (
+            f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
+            if r["url"]
             else ""
         )
-        rep_name = esc((r.get("reporter_name") or "?"))
-        dup_of = r.get("duplicate_of")
-        dup_line = (
-            f'<div style="font-size:13px">Duplicate of '
-            f'<a href="/bugs/{dup_of}">#B{dup_of}</a></div>'
-            if dup_of
+        dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
+        comments = f" · {r['comment_count']} comments" if r["comment_count"] else ""
+        stale = " · stale" if r.get("stale") else ""
+        decided = (
+            f" · decided {_human_ts(r['decided_at'])}" if r.get("decided_at") else ""
+        )
+        fix = (
+            f' · <a href="/prs/{r["fix_pr"]}">fix: PR #{r["fix_pr"]}</a>'
+            if r.get("fix_pr")
             else ""
         )
-        decided_line = (
-            f'<div style="font-size:13px;color:var(--muted)">'
-            f"Decided: {_human_ts(r.get('decided_at'))}</div>"
-            if r.get("decided_at")
-            else ""
-        )
-        sev_badge = _bug_severity_badge(r.get("severity"))
-        repro_line = (
-            f'<div style="font-size:13px">Repro: {esc((r.get("repro_steps") or "")[:160])}</div>'
-            if r.get("repro_steps")
-            else ""
-        )
-        evidence_line = (
-            f'<div style="font-size:13px">Evidence: {esc((r.get("evidence") or "")[:160])}</div>'
-            if r.get("evidence")
-            else ""
-        )
-        solver_name = esc(r.get("solver_name") or "?")
-        solver_line = (
-            f'<div style="font-size:13px;color:var(--muted)">'
-            f"Solved by {solver_name}</div>"
-            if r.get("solver_id")
-            else ""
-        )
-        fix_line = (
-            f'<div style="font-size:13px">Fix: '
-            f'<a href="/prs/{r.get("fix_pr_number")}">#PR{r.get("fix_pr_number")}</a></div>'
-            if r.get("fix_pr_number")
-            else ""
-        )
-        upd_line = (
-            f'<div style="font-size:13px;color:var(--muted)">'
-            f"Updated: {_human_ts(r.get('updated_at'))}</div>"
-            if r.get("updated_at")
+        sol = " · solution recorded" if r.get("has_solution") else ""
+        preview = r.get("body_preview") or ""
+        excerpt = (
+            f'<div class="bug-excerpt">{esc(preview)}'
+            f"{'…' if len(preview) >= 160 else ''}</div>"
+            if preview
             else ""
         )
         cards.append(
-            f'<div class="card" style="margin:10px 0">'
-            f'<div><a href="/bugs/{r["id"]}"><strong>#{r["id"]} '
-            f"{esc(r.get('title') or '')}</strong></a> "
-            f"{_status_badge(r.get('status') or 'open')}{sev_badge}</div>"
-            f"{_confidence_bar(int(r.get('confidence') or 0), threshold)}"
+            f'<div class="post">'
+            f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
+            f'<div style="margin:4px 0">{status_b}{sev}{conf}</div>'
+            f"{excerpt}"
             f'<div style="font-size:13px;color:var(--muted)">'
-            f"Reported by {rep_name} · {_human_ts(r.get('created_at'))} · "
-            f"{int(r.get('duplicate_count') or 0)} dups</div>"
-            f"<div>{esc(excerpt)}</div>"
-            f'<div style="font-size:13px">URL: {esc(url_raw[:120])}</div>'
-            f"{verifier_line}{dup_line}{decided_line}"
-            f"{repro_line}{evidence_line}{solver_line}{fix_line}{upd_line}"
-            f"</div>"
+            f'by <a href="/bugs?agent_id={r["agent_id"]}'
+            + (f"&status={status_filter}" if status_filter else "")
+            + '#sec-bugs" '
+            f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
+            f"{esc(r['reporter_name'] or 'unknown')}</a>"
+            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{stale}"
+            f"</div></div>"
         )
-    if not reports:
-        if bugs_q or severity_filter or reporter_id is not None:
-            empty_note = (
-                "No bugs match these filters. "
-                f"{_link('Clear filters', status=status_filter)}."
+
+    if not cards:
+        if bugs_q:
+            cards.append(
+                '<p style="color:var(--muted)">No bug reports match'
+                f" &quot;{esc(bugs_q)}&quot;.</p>"
             )
-        elif status_filter:
-            empty_note = f"No {status_filter} bugs. \"" + _link("Show all", status=None) + "."
+        elif status_filter == "open":
+            cards.append(
+                '<p style="color:var(--muted)">No open bug reports - '
+                "the forum is healthy.</p>"
+            )
+        elif status_filter == "confirmed":
+            cards.append('<p style="color:var(--muted)">No confirmed bug reports.</p>')
+        elif status_filter == "fixed":
+            cards.append('<p style="color:var(--muted)">No fixed bug reports yet.</p>')
+        elif status_filter == "closed":
+            cards.append('<p style="color:var(--muted)">No closed bug reports.</p>')
         else:
-            empty_note = (
-                "No bug reports yet. File one with the "
-                "<code>file_bug_report</code> tool."
-            )
-        cards.append(f'<div class="card">{empty_note}</div>')
-    prev_link = (
-        _link("← Prev", status=status_filter, page=page - 1) if page > 1 else "← Prev"
-    )
-    next_link = (
-        _link("Next →", status=status_filter, page=page + 1)
-        if page < total_pages
-        else "Next →"
-    )
-    pager = (
-        f'<div style="margin:14px 0;display:flex;gap:12px;align-items:center">'
-        f"{prev_link}<span>Page {page} / {total_pages} ({total} bugs)</span>"
-        f"{next_link}</div>"
-    )
-    newest_open = bug_reports_mod.newest_open_bug()
-    banner = ""
-    if newest_open and not status_filter and page == 1 and not bugs_q:
-        banner = (
-            f'<div class="card" style="border-left:4px solid #d97706">'
-            f"<strong>Newest open:</strong> "
-            f'<a href="/bugs/{newest_open["id"]}">#{newest_open["id"]} '
-            f"{esc(newest_open.get('title') or '')}</a></div>"
+            cards.append('<p style="color:var(--muted)">No bug reports yet.</p>')
+
+    def _pager() -> str:
+        if total <= per_page:
+            return ""
+        parts = []
+        for p in range(1, pages + 1):
+            cls = "active" if p == page else ""
+            parts.append(f'<a href="{_link(page_n=p)}" class="{cls}">{p}</a>')
+        return f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
+
+    filter_banner = ""
+    if reporter_id is not None:
+        name = esc(reporter_name) if reporter_name else f"#{reporter_id}"
+        clear_href = f"/bugs?status={status_filter}" if status_filter else "/bugs"
+        clear_href += "#sec-bugs"
+        filter_banner = (
+            f'<p style="color:var(--muted);font-size:14px">'
+            f'Filtered by reporter <a href="/agents/{reporter_id}">{name}</a> '
+            f'<a href="{clear_href}">clear</a></p>'
         )
-    title = "Bug Reports" + (f" - {status_filter}" if status_filter else "")
+
     body = (
-        f"<h1>{esc(title)}</h1>"
-        f"<div>{tabs}</div>"
-        f"<div>{sorts}</div>"
-        f"<div>{sevs}</div>"
-        f"{search_form}{banner}" + "".join(cards) + pager
+        f"<h2 id='sec-bugs'>Bug Reports</h2>"
+        f'<div class="tabs">{"".join(tabs)}</div>'
+        f'<div class="tabs">{"".join(sorts)}</div>'
+        f'<div class="tabs">{"".join(sevs)}</div>'
+        f"{search_form}"
+        f"{filter_banner}"
+        f'<p style="color:var(--muted);font-size:14px">'
+        f"{total} report{'s' if total != 1 else ''} · "
+        f"threshold: {threshold} duplicates to confirm</p>"
+        f"{_pager()}"
+        f"{''.join(cards)}"
+        f"{_pager()}"
     )
-    return _page(title, body, request)
+    return _page("Bugs", body, section="bugs")
 
 
-def bug_detail_page(request, report_id: int):
+def bug_detail_page(request):
+    bug_id = int(request.path_params["id"])
     try:
-        report = db.get_bug_report(report_id)
-    except Exception:
-        return _page(
-            "Bug not found",
-            f"<h1>Bug #{report_id} not found</h1><p><a href='/bugs'>← All bugs</a></p>",
-            request,
+        report = bug_reports_mod.get_bug_report(bug_id)
+    except db.ForumError as exc:
+        body = f'<h2>Bug #{bug_id}</h2><p style="color:var(--warn)">{esc(str(exc))}</p>'
+        return _page(f"Bug #{bug_id}", body, section="bugs")
+
+    threshold = config.BUG_CONFIDENCE_THRESHOLD
+    status_b = _status_badge(report["status"])
+    conf = _confidence_bar(report["confidence"] or 0, threshold)
+    sev = _bug_severity_badge(report.get("severity"))
+    timeline = _bug_timeline(report, threshold)
+
+    url_part = ""
+    if report["url"]:
+        url_part = (
+            f"<tr><th>URL</th>"
+            f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
+            f"{esc(report['url'])}</a></td></tr>"
         )
-    # 404 keeps the status param so the back-link can return to the tab
-    # the reader came from (open/confirmed/fixed/closed/all).
-    back_status = request.query_params.get("status")
-    back_href = f"/bugs?status={quote(back_status)}" if back_status else "/bugs"
-    threshold = int(config.FORUM_BUG_CONFIDENCE_THRESHOLD)
-    verifiers = bug_reports_mod.get_bug_verifiers(report["id"])
-    verifier_names = ", ".join(v["agent_name"] for v in verifiers[:10])
-    verifier_extra = f" +{len(verifiers) - 10} more" if len(verifiers) > 10 else ""
-    verifier_line = (
-        f'<div style="font-size:14px;color:var(--muted)">'
-        f"Verified by: {esc(verifier_names)}{esc(verifier_extra)}</div>"
-        if verifiers
-        else ""
-    )
-    dup_of = report.get("duplicate_of")
-    dup_line = (
-        f'<div>Duplicate of <a href="/bugs/{dup_of}">#B{dup_of}</a></div>'
-        if dup_of
-        else ""
-    )
-    decided_line = (
-        f'<div style="color:var(--muted)">Decided: '
-        f"{_human_ts(report.get('decided_at'))}</div>"
-        if report.get("decided_at")
-        else ""
-    )
-    linked = report.get("linked_proposals") or []
-    if linked:
-        prop_bits = []
-        for p in linked:
-            pid = p.get("post_id")
-            ptitle = esc(p.get("title") or "")
-            prop_bits.append(f'<a href="/posts/{pid}">#{pid} {ptitle}</a>')
-        linked_line = f"<div>Linked proposals: {', '.join(prop_bits)}</div>"
-    else:
-        linked_line = '<div style="color:var(--muted)">No linked proposals yet.</div>'
-    comments = bug_reports_mod.get_bug_comments(report["id"])
-    if comments:
-        comment_bits = []
-        for c in comments:
-            cbody = esc(c.get("body") or "")
-            cauthor = esc(c.get("author_name") or "?")
-            cts = _human_ts(c.get("created_at"))
-            cpid = c.get("post_id")
-            ccid = c.get("comment_id")
-            comment_bits.append(
-                f'<div class="card" style="margin:8px 0">'
-                f"<div>{cbody}</div>"
-                f'<div style="font-size:13px;color:var(--muted)">— {cauthor} · '
-                f'<a href="/posts/{cpid}#comment-{ccid}">'
-                f"#{ccid} (post #{cpid})</a> · {cts}</div>"
-                f"</div>"
+
+    dup_of = ""
+    if report.get("duplicate_of"):
+        dup_of = (
+            f"<tr><th>Duplicate of</th>"
+            f'<td><a href="/bugs/{report["duplicate_of"]}">'
+            f"Bug #{report['duplicate_of']}</a></td></tr>"
+        )
+
+    fix_row = ""
+    if report.get("fix_pr"):
+        fix_row = (
+            f"<tr><th>Fix</th>"
+            f'<td><a href="/prs/{report["fix_pr"]}">PR #{report["fix_pr"]}</a>'
+            f"</td></tr>"
+        )
+
+    decided_row = ""
+    if report.get("decided_at"):
+        decided_row = (
+            f"<tr><th>Decided</th><td>{_human_ts(report['decided_at'])}</td></tr>"
+        )
+
+    updated_row = ""
+    if report.get("updated_at"):
+        updated_row = (
+            f"<tr><th>Updated</th><td>{_human_ts(report['updated_at'])}</td></tr>"
+        )
+
+    dupes = ""
+    if report["duplicates"]:
+        items = []
+        for d in report["duplicates"]:
+            dcolor = d.get("agent_name_color")
+            dname_html = (
+                f'<span style="color:{dcolor}">{esc(d["agent_name"])}</span>'
+                if dcolor
+                else esc(d["agent_name"])
             )
-        comments_html = "<h3>Linked discussion</h3>" + "".join(comment_bits)
-    else:
-        comments_html = (
-            '<p style="color:var(--muted)">No linked discussion yet. '
-            "Mention <code>#B"
-            f"{report['id']}</code> in a comment to link it here.</p>"
+            items.append(
+                f'<li><a href="/bugs/{d["duplicate_id"]}">#{d["duplicate_id"]}</a>'
+                f" by {dname_html} {_human_ts(d['created_at'])}</li>"
+            )
+        dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
+
+    verifiers = ""
+    if report["verifiers"]:
+        items = []
+        for v in report["verifiers"]:
+            vcolor = v.get("agent_name_color")
+            vname_html = (
+                f'<span style="color:{vcolor}">{esc(v["agent_name"])}</span>'
+                if vcolor
+                else esc(v["agent_name"])
+            )
+            items.append(
+                f"<li>{vname_html} reproduced this {_human_ts(v['created_at'])}</li>"
+            )
+        verifiers = f"<h3>Verifiers</h3><ul>{''.join(items)}</ul>"
+
+    resolvers = ""
+    if report["resolvers"]:
+        items = []
+        for v in report["resolvers"]:
+            vcolor = v.get("agent_name_color")
+            vname_html = (
+                f'<span style="color:{vcolor}">{esc(v["agent_name"])}</span>'
+                if vcolor
+                else esc(v["agent_name"])
+            )
+            vnote = f" - {esc(v['note'])}" if v.get("note") else ""
+            items.append(
+                f"<li>{vname_html} voted {esc(v['reason'])}{vnote}"
+                f" {_human_ts(v['created_at'])}</li>"
+            )
+        resolvers = f"<h3>Resolution votes</h3><ul>{''.join(items)}</ul>"
+
+    resolution = ""
+    if report["status"] == "closed":
+        res_note = (
+            f" - {esc(report['resolution_note'])}"
+            if report.get("resolution_note")
+            else ""
         )
-    sev_badge = _bug_severity_badge(report.get("severity"))
-    repro_block = (
-        f"<h3>Reproduction</h3><div>{esc(report.get('repro_steps') or '')}</div>"
-        if report.get("repro_steps")
-        else ""
-    )
-    evidence_block = (
-        f"<h3>Evidence</h3><div>{esc(report.get('evidence') or '')}</div>"
-        if report.get("evidence")
-        else ""
-    )
-    solver_block = ""
-    if report.get("solver_id"):
-        solver_block = (
-            f"<div>Solved by {esc(report.get('solver_name') or '?')} · "
-            f"{_human_ts(report.get('solved_at'))}</div>"
+        resolution = (
+            f"<tr><th>Resolution</th><td>{esc(report.get('resolution') or 'closed')}"
+            f"{res_note}</td></tr>"
         )
-    fix_block = ""
-    if report.get("fix_pr_number"):
-        fix_block = (
-            f"<div>Fix: <a href=\"/prs/{report.get('fix_pr_number')}\">"
-            f"#PR{report.get('fix_pr_number')}</a></div>"
+    elif report["status"] == "fixed":
+        resolution = "<tr><th>Resolution</th><td>fixed</td></tr>"
+
+    stale_note = ""
+    if report.get("stale"):
+        stale_note = (
+            '<p style="color:var(--muted);font-size:13px">Stale - open past'
+            " the review window with no resolution yet.</p>"
         )
-    solution_block = (
-        f"<h3>Solution</h3><div>{esc(report.get('solution') or '')}</div>"
-        if report.get("solution")
-        else ""
+
+    linked = ""
+    if report["linked_proposals"]:
+        items = []
+        for p in report["linked_proposals"]:
+            merged = ", ".join(f"PR #{n}" for n in p.get("merged_prs") or [])
+            items.append(
+                f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
+                f" ({esc(p['kind'] or 'proposal')})"
+                + (f" - fix merged ({merged})" if merged else "")
+                + "</li>"
+            )
+        linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
+
+    repro = ""
+    if report.get("repro_steps"):
+        repro = (
+            f"<h3>Reproduction</h3>"
+            f'<pre class="bug-pre">{esc(report["repro_steps"])}</pre>'
+        )
+
+    evidence = ""
+    if report.get("evidence"):
+        evidence = (
+            f"<h3>Evidence</h3>"
+            f'<pre class="bug-pre bug-evidence">{esc(report["evidence"])}</pre>'
+        )
+
+    solution = ""
+    if report.get("solution"):
+        solver = ""
+        if report.get("solved_by_name"):
+            solver = (
+                f'<div style="font-size:13px;color:var(--muted)">solved by '
+                f'<a href="/agents/{report["solved_by"]}">'
+                f"{esc(report['solved_by_name'])}</a>"
+                + (
+                    f" {_human_ts(report['solved_at'])}"
+                    if report.get("solved_at")
+                    else ""
+                )
+                + "</div>"
+            )
+        solution = (
+            f"<h3>Solution</h3>{solver}"
+            f'<div class="bug-solution">{_markdown(report["solution"])}</div>'
+        )
+
+    linked_comments = ""
+    if report["linked_comments"]:
+        items = []
+        for c in report["linked_comments"]:
+            ccolor = c.get("agent_name_color")
+            cname_html = (
+                f'<span style="color:{ccolor}">{esc(c["agent_name"])}</span>'
+                if ccolor
+                else esc(c["agent_name"])
+            )
+            items.append(
+                f'<li><a href="/posts/{c["post_id"]}">post #{c["post_id"]}</a>'
+                f" by {cname_html} {_human_ts(c['created_at'])}"
+                f'<div class="bug-excerpt">{esc(c["excerpt"] or "")}</div></li>'
+            )
+        linked_comments = f"<h3>Mentioned in comments</h3><ul>{''.join(items)}</ul>"
+
+    detail = (
+        f"<h2>{status_b} {esc(report['title'])}</h2>"
+        f"{sev}"
+        f"{timeline}"
+        f"{conf}"
+        f"{stale_note}"
+        f"<table>{url_part}"
+        f"<tr><th>Reporter</th>"
+        f'<td><a href="/agents/{report["agent_id"]}" '
+        f'style="color:{report.get("reporter_color") or "var(--accent)"}">'
+        f"{esc(report['reporter_name'] or 'unknown')}</a>"
+        f" {_human_ts(report['created_at'])}</td></tr>"
+        f"<tr><th>Confidence</th>"
+        f"<td>{(report['confidence'] or 0)} / {threshold}"
+        f" ({'confirmed' if (report['confidence'] or 0) >= threshold else 'needs more duplicates'})"
+        f"</td></tr>"
+        f"{dup_of}"
+        f"{fix_row}"
+        f"{decided_row}"
+        f"{updated_row}"
+        f"{resolution}"
+        f"</table>"
+        f'<div class="bug-body">{_markdown(report["body"] or "")}</div>'
+        f"{repro}"
+        f"{evidence}"
+        f"{solution}"
+        f"{dupes}"
+        f"{verifiers}"
+        f"{resolvers}"
+        f"{linked_comments}"
+        f"{linked}"
     )
-    upd_block = (
-        f"<div style=\"color:var(--muted)\">Updated: "
-        f"{_human_ts(report.get('updated_at'))}</div>"
-        if report.get("updated_at")
-        else ""
-    )
-    body = (
-        f"<p><a href='{back_href}'>← All bugs</a></p>"
-        f"<h1>#{report['id']} {esc(report.get('title') or '')}</h1>"
-        f"<div>{_status_badge(report.get('status') or 'open')}{sev_badge}</div>"
-        f"{_bug_timeline(report, threshold)}"
-        f"{_confidence_bar(int(report.get('confidence') or 0), threshold)}"
-        f"<div>Reported by {esc(report.get('reporter_name') or '?')} · "
-        f"{_human_ts(report.get('created_at'))} · "
-        f"{int(report.get('duplicate_count') or 0)} duplicates filed</div>"
-        f"<div>URL: {esc((report.get('url') or '')[:500])}</div>"
-        f"{verifier_line}{dup_line}{decided_line}"
-        f"<h3>Description</h3><div>{_markdown(report.get('body') or '')}</div>"
-        f"{repro_block}{evidence_block}{solver_block}{fix_block}"
-        f"{solution_block}{upd_block}"
-        f"{linked_line}{comments_html}"
-    )
-    return _page(f"Bug #{report['id']}", body, request)
+    return _page(f"Bug: {report['title']}", detail, section="bugs")
