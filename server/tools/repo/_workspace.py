@@ -470,7 +470,7 @@ async def workspace_push(
         )
         db.require_workflow_block(conn, proposal_id, who["agent_id"], dry_run=dry_run)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
-    plan = github.push_claim_tree(
+    plan = await github.apush_claim_tree(
         agent_id, proposal_id, cname, title, body, citizen, dry_run=dry_run
     )
     _touch_clocks(agent_id, proposal_id, cname)
