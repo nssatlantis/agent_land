@@ -39,6 +39,8 @@ def main():
     assert poll["question"] == "Which color?"
     assert [o["text"] for o in poll["options"]] == ["Red", "Blue", "Green"]
     assert poll["total_votes"] == 0
+    assert poll["total_voters"] == 0
+    assert poll["max_choices"] == 1
     assert poll["status"] == "open"
     assert poll["my_vote"] is None
 
@@ -94,14 +96,17 @@ def main():
     opt0, opt1 = poll["options"][0]["id"], poll["options"][1]["id"]
     v = db.vote_poll(tb, p, opt0)
     assert v["total_votes"] == 1
-    assert v["my_vote"] == opt0
+    assert v["total_voters"] == 1
+    assert v["my_vote"] == [opt0]
     v2 = db.vote_poll(tb, p, opt1)
     assert v2["total_votes"] == 1, "re-vote overwrites, no double count"
-    assert v2["my_vote"] == opt1
+    assert v2["total_voters"] == 1
+    assert v2["my_vote"] == [opt1]
     db.vote_poll(tc, p, opt0)
     gv = db.get_poll(p, token=tb)
-    assert gv["my_vote"] == opt1
+    assert gv["my_vote"] == [opt1]
     assert gv["total_votes"] == 2
+    assert gv["total_voters"] == 2
     assert gv["options"][1]["votes"] == 1
     # --- single-query tally parity (folded LEFT JOIN COUNT) ------------------
     assert [o["text"] for o in gv["options"]] == ["Red", "Blue", "Green"]
@@ -111,6 +116,64 @@ def main():
     assert "own poll" in expect_error(lambda: db.vote_poll(ta, p, opt0))
     # unknown option refused
     assert "unknown poll answer" in expect_error(lambda: db.vote_poll(tb, p, 999999))
+
+    # --- multi-answer ballots (max_choices=2) -------------------------------
+    mp = db.create_post(ta, "poll multi", "b")["post_id"]
+    assert "at least 1" in expect_error(
+        lambda: db.create_poll(ta, mp, "Q", ["A", "B"], 1, max_choices=0)
+    )
+    assert "whole number" in expect_error(
+        lambda: db.create_poll(ta, mp, "Q", ["A", "B"], 1, max_choices="2")
+    )
+    assert "exceeds the number of answers" in expect_error(
+        lambda: db.create_poll(ta, mp, "Q", ["A", "B"], 1, max_choices=3)
+    )
+    assert "exceeds the limit" in expect_error(
+        lambda: db.create_poll(ta, mp, "Q", ["A", "B"], 1, max_choices=99)
+    )
+    m = db.create_poll(ta, mp, "Pick two?", ["A", "B", "C"], 1, max_choices=2)
+    assert m["max_choices"] == 2
+    assert m["total_voters"] == 0
+    assert m["my_vote"] is None
+    ma, mb, mc = (o["id"] for o in m["options"])
+    assert "at least one answer" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_ids=[])
+    )
+    assert "pass option_id or option_ids" in expect_error(lambda: db.vote_poll(tb, mp))
+    assert "exactly one of" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_id=ma, option_ids=[ma, mb])
+    )
+    assert "list of answer ids" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_ids=ma)
+    )
+    assert "at most 2 answers" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_ids=[ma, mb, mc])
+    )
+    assert "unknown poll answer" in expect_error(
+        lambda: db.vote_poll(tb, mp, option_ids=[ma, 999999])
+    )
+    # dupes collapse to one choice
+    dd = db.vote_poll(tb, mp, option_ids=[ma, ma])
+    assert dd["my_vote"] == [ma]
+    assert dd["total_votes"] == 1
+    assert dd["total_voters"] == 1
+    # a full ballot, then a re-vote replaces the whole set
+    fb = db.vote_poll(tb, mp, option_ids=[mb, ma])
+    assert sorted(fb["my_vote"]) == sorted([ma, mb])
+    assert fb["total_votes"] == 2
+    assert fb["total_voters"] == 1
+    rb = db.vote_poll(tb, mp, option_ids=[mc])
+    assert rb["my_vote"] == [mc]
+    assert rb["total_votes"] == 1
+    assert rb["total_voters"] == 1
+    # a bare option_id is a one-answer ballot on any poll
+    sb = db.vote_poll(tc, mp, ma)
+    assert sb["my_vote"] == [ma]
+    gm = db.get_poll(mp, token=tb)
+    assert gm["my_vote"] == [mc]
+    assert gm["total_votes"] == 2
+    assert gm["total_voters"] == 2
+    assert [o["votes"] for o in gm["options"]] == [1, 0, 1]
 
     # --- editing window (needs the window armed) ------------------------------
     saved_win = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
@@ -143,6 +206,21 @@ def main():
     assert "editing window has closed" in expect_error(
         lambda: db.edit_poll(ta, p, question="nope")
     )
+
+    # --- edits cannot shrink answers below max_choices --------------------
+    saved_win2 = os.environ.get("FORUM_POLL_EDIT_WINDOW_SECONDS")
+    try:
+        os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = "300"
+        se = db.create_post(ta, "poll edit shrink", "b")["post_id"]
+        db.create_poll(ta, se, "SQ", ["A", "B", "C"], 1, max_choices=3)
+        assert "exceeds the new" in expect_error(
+            lambda: db.edit_poll(ta, se, options=["A", "B"])
+        )
+    finally:
+        if saved_win2 is None:
+            os.environ.pop("FORUM_POLL_EDIT_WINDOW_SECONDS", None)
+        else:
+            os.environ["FORUM_POLL_EDIT_WINDOW_SECONDS"] = saved_win2
 
     # --- conclusion sweep notifies participants, idempotent ------------------
     cpost = db.create_post(ta, "poll conclude", "b")["post_id"]

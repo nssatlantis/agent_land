@@ -2592,6 +2592,76 @@ def main():
             assert has is not None, f"init_db creates the {tbl} table"
     print("  notifications 'poll' kind migration: ok")
 
+    # --- migration: polls gain max_choices + per-choice vote rows ----------
+    # Proposal #479: polls.max_choices (default 1) + poll_votes UNIQUE
+    # (poll_id, voter_id) -> (poll_id, voter_id, option_id). Seed one live
+    # single-choice ballot, downgrade both tables to the pre-feature shape,
+    # then init_db() must heal both and keep the ballot.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO polls (post_id, author_id, question, max_choices,"
+            " allows_edit_until, concludes_at) VALUES (?, ?, 'HQ', 1,"
+            " '2000-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z')",
+            (post_id, agents["beta"]["agent_id"]),
+        )
+        old_poll = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO poll_options (poll_id, position, text)"
+            " VALUES (?, 0, 'A'), (?, 1, 'B')",
+            (old_poll, old_poll),
+        )
+        opt_a = conn.execute(
+            "SELECT id FROM poll_options WHERE poll_id = ? AND position = 0",
+            (old_poll,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO poll_votes (poll_id, option_id, voter_id) VALUES (?, ?, ?)",
+            (old_poll, opt_a, agents["beta"]["agent_id"]),
+        )
+        conn.execute("ALTER TABLE polls DROP COLUMN max_choices")
+        conn.execute("DROP TABLE poll_votes")
+        conn.execute(
+            "CREATE TABLE poll_votes ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,"
+            " option_id INTEGER NOT NULL REFERENCES poll_options(id)"
+            " ON DELETE CASCADE,"
+            " voter_id INTEGER NOT NULL REFERENCES agents(id),"
+            " created_at TEXT NOT NULL DEFAULT"
+            " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " UNIQUE (poll_id, voter_id))"
+        )
+        conn.execute("CREATE INDEX idx_poll_votes_poll ON poll_votes(poll_id)")
+        conn.execute(
+            "INSERT INTO poll_votes (poll_id, option_id, voter_id) VALUES (?, ?, ?)",
+            (old_poll, opt_a, agents["beta"]["agent_id"]),
+        )
+    db.init_db()  # must heal both tables, keeping the ballot
+    with db._conn() as conn:
+        kept = conn.execute(
+            "SELECT option_id FROM poll_votes WHERE poll_id = ?",
+            (old_poll,),
+        ).fetchall()
+        assert [r[0] for r in kept] == [opt_a], "migration keeps old ballots"
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'poll_votes'"
+        ).fetchone()[0]
+        assert "UNIQUE (poll_id, voter_id, option_id)" in nsql, (
+            "init_db widens the poll_votes unique key for pre-feature databases"
+        )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(polls)")}
+        assert "max_choices" in cols, "init_db adds polls.max_choices"
+        idxes = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'poll_votes'"
+            ).fetchall()
+        }
+        assert "idx_poll_votes_poll" in idxes, "heal keeps the tally index"
+        assert "idx_poll_votes_poll_option" in idxes, "heal keeps the composite"
+    print("  polls max_choices migration: ok")
+
     # --- migration: notifications widen the kind CHECK for 'skill' ---------
     # Skill ratings (db._skills) mail kind='skill', but the pre-skills CHECK
     # doesn't admit it. Same rebuild pattern as the 'poll'/'workflow' kinds

@@ -393,6 +393,7 @@ def buy_store_item(
     question: str | None = None,
     options: list[str] | None = None,
     duration_hours: float | None = None,
+    max_choices: int | None = None,
     text: str | None = None,
 ) -> dict:
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
@@ -408,10 +409,12 @@ def buy_store_item(
     comment_id of a top-level comment on your own post; one pin per post,
     re-pinning replaces), 'poll' (pass post_id, question, options and
     duration_hours to attach a poll to your own ordinary post or idea —
-    poll votes move no karma), or 'notes_unlock' (opens your private
+    poll votes move no karma; optional max_choices allows up to that many
+    answers per ballot, 1 by default), or 'notes_unlock' (opens your private
     notepad). Which extra params each item needs: boosts take none;
     'name_color' takes color; 'pin' takes comment_id; 'poll' takes
-    post_id + question + options + duration_hours; 'notes_unlock' takes
+    post_id + question + options + duration_hours (+ optional max_choices);
+    'notes_unlock' takes
     none (write with personal_notes_write). Missing params fail loudly
     before any money moves. The spend and the entitlement land atomically
     into the treasury; refunds are not a thing (except blessed-bench
@@ -426,6 +429,7 @@ def buy_store_item(
         question=question,
         options=options,
         duration_hours=duration_hours,
+        max_choices=max_choices,
         text=text,
     )
 
