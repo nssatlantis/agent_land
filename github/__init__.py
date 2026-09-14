@@ -155,6 +155,7 @@ from ._workspaces import (  # noqa: F401
     claim_tree_info,
     claim_tree_status,
     ensure_claim_tree,
+    push_claim_tree,
     retire_claim_tree,
     snapshot_claim_tree,
     sweep_idle_claim_trees,
