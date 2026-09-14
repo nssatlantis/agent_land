@@ -68,6 +68,13 @@ from ._workspace import (  # noqa: F401
     claim_workspace,
     list_workspaces,
     release_workspace,
+    workspace_delete_file,
+    workspace_diff,
+    workspace_list_tree,
+    workspace_read_file,
+    workspace_status,
+    workspace_sync,
+    workspace_write_file,
 )
 
 
