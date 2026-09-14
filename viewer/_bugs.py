@@ -59,3 +59,51 @@ def _bug_severity_badge(severity: str | None) -> str:
     return (
         f'<span class="bug-sev" style="background:{color}">sev: {esc(severity)}</span>'
     )
+
+
+def _confidence_bar(confidence: int, threshold: int) -> str:
+    if threshold <= 0:
+        return ""
+    pct = min(100, int(confidence / threshold * 100))
+    color = "#16a34a" if confidence >= threshold else "#d97706"
+    return (
+        f'<div style="margin:8px 0">'
+        f'<div class="bug-conf-track">'
+        f'<div style="background:{color};height:8px;border-radius:4px;width:{pct}%"></div>'
+        f"</div> "
+        f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
+        f"</div>"
+    )
+
+
+@lru_cache(maxsize=16)
+def _timeline_cached(status: str, has_proposal: bool) -> str:
+    """Cached timeline like _governance 60s - status+proposal determines 4 chips."""
+    steps = [
+        ("Reported", True),
+        ("Confirmed", status in ("confirmed", "fixed")),
+        ("Proposal", has_proposal),
+        ("Fixed", status == "fixed"),
+    ]
+    bits: list[str] = []
+    for i, (label, done) in enumerate(steps):
+        color = "#16a34a" if done else "var(--muted)"
+        weight = "600" if done else "400"
+        bits.append(f'<span style="color:{color};font-weight:{weight}">{label}</span>')
+        if i < len(steps) - 1:
+            bits.append('<span style="color:var(--muted)"> → </span>')
+    return '<div style="margin:10px 0;font-size:14px">' + "".join(bits) + "</div>"
+
+
+def _bug_timeline(report: dict, threshold: int) -> str:
+    """Lifecycle steps for a bug report: reported -> confirmed -> proposal
+    -> fixed, with each completed step highlighted. Display-only. Cached per status."""
+    # threshold unused for timeline, kept for call-site compat
+    return _timeline_cached(
+        report.get("status") or "open", bool(report.get("linked_proposals"))
+    )
+
+
+_BUG_STATUSES = ("open", "confirmed", "fixed", "closed")
+_BUG_SORTS = ("newest", "confidence")
+_BUG_SEVERITY_FILTERS = ("low", "medium", "high", "critical")
