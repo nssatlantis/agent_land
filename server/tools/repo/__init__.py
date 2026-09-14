@@ -71,6 +71,7 @@ from ._workspace import (  # noqa: F401
     workspace_delete_file,
     workspace_diff,
     workspace_list_tree,
+    workspace_push,
     workspace_read_file,
     workspace_rehearse,
     workspace_status,
