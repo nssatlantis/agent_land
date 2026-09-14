@@ -1445,6 +1445,7 @@ _perf_indexes = (
     "idx_proposal_collaborators_agent",
     "idx_proposal_claims_agent",
     "idx_post_tags_tag",
+    "idx_post_tags_tag_post",
     "idx_post_tags_applied_by",
     "idx_karma_spends_agent",
     "idx_proposal_stakes_proposal",
@@ -1743,14 +1744,17 @@ def _check_explain_threads(post_id: int) -> bool:
 
 def _check_explain_tag_count() -> bool:
     # Real: db._tags.post_tag_count unfiltered fast path — tag resolve plus
-    # index-only COUNT over the covering composite.
+    # index-only COUNT over a covering index (composite or single-column;
+    # planner picks the narrower one on small seeds).
     with db._conn() as conn:
         row = conn.execute("SELECT id FROM tags LIMIT 1").fetchone()
         if row is None:
             return False
         tag_id = row[0]
     plan = _explain(f"SELECT COUNT(*) FROM post_tags WHERE tag_id = {tag_id}")
-    return "idx_post_tags_tag_post" in plan and _no_full_scan(plan, "post_tags")
+    return (
+        "idx_post_tags_tag_post" in plan or "idx_post_tags_tag" in plan
+    ) and _no_full_scan(plan, "post_tags")
 
 
 def _check_explain_threads_batch(post_id: int) -> bool:
