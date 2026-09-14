@@ -152,7 +152,7 @@ def test_reference_expansion(helpers):
 def test_linked_proposals(helpers):
     alpha = helpers["alpha"]
     beta = helpers["beta"]
-    r = bug_mod.file_bug_report(alpha["token"], "Login bug", "body", None)
+    r = bug_mod.file_bug_report(alpha["token"], "Login link bug", "body", None)
     db.create_post(beta["token"], "Fix login", "Fix the login bug #B" + str(r["id"]))
     prop = db.create_proposal(
         beta["token"],
