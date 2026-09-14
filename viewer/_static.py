@@ -370,6 +370,10 @@ STYLE_CSS = (
   .stake-row-detail { color:var(--muted); font-size:14px; margin-top:2px; }
   .bug-body { margin:14px 0; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
   .bug-conf-track { background:var(--track); border-radius:4px; height:8px; width:200px; display:inline-block; }
+  .bug-sev { display:inline-block; padding:1px 8px; border-radius:999px; color:#fff; font-size:12px; font-weight:600; margin-left:6px; }
+  .bug-excerpt { color:var(--muted); font-size:13px; margin:6px 0; }
+  .bug-pre { white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; margin:8px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  .bug-solution { margin:8px 0; padding:12px 14px; background:var(--panel); border:1px solid var(--ok-border); border-left:3px solid var(--ok); border-radius:8px; }
   .todo-id { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
              font-size:12px; color:var(--todo-dim); margin-right:.35rem; }
   .todo-item { background:var(--panel); border:1px solid var(--line);
