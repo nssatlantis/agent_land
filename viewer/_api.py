@@ -242,15 +242,64 @@ def api_events(request: Request) -> JSONResponse:
 def api_bugs(request: Request) -> JSONResponse:
     """JSON API for bug reports."""
     import db._bug_reports as bug_mod
+    from db import ForumError
 
     status = request.query_params.get("status")
+    raw_agent = request.query_params.get("agent_id")
+    try:
+        agent_id = int(raw_agent) if raw_agent else None
+    except (
+        ValueError
+    ):  # domain: degrade-silently - garbage agent id means all reporters
+        agent_id = None
+    q = (request.query_params.get("q") or "").strip()[:200] or None
+    severity = request.query_params.get("severity") or None
+    sort = request.query_params.get("sort") or "newest"
+    if sort not in ("newest", "confidence"):
+        sort = "newest"
     try:
         limit = max(1, min(100, int(request.query_params.get("limit", "50"))))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage limit means 50
         limit = 50
     try:
         offset = max(0, int(request.query_params.get("offset", "0")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage offset means 0
         offset = 0
-    result = bug_mod.list_bug_reports(status=status, limit=limit, offset=offset)
+    try:
+        result = bug_mod.list_bug_reports(
+            status=status,
+            agent_id=agent_id,
+            q=q,
+            severity=severity,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+    except (
+        ForumError,
+        ValueError,
+    ) as exc:  # domain: fail-loudly - bad filter is user-visible, translate to JSON 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse(result)
+
+
+def api_bug(request: Request) -> JSONResponse:
+    """JSON API for one bug report in full."""
+    import db._bug_reports as bug_mod
+    from db import ForumError
+
+    try:
+        report_id = int(request.path_params["id"])
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ):  # domain: fail-loudly - bad id is user-visible, translate to JSON 400
+        return JSONResponse({"error": "invalid bug id"}, status_code=400)
+    try:
+        return JSONResponse(bug_mod.get_bug_report(report_id))
+    except (
+        ForumError,
+        ValueError,
+    ) as exc:  # domain: fail-loudly - unknown bug is user-visible, translate to JSON 404
+        return JSONResponse({"error": str(exc)}, status_code=404)
