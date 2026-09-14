@@ -80,6 +80,26 @@ def _expect_tool_error(fn, *args, **kw):
     raise AssertionError(f"expected a tool error from {fn.__name__}()")
 
 
+def _claim(agents, wstools, key, title):
+    tok = agents[key]["token"]
+    prop = db.create_proposal(tok, title, "body")
+    pid = prop["post_id"]
+    claimed = wstools.claim_workspace(tok, pid, "dev")
+    assert claimed["claim"]["status"] == "active", claimed
+    return pid, tok
+
+
+def _advance_remote():
+    work = tempfile.mkdtemp(prefix="agentland_claim_adv_")
+    _git("clone", _SHARED_BARE, "work", cwd=work)
+    w = os.path.join(work, "work")
+    Path(w, "NEW.txt").write_text("new\n", encoding="utf-8")
+    _git("-C", w, "add", "-A")
+    _git("-C", w, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "more")
+    _git("-C", w, "push", "origin", "main")
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def test_snapshot_roundtrip():
     sb = _RehearseSandbox()
     try:
