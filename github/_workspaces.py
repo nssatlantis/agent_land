@@ -326,7 +326,9 @@ def claim_tree_diff(
     for fresh in _untracked_paths(dest):
         if scope is not None and fresh != scope:
             continue
-        section = _git(dest, "diff", "--no-index", "--", "/dev/null", fresh, check=False)
+        section = _git(
+            dest, "diff", "--no-index", "--", "/dev/null", fresh, check=False
+        )
         if section.stdout:
             text = section.stdout
             parts.append(text if text.endswith("\n") else text + "\n")
