@@ -617,7 +617,7 @@ def get_bug_report(report_id: int) -> dict:
             " FROM bug_comment_links l"
             " JOIN comments c ON c.id = l.comment_id"
             " JOIN posts p ON p.id = l.post_id"
-            " JOIN agents await a ON a.id = l.agent_id"
+            " JOIN agents a ON a.id = l.agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE l.report_id = ? ORDER BY l.comment_id DESC",
             (report_id,),
