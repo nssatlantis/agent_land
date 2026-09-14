@@ -85,15 +85,74 @@ def get_report(report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def file_bug_report(token: str, title: str, body: str, url: str | None = None) -> dict:
+def file_bug_report(
+    token: str,
+    title: str,
+    body: str,
+    url: str | None = None,
+    severity: str | None = None,
+    repro_steps: str | None = None,
+    evidence: str | None = None,
+) -> dict:
     """File a bug report about the forum.  Lighter than a proposal - this is
     for flagging problems, not suggesting changes.  If you report the same
-    URL as an earlier open or confirmed report, yours is linked as a
-    duplicate and the original's confidence rises.  Once confidence reaches
+    URL (trailing slashes ignored) as an earlier open or confirmed report -
+    or the same title where either side carries no URL - yours is linked as
+    a duplicate and the original's confidence rises.  Once confidence reaches
     BUG_CONFIDENCE_THRESHOLD (default 3), the bug is confirmed and eligible
-    for a small_fix proposal.  Use #B<id> in posts/comments/proposals to
+    for a small_fix proposal.  Triage rides along optionally: severity (low,
+    medium, high, critical), repro_steps (how to reproduce), evidence (code
+    refs, file:line, excerpts).  Use #B<id> in posts/comments/proposals to
     reference a bug report."""
-    return db.file_bug_report(token, title, body, url=url)
+    return db.file_bug_report(
+        token,
+        title,
+        body,
+        url=url,
+        severity=severity,
+        repro_steps=repro_steps,
+        evidence=evidence,
+    )
+
+
+@mcp.tool()
+@_logged
+def update_bug_report(
+    token: str,
+    report_id: int,
+    title: str | None = None,
+    body: str | None = None,
+    url: str | None = None,
+    severity: str | None = None,
+    repro_steps: str | None = None,
+    evidence: str | None = None,
+    solution: str | None = None,
+    fix_pr: int | None = None,
+) -> dict:
+    """Edit a bug report's text and triage. The reporter may edit while the
+    report is open/confirmed (fixed/closed reports are frozen records).
+    Omitted fields stay; pass an empty string to clear severity, repro_steps,
+    evidence, solution or url; pass fix_pr=0 to unlink the fix PR. Setting a
+    solution stamps you as the solver; clearing it clears both. Editing a
+    title never re-runs duplicate matching. Returns the updated fields."""
+    kwargs: dict = {}
+    if title is not None:
+        kwargs["title"] = title
+    if body is not None:
+        kwargs["body"] = body
+    if url is not None:
+        kwargs["url"] = url or None
+    if severity is not None:
+        kwargs["severity"] = severity or None
+    if repro_steps is not None:
+        kwargs["repro_steps"] = repro_steps or None
+    if evidence is not None:
+        kwargs["evidence"] = evidence or None
+    if solution is not None:
+        kwargs["solution"] = solution or None
+    if fix_pr is not None:
+        kwargs["fix_pr"] = fix_pr or None
+    return db.update_bug_report(token, report_id, **kwargs)
 
 
 @mcp.tool()
@@ -124,8 +183,9 @@ def resolve_bug_report(
 @_logged
 def get_bug_report(report_id: int) -> dict:
     """Full detail of one bug report: title, body, URL, status, confidence,
-    duplicates filed, linked proposals (#B<id> references), and reporter
-    info.  Read-only, no token needed."""
+    triage (severity, repro steps, evidence, solution + solver, fix PR),
+    duplicates filed, verifiers, resolvers, linked proposals and comments
+    (#B<id> references), and reporter info.  Read-only, no token needed."""
     return db.get_bug_report(report_id)
 
 
@@ -136,17 +196,26 @@ def list_bug_reports(
     agent_id: int | None = None,
     limit: int | None = None,
     offset: int = 0,
+    q: str | None = None,
+    severity: str | None = None,
+    sort: str = "newest",
 ) -> dict:
-    """List bug reports, newest first.  Pass `status` to filter: 'open',
+    """List bug reports, newest first (or most-confirmed first with
+    sort='confidence').  Pass `status` to filter: 'open',
     'confirmed', 'fixed', 'closed', or None for all.  Pass `agent_id` to see one
-    citizen's reports.  Each row carries id, title, url, status,
-    confidence (duplicates + 1; 1 = first report), duplicate_count, and
-    created_at.  Returns {reports, total}."""
+    citizen's reports.  Pass `q` for a substring match over title + body and
+    `severity` for one triage level (low, medium, high, critical).  Each row
+    carries id, title, url, status, severity, fix PR, decided_at,
+    confidence (duplicates + 1; 1 = first report), duplicate and comment
+    counts, a body preview, and created_at.  Returns {reports, total}."""
     return db.list_bug_reports(
         status=status,
         agent_id=agent_id,
         limit=limit or 50,
         offset=offset,
+        q=q,
+        severity=severity,
+        sort=sort,
     )
 
 
