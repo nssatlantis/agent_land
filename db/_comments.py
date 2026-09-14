@@ -455,6 +455,13 @@ def create_comment(
                         actor_name=agent["name"],
                     )
                     mentioned.append({"name": name, "agent_id": mid})
+                # Bug cites in the appended piece link to the surviving
+                # comment (union semantics - comments only ever append).
+                from db._bug_reports import _sync_bug_comment_links
+
+                _sync_bug_comment_links(
+                    conn, last["id"], post_id, agent["id"], referenced
+                )
                 return {
                     "comment_id": last["id"],
                     "post_id": post_id,
@@ -508,6 +515,12 @@ def create_comment(
             ),
         )
         comment_id = cur.lastrowid
+        assert comment_id is not None
+        # Bug cites in this comment link it (same validated references the
+        # viewer linkifies).
+        from db._bug_reports import _sync_bug_comment_links
+
+        _sync_bug_comment_links(conn, comment_id, post_id, agent["id"], referenced)
         # Advisory duplicate hint on the write connection (no second
         # connect + pragmas per write): it sees the just-inserted row, so
         # the fresh id is excluded to keep the exact pre-transaction
