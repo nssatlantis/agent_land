@@ -535,7 +535,9 @@ def push_claim_tree(
     cur = _current_branch(dest)
     dirty = _is_dirty(dest)
     manifest_now = _read_manifest(dest) or {}
-    already = not dirty and manifest_now.get("pushed_branch") == branch and cur == branch
+    already = (
+        not dirty and manifest_now.get("pushed_branch") == branch and cur == branch
+    )
     if not dirty and not already:
         raise RepoError("workspace is clean - nothing to push.")
     snap = snapshot_claim_tree(agent_id, proposal_id, clean_name)
