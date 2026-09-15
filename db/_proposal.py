@@ -569,7 +569,8 @@ def supersede_proposal(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         mention_body = body
         body, rec2 = _reconcile_signature(body, agent["id"])
         signature_reconciled = signature_reconciled or rec2
@@ -606,6 +607,7 @@ def supersede_proposal(
             collaborative=resolved_collab,
             claimable=resolved_claimable,
             proposal_config=resolved_config,
+            agents_map=agents_map,
         )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
@@ -1352,7 +1354,8 @@ def promote_idea(
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        body, unresolved = _expand_mentions(conn, body)
+        agents_map = _load_agents_map(conn)
+        body, unresolved = _expand_mentions(conn, body, agents_map=agents_map)
         mention_body = body
         body, rec2 = _reconcile_signature(body, agent["id"])
         signature_reconciled = signature_reconciled or rec2
@@ -1385,6 +1388,7 @@ def promote_idea(
             proposal_config=parent["proposal_config"]
             if (max_collaborators is None)
             else json.dumps({"max_collaborators": max_collaborators}),
+            agents_map=agents_map,
         )
         from db._bug_reports import _sync_bug_report_links
 
