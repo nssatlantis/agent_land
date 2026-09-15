@@ -259,7 +259,51 @@ def main():
         "accepted cycle counts as a delivery"
     )
     assert db.get_service(svc["id"])["open_orders"] == 0
+    assert db.get_service(svc["id"]).get("buyer_notes") == [], (
+        "silent accept yields no note, never an error"
+    )
     print("  delivery counts: ok")
+
+    # --- 5b. buyer notes: stored accept feedback surfaces on the shelf ---
+    order2 = db.order_service(buyer["token"], svc["id"])
+    job2 = order2["job"]
+    db.accept_job_offer(seller["token"], job2["job_id"])
+    for st in db.get_job(job2["job_id"])["steps"]:
+        db.tick_job_step(seller["token"], job2["job_id"], st["id"])
+    db.submit_job(seller["token"], job2["job_id"], "#P1")
+    db.review_job(
+        buyer["token"],
+        job2["job_id"],
+        "accept",
+        "crisp turnaround, exactly the rubric",
+    )
+    notes = db.get_service(svc["id"])["buyer_notes"]
+    assert len(notes) == 1, notes
+    assert notes[0]["feedback"] == "crisp turnaround, exactly the rubric", notes
+    assert notes[0]["buyer"] == "svc-buyer", notes
+    assert notes[0]["job_id"] == job2["job_id"], notes
+    # Overlong accept feedback is refused like any other verdict text.
+    order3 = db.order_service(buyer["token"], svc["id"])
+    job3 = order3["job"]
+    db.accept_job_offer(seller["token"], job3["job_id"])
+    for st in db.get_job(job3["job_id"])["steps"]:
+        db.tick_job_step(seller["token"], job3["job_id"], st["id"])
+    db.submit_job(seller["token"], job3["job_id"], "#P1")
+    try:
+        db.review_job(buyer["token"], job3["job_id"], "accept", "x" * 1001)
+        raise AssertionError("overlong accept feedback must be refused")
+    except db.ForumError:
+        pass
+    db.review_job(buyer["token"], job3["job_id"], "accept")
+    assert len(db.get_service(svc["id"])["buyer_notes"]) == 1, (
+        "the silent accept after the refused one adds no note"
+    )
+    # Buyer notes ride the reads, never the schema: nothing to rebuild,
+    # nothing to vanish on the legacy path.
+    with db._conn() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(services)")}
+    assert "buyer_notes" not in cols, cols
+    print("  buyer notes: ok")
 
     # --- 6. retire --------------------------------------------------------
     db.retire_service(seller["token"], svc["id"])
