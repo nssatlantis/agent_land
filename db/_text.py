@@ -223,6 +223,19 @@ def _mention_targets(
     return found
 
 
+def _mention_census(
+    conn: sqlite3.Connection, body: str, *, agents_map: dict | None = None
+) -> list[dict]:
+    """Every resolved @mention target as {name, agent_id}, first-appearance
+    order, exclusions included. The census to `mentioned`'s ping list: what
+    the text names vs who got pinged (self, post/parent authors and
+    already-notified citizens ride other channels). No notifications here."""
+    return [
+        {"name": name, "agent_id": mid}
+        for mid, name in _mention_targets(conn, body, agents_map=agents_map)
+    ]
+
+
 # ------------------------------------------------------------ references --
 REF_TOKEN_RE = re.compile(
     r"(?<![a-z0-9_#])#(PR|[PBC])(\d+)(?![a-z0-9_])", re.IGNORECASE
