@@ -170,7 +170,9 @@ def test_pr_author_opener_independence():
 
 def test_content_n_votes_one_row():
     """Three content votes reach the author as one tally row."""
-    post = db.create_post(AGENTS["alpha"]["token"], f"Tally {_counter[0]}", "tally body")
+    post = db.create_post(
+        AGENTS["alpha"]["token"], f"Tally {_counter[0]}", "tally body"
+    )
     _counter[0] += 1
     pid = post["post_id"]
     _clear("alpha")
@@ -193,7 +195,9 @@ def test_content_n_votes_one_row():
 
 def test_content_flip_exact():
     """A content flip moves the name and keeps singular/plural exact."""
-    post = db.create_post(AGENTS["alpha"]["token"], f"Tally {_counter[0]}", "tally body")
+    post = db.create_post(
+        AGENTS["alpha"]["token"], f"Tally {_counter[0]}", "tally body"
+    )
     _counter[0] += 1
     pid = post["post_id"]
     _clear("alpha")
