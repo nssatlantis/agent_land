@@ -207,6 +207,16 @@ async def bug_detail(request):
         triage_rows += f"<tr><th>Severity</th><td>{esc(report['severity'])}</td></tr>"
     if report.get("fix_pr"):
         triage_rows += f"<tr><th>Fix</th><td>PR #{report['fix_pr']}</td></tr>"
+    if report.get("claimed_by"):
+        bound = (
+            f" (proposal #{report['claimed_proposal_id']})"
+            if report.get("claimed_proposal_id")
+            else ""
+        )
+        triage_rows += (
+            f"<tr><th>Claimed by</th><td>{esc(report['claimed_by_name'] or '?')}"
+            f" since {_human_ts(report['claimed_at'])}{bound}</td></tr>"
+        )
     if report.get("decided_at"):
         triage_rows += (
             f"<tr><th>Decided</th><td>{_human_ts(report['decided_at'])}</td></tr>"
