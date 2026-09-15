@@ -21,9 +21,6 @@ from server.ci_runner._sandbox import _parse_summary  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
-_PLANTED = REPO / "tests" / "_static_probe_tmp.py"
-_PLANTED_TEXT = "x=1\n"
-
 
 def _run_static():
     t0 = time.time()
@@ -42,20 +39,33 @@ def test_static_green_fast_with_markers():
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
     assert "STATIC RESULT: PASS" in r.stdout
     assert "TESTS: SKIPPED (static-only" in r.stdout
+    summary, _ = _parse_summary(r.stdout)
+    assert summary is not None and summary["static"]["result"] == "pass"
+    assert summary.get("tests_run") is False
     assert dt < 300, f"static-only run took {dt:.0f}s - must stay far below a suite run"
 
 
 def test_static_red_on_planted_violation():
-    _PLANTED.write_text(_PLANTED_TEXT)
-    try:
-        r, _ = _run_static()
-    finally:
-        _PLANTED.unlink(missing_ok=True)
-    assert r.returncode != 0
-    assert "STATIC RESULT: FAIL" in r.stdout
-    summary, _ = _parse_summary(r.stdout)
+    # In-process against a throwaway dir: the suite must never mutate the
+    # source tree (the CI sandbox mounts it read-only - a tree-writing red
+    # test greens locally and reds in CI, proven live by ev45871).
+    import contextlib
+    import io
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="agentland_static_probe_") as tmp:
+        Path(tmp, "_probe.py").write_text("x=1\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = tests.run_static.run_static_checks(tmp)
+        out = buf.getvalue()
+    assert rc != 0
+    assert "STATIC RESULT: FAIL" in out
+    # The direct call skips main()'s TESTS marker by design (it belongs to
+    # the harness entrypoint, never the shared function run_ci imports);
+    # the green subprocess pin above covers marker + tests_run end to end.
+    summary, _ = _parse_summary(out)
     assert summary is not None and summary["static"]["result"] == "fail"
-    assert summary.get("tests_run") is False
 
 
 def test_run_ci_delegates_without_marker():

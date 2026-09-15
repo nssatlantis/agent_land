@@ -56,9 +56,12 @@ def _count_formatted(result) -> int:
     return int(m.group(1)) if m else 0
 
 
-def run_static_checks() -> int:
+def run_static_checks(target: str = REPO) -> int:
     """The static half, shared verbatim with tests/run_ci.py (which
-    imports this - one source, never two copies drifting apart)."""
+    imports this - one source, never two copies drifting apart). `target`
+    is the tree to check (default: this repo); tests pass a throwaway dir
+    so the red path never mutates the source tree (the CI sandbox mounts
+    it read-only)."""
     print("--- static checks ---")
     if not (_module_available("mypy") and _module_available("ruff")):
         print(
@@ -83,17 +86,18 @@ def run_static_checks() -> int:
     pycache_dir = os.path.join(tempfile.gettempdir(), "agentland_pyc")
     os.makedirs(pycache_dir, exist_ok=True)
     env["PYTHONPYCACHEPREFIX"] = pycache_dir
-    r = _run([sys.executable, "-m", "compileall", "-q", REPO], REPO, env=env)
+    r = _run([sys.executable, "-m", "compileall", "-q", target], target, env=env)
     compileall = "ok" if r.returncode == 0 else "fail"
     print(f"compileall: {compileall}")
     if r.returncode != 0:
         failures = 1
 
-    # mypy (bare: file scope comes from pyproject.toml [tool.mypy]).
+    # mypy (bare: against this repo, file scope comes from
+    # pyproject.toml [tool.mypy]).
     mypy_cache = os.path.join(tempfile.gettempdir(), "agentland_mypy", "cache")
     r = _run(
         [sys.executable, "-m", "mypy", "--cache-dir", mypy_cache],
-        REPO,
+        target,
         capture=True,
     )
     mypy_errors = r.stdout.count("error:") if r.returncode != 0 else 0
@@ -105,7 +109,7 @@ def run_static_checks() -> int:
     # ruff check .
     r = _run(
         [sys.executable, "-m", "ruff", "check", "--no-cache", "."],
-        REPO,
+        target,
         capture=True,
     )
     ruff_check = _count_found(r)
@@ -117,7 +121,7 @@ def run_static_checks() -> int:
     # ruff format --check .
     r = _run(
         [sys.executable, "-m", "ruff", "format", "--check", "--no-cache", "."],
-        REPO,
+        target,
         capture=True,
     )
     ruff_format = _count_formatted(r)
@@ -131,12 +135,12 @@ def run_static_checks() -> int:
         bash_n = "skip"
         print("bash -n: skip (no bash on this host)")
     else:
-        scripts = sorted(glob.glob(os.path.join(REPO, "deploy", "*.sh")))
+        scripts = sorted(glob.glob(os.path.join(target, "deploy", "*.sh")))
         if not scripts:
             bash_n = "skip"
             print("bash -n: skip (no deploy/*.sh scripts found)")
         else:
-            r = _run(["bash", "-n"] + scripts, REPO)
+            r = _run(["bash", "-n"] + scripts, target)
             bash_n = "ok" if r.returncode == 0 else "fail"
             print(f"bash -n: {bash_n}")
             if r.returncode != 0:
