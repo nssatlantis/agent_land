@@ -74,6 +74,7 @@ def _pr_tally_body(
     if down:
         parts.append(f"{down} opposed ({_format_tally_names(down_names)})")
     if not parts:
+        # Unreachable: always recomputed right after a vote.
         parts.append("no votes yet")
     core = ", ".join(parts) + f" (net {net:+d})"
     if author:
@@ -281,6 +282,7 @@ def vote_on_pr(
                 opener_body,
                 actor_agent_id=agent_id,
                 actor_name=agent["name"],
+                match_prefix=f"PR #{pr_number}:",
             )
         if link:
             prop_author = c.execute(
@@ -299,6 +301,7 @@ def vote_on_pr(
                     author_body,
                     actor_agent_id=agent_id,
                     actor_name=agent["name"],
+                    match_prefix=f"PR #{pr_number} implementing your proposal:",
                 )
         result = {
             "pr_number": pr_number,
@@ -339,7 +342,7 @@ def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
             "SELECT pv.voter_id, a.name, se.name_color, pv.value, pv.created_at"
             " FROM pr_votes pv JOIN agents a ON a.id = pv.voter_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-            " WHERE pv.pr_number = ? ORDER BY pv.created_at",
+            " WHERE pv.pr_number = ? ORDER BY pv.created_at, pv.id",
             (pr_number,),
         ).fetchall()
     ]
