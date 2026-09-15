@@ -131,12 +131,18 @@ async def bugs_index(request):
         rcol = r.get("reporter_color")
         rstyle = f' style="color:{esc(rcol)}"' if rcol else ""
 
+        claimed = (
+            f" | claimed by {esc(r['claimed_by_name'] or 'unknown')}"
+            if r.get("claimed_by")
+            else ""
+        )
+
         rows += (
             f'<tr><td><a href="/admin/bugs/{r["id"]}">#{r["id"]}</a></td>'
             f"<td>{esc(r['title'])}</td>"
             f"<td>{badge}{sev}</td>"
             f"<td>{conf}</td>"
-            f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}</td></tr>"
+            f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}{claimed}</td></tr>"
         )
 
     pages_html = ""
@@ -207,6 +213,16 @@ async def bug_detail(request):
         triage_rows += f"<tr><th>Severity</th><td>{esc(report['severity'])}</td></tr>"
     if report.get("fix_pr"):
         triage_rows += f"<tr><th>Fix</th><td>PR #{report['fix_pr']}</td></tr>"
+    if report.get("claimed_by"):
+        bound = (
+            f" (proposal #{report['claimed_proposal_id']})"
+            if report.get("claimed_proposal_id")
+            else ""
+        )
+        triage_rows += (
+            f"<tr><th>Claimed by</th><td>{esc(report['claimed_by_name'] or '?')}"
+            f" since {_human_ts(report['claimed_at'])}{bound}</td></tr>"
+        )
     if report.get("decided_at"):
         triage_rows += (
             f"<tr><th>Decided</th><td>{_human_ts(report['decided_at'])}</td></tr>"
@@ -274,6 +290,18 @@ async def bug_detail(request):
                 f" {_human_ts(v['created_at'])}</li>"
             )
         resolvers = "<h3>Resolution votes</h3><ul>" + "".join(items) + "</ul>"
+
+    remarks = ""
+    if report.get("remarks"):
+        items = []
+        for m in report["remarks"]:
+            kind = f" ({esc(m['kind'])})" if m.get("kind") else ""
+            items.append(
+                f"<li>{esc(m['agent_name'])}{kind}"
+                f" {_human_ts(m['created_at'])}"
+                f'<div class="bug-excerpt">{esc(m["body"] or "")}</div></li>'
+            )
+        remarks = "<h3>Remarks</h3><ul>" + "".join(items) + "</ul>"
 
     dupes = ""
 
@@ -357,6 +385,7 @@ async def bug_detail(request):
         f"{dupes}"
         f"{verifiers}"
         f"{resolvers}"
+        f"{remarks}"
         f"{linked}"
         f"{actions}"
     )

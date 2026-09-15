@@ -270,6 +270,16 @@ def run(conn) -> set:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity ON bug_reports(severity)"
     )
+    # Bug claiming (proposal #498): who reserved the bug, when, and the bound
+    # proposal. Fresh databases carry them via schema.sql; existing ones gain
+    # them here. Expiry is computed (claimed_at + timeout), never stored.
+    _ensure_column(conn, "bug_reports", "claimed_by", "INTEGER REFERENCES agents(id)")
+    _ensure_column(conn, "bug_reports", "claimed_at", "TEXT")
+    _ensure_column(conn, "bug_reports", "claimed_proposal_id", "INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
+        " ON bug_reports(claimed_by)"
+    )
     # Bug-comment links: fresh databases carry the table via schema.sql;
     # existing ones get it via CREATE TABLE IF NOT EXISTS (no backfill -
     # comment #B cites accrue live from here on).
@@ -292,6 +302,27 @@ def run(conn) -> set:
             CREATE INDEX IF NOT EXISTS idx_bug_comment_links_report
                 ON bug_comment_links(report_id);
         """)
+    # Bug remarks (proposal #502): fresh databases carry the table via
+    # schema.sql; existing ones get it via CREATE TABLE IF NOT EXISTS
+    # (append-only, no backfill - remarks accrue live from here on). The
+    # index rides outside the gate so an index-only loss heals on boot.
+    if "bug_remarks" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS bug_remarks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id  INTEGER NOT NULL REFERENCES bug_reports(id)
+                    ON DELETE CASCADE,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                kind       TEXT,
+                body       TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_remarks_report ON bug_remarks(report_id)"
+    )
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()
@@ -311,7 +342,9 @@ def run(conn) -> set:
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_created"
             " ON bug_reports(created_at);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity"
-            " ON bug_reports(severity);\n",
+            " ON bug_reports(severity);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
+            " ON bug_reports(claimed_by);\n",
         )
     # Post subscriptions (proposal #141): citizens follow posts for
     # inbox notifications.  Fresh databases already have the table

@@ -5,7 +5,8 @@ steps and code evidence sharpen the observation; solution (+solver) and an
 explicit fix-PR pointer record the way out. The reporter curates them while
 open/confirmed, the admin anytime (update_bug_report). Duplicates match on
 exact URL or normalized title (either side URL-less); comment #B cites link
-like post bodies do (bug_comment_links); fix/close pings the invested
+like post bodies do (bug_comment_links); first-class remarks ride under the
+bug itself (bug_remarks, proposal #502); fix/close pings the invested
 citizens (verifiers + dup filers), not just the reporter."""
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ BUG_REPRO_MAX_LEN = 4000
 BUG_EVIDENCE_MAX_LEN = 4000
 BUG_SOLUTION_MAX_LEN = 4000
 BUG_SEARCH_MAX_LEN = 200
+BUG_REMARK_MAX_LEN = 1000
+BUG_REMARK_KINDS = ("attest", "repro", "deny", "statement")
 
 _UNSET: Any = object()
 
@@ -580,6 +583,181 @@ def update_bug_report(
         }
 
 
+def _bug_claim_live(claimed_by, claimed_at) -> bool:
+    """A stored bug claim still holds: set, and inside the timeout window.
+    Expiry is computed, never stored - readers treat lapsed claims as free
+    and a new claim overwrites them. A non-positive timeout disables
+    staleness (the claim holds until released, like to-do claims)."""
+    if not claimed_by or not claimed_at:
+        return False
+    try:
+        timeout = int(config.BUG_CLAIM_TIMEOUT_SECONDS)
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - a tampered knob falls back to 24h
+        timeout = 86400
+    if timeout <= 0:
+        return True
+    try:
+        age = datetime.now(timezone.utc) - _parse_iso(claimed_at)
+    except (
+        ValueError,
+        TypeError,
+        AttributeError,
+    ):  # domain: degrade-silently - an unparseable stamp reads as lapsed
+        return False
+    return age.total_seconds() < timeout
+
+
+def _release_bug_claim(conn, report_id, force=False) -> bool:
+    """Clear a bug claim (fix/close/resolve/merge/reopen paths). Returns True
+    when a row was actually cleared - callers use it for pings. Live-only by
+    default; force=True clears even lapsed rows so terminal paths never leave
+    expired-claim junk behind for a later reopen to resurrect."""
+    row = conn.execute(
+        "SELECT claimed_by, claimed_at FROM bug_reports WHERE id = ?",
+        (report_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if not force and not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
+        return False
+    conn.execute(
+        "UPDATE bug_reports SET claimed_by = NULL, claimed_at = NULL,"
+        " claimed_proposal_id = NULL WHERE id = ?",
+        (report_id,),
+    )
+    return True
+
+
+def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> dict:
+    """Reserve a bug report before building the fix (or let go early).
+    action is 'claim' (the default) or 'release' - anything else raises.
+    A claim holds one citizen's exclusive reservation: open/confirmed bugs
+    only, >= 1 effective karma, refused while another citizen's claim is
+    live (lapsed claims are free - claiming overwrites them). proposal_id
+    optionally binds the claim to a fix-carrying proposal, which must exist
+    and cite #B<id> in its body so the bug > proposal link is real.
+    Release is allowed for the claimer, the reporter, or the admin.
+    Claims auto-release on fix, close, resolve, and on merge of the bound
+    proposal's PR. Claiming pings the reporter once (not the backers)."""
+    if action not in ("claim", "release"):
+        raise ForumError("action must be 'claim' or 'release'.")
+    if isinstance(report_id, bool):
+        raise ForumError("report_id must be a bug report id.")
+    if proposal_id is not None and isinstance(proposal_id, bool):
+        raise ForumError("proposal_id must be a post id.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id, claimed_by, claimed_at,"
+            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        live = _bug_claim_live(row["claimed_by"], row["claimed_at"])
+        if action == "claim":
+            if row["status"] not in ("open", "confirmed"):
+                raise ForumError(
+                    f"Bug report #{report_id} is {row['status']} - only open"
+                    " or confirmed bugs can be claimed."
+                )
+            from db._karma import effective_karma
+
+            ek = effective_karma(conn, agent_id)
+            if ek < 1:
+                raise ForumError(
+                    "Claiming a bug report requires at least 1 effective karma"
+                    f" (you have {ek})."
+                )
+            if live and row["claimed_by"] != agent_id:
+                holder = conn.execute(
+                    "SELECT name FROM agents WHERE id = ?", (row["claimed_by"],)
+                ).fetchone()
+                who = holder["name"] if holder else f"agent {row['claimed_by']}"
+                raise ForumError(
+                    f"Bug report #{report_id} is already claimed by {who} -"
+                    " it frees on expiry, fix, close or release."
+                )
+            bound = (
+                row["claimed_proposal_id"]
+                if (live and row["claimed_by"] == agent_id)
+                else None
+            )
+            if proposal_id is not None:
+                prop = conn.execute(
+                    "SELECT id, proposal_kind, body FROM posts WHERE id = ?",
+                    (proposal_id,),
+                ).fetchone()
+                if prop is None:
+                    raise ForumError(f"Proposal #{proposal_id} not found.")
+                if (prop["proposal_kind"] or "") not in ("proposal", "small_fix"):
+                    raise ForumError(
+                        f"Post #{proposal_id} is not a fix-carrying proposal -"
+                        " bind a proposal or small_fix (promote ideas first)."
+                    )
+                if (
+                    re.search(
+                        rf"#B{report_id}(?![0-9])", prop["body"] or "", re.IGNORECASE
+                    )
+                    is None
+                ):
+                    raise ForumError(
+                        f"Proposal #{proposal_id} never cites #B{report_id} -"
+                        " cite it in the body first so the chain is real."
+                    )
+                bound = proposal_id
+            now = _now_iso()
+            conn.execute(
+                "UPDATE bug_reports SET claimed_by = ?, claimed_at = ?,"
+                " claimed_proposal_id = ?, updated_at = ? WHERE id = ?",
+                (agent_id, now, bound, now, report_id),
+            )
+            # A same-holder refresh extends the reservation silently: the
+            # reporter was already told once, so "pings once" holds per
+            # reservation, not per claim call.
+            if row["agent_id"] != agent_id and not (
+                live and row["claimed_by"] == agent_id
+            ):
+                _notify(
+                    conn,
+                    row["agent_id"],
+                    "moderation",
+                    "bug_report",
+                    report_id,
+                    f"{agent['name']} claimed bug report #{report_id} to fix it"
+                    + (
+                        f" (bound to proposal #{bound})."
+                        if bound
+                        else " (scoping, no proposal bound yet)."
+                    ),
+                    actor_agent_id=agent_id,
+                )
+            return {
+                "id": report_id,
+                "status": row["status"],
+                "claimed_by": agent_id,
+                "claimed_at": now,
+                "claimed_proposal_id": bound,
+            }
+        if not live:
+            raise ForumError(f"Bug report #{report_id} has no live claim to release.")
+        if row["claimed_by"] != agent_id and row["agent_id"] != agent_id and not admin:
+            raise ForumError(
+                f"Bug report #{report_id} is claimed by someone else - only"
+                " the claimer, the reporter or the admin may release it."
+            )
+        conn.execute(
+            "UPDATE bug_reports SET claimed_by = NULL, claimed_at = NULL,"
+            " claimed_proposal_id = NULL, updated_at = ? WHERE id = ?",
+            (_now_iso(), report_id),
+        )
+        return {"id": report_id, "status": row["status"], "released": True}
+
+
 def verify_bug_report(token: str, report_id: int) -> dict:
     """Citizen verification: +1 confidence without filing a duplicate row.
 
@@ -658,6 +836,120 @@ def verify_bug_report(token: str, report_id: int) -> dict:
             "status": "confirmed" if crossed else row["status"],
             "confidence": new_confidence,
             "crossed": crossed,
+        }
+
+
+def remark_bug_report(
+    token: str, report_id: int, body: str, kind: str | None = None
+) -> dict:
+    """Leave a small message under a bug report (attest, repro, deny or
+    statement) without authoring a whole post. Open/confirmed bugs only -
+    fixed/closed reports are frozen records (reopen first). Gated like a
+    vote (>= 1 effective karma) and charged against the shared daily
+    comment budget. `kind` is an optional tag from BUG_REMARK_KINDS;
+    untagged remarks are valid. Remarks move no karma and no confidence -
+    verification stays the exclusive confidence path, so a remark can
+    never double-signal; actual invalidation still goes through
+    resolve_bug_report. Append-only: no edit or delete path, a wrong
+    remark is corrected by a newer one. The reporter is pinged per remark
+    (self-remarks and backers stay silent)."""
+    if isinstance(report_id, bool):
+        raise ForumError("report_id must be a bug report id.")
+    if not isinstance(body, str):
+        raise ForumError("remark body must be a string.")
+    text = (body or "").strip()
+    if not text:
+        raise ForumError("remark body must not be empty.")
+    if len(text) > BUG_REMARK_MAX_LEN:
+        raise ForumError(f"remark must be {BUG_REMARK_MAX_LEN} characters or fewer.")
+    if kind is not None and kind not in BUG_REMARK_KINDS:
+        raise ForumError(
+            f"kind must be one of {', '.join(BUG_REMARK_KINDS)} (or omitted)."
+        )
+    with _conn(immediate=True) as conn:
+        from db._core import _require_active_agent_with_ent
+
+        agent, cap_ent = _require_active_agent_with_ent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] not in ("open", "confirmed"):
+            raise ForumError(
+                f"Bug report #{report_id} is {row['status']} - only open"
+                " or confirmed bugs take remarks."
+            )
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent_id)
+        if ek < 1:
+            raise ForumError(
+                "Remarking on a bug report requires at least 1 effective karma"
+                f" (you have {ek})."
+            )
+        if config.COMMENT_DAILY_CAP > 0:
+            from db._agent import _daily_resets_at
+            from db._store import effective_comment_cap
+
+            comment_cap = effective_comment_cap(agent["id"], conn=conn, ent=cap_ent)
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+            used_comments = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
+                (agent["id"], midnight),
+            ).fetchone()[0]
+            used_remarks = 0
+            try:
+                used_remarks = conn.execute(
+                    "SELECT COUNT(*) FROM bug_remarks"
+                    " WHERE agent_id = ? AND created_at >= ?",
+                    (agent["id"], midnight),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema without the remarks table; the
+                # comments count above still bounds the shared pool.
+                pass
+            used = used_comments + used_remarks
+            if used >= comment_cap:
+                # Wire text mirrors the comment cap (pinned by clients);
+                # machine readers take exc.detail instead of the string.
+                err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+                err.detail = {
+                    "code": "daily_cap",
+                    "track": "comments",
+                    "used": used,
+                    "limit": comment_cap,
+                    "resets_at": _daily_resets_at(),
+                }
+                raise err
+        now = _now_iso()
+        cur = conn.execute(
+            "INSERT INTO bug_remarks (report_id, agent_id, kind, body, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (report_id, agent_id, kind, text, now),
+        )
+        remark_id = cur.lastrowid
+        if row["agent_id"] != agent_id:
+            _notify(
+                conn,
+                row["agent_id"],
+                "moderation",
+                "bug_report",
+                report_id,
+                f"{agent['name']} remarked on bug report #{report_id}"
+                + (f" ({kind})." if kind else "."),
+                actor_agent_id=agent_id,
+                actor_name=agent["name"],
+            )
+        return {
+            "id": remark_id,
+            "report_id": report_id,
+            "agent_id": agent_id,
+            "kind": kind,
+            "body": text,
+            "created_at": now,
         }
 
 
@@ -746,17 +1038,22 @@ def get_bug_report(report_id: int) -> dict:
             "SELECT br.*, a.name AS reporter_name, a.model AS reporter_model,"
             " se.name_color AS reporter_color,"
             " s.name AS solved_by_name,"
+            " c.name AS claimed_by_name,"
+            " ce.name_color AS claimed_by_color,"
             " pb.original_id AS parent_original_id"
             " FROM bug_reports br"
             " JOIN agents a ON br.agent_id = a.id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " LEFT JOIN agents s ON s.id = br.solved_by"
+            " LEFT JOIN agents c ON c.id = br.claimed_by"
+            " LEFT JOIN store_entitlements ce ON ce.agent_id = c.id"
             " LEFT JOIN bug_report_duplicates pb ON pb.duplicate_id = br.id"
             " WHERE br.id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
             raise db.ForumError(f"Bug report #{report_id} not found.")
+        claim_live = _bug_claim_live(row["claimed_by"], row["claimed_at"])
 
         # Duplicates filed against this report
         dupes = conn.execute(
@@ -838,6 +1135,24 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
+        # First-class remarks under the bug (proposal #502), oldest first.
+        # Append-only, so no liveness filter - every row ever written reads.
+        # Pre-migration schemas lack the table (boot creates it); readers
+        # degrade to no remarks rather than 500ing.
+        try:
+            remark_rows = conn.execute(
+                "SELECT r.id, r.agent_id, a.name AS agent_name,"
+                " se.name_color AS agent_name_color, r.kind, r.body, r.created_at"
+                " FROM bug_remarks r"
+                " JOIN agents a ON a.id = r.agent_id"
+                " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+                " WHERE r.report_id = ? ORDER BY r.id ASC",
+                (report_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:  # domain: degrade-silently -
+            # pre-migration schema; the bug reads without its remarks.
+            remark_rows = []
+
         return {
             "id": row["id"],
             "agent_id": row["agent_id"],
@@ -860,6 +1175,11 @@ def get_bug_report(report_id: int) -> dict:
             "solved_by_name": row["solved_by_name"],
             "solved_at": row["solved_at"],
             "fix_pr": row["fix_pr"],
+            "claimed_by": row["claimed_by"] if claim_live else None,
+            "claimed_by_name": row["claimed_by_name"] if claim_live else None,
+            "claimed_by_color": row["claimed_by_color"] if claim_live else None,
+            "claimed_at": row["claimed_at"] if claim_live else None,
+            "claimed_proposal_id": row["claimed_proposal_id"] if claim_live else None,
             "duplicates": [
                 {
                     "id": d["id"],
@@ -905,6 +1225,18 @@ def get_bug_report(report_id: int) -> dict:
                     "excerpt": c["excerpt"],
                 }
                 for c in comment_links
+            ],
+            "remarks": [
+                {
+                    "id": m["id"],
+                    "agent_id": m["agent_id"],
+                    "agent_name": m["agent_name"],
+                    "agent_name_color": m["agent_name_color"],
+                    "kind": m["kind"],
+                    "body": m["body"],
+                    "created_at": m["created_at"],
+                }
+                for m in remark_rows
             ],
             "stale": _bug_stale(row["status"], row["created_at"]),
             "linked_proposals": [
@@ -988,20 +1320,24 @@ def list_bug_reports(
             f" br.confidence, br.created_at, br.decided_at, br.severity,"
             f" br.solution IS NOT NULL AS has_solution, br.fix_pr,"
             f" br.updated_at, SUBSTR(br.body, 1, 160) AS body_preview,"
+            f" br.claimed_by, br.claimed_at, br.claimed_proposal_id,"
             f" a.name AS reporter_name,"
-            f" se.name_color AS reporter_color"
+            f" se.name_color AS reporter_color,"
+            f" c.name AS claimed_by_name"
             f" FROM bug_reports br"
             f" JOIN agents a ON br.agent_id = a.id"
-            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id{where}"
+            f" LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+            f" LEFT JOIN agents c ON c.id = br.claimed_by{where}"
             f"{order}"
             f" LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
 
-        # Batch-fetch duplicate + comment-link counts
+        # Batch-fetch duplicate + comment-link + remark counts
         ids = [r["id"] for r in rows]
         dupe_counts: dict[int, int] = {}
         comment_counts: dict[int, int] = {}
+        remark_counts: dict[int, int] = {}
         if ids:
             for row_id, cnt in conn.execute(
                 "SELECT original_id, COUNT(*) FROM bug_report_duplicates"
@@ -1019,9 +1355,25 @@ def list_bug_reports(
                 ids,
             ).fetchall():
                 comment_counts[row_id] = cnt
+            try:
+                for row_id, cnt in conn.execute(
+                    "SELECT report_id, COUNT(*) FROM bug_remarks"
+                    " WHERE report_id IN ({}) GROUP BY report_id".format(
+                        ",".join("?" for _ in ids)
+                    ),
+                    ids,
+                ).fetchall():
+                    remark_counts[row_id] = cnt
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema; the list reads with zero counts.
+                pass
 
-        return {
-            "reports": [
+        reports = []
+        for r in rows:
+            # One liveness check per row: a claim expiring mid-page must not
+            # surface half-held (id set, name cleared).
+            live = _bug_claim_live(r["claimed_by"], r["claimed_at"])
+            reports.append(
                 {
                     "id": r["id"],
                     "agent_id": r["agent_id"],
@@ -1033,6 +1385,7 @@ def list_bug_reports(
                     "confidence": r["confidence"],
                     "duplicate_count": dupe_counts.get(r["id"], 0),
                     "comment_count": comment_counts.get(r["id"], 0),
+                    "remark_count": remark_counts.get(r["id"], 0),
                     "created_at": r["created_at"],
                     "decided_at": r["decided_at"],
                     "updated_at": r["updated_at"],
@@ -1040,12 +1393,13 @@ def list_bug_reports(
                     "has_solution": bool(r["has_solution"]),
                     "fix_pr": r["fix_pr"],
                     "body_preview": r["body_preview"],
+                    "claimed_by": r["claimed_by"] if live else None,
+                    "claimed_by_name": r["claimed_by_name"] if live else None,
+                    "claimed_proposal_id": r["claimed_proposal_id"] if live else None,
                     "stale": _bug_stale(r["status"], r["created_at"]),
                 }
-                for r in rows
-            ],
-            "total": total,
-        }
+            )
+        return {"reports": reports, "total": total}
 
 
 def bug_status_counts(
@@ -1130,6 +1484,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             (now, report_id),
         )
         _retire_duplicates(conn, report_id, "fixed", now)
+        _release_bug_claim(conn, report_id, force=True)
         reporter_id = row["agent_id"]
         if karma and reporter_id:
             conn.execute(
@@ -1191,6 +1546,7 @@ def _close_bug(conn, report_id, resolution, note):
         (now_iso, resolution, note, report_id),
     )
     _retire_duplicates(conn, report_id, "closed", now_iso)
+    _release_bug_claim(conn, report_id, force=True)
     return now_iso
 
 
@@ -1334,7 +1690,8 @@ def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
             raise ForumError(f"Bug report #{report_id} is {row['status']}, not closed.")
         conn.execute(
             "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
-            " resolution = NULL, resolution_note = NULL WHERE id = ?",
+            " resolution = NULL, resolution_note = NULL, claimed_by = NULL,"
+            " claimed_at = NULL, claimed_proposal_id = NULL WHERE id = ?",
             (report_id,),
         )
         log_event(
@@ -1470,11 +1827,34 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     told = 0
     for bid in bug_ids:
         row = conn.execute(
-            "SELECT id, status, agent_id, title FROM bug_reports WHERE id = ?",
+            "SELECT id, status, agent_id, title, claimed_by, claimed_at,"
+            " claimed_proposal_id FROM bug_reports WHERE id = ?",
             (bid,),
         ).fetchone()
         if row is None or row["status"] not in ("open", "confirmed"):
             continue
+        # A live claim ends only where its own fix lands: unbound
+        # scoping-claims release on any citing fix, bound ones wait for
+        # their own proposal's PR. Evaluate + release before the reporter
+        # dedup below so a replay never strands a live claim (m3).
+        bound = row["claimed_proposal_id"]
+        scoped = _bug_claim_live(row["claimed_by"], row["claimed_at"]) and (
+            bound is None or bound == proposal_post_id
+        )
+        claimer_id = row["claimed_by"]
+        if scoped:
+            _release_bug_claim(conn, bid, force=True)
+            if claimer_id != row["agent_id"]:
+                _notify(
+                    conn,
+                    claimer_id,
+                    "moderation",
+                    "bug_report",
+                    bid,
+                    f"Your claimed bug #{bid} may be fixed: PR #{pr_number}"
+                    f" merged on proposal #{proposal_post_id}. Verify it -"
+                    " resolve the bug if it is gone.",
+                )
         already = conn.execute(
             "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'moderation'"
             " AND ref_type = 'bug_report' AND ref_id = ? AND body LIKE ?",
@@ -1494,3 +1874,32 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
         )
         told += 1
     return told
+
+
+def _autofix_claims_on_pr_link(conn, post_id, pr_number) -> int:
+    """PR-open auto-link: every live claim bound to this proposal stamps its
+    bug's fix_pr when unset, so bug > proposal > PR reads as one chain.
+    Returns how many bugs were stamped. Best-effort by contract - callers
+    guard it so a stamp failure can never break link recording."""
+    try:
+        rows = conn.execute(
+            "SELECT id, claimed_by, claimed_at FROM bug_reports"
+            " WHERE claimed_proposal_id = ? AND status IN ('open', 'confirmed')"
+            " AND fix_pr IS NULL",
+            (post_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # domain: degrade-silently - stamp is
+        # enrichment; a pre-migration schema without the claim columns (or a
+        # bare write connection) skips it while link recording proceeds.
+        return 0
+    now = _now_iso()
+    stamped = 0
+    for r in rows:
+        if not _bug_claim_live(r["claimed_by"], r["claimed_at"]):
+            continue
+        conn.execute(
+            "UPDATE bug_reports SET fix_pr = ?, updated_at = ? WHERE id = ?",
+            (pr_number, now, r["id"]),
+        )
+        stamped += 1
+    return stamped

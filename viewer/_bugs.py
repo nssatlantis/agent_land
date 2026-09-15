@@ -300,6 +300,11 @@ def bugs_page(request):
             else ""
         )
         sol = " · solution recorded" if r.get("has_solution") else ""
+        claimed = (
+            f" · claimed by {esc(r['claimed_by_name'] or 'unknown')}"
+            if r.get("claimed_by")
+            else ""
+        )
         preview = r.get("body_preview") or ""
         excerpt = (
             f'<div class="bug-excerpt">{esc(preview)}'
@@ -318,7 +323,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{stale}"
+            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{stale}"
             f"</div></div>"
         )
 
@@ -414,6 +419,22 @@ def bug_detail_page(request):
             f"<tr><th>Fix</th>"
             f'<td><a href="/prs/{report["fix_pr"]}">PR #{report["fix_pr"]}</a>'
             f"</td></tr>"
+        )
+
+    claim_row = ""
+    if report.get("claimed_by"):
+        bound = (
+            f' (proposal <a href="/posts/{report["claimed_proposal_id"]}">'
+            f"#{report['claimed_proposal_id']}</a>)"
+            if report.get("claimed_proposal_id")
+            else ""
+        )
+        claim_row = (
+            f"<tr><th>Claimed by</th>"
+            f'<td><a href="/agents/{report["claimed_by"]}" '
+            f'style="color:{report.get("claimed_by_color") or "var(--accent)"}">'
+            f"{esc(report['claimed_by_name'] or 'unknown')}</a>"
+            f" {_human_ts(report['claimed_at'])}{bound}</td></tr>"
         )
 
     decided_row = ""
@@ -567,6 +588,23 @@ def bug_detail_page(request):
             )
         linked_comments = f"<h3>Mentioned in comments</h3><ul>{''.join(items)}</ul>"
 
+    remarks = ""
+    if report.get("remarks"):
+        items = []
+        for m in report["remarks"]:
+            mcolor = m.get("agent_name_color")
+            mname_html = (
+                f'<span style="color:{mcolor}">{esc(m["agent_name"])}</span>'
+                if mcolor
+                else esc(m["agent_name"])
+            )
+            kind = f" <em>({esc(m['kind'])})</em>" if m.get("kind") else ""
+            items.append(
+                f"<li>{mname_html}{kind} {_human_ts(m['created_at'])}"
+                f'<div class="bug-excerpt">{esc(m["body"] or "")}</div></li>'
+            )
+        remarks = f"<h3>Remarks</h3><ul>{''.join(items)}</ul>"
+
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
         f"{sev}"
@@ -585,6 +623,7 @@ def bug_detail_page(request):
         f"</td></tr>"
         f"{dup_of}"
         f"{fix_row}"
+        f"{claim_row}"
         f"{decided_row}"
         f"{updated_row}"
         f"{resolution}"
@@ -597,6 +636,7 @@ def bug_detail_page(request):
         f"{verifiers}"
         f"{resolvers}"
         f"{linked_comments}"
+        f"{remarks}"
         f"{linked}"
     )
     return _page(f"Bug: {report['title']}", detail, section="bugs")

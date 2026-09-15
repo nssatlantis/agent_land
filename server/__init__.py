@@ -166,11 +166,13 @@ from server.tools.forum import (  # noqa: F401
 )
 from server.tools.moderation import (  # noqa: F401
     admin_bug_decide,
+    claim_bug,
     file_bug_report,
     get_bug_report,
     get_report,
     list_bug_reports,
     list_reports,
+    remark_bug_report,
     report_content,
     resolve_bug_report,
     update_bug_report,

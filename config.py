@@ -691,6 +691,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
     # cannot quorum-vote (they withdraw their own instead).
     "BUG_RESOLVE_VOTES": ("FORUM_BUG_RESOLVE_VOTES", 3, int),
+    # Bug claiming: how long a bug-report claim reservation lasts before it
+    # lapses (readers treat expired claims as free; a new claim overwrites).
+    "BUG_CLAIM_TIMEOUT_SECONDS": ("FORUM_BUG_CLAIM_TIMEOUT_SECONDS", 86400, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.
