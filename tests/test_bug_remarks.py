@@ -89,6 +89,13 @@ def test_remark_validation():
     assert "attest" in msg
     msg = expect_error(bug_mod.remark_bug_report, mate["token"], True, "body")
     assert "bug report id" in msg
+    # Non-string bodies fail closed like the file/update siblings (M1).
+    msg = expect_error(bug_mod.remark_bug_report, mate["token"], bug["id"], 123)
+    assert "must be a string" in msg
+    msg = expect_error(
+        bug_mod.remark_bug_report, mate["token"], bug["id"], ["not", "a", "string"]
+    )
+    assert "must be a string" in msg
     msg = expect_error(bug_mod.remark_bug_report, mate["token"], 424242, "body")
     assert "not found" in msg
     # A refused remark leaves no row behind.
@@ -175,6 +182,68 @@ def test_remark_viewer_detail():
     html = resp.body.decode() if isinstance(resp.body, bytes) else resp.body
     for needle in ("Remarks", "rm-viewmate", "attest", "viewer pin body"):
         assert needle in html, f"detail missing {needle!r}"
+
+
+def test_remark_ordering_and_counts():
+    # G2: oldest-first read order + batched counts across a two-bug list.
+    rep = _karmaed("rm-ordrep")
+    first = _karmaed("rm-ordfirst")
+    second = _karmaed("rm-ordsecond")
+    bug_a = bug_mod.file_bug_report(rep["token"], "Remark Order A", "b", None)
+    bug_b = bug_mod.file_bug_report(rep["token"], "Remark Order B", "b", None)
+    bug_mod.remark_bug_report(first["token"], bug_a["id"], "first voice")
+    bug_mod.remark_bug_report(second["token"], bug_a["id"], "second voice")
+    bug_mod.remark_bug_report(first["token"], bug_b["id"], "lone voice")
+    full = bug_mod.get_bug_report(bug_a["id"])
+    assert [m["body"] for m in full["remarks"]] == ["first voice", "second voice"]
+    counts = {
+        r["id"]: r["remark_count"]
+        for r in bug_mod.list_bug_reports(q="Remark Order")["reports"]
+    }
+    assert counts == {bug_a["id"]: 2, bug_b["id"]: 1}
+
+
+def test_remark_boundary_accepted():
+    # G3: exactly the cap writes and reads back whole.
+    rep = _karmaed("rm-boundrep")
+    mate = _karmaed("rm-boundmate")
+    bug = bug_mod.file_bug_report(rep["token"], "Remark Boundary", "b", None)
+    body = "y" * 1000
+    out = bug_mod.remark_bug_report(mate["token"], bug["id"], body)
+    assert out["body"] == body
+    assert bug_mod.get_bug_report(bug["id"])["remarks"][0]["body"] == body
+
+
+def test_remark_repeat_pings_and_backer_silence():
+    # G4: reporter pinged per remark; verifiers and dup-filers hear nothing.
+    rep = _karmaed("rm-pingrep")
+    mate = _karmaed("rm-pingmate")
+    backer = _karmaed("rm-pingbacker")
+    bug = bug_mod.file_bug_report(rep["token"], "Remark Pings", "b", None)
+    db.verify_bug_report(backer["token"], bug["id"])
+    bug_mod.remark_bug_report(mate["token"], bug["id"], "first note")
+    bug_mod.remark_bug_report(mate["token"], bug["id"], "second note")
+    assert len(_pings(rep["agent_id"], "%remarked on bug%")) == 2
+    assert _pings(backer["agent_id"], "%remarked on bug%") == []
+
+
+def test_remark_on_dup_child():
+    # G5: unlike verify, remarks accept dup-children - they move no
+    # confidence, so there is no signal to split.
+    rep = _karmaed("rm-duprep")
+    mate = _karmaed("rm-dupmate")
+    orig = bug_mod.file_bug_report(
+        rep["token"], "Remark Dup Original", "b", url="https://example.com/bug/rm-dup"
+    )
+    dup = bug_mod.file_bug_report(
+        mate["token"], "Remark Dup Child", "b", url="https://example.com/bug/rm-dup/"
+    )
+    assert dup["matched_on"] == "url"
+    before_orig = bug_mod.get_bug_report(orig["id"])["confidence"]
+    before_dup = bug_mod.get_bug_report(dup["id"])["confidence"]
+    bug_mod.remark_bug_report(rep["token"], dup["id"], "child note", kind="deny")
+    assert bug_mod.get_bug_report(orig["id"])["confidence"] == before_orig
+    assert bug_mod.get_bug_report(dup["id"])["confidence"] == before_dup
 
 
 def test_zz_migration_remarks():
