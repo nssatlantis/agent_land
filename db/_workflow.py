@@ -408,6 +408,27 @@ def auto_tick_ci_steps(
     return ticked
 
 
+def _ci_event_covers(detail: dict | None, step_key: str) -> bool:
+    """Pure predicate behind the CI-backed step gate: does one green ci_*
+    event's detail satisfy `step_key`? Static-only harness runs
+    (checks="static", summary.tests_run=False) cover `lint` but never
+    `test`/`not-gutted` - the tests did NOT run, so they prove nothing
+    about them. Fail-closed for the test-bearing steps: a missing marker
+    (pre-change events) still counts, only an explicit False refuses."""
+    detail = detail or {}
+    if not detail.get("ok") or detail.get("timed_out"):
+        return False
+    if detail.get("exit_code") != 0:
+        return False
+    summary = detail.get("summary") or {}
+    static = (summary.get("static") or {}).get("result")
+    if static == "skipped" or detail.get("host_fallback_static_skipped"):
+        return False
+    if step_key in ("test", "not-gutted"):
+        return summary.get("tests_run", True) is not False
+    return True
+
+
 def tick_workflow_step(
     conn: sqlite3.Connection, run_id: int, step_key: str, agent_id: int
 ) -> dict:
@@ -491,19 +512,9 @@ def tick_workflow_step(
                             else []
                         )
                         for _r in _rows:
-                            _d = _r.get("detail") or {}
-                            if (
-                                _d.get("ok")
-                                and not _d.get("timed_out")
-                                and _d.get("exit_code") == 0
-                            ):
-                                _summ = _d.get("summary") or {}
-                                _static = (_summ.get("static") or {}).get("result")
-                                if _static != "skipped" and not _d.get(
-                                    "host_fallback_static_skipped"
-                                ):
-                                    _found = True
-                                    break
+                            if _ci_event_covers(_r.get("detail"), step["step_key"]):
+                                _found = True
+                                break
                         if _found:
                             break
                     if not _found:
