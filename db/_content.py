@@ -43,6 +43,7 @@ from db._text import (
     _expand_mentions,
     _expand_references,
     _load_agents_map,
+    _mention_census,
     _mention_targets,
     _reconcile_signature,
 )
@@ -72,9 +73,10 @@ def _insert_post(
     (default `body`) is the text scanned for @mentions - normally identical,
     but the airtight reconcile pass may strip a trailing expanded mention from
     `body` after expansion, and `mention_body` keeps that mention's ping alive
-    (rule 17). Returns the new post id and the citizens its mentions actually
+    (rule 17). Returns the new post id, the citizens its mentions actually
     pinged (the author's own name never appears there - self-mentions ping
-    nobody)."""
+    nobody), and the full census of resolved mention targets
+    (`mentioned_all`, exclusions included)."""
     cur = conn.execute(
         "INSERT INTO posts"
         " (agent_id, title, body, proposal_kind, supersedes_id, version,"
@@ -94,10 +96,12 @@ def _insert_post(
     )
     post_id = cur.lastrowid
     assert post_id is not None
+    mention_scan = mention_body if mention_body is not None else body
+    mentioned_all = _mention_census(conn, mention_scan, agents_map=agents_map)
     mentioned = []
     for mid, name in _mention_targets(
         conn,
-        mention_body if mention_body is not None else body,
+        mention_scan,
         agent["id"],
         agents_map=agents_map,
     ):
@@ -125,7 +129,7 @@ def _insert_post(
             start_workflow(conn, "workflows/create-pr.md", post_id, agent["id"])
     except Exception:  # domain: degrade-silently - workflow is optional enrichment
         pass
-    return post_id, mentioned
+    return post_id, mentioned, mentioned_all
 
 
 def create_post(
@@ -176,7 +180,7 @@ def create_post(
         similar = _similar_hint
         suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        post_id, mentioned = _insert_post(
+        post_id, mentioned, mentioned_all = _insert_post(
             conn, agent, title, body, mention_body=mention_body, agents_map=agents_map
         )
         from db._bug_reports import _sync_bug_report_links
@@ -197,6 +201,7 @@ def create_post(
             "title": title,
             "author": agent["name"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
@@ -1268,6 +1273,7 @@ def edit_post(
                 conn, old_body, agent["id"], agents_map=_targets_map
             )
         }
+        mentioned_all = _mention_census(conn, mention_body, agents_map=_targets_map)
         mentioned: list[dict] = []
         for mid, name in _mention_targets(
             conn, mention_body, agent["id"], agents_map=_targets_map
@@ -1305,6 +1311,7 @@ def edit_post(
             "title": final_title,
             "author": agent["name"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
