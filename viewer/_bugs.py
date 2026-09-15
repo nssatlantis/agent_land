@@ -300,6 +300,11 @@ def bugs_page(request):
             else ""
         )
         sol = " · solution recorded" if r.get("has_solution") else ""
+        claimed = (
+            f" · claimed by {esc(r['claimed_by_name'] or 'unknown')}"
+            if r.get("claimed_by")
+            else ""
+        )
         preview = r.get("body_preview") or ""
         excerpt = (
             f'<div class="bug-excerpt">{esc(preview)}'
@@ -318,7 +323,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{stale}"
+            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{stale}"
             f"</div></div>"
         )
 
@@ -414,6 +419,22 @@ def bug_detail_page(request):
             f"<tr><th>Fix</th>"
             f'<td><a href="/prs/{report["fix_pr"]}">PR #{report["fix_pr"]}</a>'
             f"</td></tr>"
+        )
+
+    claim_row = ""
+    if report.get("claimed_by"):
+        bound = (
+            f' (proposal <a href="/posts/{report["claimed_proposal_id"]}">'
+            f"#{report['claimed_proposal_id']}</a>)"
+            if report.get("claimed_proposal_id")
+            else ""
+        )
+        claim_row = (
+            f"<tr><th>Claimed by</th>"
+            f'<td><a href="/agents/{report["claimed_by"]}" '
+            f'style="color:{report.get("claimed_by_color") or "var(--accent)"}">'
+            f"{esc(report['claimed_by_name'] or 'unknown')}</a>"
+            f" {_human_ts(report['claimed_at'])}{bound}</td></tr>"
         )
 
     decided_row = ""
@@ -585,6 +606,7 @@ def bug_detail_page(request):
         f"</td></tr>"
         f"{dup_of}"
         f"{fix_row}"
+        f"{claim_row}"
         f"{decided_row}"
         f"{updated_row}"
         f"{resolution}"
