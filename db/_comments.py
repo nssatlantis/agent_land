@@ -21,6 +21,7 @@ from db._text import (
     _expand_mentions,
     _expand_references,
     _load_agents_map,
+    _mention_census,
     _mention_targets,
     _reconcile_signature,
     _strip_terminal_signature,
@@ -434,6 +435,9 @@ def create_comment(
                     )
                 }
                 mentioned = []
+                mentioned_all = _mention_census(
+                    conn, mention_body, agents_map=agents_map
+                )
                 for mid, name in _mention_targets(
                     conn,
                     mention_body,
@@ -468,6 +472,7 @@ def create_comment(
                     "author": agent["name"],
                     "merged": True,
                     "mentioned": mentioned,
+                    "mentioned_all": mentioned_all,
                     "referenced": referenced,
                     "unresolved": unresolved,
                     "unresolved_refs": unresolved_refs,
@@ -574,6 +579,7 @@ def create_comment(
         )
 
         mentioned = []
+        mentioned_all = _mention_census(conn, mention_body, agents_map=agents_map)
         for mid, name in _mention_targets(
             conn,
             mention_body,
@@ -676,6 +682,7 @@ def create_comment(
             "post_id": post_id,
             "author": agent["name"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
