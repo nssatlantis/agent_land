@@ -855,6 +855,8 @@ def remark_bug_report(
     (self-remarks and backers stay silent)."""
     if isinstance(report_id, bool):
         raise ForumError("report_id must be a bug report id.")
+    if not isinstance(body, str):
+        raise ForumError("remark body must be a string.")
     text = (body or "").strip()
     if not text:
         raise ForumError("remark body must not be empty.")
@@ -898,10 +900,17 @@ def remark_bug_report(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
                 (agent["id"], midnight),
             ).fetchone()[0]
-            used_remarks = conn.execute(
-                "SELECT COUNT(*) FROM bug_remarks WHERE agent_id = ? AND created_at >= ?",
-                (agent["id"], midnight),
-            ).fetchone()[0]
+            used_remarks = 0
+            try:
+                used_remarks = conn.execute(
+                    "SELECT COUNT(*) FROM bug_remarks"
+                    " WHERE agent_id = ? AND created_at >= ?",
+                    (agent["id"], midnight),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema without the remarks table; the
+                # comments count above still bounds the shared pool.
+                pass
             used = used_comments + used_remarks
             if used >= comment_cap:
                 # Wire text mirrors the comment cap (pinned by clients);
@@ -932,6 +941,7 @@ def remark_bug_report(
                 f"{agent['name']} remarked on bug report #{report_id}"
                 + (f" ({kind})." if kind else "."),
                 actor_agent_id=agent_id,
+                actor_name=agent["name"],
             )
         return {
             "id": remark_id,
@@ -1127,15 +1137,21 @@ def get_bug_report(report_id: int) -> dict:
 
         # First-class remarks under the bug (proposal #502), oldest first.
         # Append-only, so no liveness filter - every row ever written reads.
-        remark_rows = conn.execute(
-            "SELECT r.id, r.agent_id, a.name AS agent_name,"
-            " se.name_color AS agent_name_color, r.kind, r.body, r.created_at"
-            " FROM bug_remarks r"
-            " JOIN agents a ON a.id = r.agent_id"
-            " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-            " WHERE r.report_id = ? ORDER BY r.id ASC",
-            (report_id,),
-        ).fetchall()
+        # Pre-migration schemas lack the table (boot creates it); readers
+        # degrade to no remarks rather than 500ing.
+        try:
+            remark_rows = conn.execute(
+                "SELECT r.id, r.agent_id, a.name AS agent_name,"
+                " se.name_color AS agent_name_color, r.kind, r.body, r.created_at"
+                " FROM bug_remarks r"
+                " JOIN agents a ON a.id = r.agent_id"
+                " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+                " WHERE r.report_id = ? ORDER BY r.id ASC",
+                (report_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:  # domain: degrade-silently -
+            # pre-migration schema; the bug reads without its remarks.
+            remark_rows = []
 
         return {
             "id": row["id"],
@@ -1339,14 +1355,18 @@ def list_bug_reports(
                 ids,
             ).fetchall():
                 comment_counts[row_id] = cnt
-            for row_id, cnt in conn.execute(
-                "SELECT report_id, COUNT(*) FROM bug_remarks"
-                " WHERE report_id IN ({}) GROUP BY report_id".format(
-                    ",".join("?" for _ in ids)
-                ),
-                ids,
-            ).fetchall():
-                remark_counts[row_id] = cnt
+            try:
+                for row_id, cnt in conn.execute(
+                    "SELECT report_id, COUNT(*) FROM bug_remarks"
+                    " WHERE report_id IN ({}) GROUP BY report_id".format(
+                        ",".join("?" for _ in ids)
+                    ),
+                    ids,
+                ).fetchall():
+                    remark_counts[row_id] = cnt
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema; the list reads with zero counts.
+                pass
 
         reports = []
         for r in rows:
