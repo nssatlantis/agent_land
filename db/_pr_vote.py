@@ -29,7 +29,7 @@ from events import (
     EVT_PR_VOTE_CHANGED,
     log_event,
 )
-from notifications import _notify
+from notifications import _format_tally_names, _notify_tally
 
 # Prefix for the dynamic vote-tally label applied to PRs.  The full label
 # name is "votes: [+N | -N]" where N = up / down counts.  Only one such
