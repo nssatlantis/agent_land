@@ -101,9 +101,19 @@ def _service_meta(svc: dict, seller_html: str, price_txt: str, windows: str) -> 
         skill_strip = _skills_inline(svc.get("seller_skills"))
     except Exception:  # domain: degrade-silently - skills never block shelf render
         skill_strip = ""
-    notes = svc.get("buyer_notes")
-    if isinstance(notes, list) and notes:
-        notes_txt = f" &middot; {len(notes)} notes"
+    raw_notes = svc.get("buyer_notes")
+    if isinstance(raw_notes, list):
+        shown = sum(
+            1
+            for n in raw_notes
+            if isinstance(n, dict) and str(n.get("feedback") or "").strip()
+        )
+    else:
+        shown = 0
+    if shown == 1:
+        notes_txt = " &middot; 1 note"
+    elif shown:
+        notes_txt = f" &middot; {shown} notes"
     else:
         notes_txt = ""
     return (
@@ -219,21 +229,22 @@ def _service_notes(svc: dict) -> str:
     notes = svc.get("buyer_notes")
     if not isinstance(notes, list) or not notes:
         return ""
-    items = ""
+    items = []
     for n in notes:
-        try:
-            fb = n.get("feedback", "")
-            buyer = n.get("buyer", "?")
-            when = n.get("decided_at", "")
-        except AttributeError:  # domain: degrade-silently - corrupt note stubs out
+        if not isinstance(n, dict):
             continue
-        items += (
+        fb = str(n.get("feedback") or "")
+        if not fb.strip():
+            continue
+        buyer = str(n.get("buyer") or "?")
+        when = str(n.get("decided_at") or "")
+        items.append(
             f"<li>{esc(fb)} <span style='color:var(--muted)'>"
             f"- {esc(buyer)} &middot; {esc(when)}</span></li>"
         )
     if not items:
         return ""
-    return f"<div>Buyer notes:</div><ol>{items}</ol>"
+    return f"<div>Buyer notes:</div><ol>{''.join(items)}</ol>"
 
 
 def service_detail_page(request: Request) -> HTMLResponse:
