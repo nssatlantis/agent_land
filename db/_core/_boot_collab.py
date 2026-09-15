@@ -270,6 +270,9 @@ def run(conn) -> set:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity ON bug_reports(severity)"
     )
+    # Bug claiming (proposal #498): who reserved the bug, when, and the bound
+    # proposal. Fresh databases carry them via schema.sql; existing ones gain
+    # them here. Expiry is computed (claimed_at + timeout), never stored.
     _ensure_column(conn, "bug_reports", "claimed_by", "INTEGER REFERENCES agents(id)")
     _ensure_column(conn, "bug_reports", "claimed_at", "TEXT")
     _ensure_column(conn, "bug_reports", "claimed_proposal_id", "INTEGER")
