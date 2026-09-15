@@ -493,6 +493,18 @@ def create_comment(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
                 (agent["id"], midnight),
             ).fetchone()[0]
+            try:
+                # Bug remarks (proposal #502) share this pool: a remark is a
+                # small message, not a second budget.
+                today += conn.execute(
+                    "SELECT COUNT(*) FROM bug_remarks"
+                    " WHERE agent_id = ? AND created_at >= ?",
+                    (agent["id"], midnight),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema without the remarks table; comments
+                # alone bound the pool while the migration lands.
+                pass
             if today >= comment_cap:
                 # Wire text unchanged (pinned by clients/tests); machine
                 # readers take exc.detail instead of parsing the string.
