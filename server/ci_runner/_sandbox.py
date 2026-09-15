@@ -185,7 +185,10 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     # byte-identical to before, so no existing consumer changes behavior.
     # The gate reads summary.get("tests_run", True): absent counts as
     # tests-ran, only an explicit False refuses.
-    if "TESTS: SKIPPED (static-only" in output:
+    # Line-anchored: a stray echo of the marker inside a failure dump must
+    # never relabel a full run (the mislabel direction is fail-closed, but
+    # a confusing ledger is still a bug).
+    if re.search(r"^TESTS: SKIPPED \(static-only", output, re.M):
         if summary is None:
             summary = {}
         summary["tests_run"] = False
