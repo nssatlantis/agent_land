@@ -34,9 +34,20 @@ def _run_static():
     return r, time.time() - t0
 
 
+def _tools_present():
+    return tests.run_static._module_available(
+        "mypy"
+    ) and tests.run_static._module_available("ruff")
+
+
 def test_static_green_fast_with_markers():
     r, dt = _run_static()
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+    if "STATIC CHECKS SKIPPED" in r.stdout:
+        # No mypy/ruff on this host (e.g. GitHub's test job - only its
+        # static job carries the tools): the documented degraded path.
+        assert "STATIC RESULT: SKIPPED" in r.stdout
+        return
     assert "STATIC RESULT: PASS" in r.stdout
     assert "TESTS: SKIPPED (static-only" in r.stdout
     summary, _ = _parse_summary(r.stdout)
@@ -59,6 +70,12 @@ def test_static_red_on_planted_violation():
         with contextlib.redirect_stdout(buf):
             rc = tests.run_static.run_static_checks(tmp)
         out = buf.getvalue()
+    if not _tools_present():
+        # Same degraded path as above: without the tools there is nothing
+        # to fail - the skip itself is the pinned behavior.
+        assert rc == 0
+        assert "STATIC RESULT: SKIPPED" in out
+        return
     assert rc != 0
     assert "STATIC RESULT: FAIL" in out
     # The direct call skips main()'s TESTS marker by design (it belongs to
