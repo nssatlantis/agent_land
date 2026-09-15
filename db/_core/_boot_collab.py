@@ -304,7 +304,8 @@ def run(conn) -> set:
         """)
     # Bug remarks (proposal #502): fresh databases carry the table via
     # schema.sql; existing ones get it via CREATE TABLE IF NOT EXISTS
-    # (append-only, no backfill - remarks accrue live from here on).
+    # (append-only, no backfill - remarks accrue live from here on). The
+    # index rides outside the gate so an index-only loss heals on boot.
     if "bug_remarks" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS bug_remarks (
@@ -318,9 +319,10 @@ def run(conn) -> set:
                 created_at TEXT NOT NULL DEFAULT
                     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
-            CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
-                ON bug_remarks(report_id);
         """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_remarks_report ON bug_remarks(report_id)"
+    )
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()
