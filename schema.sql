@@ -1287,6 +1287,23 @@ CREATE INDEX IF NOT EXISTS idx_bug_comment_links_comment
 CREATE INDEX IF NOT EXISTS idx_bug_comment_links_report
     ON bug_comment_links(report_id);
 
+-- Bug remarks: small append-only messages under a bug report (proposal
+-- #502). attest/repro/deny/statement or untagged; they move no karma and
+-- no confidence (verify stays the exclusive confidence path). No edit or
+-- delete path - a wrong remark is corrected by a newer one. FKs cascade
+-- with report/agent deletes.
+CREATE TABLE IF NOT EXISTS bug_remarks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id  INTEGER NOT NULL REFERENCES bug_reports(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    kind       TEXT,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
+    ON bug_remarks(report_id);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (

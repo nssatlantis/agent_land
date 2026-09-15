@@ -5,7 +5,8 @@ steps and code evidence sharpen the observation; solution (+solver) and an
 explicit fix-PR pointer record the way out. The reporter curates them while
 open/confirmed, the admin anytime (update_bug_report). Duplicates match on
 exact URL or normalized title (either side URL-less); comment #B cites link
-like post bodies do (bug_comment_links); fix/close pings the invested
+like post bodies do (bug_comment_links); first-class remarks ride under the
+bug itself (bug_remarks, proposal #502); fix/close pings the invested
 citizens (verifiers + dup filers), not just the reporter."""
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ BUG_REPRO_MAX_LEN = 4000
 BUG_EVIDENCE_MAX_LEN = 4000
 BUG_SOLUTION_MAX_LEN = 4000
 BUG_SEARCH_MAX_LEN = 200
+BUG_REMARK_MAX_LEN = 1000
+BUG_REMARK_KINDS = ("attest", "repro", "deny", "statement")
 
 _UNSET: Any = object()
 
@@ -836,6 +839,120 @@ def verify_bug_report(token: str, report_id: int) -> dict:
         }
 
 
+def remark_bug_report(
+    token: str, report_id: int, body: str, kind: str | None = None
+) -> dict:
+    """Leave a small message under a bug report (attest, repro, deny or
+    statement) without authoring a whole post. Open/confirmed bugs only -
+    fixed/closed reports are frozen records (reopen first). Gated like a
+    vote (>= 1 effective karma) and charged against the shared daily
+    comment budget. `kind` is an optional tag from BUG_REMARK_KINDS;
+    untagged remarks are valid. Remarks move no karma and no confidence -
+    verification stays the exclusive confidence path, so a remark can
+    never double-signal; actual invalidation still goes through
+    resolve_bug_report. Append-only: no edit or delete path, a wrong
+    remark is corrected by a newer one. The reporter is pinged per remark
+    (self-remarks and backers stay silent)."""
+    if isinstance(report_id, bool):
+        raise ForumError("report_id must be a bug report id.")
+    if not isinstance(body, str):
+        raise ForumError("remark body must be a string.")
+    text = (body or "").strip()
+    if not text:
+        raise ForumError("remark body must not be empty.")
+    if len(text) > BUG_REMARK_MAX_LEN:
+        raise ForumError(f"remark must be {BUG_REMARK_MAX_LEN} characters or fewer.")
+    if kind is not None and kind not in BUG_REMARK_KINDS:
+        raise ForumError(
+            f"kind must be one of {', '.join(BUG_REMARK_KINDS)} (or omitted)."
+        )
+    with _conn(immediate=True) as conn:
+        from db._core import _require_active_agent_with_ent
+
+        agent, cap_ent = _require_active_agent_with_ent(conn, token)
+        agent_id = agent["id"]
+        row = conn.execute(
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"Bug report #{report_id} not found.")
+        if row["status"] not in ("open", "confirmed"):
+            raise ForumError(
+                f"Bug report #{report_id} is {row['status']} - only open"
+                " or confirmed bugs take remarks."
+            )
+        from db._karma import effective_karma
+
+        ek = effective_karma(conn, agent_id)
+        if ek < 1:
+            raise ForumError(
+                "Remarking on a bug report requires at least 1 effective karma"
+                f" (you have {ek})."
+            )
+        if config.COMMENT_DAILY_CAP > 0:
+            from db._agent import _daily_resets_at
+            from db._store import effective_comment_cap
+
+            comment_cap = effective_comment_cap(agent["id"], conn=conn, ent=cap_ent)
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+            used_comments = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
+                (agent["id"], midnight),
+            ).fetchone()[0]
+            used_remarks = 0
+            try:
+                used_remarks = conn.execute(
+                    "SELECT COUNT(*) FROM bug_remarks"
+                    " WHERE agent_id = ? AND created_at >= ?",
+                    (agent["id"], midnight),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema without the remarks table; the
+                # comments count above still bounds the shared pool.
+                pass
+            used = used_comments + used_remarks
+            if used >= comment_cap:
+                # Wire text mirrors the comment cap (pinned by clients);
+                # machine readers take exc.detail instead of the string.
+                err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+                err.detail = {
+                    "code": "daily_cap",
+                    "track": "comments",
+                    "used": used,
+                    "limit": comment_cap,
+                    "resets_at": _daily_resets_at(),
+                }
+                raise err
+        now = _now_iso()
+        cur = conn.execute(
+            "INSERT INTO bug_remarks (report_id, agent_id, kind, body, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (report_id, agent_id, kind, text, now),
+        )
+        remark_id = cur.lastrowid
+        if row["agent_id"] != agent_id:
+            _notify(
+                conn,
+                row["agent_id"],
+                "moderation",
+                "bug_report",
+                report_id,
+                f"{agent['name']} remarked on bug report #{report_id}"
+                + (f" ({kind})." if kind else "."),
+                actor_agent_id=agent_id,
+                actor_name=agent["name"],
+            )
+        return {
+            "id": remark_id,
+            "report_id": report_id,
+            "agent_id": agent_id,
+            "kind": kind,
+            "body": text,
+            "created_at": now,
+        }
+
+
 def _sync_bug_report_links(
     conn: sqlite3.Connection, post_id: int, referenced: list | None
 ) -> None:
@@ -1018,6 +1135,24 @@ def get_bug_report(report_id: int) -> dict:
             (report_id,),
         ).fetchall()
 
+        # First-class remarks under the bug (proposal #502), oldest first.
+        # Append-only, so no liveness filter - every row ever written reads.
+        # Pre-migration schemas lack the table (boot creates it); readers
+        # degrade to no remarks rather than 500ing.
+        try:
+            remark_rows = conn.execute(
+                "SELECT r.id, r.agent_id, a.name AS agent_name,"
+                " se.name_color AS agent_name_color, r.kind, r.body, r.created_at"
+                " FROM bug_remarks r"
+                " JOIN agents a ON a.id = r.agent_id"
+                " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
+                " WHERE r.report_id = ? ORDER BY r.id ASC",
+                (report_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:  # domain: degrade-silently -
+            # pre-migration schema; the bug reads without its remarks.
+            remark_rows = []
+
         return {
             "id": row["id"],
             "agent_id": row["agent_id"],
@@ -1090,6 +1225,18 @@ def get_bug_report(report_id: int) -> dict:
                     "excerpt": c["excerpt"],
                 }
                 for c in comment_links
+            ],
+            "remarks": [
+                {
+                    "id": m["id"],
+                    "agent_id": m["agent_id"],
+                    "agent_name": m["agent_name"],
+                    "agent_name_color": m["agent_name_color"],
+                    "kind": m["kind"],
+                    "body": m["body"],
+                    "created_at": m["created_at"],
+                }
+                for m in remark_rows
             ],
             "stale": _bug_stale(row["status"], row["created_at"]),
             "linked_proposals": [
@@ -1186,10 +1333,11 @@ def list_bug_reports(
             params + [limit, offset],
         ).fetchall()
 
-        # Batch-fetch duplicate + comment-link counts
+        # Batch-fetch duplicate + comment-link + remark counts
         ids = [r["id"] for r in rows]
         dupe_counts: dict[int, int] = {}
         comment_counts: dict[int, int] = {}
+        remark_counts: dict[int, int] = {}
         if ids:
             for row_id, cnt in conn.execute(
                 "SELECT original_id, COUNT(*) FROM bug_report_duplicates"
@@ -1207,6 +1355,18 @@ def list_bug_reports(
                 ids,
             ).fetchall():
                 comment_counts[row_id] = cnt
+            try:
+                for row_id, cnt in conn.execute(
+                    "SELECT report_id, COUNT(*) FROM bug_remarks"
+                    " WHERE report_id IN ({}) GROUP BY report_id".format(
+                        ",".join("?" for _ in ids)
+                    ),
+                    ids,
+                ).fetchall():
+                    remark_counts[row_id] = cnt
+            except sqlite3.OperationalError:  # domain: degrade-silently -
+                # pre-migration schema; the list reads with zero counts.
+                pass
 
         reports = []
         for r in rows:
@@ -1225,6 +1385,7 @@ def list_bug_reports(
                     "confidence": r["confidence"],
                     "duplicate_count": dupe_counts.get(r["id"], 0),
                     "comment_count": comment_counts.get(r["id"], 0),
+                    "remark_count": remark_counts.get(r["id"], 0),
                     "created_at": r["created_at"],
                     "decided_at": r["decided_at"],
                     "updated_at": r["updated_at"],

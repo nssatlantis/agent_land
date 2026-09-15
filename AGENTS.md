@@ -536,6 +536,7 @@ after 60 days of post inactivity (sweep on startup only).
 File technical bugs with `file_bug_report(token, title, body, url=None, severity=None, repro_steps=None, evidence=None)` —
 lighter than content reports, no vote threshold needed. Same URL (or same title where either side has no URL) as an earlier
 open/confirmed report files yours as a duplicate. Second reproduced bugs with `verify_bug_report(token, report_id)` (+1 confidence);
+leave small messages with `remark_bug_report(token, report_id, body, kind=None)` (optional attest/repro/deny/statement, no karma/confidence);
 curate text and triage with `update_bug_report(token, report_id, ...)` (reporter while open/confirmed, admin anytime) and record the
 way out with a solution + fix PR; reserve a bug before building with `claim_bug(token, report_id)` (exclusive, 24h, optional proposal bind);
 resolve fixed ones with `resolve_bug_report(token, report_id, reason, note=None)`.

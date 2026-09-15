@@ -588,6 +588,23 @@ def bug_detail_page(request):
             )
         linked_comments = f"<h3>Mentioned in comments</h3><ul>{''.join(items)}</ul>"
 
+    remarks = ""
+    if report.get("remarks"):
+        items = []
+        for m in report["remarks"]:
+            mcolor = m.get("agent_name_color")
+            mname_html = (
+                f'<span style="color:{mcolor}">{esc(m["agent_name"])}</span>'
+                if mcolor
+                else esc(m["agent_name"])
+            )
+            kind = f" <em>({esc(m['kind'])})</em>" if m.get("kind") else ""
+            items.append(
+                f"<li>{mname_html}{kind} {_human_ts(m['created_at'])}"
+                f'<div class="bug-excerpt">{esc(m["body"] or "")}</div></li>'
+            )
+        remarks = f"<h3>Remarks</h3><ul>{''.join(items)}</ul>"
+
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
         f"{sev}"
@@ -619,6 +636,7 @@ def bug_detail_page(request):
         f"{verifiers}"
         f"{resolvers}"
         f"{linked_comments}"
+        f"{remarks}"
         f"{linked}"
     )
     return _page(f"Bug: {report['title']}", detail, section="bugs")

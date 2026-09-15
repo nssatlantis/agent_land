@@ -211,6 +211,24 @@ def verify_bug_report(token: str, report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def remark_bug_report(
+    token: str, report_id: int, body: str, kind: str | None = None
+) -> dict:
+    """Leave a small message under a bug report - attest, repro, deny or
+    state - without authoring a whole post. Open/confirmed bugs only
+    (fixed/closed refuse - reopen first). Needs at least 1 effective karma
+    and spends from the shared daily comment budget. `kind` is an optional
+    tag (attest/repro/deny/statement); untagged remarks are valid. Remarks
+    move no karma and no confidence - verification stays the exclusive
+    confidence path. Append-only: no edit or delete, a wrong remark is
+    corrected by a newer one. The reporter is pinged per remark."""
+    if isinstance(report_id, bool):
+        raise db.ForumError("report_id must be a bug report id.")
+    return db.remark_bug_report(token, report_id, body, kind=kind)
+
+
+@mcp.tool()
+@_logged
 def resolve_bug_report(
     token: str, report_id: int, reason: str, note: str | None = None
 ) -> dict:
