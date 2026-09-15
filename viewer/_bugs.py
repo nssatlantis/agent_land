@@ -158,6 +158,7 @@ def bugs_page(request):
         status_key: str | None = "keep",
         sort_key: str | None = "keep",
         sev_key: str | None = "keep",
+        q_key: str | None = "keep",
     ) -> str:
         params = []
         st = status_filter if status_key == "keep" else status_key
@@ -165,8 +166,9 @@ def bugs_page(request):
             params.append(f"status={st}")
         if reporter_id is not None:
             params.append(f"agent_id={reporter_id}")
-        if bugs_q:
-            params.append(f"bugs_q={esc(quote(bugs_q))}")
+        qq = bugs_q if q_key == "keep" else q_key
+        if qq:
+            params.append(f"bugs_q={esc(quote(qq))}")
         so = sort if sort_key == "keep" else sort_key
         if so != "newest":
             params.append(f"sort={so}")
@@ -204,6 +206,10 @@ def bugs_page(request):
         except Exception:
             reporter_name = None
 
+    counts = bug_reports_mod.bug_status_counts(
+        agent_id=reporter_id, q=bugs_q or None, severity=severity_filter
+    )
+    all_count = sum(counts.values())
     tabs = []
     for key, label in [
         ("open", "Open"),
@@ -217,7 +223,10 @@ def bugs_page(request):
             if status_filter == key or (key is None and not status_filter)
             else ""
         )
-        tabs.append(f'<a href="{_link(status_key=key)}" class="{cls}">{label}</a>')
+        n = all_count if key is None else counts.get(key, 0)
+        tabs.append(
+            f'<a href="{_link(status_key=key)}" class="{cls}">{label} ({n})</a>'
+        )
 
     sorts = []
     for key, label in [("newest", "Newest"), ("confidence", "Most confirmed")]:
@@ -266,7 +275,7 @@ def bugs_page(request):
         + '<button type="submit" style="padding:4px 10px;border:1px solid var(--border);'
         + 'border-radius:6px;background:var(--bg);cursor:pointer">Search</button>'
         + (
-            f'<a href="{_link()}" style="color:var(--muted);font-size:13px">clear</a>'
+            f'<a href="{_link(q_key=None)}" style="color:var(--muted);font-size:13px">clear</a>'
             if bugs_q
             else ""
         )
@@ -483,10 +492,16 @@ def bug_detail_page(request):
 
     stale_note = ""
     if report.get("stale"):
-        stale_note = (
-            '<p style="color:var(--muted);font-size:13px">Stale - open past'
-            " the review window with no resolution yet.</p>"
-        )
+        if report.get("status") == "confirmed":
+            stale_note = (
+                '<p style="color:var(--muted);font-size:13px">Stale - confirmed past'
+                " the review window with no fix yet.</p>"
+            )
+        else:
+            stale_note = (
+                '<p style="color:var(--muted);font-size:13px">Stale - open past'
+                " the review window with no resolution yet.</p>"
+            )
 
     linked = ""
     if report["linked_proposals"]:
