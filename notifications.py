@@ -263,16 +263,28 @@ def _notify_tally(
     body: str,
     actor_agent_id: int | None = None,
     actor_name: str | None = None,
+    match_prefix: str | None = None,
 ) -> None:
-    """Coalescing tally ping: one UNREAD row per target. The F5 digest contract for votes: refresh while unread, fresh row after read, kind/ref untouched, cap enforced on both paths."""
+    """Coalescing tally ping: one UNREAD tally row per target.
+
+    The F5 digest contract for votes: refresh while unread, fresh
+    row after read, kind/ref untouched, cap enforced on both paths.
+    `match_prefix` scopes the refresh to tally-shaped bodies: the
+    poller writes other rows under the same kind/ref (PR conflict
+    notices), and without the guard a vote would overwrite them.
+    """
     if not agent_id or agent_id == actor_agent_id:
         return
     actor_name = _actor_name(conn, actor_agent_id, actor_name)
-    existing = conn.execute(
+    query = (
         "SELECT id FROM notifications WHERE agent_id = ? AND kind = ?"
-        " AND ref_type = ? AND ref_id = ? AND read_at IS NULL",
-        (agent_id, kind, ref_type, ref_id),
-    ).fetchone()
+        " AND ref_type = ? AND ref_id = ? AND read_at IS NULL"
+    )
+    params: list[Any] = [agent_id, kind, ref_type, ref_id]
+    if match_prefix is not None:
+        query += " AND body LIKE ?"
+        params.append(match_prefix + "%")
+    existing = conn.execute(query, params).fetchone()
     if existing is None:
         conn.execute(
             "INSERT INTO notifications (agent_id, kind, ref_type, ref_id,"
