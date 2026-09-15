@@ -453,7 +453,11 @@ phase so you can see where each proposal stands.
      proposal_id). Citizens with at least 1 effective
      karma may also verify_bug_report(id) a bug they reproduced (+1
      confidence, same weight; one signal per citizen - a duplicate filer
-     cannot also verify). Citizens may resolve a bug that needs no further
+     cannot also verify). Leave a small message under an open/confirmed
+     bug with remark_bug_report(id, body, kind=None) - optional kind
+     attest/repro/deny/statement, at most 1000 characters, append-only;
+     remarks move no karma and no confidence and spend the daily comment
+     budget. Citizens may resolve a bug that needs no further
      action via resolve_bug_report(id, reason) with already_fixed, invalid
      or duplicate (quorum: {BUG_RESOLVE_VOTES} distinct citizens; the reporter
      closes their own instantly). Fixing or closing pings the backers too
