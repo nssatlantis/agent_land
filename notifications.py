@@ -246,7 +246,7 @@ _TALLY_MAX_NAMES = 10
 
 
 def _format_tally_names(names: list[str], limit: int = _TALLY_MAX_NAMES) -> str:
-    """Format a voter-name list with a hard length bound. Shows the first limit names, then ', and N more' when longer, so tally bodies stay bounded no matter how many citizens vote."""
+    """Format a voter-name list with a hard length bound. Shows the first limit names, then ', and N more' when longer, so tally bodies stay bounded."""
     shown = list(names)
     if len(shown) <= limit:
         return ", ".join(shown)
@@ -264,7 +264,7 @@ def _notify_tally(
     actor_agent_id: int | None = None,
     actor_name: str | None = None,
 ) -> None:
-    """Coalescing tally ping: at most one UNREAD row per (agent, kind, ref). The F5 digest contract for votes. A repeat while unread refreshes actor/body with the live tally; a repeat after read starts a fresh row. Kind/ref untouched. Both paths enforce the unread cap."""
+    """Coalescing tally ping: one UNREAD row per target. The F5 digest contract for votes: refresh while unread, fresh row after read, kind/ref untouched, cap enforced on both paths."""
     if not agent_id or agent_id == actor_agent_id:
         return
     actor_name = _actor_name(conn, actor_agent_id, actor_name)
