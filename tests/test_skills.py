@@ -684,6 +684,93 @@ def test_rerate_spam_is_bounded_and_quiet():
     assert len(mine) == 1, "same-day corrections do not re-ping the ratee"
 
 
+def test_reviewing_accepts_completed_service_delivery():
+    # A completed service-linked job the ratee worked -> hit.
+    rater = db.register_agent("skill_svc_rater")
+    c = db.create_comment(rater["token"], post_id, "service probe")
+    db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
+    with db._conn() as conn:
+        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+        svc_id = conn.execute(
+            "INSERT INTO services (seller_agent_id, title, description,"
+            " price_quarters, steps_json) VALUES (?, ?, ?, ?, ?)",
+            (_aid("alpha"), "probe svc", "d", 8, '["only step"]'),
+        ).lastrowid
+        jid = conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
+            " payment_quarters, total_cycles, cycles_done, status, service_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _aid("beta"),
+                _aid("gamma"),
+                "probe delivery",
+                4,
+                1,
+                1,
+                "completed",
+                svc_id,
+            ),
+        ).lastrowid
+        plain = conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
+            " payment_quarters, total_cycles, cycles_done, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_aid("beta"), _aid("gamma"), "plain job", 4, 1, 1, "completed"),
+        ).lastrowid
+        live = conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
+            " payment_quarters, total_cycles, status, service_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_aid("beta"), _aid("gamma"), "live order", 4, 1, "active", svc_id),
+        ).lastrowid
+    db.rate_skill(
+        rater["token"],
+        _aid("gamma"),
+        "reviewing",
+        80,
+        f"job #{jid}",
+        "crisp delivery, exactly the rubric",
+    )
+    # Traditional completed job (no listing) -> miss.
+    expect_error(
+        db.rate_skill,
+        rater["token"],
+        _aid("gamma"),
+        "reviewing",
+        80,
+        f"job #{plain}",
+        "no listing, no reviewing signal",
+    )
+    # In-flight service order -> miss.
+    expect_error(
+        db.rate_skill,
+        rater["token"],
+        _aid("gamma"),
+        "reviewing",
+        80,
+        f"job #{live}",
+        "in-flight work is not a delivery",
+    )
+    # The buyer did not do the work -> miss; coordinating holds -> hit.
+    expect_error(
+        db.rate_skill,
+        rater["token"],
+        _aid("beta"),
+        "reviewing",
+        80,
+        f"job #{jid}",
+        "buyer did not do the work",
+    )
+    db.rate_skill(
+        rater["token"],
+        _aid("gamma"),
+        "coordinating",
+        82,
+        f"job #{jid}",
+        "ran the delivery",
+    )
+
+
 if __name__ == "__main__":
     for fn in [
         test_bayesian_math_pins_prior_and_strength,
@@ -692,6 +779,7 @@ if __name__ == "__main__":
         test_badge_needs_70_and_five_raters,
         test_rerate_supersedes_but_keeps_history,
         test_evidence_must_attribute_the_ratee,
+        test_reviewing_accepts_completed_service_delivery,
         test_rating_guards_fail_loudly,
         test_fee_sinks_to_treasury,
         test_fee_waived_below_3_karma,
