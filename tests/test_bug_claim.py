@@ -258,6 +258,148 @@ def test_viewer_claim_chip_and_row():
     assert "Claimed by" not in h2
 
 
+def test_review_bound_claim_survives_foreign_merge():
+    # M1: a bound claim releases only on its own proposal's merge.
+    rep = _karmaed("cl-m1rep")
+    worker = _karmaed("cl-m1work")
+    bug = _file(rep["token"], "M1 Scoped Release")
+    prop_a = db.create_proposal(
+        worker["token"], "M1 A", f"fixes #B{bug['id']} for real"
+    )
+    prop_b = db.create_proposal(
+        worker["token"], "M1 B", f"also cites #B{bug['id']} drive-by"
+    )
+    bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop_a["post_id"])
+    with db._conn() as conn:
+        bug_mod.notify_bug_fix_landed(conn, 6201, prop_b["post_id"])
+        conn.commit()
+    kept = bug_mod.get_bug_report(bug["id"])
+    assert kept["claimed_by"] == worker["agent_id"]
+    assert kept["claimed_proposal_id"] == prop_a["post_id"]
+    with db._conn() as conn:
+        bug_mod.notify_bug_fix_landed(conn, 6202, prop_a["post_id"])
+        conn.commit()
+    assert bug_mod.get_bug_report(bug["id"])["claimed_by"] is None
+
+
+def test_review_refresh_preserves_bind_and_pings_once():
+    # M2 + m4: same-holder refresh keeps the bind and stays silent.
+    rep = _karmaed("cl-m2rep")
+    worker = _karmaed("cl-m2work")
+    bug = _file(rep["token"], "M2 Bind Preserve")
+    prop = db.create_proposal(
+        worker["token"], "M2 prop", f"fixes #B{bug['id']} for real"
+    )
+    bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop["post_id"])
+    again = bug_mod.claim_bug(worker["token"], bug["id"])
+    assert again["claimed_proposal_id"] == prop["post_id"]
+    assert bug_mod.get_bug_report(bug["id"])["claimed_proposal_id"] == prop["post_id"]
+    assert len(_pings(rep["agent_id"], "%claimed bug%")) == 1
+
+
+def test_review_degrade_fallbacks():
+    # G1 + m2: tampered knob, unparseable/int stamps, non-positive timeout.
+    import config
+
+    rep = _karmaed("cl-g1rep")
+    worker = _karmaed("cl-g1work")
+    bug = _file(rep["token"], "G1 Degrade")
+    out = bug_mod.claim_bug(worker["token"], bug["id"])
+    live_args = (out["claimed_by"], out["claimed_at"])
+    old_timeout = config.BUG_CLAIM_TIMEOUT_SECONDS
+    try:
+        config.BUG_CLAIM_TIMEOUT_SECONDS = "junk"
+        assert bug_mod._bug_claim_live(*live_args) is True
+        config.BUG_CLAIM_TIMEOUT_SECONDS = 0
+        assert bug_mod._bug_claim_live(worker["agent_id"], "not-a-time") is True
+    finally:
+        config.BUG_CLAIM_TIMEOUT_SECONDS = old_timeout
+    assert bug_mod._bug_claim_live(worker["agent_id"], "not-a-time") is False
+    assert bug_mod._bug_claim_live(worker["agent_id"], 123) is False
+
+
+def test_review_release_on_replay_despite_reporter_dedup():
+    # m3: the reporter dedup must not strand the claim.
+    rep = _karmaed("cl-m3rep")
+    worker = _karmaed("cl-m3work")
+    bug = _file(rep["token"], "M3 Replay Release")
+    prop = db.create_proposal(
+        worker["token"], "M3 prop", f"fixes #B{bug['id']} for real"
+    )
+    bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop["post_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body,"
+            " created_at) VALUES (?, 'moderation', 'bug_report', ?, ?, ?)",
+            (
+                rep["agent_id"],
+                bug["id"],
+                "PR #6301 merged on proposal #1 (prior replay)",
+                out_now(),
+            ),
+        )
+        conn.commit()
+    with db._conn() as conn:
+        told = bug_mod.notify_bug_fix_landed(conn, 6301, prop["post_id"])
+        conn.commit()
+    assert told == 0
+    assert bug_mod.get_bug_report(bug["id"])["claimed_by"] is None
+    assert len(_pings(worker["agent_id"], "%claimed bug%fixed%")) == 1
+
+
+def out_now():
+    from db._core._time import _now_iso
+
+    return _now_iso()
+
+
+def test_review_bool_ids_refused():
+    # m5: True == 1 in SQLite, so bools must fail closed like proposal_id.
+    from tests._setup import expect_error
+
+    rep = _karmaed("cl-m5rep")
+    worker = _karmaed("cl-m5work")
+    bug = _file(rep["token"], "M5 Bool Guard")
+    msg = expect_error(bug_mod.claim_bug, worker["token"], True)
+    assert "bug report id" in msg
+    msg = expect_error(bug_mod.claim_bug, worker["token"], bug["id"], proposal_id=True)
+    assert "post id" in msg
+
+
+def test_review_terminal_clears_lapsed_and_reopen():
+    # m1: fix/close force-clear lapsed junk; reopen never resurrects.
+    rep = _karmaed("cl-m1trep")
+    worker = _karmaed("cl-m1twork")
+    bug = _file(rep["token"], "M1T Fix Clears Lapsed")
+    bug_mod.claim_bug(worker["token"], bug["id"])
+    old = "2001-01-01T00:00:00.000Z"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET claimed_at = ? WHERE id = ?",
+            (old, bug["id"]),
+        )
+        conn.commit()
+    bug_mod.fix_bug_report(bug["id"], admin="testadmin")
+    with db._conn() as conn:
+        raw = conn.execute(
+            "SELECT claimed_by, claimed_at, claimed_proposal_id FROM bug_reports"
+            " WHERE id = ?",
+            (bug["id"],),
+        ).fetchone()
+    assert tuple(raw) == (None, None, None)
+    bug2 = _file(rep["token"], "M1T Reopen Clears")
+    bug_mod.claim_bug(worker["token"], bug2["id"])
+    db.resolve_bug_report(rep["token"], bug2["id"], "invalid", "gone")
+    bug_mod.reopen_bug_report(bug2["id"], admin="testadmin")
+    with db._conn() as conn:
+        raw2 = conn.execute(
+            "SELECT claimed_by, claimed_at, claimed_proposal_id FROM bug_reports"
+            " WHERE id = ?",
+            (bug2["id"],),
+        ).fetchone()
+    assert tuple(raw2) == (None, None, None)
+
+
 def test_zz_migration_claim_columns():
     # Runs last (alphabetical): replants the file DB with the pre-claim
     # shape (triage present, claim columns absent), so no later test may
