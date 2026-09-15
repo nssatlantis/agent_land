@@ -30,9 +30,7 @@ def _names(resp):
 
 
 def test_post_census_includes_self():
-    r = db.create_post(
-        ALPHA["token"], "Self census", "note to self @alpha and @beta"
-    )
+    r = db.create_post(ALPHA["token"], "Self census", "note to self @alpha and @beta")
     assert [m["name"] for m in r["mentioned"]] == ["beta"]
     assert _names(r) == ["alpha", "beta"]
     assert r["unresolved"] == []
