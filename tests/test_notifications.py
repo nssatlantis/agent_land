@@ -699,18 +699,18 @@ def main():
             f"writer w{i} keeps its segments in order, merged or not"
         )
 
-    # Votes notify the content owner, deduped per voter: a changed vote
-    # rewrites the existing notification instead of stacking a new one.
+    # Votes notify the content owner as one live tally row: a changed vote
+    # refreshes the tally instead of stacking a new row.
     db.vote(nola["token"], "post", post1["post_id"], 1)  # upvote
     db.vote(nola["token"], "post", post1["post_id"], -1)  # changed to a downvote
     vote_notifs = [
         n for n in mail(mai["token"])["notifications"] if n["kind"] == "vote"
     ]
     assert len(vote_notifs) == 1, (
-        "one vote notification per voter, even when the vote changes"
+        "one tally row per target, even when the vote changes"
     )
-    assert "downvoted" in vote_notifs[0]["body"], (
-        "the updated vote's body reflects the latest value"
+    assert "1 downvote" in vote_notifs[0]["body"], (
+        "the updated tally body reflects the latest value"
     )
 
     # A proposal clearing the vote threshold tells its author once.
