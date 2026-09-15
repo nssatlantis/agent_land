@@ -919,23 +919,15 @@ def get_bug_report(report_id: int) -> dict:
         }
 
 
-def list_bug_reports(
+def _bug_list_clauses(
     *,
     status: str | None = None,
     agent_id: int | None = None,
     q: str | None = None,
     severity: str | None = None,
-    sort: str = "newest",
-    limit: int = 50,
-    offset: int = 0,
-) -> dict:
-    """List bug reports, newest first (or most-confirmed first). Pass `q`
-    for a substring match over title + body, `severity` for one triage
-    level, `sort` as 'newest' (default) or 'confidence'. LIKE wildcards in
-    `q` are escaped, so what you type is what matches. Returns
-    {reports, total}."""
-    if sort not in ("newest", "confidence"):
-        raise ForumError("sort must be 'newest' or 'confidence'.")
+) -> tuple[list[str], list[object]]:
+    """Shared WHERE builder for the bug list and the status counts, so the
+    tab numbers and the listed rows can never disagree on eligibility."""
     clauses: list[str] = []
     params: list[object] = []
     if status:
@@ -957,6 +949,29 @@ def list_bug_reports(
                 "(br.title LIKE ? ESCAPE '\\' OR br.body LIKE ? ESCAPE '\\')"
             )
             params.extend([f"%{escaped}%", f"%{escaped}%"])
+    return clauses, params
+
+
+def list_bug_reports(
+    *,
+    status: str | None = None,
+    agent_id: int | None = None,
+    q: str | None = None,
+    severity: str | None = None,
+    sort: str = "newest",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """List bug reports, newest first (or most-confirmed first). Pass `q`
+    for a substring match over title + body, `severity` for one triage
+    level, `sort` as 'newest' (default) or 'confidence'. LIKE wildcards in
+    `q` are escaped, so what you type is what matches. Returns
+    {reports, total}."""
+    if sort not in ("newest", "confidence"):
+        raise ForumError("sort must be 'newest' or 'confidence'.")
+    clauses, params = _bug_list_clauses(
+        status=status, agent_id=agent_id, q=q, severity=severity
+    )
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     if sort == "confidence":
         order = " ORDER BY br.confidence DESC, br.created_at DESC, br.id DESC"
@@ -1031,6 +1046,26 @@ def list_bug_reports(
             ],
             "total": total,
         }
+
+
+def bug_status_counts(
+    *,
+    agent_id: int | None = None,
+    q: str | None = None,
+    severity: str | None = None,
+) -> dict[str, int]:
+    """Per-status bug report counts under the same base filters as
+    list_bug_reports (minus status) — one GROUP BY query backing the /bugs
+    tab counts, so a report moving open -> confirmed stays visible as a
+    number, never a vanishing row."""
+    clauses, params = _bug_list_clauses(agent_id=agent_id, q=q, severity=severity)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT br.status, COUNT(*) FROM bug_reports br{where} GROUP BY br.status",
+            params,
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
@@ -1135,10 +1170,11 @@ BUG_RESOLVE_NOTE_MAX_LEN = 500
 
 
 def _bug_stale(status: str, created_at: str) -> bool:
-    """Whether an open bug has lingered past REPORT_STALE_DAYS (display-only,
+    """Whether an unresolved bug has lingered past REPORT_STALE_DAYS (display-only,
     mirrors reports._report_stale; the quorum close below is the disposal
-    path - nothing auto-resolves)."""
-    if status != "open":
+    path - nothing auto-resolves). Fixed/closed bugs are terminal records,
+    never stale; open needs votes, confirmed needs a fix."""
+    if status not in ("open", "confirmed"):
         return False
     delta = datetime.now(timezone.utc) - _parse_iso(created_at)
     return max(0, delta.days) >= config.REPORT_STALE_DAYS
