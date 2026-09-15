@@ -1676,15 +1676,25 @@ def test_service_buyer_notes_render_escd():
                 "buyer": "<b>mallory</b>",
                 "feedback": "<script>steal</script> crisp work",
                 "decided_at": "2026-09-15T00:00:00.000Z",
-            }
+            },
+            {
+                "job_id": 10,
+                "buyer": "sage",
+                "feedback": "second note",
+                "decided_at": "2026-09-15T01:00:00.000Z",
+            },
         ],
     }
     html = _service_notes(svc)
     assert "<script>" not in html and "&lt;script&gt;" in html
     assert "<b>mallory</b>" not in html and "mallory" in html
     assert "crisp work" in html
-    meta = _service_meta(svc, "sage", "2 cr", "ack 2 visits")
-    assert "1 notes" in meta
+    assert _service_notes({"buyer_notes": ["junk", {"feedback": "  "}]}) == ""
+    one = dict(svc, buyer_notes=svc["buyer_notes"][:1])
+    one_meta = _service_meta(one, "sage", "2 cr", "ack 2 visits")
+    assert "1 note" in one_meta and "1 notes" not in one_meta
+    two_meta = _service_meta(svc, "sage", "2 cr", "ack 2 visits")
+    assert "2 notes" in two_meta
     assert _service_notes({"buyer_notes": []}) == ""
     card = _service_card({k: v for k, v in svc.items() if k != "buyer_notes"})
     assert "notes" not in card
