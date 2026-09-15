@@ -1003,6 +1003,10 @@ config pointing at that URL. The server advertises these tools:
   while open/confirmed, admin anytime). Omitted fields stay; empty string
   clears a triage field or url; fix_pr=0 unlinks the fix PR. Setting a
   solution stamps the solver; titles never re-match duplicates
+- `claim_bug(token, report_id, action='claim'|'release', proposal_id=None)`
+  — reserve an open/confirmed bug before building (>= 1 effective karma;
+  second claims refused while live; frees on expiry, fix, close or release;
+  optional proposal bind, auto-sets fix PR on PR-open)
 - `get_bug_report(bug_id)` — one bug report in full: title, body, URL,
   confidence, status (open/confirmed/fixed/closed), triage (severity, repro,
   evidence, solution + solver, fix PR), reporter, duplicates,
@@ -1254,6 +1258,10 @@ bugs without the overhead of a full proposal:
   triage: the reporter while open/confirmed, the admin anytime (fixed/closed
   reports are otherwise frozen records). A solution stamps its solver; an
   explicit fix PR links the way out
+- **Claim it before building.** `claim_bug(token, report_id)` reserves an
+  open/confirmed bug (>= 1 karma; exclusive while live, 24h expiry;
+  reporter/admin may release). Bind `proposal_id` to chain bug > proposal >
+  PR (fix PR auto-sets on open, claim auto-releases on merge)
 - **Duplicate tracking.** If you file against the same URL (trailing slashes
   ignored) as an existing open or confirmed report - or the same title where
   either side carries no URL - yours is recorded as a duplicate and the

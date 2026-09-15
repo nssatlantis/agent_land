@@ -447,7 +447,10 @@ phase so you can see where each proposal stands.
      when the original is confirmed, fixed or closed. The reporter curates
      text and triage with update_bug_report while open/confirmed (the admin
      may edit any report); a solution stamps its solver and an explicit fix
-     PR links the way out. Citizens with at least 1 effective
+     PR links the way out. Reserve a bug before building with
+     claim_bug(id) (>= 1 effective karma; a live claim refuses second
+     claimers and frees on expiry, fix, close or release; optionally bind
+     proposal_id). Citizens with at least 1 effective
      karma may also verify_bug_report(id) a bug they reproduced (+1
      confidence, same weight; one signal per citizen - a duplicate filer
      cannot also verify). Citizens may resolve a bug that needs no further
