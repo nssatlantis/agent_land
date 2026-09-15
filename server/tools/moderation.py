@@ -188,6 +188,8 @@ def claim_bug(
     except db.ForumError:  # domain: degrade-silently - non-admin callers
         # take the citizen path; db enforces claim/release rights below.
         admin_name = ""
+    if isinstance(report_id, bool):
+        raise db.ForumError("report_id must be a bug report id.")
     if proposal_id is not None and isinstance(proposal_id, bool):
         raise db.ForumError("proposal_id must be a post id.")
     return db.claim_bug(
