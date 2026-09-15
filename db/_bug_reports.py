@@ -601,19 +601,24 @@ def _bug_claim_live(claimed_by, claimed_at) -> bool:
     except (
         ValueError,
         TypeError,
+        AttributeError,
     ):  # domain: degrade-silently - an unparseable stamp reads as lapsed
         return False
     return age.total_seconds() < timeout
 
 
-def _release_bug_claim(conn, report_id) -> bool:
-    """Clear a live bug claim (fix/close/resolve/merge paths). Returns True
-    when a live claim was actually held - callers use it for pings."""
+def _release_bug_claim(conn, report_id, force=False) -> bool:
+    """Clear a bug claim (fix/close/resolve/merge/reopen paths). Returns True
+    when a row was actually cleared - callers use it for pings. Live-only by
+    default; force=True clears even lapsed rows so terminal paths never leave
+    expired-claim junk behind for a later reopen to resurrect."""
     row = conn.execute(
         "SELECT claimed_by, claimed_at FROM bug_reports WHERE id = ?",
         (report_id,),
     ).fetchone()
-    if row is None or not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
+    if row is None:
+        return False
+    if not force and not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
         return False
     conn.execute(
         "UPDATE bug_reports SET claimed_by = NULL, claimed_at = NULL,"
@@ -636,6 +641,10 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
     proposal's PR. Claiming pings the reporter once (not the backers)."""
     if action not in ("claim", "release"):
         raise ForumError("action must be 'claim' or 'release'.")
+    if isinstance(report_id, bool):
+        raise ForumError("report_id must be a bug report id.")
+    if proposal_id is not None and isinstance(proposal_id, bool):
+        raise ForumError("proposal_id must be a post id.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         agent_id = agent["id"]
@@ -670,7 +679,11 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
                     f"Bug report #{report_id} is already claimed by {who} -"
                     " it frees on expiry, fix, close or release."
                 )
-            bound = None
+            bound = (
+                row["claimed_proposal_id"]
+                if (live and row["claimed_by"] == agent_id)
+                else None
+            )
             if proposal_id is not None:
                 prop = conn.execute(
                     "SELECT id, proposal_kind, body FROM posts WHERE id = ?",
@@ -700,7 +713,12 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
                 " claimed_proposal_id = ?, updated_at = ? WHERE id = ?",
                 (agent_id, now, bound, now, report_id),
             )
-            if row["agent_id"] != agent_id:
+            # A same-holder refresh extends the reservation silently: the
+            # reporter was already told once, so "pings once" holds per
+            # reservation, not per claim call.
+            if row["agent_id"] != agent_id and not (
+                live and row["claimed_by"] == agent_id
+            ):
                 _notify(
                     conn,
                     row["agent_id"],
@@ -1305,7 +1323,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             (now, report_id),
         )
         _retire_duplicates(conn, report_id, "fixed", now)
-        _release_bug_claim(conn, report_id)
+        _release_bug_claim(conn, report_id, force=True)
         reporter_id = row["agent_id"]
         if karma and reporter_id:
             conn.execute(
@@ -1367,7 +1385,7 @@ def _close_bug(conn, report_id, resolution, note):
         (now_iso, resolution, note, report_id),
     )
     _retire_duplicates(conn, report_id, "closed", now_iso)
-    _release_bug_claim(conn, report_id)
+    _release_bug_claim(conn, report_id, force=True)
     return now_iso
 
 
@@ -1511,7 +1529,8 @@ def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
             raise ForumError(f"Bug report #{report_id} is {row['status']}, not closed.")
         conn.execute(
             "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
-            " resolution = NULL, resolution_note = NULL WHERE id = ?",
+            " resolution = NULL, resolution_note = NULL, claimed_by = NULL,"
+            " claimed_at = NULL, claimed_proposal_id = NULL WHERE id = ?",
             (report_id,),
         )
         log_event(
@@ -1647,12 +1666,34 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
     told = 0
     for bid in bug_ids:
         row = conn.execute(
-            "SELECT id, status, agent_id, title, claimed_by, claimed_at"
-            " FROM bug_reports WHERE id = ?",
+            "SELECT id, status, agent_id, title, claimed_by, claimed_at,"
+            " claimed_proposal_id FROM bug_reports WHERE id = ?",
             (bid,),
         ).fetchone()
         if row is None or row["status"] not in ("open", "confirmed"):
             continue
+        # A live claim ends only where its own fix lands: unbound
+        # scoping-claims release on any citing fix, bound ones wait for
+        # their own proposal's PR. Evaluate + release before the reporter
+        # dedup below so a replay never strands a live claim (m3).
+        bound = row["claimed_proposal_id"]
+        scoped = _bug_claim_live(row["claimed_by"], row["claimed_at"]) and (
+            bound is None or bound == proposal_post_id
+        )
+        claimer_id = row["claimed_by"]
+        if scoped:
+            _release_bug_claim(conn, bid, force=True)
+            if claimer_id != row["agent_id"]:
+                _notify(
+                    conn,
+                    claimer_id,
+                    "moderation",
+                    "bug_report",
+                    bid,
+                    f"Your claimed bug #{bid} may be fixed: PR #{pr_number}"
+                    f" merged on proposal #{proposal_post_id}. Verify it -"
+                    " resolve the bug if it is gone.",
+                )
         already = conn.execute(
             "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'moderation'"
             " AND ref_type = 'bug_report' AND ref_id = ? AND body LIKE ?",
@@ -1671,22 +1712,6 @@ def notify_bug_fix_landed(conn, pr_number, proposal_post_id):
             " Verify the fix - resolve the bug if it is gone.",
         )
         told += 1
-        # A live claim ends where the fix lands: release it and tell the
-        # claimer (unless they are the reporter, already told above).
-        if _bug_claim_live(row["claimed_by"], row["claimed_at"]):
-            claimer_id = row["claimed_by"]
-            _release_bug_claim(conn, bid)
-            if claimer_id != row["agent_id"]:
-                _notify(
-                    conn,
-                    claimer_id,
-                    "moderation",
-                    "bug_report",
-                    bid,
-                    f"Your claimed bug #{bid} may be fixed: PR #{pr_number}"
-                    f" merged on proposal #{proposal_post_id}. Verify it -"
-                    " resolve the bug if it is gone.",
-                )
     return told
 
 
