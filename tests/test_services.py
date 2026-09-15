@@ -298,6 +298,71 @@ def main():
     assert len(db.get_service(svc["id"])["buyer_notes"]) == 1, (
         "the silent accept after the refused one adds no note"
     )
+    # --- 5c. reader pins: decline/non-service exclusion, cap + order ----
+    # Raw-seeded rows (the flow path above already proves end-to-end).
+    with db._conn() as conn:
+        hold_id = conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
+            " payment_quarters, total_cycles, cycles_done, status, service_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                buyer["agent_id"],
+                seller["agent_id"],
+                "holding job",
+                4,
+                1,
+                1,
+                "completed",
+                svc["id"],
+            ),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, status, feedback,"
+            " decided_at) VALUES (?, ?, ?, ?, ?)",
+            (hold_id, 1, "declined", "rework this", "2026-09-14T00:00:00.000Z"),
+        )
+        plain_id = conn.execute(
+            "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
+            " payment_quarters, total_cycles, cycles_done, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                buyer["agent_id"],
+                seller["agent_id"],
+                "plain job",
+                4,
+                1,
+                1,
+                "completed",
+            ),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, status, feedback,"
+            " decided_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                plain_id,
+                1,
+                "accepted",
+                "not a service note",
+                "2026-09-14T00:00:00.000Z",
+            ),
+        )
+    still = [n["feedback"] for n in db.get_service(svc["id"])["buyer_notes"]]
+    assert still == ["crisp turnaround, exactly the rubric"], still
+    for i in range(1, 13):
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO job_cycles (job_id, cycle_no, status, feedback,"
+                " decided_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    hold_id,
+                    i + 1,
+                    "accepted",
+                    f"seed note {i:02d}",
+                    f"2026-10-{i:02d}T00:00:00.000Z",
+                ),
+            )
+    got = [n["feedback"] for n in db.get_service(svc["id"])["buyer_notes"]]
+    assert got == [f"seed note {i:02d}" for i in range(12, 2, -1)], got
     # Buyer notes ride the reads, never the schema: nothing to rebuild,
     # nothing to vanish on the legacy path.
     with db._conn() as conn:
