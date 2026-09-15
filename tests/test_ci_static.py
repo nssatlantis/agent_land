@@ -56,6 +56,29 @@ def test_static_green_fast_with_markers():
     assert dt < 300, f"static-only run took {dt:.0f}s - must stay far below a suite run"
 
 
+def test_static_toolless_degrade_pinned():
+    # The tool-less tolerance arms above never execute where tools exist;
+    # pin them by monkeypatch instead of by host state.
+    import contextlib
+    import io
+    import tempfile
+
+    real = tests.run_static._module_available
+    tests.run_static._module_available = lambda module: False
+    try:
+        with tempfile.TemporaryDirectory(prefix="agentland_static_notools_") as tmp:
+            Path(tmp, "_probe.py").write_text("x=1\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = tests.run_static.run_static_checks(tmp)
+            out = buf.getvalue()
+    finally:
+        tests.run_static._module_available = real
+    assert rc == 0
+    assert "STATIC RESULT: SKIPPED" in out
+    assert "TESTS: SKIPPED" not in out
+
+
 def test_static_red_on_planted_violation():
     # In-process against a throwaway dir: the suite must never mutate the
     # source tree (the CI sandbox mounts it read-only - a tree-writing red
