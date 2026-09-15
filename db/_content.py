@@ -1413,10 +1413,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             parts.append(f"{down} {down_word} ({_format_tally_names(down_names)})")
         if not parts:
             parts.append("no votes yet")
-        vote_text = (
-            f"Your {target_type} #{target_id}: "
-            f"{', '.join(parts)} (net {net:+d})"
-        )
+        vote_text = f"Your {target_type} #{target_id}: {', '.join(parts)} (net {net:+d})"
         _notify_tally(
             conn,
             target["agent_id"],
