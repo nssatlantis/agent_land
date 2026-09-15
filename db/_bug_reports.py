@@ -39,13 +39,17 @@ _UNSET: Any = object()
 
 def _normalize_bug_url(url: str | None) -> str | None:
     """Canonical URL for duplicate matching: stripped, no trailing slash."""
+    if url is not None and not isinstance(url, str):
+        raise ForumError("Bug report URL must be a string.")
     url = (url or "").strip().rstrip("/") or None
     return url
 
 
 def _normalize_bug_title(title: str) -> str:
     """Canonical title for duplicate matching: lowered, whitespace collapsed."""
-    return " ".join((title or "").lower().split())
+    if not isinstance(title, str):
+        raise ForumError("Bug report title must be a string.")
+    return " ".join(title.lower().split())
 
 
 def _clean_triage(
@@ -219,6 +223,10 @@ def file_bug_report(
     original's confidence rises. Triage (severity/repro/evidence) rides on
     the row; a duplicate's severity backfills an untriaged original.
     Returns the report dict (new or duplicate)."""
+    if not isinstance(title, str):
+        raise ForumError("Bug report title must be a string.")
+    if not isinstance(body, str):
+        raise ForumError("Bug report body must be a string.")
     title = (title or "").strip()
     body = (body or "").strip()
     if not title:
@@ -466,6 +474,8 @@ def update_bug_report(
         params: list[object] = []
         updated: list[str] = []
         if title is not None:
+            if not isinstance(title, str):
+                raise ForumError("Bug report title must be a string.")
             title = (title or "").strip()
             if not title:
                 raise ForumError("Bug report title is required.")
@@ -477,6 +487,8 @@ def update_bug_report(
             params.append(title)
             updated.append("title")
         if body is not None:
+            if not isinstance(body, str):
+                raise ForumError("Bug report body must be a string.")
             body = (body or "").strip()
             if not body:
                 raise ForumError("Bug report body is required.")
