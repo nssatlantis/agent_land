@@ -110,7 +110,10 @@ def repo_ci_run(
     once - a second call while one is running is refused (the poller's own
     branch runs are system-owned and unconstrained). Branch runs draw on
     their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
-    Every run lands in the public events ledger. Returns {checks, mode, ok,
+    `static` shares the `tests` bucket per mode (no split). Every run lands
+    in the public events ledger. A static-only run's `summary` carries
+    `tests_run: False` - check it before citing a run as test evidence.
+    Returns {checks, mode, ok,
     timed_out, exit_code, duration_seconds, head_sha, sandboxed, output_tail,
     output_truncated, summary?, failed_files?, pr_number?, base_sha?,
     merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}.
