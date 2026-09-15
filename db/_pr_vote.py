@@ -253,43 +253,53 @@ def vote_on_pr(
         ):
             c.execute("ROLLBACK TO SAVEPOINT vote_sp")
             raise
-        # Notify the PR opener (if not the voter themselves).
+        threshold = _pr_vote_threshold(c)
+        eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
+        tally = _tally(c, pr_number)
+        up_names = [v["name"] for v in tally["voters"] if v["value"] == 1]
+        down_names = [v["name"] for v in tally["voters"] if v["value"] == -1]
+        opener_body = _pr_tally_body(
+            pr_number, tally["up"], tally["down"], tally["net"], up_names, down_names
+        )
+        author_body = _pr_tally_body(
+            pr_number,
+            tally["up"],
+            tally["down"],
+            tally["net"],
+            up_names,
+            down_names,
+            author=True,
+        )
         opener = pr_opener(pr_number, conn=c)
-        if opener and opener["agent_id"] != agent_id:
-            v_label = "approved" if value == 1 else "opposed"
-            _notify(
+        if opener:
+            _notify_tally(
                 c,
                 opener["agent_id"],
                 "pr",
                 "pr",
                 pr_number,
-                f"PR #{pr_number} {v_label}",
+                opener_body,
                 actor_agent_id=agent_id,
+                actor_name=agent["name"],
             )
-        # Notify the proposal author (if different from both voter and opener).
         if link:
             prop_author = c.execute(
                 "SELECT agent_id FROM posts WHERE id = ?",
                 (link["post_id"],),
             ).fetchone()
-            if (
-                prop_author
-                and prop_author["agent_id"] != agent_id
-                and (not opener or prop_author["agent_id"] != opener["agent_id"])
+            if prop_author and (
+                not opener or prop_author["agent_id"] != opener["agent_id"]
             ):
-                v_label = "approved" if value == 1 else "opposed"
-                _notify(
+                _notify_tally(
                     c,
                     prop_author["agent_id"],
                     "pr",
                     "pr",
                     pr_number,
-                    f"PR #{pr_number} implementing your proposal {v_label}",
+                    author_body,
                     actor_agent_id=agent_id,
+                    actor_name=agent["name"],
                 )
-        threshold = _pr_vote_threshold(c)
-        eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
-        tally = _tally(c, pr_number)
         result = {
             "pr_number": pr_number,
             "up": tally["up"],
