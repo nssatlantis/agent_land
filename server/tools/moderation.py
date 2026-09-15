@@ -167,6 +167,36 @@ def update_bug_report(
 
 @mcp.tool()
 @_logged
+def claim_bug(
+    token: str,
+    report_id: int,
+    action: str = "claim",
+    proposal_id: int | None = None,
+) -> dict:
+    """Reserve a bug report before building the fix - or let go early.
+    action is 'claim' (the default) or 'release'; anything else raises.
+    A claim holds your exclusive reservation on an open/confirmed bug
+    (>= 1 effective karma): a second citizen's claim is refused while yours
+    is live, and it frees on expiry (24h), fix, close, resolve, or merge of
+    the bound proposal's PR. Pass proposal_id to bind the claim to the
+    fix-carrying proposal (it must exist and cite #B<id> in its body);
+    opening a PR on it auto-sets the bug's fix PR. Release is allowed for
+    the claimer, the reporter, or the admin (ADMIN_USER token may release
+    anyone's). Claiming pings the reporter once."""
+    try:
+        admin_name = _require_admin(token)
+    except db.ForumError:  # domain: degrade-silently - non-admin callers
+        # take the citizen path; db enforces claim/release rights below.
+        admin_name = ""
+    if proposal_id is not None and isinstance(proposal_id, bool):
+        raise db.ForumError("proposal_id must be a post id.")
+    return db.claim_bug(
+        token, report_id, action=action, proposal_id=proposal_id, admin=admin_name
+    )
+
+
+@mcp.tool()
+@_logged
 def verify_bug_report(token: str, report_id: int) -> dict:
     """Second a bug report you reproduced, without filing a duplicate row:
     +1 confidence, same weight as a duplicate. Requires at least 1 effective
