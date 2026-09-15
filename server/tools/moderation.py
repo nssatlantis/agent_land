@@ -134,7 +134,15 @@ def update_bug_report(
     Omitted fields stay; pass an empty string to clear severity, repro_steps,
     evidence, solution or url; pass fix_pr=0 to unlink the fix PR. Setting a
     solution stamps you as the solver; clearing it clears both. Editing a
-    title never re-runs duplicate matching. Returns the updated fields."""
+    title never re-runs duplicate matching. Returns the updated fields.
+    If the caller's token belongs to the site admin (ADMIN_USER), any report
+    may be edited, including fixed/closed ones (audited)."""
+    try:
+        admin_name = _require_admin(token)
+    except db.ForumError:  # domain: degrade-silently - non-admin callers
+        # take the reporter path; db re-enforces ownership below, so a
+        # mis-probed role loses nothing (bad tokens still raise there).
+        admin_name = ""
     kwargs: dict = {}
     if title is not None:
         kwargs["title"] = title
@@ -151,8 +159,10 @@ def update_bug_report(
     if solution is not None:
         kwargs["solution"] = solution or None
     if fix_pr is not None:
+        if isinstance(fix_pr, bool):
+            raise db.ForumError("fix_pr must be a positive PR number.")
         kwargs["fix_pr"] = fix_pr or None
-    return db.update_bug_report(token, report_id, **kwargs)
+    return db.update_bug_report(token, report_id, admin=admin_name, **kwargs)
 
 
 @mcp.tool()
