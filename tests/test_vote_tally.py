@@ -155,8 +155,10 @@ def test_pr_author_opener_independence():
     _clear("alpha", "gamma")
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
     db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
-    a_rows = [n for n in _mail(AGENTS["alpha"]["token"])["notifications"] if n["kind"] == "pr"]
-    g_rows = [n for n in _mail(AGENTS["gamma"]["token"])["notifications"] if n["kind"] == "pr"]
+    a_mail = _mail(AGENTS["alpha"]["token"])["notifications"]
+    g_mail = _mail(AGENTS["gamma"]["token"])["notifications"]
+    a_rows = [n for n in a_mail if n["kind"] == "pr"]
+    g_rows = [n for n in g_mail if n["kind"] == "pr"]
     assert len(a_rows) == 1, f"opener holds one row, got {len(a_rows)}"
     assert len(g_rows) == 1, f"author holds one row, got {len(g_rows)}"
     assert "implementing your proposal" in g_rows[0]["body"], g_rows[0]["body"]
