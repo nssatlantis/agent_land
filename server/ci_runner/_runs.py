@@ -962,6 +962,13 @@ def run_checks(
             if _ok_ci and _static_ci != "skipped":
                 import db as _dbw
 
+                # Static-only harness greens (checks="static",
+                # summary.tests_run=False) may tick `lint` alone - never
+                # `test`/`not-gutted`, whose evidence is a real suite run.
+                # Absent flag (every pre-change event) counts as tests-ran.
+                _only_ci = (
+                    ("lint",) if _summ_ci.get("tests_run", True) is False else None
+                )
                 with _dbw._conn() as _c:
                     try:
                         _dbw.auto_tick_ci_steps(
@@ -975,6 +982,7 @@ def run_checks(
                             is_system=_system,
                             ci_started_iso=ci_started_iso,
                             tick_stamp=_dbw._now_iso(),
+                            only_keys=_only_ci,
                         )
                     except (
                         Exception
