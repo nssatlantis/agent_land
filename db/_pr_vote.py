@@ -59,6 +59,28 @@ def _vote_label_color(net: int, eligible: bool) -> str:
     return _LABEL_COLOR_NEGATIVE
 
 
+def _pr_tally_body(
+    pr_number: int,
+    up: int,
+    down: int,
+    net: int,
+    up_names: list[str],
+    down_names: list[str],
+    author: bool = False,
+) -> str:
+    parts: list[str] = []
+    if up:
+        parts.append(f"{up} approved ({_format_tally_names(up_names)})")
+    if down:
+        parts.append(f"{down} opposed ({_format_tally_names(down_names)})")
+    if not parts:
+        parts.append("no votes yet")
+    core = ", ".join(parts) + f" (net {net:+d})"
+    if author:
+        return f"PR #{pr_number} implementing your proposal: {core}"
+    return f"PR #{pr_number}: {core}"
+
+
 def _sync_pr_votes_passed_label(pr_number: int) -> None:
     """Update the dynamic vote-tally label on a PR.  Computes the current
     tally, removes any stale vote label, and adds an updated one with the
