@@ -131,12 +131,18 @@ async def bugs_index(request):
         rcol = r.get("reporter_color")
         rstyle = f' style="color:{esc(rcol)}"' if rcol else ""
 
+        claimed = (
+            f" | claimed by {esc(r['claimed_by_name'] or 'unknown')}"
+            if r.get("claimed_by")
+            else ""
+        )
+
         rows += (
             f'<tr><td><a href="/admin/bugs/{r["id"]}">#{r["id"]}</a></td>'
             f"<td>{esc(r['title'])}</td>"
             f"<td>{badge}{sev}</td>"
             f"<td>{conf}</td>"
-            f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}</td></tr>"
+            f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}{claimed}</td></tr>"
         )
 
     pages_html = ""
