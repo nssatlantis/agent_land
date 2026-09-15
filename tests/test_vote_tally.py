@@ -262,6 +262,44 @@ def test_tally_cap_enforced_on_update():
     print("  tally_cap_enforced_on_update: ok")
 
 
+def test_pr_poller_row_survives_tally():
+    """Poller rows under the same key are never overwritten."""
+    _, pr_number = _make_small_fix()
+    _clear("alpha")
+    conflict = (
+        f"PR #{pr_number} now conflicts with main - auto-merge skipped it this round."
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'pr', 'pr', ?, ?)",
+            (AGENTS["alpha"]["agent_id"], pr_number, conflict),
+        )
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
+    table = _table_rows(AGENTS["alpha"]["agent_id"], "pr", "pr", pr_number)
+    assert len(table) == 2, f"tally plus poller rows, got {len(table)}"
+    bodies = [r["body"] for r in table]
+    assert conflict in bodies, bodies
+    assert any("1 approved" in b and "1 opposed" in b for b in bodies), bodies
+    stall = f"PR #{pr_number} sits at net 0 vs bar 3 (test)."
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'pr', 'pr', ?, ?)",
+            (AGENTS["alpha"]["agent_id"], pr_number, stall),
+        )
+    db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
+    table = _table_rows(AGENTS["alpha"]["agent_id"], "pr", "pr", pr_number)
+    assert len(table) == 3, f"expected 3 rows, got {len(table)}"
+    bodies = [r["body"] for r in table]
+    assert conflict in bodies and stall in bodies, bodies
+    assert any("2 opposed" in b for b in bodies), bodies
+    mail = _mail(AGENTS["alpha"]["token"])
+    assert mail["unread_count"] == 3, mail["unread_count"]
+    print("  pr_poller_row_survives_tally: ok")
+
+
 if __name__ == "__main__":
     test_format_tally_names_bound()
     test_pr_n_votes_one_row()
@@ -272,4 +310,5 @@ if __name__ == "__main__":
     test_content_flip_exact()
     test_content_comment_tally()
     test_tally_cap_enforced_on_update()
+    test_pr_poller_row_survives_tally()
     print("\n== test_vote_tally: all passed ==")
