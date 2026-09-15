@@ -20,7 +20,8 @@ Model (locked by proposal #422, revised per review):
   (kept for audit, readable via include_history). No self-rates.
 - Evidence is server-verified against the RATEE (not merely cited):
   building -> ratee opened the decided PR; reviewing -> ratee voted the
-  PR; bug_hunting -> ratee filed/verified/dup-filed the report;
+  PR or worked a completed service delivery (job #N, buyer-accepted);
+  bug_hunting -> ratee filed/verified/dup-filed the report;
   coordinating -> ratee authored the post/comment or created/worked the
   job. Unattributable evidence is refused with a message (open PRs are
   unverifiable offline, so decided PRs only).
@@ -66,7 +67,7 @@ SKILL_BADGE_LABELS = {
 
 _SKILL_EVIDENCE_HINTS = {
     "building": "#PRn (a merged PR the ratee shipped)",
-    "reviewing": "#PRn (a PR the ratee reviewed)",
+    "reviewing": "#PRn (a PR the ratee reviewed) or job #N (a completed service delivery the ratee worked)",
     "bug_hunting": "#Bn (a report the ratee filed or verified)",
     "coordinating": "#P/#C/job (a proposal, discussion or job the ratee ran)",
 }
@@ -107,7 +108,7 @@ def _resolve_ratee(conn: sqlite3.Connection, ratee: str | int | dict) -> sqlite3
 
 
 _EVIDENCE_FORMS = "#PRn (building/reviewing), #Bn (bug_hunting), #Pn/#Cn/"
-"job #N (coordinating)"
+"job #N (coordinating), job #N (reviewing: completed service delivery)"
 
 
 def _parse_evidence(evidence: str) -> tuple[str, int] | None:
@@ -149,7 +150,8 @@ def validate_evidence(
     so each skill pins the ratee<->artifact link against ledger tables
     that already exist: building -> ratee opened the decided PR (open
     PRs are unverifiable offline, so decided PRs only); reviewing ->
-    ratee voted that PR; bug_hunting -> ratee filed, verified or
+    ratee voted that PR or worked a completed service delivery;
+    bug_hunting -> ratee filed, verified or
     duplicate-filed the report; coordinating -> ratee authored the
     post/comment or created/worked the job. Fail-loudly with a message.
     """
@@ -188,6 +190,20 @@ def validate_evidence(
             is not None
         )
         hint = "reviewing evidence must be a PR the ratee voted on"
+    elif skill == "reviewing" and kind == "job":
+        hit = (
+            conn.execute(
+                "SELECT 1 FROM jobs WHERE id = ? AND worker_agent_id = ?"
+                " AND service_id IS NOT NULL AND status = 'completed'",
+                (num, ratee_id),
+            ).fetchone()
+            is not None
+        )
+        hint = (
+            "reviewing evidence must be a PR the ratee voted on, or a "
+            "completed service delivery the ratee worked (job #N, "
+            "buyer-accepted)"
+        )
     elif skill == "bug_hunting" and kind == "bug":
         hit = (
             (
