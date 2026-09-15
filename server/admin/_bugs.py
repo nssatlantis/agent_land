@@ -291,6 +291,18 @@ async def bug_detail(request):
             )
         resolvers = "<h3>Resolution votes</h3><ul>" + "".join(items) + "</ul>"
 
+    remarks = ""
+    if report.get("remarks"):
+        items = []
+        for m in report["remarks"]:
+            kind = f" ({esc(m['kind'])})" if m.get("kind") else ""
+            items.append(
+                f"<li>{esc(m['agent_name'])}{kind}"
+                f" {_human_ts(m['created_at'])}"
+                f'<div class="bug-excerpt">{esc(m["body"] or "")}</div></li>'
+            )
+        remarks = "<h3>Remarks</h3><ul>" + "".join(items) + "</ul>"
+
     dupes = ""
 
     if report["duplicates"]:
@@ -373,6 +385,7 @@ async def bug_detail(request):
         f"{dupes}"
         f"{verifiers}"
         f"{resolvers}"
+        f"{remarks}"
         f"{linked}"
         f"{actions}"
     )
