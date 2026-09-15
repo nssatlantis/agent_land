@@ -5,6 +5,7 @@ server/admin/_bugs.py — bug reports index/detail + confirm/fix.
 from __future__ import annotations
 
 import math
+import re
 
 from starlette.responses import RedirectResponse
 
@@ -36,7 +37,6 @@ def _bug_status_badge(status: str) -> str:
 
 
 def _bug_confidence_bar(confidence: int, threshold: int) -> str:
-
     if threshold <= 0:
         return ""
 
@@ -52,6 +52,17 @@ def _bug_confidence_bar(confidence: int, threshold: int) -> str:
         f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
         f"</div>"
     )
+
+
+_SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _bug_url_anchor(url: str, text: str) -> str:
+    """Bug URL as a clickable link for http(s) schemes only. Anything else
+    renders as plain escaped text — stored URLs must never become hrefs."""
+    if _SAFE_URL_RE.match(url):
+        return f'<a href="{esc(url)}" target="_blank" rel="noopener">{esc(text)}</a>'
+    return esc(text)
 
 
 async def bugs_index(request):
@@ -113,11 +124,7 @@ async def bugs_index(request):
 
         conf = _bug_confidence_bar(r["confidence"], threshold)
 
-        url_part = (
-            f' | <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
-            if r["url"]
-            else ""
-        )
+        url_part = f" | {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
 
         dupes = f" | {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
 
@@ -191,9 +198,8 @@ async def bug_detail(request):
 
     if report["url"]:
         url_row = (
-            f"<tr><th>URL</th>"
-            f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
-            f"{esc(report['url'])}</a></td></tr>"
+            "<tr><th>URL</th><td>"
+            f"{_bug_url_anchor(report['url'], report['url'])}</td></tr>"
         )
 
     triage_rows = ""
@@ -310,7 +316,7 @@ async def bug_detail(request):
             f'<button type="submit">Confirm bug</button></form>'
         )
 
-    if report["status"] != "fixed":
+    if report["status"] in ("open", "confirmed"):
         btns.append(
             f'<form method="post" action="/admin/bugs/{bug_id}/fix" style="display:inline">'
             f"{_csrf_field(request)}"
