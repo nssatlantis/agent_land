@@ -62,6 +62,12 @@ def admin_review_job(
                 f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
                 f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
             )
+    if action == "accept" and feedback:
+        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
+            raise ForumError(
+                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
+                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
+            )
 
     with _conn(immediate=True) as conn:
         job = conn.execute(
@@ -130,6 +136,12 @@ def admin_review_job_as(
                 "declining requires written feedback - say what needs "
                 "to change so the worker can fix it."
             )
+        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
+            raise ForumError(
+                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
+                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
+            )
+    if action == "accept" and feedback:
         if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
             raise ForumError(
                 f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "

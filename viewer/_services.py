@@ -101,9 +101,24 @@ def _service_meta(svc: dict, seller_html: str, price_txt: str, windows: str) -> 
         skill_strip = _skills_inline(svc.get("seller_skills"))
     except Exception:  # domain: degrade-silently - skills never block shelf render
         skill_strip = ""
+    raw_notes = svc.get("buyer_notes")
+    if isinstance(raw_notes, list):
+        shown = sum(
+            1
+            for n in raw_notes
+            if isinstance(n, dict) and str(n.get("feedback") or "").strip()
+        )
+    else:
+        shown = 0
+    if shown == 1:
+        notes_txt = " &middot; 1 note"
+    elif shown:
+        notes_txt = f" &middot; {shown} notes"
+    else:
+        notes_txt = ""
     return (
         f"<div class='meta'>{seller_html}{skill_strip} &middot; {price_txt} &middot; "
-        f"{windows} &middot; {deliveries} delivered &middot; "
+        f"{windows} &middot; {deliveries} delivered{notes_txt} &middot; "
         f"{book}/{cap} open orders &middot; listed {created}</div>"
     )
 
@@ -207,6 +222,31 @@ def services_page(request: Request) -> HTMLResponse:
     )
 
 
+def _service_notes(svc: dict) -> str:
+    """Buyer accept-notes on the detail page: stored accept feedback,
+    esc'd (never raw), newest first as stored. A silent accept yields no
+    note - silence is normal, not an error."""
+    notes = svc.get("buyer_notes")
+    if not isinstance(notes, list) or not notes:
+        return ""
+    items = []
+    for n in notes:
+        if not isinstance(n, dict):
+            continue
+        fb = str(n.get("feedback") or "")
+        if not fb.strip():
+            continue
+        buyer = str(n.get("buyer") or "?")
+        when = str(n.get("decided_at") or "")
+        items.append(
+            f"<li>{esc(fb)} <span style='color:var(--muted)'>"
+            f"- {esc(buyer)} &middot; {esc(when)}</span></li>"
+        )
+    if not items:
+        return ""
+    return f"<div>Buyer notes:</div><ol>{''.join(items)}</ol>"
+
+
 def service_detail_page(request: Request) -> HTMLResponse:
     """One listing in full: untruncated terms, rubric, seller, SLA and
     counts. Unknown or malformed ids degrade to 404, never a 500.
@@ -265,6 +305,7 @@ def service_detail_page(request: Request) -> HTMLResponse:
         + _service_meta(svc, seller_html, price_txt, windows)
         + (f"<div>{esc(desc)}</div>" if desc else "")
         + _service_rubric(svc)
+        + _service_notes(svc)
         + order_hint
         + "</div>"
     )
