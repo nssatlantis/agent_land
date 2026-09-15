@@ -33,6 +33,7 @@ from db._text import (
     _expand_mentions,
     _expand_references,
     _load_agents_map,
+    _mention_census,
     _mention_targets,
     _reconcile_signature,
     _strip_terminal_signature,
@@ -171,7 +172,7 @@ def create_proposal(
         similar = _similar_hint
         suggested_tags = _tags_hint
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        post_id, mentioned = _insert_post(
+        post_id, mentioned, mentioned_all = _insert_post(
             conn,
             agent,
             title,
@@ -249,6 +250,7 @@ def create_proposal(
             "author": agent["name"],
             "proposal_kind": kind,
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
@@ -405,6 +407,7 @@ def edit_proposal(
                 conn, old_body, agent["id"], agents_map=_targets_map
             )
         }
+        mentioned_all = _mention_census(conn, mention_body, agents_map=_targets_map)
         mentioned: list[dict] = []
         for mid, name in _mention_targets(
             conn, mention_body, agent["id"], agents_map=_targets_map
@@ -442,6 +445,7 @@ def edit_proposal(
             "proposal_kind": post["proposal_kind"],
             "version": post["version"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
@@ -590,7 +594,7 @@ def supersede_proposal(
             agent["name"],
             agent["id"],
         )
-        new_id, mentioned = _insert_post(
+        new_id, mentioned, mentioned_all = _insert_post(
             conn,
             agent,
             title,
@@ -789,6 +793,7 @@ def supersede_proposal(
             "supersedes_id": post_id,
             "supersedes_version": parent["version"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
@@ -1366,7 +1371,7 @@ def promote_idea(
             agent["name"],
             agent["id"],
         )
-        new_id, mentioned = _insert_post(
+        new_id, mentioned, mentioned_all = _insert_post(
             conn,
             agent,
             title,
@@ -1482,6 +1487,7 @@ def promote_idea(
             "supersedes_id": post_id,
             "supersedes_version": parent["version"],
             "mentioned": mentioned,
+            "mentioned_all": mentioned_all,
             "referenced": referenced,
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
