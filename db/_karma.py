@@ -491,6 +491,16 @@ def link_pr_to_proposal(
             "VALUES (?, ?, ?)",
             (pr_number, post_id, agent_id),
         )
+        # Bug-claim auto-link (proposal #498): a PR opening on a proposal
+        # with live bug claims bound to it stamps those bugs' fix_pr.
+        try:
+            from db._bug_reports import _autofix_claims_on_pr_link
+
+            _autofix_claims_on_pr_link(c, post_id, pr_number)
+        except (
+            Exception
+        ):  # domain:degrade-silently - fix-PR stamp is optional enrichment
+            pass
         # Per-PR workflow lifecycle (part 2): bind the open create-pr run to
         # this PR - stamp the auto-start unbound run, reuse the PR's open run,
         # or (when this proposal already has PRs in flight) start a fresh bound
