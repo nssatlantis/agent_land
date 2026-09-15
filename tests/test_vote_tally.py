@@ -282,7 +282,10 @@ def test_pr_poller_row_survives_tally():
     bodies = [r["body"] for r in table]
     assert conflict in bodies, bodies
     assert any("1 approved" in b and "1 opposed" in b for b in bodies), bodies
-    stall = f"PR #{pr_number} sits at net 0 vs bar 3 (test)."
+    stall = (
+        f"PR #{pr_number} has been open 48h+ and sits at net 0 vs bar 3 "
+        "(1 more approving vote(s) needed). Nudge reviewers or update the branch."
+    )
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
