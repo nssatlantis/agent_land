@@ -726,6 +726,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
     # Server-side CI runner (repo_ci_run): agents choose a harness -
     # tests (tests/run_ci.py, the combined test+static harness),
+    # static (tests/run_static.py, the static half without the suite -
+    # shared bucket, lint-tick only),
     # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) -
     # against origin/main natively or a PR merge via the Docker
     # workspace pool (slots sized by CI_RUN_CONCURRENCY). Kill switch, hard timeout, per-agent cooldown
