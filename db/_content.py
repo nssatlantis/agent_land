@@ -47,7 +47,7 @@ from db._text import (
     _mention_targets,
     _reconcile_signature,
 )
-from notifications import _notify
+from notifications import _format_tally_names, _notify, _notify_tally
 from search import find_matching_tags, find_similar_posts
 
 
