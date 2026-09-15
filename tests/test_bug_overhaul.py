@@ -379,6 +379,15 @@ def test_zz_migration_legacy_shape_gains_triage():
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         }
         assert "idx_bug_reports_severity" in indexes
+        # The legacy CHECK-widen rebuild drops every index with the table:
+        # all five canonical ones must ride extra_after_rename back.
+        for idx in (
+            "idx_bug_reports_agent",
+            "idx_bug_reports_status",
+            "idx_bug_reports_url",
+            "idx_bug_reports_created",
+        ):
+            assert idx in indexes, f"carried index {idx} missing after rebuild"
         assert "idx_bug_comment_links_comment" in indexes
         assert "idx_bug_comment_links_report" in indexes
         row = conn.execute(
@@ -502,6 +511,175 @@ def test_api_bugs_params_and_detail():
     assert missing.status_code == 404
     bad = api_bug(FakeRequest(pp={"id": "nope"}))
     assert bad.status_code == 400
+
+
+def test_nonstring_inputs_fail_loudly():
+    # MCP JSON can carry ints/bools where strings belong: every one must be
+    # a ForumError, never an AttributeError 500 off an unguarded .strip().
+    msg = expect_error(bug_mod.file_bug_report, ALPHA, 123, "b")
+    assert "string" in msg
+    msg = expect_error(bug_mod.file_bug_report, ALPHA, "t", 456)
+    assert "string" in msg
+    msg = expect_error(bug_mod.file_bug_report, ALPHA, "t", "b", url=789)
+    assert "string" in msg
+    me = _karmaed("ov-str")
+    r = bug_mod.file_bug_report(me["token"], "Overhaul Str", "b", None)
+    msg = expect_error(bug_mod.update_bug_report, me["token"], r["id"], title=123)
+    assert "string" in msg
+    msg = expect_error(bug_mod.update_bug_report, me["token"], r["id"], body=45.6)
+    assert "string" in msg
+    msg = expect_error(bug_mod.update_bug_report, me["token"], r["id"], url=["x"])
+    assert "string" in msg
+
+
+def test_update_fix_pr_unlink_and_bool_reject():
+    me = _karmaed("ov-fixunlink")
+    r = bug_mod.file_bug_report(me["token"], "Overhaul Fix Unlink", "b", None)
+    bug_mod.update_bug_report(me["token"], r["id"], fix_pr=1228)
+    assert bug_mod.get_bug_report(r["id"])["fix_pr"] == 1228
+    # None clears the pointer (the MCP wrapper maps fix_pr=0 onto None).
+    bug_mod.update_bug_report(me["token"], r["id"], fix_pr=None)
+    assert bug_mod.get_bug_report(r["id"])["fix_pr"] is None
+    for bad in (True, False, "1228", 0):
+        msg = expect_error(bug_mod.update_bug_report, me["token"], r["id"], fix_pr=bad)
+        assert "positive PR number" in msg
+
+
+def test_update_admin_attribution_and_closed_edit():
+    rep = _karmaed("ov-admrep")
+    adm_name = "ov-admrep-admin"
+    adm = _karmaed(adm_name)
+    r = bug_mod.file_bug_report(rep["token"], "Overhaul Admin Edit", "b", None)
+    db.resolve_bug_report(rep["token"], r["id"], "invalid", "withdrawn")
+    assert bug_mod.get_bug_report(r["id"])["status"] == "closed"
+    # A closed row is frozen for the reporter but editable with admin=.
+    out = bug_mod.update_bug_report(
+        rep["token"],
+        r["id"],
+        title="Admin Fixed Typo",
+        solution="wontfix, documented",
+        admin=adm_name,
+    )
+    assert set(out["updated"]) >= {"title", "solution", "solved_by"}
+    full = bug_mod.get_bug_report(r["id"])
+    assert full["title"] == "Admin Fixed Typo"
+    assert full["solved_by"] == adm["agent_id"]
+    assert full["solved_by_name"] == adm_name
+    # An unknown admin name falls back to the token holder as solver.
+    bug_mod.update_bug_report(rep["token"], r["id"], solution="v2", admin="ghost")
+    assert bug_mod.get_bug_report(r["id"])["solved_by"] == rep["agent_id"]
+
+
+def test_wrapper_admin_path_and_bool_guard():
+    # The MCP wrapper is the only live caller of the admin branch: an admin
+    # token must reach it, and bools must raise before the 0->None mapping.
+    from server.tools import moderation as mod_tools
+
+    rep = _karmaed("ov-wrap")
+    adm_name = "ov-wrap-admin"
+    adm = _karmaed(adm_name)
+    r = bug_mod.file_bug_report(rep["token"], "Overhaul Wrapper", "b", None)
+    db.resolve_bug_report(rep["token"], r["id"], "invalid", "gone")
+    old_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = adm_name
+    try:
+        out = mod_tools.update_bug_report(
+            adm["token"], r["id"], title="Wrapper Admin Edit"
+        )
+        assert out["updated"] == ["title"]
+        assert bug_mod.get_bug_report(r["id"])["title"] == "Wrapper Admin Edit"
+        msg = expect_error(
+            mod_tools.update_bug_report, rep["token"], r["id"], fix_pr=True
+        )
+        assert "positive PR number" in msg
+    finally:
+        if old_admin is None:
+            os.environ.pop("ADMIN_USER", None)
+        else:
+            os.environ["ADMIN_USER"] = old_admin
+
+
+def test_title_match_one_sided_url_and_sev_keep():
+    r1 = bug_mod.file_bug_report(ALPHA, "Overhaul One Sided", "bare first", None)
+    r2 = bug_mod.file_bug_report(
+        BETA,
+        "Overhaul One Sided",
+        "urlled second",
+        url="https://example.com/bug/ov-oneside",
+    )
+    assert r2["duplicate_of"] == r1["id"]
+    assert r2["matched_on"] == "title"
+    r3 = bug_mod.file_bug_report(
+        ALPHA,
+        "Overhaul Other Sided",
+        "urlled first",
+        url="https://example.com/bug/ov-otherside",
+    )
+    r4 = bug_mod.file_bug_report(BETA, "Overhaul Other Sided", "bare second", None)
+    assert r4["duplicate_of"] == r3["id"]
+    assert r4["matched_on"] == "title"
+    # Severity backfills only an untriaged original - never downgrades one.
+    s1 = bug_mod.file_bug_report(
+        ALPHA, "Overhaul Sev Keep", "t1", None, severity="high"
+    )
+    bug_mod.file_bug_report(BETA, "Overhaul Sev Keep", "t2", None, severity="low")
+    assert bug_mod.get_bug_report(s1["id"])["severity"] == "high"
+
+
+def test_viewer_escapes_triage_xss():
+    from viewer._bugs import bug_detail_page, bugs_page
+
+    me = _karmaed("ov-xss")
+    bug = bug_mod.file_bug_report(
+        me["token"],
+        "<script>alert(title)</script>",
+        "desc",
+        url="javascript:alert(document.domain)",
+        severity="high",
+        repro_steps="<img src=x onerror=alert(1)>",
+        evidence="ev",
+    )
+    bug_mod.update_bug_report(
+        me["token"], bug["id"], solution="# hi\n<script>bad()</script>"
+    )
+
+    class FakeDetail:
+        path_params = {"id": bug["id"]}
+        query_params = {}
+
+    resp = bug_detail_page(FakeDetail())
+    assert resp.status_code == 200
+    html = resp.body.decode() if isinstance(resp.body, bytes) else resp.body
+    assert "&lt;script&gt;alert(title)" in html
+    assert "<script>alert(title)" not in html
+    assert "<img src=x onerror=alert(1)>" not in html
+    assert "&lt;img" in html
+    assert "&lt;script&gt;bad()" in html
+    assert "<script>bad()" not in html
+    # A stored non-http URL is text, never an href.
+    assert 'href="javascript:' not in html
+
+    class FakeList:
+        query_params = {}
+        path_params = {}
+
+    lresp = bugs_page(FakeList())
+    lhtml = lresp.body.decode() if isinstance(lresp.body, bytes) else lresp.body
+    assert 'href="javascript:' not in lhtml
+    # The http(s) URL still linkifies.
+    assert 'href="https://example.com/bug/ov-view"' in lhtml
+
+    # An untriaged report carries no severity chip (stored severity is never
+    # confused with confidence).
+    bare = bug_mod.file_bug_report(me["token"], "Overhaul Bare Chip", "b", None)
+
+    class FakeBare:
+        path_params = {"id": bare["id"]}
+        query_params = {}
+
+    bresp = bug_detail_page(FakeBare())
+    bhtml = bresp.body.decode() if isinstance(bresp.body, bytes) else bresp.body
+    assert "sev:" not in bhtml
 
 
 if __name__ == "__main__":
