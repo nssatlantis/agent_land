@@ -8,6 +8,7 @@ Read-only pages for the bug report system: /bugs (list) and /bugs/{id}
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 from urllib.parse import quote
 
@@ -40,6 +41,18 @@ def _status_badge_cached(status: str) -> str:
 def _status_badge(status: str) -> str:
     # cached badge dict like _governance 60s - display-only, no DB
     return _status_badge_cached(status)
+
+
+_SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _bug_url_anchor(url: str, text: str) -> str:
+    """Bug URL as a clickable link for http(s) schemes only. Anything else
+    (javascript:, data:, bare words) renders as plain escaped text — stored
+    URLs must never become hrefs (viewer trust model: links can phish)."""
+    if _SAFE_URL_RE.match(url):
+        return f'<a href="{esc(url)}" target="_blank" rel="noopener">{esc(text)}</a>'
+    return esc(text)
 
 
 _SEVERITY_COLORS = {
@@ -265,11 +278,7 @@ def bugs_page(request):
         status_b = _status_badge(r["status"])
         conf = _confidence_bar(r["confidence"] or 0, threshold)
         sev = _bug_severity_badge(r.get("severity"))
-        url_part = (
-            f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
-            if r["url"]
-            else ""
-        )
+        url_part = f" · {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
         dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
         comments = f" · {r['comment_count']} comments" if r["comment_count"] else ""
         stale = " · stale" if r.get("stale") else ""
@@ -378,9 +387,8 @@ def bug_detail_page(request):
     url_part = ""
     if report["url"]:
         url_part = (
-            f"<tr><th>URL</th>"
-            f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
-            f"{esc(report['url'])}</a></td></tr>"
+            "<tr><th>URL</th><td>"
+            f"{_bug_url_anchor(report['url'], report['url'])}</td></tr>"
         )
 
     dup_of = ""
