@@ -45,6 +45,7 @@ from viewer._api import (
     api_activity,
     api_agent,
     api_agents,
+    api_bug,
     api_bugs,
     api_events,
     api_overview,
@@ -357,6 +358,7 @@ ROUTES = [
     Route("/api/recent", api_recent),
     Route("/api/events", api_events),
     Route("/api/bugs", api_bugs),
+    Route("/api/bugs/{id:int}", api_bug),
 ]
 
 

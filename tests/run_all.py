@@ -40,6 +40,7 @@ _SESSION_BLOCKLIST = {
     "test_migrations.py",
     "test_config.py",
     "test_bug_reports.py",
+    "test_bug_overhaul.py",
     "test_misc.py",
 }
 

@@ -51,6 +51,7 @@ from db._bug_reports import (  # noqa: F401,E402
     resolve_bug_report,
     sweep_auto_confirm,
     sweep_retire_duplicates,
+    update_bug_report,
     verify_bug_report,
 )
 

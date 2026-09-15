@@ -5,6 +5,7 @@ server/admin/_bugs.py — bug reports index/detail + confirm/fix.
 from __future__ import annotations
 
 import math
+import re
 
 from starlette.responses import RedirectResponse
 
@@ -36,7 +37,6 @@ def _bug_status_badge(status: str) -> str:
 
 
 def _bug_confidence_bar(confidence: int, threshold: int) -> str:
-
     if threshold <= 0:
         return ""
 
@@ -54,6 +54,17 @@ def _bug_confidence_bar(confidence: int, threshold: int) -> str:
     )
 
 
+_SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _bug_url_anchor(url: str, text: str) -> str:
+    """Bug URL as a clickable link for http(s) schemes only. Anything else
+    renders as plain escaped text — stored URLs must never become hrefs."""
+    if _SAFE_URL_RE.match(url):
+        return f'<a href="{esc(url)}" target="_blank" rel="noopener">{esc(text)}</a>'
+    return esc(text)
+
+
 async def bugs_index(request):
     """The /admin/bugs index: bug reports with status tabs."""
 
@@ -62,7 +73,11 @@ async def bugs_index(request):
 
     status_filter = (request.query_params.get("status") or "all").lower()
 
-    page = max(1, int(request.query_params.get("page", "1")))
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (TypeError, ValueError):
+        # domain: degrade-silently - garbage page param means page 1
+        page = 1
 
     per_page = 30
 
@@ -72,7 +87,7 @@ async def bugs_index(request):
 
     kwargs: dict = {"limit": per_page, "offset": offset}
 
-    if status_filter in ("open", "confirmed", "fixed"):
+    if status_filter in ("open", "confirmed", "fixed", "closed"):
         kwargs["status"] = status_filter
 
     result = db.list_bug_reports(**kwargs)
@@ -87,6 +102,7 @@ async def bugs_index(request):
         ("open", "Open"),
         ("confirmed", "Confirmed"),
         ("fixed", "Fixed"),
+        ("closed", "Closed"),
         ("all", "All"),
     ]:
         cls = "active" if status_filter == key else ""
@@ -99,14 +115,16 @@ async def bugs_index(request):
 
     for r in reports:
         badge = _bug_status_badge(r["status"])
+        sev = (
+            f' <span class="kind-badge" style="background:#64748b">'
+            f"sev: {r['severity']}</span>"
+            if r.get("severity")
+            else ""
+        )
 
         conf = _bug_confidence_bar(r["confidence"], threshold)
 
-        url_part = (
-            f' | <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
-            if r["url"]
-            else ""
-        )
+        url_part = f" | {_bug_url_anchor(r['url'], 'link')}" if r["url"] else ""
 
         dupes = f" | {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
 
@@ -116,7 +134,7 @@ async def bugs_index(request):
         rows += (
             f'<tr><td><a href="/admin/bugs/{r["id"]}">#{r["id"]}</a></td>'
             f"<td>{esc(r['title'])}</td>"
-            f"<td>{badge}</td>"
+            f"<td>{badge}{sev}</td>"
             f"<td>{conf}</td>"
             f"<td><span{rstyle}>{esc(r['reporter_name'])}</span>{_human_ts(r['created_at'])}{url_part}{dupes}</td></tr>"
         )
@@ -165,7 +183,9 @@ async def bug_detail(request):
     try:
         report = db.get_bug_report(bug_id)
 
-    except db.ForumError as exc:
+    except (
+        db.ForumError
+    ) as exc:  # domain: fail-loudly - action errors render as flash, never silent
         return _flash(request, str(exc))
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
@@ -178,10 +198,82 @@ async def bug_detail(request):
 
     if report["url"]:
         url_row = (
-            f"<tr><th>URL</th>"
-            f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
-            f"{esc(report['url'])}</a></td></tr>"
+            "<tr><th>URL</th><td>"
+            f"{_bug_url_anchor(report['url'], report['url'])}</td></tr>"
         )
+
+    triage_rows = ""
+    if report.get("severity"):
+        triage_rows += f"<tr><th>Severity</th><td>{esc(report['severity'])}</td></tr>"
+    if report.get("fix_pr"):
+        triage_rows += f"<tr><th>Fix</th><td>PR #{report['fix_pr']}</td></tr>"
+    if report.get("decided_at"):
+        triage_rows += (
+            f"<tr><th>Decided</th><td>{_human_ts(report['decided_at'])}</td></tr>"
+        )
+    if report.get("updated_at"):
+        triage_rows += (
+            f"<tr><th>Updated</th><td>{_human_ts(report['updated_at'])}</td></tr>"
+        )
+    if report.get("duplicate_of"):
+        triage_rows += (
+            f"<tr><th>Duplicate of</th><td>Bug #{report['duplicate_of']}</td></tr>"
+        )
+    if report["status"] in ("closed", "fixed"):
+        triage_rows += (
+            f"<tr><th>Resolution</th>"
+            f"<td>{esc(report.get('resolution') or report['status'])}"
+            + (
+                f" - {esc(report['resolution_note'])}"
+                if report.get("resolution_note")
+                else ""
+            )
+            + "</td></tr>"
+        )
+
+    triage_sections = ""
+    for head, key in (
+        ("Reproduction", "repro_steps"),
+        ("Evidence", "evidence"),
+        ("Solution", "solution"),
+    ):
+        if report.get(key):
+            solver = ""
+            if key == "solution" and report.get("solved_by_name"):
+                solver = (
+                    f'<div style="font-size:13px;color:var(--muted)">solved by '
+                    f"{esc(report['solved_by_name'])}"
+                    + (
+                        f" {_human_ts(report['solved_at'])}"
+                        if report.get("solved_at")
+                        else ""
+                    )
+                    + "</div>"
+                )
+            triage_sections += (
+                f'<h3>{head}</h3>{solver}<div class="bug-body">{esc(report[key])}</div>'
+            )
+
+    verifiers = ""
+    if report["verifiers"]:
+        items = []
+        for v in report["verifiers"]:
+            items.append(
+                f"<li>{esc(v['agent_name'])} reproduced this"
+                f" {_human_ts(v['created_at'])}</li>"
+            )
+        verifiers = "<h3>Verifiers</h3><ul>" + "".join(items) + "</ul>"
+
+    resolvers = ""
+    if report["resolvers"]:
+        items = []
+        for v in report["resolvers"]:
+            vnote = f" - {esc(v['note'])}" if v.get("note") else ""
+            items.append(
+                f"<li>{esc(v['agent_name'])} voted {esc(v['reason'])}{vnote}"
+                f" {_human_ts(v['created_at'])}</li>"
+            )
+        resolvers = "<h3>Resolution votes</h3><ul>" + "".join(items) + "</ul>"
 
     dupes = ""
 
@@ -224,11 +316,18 @@ async def bug_detail(request):
             f'<button type="submit">Confirm bug</button></form>'
         )
 
-    if report["status"] != "fixed":
+    if report["status"] in ("open", "confirmed"):
         btns.append(
             f'<form method="post" action="/admin/bugs/{bug_id}/fix" style="display:inline">'
             f"{_csrf_field(request)}"
             f'<button type="submit" style="color:var(--ok)">Mark fixed</button></form>'
+        )
+
+    if report["status"] == "closed":
+        btns.append(
+            f'<form method="post" action="/admin/bugs/{bug_id}/reopen" style="display:inline">'
+            f"{_csrf_field(request)}"
+            f'<button type="submit">Reopen bug</button></form>'
         )
 
     if btns:
@@ -250,10 +349,14 @@ async def bug_detail(request):
         f"<td>{report['confidence']} / {threshold}"
         f" ({'confirmed' if report['confidence'] >= threshold else 'needs more duplicates'})"
         f"</td></tr>"
+        f"{triage_rows}"
         f"</table></div>"
         f'<div class="panel"><h2>Description</h2>'
         f'<div class="bug-body">{_markdown(report["body"])}</div></div>'
+        f"{triage_sections}"
         f"{dupes}"
+        f"{verifiers}"
+        f"{resolvers}"
         f"{linked}"
         f"{actions}"
     )
@@ -274,7 +377,9 @@ async def admin_confirm_bug(request):
     try:
         db.confirm_bug_report(request.path_params["id"], admin=_admin_user(request))
 
-    except db.ForumError as exc:
+    except (
+        db.ForumError
+    ) as exc:  # domain: fail-loudly - action errors render as flash, never silent
         return _flash(request, str(exc))
 
     return RedirectResponse(
@@ -296,7 +401,33 @@ async def admin_fix_bug(request):
     try:
         db.fix_bug_report(request.path_params["id"], admin=_admin_user(request))
 
-    except db.ForumError as exc:
+    except (
+        db.ForumError
+    ) as exc:  # domain: fail-loudly - action errors render as flash, never silent
+        return _flash(request, str(exc))
+
+    return RedirectResponse(
+        _safe_referer(request, "/admin/bugs"),
+        status_code=303,
+    )
+
+
+async def admin_reopen_bug(request):
+
+    if not _authorized(request):
+        return _denied()
+
+    form = await request.form()
+
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+
+    try:
+        db.reopen_bug_report(request.path_params["id"], admin=_admin_user(request))
+
+    except (
+        db.ForumError
+    ) as exc:  # domain: fail-loudly - action errors render as flash, never silent
         return _flash(request, str(exc))
 
     return RedirectResponse(

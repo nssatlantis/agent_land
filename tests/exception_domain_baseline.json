@@ -19,7 +19,7 @@
   "server/admin/_workflows.py": 0,
   "server/admin/_ci.py": 0,
   "server/admin/_economy.py": 0,
-  "server/admin/_bugs.py": 3,
+  "server/admin/_bugs.py": 0,
   "server/poller/__init__.py": 0,
   "server/poller/_outcome.py": 6,
   "server/poller/_autolink.py": 0,

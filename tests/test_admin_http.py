@@ -829,6 +829,60 @@ def main():
         r["action"] == "fix_bug_report" and r["admin_user"] == "root" for r in bug_audit
     ), "fix left a signed audit row"
 
+    # --- /admin/bugs closed tab + reopen (bug overhaul #492) ----------------
+    bug_close = bug_mod.file_bug_report(
+        bug_token, "Admin close bug", "stale thing", None
+    )
+    close_id = bug_close["id"]
+    db.resolve_bug_report(bug_token, close_id, "invalid", "gone")
+    assert bug_mod.get_bug_report(close_id)["status"] == "closed"
+    closed_tab = _call(
+        admin.bugs_index,
+        _req(
+            "GET",
+            "/admin/bugs",
+            query={"status": "closed"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert closed_tab.status_code == 200 and b"Admin close bug" in closed_tab.body, (
+        "the closed tab lists closed bugs"
+    )
+    closed_det = _call(
+        admin.bug_detail,
+        _req(
+            "GET",
+            f"/admin/bugs/{close_id}",
+            params={"id": close_id},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"Reopen bug" in closed_det.body, "the reopen button shows for closed bugs"
+    reopen_resp = _call(
+        admin.admin_reopen_bug,
+        _req(
+            "POST",
+            f"/admin/bugs/{close_id}/reopen",
+            params={"id": close_id},
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert reopen_resp.status_code == 303, "reopen redirects after success"
+    assert bug_mod.get_bug_report(close_id)["status"] == "open"
+    # garbage ?page= no longer 500s
+    bad_page = _call(
+        admin.bugs_index,
+        _req(
+            "GET",
+            "/admin/bugs",
+            query={"page": "foo"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert bad_page.status_code == 200, "garbage page param degrades to page 1"
+
     # --- /admin/workflows close-stale (review D7/W9) -------------------------
     # A decided-but-retryable proposal keeps an open create-pr run until the
     # reconcile sweep closes it; the admin page offers a one-click sweep that

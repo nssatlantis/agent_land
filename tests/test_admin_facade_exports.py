@@ -93,6 +93,7 @@ EXPECTED = [
     "bug_detail",
     "admin_confirm_bug",
     "admin_fix_bug",
+    "admin_reopen_bug",
     # routes
     "ROUTES",
 ]
