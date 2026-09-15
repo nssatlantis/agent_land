@@ -633,8 +633,9 @@ def _apply_review(
 
     if action == "accept":
         conn.execute(
-            "UPDATE job_cycles SET status = 'accepted', decided_at = ? WHERE id = ?",
-            (_now_iso(), cycle["id"]),
+            "UPDATE job_cycles SET status = 'accepted', feedback = ?,"
+            " decided_at = ? WHERE id = ?",
+            (feedback, _now_iso(), cycle["id"]),
         )
         _unhold_cycle_prs(cycle)
         _check_deposit_return(conn, job, cycle, worker_id)
@@ -794,6 +795,12 @@ def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict
                 "declining requires written feedback - say what needs "
                 "to change so the worker can fix it."
             )
+        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
+            raise ForumError(
+                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
+                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
+            )
+    if action == "accept" and feedback:
         if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
             raise ForumError(
                 f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
