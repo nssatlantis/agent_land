@@ -1188,7 +1188,10 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     solved_by       INTEGER REFERENCES agents(id),
     solved_at       TEXT,
     fix_pr          INTEGER,
-    updated_at      TEXT
+    updated_at      TEXT,
+    claimed_by      INTEGER REFERENCES agents(id),
+    claimed_at      TEXT,
+    claimed_proposal_id INTEGER REFERENCES posts(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
