@@ -1412,6 +1412,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
         if down:
             parts.append(f"{down} {down_word} ({_format_tally_names(down_names)})")
         if not parts:
+            # Unreachable: always recomputed right after a vote.
             parts.append("no votes yet")
         vote_text = (
             f"Your {target_type} #{target_id}: {', '.join(parts)} (net {net:+d})"
@@ -1425,6 +1426,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             vote_text,
             actor_agent_id=agent["id"],
             actor_name=agent["name"],
+            match_prefix=f"Your {target_type} #{target_id}:",
         )
         from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
 
