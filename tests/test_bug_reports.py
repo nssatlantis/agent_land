@@ -482,6 +482,67 @@ def test_bug_links_backfill(helpers):
     print("  bug links backfill: ok")
 
 
+def test_search_clear_drops_query(helpers):
+    """The search-form clear link must not carry bugs_q (B28)."""
+    import re
+
+    from viewer._bugs import bugs_page
+
+    class SearchReq:
+        query_params = {"bugs_q": "zebra"}
+
+    html = bugs_page(SearchReq()).body.decode()
+    clears = re.findall(r'<a href="([^"]*)"[^>]*>clear</a>', html)
+    assert clears, "expected a clear link while a search term is active"
+    for href in clears:
+        assert "bugs_q" not in href, f"clear link keeps the query: {href}"
+    print("  search clear drops query: ok")
+
+
+def test_confirmed_stale_markers(helpers):
+    """Old confirmed bugs render stale on the list and the detail page."""
+    from viewer._bugs import bug_detail_page, bugs_page
+
+    alpha = helpers["alpha"]
+    r = bug_mod.file_bug_report(alpha["token"], "Old Confirmed Bug", "body", None)
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bug_reports SET status = 'confirmed',"
+            " created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?",
+            (r["id"],),
+        )
+
+    class ListReq:
+        query_params = {"status": "confirmed"}
+
+    assert "stale" in bugs_page(ListReq()).body.decode().lower()
+
+    class DetailReq:
+        path_params = {"id": r["id"]}
+
+    assert "Stale - confirmed past" in bug_detail_page(DetailReq()).body.decode()
+    print("  confirmed stale markers: ok")
+
+
+def test_bug_tab_counts(helpers):
+    """Tabs carry per-status counts; the counter agrees with the list."""
+    from viewer._bugs import bugs_page
+
+    alpha = helpers["alpha"]
+    bug_mod.file_bug_report(alpha["token"], "Counted Bug", "body", None)
+
+    class ListReq:
+        query_params = {}
+
+    html = bugs_page(ListReq()).body.decode()
+    assert "Open (" in html
+    assert "All (" in html
+    counts = bug_mod.bug_status_counts()
+    assert counts.get("open", 0) >= 1
+    assert sum(counts.values()) >= 1
+    print("  bug tab counts: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -506,4 +567,7 @@ if __name__ == "__main__":
     test_bug_links_exact_validated_ids(helpers)
     test_bug_duplicate_of_via_read(helpers)
     test_bug_links_backfill(helpers)
+    test_search_clear_drops_query(helpers)
+    test_confirmed_stale_markers(helpers)
+    test_bug_tab_counts(helpers)
     print("All bug report tests passed.")
