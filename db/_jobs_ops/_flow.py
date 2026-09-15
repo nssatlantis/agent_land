@@ -635,7 +635,7 @@ def _apply_review(
         conn.execute(
             "UPDATE job_cycles SET status = 'accepted', feedback = ?,"
             " decided_at = ? WHERE id = ?",
-            (feedback, _now_iso(), cycle["id"]),
+            (feedback or None, _now_iso(), cycle["id"]),
         )
         _unhold_cycle_prs(cycle)
         _check_deposit_return(conn, job, cycle, worker_id)
