@@ -178,6 +178,20 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         if summary is None:
             summary = {}
         summary["static"] = static_summary
+    # Static-only harness (tests/run_static.py) vs full runs: the workflow
+    # gate accepts a static-only green for the `lint` tick while
+    # `test`/`not-gutted` still demand tests actually ran. Only the
+    # static-only marker writes the flag - every other summary shape stays
+    # byte-identical to before, so no existing consumer changes behavior.
+    # The gate reads summary.get("tests_run", True): absent counts as
+    # tests-ran, only an explicit False refuses.
+    # Line-anchored: a stray echo of the marker inside a failure dump must
+    # never relabel a full run (the mislabel direction is fail-closed, but
+    # a confusing ledger is still a bug).
+    if re.search(r"^TESTS: SKIPPED \(static-only", output, re.M):
+        if summary is None:
+            summary = {}
+        summary["tests_run"] = False
     return summary, sorted(set(failed_files))
 
 

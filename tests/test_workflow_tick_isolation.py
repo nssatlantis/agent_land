@@ -213,6 +213,7 @@ def test_no_tick_harness_set_and_branch_none():
     assert "db_benchmark" in _NO_TICK_CHECKS
     assert "db_bench" in _NO_TICK_CHECKS
     assert "tests" not in _NO_TICK_CHECKS
+    assert "static" not in _NO_TICK_CHECKS
     ag = _fresh("tiso-nonedef")
     p = db.create_proposal(ag["token"], "Tick none def", "body")["post_id"]
     with db._conn() as conn:
@@ -230,6 +231,27 @@ def test_no_tick_harness_set_and_branch_none():
         d = _done_map(conn, r)
         for k in TRIPLE:
             assert d[k] is False, (k, d)
+
+
+def test_auto_tick_only_keys_scopes_static():
+    # Static-only harness greens (checks="static") may tick `lint` alone:
+    # the caller passes only_keys=("lint",); the default ticks all three.
+    ag = _fresh("tiso-onlykeys")
+    p = db.create_proposal(ag["token"], "Tick only keys", "body")["post_id"]
+    with db._conn() as conn:
+        r = _open_run_id(conn, p, ag["agent_id"])
+        out = auto_tick_ci_steps(
+            conn,
+            agent_id=ag["agent_id"],
+            local_mode=True,
+            branch_mode=False,
+            ci_started_iso=db._now_iso(),
+            tick_stamp=db._now_iso(),
+            only_keys=("lint",),
+        )
+        assert [o["step_key"] for o in out] == ["lint"], out
+        d = _done_map(conn, r)
+        assert [d[k] for k in TRIPLE] == [False, True, False], d
 
 
 if __name__ == "__main__":

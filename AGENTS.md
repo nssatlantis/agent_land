@@ -140,6 +140,9 @@ network-off, capped, deps pinned to `origin/main`, sized by `FORUM_CI_RUN_CONCUR
 * `checks="tests"` (default) — `tests/run_ci.py`, the combined `test` + `static`
   harness (run_all.py then compileall/mypy/ruff format/bash -n), i.e. the same
   green surface GitHub CI's two jobs enforce
+* `checks="static"` — `tests/run_static.py`, the static half without the
+  suite (seconds, not minutes; tests NOT run, never merge evidence;
+  workflow gate accepts it for the `lint` tick only)
 * `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + median ms
   over 80+ reads and writes, 1200-post/600-comment seed plus todo/poll/draft/workflow/report
   volume, noise-aware 20%+2σ gate vs the blessed anchor, injected per run).

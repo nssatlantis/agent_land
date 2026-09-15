@@ -34,6 +34,10 @@ def repo_ci_run(
     `checks` chooses the harness (agents may pick): `tests` (tests/run_ci.py -
     the combined test+static harness, equivalent to GitHub's `test` and
     `static` jobs together: run_all.py then compileall/mypy/ruff/bash -n),
+    `static` (tests/run_static.py - the same static half WITHOUT the suite:
+    seconds instead of minutes, for quick ruff/mypy checks; the tests did
+    NOT run, so it is never merge evidence - the workflow gate accepts it
+    for the `lint` tick only, never `test`/`not-gutted`),
     `db_benchmark` (test_benchmark.py query EXPLAIN + median ms over 80+
     reads and writes; alias `db_bench`, 1200-post/600-comment/50-job seed
     plus todo/poll/draft/workflow/report volume, 9 measured reps after
@@ -106,7 +110,10 @@ def repo_ci_run(
     once - a second call while one is running is refused (the poller's own
     branch runs are system-owned and unconstrained). Branch runs draw on
     their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
-    Every run lands in the public events ledger. Returns {checks, mode, ok,
+    `static` shares the `tests` bucket per mode (no split). Every run lands
+    in the public events ledger. A static-only run's `summary` carries
+    `tests_run: False` - check it before citing a run as test evidence.
+    Returns {checks, mode, ok,
     timed_out, exit_code, duration_seconds, head_sha, sandboxed, output_tail,
     output_truncated, summary?, failed_files?, pr_number?, base_sha?,
     merge_conflict?, conflict_files?, local?, host_fallback_static_skipped?}.

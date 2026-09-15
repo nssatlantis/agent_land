@@ -28,11 +28,18 @@ import server.ci_runner._trees as _trees_mod
 # The "tests" harness is the combined test + static runner (tests/run_ci.py):
 # it executes run_all.py then the GitHub `static` job's checks (compileall,
 # mypy, ruff check, ruff format, bash -n), so a green repo_ci_run covers the
-# same surface GitHub CI's test + static jobs do. The static half needs
+# same surface GitHub CI's test + static jobs do. The "static" harness is
+# the same static half without the suite (tests/run_static.py, which
+# run_ci.py imports - one source): seconds instead of minutes, for quick
+# ruff/mypy checks. Its runs print TESTS-skipped and carry
+# summary.tests_run=False, so the workflow gate accepts them for the `lint`
+# tick while `test`/`not-gutted` still demand tests actually ran. The static
+# half needs
 # mypy/ruff, which the sandbox image bakes from requirements-dev.txt; native
 # (host-interpreter) runs skip it gracefully when the tools are absent.
 _CHECKS: dict[str, tuple[str, str]] = {
     "tests": ("ci_run", os.path.join("tests", "run_ci.py")),
+    "static": ("ci_run", os.path.join("tests", "run_static.py")),
     "benchmarks": ("ci_benchmark_run", os.path.join("tests", "benchmark_github.py")),
     "db_benchmark": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
     "db_bench": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
@@ -955,6 +962,13 @@ def run_checks(
             if _ok_ci and _static_ci != "skipped":
                 import db as _dbw
 
+                # Static-only harness greens (checks="static",
+                # summary.tests_run=False) may tick `lint` alone - never
+                # `test`/`not-gutted`, whose evidence is a real suite run.
+                # Absent flag (every pre-change event) counts as tests-ran.
+                _only_ci = (
+                    ("lint",) if _summ_ci.get("tests_run", True) is False else None
+                )
                 with _dbw._conn() as _c:
                     try:
                         _dbw.auto_tick_ci_steps(
@@ -968,6 +982,7 @@ def run_checks(
                             is_system=_system,
                             ci_started_iso=ci_started_iso,
                             tick_stamp=_dbw._now_iso(),
+                            only_keys=_only_ci,
                         )
                     except (
                         Exception
