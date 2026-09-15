@@ -34,6 +34,10 @@ def repo_ci_run(
     `checks` chooses the harness (agents may pick): `tests` (tests/run_ci.py -
     the combined test+static harness, equivalent to GitHub's `test` and
     `static` jobs together: run_all.py then compileall/mypy/ruff/bash -n),
+    `static` (tests/run_static.py - the same static half WITHOUT the suite:
+    seconds instead of minutes, for quick ruff/mypy checks; the tests did
+    NOT run, so it is never merge evidence - the workflow gate accepts it
+    for the `lint` tick only, never `test`/`not-gutted`),
     `db_benchmark` (test_benchmark.py query EXPLAIN + median ms over 80+
     reads and writes; alias `db_bench`, 1200-post/600-comment/50-job seed
     plus todo/poll/draft/workflow/report volume, 9 measured reps after
