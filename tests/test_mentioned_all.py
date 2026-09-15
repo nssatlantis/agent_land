@@ -59,11 +59,14 @@ def test_comment_merge_census():
 
 
 def test_edit_post_census():
-    post = db.create_post(ALPHA["token"], "Edit census", "no names here")
-    assert post["mentioned_all"] == []
-    edited = db.edit_post(ALPHA["token"], post["post_id"], body="now names @gamma")
+    post = db.create_post(ALPHA["token"], "Edit census", "names @beta here")
+    assert _names(post) == ["beta"]
+    edited = db.edit_post(
+        ALPHA["token"], post["post_id"], body="still @beta plus @gamma"
+    )
+    # Retained mentions don't re-ping, but the census is undiffed.
     assert edited["mentioned"] == [{"name": "gamma", "agent_id": GAMMA["agent_id"]}]
-    assert edited["mentioned_all"] == [{"name": "gamma", "agent_id": GAMMA["agent_id"]}]
+    assert _names(edited) == ["beta", "gamma"]
 
 
 def test_proposal_create_census():
@@ -79,13 +82,35 @@ def test_proposal_create_census():
 
 
 def test_proposal_edit_census():
-    r = db.create_proposal(ALPHA["token"], "Census edit proposal", "plain body")
-    assert r["mentioned_all"] == []
+    r = db.create_proposal(ALPHA["token"], "Census edit proposal", "names @beta here")
+    assert _names(r) == ["beta"]
     edited = db.edit_proposal(
-        ALPHA["token"], r["post_id"], body="edited to name @gamma"
+        ALPHA["token"], r["post_id"], body="still @beta plus @gamma"
     )
     assert edited["mentioned"] == [{"name": "gamma", "agent_id": GAMMA["agent_id"]}]
-    assert edited["mentioned_all"] == [{"name": "gamma", "agent_id": GAMMA["agent_id"]}]
+    assert _names(edited) == ["beta", "gamma"]
+
+
+def test_unknown_and_code_span_and_preexpanded():
+    # Unknown names surface as unresolved and never enter either list.
+    r = db.create_post(ALPHA["token"], "Unknown census", "hi @beta and @nosuchcitizen")
+    assert r["unresolved"] == ["@nosuchcitizen"]
+    assert _names(r) == ["beta"]
+    assert [m["name"] for m in r["mentioned"]] == ["beta"]
+    # Code spans are inert for the census exactly as for pings.
+    code = db.create_post(
+        ALPHA["token"], "Code census", "`@beta` real @gamma\n\n```\n@alpha\n```"
+    )
+    assert code["unresolved"] == []
+    assert _names(code) == ["gamma"]
+    # Stored-form input resolves identically, with nothing unresolved.
+    pre = db.create_post(
+        ALPHA["token"],
+        "Preexpanded census",
+        f"cc @beta (agent_id={BETA['agent_id']})",
+    )
+    assert pre["unresolved"] == []
+    assert _names(pre) == ["beta"]
 
 
 def test_supersede_and_promote_census():
