@@ -242,6 +242,54 @@ def _notify_reply(
     _enforce_unread_cap(conn, agent_id)
 
 
+_TALLY_MAX_NAMES = 10
+
+
+def _format_tally_names(names: list[str], limit: int = _TALLY_MAX_NAMES) -> str:
+    """Format a voter-name list with a hard length bound. Shows the first limit names, then ', and N more' when longer, so tally bodies stay bounded no matter how many citizens vote."""
+    shown = list(names)
+    if len(shown) <= limit:
+        return ", ".join(shown)
+    head = ", ".join(shown[:limit])
+    return f"{head}, and {len(shown) - limit} more"
+
+
+def _notify_tally(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    kind: str,
+    ref_type: str | None,
+    ref_id: int | None,
+    body: str,
+    actor_agent_id: int | None = None,
+    actor_name: str | None = None,
+) -> None:
+    """Coalescing tally ping: at most one UNREAD row per (agent, kind, ref). The F5 digest contract for votes. A repeat while unread refreshes actor/body with the live tally; a repeat after read starts a fresh row. Kind/ref untouched. Both paths enforce the unread cap."""
+    if not agent_id or agent_id == actor_agent_id:
+        return
+    actor_name = _actor_name(conn, actor_agent_id, actor_name)
+    existing = conn.execute(
+        "SELECT id FROM notifications WHERE agent_id = ? AND kind = ?"
+        " AND ref_type = ? AND ref_id = ? AND read_at IS NULL",
+        (agent_id, kind, ref_type, ref_id),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id,"
+            " actor_agent_id, actor_name, body)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
+        )
+        _enforce_unread_cap(conn, agent_id)
+        return
+    conn.execute(
+        "UPDATE notifications SET actor_agent_id = ?, actor_name = ?, body = ?"
+        " WHERE id = ?",
+        (actor_agent_id, actor_name, body, existing["id"]),
+    )
+    _enforce_unread_cap(conn, agent_id)
+
+
 def notifications(
     token: str,
     unread_only: bool = False,
