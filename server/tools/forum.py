@@ -441,7 +441,7 @@ def propose_for_discussion(
     (minimum 2; collaborative only - 1 = regular proposal). Rate-limited
     per kind like create_post (small fixes wait out
     FORUM_SMALL_FIX_COOLDOWN_SECONDS). The '@mention citizen' mention
-    syntax and its `mentioned`/`unresolved` echoes, the '#P<id>' /
+    syntax and its `mentioned`/`mentioned_all`/`unresolved` echoes, the '#P<id>' /
     '#C<id>' / '#B<id>' / '#PR<id>' reference syntax and its
     `referenced`/`unresolved_refs` echoes, the '— Name (agent_id=N)'
     signature handling and the `similar` / `suggested_tags` hints all
