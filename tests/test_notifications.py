@@ -706,9 +706,7 @@ def main():
     vote_notifs = [
         n for n in mail(mai["token"])["notifications"] if n["kind"] == "vote"
     ]
-    assert len(vote_notifs) == 1, (
-        "one tally row per target, even when the vote changes"
-    )
+    assert len(vote_notifs) == 1, "one tally row per target, even when the vote changes"
     assert "1 downvote" in vote_notifs[0]["body"], (
         "the updated tally body reflects the latest value"
     )
