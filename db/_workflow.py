@@ -525,7 +525,7 @@ def tick_workflow_step(
                             break
                     if not _found:
                         raise ForumError(
-                            "CI not green - run repo_ci_run(files=[...]) rehearsal until ok before ticking lint/test/not-gutted (WORKFLOW_LINT_CI_ENFORCE=1)"
+                            'CI not green - run repo_ci_run(files=[...]) rehearsal until ok (checks="static" suffices for lint alone) before ticking lint/test/not-gutted (WORKFLOW_LINT_CI_ENFORCE=1)'
                         )
                 except ForumError:
                     raise
