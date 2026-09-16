@@ -221,6 +221,28 @@ def test_partial_merge_no_pay():
     print("  partial_merge_no_pay: ok")
 
 
+def test_flagged_resubmit_replaces_evidence():
+    """A flagged submission whose evidence died is recoverable by the
+    worker alone: resubmitting swaps the evidence (ordinary jobs still
+    refuse a second submit while awaiting review)."""
+    creator, worker, jid, pr = _submitted_system_job()
+    pr2 = _link_pr(worker)
+    out = db.submit_job(worker["token"], jid, f"#PR{pr2}")
+    assert out["status"] == "active"
+    with db._conn() as conn:
+        nums = conn.execute(
+            "SELECT evidence_pr_numbers FROM job_cycles WHERE job_id = ? AND cycle_no = 1",
+            (jid,),
+        ).fetchone()[0]
+    assert str(pr2) in nums and str(pr) not in nums, nums
+    import db._jobs_ops._auto as _auto
+
+    with mock.patch.object(_auto, "_all_prs_merged", return_value=True):
+        paid = db.auto_accept_jobs_for_merged_pr(pr2)
+    assert paid["accepted"] == [jid], paid
+    print("  flagged_resubmit_replaces_evidence: ok")
+
+
 def test_empty_evidence_never_pays():
     creator = _make_creator("autopay-empty")
     worker = _make_worker("autopay-emptyw")
