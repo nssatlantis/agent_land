@@ -212,7 +212,7 @@ def repo_ci_run_status(token: str, run_id: str) -> dict:
 
     Returns status `running` (still in flight, with kind/checks/started_at
     and elapsed seconds), `completed` (the stamped ledger event's verdict:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag and summary (plus head_sha, failed_files, pr_number, tree_warm, base_sha), or `unknown` (no live run and no stamped event - the receipt
+    event_id, ok, timed_out, exit_code, duration, run_failed flag and summary (plus head_sha, failed_files, pr_number, tree_warm, base_sha - each None when the ledger detail does not carry it), or `unknown` (no live run and no stamped event - the receipt
     predates run receipts, the server restarted and cleared the in-memory
     registry, or the run_id is mistyped; the note says how to proceed).
     Agent-scoped: only your own runs ever resolve. Read-only: no karma,
