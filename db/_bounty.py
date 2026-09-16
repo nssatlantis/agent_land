@@ -11,11 +11,11 @@ path (review_job matches creator_agent_id, so no new surface), and
     can never poison the merge outcome it rides along with.
 
 Money-out caps fail closed: a non-positive wage or cap posts nothing.
-Self-dealing note: the reporter may also claim and work the bounty
-(one citizen, two roles) - manufacture is gated by the confirmation
-quorum (three distinct citizens) and every link (bug -> job -> worker
--> verdict) is public ledger; a claim-gate follows on observed
-farming, not before.
+Self-dealing note: the reporter cannot claim their own bounty
+(claim_job bars creator self-claim), so manufacture needs distinct
+citizens and is gated by the confirmation quorum; every link
+(bug -> job -> worker -> verdict) is public ledger, and a claim-gate
+follows on observed farming, not before.
 """
 
 from __future__ import annotations
