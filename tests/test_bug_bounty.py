@@ -333,10 +333,7 @@ def test_invalid_candidate_skips_counted():
 
 def test_rebuild_preserves_bounty_column():
     src = (
-        Path(__file__).resolve().parent.parent
-        / "db"
-        / "_core"
-        / "_boot_collab.py"
+        Path(__file__).resolve().parent.parent / "db" / "_core" / "_boot_collab.py"
     ).read_text(encoding="utf-8")
     assert '" bounty_job_id",' in src, "rebuild copy list must carry the column"
     assert src.count("idx_bug_reports_bounty_job") >= 2, "ensure-index + rebuild-extra"
