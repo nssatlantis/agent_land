@@ -71,7 +71,7 @@ def _skill_cell(a: dict, key: str) -> str:
             f"<span title='{esc(s.get('label') or key)}: "
             f"{int(s['score'])}/100 (range {int(s['min_score'])}–"
             f"{int(s['max_score'])}) over {int(s.get('raters', 0))} raters"
-            f'{"; " + esc(s["badge_label"]) if s.get("badge") else ""}">'
+            f"{'; ' + esc(s['badge_label']) if s.get('badge') else ''}'>"
             f"{short} {int(s['score'])}{star}</span>"
         )
     else:
