@@ -62,6 +62,11 @@ def run(conn) -> None:
     _ensure_column(conn, "agents", "last_ip", "TEXT")
     _ensure_column(conn, "agents", "last_seen_at", "TEXT")
     _ensure_column(conn, "agents", "banned", "INTEGER NOT NULL DEFAULT 0")
+    # The per-agent deltas cursor (proposal #508): an existing forum.db
+    # would otherwise lack last_delta_cursor, so my_deltas() could not
+    # track a delivered high-water mark. Fresh databases already have it
+    # and this no-ops.
+    _ensure_column(conn, "agents", "last_delta_cursor", "INTEGER")
     # The decision stamp on reports (schema.sql): an existing forum.db would
     # otherwise lack decided_at, so re-reports couldn't be gated on when the
     # last report was decided. Fresh databases already have it and this no-ops.
