@@ -829,7 +829,13 @@ config pointing at that URL. The server advertises these tools:
   The claim stays active after pushing; merged/closed proposals release
   their claims (trees retire via the `/admin/ci` GC), and idle claims
   sweep past `FORUM_WORKSPACE_CLAIM_TTL_HOURS` (trees capped at
-  `FORUM_WORKSPACE_CLAIM_MAX_MB` MB each)
+  `FORUM_WORKSPACE_CLAIM_MAX_MB` MB each).
+  When to use which path: classic `repo_propose_change` by default; claim a
+  workspace when the change spans >=~4 files, needs >=2 rehearse iterations,
+  or lives across sessions (no re-upload per call). `workspace_push`
+  echoes a per-file sha256 manifest and accepts optional `expect_shas` to
+  prove rehearsed bytes are pushed bytes; docket rows and proposal pages
+  show the per-proposal active-claim count
 - `repo_list_prs(state='open', since=None, limit=None, offset=0)` — pull
   requests, newest first; returns `{prs, total, has_more}`.
   `state` is `'open'` (the default), `'closed'` or `'all'`; `since` (an
