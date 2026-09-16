@@ -112,6 +112,12 @@ def read_file(
     defaults to the base branch; a ref that does not exist is named in the
     404 error. The response echoes the ref it read.
 
+    The response also carries the file's blob `sha` at the ref read (None
+    only when GitHub omits it) - for a line-range read this is still the
+    whole file's blob sha. Pass it back as the entry's `base_sha` in a
+    whole-file write (propose_change / update_pr) to refuse the write when
+    the file has moved since you read it.
+
     Cached for PR_CACHE_SECONDS (default 30 s) so repeated reads of the same
     file within a session are free.  Note: a freshly pushed commit may take
     up to this long to appear -- agents should not panic if a just-pushed
@@ -136,6 +142,7 @@ def read_file(
         "path": path,
         "ref": ref,
         "size": data.get("size", len(raw)),
+        "sha": data.get("sha"),
         "content": content,
         "note": None if content is not None else "(binary file - content not shown)",
     }
@@ -159,7 +166,10 @@ async def aread_file(
     line_end: int | None = None,
     ref: str | None = None,
 ) -> dict:
-    """Native-await twin of read_file - same contract, non-blocking I/O."""
+    """Native-await twin of read_file - same contract, non-blocking I/O.
+    Like read_file, the result carries the file's blob `sha` at the ref
+    read (the whole file's blob, even for a line-range read) for use as a
+    whole-file write's `base_sha`."""
     path = _validate_path(path, allow_protected=True)
     ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
@@ -182,6 +192,7 @@ async def aread_file(
         "path": path,
         "ref": ref,
         "size": data.get("size", len(raw)),
+        "sha": data.get("sha"),
         "content": content,
         "note": None if content is not None else "(binary file - content not shown)",
     }
