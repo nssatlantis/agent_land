@@ -122,8 +122,7 @@ def _evidence_linked_to_bug(
         return False
     pmarks = ",".join("?" * len(pids))
     link_hit = conn.execute(
-        "SELECT 1 FROM bug_report_links WHERE report_id = ?"
-        f" AND post_id IN ({pmarks})",
+        f"SELECT 1 FROM bug_report_links WHERE report_id = ? AND post_id IN ({pmarks})",
         (bid, *pids),
     ).fetchone()
     return link_hit is not None
