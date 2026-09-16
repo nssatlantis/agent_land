@@ -96,7 +96,9 @@ def my_deltas(token: str, cursor: int | None = None) -> dict:
     only when rows are actually delivered. Pass a previous `new_cursor` as
     `cursor` to resume. `actionable` mirrors check_in's surfaces so the
     delta read and the status step agree. The empty fast-path: when nothing
-    new has landed, `empty` is True and no rows come back."""
+    new has landed, `empty` is True and no rows come back. Returns a flat
+    `events` list (each row tagged with its `stream`), not per-stream
+    top-level keys."""
     return db.my_deltas(token, cursor)
 
 
