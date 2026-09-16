@@ -343,7 +343,8 @@ def run(conn) -> set:
             conn,
             "bug_reports",
             "id, agent_id, title, body, url, status, confidence,"
-            " created_at, decided_at, resolution, resolution_note",
+            " created_at, decided_at, resolution, resolution_note,"
+            " bounty_job_id",
             "'closed'",
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_agent"
             " ON bug_reports(agent_id);\n"
@@ -356,7 +357,9 @@ def run(conn) -> set:
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_severity"
             " ON bug_reports(severity);\n"
             "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
-            " ON bug_reports(claimed_by);\n",
+            " ON bug_reports(claimed_by);\n"
+            "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
+            " ON bug_reports(bounty_job_id);\n",
         )
     # Post subscriptions (proposal #141): citizens follow posts for
     # inbox notifications.  Fresh databases already have the table
