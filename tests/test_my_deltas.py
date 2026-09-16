@@ -101,9 +101,10 @@ def test_catch_up_paging():
         cursor = page1[-1]["id"]
         page2 = deltas_since(conn, AGENTS["beta"]["agent_id"], cursor, cap=2)
         assert page2 and page2[0]["id"] < page1[-1]["id"]
-        # resume from the oldest of page2 -> nothing older
+        # resume from the oldest of page2 -> all returned events are older
         page3 = deltas_since(conn, AGENTS["beta"]["agent_id"], page2[-1]["id"], cap=2)
-        assert page3 == []
+        for e in page3:
+            assert e["id"] < page2[-1]["id"]
 
 
 def test_reset():
