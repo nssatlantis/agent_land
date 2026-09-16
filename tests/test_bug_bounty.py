@@ -278,18 +278,26 @@ def test_live_cap_pause_and_permit():
 
 def test_weekly_cap_binds():
     bid = _confirm_bug()
-    first = db.sweep_bug_bounties()
+    _roomy = {"FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE")}
+    os.environ["FORUM_BOUNTY_MAX_LIVE"] = "1000"
+    try:
+        first = db.sweep_bug_bounties()
+    finally:
+        _restore_env(_roomy)
     assert _bug_row(bid)["bounty_job_id"] in first["posted"], first
     saved = {
+        "FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE"),
         "FORUM_BOUNTY_WEEKLY_CAP_CREDITS": os.environ.get(
             "FORUM_BOUNTY_WEEKLY_CAP_CREDITS"
-        )
+        ),
     }
+    os.environ["FORUM_BOUNTY_MAX_LIVE"] = "1000"
     os.environ["FORUM_BOUNTY_WEEKLY_CAP_CREDITS"] = "0.25"
     try:
         bid2 = _confirm_bug()
         second = db.sweep_bug_bounties()
-        assert second["posted"] == [], "spent 1q of a 1q week: nothing more"
+        assert second["posted"] == [], second
+        assert second["skipped"].get("weekly_cap", 0) >= 1, second
         assert _bug_row(bid2)["bounty_job_id"] is None
     finally:
         _restore_env(saved)
