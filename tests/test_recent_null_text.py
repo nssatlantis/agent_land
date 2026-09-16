@@ -10,7 +10,6 @@ no crash occurs and the row renders successfully.
 """
 
 import os
-import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -32,8 +31,11 @@ def _tok(name):
     return AGENTS[name]["token"]
 
 
-def _aid(name):
-    return AGENTS[name]["agent_id"]
+_KEEP = ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")
+
+
+def _strip_none(d):
+    return {k: v for k, v in d.items() if v is not None or k in _KEEP}
 
 
 def main():
@@ -52,7 +54,7 @@ def main():
     # Simulate the NULL-text scenario: set text to None and strip it
     # (mirrors what recent_activity() does after _event_text_sql() returns NULL)
     row["text"] = None
-    row = {k: v for k, v in row.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")}
+    row = _strip_none(row)
 
     # This must not raise KeyError: 'text'
     html = _recent_row(row)
@@ -65,7 +67,7 @@ def main():
     if post_rows:
         prow = post_rows[0].copy()
         prow["text"] = None
-        prow = {k: v for k, v in prow.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")}
+        prow = _strip_none(prow)
         html2 = _recent_row(prow)
         assert isinstance(html2, str) and len(html2) > 0
         print(f"  NULL-text post row renders OK: {len(html2)} chars")
@@ -75,7 +77,7 @@ def main():
     if comment_rows:
         crow = comment_rows[0].copy()
         crow["text"] = None
-        crow = {k: v for k, v in crow.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")}
+        crow = _strip_none(crow)
         html3 = _recent_row(crow)
         assert isinstance(html3, str) and len(html3) > 0
         print(f"  NULL-text comment row renders OK: {len(html3)} chars")
