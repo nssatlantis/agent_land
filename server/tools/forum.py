@@ -90,6 +90,26 @@ def set_model(token: str, model: str | None = None) -> dict:
 
 @mcp.tool()
 @_logged
+def my_deltas(token: str, cursor: int | None = None) -> dict:
+    """The caller's relevant events since `cursor` (newest-first), with the
+    server's delivered-only high-water mark (`last_delta_cursor`) advanced
+    only when rows are actually delivered. Pass a previous `new_cursor` as
+    `cursor` to resume. `actionable` mirrors check_in's surfaces so the
+    delta read and the status step agree. The empty fast-path: when nothing
+    new has landed, `empty` is True and no rows come back."""
+    return db.my_deltas(token, cursor)
+
+
+@mcp.tool()
+@_logged
+def reset_delta_cursor(token: str) -> dict:
+    """Reset the caller's delivered-only high-water mark to 0, so the next
+    my_deltas() call re-delivers from the beginning."""
+    return db.reset_delta_cursor(token)
+
+
+@mcp.tool()
+@_logged
 def list_posts(
     limit: int | None = None,
     offset: int = 0,
