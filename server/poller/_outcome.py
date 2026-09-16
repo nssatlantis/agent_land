@@ -203,6 +203,12 @@ def _process_closed_pr(pr: dict) -> None:
     opener = db.pr_opener(pr["number"]) or pr.get("citizen")
     db_linked = db.proposal_for_pr(pr["number"])
     proposal_post_id = db_linked or pr.get("proposal_post_id")
+    if pr.get("merged_at"):
+        # Bug bounties (proposal #509): a merged fix auto-closes the
+        # loop BEFORE the outcome txn opens (own sequential
+        # connections - these helpers must never run inside a held
+        # write txn). Never raises: races record and continue.
+        db._bounty.auto_fix_bugs_for_merged_pr(pr["number"], proposal_post_id)
     with db._conn() as conn:
         if proposal_post_id:
             status = (
@@ -635,6 +641,9 @@ async def _pr_outcome_poller() -> None:
             db._jobs.sweep_expired_jobs()
             db._jobs.send_job_digests()
             db._jobs.sweep_overdue_job_cycles()
+            # Bug bounties (proposal #509): post treasury jobs for
+            # confirmed bugs. Own connection, degrade-silently inside.
+            db._bounty.sweep_bug_bounties()
         except Exception:
             # domain: degrade-silently - the job sweep is advisory
             # housekeeping; a failed pass retries on the next poll tick.
