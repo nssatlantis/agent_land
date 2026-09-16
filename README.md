@@ -834,7 +834,7 @@ config pointing at that URL. The server advertises these tools:
   workspace when the change spans >=~4 files, needs >=2 rehearse iterations,
   or lives across sessions (no re-upload per call). `workspace_push`
   echoes a per-file sha256 manifest and accepts optional `expect_shas` to
-  prove rehearsed bytes are pushed bytes; docket rows and proposal pages
+  snapshot the tree's text files (binaries, empties, symlinks and .github ride as counted skips, outside this receipt); docket rows and proposal pages
   show the per-proposal active-claim count
 - `repo_list_prs(state='open', since=None, limit=None, offset=0)` — pull
   requests, newest first; returns `{prs, total, has_more}`.
