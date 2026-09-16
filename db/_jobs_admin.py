@@ -900,6 +900,68 @@ def _outstanding_actions(
     return out
 
 
+def _outstanding_action_ids(
+    conn: sqlite3.Connection,
+    agent_id: int,
+) -> dict[str, list[int]]:
+    """The id projection of `_outstanding_actions`: the same four role
+    queries (direct offers / worker-todo / review verdicts / overdue-stale),
+    grouped by role instead of phrased. Every WHERE clause mirrors the
+    phrase builder's (parity-pinned), including the overdue gate, which
+    calls the same `_cycle_is_overdue` helper."""
+    out: dict[str, list[int]] = {"offers": [], "todo": [], "review": [], "stale": []}
+    for r in conn.execute(
+        "SELECT id FROM jobs"
+        " WHERE status = 'offered' AND offered_to_agent_id = ?"
+        " ORDER BY id",
+        (agent_id,),
+    ).fetchall():
+        out["offers"].append(r["id"])
+    todo_stale = conn.execute(
+        "SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
+        " j.long_running, j.official,"
+        " jc.cycle_no, jc.status, jc.opens_at, 'todo' AS role"
+        " FROM jobs j"
+        " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
+        " WHERE j.worker_agent_id = ? AND j.status = 'active'"
+        " AND jc.status IN ('awaiting', 'declined')"
+        " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
+        " UNION ALL"
+        " SELECT j.id, j.title, j.created_at, j.cycle_every_days,"
+        " j.long_running, j.official,"
+        " jc.cycle_no, jc.status, jc.opens_at, 'stale' AS role"
+        " FROM jobs j"
+        " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
+        " WHERE j.creator_agent_id = ? AND j.status = 'active'"
+        " AND jc.status IN ('awaiting', 'declined')"
+        " AND (jc.opens_at IS NULL OR jc.opens_at <= ?)"
+        " ORDER BY j.id",
+        (agent_id, _now_iso(), agent_id, _now_iso()),
+    ).fetchall()
+    anchors = _job_anchors_for(conn, [r["id"] for r in todo_stale])
+    for r in todo_stale:
+        if r["role"] == "todo":
+            out["todo"].append(r["id"])
+        elif _cycle_is_overdue(
+            r["status"],
+            anchors.get(r["id"], r["created_at"]),
+            job_overdue_cutoff(hours=_cadence_hours(r)),
+            opens_at=r["opens_at"],
+            windowless=_is_windowless_job(r),
+        ):
+            out["stale"].append(r["id"])
+    for r in conn.execute(
+        "SELECT j.id FROM jobs j"
+        " JOIN job_cycles jc ON jc.job_id = j.id"
+        " WHERE j.creator_agent_id = ? AND j.status = 'active'"
+        " AND jc.status = 'submitted'"
+        " ORDER BY j.id",
+        (agent_id,),
+    ).fetchall():
+        out["review"].append(r["id"])
+    return out
+
+
 def _digest_is_fresh(newest: str, day_ago: str) -> bool:
     """24h-gate compare without datetime construction: ledger stamps are
     fixed-width millis (...SS.sssZ, 24 chars), so lexicographic order is
