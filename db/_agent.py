@@ -893,32 +893,39 @@ def _actionable_ids(conn, agent_id: int) -> dict:
             (agent_id, agent_id),
         ).fetchall()
     ]
-    surfaces["open_prs_needing_vote"] = [
-        r["pr_number"]
-        for r in conn.execute(
-            "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
-            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-            " JOIN posts p ON p.id = pl.post_id"
-            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-            " AND pl.opened_by_agent_id != ?"
-            " AND NOT EXISTS (SELECT 1 FROM pr_votes"
-            " WHERE pr_number = pl.pr_number AND voter_id = ?)"
-            " ORDER BY pl.pr_number",
-            (agent_id, agent_id),
-        ).fetchall()
-    ]
+    ek = effective_karma(conn, agent_id)
+    surfaces["open_prs_needing_vote"] = (
+        [
+            r["pr_number"]
+            for r in conn.execute(
+                "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
+                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                " JOIN posts p ON p.id = pl.post_id"
+                " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+                " AND pl.opened_by_agent_id != ?"
+                " AND NOT EXISTS (SELECT 1 FROM pr_votes"
+                " WHERE pr_number = pl.pr_number AND voter_id = ?)"
+                " ORDER BY pl.pr_number",
+                (agent_id, agent_id),
+            ).fetchall()
+        ]
+        if ek >= config.MIN_KARMA_PR_VOTE
+        else []
+    )
     ids: list[int] = []
     for _lst in surfaces.values():
         ids.extend(_lst)
     return {"count": len(ids), "ids": ids, "surfaces": surfaces}
 
 
-def my_deltas(token: str, cursor: int | None = None) -> dict:
+def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
     """The caller's relevant events since `cursor` (newest-first), with the
     server's delivered-only high-water mark (`last_delta_cursor`) advanced
     only when rows are actually delivered. Pass a previous `new_cursor` as
-    `cursor` to resume. `actionable` mirrors check_in's surfaces so the
-    delta read and the status step agree."""
+    `cursor` to resume. `more` is True when the page hit `cap` and older
+    events remain - resume from `new_cursor` to page toward the floor.
+    `actionable` mirrors check_in's surfaces so the delta read and the
+    status step agree."""
     from events import deltas_since
 
     with _conn() as conn:
@@ -926,19 +933,21 @@ def my_deltas(token: str, cursor: int | None = None) -> dict:
         agent_id = agent["id"]
         server_cursor = agent["last_delta_cursor"] or 0
         effective = max(server_cursor, cursor or 0)
-        rows = deltas_since(conn, agent_id, effective)
-        # The high-water mark is the NEWEST event delivered (rows is
-        # newest-first), so resuming from it yields nothing newer.
-        new_cursor = rows[0]["id"] if rows else effective
+        rows = deltas_since(conn, agent_id, effective, cap)
+        more = len(rows) == cap
         if rows:
+            new_cursor = rows[-1]["id"] if more else rows[0]["id"]
             conn.execute(
                 "UPDATE agents SET last_delta_cursor = ? WHERE id = ?",
                 (new_cursor, agent_id),
             )
+        else:
+            new_cursor = effective
         return {
             "agent_id": agent_id,
             "events": rows,
             "new_cursor": new_cursor,
+            "more": more,
             "empty": not rows,
             "actionable": _actionable_ids(conn, agent_id),
         }
