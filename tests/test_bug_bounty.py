@@ -264,6 +264,40 @@ def test_autofix_via_proposal_link():
     print("  autofix_via_proposal_link: ok")
 
 
+def test_unlinked_evidence_no_pay():
+    """An evidence PR that resolves to neither the bug (no fix_pr
+    pointer, no #B proposal cite) pays nothing - otherwise an
+    unrelated merged PR could drain the bounty and orphan the bug
+    (bounty_job_id stays stamped, sweep never reposts)."""
+    from unittest import mock
+
+    bid = _confirm_bug()
+    result = db.sweep_bug_bounties()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result["posted"], result
+    db.claim_job(AGENTS["delta"]["token"], jid)
+    prop = db.create_proposal(
+        AGENTS["delta"]["token"],
+        f"Bounty unrelated {_counter[0]}",
+        "fixes something else entirely",
+        small_fix=True,
+    )
+    pid = prop["post_id"]
+    pr = 93500 + pid
+    db.link_pr_to_proposal(pr, pid, AGENTS["delta"]["agent_id"])
+    before = _bal(AGENTS["delta"]["agent_id"])
+    db.submit_job(AGENTS["delta"]["token"], jid, f"#PR{pr}")
+    import db._jobs_ops._auto as _auto
+
+    with mock.patch.object(_auto, "_all_prs_merged", return_value=True):
+        out = db.auto_accept_jobs_for_merged_pr(pr)
+    assert out["accepted"] == [], out
+    assert out["skipped"].get("unlinked_evidence", 0) == 1, out
+    assert _bug_row(bid)["status"] == "confirmed"
+    assert _bal(AGENTS["delta"]["agent_id"]) == before
+    print("  unlinked_evidence_no_pay: ok")
+
+
 def test_worker_in_flight_stays():
     bid = _confirm_bug()
     stay_result = db.sweep_bug_bounties()
@@ -384,6 +418,7 @@ if __name__ == "__main__":
     test_bounty_deposit_is_zero()
     test_autofix_via_fix_pr()
     test_autofix_via_proposal_link()
+    test_unlinked_evidence_no_pay()
     test_worker_in_flight_stays()
     test_live_cap_pause_and_permit()
     test_weekly_cap_binds()
