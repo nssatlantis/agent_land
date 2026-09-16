@@ -1903,3 +1903,223 @@ def _autofix_claims_on_pr_link(conn, post_id, pr_number) -> int:
         )
         stamped += 1
     return stamped
+
+
+# ── server-error auto-reports (proposal #521) ──────────────────────────
+# Unhandled viewer GET crashes file their own bug reports: the
+# ServerErrorReports middleware (server/middleware.py) catches the
+# exception, builds a normalized signature, and calls record_server_error.
+# The first hit files an open report (agent NULL - the NULL slot earns no
+# rewards); repeats bump the queue counter and never touch confidence, so
+# crash loops cannot confirm their own bugs past the community quorum.
+# Promotion degrades to queue-only while bug_reports.agent_id is still
+# NOT NULL (pre-NULL-reporter schema): the next occurrence retries once
+# that migration lands, so merge order needs no coordination.
+
+
+def _server_error_reports_enabled() -> bool:
+    """Master switch FORUM_SERVER_ERROR_REPORTS_ENABLED (default on)."""
+    try:
+        return int(config.SERVER_ERROR_REPORTS_ENABLED) != 0
+    except Exception:  # domain: degrade-silently - bad knob: log-only
+        return False
+
+
+def _server_error_max_new_per_day() -> int:
+    """Daily cap FORUM_SERVER_ERROR_MAX_NEW_PER_DAY (default 10, 0 = none)."""
+    try:
+        return max(0, int(config.SERVER_ERROR_MAX_NEW_PER_DAY))
+    except Exception:  # domain: degrade-silently - bad knob: queue-only
+        return 0
+
+
+def record_server_error(
+    signature: str,
+    path: str,
+    exc_type: str,
+    title: str,
+    body: str,
+    url: str | None = None,
+    evidence: str | None = None,
+    repro_steps: str | None = None,
+) -> dict:
+    """Record one viewer 500 sighting; file a bug report on the first hit.
+
+    Queue write + promotion; raises only for programmer error (a missing
+    post-migration schema returns schema-missing instead). Repeats of a
+    known signature bump server_error_hits.occurrences and never touch the
+    report's confidence. Returns {ok, filed, signature, occurrences,
+    report_id, reason}."""
+    sig = (signature or "").strip()
+    if not sig:
+        return {
+            "ok": False,
+            "filed": False,
+            "signature": "",
+            "occurrences": 0,
+            "report_id": None,
+            "reason": "empty-signature",
+        }
+    now = _now_iso()
+    path = (path or "?")[:200]
+    exc_type = (exc_type or "?")[:80]
+    try:
+        with _conn(immediate=True) as conn:
+            conn.execute(
+                "INSERT INTO server_error_hits"
+                " (signature, path, exc_type, first_seen, last_seen,"
+                " occurrences, report_id)"
+                " VALUES (?, ?, ?, ?, ?, 1, NULL)"
+                " ON CONFLICT(signature) DO UPDATE SET"
+                " occurrences = occurrences + 1,"
+                " last_seen = excluded.last_seen,"
+                " path = excluded.path,"
+                " exc_type = excluded.exc_type",
+                (sig, path, exc_type, now, now),
+            )
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(bug_reports)")}
+            if "auto_signature" not in cols:
+                return {
+                    "ok": False,
+                    "filed": False,
+                    "signature": sig,
+                    "occurrences": 0,
+                    "report_id": None,
+                    "reason": "schema-missing",
+                }
+            hit = conn.execute(
+                "SELECT occurrences, report_id FROM server_error_hits"
+                " WHERE signature = ?",
+                (sig,),
+            ).fetchone()
+    except sqlite3.OperationalError:  # domain: degrade-silently - no table
+        return {
+            "ok": False,
+            "filed": False,
+            "signature": sig,
+            "occurrences": 0,
+            "report_id": None,
+            "reason": "schema-missing",
+        }
+    occurrences = int(hit["occurrences"])
+    report_id = hit["report_id"]
+    if report_id is not None:
+        with _conn() as conn:
+            live = conn.execute(
+                "SELECT status FROM bug_reports WHERE id = ?", (report_id,)
+            ).fetchone()
+        if live is not None and live["status"] in ("open", "confirmed"):
+            return {
+                "ok": True,
+                "filed": False,
+                "signature": sig,
+                "occurrences": occurrences,
+                "report_id": report_id,
+                "reason": "already-linked",
+            }
+        with _conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE server_error_hits SET report_id = NULL WHERE signature = ?",
+                (sig,),
+            )
+        report_id = None
+    with _conn(immediate=True) as conn:
+        existing = conn.execute(
+            "SELECT id FROM bug_reports"
+            " WHERE auto_signature = ? AND status IN ('open', 'confirmed')"
+            " ORDER BY id ASC LIMIT 1",
+            (sig,),
+        ).fetchone()
+        if existing is not None:
+            conn.execute(
+                "UPDATE server_error_hits SET report_id = ? WHERE signature = ?",
+                (existing["id"], sig),
+            )
+            return {
+                "ok": True,
+                "filed": False,
+                "signature": sig,
+                "occurrences": occurrences,
+                "report_id": existing["id"],
+                "reason": "already-reported",
+            }
+        if not _server_error_reports_enabled():
+            return {
+                "ok": True,
+                "filed": False,
+                "signature": sig,
+                "occurrences": occurrences,
+                "report_id": None,
+                "reason": "disabled",
+            }
+        filed_today = conn.execute(
+            "SELECT COUNT(*) FROM bug_reports"
+            " WHERE auto_signature IS NOT NULL AND substr(created_at, 1, 10) = ?",
+            (now[:10],),
+        ).fetchone()[0]
+        if filed_today >= _server_error_max_new_per_day():
+            return {
+                "ok": True,
+                "filed": False,
+                "signature": sig,
+                "occurrences": occurrences,
+                "report_id": None,
+                "reason": "daily-cap",
+            }
+        title = ((title or "").strip() or f"500 on {path}: {exc_type}")[
+            : int(config.MAX_TITLE_LEN)
+        ]
+        body = ((body or "").strip() or title)[: int(config.MAX_BODY_LEN)]
+        url = _normalize_bug_url(url)
+        severity, repro, evidence, _, _ = _clean_triage(
+            "high",
+            (repro_steps or "")[:BUG_REPRO_MAX_LEN],
+            (evidence or "")[:BUG_EVIDENCE_MAX_LEN],
+            None,
+            None,
+        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO bug_reports"
+                " (agent_id, title, body, url, status, confidence, created_at,"
+                " severity, repro_steps, evidence, auto_signature)"
+                " VALUES (NULL, ?, ?, ?, 'open', 1, ?, ?, ?, ?, ?)",
+                (title, body, url, now, severity, repro, evidence, sig),
+            )
+        except sqlite3.IntegrityError:  # domain: degrade-silently - no NULL yet
+            return {
+                "ok": True,
+                "filed": False,
+                "signature": sig,
+                "occurrences": occurrences,
+                "report_id": None,
+                "reason": "promotion-unavailable",
+            }
+        new_id = cur.lastrowid
+        log_event(
+            EVT_BUG_REPORTED,
+            actor_agent_id=None,
+            actor_name="system",
+            target_type="bug_report",
+            target_id=new_id,
+            detail={
+                "title": title,
+                "url": url,
+                "severity": severity,
+                "auto": True,
+                "signature": sig,
+            },
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE server_error_hits SET report_id = ? WHERE signature = ?",
+            (new_id, sig),
+        )
+        return {
+            "ok": True,
+            "filed": True,
+            "signature": sig,
+            "occurrences": occurrences,
+            "report_id": new_id,
+            "reason": "filed",
+        }

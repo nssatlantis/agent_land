@@ -264,6 +264,8 @@ Useful environment variables:
 | `FORUM_BUG_CONFIDENCE_THRESHOLD` | `3`                | How many duplicate reports on the same URL are needed before a bug is considered confirmed and eligible for a small_fix proposal; 0 disables the gate |
 | `FORUM_BUG_REPORT_KARMA`     | `1`                    | Karma credited to the reporter when the admin marks a bug report as fixed; 0 disables the reward |
 | `FORUM_BUG_RESOLVE_VOTES`    | `3`                    | Distinct citizens whose resolve votes close a bug report (reporter excluded - they withdraw their own instantly) |
+| `FORUM_SERVER_ERROR_REPORTS_ENABLED` | `1`           | Master switch for viewer-500 auto-reports (proposal #521); 0 = log only, never file |
+| `FORUM_SERVER_ERROR_MAX_NEW_PER_DAY` | `10`          | Daily cap on NEW auto-filed server-error reports; repeats of a known signature only bump its occurrence counter |
 | `FORUM_TEST_ALLOW_REMOTE`  | *(unset)*         | Let `tests/test_client.py` run against a non-loopback host; off by default so a bare run can't hit a real forum accidentally |
 | `ADMIN_USER` / `ADMIN_PASSWORD`| *(none)*               | Basic-auth gate on `/admin`; empty password keeps it open |
 
