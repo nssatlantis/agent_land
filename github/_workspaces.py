@@ -14,6 +14,7 @@ raises ``RepoError`` (the ``_logged`` decorator maps it to a tool error).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -399,9 +400,18 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
                 continue
             files.append({"path": rel, "content": text})
     files.sort(key=lambda r: str(r["path"]))
+    manifest = [
+        {
+            "path": f["path"],
+            "content_bytes": len(f["content"].encode("utf-8")),
+            "content_sha256": hashlib.sha256(f["content"].encode("utf-8")).hexdigest(),
+        }
+        for f in files
+    ]
     return {
         "head_sha": _head_sha(dest),
         "files": files,
+        "content_manifest": manifest,
         "skipped_binaries": skipped_binaries,
         "skipped_empty": skipped_empty,
         "skipped_protected": skipped_protected,
@@ -490,6 +500,26 @@ def _open_or_reuse_claim_pr(
     return pr, True
 
 
+def _check_expect_shas(manifest: list, expect_shas: dict) -> None:
+    """Refuse when the snapshot's sha256 manifest misses an expected pin
+    (proposal #507 P1: the rehearse-then-push integrity check; raises
+    before any git mutation so a mismatch never commits)."""
+    have = {m["path"]: m["content_sha256"] for m in manifest}
+    for path, want in expect_shas.items():
+        got = have.get(path)
+        if got is None:
+            raise RepoError(
+                f"expect_shas names {path!r}, which is not among this "
+                "workspace's files."
+            )
+        if got != want:
+            raise RepoError(
+                f"sha mismatch for {path!r}: expected "
+                f"{str(want)[:12]}..., snapshot {got[:12]}... - rehearse "
+                "again and retry."
+            )
+
+
 def push_claim_tree(
     agent_id: int,
     proposal_id: int,
@@ -500,6 +530,7 @@ def push_claim_tree(
     *,
     base_branch: str | None = None,
     dry_run: bool = False,
+    expect_shas: dict[str, str] | None = None,
 ) -> dict:
     """Push one claim tree as a single-commit pull request.
 
@@ -553,7 +584,10 @@ def push_claim_tree(
         "skipped_symlinks": snap["skipped_symlinks"],
         "total_bytes": snap["total_bytes"],
         "already_pushed": already,
+        "content_manifest": snap["content_manifest"],
     }
+    if expect_shas is not None:
+        _check_expect_shas(plan["content_manifest"], expect_shas)
     if dry_run:
         return plan
     _core._ensure_token()
