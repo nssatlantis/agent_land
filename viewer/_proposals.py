@@ -60,7 +60,7 @@ def _workspace_claims_line(count: int = 0) -> str:
     Pure renderer: the row's `active_workspaces` count in, a pr-trail div
     or "" out. Never queries; unknown shapes render nothing."""
     n = count or 0
-    if not isinstance(n, int) or n <= 0:
+    if type(n) is not int or n <= 0:
         return ""
     return (
         '<div class="pr-trail" style="margin-top:4px">'
