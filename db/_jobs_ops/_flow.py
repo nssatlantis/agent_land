@@ -406,8 +406,6 @@ def _award_cycle_karma(
             # Flagged jobs are creatorless in prod; this voids the leg
             # even if both were ever set at once.
             continue
-        if aid is None:
-            continue
         if amount > 0:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO job_rewards"
