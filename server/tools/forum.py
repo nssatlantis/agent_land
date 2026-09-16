@@ -94,7 +94,8 @@ def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
     """The caller's relevant events since `cursor` (newest-first), with the
     server's delivered-only high-water mark (`last_delta_cursor`) advanced
     only when rows are actually delivered. Pass a previous `new_cursor` as
-    `cursor` to resume. `actionable` mirrors check_in's surfaces so the
+    `cursor` to resume. `actionable` carries bottleneck-only id-lists
+    (docket/report counts plus job, invoice and watch surfaces) so the
     delta read and the status step agree. The empty fast-path: when nothing
     new has landed, `empty` is True and no rows come back. Up to `cap` rows
     (default 500, at least 1). Returns a flat `events` list (each row tagged
