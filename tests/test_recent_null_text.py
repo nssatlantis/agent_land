@@ -28,8 +28,10 @@ def _base_event(event_type="vote"):
 
 
 def main():
+    agents, _base_post = setup()
+
     def tok(name):
-        return AGENTS[name]["token"]
+        return agents[name]["token"]
 
     # Whitelist: recent_activity() preserves 'text' key.
     p1 = db.create_post(tok("alpha"), "Null test", "Body.")
