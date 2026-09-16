@@ -587,6 +587,8 @@ def push_claim_tree(
         "content_manifest": snap["content_manifest"],
     }
     if expect_shas is not None:
+        if not isinstance(expect_shas, dict):
+            raise RepoError("expect_shas must be a {path: sha256} mapping.")
         _check_expect_shas(plan["content_manifest"], expect_shas)
     if dry_run:
         return plan
