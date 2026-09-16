@@ -919,18 +919,24 @@ def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
     server's delivered-only high-water mark (`last_delta_cursor`) advanced
     only when rows are actually delivered. Pass a previous `new_cursor` as
     `cursor` to resume; an explicit cursor always wins over the stored mark
-    (reset + rewind read old pages again - duplicates, never skips), while
-    omitting it follows the server-tracked mark. `more` is True when the
-    page hit `cap` and older events remain - resume from `new_cursor` to
-    page toward the floor. `actionable` mirrors check_in's docket/report
-    counts (proposals, reports, bugs, assignments, review queues) so the
-    delta read and the status step agree; job, invoice and subscription
-    bottlenecks stay on check_in for now."""
+    (rewind duplicates; rows inserted after the first page are missed until
+    a fresh cursor=0 rescan), while omitting it follows the server-tracked
+    mark. `more` hints older events may remain (an exact-multiple final page
+    still reports True; an empty following page confirms the floor) - resume
+    from `new_cursor` to page toward the floor. `actionable` mirrors
+    check_in's docket/report counts (proposals, reports, bugs, assignments,
+    review queues) so the delta read and the status step agree; job, invoice
+    and subscription bottlenecks are not included here."""
     from events import deltas_since
 
-    cap = 500 if cap is None else int(cap)
-    if cap < 1:
-        raise ForumError("cap must be at least 1.")
+    if cap is None:
+        cap = 500
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ForumError("cap must be an integer >= 1.")
+    if cursor is not None and (
+        isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0
+    ):
+        raise ForumError("cursor must be an integer >= 0.")
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         agent_id = agent["id"]
