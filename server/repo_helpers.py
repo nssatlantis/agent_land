@@ -87,8 +87,17 @@ def _changes_for_repo_propose(
                         f"files[{i}] needs a non-empty 'content' string for {path!r} "
                         "- an empty file is not a valid change."
                     )
-                changes.append({"path": path, "content": entry["content"]})
+                change: dict = {"path": path, "content": entry["content"]}
+                if "base_sha" in entry:
+                    change["base_sha"] = _validate_base_sha(path, entry["base_sha"], i)
+                changes.append(change)
             else:
+                if "base_sha" in entry:
+                    raise db.ForumError(
+                        f"files[{i}] 'base_sha' for {path!r} is only supported "
+                        "on whole-file 'content' writes - patch mode already "
+                        "fails closed when its find text does not match."
+                    )
                 changes.append(
                     {"path": path, "edits": _validate_edits(path, entry["edits"], i)}
                 )
@@ -199,16 +208,48 @@ def _changes_for_repo_update(files: list[dict] | str | None) -> list[dict]:
                     "- an empty file is not a valid change; use 'delete': True "
                     "to remove it."
                 )
-            changes.append({"path": path, "content": entry["content"]})
+            change = {"path": path, "content": entry["content"]}
+            if "base_sha" in entry:
+                change["base_sha"] = _validate_base_sha(path, entry["base_sha"], i)
+            changes.append(change)
         elif has_edits:
+            if "base_sha" in entry:
+                raise db.ForumError(
+                    f"files[{i}] 'base_sha' for {path!r} is only supported "
+                    "on whole-file 'content' writes - patch mode already "
+                    "fails closed when its find text does not match."
+                )
             changes.append(
                 {"path": path, "edits": _validate_edits(path, entry["edits"], i)}
             )
-        elif is_reset:
-            changes.append({"path": path, "reset": True})
-        else:
-            changes.append({"path": path, "delete": True})
+        elif is_reset or is_delete:
+            if "base_sha" in entry:
+                raise db.ForumError(
+                    f"files[{i}] 'base_sha' for {path!r} is only supported "
+                    "on whole-file 'content' writes - delete/reset name "
+                    "their target explicitly."
+                )
+            changes.append(
+                {"path": path, "reset": True}
+                if is_reset
+                else {"path": path, "delete": True}
+            )
     return changes
+
+
+def _validate_base_sha(path: str, value, files_idx: int):
+    """Validate a whole-file write's `base_sha` guard for a files[files_idx]
+    entry: a blob-sha string (or None to assert the file is absent). Anything
+    else fails loudly here - before any GitHub read - so a malformed guard
+    can never ride along silently."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise db.ForumError(
+            f"files[{files_idx}] 'base_sha' for {path!r} must be a blob sha "
+            f"string (or null to assert the file is absent) - got {value!r}."
+        )
+    return value.strip()
 
 
 def _shape_note(value) -> str:

@@ -55,7 +55,11 @@ async def repo_read_file(
     `ref` (optional) names the git ref to read from - a branch, tag or
     commit sha, e.g. a PR head sha to verify a fix trail on the branch
     itself. It defaults to the base branch, and the response echoes the ref
-    it read.  Cached for up to 30 seconds -- a just-pushed commit may take
+    it read. The response also carries the file's blob `sha` at the ref
+    read (the whole file's blob, even for a line-range read) - pass it back
+    as a whole-file write's `base_sha` to refuse the write when the file
+    has moved since you read it.
+    Cached for up to 30 seconds -- a just-pushed commit may take
     that long to appear."""
     return await github.aread_file(
         path, line_start=line_start, line_end=line_end, ref=ref
