@@ -12,7 +12,11 @@ Eligibility per candidate, all required:
 - ALL evidence PRs merged (reused _all_prs_merged),
 - EVERY evidence PR opened by the job's worker (hard anti-spoof gate;
   forum-linked PRs only — unlinked PRs attribute to nobody and fail
-  closed; mismatches fall back to admin_review_job, never auto-pay).
+  closed; mismatches fall back to admin_review_job, never auto-pay),
+- for bug-bound jobs (scope 'bugs/<id>'): at least one evidence PR
+  resolves to the bug via the fix_pr pointer or a #B proposal-link
+  cite (the autofix discovery's own signals), so an unrelated merged
+  PR cannot drain the bounty and orphan the bug.
 
 Never raises: discovery failures return zeros and per-candidate races
 record into the return, so a payout hiccup can never poison the merge
@@ -60,6 +64,68 @@ def _evidence_openers(
     }
 
 
+def _evidence_posts(
+    conn: sqlite3.Connection, pr_numbers: list[int]
+) -> dict[int, int | None]:
+    """{pr_number: proposal post backing the forum link} for evidence PRs.
+
+    Unlinked PRs are simply absent - the payout gate treats absence as
+    unlinked, never as a match."""
+    nums = [int(n) for n in pr_numbers if int(n) > 0]
+    if not nums:
+        return {}
+    marks = ",".join("?" * len(nums))
+    return {
+        int(r["pr_number"]): r["post_id"]
+        for r in conn.execute(
+            "SELECT pr_number, post_id FROM proposal_links"
+            f" WHERE pr_number IN ({marks})",
+            nums,
+        ).fetchall()
+    }
+
+
+def _scope_bug_id(scope: str | None) -> int | None:
+    """The bug a bounty job funds, from its 'bugs/<id>' scope - or None
+    for work that is not bug-bound (generic merge-payout jobs)."""
+    try:
+        head, _, tail = str(scope or "").partition("/")
+        if head == "bugs" and tail.isdigit():
+            return int(tail)
+    except (TypeError, ValueError):  # domain: degrade-silently
+        pass
+    return None
+
+
+def _evidence_linked_to_bug(
+    conn: sqlite3.Connection, bid: int, pr_numbers: list[int]
+) -> bool:
+    """Whether any evidence PR resolves to the bug: the fix_pr pointer
+    or a #B proposal-link cite. Both are the autofix discovery's own
+    signals, so payout and fix agree on what 'the fix' is."""
+    nums = [int(n) for n in pr_numbers if int(n) > 0]
+    if not nums:
+        return False
+    marks = ",".join("?" * len(nums))
+    fix_hit = conn.execute(
+        f"SELECT 1 FROM bug_reports WHERE id = ? AND fix_pr IN ({marks})",
+        (bid, *nums),
+    ).fetchone()
+    if fix_hit is not None:
+        return True
+    posts = _evidence_posts(conn, nums)
+    pids = sorted({p for p in posts.values() if p is not None})
+    if not pids:
+        return False
+    pmarks = ",".join("?" * len(pids))
+    link_hit = conn.execute(
+        "SELECT 1 FROM bug_report_links WHERE report_id = ?"
+        f" AND post_id IN ({pmarks})",
+        (bid, *pids),
+    ).fetchone()
+    return link_hit is not None
+
+
 def auto_accept_jobs_for_merged_pr(pr_number: int) -> dict:
     """Accept system-owned cycles whose evidence just fully merged.
 
@@ -104,9 +170,6 @@ def auto_accept_jobs_for_merged_pr(pr_number: int) -> dict:
     except Exception:  # domain: degrade-silently - discovery is best-effort; the merge outcome must never hinge on it
         return {"accepted": accepted, "skipped": {"discovery_failed": 1}}
     for job_id, cycle_no, nums in cands:
-        if not nums:
-            _skip("empty_evidence")
-            continue
         # Network first (no lock held): monotonic, so a merged reading
         # stays true through the txn below; a failed lookup reads as
         # not-merged and retries on the next merge event.
@@ -152,6 +215,12 @@ def auto_accept_jobs_for_merged_pr(pr_number: int) -> dict:
                 if any(openers.get(n) != worker_id for n in live_nums):
                     _skip("opener_mismatch")
                     continue
+                bid = _scope_bug_id(job["scope"] if "scope" in job.keys() else None)
+                if bid is not None and not _evidence_linked_to_bug(
+                    conn, bid, live_nums
+                ):
+                    _skip("unlinked_evidence")
+                    continue
                 _apply_review(
                     conn,
                     job,
@@ -176,5 +245,8 @@ def auto_accept_jobs_for_merged_pr(pr_number: int) -> dict:
             continue
         accepted.append(job_id)
     if accepted:
-        logutil.log("job_merge_payout", accepted=len(accepted), job_ids=accepted)
+        try:
+            logutil.log("job_merge_payout", accepted=len(accepted), job_ids=accepted)
+        except Exception:  # domain: degrade-silently - audit must never fail payout
+            pass
     return {"accepted": accepted, "skipped": skipped}
