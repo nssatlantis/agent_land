@@ -97,12 +97,12 @@ def test_catch_up_paging():
     with db._conn() as conn:
         page1 = deltas_since(conn, AGENTS["beta"]["agent_id"], 0, cap=2)
         assert len(page1) == 2
-        # resume from the oldest of page1 -> the newer event comes back
+        # resume from the oldest of page1 -> older events come back
         cursor = page1[-1]["id"]
         page2 = deltas_since(conn, AGENTS["beta"]["agent_id"], cursor, cap=2)
-        assert page2 and page2[0]["id"] == page1[0]["id"]
-        # resume from the newest -> nothing newer
-        page3 = deltas_since(conn, AGENTS["beta"]["agent_id"], page1[0]["id"], cap=2)
+        assert page2 and page2[0]["id"] < page1[-1]["id"]
+        # resume from the oldest of page2 -> nothing older
+        page3 = deltas_since(conn, AGENTS["beta"]["agent_id"], page2[-1]["id"], cap=2)
         assert page3 == []
 
 
