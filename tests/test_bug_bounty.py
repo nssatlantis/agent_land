@@ -269,10 +269,14 @@ def test_live_cap_pause_and_permit():
         assert _bug_row(bid)["bounty_job_id"] is None
     finally:
         _restore_env(saved)
-    live_bid = _confirm_bug()
-    live_result = db.sweep_bug_bounties()
-    live_jid = _bug_row(live_bid)["bounty_job_id"]
-    assert live_jid is not None and live_jid in live_result["posted"], live_result
+    saved2 = {"FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE")}
+    os.environ["FORUM_BOUNTY_MAX_LIVE"] = "1000"
+    try:
+        result = db.sweep_bug_bounties()
+        jid = _bug_row(bid)["bounty_job_id"]
+        assert jid is not None and jid in result["posted"], result
+    finally:
+        _restore_env(saved2)
     print("  live_cap_pause_and_permit: ok")
 
 
