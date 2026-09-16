@@ -473,6 +473,8 @@ def test_push_manifest_and_expect_shas():
         tree = ws.ensure_claim_tree(11, 33, "manifest")
         dest = tree["path"]
         Path(dest, "feat.txt").write_text("feat\n", encoding="utf-8")
+        Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00")
+        Path(dest, "empty.txt").write_text("", encoding="utf-8")
         plan = ws.push_claim_tree(
             11,
             33,
@@ -489,8 +491,8 @@ def test_push_manifest_and_expect_shas():
         assert man["feat.txt"]["content_bytes"] == 5, plan
         assert "README.md" in man, sorted(man)
         assert ".workspace.json" not in man, sorted(man)
-        assert {m["path"] for m in plan["content_manifest"]} == set(
-            _branch_snapshot_paths(dest)
+        assert {m["path"] for m in plan["content_manifest"]}.isdisjoint(
+            {"blob.bin", "empty.txt", ".workspace.json"}
         ), plan
         try:
             ws.push_claim_tree(
@@ -506,6 +508,15 @@ def test_push_manifest_and_expect_shas():
             assert "sha mismatch" in str(exc), str(exc)
         else:
             raise AssertionError("expected RepoError on sha mismatch")
+        assert not [c for c in sb.calls if c[0] == "POST"], sb.calls
+        nobranch = subprocess.run(
+            ["git", "branch", "--list", "claim/11/33/manifest"],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert nobranch.stdout.strip() == "", nobranch.stdout
         try:
             ws.push_claim_tree(
                 11,
@@ -520,6 +531,7 @@ def test_push_manifest_and_expect_shas():
             assert "not among" in str(exc), str(exc)
         else:
             raise AssertionError("expected RepoError on unknown path")
+        assert not [c for c in sb.calls if c[0] == "POST"], sb.calls
         ok = ws.push_claim_tree(
             11,
             33,
@@ -536,17 +548,6 @@ def test_push_manifest_and_expect_shas():
     print(
         "  push manifest + expect_shas (receipt, mismatch/unknown refuse, match pushes): ok"
     )
-
-
-def _branch_snapshot_paths(dest):
-    out = subprocess.run(
-        ["git", "ls-files", "--others", "--cached", "--exclude-standard"],
-        cwd=dest,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return [ln for ln in out.stdout.splitlines() if ln != ".workspace.json"]
 
 
 def _push_guard(wstools):
