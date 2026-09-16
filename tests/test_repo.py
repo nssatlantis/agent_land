@@ -1192,6 +1192,16 @@ def main():
     finally:
         github._core._request = real_request
     assert plan["pr_number"] == 9, plan
+    # assert-absent reuses the probe outcome: no second GET between the
+    # guard and the branch creation, and the PUT carries no sha (a file
+    # that lands in between fails the create instead of being reverted).
+    assert calls == [
+        ("GET", "contents/bs-new.md?ref=main"),
+        ("GET", "git/ref/heads/main"),
+        ("POST", "git/refs"),
+        ("PUT", "contents/bs-new.md"),
+        ("POST", "pulls"),
+    ], calls
 
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
@@ -1219,9 +1229,10 @@ def main():
         github._core._request = real_request
     assert not [c for c in calls if c[0] in ("POST", "PUT")], calls
 
-    # a guarded update whose branch head is unchanged proceeds (three
-    # contents GETs: the guard pre-pass, the resolve loop's EOL probe and
-    # the write loop's sha probe - then one PUT).
+    # a guarded update whose branch head is unchanged proceeds (two
+    # contents GETs: the guard pre-pass and the resolve loop's EOL probe -
+    # then one PUT carrying the asserted sha, so the write itself is
+    # conditional on the checked state).
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
         if method == "GET" and path == "pulls/9":
@@ -1248,7 +1259,7 @@ def main():
     finally:
         github._core._request = real_request
     assert plan["changes"] == ["bs-update.md"], plan
-    assert calls.count(("GET", "contents/bs-update.md?ref=feature/x")) == 3, calls
+    assert calls.count(("GET", "contents/bs-update.md?ref=feature/x")) == 2, calls
     assert calls.count(("PUT", "contents/bs-update.md")) == 1, calls
 
     # a guarded update on a moved branch refuses before ANY mutation: the
