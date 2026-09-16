@@ -21,7 +21,7 @@ def _base_event(event_type="vote"):
         "target_type": "post",
         "target_id": 1,
         "actor_agent_id": 1,
-        "actor_name": "test",
+        "actor": "test",
         "created_at": "2026-01-01T00:00:00Z",
         "text": None,
     }
