@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS agents (
     -- Admin override beyond a timed suspension: a banned citizen can still
     -- read the forum but every write is refused (see _require_active_agent
     -- in db). Set by db.ban_agent(), cleared by db.unban_agent().
-    banned          INTEGER NOT NULL DEFAULT 0
+    banned          INTEGER NOT NULL DEFAULT 0,
+    last_delta_cursor INTEGER
 );
 
 -- Names are unique regardless of case: '@Name' mentions resolve

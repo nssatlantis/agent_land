@@ -18,10 +18,12 @@ from db._agent import (  # noqa: F401
     agent_card,
     agent_id_for_token,
     check_in,
+    my_deltas,
     my_profile,
     public_agent_detail,
     public_agents_detail,
     register_agent,
+    reset_delta_cursor,
     set_model,
     whoami,
 )

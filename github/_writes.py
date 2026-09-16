@@ -64,6 +64,17 @@ def propose_change(
     a content_manifest: each file's byte count and sha256 of exactly what
     will be written (for patch entries, the APPLIED result), plus a patch_log
     echoing every find-replace op and how many times its find matched.
+
+    A whole-file 'content' entry may carry 'base_sha': the blob sha
+    repo_read_file echoed when the caller read the file (or null to assert
+    the file is absent - the new-file case). Guarded entries are asserted
+    against the live base branch before the feature branch is created: any
+    mismatch aborts the whole call with no side effects, so a whole-file
+    write composed against a moved base can never silently revert reviewed
+    code. Unguarded entries behave exactly as before (no new requests).
+    The PUT itself carries the asserted sha (or none for assert-absent),
+    so a file that lands between the check and the write fails the write
+    instead of reverting.
     """
     base_branch = base_branch or GITHUB_BASE_BRANCH
     if not changes:
@@ -118,12 +129,17 @@ def propose_change(
         else:
             # Whole-file: detect base EOL so we preserve CRLF bases until the
             # one-time renormalize lands; new files default to LF (canonical).
-            # For dry_run we stay network-free (canonical LF) to keep the
-            # original contract and avoid requiring GITHUB_TOKEN in tests.
+            # The probe doubles as the base_sha guard's freshness read: its
+            # outcome (present + blob sha / absent / failed) is recorded on
+            # the entry so the guard asserts with no extra round-trips.
             if dry_run:
                 content = _normalize_eol(p["content"], "\n")
-                resolved.append({"path": p["path"], "content": content})
+                dry_entry: dict = {"path": p["path"], "content": content}
+                if "base_sha" in p:
+                    dry_entry["base_sha"] = p["base_sha"]
+                resolved.append(dry_entry)
             else:
+                probe_failed = False
                 try:
                     data = _core._request(
                         "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
@@ -132,6 +148,7 @@ def propose_change(
                     RepoError
                 ):  # domain:degrade-silently - EOL probe is best-effort, fallback to LF
                     data = None
+                    probe_failed = True
                 base_text = None
                 if data is not None:
                     try:
@@ -143,6 +160,17 @@ def propose_change(
                 entry: dict = {"path": p["path"], "content": content}
                 if data is not None and data.get("sha"):
                     entry["sha"] = data.get("sha")
+                if data is not None:
+                    entry["base_state"] = "present"
+                    entry["base_blob_sha"] = data.get("sha")
+                elif probe_failed:
+                    entry["base_state"] = "unknown"
+                    entry["base_blob_sha"] = None
+                else:
+                    entry["base_state"] = "absent"
+                    entry["base_blob_sha"] = None
+                if "base_sha" in p:
+                    entry["base_sha"] = p["base_sha"]
                 resolved.append(entry)
 
     plan = {
@@ -161,12 +189,34 @@ def propose_change(
     if dry_run:
         return plan
 
+    # base_sha guard, enforced before any side effect: every guarded
+    # whole-file entry is asserted against the base state the EOL probe just
+    # recorded (no extra requests). The first mismatch aborts the whole call
+    # here - before the branch exists - so a stale guarded write can never
+    # leave a dangling branch, let alone a reverting commit.
+    for p in resolved:
+        if "base_sha" not in p:
+            continue
+        _assert_base_blob(
+            p["path"],
+            f"the base branch ({base_branch!r})",
+            p["base_sha"],
+            p.get("base_state", "unknown"),
+            p.get("base_blob_sha"),
+        )
+
     # Existing files need their current sha to update. Content entries resolve
     # against the base branch first, before the feature branch exists; patch
     # entries already carry their sha from the resolution pass.
     existing_sha: dict[str, str | None] = {}
     for p in resolved:
         if "sha" in p:
+            continue
+        if "base_sha" in p:
+            # Guarded entries reuse the probe outcome the guard already
+            # asserted (present files carry it as "sha"; assert-absent files
+            # PUT sha-less, which GitHub refuses if the file appeared) - no
+            # second GET, so no window for a file to land unobserved.
             continue
         data = _core._request(
             "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
@@ -272,6 +322,18 @@ def update_pr(
     each file's byte count and sha256 of exactly what will be written (for
     patch entries, the APPLIED result), plus a patch_log echoing every
     find-replace op and how many times its find matched.
+
+    A whole-file 'content' entry may carry 'base_sha': the blob sha
+    repo_read_file echoed when the caller read the file on this branch (or
+    null to assert the file is absent). Guarded entries are asserted against
+    the live PR branch head before any mutation: any mismatch aborts the
+    whole call with no commits, so a whole-file write composed against a
+    moved branch head can never silently revert a collaborator's push.
+    Unguarded entries behave exactly as before. The two guards compose:
+    base_sha proves the base is what you read, expect_shas proves the
+    applied bytes are what you rehearsed.
+    The PUT itself carries the asserted state, closing the check-to-write
+    race: a guarded write either lands on exactly what was checked or fails.
     """
     citizen = (citizen or "").strip()
     if not citizen:
@@ -301,6 +363,12 @@ def update_pr(
                 f"change for {path!r} has more than one of 'content', "
                 "'edits', 'delete' and 'reset' - use one."
             )
+        if "base_sha" in c and (is_delete or is_reset):
+            raise RepoError(
+                f"'base_sha' for {path!r} is only supported on whole-file "
+                "'content' writes - patch mode already fails closed, and "
+                "delete/reset name their target explicitly."
+            )
         if is_delete:
             planned.append({"path": path, "delete": True})
         elif is_reset:
@@ -320,6 +388,30 @@ def update_pr(
     current_title = pr.get("title") or ""
 
     new_title = (title or current_title).strip()
+
+    guarded = [p for p in planned if "base_sha" in p]
+    if guarded and not dry_run:
+        # Freshness pre-pass: assert every guarded whole-file write against
+        # the live PR branch head BEFORE any mutation, so one stale file
+        # aborts the whole call instead of landing a partial update. One GET
+        # per guarded file, only on guarded calls - unguarded updates make
+        # no new requests here. (A live read that itself fails propagates -
+        # a guard that cannot be checked must not silently pass.)
+        for p in guarded:
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            )
+            if data is None:
+                state: str = "absent"
+            else:
+                state = "present"
+            _assert_base_blob(
+                p["path"],
+                f"the PR branch ({branch!r})",
+                p["base_sha"],
+                state,
+                data.get("sha") if data is not None else None,
+            )
 
     # Resolve patch and reset entries before building the plan - patches
     # cannot be previewed (or written) without the base, and reset entries
@@ -471,10 +563,18 @@ def update_pr(
                 _put_params(plan["commit_message"], p["content"], branch, p.get("sha")),
             )
         else:
-            data = _core._request(
-                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
-            )
-            sha = data.get("sha") if data else None
+            # Guarded entries skip the re-read and PUT conditionally on the
+            # asserted state - the blob sha the pre-pass passed (or a
+            # sha-less create for assert-absent) - so a file that lands
+            # between the pre-pass and the write fails the PUT instead of
+            # being reverted. Unguarded entries keep the fresh-sha PUT.
+            if "base_sha" in p:
+                sha = p["base_sha"]
+            else:
+                data = _core._request(
+                    "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+                )
+                sha = data.get("sha") if data else None
             _core._request(
                 "PUT",
                 f"contents/{p['path']}",
@@ -740,8 +840,19 @@ def _validate_change(path: str, c: dict) -> dict:
     """Validate one change entry's content-or-edits tail and return the planned
     entry. Shared by propose_change (content/edits only) and update_pr (which
     routes delete/reset before calling it), so the two write paths agree on
-    what a valid change is."""
+    what a valid change is. A whole-file 'content' entry may carry 'base_sha':
+    the blob sha the caller saw when it read the file (repo_read_file echoes
+    it), or null to assert the file is absent - enforced against the live
+    file before any mutation (fail-closed, whole call aborts on mismatch).
+    Patch mode needs no guard: it already fails closed when its find text
+    does not match the live file."""
     if "edits" in c:
+        if "base_sha" in c:
+            raise RepoError(
+                f"'base_sha' for {path!r} is only supported on whole-file "
+                "'content' writes - patch mode already fails closed when "
+                "its find text does not match the live file."
+            )
         return {"path": path, "edits": _validate_edits(path, c["edits"])}
     content = c.get("content", "")
     if not isinstance(content, str) or content == "":
@@ -749,7 +860,70 @@ def _validate_change(path: str, c: dict) -> dict:
             f"content for {path!r} must be a non-empty string - an empty file "
             "is not a valid change; use delete: True to remove it."
         )
-    return {"path": path, "content": content}
+    entry: dict = {"path": path, "content": content}
+    if "base_sha" in c:
+        entry["base_sha"] = _validate_base_sha(path, c["base_sha"])
+    return entry
+
+
+def _validate_base_sha(path: str, value) -> str | None:
+    """Validate a whole-file write's `base_sha` guard: a blob-sha string the
+    caller saw when it read the file, or None to assert the file is absent.
+    Anything else fails loudly - silently ignoring a stale-guard parameter
+    would leave the caller believing it is guarded when it is not."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise RepoError(
+            f"'base_sha' for {path!r} must be a blob sha string (or null to "
+            f"assert the file is absent) - got {value!r}."
+        )
+    return value.strip()
+
+
+def _assert_base_blob(
+    path: str, where: str, expected: str | None, state: str, actual: str | None
+) -> None:
+    """Assert one guarded whole-file write against the live file's blob
+    state before any mutation: `expected` is the caller's `base_sha` (a blob
+    sha, or None to assert absence), `state` is 'present' / 'absent' /
+    'unknown' (the live read failed), `actual` the live blob sha when
+    present. Any mismatch raises - the caller re-reads and retries with the
+    fresh sha. Pure function, no network."""
+    if expected is None:
+        if state == "absent":
+            return
+        if state == "present":
+            raise RepoError(
+                f"stale base for {path!r}: no file was read here, but {where} "
+                f"now holds blob {actual} - re-read with repo_read_file and "
+                "retry with the fresh sha (or drop 'base_sha' to overwrite)."
+            )
+        raise RepoError(
+            f"cannot verify the base for {path!r} on {where} (the live read "
+            "failed) - retry the guarded write later, or retry unguarded by "
+            "dropping 'base_sha'."
+        )
+    if state == "present" and actual == expected:
+        return
+    if state == "present":
+        raise RepoError(
+            f"stale base for {path!r}: the write was composed against blob "
+            f"{expected}, but {where} now holds blob {actual} - re-read the "
+            "file with repo_read_file and retry with the fresh sha."
+        )
+    if state == "absent":
+        raise RepoError(
+            f"stale base for {path!r}: the write was composed against blob "
+            f"{expected}, but the file no longer exists on {where} - "
+            "re-read with repo_read_file and retry (or drop 'base_sha' to "
+            "recreate it)."
+        )
+    raise RepoError(
+        f"cannot verify the base for {path!r} on {where} (the live read "
+        "failed) - retry the guarded write later, or retry unguarded by "
+        "dropping 'base_sha'."
+    )
 
 
 def _check_occurrence(path: str, i: int, occurrence) -> None:
