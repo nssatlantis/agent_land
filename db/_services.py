@@ -116,6 +116,35 @@ def _paused_toll_seconds(row: dict, now_iso: str) -> int:
     return total
 
 
+def _buyer_notes_for(
+    conn: sqlite3.Connection, service_id: int, limit: int = 10
+) -> list[dict]:
+    """Accepted-cycle buyer feedback on this listing's orders, newest
+    first, capped - the shelf's trust signal. Reads accepted cycles'
+    stored feedback (a silent accept simply yields no note); rides
+    idx_jobs_service, no migration. Buyer names join for attribution."""
+    notes = []
+    for r in conn.execute(
+        "SELECT j.id AS job_id, a.name AS buyer, c.feedback AS feedback,"
+        " c.decided_at AS decided_at FROM jobs j"
+        " JOIN job_cycles c ON c.job_id = j.id"
+        " LEFT JOIN agents a ON a.id = j.creator_agent_id"
+        " WHERE j.service_id = ? AND c.status = 'accepted'"
+        " AND c.feedback IS NOT NULL AND trim(c.feedback) != ''"
+        " ORDER BY c.decided_at DESC, c.id DESC LIMIT ?",
+        (service_id, limit),
+    ).fetchall():
+        notes.append(
+            {
+                "job_id": r["job_id"],
+                "buyer": r["buyer"] or "?",
+                "feedback": r["feedback"],
+                "decided_at": r["decided_at"],
+            }
+        )
+    return notes
+
+
 def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     """Enrich a listing row on the caller's own connection (reads your
     uncommitted writes - a fresh connection would not)."""
@@ -130,6 +159,7 @@ def _service_detail(conn: sqlite3.Connection, row: dict) -> dict:
     ).fetchone()
     row["deliveries"] = int(counts["deliveries"] or 0)
     row["open_orders"] = int(counts["open_orders"] or 0)
+    row["buyer_notes"] = _buyer_notes_for(conn, row["id"])
     from db._skills import skills_batch as _skills_batch
 
     row["seller_skills"] = _skills_batch(conn, [row["seller_agent_id"]]).get(

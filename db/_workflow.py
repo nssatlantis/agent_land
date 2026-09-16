@@ -348,7 +348,11 @@ def auto_tick_ci_steps(
     is_system: bool = False,
     ci_started_iso: str | None = None,
     tick_stamp: str | None = None,
+    only_keys: tuple[str, ...] | None = None,
 ) -> list[dict]:
+    """Auto-tick CI-gated steps on a green run. `only_keys` scopes which
+    steps may tick (default: all three) - static-only harness greens pass
+    ("lint",) so a format check can never mark `test`/`not-gutted` done."""
     if is_system or int(agent_id) == 0:
         return []
     if is_bench or is_native:
@@ -396,7 +400,7 @@ def auto_tick_ci_steps(
                     allowed.add(int(cand))
         if int(agent_id) not in allowed:
             continue
-        for sk in _CI_AUTO_TICK_KEYS:
+        for sk in only_keys or _CI_AUTO_TICK_KEYS:
             cur = conn.execute(
                 "UPDATE workflow_run_steps SET done = 1, done_at = ?"
                 ", done_by = ? WHERE run_id = ? AND step_key = ?"
@@ -406,6 +410,29 @@ def auto_tick_ci_steps(
             if cur.rowcount:
                 ticked.append({"run_id": rid, "step_key": sk})
     return ticked
+
+
+def _ci_event_covers(detail: dict | None, step_key: str) -> bool:
+    """Pure predicate behind the CI-backed step gate: does one green ci_*
+    event's detail satisfy `step_key`? Static-only harness runs
+    (checks="static", summary.tests_run=False) cover `lint` but never
+    `test`/`not-gutted` - the tests did NOT run, so they prove nothing
+    about them. Fail-closed for the test-bearing steps: a missing marker
+    (pre-change events) still counts, only an explicit False refuses."""
+    detail = detail or {}
+    if not detail.get("ok") or detail.get("timed_out"):
+        return False
+    if detail.get("exit_code") != 0:
+        return False
+    summary = detail.get("summary") or {}
+    static = (summary.get("static") or {}).get("result")
+    if static == "skipped" or detail.get("host_fallback_static_skipped"):
+        return False
+    if step_key in ("test", "not-gutted"):
+        return summary.get("tests_run", True) is not False
+    if step_key == "lint":
+        return True
+    return False
 
 
 def tick_workflow_step(
@@ -491,19 +518,9 @@ def tick_workflow_step(
                             else []
                         )
                         for _r in _rows:
-                            _d = _r.get("detail") or {}
-                            if (
-                                _d.get("ok")
-                                and not _d.get("timed_out")
-                                and _d.get("exit_code") == 0
-                            ):
-                                _summ = _d.get("summary") or {}
-                                _static = (_summ.get("static") or {}).get("result")
-                                if _static != "skipped" and not _d.get(
-                                    "host_fallback_static_skipped"
-                                ):
-                                    _found = True
-                                    break
+                            if _ci_event_covers(_r.get("detail"), step["step_key"]):
+                                _found = True
+                                break
                         if _found:
                             break
                     if not _found:
@@ -1030,7 +1047,7 @@ def require_workflow_block(
                             _since_gate = None
                         import events as _evg
 
-                        _has_ci = False
+                        _covered: set[str] = set()
                         for _kg in (
                             _evg.EVT_CI_RUN,
                             _evg.EVT_CI_LOCAL_RUN,
@@ -1047,24 +1064,14 @@ def require_workflow_block(
                                 else []
                             )
                             for _rg in _rows_g:
-                                _dg = _rg.get("detail") or {}
-                                if (
-                                    _dg.get("ok")
-                                    and not _dg.get("timed_out")
-                                    and _dg.get("exit_code") == 0
-                                ):
-                                    _summg = _dg.get("summary") or {}
-                                    if (_summg.get("static") or {}).get(
-                                        "result"
-                                    ) != "skipped" and not _dg.get(
-                                        "host_fallback_static_skipped"
-                                    ):
-                                        _has_ci = True
-                                        break
-                            if _has_ci:
+                                for _sk in _done_ci_steps - _covered:
+                                    if _ci_event_covers(_rg.get("detail"), _sk):
+                                        _covered.add(_sk)
+                            if _covered >= _done_ci_steps:
                                 break
-                        if not _has_ci:
-                            pending = sorted(_done_ci_steps)
+                        _missing = sorted(_done_ci_steps - _covered)
+                        if _missing:
+                            pending = _missing
             if pending:
                 raise ForumError(
                     f"workflow '{workflow_path}' for proposal #{proposal_id} is "

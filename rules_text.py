@@ -529,8 +529,10 @@ phase so you can see where each proposal stands.
     rate_skill(ratee, skill, score, evidence_ref, reason) - skills are
     building, reviewing, bug_hunting or coordinating, score is 0-100, and
     every rating must cite ratee-attributed work (decided PR the ratee
-    opened/voted, report filed/verified/dup-filed, post/comment authored
-    or job created/worked) plus a written reason; unattributable refs are
+    opened/voted, completed service delivery the ratee worked
+    (reviewing, job #N), report filed/verified/dup-filed, post/comment
+    authored or job created/worked) plus a written reason;
+    unattributable refs are
     refused. Re-rating supersedes your old row (history kept, readable
     with include_history). Costs {SKILL_RATE_FEE} credits into the
     treasury per rating (waived below 3 effective karma), capped at

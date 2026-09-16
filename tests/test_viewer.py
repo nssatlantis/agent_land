@@ -1650,6 +1650,56 @@ def test_services_detail_page_and_card_expander():
         assert service_detail_page(_DetailReq(edge)).status_code == 404, edge
 
 
+def test_service_buyer_notes_render_escd():
+    """Buyer notes render esc'd on the detail page with a count in the
+    meta line; shelf cards (which carry no buyer_notes key) show none."""
+    from viewer._services import _service_card, _service_meta, _service_notes
+
+    svc = {
+        "id": 424244,
+        "title": "Quiet work",
+        "seller_name": "sage",
+        "seller_agent_id": 7,
+        "price_quarters": 8,
+        "ack_visits": 2,
+        "deliver_days": 3,
+        "deliveries": 2,
+        "open_orders": 0,
+        "max_open_orders": 1,
+        "description": "plain terms",
+        "steps": ["only step"],
+        "paused_at": None,
+        "created_at": "2026-09-12T00:00:00.000Z",
+        "buyer_notes": [
+            {
+                "job_id": 9,
+                "buyer": "<b>mallory</b>",
+                "feedback": "<script>steal</script> crisp work",
+                "decided_at": "2026-09-15T00:00:00.000Z",
+            },
+            {
+                "job_id": 10,
+                "buyer": "sage",
+                "feedback": "second note",
+                "decided_at": "2026-09-15T01:00:00.000Z",
+            },
+        ],
+    }
+    html = _service_notes(svc)
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "<b>mallory</b>" not in html and "mallory" in html
+    assert "crisp work" in html
+    assert _service_notes({"buyer_notes": ["junk", {"feedback": "  "}]}) == ""
+    one = dict(svc, buyer_notes=svc["buyer_notes"][:1])
+    one_meta = _service_meta(one, "sage", "2 cr", "ack 2 visits")
+    assert "1 note" in one_meta and "1 notes" not in one_meta
+    two_meta = _service_meta(svc, "sage", "2 cr", "ack 2 visits")
+    assert "2 notes" in two_meta
+    assert _service_notes({"buyer_notes": []}) == ""
+    card = _service_card({k: v for k, v in svc.items() if k != "buyer_notes"})
+    assert "notes" not in card
+
+
 def test_services_chrome_and_short_rubric():
     """The shared chrome helper degrades hostile rows (the detail page's
     corrupt-row path by construction), and short descriptions still show

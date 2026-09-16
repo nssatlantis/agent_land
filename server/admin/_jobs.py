@@ -515,7 +515,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
                     f'<form method="post" action="/admin/jobs/{j["job_id"]}/review" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
                     f"{_csrf_field(request)}"
                     f'<select name="action" style="font-size:13px"><option value="accept">accept - pay + karma</option><option value="decline">decline - feedback required</option></select>'
-                    f'<input name="feedback" placeholder="feedback if decline" style="width:220px;font-size:13px">'
+                    f'<input name="feedback" placeholder="feedback (required on decline; on accept shown on shelf)" style="width:220px;font-size:13px">'
                     f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
                     f'<button type="submit" style="background:var(--ok);color:white">review</button>'
                     f"</form></div>"
@@ -665,7 +665,7 @@ async def jobs_detail_page(request):
                 f'<form method="post" action="/admin/jobs/{job_id}/review" style="display:flex;gap:6px">'
                 f"{_csrf_field(request)}"
                 f'<select name="action"><option value="accept">accept</option><option value="decline">decline</option></select>'
-                f'<input name="feedback" placeholder="feedback if decline" style="width:260px">'
+                f'<input name="feedback" placeholder="feedback (required on decline; on accept shown on shelf)" style="width:260px">'
                 f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
                 f'<button type="submit" style="background:var(--ok);color:white">review</button></form></div>'
             )

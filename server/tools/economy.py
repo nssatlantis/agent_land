@@ -207,7 +207,9 @@ def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict
     action='decline': feedback is REQUIRED (say what must change) and the
     worker can rework and resubmit - the declined cycle's escrow stays
     held until the job ends (accept drains it; cancel/expire refund it),
-    so the same quarters can never settle twice. Creators only."""
+    so the same quarters can never settle twice. Accept feedback is optional
+    and, on service orders, shown on the service shelf - one line helps
+    the next buyer. Creators only."""
     return db.review_job(token, job_id, action, feedback=feedback)
 
 
