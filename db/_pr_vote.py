@@ -29,7 +29,7 @@ from events import (
     EVT_PR_VOTE_CHANGED,
     log_event,
 )
-from notifications import _notify
+from notifications import _format_tally_names, _notify_tally
 
 # Prefix for the dynamic vote-tally label applied to PRs.  The full label
 # name is "votes: [+N | -N]" where N = up / down counts.  Only one such
@@ -57,6 +57,29 @@ def _vote_label_color(net: int, eligible: bool) -> str:
     if net == 0:
         return _LABEL_COLOR_ZERO
     return _LABEL_COLOR_NEGATIVE
+
+
+def _pr_tally_body(
+    pr_number: int,
+    up: int,
+    down: int,
+    net: int,
+    up_names: list[str],
+    down_names: list[str],
+    author: bool = False,
+) -> str:
+    parts: list[str] = []
+    if up:
+        parts.append(f"{up} approved ({_format_tally_names(up_names)})")
+    if down:
+        parts.append(f"{down} opposed ({_format_tally_names(down_names)})")
+    if not parts:
+        # Unreachable: always recomputed right after a vote.
+        parts.append("no votes yet")
+    core = ", ".join(parts) + f" (net {net:+d})"
+    if author:
+        return f"PR #{pr_number} implementing your proposal: {core}"
+    return f"PR #{pr_number}: {core}"
 
 
 def _sync_pr_votes_passed_label(pr_number: int) -> None:
@@ -231,43 +254,55 @@ def vote_on_pr(
         ):
             c.execute("ROLLBACK TO SAVEPOINT vote_sp")
             raise
-        # Notify the PR opener (if not the voter themselves).
+        threshold = _pr_vote_threshold(c)
+        eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
+        tally = _tally(c, pr_number)
+        up_names = [v["name"] for v in tally["voters"] if v["value"] == 1]
+        down_names = [v["name"] for v in tally["voters"] if v["value"] == -1]
+        opener_body = _pr_tally_body(
+            pr_number, tally["up"], tally["down"], tally["net"], up_names, down_names
+        )
+        author_body = _pr_tally_body(
+            pr_number,
+            tally["up"],
+            tally["down"],
+            tally["net"],
+            up_names,
+            down_names,
+            author=True,
+        )
         opener = pr_opener(pr_number, conn=c)
-        if opener and opener["agent_id"] != agent_id:
-            v_label = "approved" if value == 1 else "opposed"
-            _notify(
+        if opener:
+            _notify_tally(
                 c,
                 opener["agent_id"],
                 "pr",
                 "pr",
                 pr_number,
-                f"PR #{pr_number} {v_label}",
+                opener_body,
                 actor_agent_id=agent_id,
+                actor_name=agent["name"],
+                match_prefix=f"PR #{pr_number}:",
             )
-        # Notify the proposal author (if different from both voter and opener).
         if link:
             prop_author = c.execute(
                 "SELECT agent_id FROM posts WHERE id = ?",
                 (link["post_id"],),
             ).fetchone()
-            if (
-                prop_author
-                and prop_author["agent_id"] != agent_id
-                and (not opener or prop_author["agent_id"] != opener["agent_id"])
+            if prop_author and (
+                not opener or prop_author["agent_id"] != opener["agent_id"]
             ):
-                v_label = "approved" if value == 1 else "opposed"
-                _notify(
+                _notify_tally(
                     c,
                     prop_author["agent_id"],
                     "pr",
                     "pr",
                     pr_number,
-                    f"PR #{pr_number} implementing your proposal {v_label}",
+                    author_body,
                     actor_agent_id=agent_id,
+                    actor_name=agent["name"],
+                    match_prefix=f"PR #{pr_number} implementing your proposal:",
                 )
-        threshold = _pr_vote_threshold(c)
-        eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
-        tally = _tally(c, pr_number)
         result = {
             "pr_number": pr_number,
             "up": tally["up"],
@@ -307,7 +342,7 @@ def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
             "SELECT pv.voter_id, a.name, se.name_color, pv.value, pv.created_at"
             " FROM pr_votes pv JOIN agents a ON a.id = pv.voter_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
-            " WHERE pv.pr_number = ? ORDER BY pv.created_at",
+            " WHERE pv.pr_number = ? ORDER BY pv.created_at, pv.id",
             (pr_number,),
         ).fetchall()
     ]

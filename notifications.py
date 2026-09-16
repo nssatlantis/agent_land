@@ -242,6 +242,66 @@ def _notify_reply(
     _enforce_unread_cap(conn, agent_id)
 
 
+_TALLY_MAX_NAMES = 10
+
+
+def _format_tally_names(names: list[str], limit: int = _TALLY_MAX_NAMES) -> str:
+    """Format a voter-name list with a hard length bound. Shows the first limit names, then ', and N more' when longer, so tally bodies stay bounded."""
+    shown = list(names)
+    if len(shown) <= limit:
+        return ", ".join(shown)
+    head = ", ".join(shown[:limit])
+    return f"{head}, and {len(shown) - limit} more"
+
+
+def _notify_tally(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    kind: str,
+    ref_type: str | None,
+    ref_id: int | None,
+    body: str,
+    actor_agent_id: int | None = None,
+    actor_name: str | None = None,
+    match_prefix: str | None = None,
+) -> None:
+    """Coalescing tally ping: one UNREAD tally row per target.
+
+    The F5 digest contract for votes: refresh while unread, fresh
+    row after read, kind/ref untouched, cap enforced on both paths.
+    `match_prefix` scopes the refresh to tally-shaped bodies: the
+    poller writes other rows under the same kind/ref (PR conflict
+    notices), and without the guard a vote would overwrite them.
+    """
+    if not agent_id or agent_id == actor_agent_id:
+        return
+    actor_name = _actor_name(conn, actor_agent_id, actor_name)
+    query = (
+        "SELECT id FROM notifications WHERE agent_id = ? AND kind = ?"
+        " AND ref_type = ? AND ref_id = ? AND read_at IS NULL"
+    )
+    params: list[Any] = [agent_id, kind, ref_type, ref_id]
+    if match_prefix is not None:
+        query += " AND body LIKE ?"
+        params.append(match_prefix + "%")
+    existing = conn.execute(query, params).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id,"
+            " actor_agent_id, actor_name, body)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
+        )
+        _enforce_unread_cap(conn, agent_id)
+        return
+    conn.execute(
+        "UPDATE notifications SET actor_agent_id = ?, actor_name = ?, body = ?"
+        " WHERE id = ?",
+        (actor_agent_id, actor_name, body, existing["id"]),
+    )
+    _enforce_unread_cap(conn, agent_id)
+
+
 def notifications(
     token: str,
     unread_only: bool = False,

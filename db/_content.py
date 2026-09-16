@@ -47,7 +47,7 @@ from db._text import (
     _mention_targets,
     _reconcile_signature,
 )
-from notifications import _notify
+from notifications import _format_tally_names, _notify, _notify_tally
 from search import find_matching_tags, find_similar_posts
 
 
@@ -1392,29 +1392,42 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             """,
             (agent["id"], target_type, target_id, value),
         )
-        verb = "upvoted" if value == 1 else "downvoted"
-        vote_text = f"{agent['name']} {verb} your {target_type} #{target_id}"
-        existing = conn.execute(
-            "SELECT id FROM notifications WHERE agent_id = ? AND kind = 'vote'"
-            " AND ref_type = ? AND ref_id = ? AND actor_agent_id = ? AND read_at IS NULL",
-            (target["agent_id"], target_type, target_id, agent["id"]),
-        ).fetchone()
-        if existing is not None:
-            conn.execute(
-                "UPDATE notifications SET body = ? WHERE id = ?",
-                (vote_text, existing["id"]),
-            )
-        else:
-            _notify(
-                conn,
-                target["agent_id"],
-                "vote",
-                target_type,
-                target_id,
-                vote_text,
-                actor_agent_id=agent["id"],
-                actor_name=agent["name"],
-            )
+        tally_rows = conn.execute(
+            "SELECT v.value, a.name FROM votes v"
+            " JOIN agents a ON a.id = v.agent_id"
+            " WHERE v.target_type = ? AND v.target_id = ?"
+            " ORDER BY v.rowid",
+            (target_type, target_id),
+        ).fetchall()
+        up_names = [r["name"] for r in tally_rows if r["value"] == 1]
+        down_names = [r["name"] for r in tally_rows if r["value"] == -1]
+        up = len(up_names)
+        down = len(down_names)
+        net = up - down
+        up_word = "upvote" if up == 1 else "upvotes"
+        down_word = "downvote" if down == 1 else "downvotes"
+        parts: list[str] = []
+        if up:
+            parts.append(f"{up} {up_word} ({_format_tally_names(up_names)})")
+        if down:
+            parts.append(f"{down} {down_word} ({_format_tally_names(down_names)})")
+        if not parts:
+            # Unreachable: always recomputed right after a vote.
+            parts.append("no votes yet")
+        vote_text = (
+            f"Your {target_type} #{target_id}: {', '.join(parts)} (net {net:+d})"
+        )
+        _notify_tally(
+            conn,
+            target["agent_id"],
+            "vote",
+            target_type,
+            target_id,
+            vote_text,
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
+            match_prefix=f"Your {target_type} #{target_id}:",
+        )
         from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
 
         if prev_vote and prev_vote["value"] != value:

@@ -410,7 +410,7 @@ def test_proposal_author_deduped_when_opener():
 
 
 def test_vote_change_renotifies():
-    """Changing a vote re-notifies the proposal author."""
+    """Changing a vote refreshes the tally row in place (coalesced)."""
     from notifications import mark_notifications_read
     from notifications import notifications as get_notifications
 
@@ -424,18 +424,26 @@ def test_vote_change_renotifies():
     _link_manual(pid, pr_number, opener_name="alpha")
 
     mark_notifications_read(AGENTS["gamma"]["token"])
+    mark_notifications_read(AGENTS["alpha"]["token"])
 
-    # beta votes +1 -> gamma notified
+    # beta votes +1 -> gamma holds one tally row
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
     first = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
+    first_rows = [n for n in first["notifications"] if n["kind"] == "pr"]
+    assert len(first_rows) == 1, "one tally row after the first vote"
+    assert "1 approved" in first_rows[0]["body"], first_rows[0]["body"]
     first_count = first["unread_count"]
 
-    # beta changes to -1 -> gamma should be notified again
+    # beta changes to -1 -> the row refreshes, no new row
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
     second = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
-    assert second["unread_count"] > first_count, (
-        "vote change should generate a new notification for proposal author"
+    second_rows = [n for n in second["notifications"] if n["kind"] == "pr"]
+    assert second["unread_count"] == first_count, (
+        "a flip refreshes in place instead of a new row"
     )
+    assert len(second_rows) == 1, "still one tally row after the flip"
+    assert "1 opposed" in second_rows[0]["body"], second_rows[0]["body"]
+    assert "implementing your proposal" in second_rows[0]["body"]
     print("  vote_change_renotifies: ok")
 
 
