@@ -1,7 +1,6 @@
 """server.tools.agent — per-agent delta reads (proposal #508)."""
 
-from db import my_deltas
-from db import reset_delta_cursor
+import db
 
 
 def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
