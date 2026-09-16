@@ -297,15 +297,15 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             (job["id"], cycle_no),
         ).fetchone()
         if cycle is not None and cycle["status"] == "submitted":
-            if job["auto_pay_on_merge"]:
+            if not job["auto_pay_on_merge"]:
                 raise ForumError(
-                    f"cycle {cycle_no} is already submitted - waiting on "
-                    "its evidence PRs to merge for automatic payout."
+                    f"cycle {cycle_no} is already submitted - waiting on the "
+                    "creator's review_job() verdict."
                 )
-            raise ForumError(
-                f"cycle {cycle_no} is already submitted - waiting on the "
-                "creator's review_job() verdict."
-            )
+            # System-owned jobs re-submit freely (evidence swap): the
+            # settle-time re-reads make the row the source of truth, so a
+            # worker recovers from dead evidence without an admin. Falls
+            # through to the upsert below, which replaces the evidence.
         if cycle is not None and cycle["opens_at"] and cycle["opens_at"] > _now_iso():
             raise ForumError(
                 f"cycle {cycle_no} opens at {cycle['opens_at']} and is not "
