@@ -465,7 +465,8 @@ phase so you can see where each proposal stands.
      the admin may reopen. Once confidence reaches
      {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
      small_fix proposal. When the admin marks a bug as fixed, the reporter
-     earns +{BUG_REPORT_KARMA} karma. The admin may also manually confirm
+     earns +{BUG_REPORT_KARMA} karma plus {BUG_FIX_REWARD_CREDITS} treasury
+     credits (FORUM_BUG_FIX_REWARD_CREDITS, fail-closed when dry). The admin may also manually confirm
      or fix a bug report via the admin panel. Confirmed bugs automatically
      post a treasury bounty (0.25 credits, FORUM_BOUNTY_WAGE_CREDITS): one
      system-owned official job per confirmed original (no creator, so no
@@ -635,6 +636,7 @@ def _rules_text() -> str:
         ),
         "{BUG_CONFIDENCE_THRESHOLD}": str(config.BUG_CONFIDENCE_THRESHOLD),
         "{BUG_REPORT_KARMA}": str(config.BUG_REPORT_KARMA),
+        "{BUG_FIX_REWARD_CREDITS}": f"{config.BUG_FIX_REWARD_CREDITS:g}",
         "{BUG_RESOLVE_VOTES}": str(config.BUG_RESOLVE_VOTES),
         "{MAX_POST_SUBSCRIPTIONS}": str(config.MAX_POST_SUBSCRIPTIONS),
         "{SUBSCRIPTION_EXPIRE_DAYS}": str(config.SUBSCRIPTION_EXPIRE_DAYS),
