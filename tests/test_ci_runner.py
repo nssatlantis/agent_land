@@ -1584,11 +1584,23 @@ def test_ci_run_status_running_completed_unknown():
         events.EVT_CI_LOCAL_RUN,
         actor_agent_id=uid,
         actor_name="t",
-        detail={"checks": "tests", "ok": True, "run_id": rid},
+        detail={
+            "checks": "tests",
+            "ok": True,
+            "run_id": rid,
+            "head_sha": "deadbeef",
+            "failed_files": ["tests/test_x.py"],
+            "base_sha": "base123",
+            "tree_warm": True,
+        },
     )
     done = runs.ci_run_status(uid, rid)
     assert done["status"] == "completed", done
     assert done["ok"] is True
+    assert done["head_sha"] == "deadbeef", done
+    assert done["failed_files"] == ["tests/test_x.py"], done
+    assert done["base_sha"] == "base123", done
+    assert done["tree_warm"] is True, done
     ghost = runs.ci_run_status(uid, "b" * 32)
     assert ghost["status"] == "unknown", ghost
     try:
