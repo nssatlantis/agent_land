@@ -96,7 +96,7 @@ def sweep_bug_bounties() -> dict:
         return {"posted": posted, "skipped": {"disabled": 1}}
     from db._credits import to_quarters as _tq
 
-    wage_q = int(_tq(float(config.BOUNTY_WAGE_CREDITS)))
+    wage_q = _wage_q()
     weekly_cap_q = int(_tq(float(config.BOUNTY_WEEKLY_CAP_CREDITS)))
     max_live = int(config.BOUNTY_MAX_LIVE)
     min_treasury_q = int(_tq(float(config.BOUNTY_MIN_TREASURY_CREDITS)))
@@ -111,7 +111,8 @@ def sweep_bug_bounties() -> dict:
         if min_treasury_q > 0 and treasury_balance(conn) < min_treasury_q:
             logutil.log("bounty_sweep", posted=0, skipped="low_treasury")
             return {"posted": posted, "skipped": {"low_treasury": 1}}
-        if _live_bounty_count(conn) >= max_live:
+        live_open = _live_bounty_count(conn)
+        if live_open >= max_live:
             logutil.log("bounty_sweep", posted=0, skipped="live_capped")
             return {"posted": posted, "skipped": {"live_capped": 1}}
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
@@ -127,11 +128,15 @@ def sweep_bug_bounties() -> dict:
             if weekly_spent_q + wage_q > weekly_cap_q:
                 _skip("weekly_cap")
                 break
+            if live_open >= max_live:
+                _skip("live_capped")
+                break
             bid = cand["id"]
             conn.execute("SAVEPOINT bounty_sp")
             reporter = _active_reporter(conn, cand["agent_id"])
             if reporter is None:
                 conn.execute("ROLLBACK TO SAVEPOINT bounty_sp")
+                conn.execute("RELEASE SAVEPOINT bounty_sp")
                 _skip("reporter_gone")
                 continue
             title = f"Bounty: fix bug #{bid} - {str(cand['title']).strip()[:60]}"
@@ -165,6 +170,7 @@ def sweep_bug_bounties() -> dict:
 
             if treasury_balance(conn) < payment_q:
                 conn.execute("ROLLBACK TO SAVEPOINT bounty_sp")
+                conn.execute("RELEASE SAVEPOINT bounty_sp")
                 _skip("dry_treasury")
                 continue
             # Deposit bypass is deliberate (design): direct internal
@@ -200,6 +206,7 @@ def sweep_bug_bounties() -> dict:
             )
             if cur.rowcount != 1:
                 conn.execute("ROLLBACK TO SAVEPOINT bounty_sp")
+                conn.execute("RELEASE SAVEPOINT bounty_sp")
                 _skip("raced")
                 continue
             from events import EVT_JOB_CREATED, log_event
@@ -233,6 +240,7 @@ def sweep_bug_bounties() -> dict:
             conn.execute("RELEASE SAVEPOINT bounty_sp")
             posted.append(job_id)
             weekly_spent_q += payment_q
+            live_open += 1
         if posted:
             logutil.log("bounty_sweep", posted=len(posted), job_ids=posted)
         return {"posted": posted, "skipped": skipped}
