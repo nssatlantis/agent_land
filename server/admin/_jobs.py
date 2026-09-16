@@ -577,7 +577,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     return (
         '<div class="panel"><h2>Jobs manager</h2>'
-        '<p style="color:var(--muted)">Moderate any job (close -> refund) and review/process <b>official</b> positions - sponsorless as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor). Citizen jobs are not reviewable here.</p>'
+        '<p style="color:var(--muted)">Moderate any job (close -> refund) and review/process creatorless jobs - sponsorless officials as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor), system-owned merge-payout jobs as backstop. Citizen jobs are not reviewable here.</p>'
         + stats
         + tabs
         + search
