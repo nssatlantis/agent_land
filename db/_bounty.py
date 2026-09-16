@@ -268,7 +268,6 @@ def auto_fix_bugs_for_merged_pr(
     "stayed": [...] bid lists}.
     """
     import logutil
-
     from db._bug_reports import fix_bug_report
     from db._jobs_admin import admin_cancel_job
 
@@ -305,9 +304,7 @@ def auto_fix_bugs_for_merged_pr(
             fix_bug_report(bid, admin=_AUTOFIX_ADMIN)
         except ForumError:  # domain: fail-loudly - raced fix wins; recorded
             continue
-        except (
-            Exception
-        ):  # domain: degrade-silently - transient faults log and skip; merge outcome safe
+        except Exception:  # domain: degrade-silently - transient faults log and skip; merge outcome safe
             logutil.log("bounty_autofix_bug_failed", bid=bid, phase="fix")
             continue
         fixed.append(bid)
@@ -330,9 +327,7 @@ def auto_fix_bugs_for_merged_pr(
         except ForumError:  # domain: fail-loudly - raced terminal state wins
             stayed.append(job_id)
             continue
-        except (
-            Exception
-        ):  # domain: degrade-silently - transient faults log and stay; fix already landed
+        except Exception:  # domain: degrade-silently - transient faults log and stay; fix already landed
             logutil.log("bounty_autofix_bug_failed", bid=bid, phase="cancel")
             stayed.append(job_id)
             continue
