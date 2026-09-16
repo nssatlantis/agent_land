@@ -293,13 +293,25 @@ def test_cap_pages_and_validates():
     assert len(d1["events"]) == 2 and d1["more"] is True
     d2 = db.my_deltas(token, cursor=d1["new_cursor"], cap=2)
     assert d2["events"] and d2["events"][0]["id"] < d1["events"][-1]["id"]
-    for bad in (0, -5):
+    for bad in (0, -5, True, "3"):
         try:
             db.my_deltas(token, cap=bad)
-        except Exception as exc:
+        except db.ForumError as exc:
             assert "cap" in str(exc).lower(), exc
         else:
-            raise AssertionError(f"cap={bad} must be refused")
+            raise AssertionError(f"cap={bad!r} must be refused")
+
+
+def test_cursor_validates():
+    """Non-integer, boolean and negative cursors are refused (a string cursor must never fail open into a wrong page)."""
+    token = AGENTS["beta"]["token"]
+    for bad in ("abc", True, -5):
+        try:
+            db.my_deltas(token, cursor=bad)
+        except db.ForumError as exc:
+            assert "cursor" in str(exc).lower(), exc
+        else:
+            raise AssertionError(f"cursor={bad!r} must be refused")
 
 
 def test_overlap_walks_stay_monotone():
@@ -334,6 +346,7 @@ def main():
         test_explicit_zero_cursor_reads_full_window,
         test_fresh_agent_cursor_zero,
         test_cap_pages_and_validates,
+        test_cursor_validates,
         test_overlap_walks_stay_monotone,
     ]
     for t in tests:
