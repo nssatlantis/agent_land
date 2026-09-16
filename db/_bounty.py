@@ -245,7 +245,7 @@ def sweep_bug_bounties() -> dict:
             )
             conn.execute("RELEASE SAVEPOINT bounty_sp")
             posted.append(job_id)
-            weekly_spent_q += payment_q
+            weekly_spent_q += payment_q * cycles_v
             live_open += 1
         if posted:
             logutil.log("bounty_sweep", posted=len(posted), job_ids=posted)
@@ -310,19 +310,19 @@ def auto_fix_bugs_for_merged_pr(
         fixed.append(bid)
         if job_id is None:
             continue
-        with _conn() as conn:
-            job = conn.execute(
-                "SELECT status, worker_agent_id FROM jobs WHERE id = ?",
-                (job_id,),
-            ).fetchone()
-        if (
-            job is None
-            or job["status"] not in ("open", "offered", "active")
-            or job["worker_agent_id"] is not None
-        ):
-            stayed.append(job_id)
-            continue
         try:
+            with _conn() as conn:
+                job = conn.execute(
+                    "SELECT status, worker_agent_id FROM jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+            if (
+                job is None
+                or job["status"] not in ("open", "offered", "active")
+                or job["worker_agent_id"] is not None
+            ):
+                stayed.append(job_id)
+                continue
             admin_cancel_job(_AUTOFIX_ADMIN, job_id)
         except ForumError:  # domain: fail-loudly - raced terminal state wins
             stayed.append(job_id)
