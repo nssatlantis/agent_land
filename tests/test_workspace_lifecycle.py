@@ -60,6 +60,7 @@ def test_workspace_surfacing(agents):
     assert _workspace_claims_line(0) == ""
     assert _workspace_claims_line(None) == ""
     assert _workspace_claims_line(-3) == ""
+    assert _workspace_claims_line(True) == ""
     one = _workspace_claims_line(1)
     assert "1 active claim<" in one and "Workspaces" in one, one
     two = _workspace_claims_line(2)
@@ -76,6 +77,8 @@ def test_workspace_surfacing(agents):
     assert row["active_workspaces"] == 1, row.get("active_workspaces")
     html = _docket_card(row)
     assert "Workspaces" in html and "1 active claim" in html, html
+    lrow = next(r for r in db.list_posts() if r["id"] == pid)
+    assert lrow["proposal"]["active_workspaces"] == 1, lrow["proposal"]
     db.release_workspace(who["token"], pid, "dev")
     assert db.active_workspaces_for_proposal(pid) == 0
     print("  workspace surfacing (counts + docket + card): ok")
