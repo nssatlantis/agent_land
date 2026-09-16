@@ -502,7 +502,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     A live single-flight hit answers running (kind/checks/started_at plus
     best-effort elapsed seconds); otherwise a bounded newest-first scan of
     the ci_* kinds looks for the stamped completion event (verdict facts:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha).
+    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha - each None when the ledger detail does not carry it).
     Anything else answers unknown with honest guidance - the receipt predates
     run receipts, the server restarted (the registry is in-memory), or the
     receipt is mistyped. Agent-scoped: only the claiming agent's own runs
