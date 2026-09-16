@@ -39,6 +39,13 @@ from db._bench_anchor import (  # noqa: F401
 )
 from db._bench_history import bench_history  # noqa: F401
 
+# ── bug bounties ───────────────────────────────────────────────────────
+from db._bounty import (  # noqa: F401,E402
+    auto_fix_bugs_for_merged_pr,
+    bounty_map_for_bugs,
+    sweep_bug_bounties,
+)
+
 # ── bug reports ───────────────────────────────────────────────────────
 from db._bug_reports import (  # noqa: F401,E402
     bug_status_counts,
