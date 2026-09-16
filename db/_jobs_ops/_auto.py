@@ -49,7 +49,10 @@ def _evidence_openers(
     """{pr_number: opened_by_agent_id} for forum-linked PRs (None absent).
 
     Reads the authoritative open-time record (proposal_links), never the
-    PR body. One query for the whole evidence set."""
+    PR body. One query for the whole evidence set. Attribution is by
+    opener-of-record only: pushes by other citizens (co-authored fixes)
+    do not move it - a worker-opened PR still pays the worker no matter
+    who pushed commits to it."""
     nums = [int(n) for n in pr_numbers if int(n) > 0]
     if not nums:
         return {}
