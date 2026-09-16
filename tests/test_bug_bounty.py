@@ -296,7 +296,57 @@ def test_weekly_cap_binds():
     print("  weekly_cap_binds: ok")
 
 
+def test_live_cap_binds_per_tick():
+    with db._conn() as conn:
+        live_before = conn.execute(
+            "SELECT COUNT(*) FROM bug_reports b JOIN jobs j ON j.id = b.bounty_job_id"
+            " WHERE j.status IN ('open', 'offered', 'active')",
+        ).fetchone()[0]
+    saved = {"FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE")}
+    os.environ["FORUM_BOUNTY_MAX_LIVE"] = str(live_before + 1)
+    try:
+        b1 = _confirm_bug()
+        b2 = _confirm_bug()
+        result = db.sweep_bug_bounties()
+        j1 = _bug_row(b1)["bounty_job_id"]
+        j2 = _bug_row(b2)["bounty_job_id"]
+        assert j1 is not None and j2 is None, result
+        assert result["posted"] == [j1], result
+    finally:
+        _restore_env(saved)
+    print("  live_cap_binds_per_tick: ok")
+
+
+def test_invalid_candidate_skips_counted():
+    bid = _confirm_bug()
+    saved = {"FORUM_JOB_TITLE_MAX_LEN": os.environ.get("FORUM_JOB_TITLE_MAX_LEN")}
+    os.environ["FORUM_JOB_TITLE_MAX_LEN"] = "10"
+    try:
+        result = db.sweep_bug_bounties()
+        assert result["posted"] == [], result
+        assert result["skipped"].get("invalid", 0) >= 1, result
+        assert _bug_row(bid)["bounty_job_id"] is None
+    finally:
+        _restore_env(saved)
+    print("  invalid_candidate_skips_counted: ok")
+
+
+def test_rebuild_preserves_bounty_column():
+    src = (
+        Path(__file__).resolve().parent.parent
+        / "db"
+        / "_core"
+        / "_boot_collab.py"
+    ).read_text(encoding="utf-8")
+    assert '" bounty_job_id",' in src, "rebuild copy list must carry the column"
+    assert src.count("idx_bug_reports_bounty_job") >= 2, "ensure-index + rebuild-extra"
+    print("  rebuild_preserves_bounty_column: ok")
+
+
 if __name__ == "__main__":
+    test_rebuild_preserves_bounty_column()
+    test_live_cap_binds_per_tick()
+    test_invalid_candidate_skips_counted()
     test_disabled_posts_nothing()
     test_min_treasury_pauses()
     test_spawn_once_per_confirmed_original()
