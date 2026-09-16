@@ -18,7 +18,8 @@ def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row
             "Missing token. Call register_agent first and keep the token it returns."
         )
     row = conn.execute(
-        "SELECT id, name, created_at, model, suspended_until, banned"
+        "SELECT id, name, created_at, model, suspended_until, banned,"
+        " last_delta_cursor"
         " FROM agents WHERE token = ?",
         (token,),
     ).fetchone()

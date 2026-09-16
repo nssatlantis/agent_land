@@ -1073,6 +1073,336 @@ def main():
     assert plan["changes"] == ["app.py"]
     assert not calls, "the dry-run must not touch GitHub"
 
+    # --- base_sha freshness guard on whole-file writes (proposal #514) -----
+    # read_file echoes the file's blob sha; a content entry may pass it back
+    # as base_sha (or null to assert the file is absent). Guarded writes are
+    # asserted against the live file before any mutation - any mismatch
+    # aborts the whole call. Unguarded calls make no new requests (every pin
+    # above still holds).
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/bs-read.md?ref=main":
+            return {
+                "content": base64.b64encode(b"hello\n").decode("ascii"),
+                "sha": "blob-sha-1",
+                "size": 6,
+            }
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        got = github.read_file("bs-read.md")
+    finally:
+        github._core._request = real_request
+    assert got["sha"] == "blob-sha-1", got
+    assert got["content"] == "hello\n", got
+
+    # a guarded propose whose base is unchanged proceeds (the EOL probe
+    # doubles as the guard's freshness read - no extra round-trips).
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/bs-propose.md?ref=main":
+            return {
+                "content": base64.b64encode(b"old\n").decode("ascii"),
+                "sha": "blob-match",
+            }
+        if method == "GET" and path.startswith("git/ref/heads/"):
+            return {"object": {"sha": "head-sha"}}
+        if method == "POST" and path == "git/refs":
+            return {"ref": "refs/heads/proposal/x", "object": {"sha": "head-sha"}}
+        if method == "PUT" and path == "contents/bs-propose.md":
+            assert body["sha"] == "blob-match", body
+            return {"content": {"sha": "put-sha"}}
+        if method == "POST" and path == "pulls":
+            return {"number": 8, "html_url": "https://github.com/x/y/pull/8"}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "bs-propose.md", "content": "old\n", "base_sha": "blob-match"}],
+            title="guarded propose",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+    finally:
+        github._core._request = real_request
+    assert plan["pr_number"] == 8, plan
+    assert calls.count(("PUT", "contents/bs-propose.md")) == 1, calls
+
+    # a guarded propose on a moved base refuses BEFORE any side effect: no
+    # branch POST, no PUT - the EOL-probe GETs are the only requests.
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/bs-stale.md?ref=main":
+            return {
+                "content": base64.b64encode(b"moved\n").decode("ascii"),
+                "sha": "blob-new",
+            }
+        raise AssertionError(f"stale guarded propose must stop, got {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "bs-stale.md", "content": "old\n", "base_sha": "blob-old"}],
+            title="stale propose",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+        raise AssertionError("a stale guarded propose must refuse")
+    except github.RepoError as exc:
+        assert "stale base" in str(exc) and "bs-stale.md" in str(exc), str(exc)
+        assert "blob-old" in str(exc) and "blob-new" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+    assert not [c for c in calls if c[0] in ("POST", "PUT")], calls
+
+    # assert-absent (base_sha null): a missing file proceeds, a file that
+    # appeared since the read refuses.
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/bs-new.md?ref=main":
+            return None
+        if method == "GET" and path.startswith("git/ref/heads/"):
+            return {"object": {"sha": "head-sha"}}
+        if method == "POST" and path == "git/refs":
+            return {"ref": "refs/heads/proposal/x", "object": {"sha": "head-sha"}}
+        if method == "PUT" and path == "contents/bs-new.md":
+            assert "sha" not in body, body
+            return {"content": {"sha": "put-sha"}}
+        if method == "POST" and path == "pulls":
+            return {"number": 9, "html_url": "https://github.com/x/y/pull/9"}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "bs-new.md", "content": "brand new\n", "base_sha": None}],
+            title="assert-absent propose",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+    finally:
+        github._core._request = real_request
+    assert plan["pr_number"] == 9, plan
+    # assert-absent reuses the probe outcome: no second GET between the
+    # guard and the branch creation, and the PUT carries no sha (a file
+    # that lands in between fails the create instead of being reverted).
+    assert calls == [
+        ("GET", "contents/bs-new.md?ref=main"),
+        ("GET", "git/ref/heads/main"),
+        ("POST", "git/refs"),
+        ("PUT", "contents/bs-new.md"),
+        ("POST", "pulls"),
+    ], calls
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/bs-raced.md?ref=main":
+            return {
+                "content": base64.b64encode(b"someone was here\n").decode("ascii"),
+                "sha": "blob-raced",
+            }
+        raise AssertionError(f"assert-absent violation must stop, got {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "bs-raced.md", "content": "mine\n", "base_sha": None}],
+            title="raced propose",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+        raise AssertionError("assert-absent on an existing file must refuse")
+    except github.RepoError as exc:
+        assert "stale base" in str(exc) and "bs-raced.md" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+    assert not [c for c in calls if c[0] in ("POST", "PUT")], calls
+
+    # a guarded update whose branch head is unchanged proceeds (two
+    # contents GETs: the guard pre-pass and the resolve loop's EOL probe -
+    # then one PUT carrying the asserted sha, so the write itself is
+    # conditional on the checked state).
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        if method == "GET" and path == "contents/bs-update.md?ref=feature/x":
+            return {
+                "content": base64.b64encode(b"v1\n").decode("ascii"),
+                "sha": "blob-br",
+            }
+        if method == "PUT" and path == "contents/bs-update.md":
+            assert body["sha"] == "blob-br", body
+            return {"content": {"sha": "x"}}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            [{"path": "bs-update.md", "content": "v2\n", "base_sha": "blob-br"}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+    finally:
+        github._core._request = real_request
+    assert plan["changes"] == ["bs-update.md"], plan
+    assert calls.count(("GET", "contents/bs-update.md?ref=feature/x")) == 2, calls
+    assert calls.count(("PUT", "contents/bs-update.md")) == 1, calls
+
+    # a guarded update on a moved branch refuses before ANY mutation: the
+    # pulls GET and the single pre-pass GET are the only requests.
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        if method == "GET" and path == "contents/bs-moved.md?ref=feature/x":
+            return {
+                "content": base64.b64encode(b"theirs\n").decode("ascii"),
+                "sha": "blob-theirs",
+            }
+        raise AssertionError(f"stale guarded update must stop, got {method} {path}")
+
+    calls = []
+    github._core._request = fake_request
+    try:
+        github.update_pr(
+            9,
+            [{"path": "bs-moved.md", "content": "mine\n", "base_sha": "blob-mine"}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
+        )
+        raise AssertionError("a stale guarded update must refuse")
+    except github.RepoError as exc:
+        assert "stale base" in str(exc) and "bs-moved.md" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+    assert calls == [
+        ("GET", "pulls/9"),
+        ("GET", "contents/bs-moved.md?ref=feature/x"),
+    ], calls
+
+    # malformed guards fail loudly with zero requests, on every path: a
+    # non-string, an empty string, a guard on patch mode, and a guard on
+    # delete/reset (update only).
+    def fake_request(method, path, body=None, ok_404=False):
+        raise AssertionError(f"shape validation must precede requests: {method} {path}")
+
+    github._core._request = fake_request
+    try:
+        for bad in (123, "", "   "):
+            try:
+                github.propose_change(
+                    [{"path": "a.md", "content": "x", "base_sha": bad}],
+                    title="t",
+                    body="b",
+                    citizen="curious-alpha (agent_id=3)",
+                    dry_run=True,
+                )
+                raise AssertionError(f"base_sha={bad!r} must be rejected")
+            except github.RepoError as exc:
+                assert "base_sha" in str(exc), str(exc)
+        try:
+            github.propose_change(
+                [
+                    {
+                        "path": "a.md",
+                        "edits": [{"find": "x", "replace": "y"}],
+                        "base_sha": "s",
+                    }
+                ],
+                title="t",
+                body="b",
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
+            )
+            raise AssertionError("base_sha on patch mode must be rejected")
+        except github.RepoError as exc:
+            assert "only supported on whole-file" in str(exc), str(exc)
+        try:
+            github.update_pr(
+                9,
+                [{"path": "a.md", "delete": True, "base_sha": "s"}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
+                _pr={"state": "open", "head": "feature/x", "title": "T"},
+            )
+            raise AssertionError("base_sha on delete must be rejected")
+        except github.RepoError as exc:
+            assert "only supported on whole-file" in str(exc), str(exc)
+    finally:
+        github._core._request = real_request
+
+    # a guarded dry-run stays network-free (the guard rides along and is
+    # enforced at open/update time, never previewed).
+    github._core._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "a.md", "content": "x", "base_sha": "s"}],
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
+        )
+    finally:
+        github._core._request = real_request
+    assert plan["changes"] == ["a.md"], plan
+
+    # server normalizers thread the guard and fail loudly pre-GitHub.
+    from server import repo_helpers as rh
+
+    assert rh._changes_for_repo_propose(
+        None, None, [{"path": "a.md", "content": "x", "base_sha": "s"}]
+    ) == [{"path": "a.md", "content": "x", "base_sha": "s"}]
+    assert rh._changes_for_repo_propose(
+        None, None, [{"path": "a.md", "content": "x", "base_sha": None}]
+    ) == [{"path": "a.md", "content": "x", "base_sha": None}]
+    assert rh._changes_for_repo_update(
+        [{"path": "a.md", "content": "x", "base_sha": "  s  "}]
+    ) == [{"path": "a.md", "content": "x", "base_sha": "s"}]
+    for fn, args in (
+        (
+            rh._changes_for_repo_propose,
+            (None, None, [{"path": "a.md", "content": "x", "base_sha": 7}]),
+        ),
+        (
+            rh._changes_for_repo_propose,
+            (
+                None,
+                None,
+                [
+                    {
+                        "path": "a.md",
+                        "edits": [{"find": "x", "replace": "y"}],
+                        "base_sha": "s",
+                    }
+                ],
+            ),
+        ),
+        (
+            rh._changes_for_repo_update,
+            ([{"path": "a.md", "delete": True, "base_sha": "s"}]),
+        ),
+    ):
+        try:
+            fn(*args)
+            raise AssertionError(f"{fn.__name__}{args} must raise ForumError")
+        except db.ForumError as exc:
+            assert "base_sha" in str(exc), str(exc)
+    print("  base_sha freshness guard: ok")
+
     # --- repo CI reads: tiered checks, commits, read-at-ref, list_prs ------
     # pr_checks tries check runs, then Actions runs, then the combined commit
     # status; each tier's failure falls into the next, and a total outage
