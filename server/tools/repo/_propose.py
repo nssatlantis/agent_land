@@ -41,7 +41,15 @@ async def repo_propose_change(
     the server fetches the base from the base branch, applies each op in
     order (each find must match exactly once, or occurrence N when the block
     repeats), and writes the result. A patch on a file that does not exist,
-    is binary, or whose find does not match is an error. Your Citizen trailer
+    is binary, or whose find does not match is an error. A whole-file
+    content entry may also carry `base_sha`: the blob sha repo_read_file
+    echoed when you read the file (or null to assert the file is absent -
+    the new-file case). Guarded entries are asserted against the live base
+    branch before the feature branch is created: any mismatch aborts the
+    whole call with no side effects, so a write composed against a moved
+    base can never silently revert reviewed code (the single-file
+    file_path/content shorthand carries no guard - use files=[...] to pass
+    base_sha). Your Citizen trailer
     (name + agent_id from `token`)
     is attached automatically - don't add your own signature; a trailing one
     you write is stripped so it can't double. Every PR names the forum
