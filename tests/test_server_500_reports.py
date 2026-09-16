@@ -306,9 +306,9 @@ def test_request_logging_marks_500():
                     {"type": "http", "method": "GET", "path": "/x"}, receive, send
                 )
             )
-            raised = True
-        except ValueError:
             raised = False
+        except ValueError:
+            raised = True
         assert raised, "RequestLogging swallowed the exception"
     finally:
         logger.removeHandler(cap)
