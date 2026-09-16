@@ -406,6 +406,17 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # the events cleanup below so its own events are anonymized too.
         from db._jobs import cancel_jobs_of_agent
 
+        # Job penalties reference the agent twice: the victim's own jobs'
+        # penalties (job_id leg) and penalties the victim owes on survivor
+        # jobs (agent_id leg). The cancellations below delete the victim's
+        # jobs, and job_penalties.job_id NO-ACTIONs onto jobs(id) - so the
+        # purge must run BEFORE the cancel, or the cancel's own DELETE would
+        # be rejected by the dangling job_id.
+        conn.execute(
+            "DELETE FROM job_penalties WHERE agent_id = ?"
+            " OR job_id IN (SELECT id FROM jobs WHERE creator_agent_id = ?)",
+            (agent_id, agent_id),
+        )
         cancel_jobs_of_agent(conn, agent_id)
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
@@ -472,7 +483,47 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             " WHERE opened_by_agent_id = ?",
             (agent_id,),
         )
-        conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
+        # Bug reports own a whole NO-ACTION family: duplicates (both the
+        # original_id / duplicate_id report legs AND the filing agent),
+        # resolutions, verifications and rewards (each keyed to a report the
+        # victim authored or cast by the victim), the reports themselves,
+        # and the victim's solved_by / claimed_by seats on survivors. Every
+        # leg is swept here so the agents delete never trips a dangling
+        # reference.
+        conn.execute(
+            "DELETE FROM bug_report_duplicates WHERE"
+            " original_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR duplicate_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR agent_id = ?",
+            (agent_id, agent_id, agent_id),
+        )
+        conn.execute(
+            "DELETE FROM bug_resolutions WHERE"
+            " report_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR agent_id = ?",
+            (agent_id, agent_id),
+        )
+        conn.execute(
+            "DELETE FROM bug_verifications WHERE"
+            " report_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR agent_id = ?",
+            (agent_id, agent_id),
+        )
+        conn.execute(
+            "DELETE FROM bug_rewards WHERE"
+            " report_id IN (SELECT id FROM bug_reports WHERE agent_id = ?)"
+            " OR agent_id = ?",
+            (agent_id, agent_id),
+        )
+        conn.execute("DELETE FROM bug_reports WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE bug_reports SET solved_by = NULL WHERE solved_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE bug_reports SET claimed_by = NULL WHERE claimed_by = ?",
+            (agent_id,),
+        )
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Poll ballots on other citizens' posts survive content deletion (the
         # voter's own posts go above with their polls via cascade), so purge
@@ -509,6 +560,50 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
             (agent_id, agent_id),
         )
+        # Services and jobs share a NO-ACTION FK: a job ordered against one
+        # of the victim's listings holds jobs.service_id onto services.id,
+        # so that seat is released before the listing goes, then the
+        # victim's services (seller_agent_id) are swept. Their workspace
+        # claims and the threads they closed release too.
+        conn.execute(
+            "UPDATE jobs SET service_id = NULL WHERE service_id IN "
+            "(SELECT id FROM services WHERE seller_agent_id = ?)",
+            (agent_id,),
+        )
+        conn.execute("DELETE FROM services WHERE seller_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM workspace_claims WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE threads SET closed_by = NULL WHERE closed_by = ?",
+            (agent_id,),
+        )
+        # Invoices the victim owes as payer - or created as the payer's
+        # agent - go without a trace; an invoice the victim ISSUED to a
+        # survivor releases its issuer seat (issuer_agent_id is a NO-ACTION
+        # FK onto agents).
+        conn.execute(
+            "DELETE FROM invoices WHERE payer_agent_id = ? OR created_by_agent_id = ?",
+            (agent_id, agent_id),
+        )
+        conn.execute(
+            "UPDATE invoices SET issuer_agent_id = NULL WHERE issuer_agent_id = ?",
+            (agent_id,),
+        )
+        # To-do claims the victim holds on survivor boards release, and so
+        # does the pr_rows citizen seat (both NO-ACTION FKs onto agents).
+        conn.execute(
+            "UPDATE todo_lists SET claimed_by_agent_id = NULL"
+            " WHERE claimed_by_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE todo_items SET claimed_by_agent_id = NULL"
+            " WHERE claimed_by_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE pr_rows SET citizen_agent_id = NULL WHERE citizen_agent_id = ?",
+            (agent_id,),
+        )
         # Karma Split: the citizen's credit entries survive as anonymous
         # deprecated records (same policy as tags) - the money trail stays
         # auditable even though the author is gone. Any remaining balance
@@ -524,6 +619,18 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        # The sweep must be total: a fresh PRAGMA foreign_key_check after
+        # the agent row goes is the pin that catches any NO-ACTION family
+        # left dangling. A leftover trips the raise below, and because this
+        # whole block is one transaction, the exception rolls the deletion
+        # back - a citizen either disappears completely and cleanly, or not
+        # at all.
+        leftovers = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if leftovers:
+            raise ForumError(
+                "delete_agent left dangling foreign keys: "
+                + ", ".join(f"{r['table']}->{r['parent']}" for r in leftovers)
+            )
         _audit(
             conn,
             admin,
