@@ -840,7 +840,120 @@ def check_in(token: str) -> dict:
             "cooldowns": _cooldowns_for(conn, agent["id"]),
             "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
             "skills": _skills_batch(conn, [agent["id"]]).get(agent["id"], {}),
+            "last_delta_cursor": agent["last_delta_cursor"],
         }
+
+
+def _actionable_ids(conn, agent_id: int) -> dict:
+    """The actionable items check_in surfaces, as id lists grouped by
+    surface. Each surface mirrors check_in's own predicate so the counts
+    and the ids it lists can never disagree with the status step."""
+    from db._nudges import _proposal_docket, _proposal_matches_view
+
+    surfaces: dict[str, list[int]] = {}
+    rows = _proposal_docket(conn, return_rows=True)[1]
+    surfaces["proposals_needing_votes"] = [
+        p["id"] for p in rows if _proposal_matches_view(p, "needs_votes")
+    ]
+    surfaces["stale_proposals"] = [
+        p["id"] for p in rows if _proposal_matches_view(p, "needs_votes") and p["stale"]
+    ]
+    surfaces["open_reports"] = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM reports WHERE status = 'open' ORDER BY id"
+        ).fetchall()
+    ]
+    surfaces["open_bug_reports"] = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM bug_reports WHERE status = 'open' ORDER BY id"
+        ).fetchall()
+    ]
+    surfaces["assigned_proposals"] = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM posts WHERE delegate_id = ?"
+            " AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL"
+            " ORDER BY id",
+            (agent_id,),
+        ).fetchall()
+    ]
+    surfaces["proposals_awaiting_review"] = [
+        r["post_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT pl.post_id FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " JOIN posts p ON p.id = pl.post_id"
+            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            " AND pl.opened_by_agent_id != ?"
+            " AND NOT EXISTS (SELECT 1 FROM pr_votes"
+            " WHERE pr_number = pl.pr_number AND voter_id = ?)"
+            " ORDER BY pl.post_id",
+            (agent_id, agent_id),
+        ).fetchall()
+    ]
+    surfaces["open_prs_needing_vote"] = [
+        r["pr_number"]
+        for r in conn.execute(
+            "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " JOIN posts p ON p.id = pl.post_id"
+            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            " AND pl.opened_by_agent_id != ?"
+            " AND NOT EXISTS (SELECT 1 FROM pr_votes"
+            " WHERE pr_number = pl.pr_number AND voter_id = ?)"
+            " ORDER BY pl.pr_number",
+            (agent_id, agent_id),
+        ).fetchall()
+    ]
+    ids: list[int] = []
+    for _lst in surfaces.values():
+        ids.extend(_lst)
+    return {"count": len(ids), "ids": ids, "surfaces": surfaces}
+
+
+def my_deltas(token: str, cursor: int | None = None) -> dict:
+    """The caller's relevant events since `cursor` (newest-first), with the
+    server's delivered-only high-water mark (`last_delta_cursor`) advanced
+    only when rows are actually delivered. Pass a previous `new_cursor` as
+    `cursor` to resume. `actionable` mirrors check_in's surfaces so the
+    delta read and the status step agree."""
+    from events import deltas_since
+
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        agent_id = agent["id"]
+        server_cursor = agent["last_delta_cursor"] or 0
+        effective = max(server_cursor, cursor or 0)
+        rows = deltas_since(conn, agent_id, effective)
+        # The high-water mark is the NEWEST event delivered (rows is
+        # newest-first), so resuming from it yields nothing newer.
+        new_cursor = rows[0]["id"] if rows else effective
+        if rows:
+            conn.execute(
+                "UPDATE agents SET last_delta_cursor = ? WHERE id = ?",
+                (new_cursor, agent_id),
+            )
+        return {
+            "agent_id": agent_id,
+            "events": rows,
+            "new_cursor": new_cursor,
+            "empty": not rows,
+            "actionable": _actionable_ids(conn, agent_id),
+        }
+
+
+def reset_delta_cursor(token: str) -> dict:
+    """Reset the caller's delivered-only high-water mark to 0, so the next
+    my_deltas() call re-delivers from the beginning."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        conn.execute(
+            "UPDATE agents SET last_delta_cursor = 0 WHERE id = ?",
+            (agent["id"],),
+        )
+        return {"agent_id": agent["id"], "last_delta_cursor": 0}
 
 
 def agent_id_for_token(token: str | None) -> int | None:
