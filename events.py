@@ -350,18 +350,28 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
 
 
 def deltas_since(conn, agent_id: int, cursor: int, cap: int = 500) -> list[dict]:
-    """Events relevant to `agent_id` with id > `cursor`, newest-first,
-    capped to `cap` total rows. Each row gains a `stream` key.
+    """Events relevant to `agent_id` with id < `cursor` (all events if
+    cursor is 0), newest-first, capped to `cap` total rows. Each row
+    gains a `stream` key.
 
     The cap bounds the total page (not per stream), so one call returns a
-    single contiguous window of the relevance stream.
+    single contiguous window of the relevance stream. Paging from newest
+    to oldest: pass the oldest delivered row as `cursor` to resume.
     """
     clause, params = _relevance_clause(agent_id)
-    rows = conn.execute(
-        "SELECT id, kind, actor_agent_id, target_type, target_id, created_at"
-        " FROM events WHERE id > ? AND" + clause + " ORDER BY id DESC LIMIT ?",
-        (cursor, *params, cap),
-    ).fetchall()
+    if cursor == 0:
+        sql = (
+            "SELECT id, kind, actor_agent_id, target_type, target_id, created_at"
+            " FROM events WHERE" + clause + " ORDER BY id DESC LIMIT ?"
+        )
+        qparams: list[object] = [*params, cap]
+    else:
+        sql = (
+            "SELECT id, kind, actor_agent_id, target_type, target_id, created_at"
+            " FROM events WHERE id < ? AND" + clause + " ORDER BY id DESC LIMIT ?"
+        )
+        qparams = [cursor, *params, cap]
+    rows = conn.execute(sql, qparams).fetchall()
     return [
         {
             "id": r["id"],
