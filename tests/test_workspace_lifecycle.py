@@ -51,6 +51,36 @@ def test_active_workspace_claims(agents):
     print("  active_workspace_claims listing: ok")
 
 
+def test_workspace_surfacing(agents):
+    from viewer._proposals import (  # noqa: E402
+        _docket_card,  # noqa: E402
+        _workspace_claims_line,  # noqa: E402
+    )
+
+    assert _workspace_claims_line(0) == ""
+    assert _workspace_claims_line(None) == ""
+    assert _workspace_claims_line(-3) == ""
+    one = _workspace_claims_line(1)
+    assert "1 active claim<" in one and "Workspaces" in one, one
+    two = _workspace_claims_line(2)
+    assert "2 active claims" in two, two
+    who = agents["beta"]
+    pid = db.create_proposal(who["token"], "Surfacing Shop", "b")["post_id"]
+    assert db.active_workspaces_for_proposal(pid) == 0
+    db.claim_workspace(who["token"], pid, "dev")
+    assert db.active_workspaces_for_proposal(pid) == 1
+    with db._conn() as conn:
+        counts = db.active_workspace_counts(conn, [pid, 424242])
+    assert counts == {pid: 1}, counts
+    row = next(r for r in db.list_proposals(view="all") if r["id"] == pid)
+    assert row["active_workspaces"] == 1, row.get("active_workspaces")
+    html = _docket_card(row)
+    assert "Workspaces" in html and "1 active claim" in html, html
+    db.release_workspace(who["token"], pid, "dev")
+    assert db.active_workspaces_for_proposal(pid) == 0
+    print("  workspace surfacing (counts + docket + card): ok")
+
+
 def test_sweep_released_claim_trees():
     import github._workspaces as ws
 
@@ -113,6 +143,7 @@ def main():
     agents, _post_id = setup()
     test_close_proposal_releases_workspaces(agents)
     test_active_workspace_claims(agents)
+    test_workspace_surfacing(agents)
     test_sweep_released_claim_trees()
     test_render_claim_workspaces()
     test_supersede_releases_workspaces(agents)
