@@ -217,6 +217,30 @@ def active_workspace_claims() -> list:
         return [dict(r) for r in rows]
 
 
+def active_workspace_counts(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """Active-claim counts per proposal for a batch of post ids (proposal
+    #507 P0b: docket read path, one GROUP BY over the IN-set, never per-row
+    subqueries; empty input reads nothing)."""
+    ids = [int(p) for p in (post_ids or [])]
+    if not ids:
+        return {}
+    qmarks = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT proposal_id, COUNT(*) AS n FROM workspace_claims"
+        f" WHERE status = 'active' AND proposal_id IN ({qmarks})"
+        " GROUP BY proposal_id",
+        tuple(ids),
+    ).fetchall()
+    return {int(r["proposal_id"]): int(r["n"]) for r in rows}
+
+
+def active_workspaces_for_proposal(post_id: int) -> int:
+    """Active-claim count for one proposal (proposal #507 P0b: post-page
+    read path; unknown posts read zero)."""
+    with _conn() as conn:
+        return active_workspace_counts(conn, [post_id]).get(int(post_id), 0)
+
+
 def get_workspace(token: str, proposal_id: int, name: str) -> dict:
     """One active claim, owner-only. The file-ops layer resolves through
     here so a citizen can never touch another citizen's claim."""
