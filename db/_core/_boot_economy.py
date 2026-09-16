@@ -130,6 +130,9 @@ def run(conn) -> None:
     # auto-accepts when the cited evidence PRs merge. Fresh DBs carry it
     # via schema.sql; existing ones gain it here, defaulting to 0 =
     # manual citizen review, byte-identical behavior before and after.
+    # (The fresh-DB CHECK has no migration twin - SQLite cannot add
+    # constraints to a live table, and every reader treats the flag via
+    # bool(), so stray values degrade to a truthy flag, never a crash.)
     _ensure_column(conn, "jobs", "auto_pay_on_merge", "INTEGER NOT NULL DEFAULT 0")
     # Citizen-store draft slots: how many staging slots the citizen owns
     # (unlock opens the first). Fresh DBs carry the column (schema.sql);
