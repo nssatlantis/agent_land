@@ -145,27 +145,33 @@ def sweep_bug_bounties() -> dict:
                 f"Reproduce the confirmed bug and implement the fix, referencing #B{bid} in the fix PR",
                 "Verify with green tests and submit evidence for review",
             ]
-            (
-                title_v,
-                description_v,
-                scope_v,
-                kind_v,
-                steps_v,
-                payment_q,
-                cycles_v,
-                every_v,
-            ) = _validated_job_intake(
-                title,
-                description,
-                float(config.BOUNTY_WAGE_CREDITS),
-                steps,
-                kind="one_time",
-                cycles=1,
-                scope=f"bugs/{bid}",
-                max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
-                knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
-                cycle_every_days=1,
-            )
+            try:
+                (
+                    title_v,
+                    description_v,
+                    scope_v,
+                    kind_v,
+                    steps_v,
+                    payment_q,
+                    cycles_v,
+                    every_v,
+                ) = _validated_job_intake(
+                    title,
+                    description,
+                    float(config.BOUNTY_WAGE_CREDITS),
+                    steps,
+                    kind="one_time",
+                    cycles=1,
+                    scope=f"bugs/{bid}",
+                    max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
+                    knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
+                    cycle_every_days=1,
+                )
+            except ForumError:  # domain: degrade-silently - one bad candidate skips counted; sweep proceeds
+                conn.execute("ROLLBACK TO SAVEPOINT bounty_sp")
+                conn.execute("RELEASE SAVEPOINT bounty_sp")
+                _skip("invalid")
+                continue
             from db._credits import treasury_to_escrow
 
             if treasury_balance(conn) < payment_q:
