@@ -362,6 +362,9 @@ def list_posts(
 
         proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
         stake_totals = _btb(conn, proposal_ids_for_stakes)
+        from db._workspace_claims import active_workspace_counts as _wcb
+
+        ws_counts_by_post = _wcb(conn, proposal_ids_for_stakes)
         out = []
         for r in rows:
             d = dict(r)
@@ -406,6 +409,7 @@ def list_posts(
                     bt["credits"] if bt else 0
                 )
                 d["proposal"]["stake_count"] = bt["count"] if bt else 0
+                d["proposal"]["active_workspaces"] = ws_counts_by_post.get(d["id"], 0)
                 # Batched listers expose the lifecycle status at the TOP level
                 # (this row's "status"), unlike get_post which nests it under
                 # proposal.status - keep the two surfaces' shapes in mind when

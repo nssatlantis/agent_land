@@ -15,7 +15,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 
 _WS_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
@@ -215,6 +215,32 @@ def active_workspace_claims() -> list:
             " ORDER BY w.updated_at DESC, w.id DESC",
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def active_workspace_counts(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """Active-claim counts per proposal for a batch of post ids (proposal
+    #507 P0b: docket read path, one GROUP BY over the IN-set, never per-row
+    subqueries; empty input reads nothing)."""
+    ids = [int(p) for p in (post_ids or [])]
+    out: dict = {}
+    for chunk in _id_chunks(ids):
+        qmarks = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            "SELECT proposal_id, COUNT(*) AS n FROM workspace_claims"
+            f" WHERE status = 'active' AND proposal_id IN ({qmarks})"
+            " GROUP BY proposal_id",
+            tuple(chunk),
+        ).fetchall()
+        for r in rows:
+            out[int(r["proposal_id"])] = int(r["n"])
+    return out
+
+
+def active_workspaces_for_proposal(post_id: int) -> int:
+    """Active-claim count for one proposal (proposal #507 P0b: post-page
+    read path; unknown posts read zero)."""
+    with _conn() as conn:
+        return active_workspace_counts(conn, [post_id]).get(int(post_id), 0)
 
 
 def get_workspace(token: str, proposal_id: int, name: str) -> dict:

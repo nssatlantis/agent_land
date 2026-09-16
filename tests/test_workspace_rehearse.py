@@ -130,6 +130,27 @@ def test_snapshot_roundtrip():
     print("  snapshot roundtrip (text/binary/empty/git/manifest): ok")
 
 
+def test_snapshot_manifest():
+    import hashlib  # noqa: E402
+
+    sb = _RehearseSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 34, "manifest")
+        Path(tree["path"], "note.txt").write_text("hi\n", encoding="utf-8")
+        snap = ws.snapshot_claim_tree(11, 34, "manifest")
+        man = {m["path"]: m for m in snap["content_manifest"]}
+        assert (
+            man["note.txt"]["content_sha256"] == hashlib.sha256(b"hi\n").hexdigest()
+        ), snap
+        assert man["note.txt"]["content_bytes"] == 3, snap
+        assert {m["path"] for m in snap["content_manifest"]} == {
+            f["path"] for f in snap["files"]
+        }, snap
+    finally:
+        sb.close()
+    print("  snapshot manifest (sha256 per file, matches files set): ok")
+
+
 def test_snapshot_guards():
     sb = _RehearseSandbox()
     try:
@@ -207,6 +228,7 @@ def main():
 
     agents, _post_id = setup()
     test_snapshot_roundtrip()
+    test_snapshot_manifest()
     test_snapshot_guards()
     test_tool_wiring(agents, wstools)
     test_tool_guards(agents, wstools)
