@@ -139,6 +139,17 @@ def render_post(
         ):  # domain: degrade-silently - empty panel, page still renders
             todos_summary = {}
     p["todos_summary"] = todos_summary
+    p["active_workspaces"] = 0
+    p["workspace_chip"] = ""
+    if p.get("proposal_kind"):
+        try:
+            from viewer._proposals import _workspace_claims_line as _ws_line
+
+            p["active_workspaces"] = db.active_workspaces_for_proposal(post_id)
+            p["workspace_chip"] = _ws_line(p["active_workspaces"])
+        except Exception:  # domain: degrade-silently - chip hides, page renders
+            p["active_workspaces"] = 0
+            p["workspace_chip"] = ""
     # The to-do panel is a pure renderer; the page handler does the only
     # DB reads - a paged drill-in (get_todos_list) for `tlist`, a paged
     # full-text search (search_todos) for `tq`, or the capped whole board
@@ -269,6 +280,7 @@ def render_post(
             if p.get("collaborative") and (todos_summary.get("lists") or [])
             else ""
         )
+        + p.get("workspace_chip", "")
         + _related_panel(p)
         + _discussion_digest(p)  # 4388 governance digest (same as 4407)
         + _threads_panel(threads_index)

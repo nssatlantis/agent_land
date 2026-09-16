@@ -31,6 +31,7 @@ from db._proposal_status import (
 from db._proposal_todos import _todos_summary_for_posts
 from db._staking import _stake_totals_batch
 from db._tags import _tags_by_post_map
+from db._workspace_claims import active_workspace_counts
 
 
 def _batch_pr_vote_tallies(
@@ -280,6 +281,7 @@ def _assemble_proposal_rows(
             _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         )
         todos_by_post = _todos_summary_for_posts(conn, ids)
+        ws_counts_by_post = active_workspace_counts(conn, ids)
         # Activity enrichment: content score, plus the comment count and
         # the newest comment timestamp in one GROUP BY over the same IN-set
         # (absent when there are no comments - the viewer falls back to
@@ -295,6 +297,7 @@ def _assemble_proposal_rows(
     else:
         pr_vote_tallies = {}
         todos_by_post = {}
+        ws_counts_by_post = {}
         scores = {}
         comment_counts = {}
         last_activity = {}
@@ -311,6 +314,7 @@ def _assemble_proposal_rows(
             stake_totals=stake_totals,
             pr_vote_tallies=pr_vote_tallies,
             todos_by_post=todos_by_post,
+            ws_counts_by_post=ws_counts_by_post,
             scores=scores,
             comment_counts=comment_counts,
             last_activity=last_activity,
@@ -332,6 +336,7 @@ def _assemble_proposal_list(
     stake_totals: dict,
     pr_vote_tallies: dict,
     todos_by_post: dict,
+    ws_counts_by_post: dict,
     scores: dict,
     comment_counts: dict,
     last_activity: dict,
@@ -434,6 +439,7 @@ def _assemble_proposal_list(
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
+        d["active_workspaces"] = ws_counts_by_post.get(d["id"], 0)
         if not for_counts:
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)

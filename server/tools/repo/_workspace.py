@@ -388,6 +388,7 @@ def workspace_rehearse(
     summary = {
         "head_sha": snap["head_sha"],
         "files": len(snap["files"]),
+        "content_manifest": snap["content_manifest"],
         "skipped_binaries": snap["skipped_binaries"],
         "skipped_empty": snap["skipped_empty"],
         "skipped_protected": snap["skipped_protected"],
@@ -432,8 +433,13 @@ async def workspace_push(
     todo_item_id: int | None = None,
     labels: list[str] | None = None,
     dry_run: bool = False,
+    expect_shas: dict[str, str] | None = None,
 ) -> dict:
     """Push one workspace tree as a single-commit pull request.
+
+    Pass `expect_shas` ({path: sha256} from a `dry_run=True` manifest or
+    `workspace_rehearse`) to refuse before any git mutation when the tree
+    drifted since the rehearsed snapshot.
 
     The first push creates branch claim/<agent>/<proposal>/<name>,
     commits the whole tree once, pushes, and opens the PR under the
@@ -471,7 +477,14 @@ async def workspace_push(
         db.require_workflow_block(conn, proposal_id, who["agent_id"], dry_run=dry_run)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     plan = await github.apush_claim_tree(
-        agent_id, proposal_id, cname, title, body, citizen, dry_run=dry_run
+        agent_id,
+        proposal_id,
+        cname,
+        title,
+        body,
+        citizen,
+        dry_run=dry_run,
+        expect_shas=expect_shas,
     )
     _touch_clocks(agent_id, proposal_id, cname)
     proposal_link_error = None

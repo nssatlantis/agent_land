@@ -54,6 +54,21 @@ _DOCKET_EMPTIES = {
 }
 
 
+def _workspace_claims_line(count: int = 0) -> str:
+    """Docket/post-page line for live workspace claims (proposal #507 P0b).
+
+    Pure renderer: the row's `active_workspaces` count in, a pr-trail div
+    or "" out. Never queries; unknown shapes render nothing."""
+    n = count or 0
+    if type(n) is not int or n <= 0:
+        return ""
+    return (
+        '<div class="pr-trail" style="margin-top:4px">'
+        '<span class="pr-label">Workspaces:</span> '
+        f"{n} active claim{'s' if n != 1 else ''}</div>"
+    )
+
+
 def _docket_card(p: dict, tallies: dict | None = None) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
     the locked tag, the title with its lineage badge, the meta line
@@ -289,6 +304,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f"{len(list_claims)} of {len(todos_lists)} lists claimed by "
                 f"{', '.join(claimers.values())}</div>"
             )
+    pr_trail += _workspace_claims_line(p.get("active_workspaces", 0) or 0)
     # Per-checklist burn-down: one mini progress bar per to-do list, so the
     # docket shows shipping momentum inside each claimed area too.
     if p.get("collaborative") and not p.get("locked") and todos_lists:
