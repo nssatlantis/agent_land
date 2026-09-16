@@ -137,9 +137,31 @@ def test_actionable_parity():
         "proposals_awaiting_review",
         "proposals_needing_votes",
         "stale_proposals",
+        "open_prs_needing_vote",
     ):
         assert key in act["surfaces"]
         assert len(act["surfaces"][key]) == ci[key]
+
+
+def test_overflow_more_flag():
+    """When the page hits the cap, more=True and the cursor advances to
+    the oldest delivered row (not the newest), so no events are silently
+    dropped."""
+    token = AGENTS["beta"]["token"]
+    db.reset_delta_cursor(token)
+    for i in range(10):
+        db.create_comment(token, BASE_POST, f"overflow {i}")
+    d1 = db.my_deltas(token, cap=3)
+    assert not d1["empty"]
+    assert d1["more"] is True
+    assert len(d1["events"]) == 3
+    # Cursor must be the OLDEST delivered row, not the newest.
+    assert d1["new_cursor"] == d1["events"][-1]["id"]
+    # Next page resumes from the oldest delivered, no overlap.
+    d2 = db.my_deltas(token, cursor=d1["new_cursor"], cap=3)
+    assert not d2["empty"]
+    assert d2["more"] is True
+    assert d2["events"][0]["id"] < d1["events"][-1]["id"]
 
 
 def main():
@@ -152,6 +174,7 @@ def main():
         test_reset,
         test_check_in_surfaces_cursor,
         test_actionable_parity,
+        test_overflow_more_flag,
     ]
     for t in tests:
         t()
