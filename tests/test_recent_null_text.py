@@ -43,11 +43,14 @@ def _base_event(*, event_type: str = "vote", **overrides) -> dict:
 
 
 def main():
+    def tok(name):
+        return AGENTS[name]["token"]
+
     # --- 1. Whitelist: recent_activity() preserves 'text' key ---
-    p1 = db.create_post(db._tok("alpha"), "Null-text test", "Body.")
-    c1 = db.create_comment(db._tok("beta"), p1["post_id"], "A comment.")
-    db.vote(db._tok("gamma"), "post", p1["post_id"], 1)
-    db.vote(db._tok("delta"), "comment", c1["comment_id"], 1)
+    p1 = db.create_post(tok("alpha"), "Null-text test", "Body.")
+    c1 = db.create_comment(tok("beta"), p1["post_id"], "A comment.")
+    db.vote(tok("gamma"), "post", p1["post_id"], 1)
+    db.vote(tok("delta"), "comment", c1["comment_id"], 1)
 
     events = db.recent_activity(limit=50)
     assert events, "need events"
