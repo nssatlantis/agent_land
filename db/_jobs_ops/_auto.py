@@ -92,7 +92,10 @@ def _scope_bug_id(scope: str | None) -> int | None:
         head, _, tail = str(scope or "").partition("/")
         if head == "bugs" and tail.isdigit():
             return int(tail)
-    except (TypeError, ValueError):  # domain: degrade-silently
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - odd scopes read as unbound
         pass
     return None
 
