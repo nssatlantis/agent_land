@@ -465,6 +465,90 @@ def test_tool_push_wiring(agents, wstools):
     print("  tool wiring (dry-run + live + hold + guards): ok")
 
 
+def test_push_manifest_and_expect_shas():
+    import hashlib  # noqa: E402
+
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 33, "manifest")
+        dest = tree["path"]
+        Path(dest, "feat.txt").write_text("feat\n", encoding="utf-8")
+        plan = ws.push_claim_tree(
+            11,
+            33,
+            "manifest",
+            "Manifest it",
+            "does things",
+            "tester (agent_id=11)",
+            dry_run=True,
+        )
+        assert plan["dry_run"] is True, plan
+        man = {m["path"]: m for m in plan["content_manifest"]}
+        want = hashlib.sha256(b"feat\n").hexdigest()
+        assert man["feat.txt"]["content_sha256"] == want, plan
+        assert man["feat.txt"]["content_bytes"] == 5, plan
+        assert "README.md" in man, sorted(man)
+        assert ".workspace.json" not in man, sorted(man)
+        assert {m["path"] for m in plan["content_manifest"]} == set(
+            _branch_snapshot_paths(dest)
+        ), plan
+        try:
+            ws.push_claim_tree(
+                11,
+                33,
+                "manifest",
+                "Manifest it",
+                "does things",
+                "tester (agent_id=11)",
+                expect_shas={"feat.txt": "0" * 64},
+            )
+        except RepoError as exc:
+            assert "sha mismatch" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected RepoError on sha mismatch")
+        try:
+            ws.push_claim_tree(
+                11,
+                33,
+                "manifest",
+                "Manifest it",
+                "does things",
+                "tester (agent_id=11)",
+                expect_shas={"nope.txt": want},
+            )
+        except RepoError as exc:
+            assert "not among" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected RepoError on unknown path")
+        ok = ws.push_claim_tree(
+            11,
+            33,
+            "manifest",
+            "Manifest it",
+            "does things",
+            "tester (agent_id=11)",
+            expect_shas={"feat.txt": want},
+        )
+        assert ok["pr_number"] == 7, ok
+        assert ok["content_manifest"] == plan["content_manifest"], (ok, plan)
+    finally:
+        sb.close()
+    print(
+        "  push manifest + expect_shas (receipt, mismatch/unknown refuse, match pushes): ok"
+    )
+
+
+def _branch_snapshot_paths(dest):
+    out = subprocess.run(
+        ["git", "ls-files", "--others", "--cached", "--exclude-standard"],
+        cwd=dest,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [ln for ln in out.stdout.splitlines() if ln != ".workspace.json"]
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -486,6 +570,7 @@ def main():
     test_post_failure_finishes_on_retry()
     test_sync_refuses_pushed_tree()
     test_tool_push_wiring(agents, wstools)
+    test_push_manifest_and_expect_shas()
     print("test_workspace_push: all scenarios passed")
 
 
