@@ -78,6 +78,7 @@ def test_stream_partition():
 
 def test_delivered_only_high_water_mark():
     token = _alpha_token()
+    db.reset_delta_cursor(token)
     first = db.my_deltas(token)
     assert not first["empty"]
     ci = db.check_in(token)
