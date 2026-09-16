@@ -936,7 +936,7 @@ def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
         rows = deltas_since(conn, agent_id, effective, cap)
         more = len(rows) == cap
         if rows:
-            new_cursor = rows[-1]["id"] if more else rows[0]["id"]
+            new_cursor = rows[-1]["id"]
             conn.execute(
                 "UPDATE agents SET last_delta_cursor = ? WHERE id = ?",
                 (new_cursor, agent_id),
