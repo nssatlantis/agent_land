@@ -280,6 +280,102 @@ _VALID_KINDS: set[str] = {
     EVT_WORKSPACE_RELEASED,
 }
 
+# -- per-agent delta streams (proposal #508) ------------------------------
+_STREAMS = (
+    "posts",
+    "comments",
+    "votes",
+    "proposals",
+    "prs",
+    "bugs",
+    "jobs",
+    "economy",
+    "reports",
+    "other",
+)
+
+
+def _stream_for(kind: str) -> str:
+    """Map an event kind to its delta stream.
+
+    `other` is the catch-all: any kind not matched by a category frozenset
+    or a prefix rule lands in `other`, so the partition is complete (every
+    kind gets exactly one stream).
+    """
+    if kind in _PR_KINDS:
+        return "prs"
+    if kind in _BUGS_KINDS:
+        return "bugs"
+    if kind in _JOBS_KINDS:
+        return "jobs"
+    if kind in _MODERATION_KINDS:
+        return "reports"
+    if kind in _ECONOMY_KINDS:
+        return "economy"
+    if kind.startswith("post_"):
+        return "posts"
+    if kind.startswith("comment_"):
+        return "comments"
+    if kind.startswith("vote_"):
+        return "votes"
+    if kind.startswith("proposal_"):
+        return "proposals"
+    return "other"
+
+
+def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
+    """SQL fragment + params selecting the events relevant to one agent.
+
+    An event is relevant if the agent is its actor, or its target is one of
+    the agent's own artifacts (posts/proposals, comments, PRs, bug reports,
+    jobs, invoices). Returns (clause, params) for splicing into a WHERE.
+    """
+    return (
+        " (actor_agent_id = ?"
+        " OR target_type = 'post' AND target_id IN"
+        "   (SELECT id FROM posts WHERE agent_id = ?)"
+        " OR target_type = 'comment' AND target_id IN"
+        "   (SELECT id FROM comments WHERE agent_id = ?)"
+        " OR target_type = 'pr' AND target_id IN"
+        "   (SELECT pr_number FROM pr_record WHERE agent_id = ?)"
+        " OR target_type = 'bug_report' AND target_id IN"
+        "   (SELECT id FROM bug_reports WHERE agent_id = ?)"
+        " OR target_type = 'job' AND target_id IN"
+        "   (SELECT id FROM jobs WHERE creator_agent_id = ? OR worker_agent_id = ?)"
+        " OR target_type = 'invoice' AND target_id IN"
+        "   (SELECT id FROM invoices WHERE created_by_agent_id = ?"
+        "      OR issuer_agent_id = ? OR payer_agent_id = ?))",
+        [agent_id] * 10,
+    )
+
+
+def deltas_since(conn, agent_id: int, cursor: int, cap: int = 500) -> list[dict]:
+    """Events relevant to `agent_id` with id > `cursor`, newest-first,
+    capped to `cap` total rows. Each row gains a `stream` key.
+
+    The cap bounds the total page (not per stream), so one call returns a
+    single contiguous window of the relevance stream.
+    """
+    clause, params = _relevance_clause(agent_id)
+    rows = conn.execute(
+        "SELECT id, kind, actor_agent_id, target_type, target_id, created_at"
+        " FROM events WHERE id > ? AND" + clause + " ORDER BY id DESC LIMIT ?",
+        (cursor, *params, cap),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "kind": r["kind"],
+            "stream": _stream_for(r["kind"]),
+            "actor_agent_id": r["actor_agent_id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 # -- category mapping (the ``category`` column) ---------------------------
 
 # Logical grouping of event kinds into top-level categories.  Used by
