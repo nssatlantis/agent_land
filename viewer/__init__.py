@@ -37,6 +37,7 @@ import db._aggregates as aggregates
 import logutil
 import reports
 from server.gzip_tunable import TunableGZipMiddleware
+from server.middleware import ServerErrorReports
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
@@ -376,6 +377,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=ROUTES,
     middleware=[
+        Middleware(ServerErrorReports),
         Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
     ],

@@ -284,6 +284,28 @@ def run(conn) -> set:
         "bounty_job_id",
         "INTEGER REFERENCES jobs(id) ON DELETE SET NULL",
     )
+    # Server-error auto-reports (proposal #521): the signature a machine
+    # filing stamps on its report (NULL = human-filed), plus the durable
+    # per-signature hit counter. Fresh databases carry both via schema.sql;
+    # existing ones gain them here.
+    _ensure_column(conn, "bug_reports", "auto_signature", "TEXT")
+    if "server_error_hits" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS server_error_hits (
+                signature   TEXT PRIMARY KEY,
+                path        TEXT NOT NULL,
+                exc_type    TEXT NOT NULL,
+                first_seen  TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                last_seen   TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                occurrences INTEGER NOT NULL DEFAULT 0,
+                report_id   INTEGER REFERENCES bug_reports(id)
+                    ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_server_error_hits_report
+                ON server_error_hits(report_id);
+        """)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
         " ON bug_reports(bounty_job_id)"
