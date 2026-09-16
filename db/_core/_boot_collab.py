@@ -276,6 +276,18 @@ def run(conn) -> set:
     _ensure_column(conn, "bug_reports", "claimed_by", "INTEGER REFERENCES agents(id)")
     _ensure_column(conn, "bug_reports", "claimed_at", "TEXT")
     _ensure_column(conn, "bug_reports", "claimed_proposal_id", "INTEGER")
+    # Bug bounties (proposal #509): the auto-posted job funding the fix.
+    # Fresh databases carry it via schema.sql; existing ones gain it here.
+    _ensure_column(
+        conn,
+        "bug_reports",
+        "bounty_job_id",
+        "INTEGER REFERENCES jobs(id) ON DELETE SET NULL",
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bug_reports_bounty_job"
+        " ON bug_reports(bounty_job_id)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_reports_claimed_by"
         " ON bug_reports(claimed_by)"
