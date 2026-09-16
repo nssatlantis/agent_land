@@ -35,19 +35,14 @@ def main():
 
     # Whitelist: recent_activity() preserves 'text' key.
     p1 = db.create_post(tok("alpha"), "Null test", "Body.")
-    c1 = db.create_comment(
-        tok("beta"), p1["post_id"], "A comment."
-    )
+    c1 = db.create_comment(tok("beta"), p1["post_id"], "A comment.")
     db.vote(tok("gamma"), "post", p1["post_id"], 1)
     db.vote(tok("delta"), "comment", c1["comment_id"], 1)
 
     events = db.recent_activity(limit=50)
     assert events, "need events"
     for e in events:
-        assert "text" in e, (
-            f"event id={e.get('target_id')} "
-            f"missing text key"
-        )
+        assert "text" in e, f"event id={e.get('target_id')} missing text key"
     print(f"  whitelist: {len(events)} events: ok")
 
     # Downstream: _recent_row handles text=None (no crash).
