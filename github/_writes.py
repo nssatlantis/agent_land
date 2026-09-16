@@ -72,6 +72,9 @@ def propose_change(
     mismatch aborts the whole call with no side effects, so a whole-file
     write composed against a moved base can never silently revert reviewed
     code. Unguarded entries behave exactly as before (no new requests).
+    The PUT itself carries the asserted sha (or none for assert-absent),
+    so a file that lands between the check and the write fails the write
+    instead of reverting.
     """
     base_branch = base_branch or GITHUB_BASE_BRANCH
     if not changes:
@@ -209,6 +212,12 @@ def propose_change(
     for p in resolved:
         if "sha" in p:
             continue
+        if "base_sha" in p:
+            # Guarded entries reuse the probe outcome the guard already
+            # asserted (present files carry it as "sha"; assert-absent files
+            # PUT sha-less, which GitHub refuses if the file appeared) - no
+            # second GET, so no window for a file to land unobserved.
+            continue
         data = _core._request(
             "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
         )
@@ -323,6 +332,8 @@ def update_pr(
     Unguarded entries behave exactly as before. The two guards compose:
     base_sha proves the base is what you read, expect_shas proves the
     applied bytes are what you rehearsed.
+    The PUT itself carries the asserted state, closing the check-to-write
+    race: a guarded write either lands on exactly what was checked or fails.
     """
     citizen = (citizen or "").strip()
     if not citizen:
@@ -552,10 +563,18 @@ def update_pr(
                 _put_params(plan["commit_message"], p["content"], branch, p.get("sha")),
             )
         else:
-            data = _core._request(
-                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
-            )
-            sha = data.get("sha") if data else None
+            # Guarded entries skip the re-read and PUT conditionally on the
+            # asserted state - the blob sha the pre-pass passed (or a
+            # sha-less create for assert-absent) - so a file that lands
+            # between the pre-pass and the write fails the PUT instead of
+            # being reverted. Unguarded entries keep the fresh-sha PUT.
+            if "base_sha" in p:
+                sha = p["base_sha"]
+            else:
+                data = _core._request(
+                    "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+                )
+                sha = data.get("sha") if data else None
             _core._request(
                 "PUT",
                 f"contents/{p['path']}",
