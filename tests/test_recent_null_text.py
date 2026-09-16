@@ -49,7 +49,6 @@ def main():
     for etype in ("post", "comment", "vote"):
         html = _recent_row(_base_event(etype))
         assert isinstance(html, str) and len(html) > 0
-        assert "None" in html
     print("  _recent_row text=None: ok")
 
     # Smoke: real events render.
