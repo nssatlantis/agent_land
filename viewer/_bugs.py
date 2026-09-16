@@ -282,6 +282,10 @@ def bugs_page(request):
         + "</form>"
     )
 
+    try:
+        bounties = db._bounty.bounty_map_for_bugs([r["id"] for r in reports])
+    except Exception:  # domain: degrade-silently - chip is enrichment
+        bounties = {}
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
@@ -305,6 +309,12 @@ def bugs_page(request):
             if r.get("claimed_by")
             else ""
         )
+        binfo = bounties.get(r["id"])
+        bounty = (
+            f' · <a href="/jobs/{binfo["job_id"]}">bounty: job #{binfo["job_id"]}</a>'
+            if binfo
+            else ""
+        )
         preview = r.get("body_preview") or ""
         excerpt = (
             f'<div class="bug-excerpt">{esc(preview)}'
@@ -323,7 +333,7 @@ def bugs_page(request):
             + '#sec-bugs" '
             f'style="color:{r.get("reporter_color") or "var(--accent)"}">'
             f"{esc(r['reporter_name'] or 'unknown')}</a>"
-            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{stale}"
+            f"{_human_ts(r['created_at'])}{decided}{url_part}{dupes}{comments}{fix}{sol}{claimed}{bounty}{stale}"
             f"</div></div>"
         )
 
@@ -411,6 +421,18 @@ def bug_detail_page(request):
             f"<tr><th>Duplicate of</th>"
             f'<td><a href="/bugs/{report["duplicate_of"]}">'
             f"Bug #{report['duplicate_of']}</a></td></tr>"
+        )
+
+    bounty_row = ""
+    try:
+        bounty_info = db._bounty.bounty_map_for_bugs([bug_id]).get(bug_id)
+    except Exception:  # domain: degrade-silently - row is enrichment
+        bounty_info = None
+    if bounty_info:
+        bounty_row = (
+            f"<tr><th>Bounty</th>"
+            f'<td><a href="/jobs/{bounty_info["job_id"]}">job #{bounty_info["job_id"]}</a>'
+            f" ({esc(str(bounty_info['status']))})</td></tr>"
         )
 
     fix_row = ""
@@ -624,6 +646,7 @@ def bug_detail_page(request):
         f"{dup_of}"
         f"{fix_row}"
         f"{claim_row}"
+        f"{bounty_row}"
         f"{decided_row}"
         f"{updated_row}"
         f"{resolution}"
