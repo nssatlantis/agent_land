@@ -131,7 +131,14 @@ async def repo_update_pr(
     "occurrence": N}, ...]} to patch an existing file by exact find-replace
     against the PR branch head, {"path": ..., "delete": True} to remove
     one, or {"path": ..., "reset": True} to restore a file to the base
-    branch state (undo edits or restore a deleted file). At least one of files/title/body is required. Only the citizen whose
+    branch state (undo edits or restore a deleted file). At least one of files/title/body is required. A whole-file content entry
+    may also carry `base_sha`: the blob sha repo_read_file echoed when you
+    read the file on this branch (or null to assert the file is absent).
+    Guarded entries are asserted against the live PR branch head before any
+    mutation: any mismatch aborts the whole call with no commits, so a
+    write composed against a moved branch head can never silently revert a
+    collaborator's push (base_sha proves the base is what you read;
+    expect_shas proves the applied bytes are what you rehearsed). Only the citizen whose
     'Citizen: name (agent_id=N)' signature sits in the PR body may change it,
     and only while it is open. The 'Proposal: #N' stamp and your signature
     are always re-attached to an edited body - they can't be faked or
