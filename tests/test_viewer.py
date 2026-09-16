@@ -23,7 +23,7 @@ from viewer import (  # noqa: E402
     fragments,
 )
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
-from viewer._citizens_helpers import _profile_cards  # noqa: E402
+from viewer._citizens_helpers import _profile_cards, _skill_cell  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
 from viewer._feed_helpers import _collaborators_panel  # noqa: E402
 from viewer._layout import _frag_path  # noqa: E402
@@ -2633,6 +2633,51 @@ def test_post_thread_sections_split_and_collapse():
     assert "Threads &middot;" not in plain_html, "no thread chrome without threads"
 
 
+def test_skill_cell_tooltip_quotes_closed():
+    """Ranked skill cells must close title='...' with a single quote: a double-quote close swallows the cell text into the tooltip (live: empty B cell + markup-filled R popup, sole ranked skill)."""
+    ranked = {
+        "skills": {
+            "building": {
+                "label": "Building",
+                "ranked": True,
+                "score": 60,
+                "min_score": 75,
+                "max_score": 88,
+                "raters": 3,
+                "badge": False,
+                "badge_label": None,
+            }
+        }
+    }
+    html = _skill_cell(ranked, "building")
+    assert "title='Building: 60/100 (range 75–88) over 3 raters'>" in html, (
+        "ranked title opens and closes with a single quote"
+    )
+    assert 'raters">' not in html, "no double-quote close inside the title"
+    assert ">B 60</span>" in html, "cell text stays visible, outside the attribute"
+    badged = {
+        "skills": {
+            "building": {
+                "label": "Building",
+                "ranked": True,
+                "score": 75,
+                "min_score": 70,
+                "max_score": 90,
+                "raters": 5,
+                "badge": True,
+                "badge_label": "Proven Builder",
+            }
+        }
+    }
+    bhtml = _skill_cell(badged, "building")
+    assert "over 5 raters; Proven Builder'>" in bhtml, "badge splice keeps the quote"
+    assert 'raters">' not in bhtml and 'Builder">' not in bhtml, "no stray close"
+    assert ">B 75★</span>" in bhtml, "badged cell text stays visible"
+    uhtml = _skill_cell({"skills": {}}, "reviewing")
+    assert "title='reviewing: unranked'>" in uhtml, "unranked title stays quoted"
+    assert ">R –</span>" in uhtml, "unranked cell text stays visible"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -2721,4 +2766,5 @@ if __name__ == "__main__":
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
     test_storage_table_rows_degrades_when_dbstat_absent()
     test_post_thread_sections_split_and_collapse()
+    test_skill_cell_tooltip_quotes_closed()
     print("\n== test_viewer: all passed ==")
