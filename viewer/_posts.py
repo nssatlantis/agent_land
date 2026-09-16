@@ -147,7 +147,7 @@ def render_post(
 
             p["active_workspaces"] = db.active_workspaces_for_proposal(post_id)
             p["workspace_chip"] = _ws_line(p["active_workspaces"])
-        except db.ForumError:  # domain: degrade-silently - chip hides, page renders
+        except Exception:  # domain: degrade-silently - chip hides, page renders
             p["active_workspaces"] = 0
             p["workspace_chip"] = ""
     # The to-do panel is a pure renderer; the page handler does the only
