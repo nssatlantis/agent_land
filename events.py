@@ -166,6 +166,16 @@ EVT_GUILD_ENROLLMENT = "guild_enrollment"
 EVT_GUILD_COSIGN_REQUESTED = "guild_cosign_requested"
 EVT_GUILD_COSIGN_CONFIRMED = "guild_cosign_confirmed"
 
+# Guilds PR-3 (proposal #525, L4 money flows): pool movement and the job
+# rails that touch it - deposits, withdrawals, commissioned/taken links,
+# detachments, and pool-funded invoice payments.
+EVT_GUILD_DEPOSIT = "guild_deposit"
+EVT_GUILD_WITHDRAW = "guild_withdraw"
+EVT_GUILD_JOB_COMMISSIONED = "guild_job_commissioned"
+EVT_GUILD_JOB_TAKEN = "guild_job_taken"
+EVT_GUILD_JOB_DETACHED = "guild_job_detached"
+EVT_GUILD_INVOICE_PAID = "guild_invoice_paid"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -314,6 +324,12 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_ENROLLMENT,
     EVT_GUILD_COSIGN_REQUESTED,
     EVT_GUILD_COSIGN_CONFIRMED,
+    EVT_GUILD_DEPOSIT,
+    EVT_GUILD_WITHDRAW,
+    EVT_GUILD_JOB_COMMISSIONED,
+    EVT_GUILD_JOB_TAKEN,
+    EVT_GUILD_JOB_DETACHED,
+    EVT_GUILD_INVOICE_PAID,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
