@@ -311,6 +311,9 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
             " VALUES (?, ?, ?)",
             (guild_id, row[0], _now_iso()),
         )
+    from db._guilds_treasury import _void_open_arrears
+
+    _void_open_arrears(conn, guild_id)
     conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild_id,))
     remainder = guild_balance(conn, guild_id)
     if remainder > 0:
