@@ -377,7 +377,7 @@ def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
             entries.extend(page["entries"])
             if not page["has_more"]:
                 break
-            offset += 200
+            offset += len(page["entries"])
     except Exception:  # domain: degrade-silently - public ledger page failure fallback
         return {
             "present": False,
