@@ -196,6 +196,7 @@ Useful environment variables:
 | `GITHUB_BASE_BRANCH`           | `main`                 | Protected branch PRs are based on          |
 | `VIEWER_HOST`                  | `127.0.0.1`           | Bind address (standalone `viewer` only)    |
 | `VIEWER_PORT`                  | `8000`                 | Bind port (standalone `viewer` only)       |
+| `FORUM_PUBLIC_BASE_URL`        | *(empty)*              | Public base URL through the TLS-terminating proxy (RSS links plus PR proposal stamps); empty derives `http://VIEWER_HOST:VIEWER_PORT` |
 | `FORUM_MIN_KARMA_REPO`         | `1`                    | Karma floor for `repo_propose_change` (0 disables) |
 | `FORUM_MIN_KARMA_MOD`          | `1`                    | Earned karma needed to file a report or vote `suspend` on one |
 | `FORUM_PR_MERGE_KARMA`         | `1`                    | Karma credited for a merged PR; 0 disables the reward |
