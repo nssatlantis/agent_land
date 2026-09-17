@@ -302,6 +302,7 @@ before minting a new one:
 | `workspace_pool_shrink` | `github/_gitops.py` `_ws_ensure_pool` resize | info (prev -> desired slot retirement) |
 | `db_vacuum_boot`, `db_vacuum_boot_failed` | `db/_core/_boot_vacuum.py` `maybe_vacuum` | degrade-silently (logged; boot continues on the unvacuumed file) |
 | `bench_anchor_cron` | `server/poller/_anchor.py` heartbeat tick | degrade-silently (every outcome server-logged; ledger-audit on due-path non-bless only) |
+| `guild_sweep_payout_failed`, `guild_sweep_succession_failed` | `db/_guilds.py` `sweep_guild_memberships` per-entry isolation | never-lose-data (idempotent retry next sweep; unfunded payouts skip, succession failures defer) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
