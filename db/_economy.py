@@ -570,7 +570,7 @@ def _runway_estimate(
     if treasury_units <= 0:
         return {**base, "status": "exhausted", "days": None}
     # Net burn over 7 days annualised to a per-day rate; credits are
-    # treasury_units/4. Round down so the estimate is conservative.
+    # treasury_units/20. Round down so the estimate is conservative.
     per_day = net_burn / 7.0
     days = int((treasury_units / 20.0) / per_day) if per_day > 0 else None
     return {**base, "status": "ok", "days": days}
