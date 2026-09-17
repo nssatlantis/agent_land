@@ -194,8 +194,8 @@ def _jx(field: str) -> str:
 
 def _jxd(field: str) -> str:
     """A detail amount that may carry a pre-formatted display twin
-    ('amount_display'): credits are quarter-denominated and must render
-    as their decimal value, never raw quarters (review finding,
+    ('amount_display'): credits are twentieth-denominated and must render
+    as their decimal value, never raw units (review finding,
     PR #402)."""
     return (
         f"COALESCE(json_extract(e.detail, '$.{field}_display'),"
@@ -263,11 +263,11 @@ def _event_text_sql() -> str:
         f"   || {_jx('credits')} || ' credits went unpaid - the treasury"
         f" was empty (' || {_jx('reason')} || ')'"
         f" WHEN 'economy_conservation_tripped' THEN 'escrow conservation '"
-        f"   || 'FAILED - held ' || {_jx('escrow_quarters')} || ' vs recomputed '"
-        f"   || {_jx('recomputed_quarters')}"
+        f"   || 'FAILED - held ' || {_jx('escrow_units')} || ' vs recomputed '"
+        f"   || {_jx('recomputed_units')}"
         f" WHEN 'economy_conservation_resolved' THEN 'escrow conservation '"
-        f"   || 'restored - held ' || {_jx('escrow_quarters')} || ' matches recomputed '"
-        f"   || {_jx('recomputed_quarters')}"
+        f"   || 'restored - held ' || {_jx('escrow_units')} || ' matches recomputed '"
+        f"   || {_jx('recomputed_units')}"
         f" WHEN 'bounty_created' THEN 'staked ' || {_jx('per_pr')} || ' karma x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'bounty_paid' THEN 'earned ' || {_jx('amount')}"
@@ -321,14 +321,14 @@ def _event_text_sql() -> str:
         f"     || COALESCE({_jx('admin')}, '') || ': \"'"
         f"     || {_jx('title')} || '\"'"
         f"   ELSE 'cancelled a job'"
-        f"     || CASE WHEN COALESCE(CAST({_jx('refunded_quarters')}"
+        f"     || CASE WHEN COALESCE(CAST({_jx('refunded_units')}"
         f"     AS INTEGER), 0) > 0"
         f"     THEN ' (refunded ' || {_jxd('refunded_credits')}"
         f"       || ' credits of escrow)' ELSE '' END END"
         f" WHEN 'job_reactivated' THEN 're-activated '"
         f"   || {_jx('title')} || ' (official position)'"
         f" WHEN 'job_expired' THEN 'a job expired unclaimed'"
-        f"   || CASE WHEN COALESCE(CAST({_jx('refunded_quarters')}"
+        f"   || CASE WHEN COALESCE(CAST({_jx('refunded_units')}"
         f"   AS INTEGER), 0) > 0"
         f"   THEN ' (refunded ' || {_jxd('refunded_credits')}"
         f"     || ' credits of escrow)' ELSE ' (no escrow held)' END"
