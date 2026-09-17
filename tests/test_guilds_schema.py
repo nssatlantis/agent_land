@@ -288,6 +288,28 @@ def test_project_designation_shapes():
             pass
 
 
+def test_guild_enrollment_default():
+    """enrollment defaults to invite_only (open flips explicitly)."""
+    founder = _new_agent("gs-enroll")
+    with db._conn() as conn:
+        gid = _mk_guild(conn, founder["agent_id"], "Enroll Guild")
+        row = conn.execute(
+            "SELECT enrollment FROM guilds WHERE id = ?", (gid,)
+        ).fetchone()
+    assert row[0] == "invite_only"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guilds SET enrollment = 'open' WHERE id = ?", (gid,)
+        )
+        try:
+            conn.execute(
+                "UPDATE guilds SET enrollment = 'public' WHERE id = ?", (gid,)
+            )
+            raise AssertionError("bad enrollment accepted")
+        except sqlite3.IntegrityError:
+            pass
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
