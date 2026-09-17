@@ -1466,7 +1466,8 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
     plus the FORUM_BUG_FIX_REWARD_CREDITS treasury credit reward (default
     0.25, 0 disables) - a scoped carve-out from hotfix 744's karma-only
     rule, paid only on validated fixes and skipped silently when the
-    treasury cannot fund it."""
+    treasury cannot fund it. Both legs ride inside the karma gate:
+    BUG_REPORT_KARMA=0 skips the credit too."""
     karma = config.BUG_REPORT_KARMA
     with _conn(immediate=True) as conn:
         row = conn.execute(
