@@ -408,7 +408,7 @@ def rate_skill(
     RATEE (see validate_evidence); unattributable refs are refused.
     One active rating per rater->ratee->skill: re-rating supersedes the
     old row (kept for audit). A treasury-sink fee rides each rating
-    (SKILL_RATE_FEE, exact whole/half/quarter price, fail-loudly;
+    (SKILL_RATE_FEE, exact twentieth-exact price, fail-loudly;
     waived below 3 effective karma); raters are capped at
     SKILL_DAILY_CAP created rows per UTC calendar day (the first
     same-pair re-rate of the day is exempt - it replaces today's slot).
