@@ -302,7 +302,8 @@ def request_guild_subsidy(
                 " file until it clears (nothing moved)."
             )
         prior = conn.execute(
-            "SELECT COUNT(*) FROM guild_subsidies WHERE guild_id = ?",
+            "SELECT COUNT(*) FROM guild_subsidies WHERE guild_id = ?"
+            " AND status != 'declined'",
             (int(guild_id),),
         ).fetchone()[0]
         if int(prior or 0) > 0 and not payback:
@@ -331,6 +332,24 @@ def request_guild_subsidy(
                     " subsidy per 14d (nothing moved)."
                 )
         clean = (reason or "").strip()
+        if len(clean) > int(config.MAX_BODY_LEN):
+            raise ForumError(
+                f"subsidy reasons must be {config.MAX_BODY_LEN} characters"
+                " or fewer (nothing moved)."
+            )
+        # One open request per guild: the admin queue is serial, so an
+        # over-tier request can neither duplicate its venue Idea nor
+        # stack unpaid claims against one decision.
+        waiting = conn.execute(
+            "SELECT 1 FROM guild_subsidies WHERE guild_id = ?"
+            " AND status = 'requested' LIMIT 1",
+            (int(guild_id),),
+        ).fetchone()
+        if waiting is not None:
+            raise ForumError(
+                "that guild already holds an undecided subsidy request -"
+                " wait for the admin decision first (nothing moved)."
+            )
         cur = conn.execute(
             "INSERT INTO guild_subsidies (guild_id, amount_quarters, tier,"
             " payback, status, requested_by) VALUES (?, ?, ?, ?, ?, ?)",
@@ -583,11 +602,14 @@ def open_guild_match_window(
 def _window_net(conn: sqlite3.Connection, guild_id: int, since_iso: str) -> int:
     """Member net deposits inside the window (actor-attributed deposit
     minus withdrawal legs only - pool-owned income never weights it, so
-    wash trading nets ~zero minus the mover fees)."""
+    wash trading nets ~zero minus the mover fees). Upkeep fee dues ride
+    kind 'deposit' for the shares math but are dues, not deposits, so
+    the window skips that note."""
     rows = conn.execute(
         "SELECT kind, quarters FROM guild_ledger WHERE guild_id = ?"
         " AND actor_agent_id IS NOT NULL AND created_at >= ?"
-        " AND kind IN ('deposit', 'withdrawal')",
+        " AND kind IN ('deposit', 'withdrawal')"
+        " AND note != 'upkeep fee payment'",
         (int(guild_id), since_iso),
     ).fetchall()
     net = 0
@@ -662,6 +684,13 @@ def settle_guild_debt_payment(
     if debt is None:
         return
     debt = dict(debt)
+    # Terminal rows are closed: a written_off remainder was Treasury
+    # loss on the record, and paying into it would move real quarters
+    # against a dead row with no status change. Settle only live debts.
+    if debt["status"] not in ("current", "overdue"):
+        raise ForumError(
+            f"that debt is {debt['status']} - closed debts take no payments."
+        )
     remaining = max(0, int(debt["remaining_quarters"]) - pay_q)
     if remaining <= 0:
         conn.execute(
@@ -799,12 +828,19 @@ def release_guild_stakes_for_disband(conn: sqlite3.Connection, guild_id: int) ->
             " WHERE stake_id = ? AND status = 'locked'",
             (link["stake_id"],),
         ).fetchone()[0]
+        # Stake-scoped refunds only: sibling locks from other citizens
+        # on the same shared PR numbers are never touched.
         for lk in conn.execute(
             "SELECT pr_number FROM stake_locks WHERE stake_id = ?"
             " AND status = 'locked'",
             (link["stake_id"],),
         ).fetchall():
-            refund_stake_locks(conn, int(lk["pr_number"]))
+            refund_stake_locks(
+                conn,
+                int(lk["pr_number"]),
+                stake_id=int(link["stake_id"]),
+                reason="guild_disbanded",
+            )
         restored += int(outstanding or 0)
         conn.execute(
             "DELETE FROM guild_stake_links WHERE stake_id = ?",
@@ -962,7 +998,10 @@ def sweep_guild_lending() -> dict:
                     ):
                         from db._guilds import _disband_distribute
 
-                        _prepare_guild_disband(conn, gid)
+                        # No explicit prepare: _disband_distribute opens
+                        # with the shared preamble (jobs resolve, stakes
+                        # release, debts seize), so calling it twice would
+                        # only redo idempotent no-ops.
                         _disband_distribute(conn, gid, "debt seize-and-dissolve")
                         report["seized"].append(gid)
                         dead = True
