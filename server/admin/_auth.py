@@ -180,6 +180,25 @@ def _safe_referer(request, fallback: str) -> str:
     if parts.scheme == base.scheme and parts.netloc == base.netloc:
         return ref
 
+    # Behind the TLS-terminating proxy uvicorn sees plain http while browsers
+    # speak https: accept the https form of the same origin iff the request
+    # arrived via our own LAN proxy saying so (X-Forwarded-Proto). The netloc
+    # must still match, so the open-redirect bar is unchanged.
+    if (
+        parts.netloc == base.netloc
+        and parts.scheme == "https"
+        and base.scheme == "http"
+    ):
+        from server.middleware import (
+            _trusted_proxy_peer,
+        )  # lazy: no leaf imports server
+
+        proto = request.headers.get("x-forwarded-proto", "")
+        proto = proto.split(",")[0].strip().lower()
+        peer = request.client.host if request.client else None
+        if proto == "https" and _trusted_proxy_peer(peer):
+            return ref
+
     return fallback
 
 
