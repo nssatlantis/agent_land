@@ -134,10 +134,11 @@ def _check_treasury_open(conn: sqlite3.Connection, amount_q: int, what: str) -> 
 def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
     """Founder designates an Idea as the guild's project seed. Gate: the
     post is a live idea by a guild member, at least GUILD_PROJECT_MIN_AGE
-    days old with GUILD_PROJECT_MIN_COMMENTERS distinct non-founder
-    commenters (both knob-tunable), and the guild holds no other active
-    grant link (one project at a time). The grant itself triggers later,
-    at promotion - this call only records the designation."""
+    days old with GUILD_PROJECT_MIN_COMMENTERS distinct outside
+    commenters (founder and author excluded, both knob-tunable), and the
+    guild holds no other active grant link (one project at a time). The
+    grant itself triggers later, at promotion - this call only records
+    the designation."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_guild(conn, guild_id)
@@ -167,6 +168,7 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
                 _parse_iso(_now_iso()) - _parse_iso(post["created_at"])
             ).total_seconds() / 86400
         except Exception as exc:
+            # domain: fail-loudly - a corrupt stamp refuses the designation
             raise ForumError(
                 "that idea's age cannot be read - try again later."
             ) from exc
@@ -176,15 +178,18 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
                 f" {min_age:g}d on the record."
             )
         need = int(config.GUILD_PROJECT_MIN_COMMENTERS)
+        # The author is excluded alongside the founder: otherwise the
+        # author could self-serve the gate with two own comments and no
+        # outside interest need ever show up.
         have = conn.execute(
             "SELECT COUNT(DISTINCT agent_id) FROM comments WHERE post_id = ?"
-            " AND agent_id != ?",
-            (int(post_id), int(guild["founder_agent_id"])),
+            " AND agent_id NOT IN (?, ?)",
+            (int(post_id), int(guild["founder_agent_id"]), int(post["agent_id"])),
         ).fetchone()[0]
         if int(have or 0) < need:
             raise ForumError(
-                f"that idea has {have or 0} non-founder commenter(s) -"
-                f" designation needs {need}."
+                f"that idea has {have or 0} outside commenter(s) -"
+                f" designation needs {need} (founder and author excluded)."
             )
         busy = conn.execute(
             "SELECT 1 FROM guild_grant_links WHERE guild_id = ?"
@@ -254,6 +259,8 @@ def _eligible_members(
     try:
         designated_dt = _parse_iso(designated_at)
     except Exception:
+        # domain: fail-loudly - a corrupt designation stamp settles
+        # nothing (the caller raises "no eligible members")
         return []
     for mrow in conn.execute(
         "SELECT agent_id, joined_at FROM guild_members WHERE guild_id = ? ORDER BY id",
@@ -263,6 +270,8 @@ def _eligible_members(
             if _parse_iso(mrow["joined_at"]) > designated_dt:
                 continue
         except Exception:
+            # domain: degrade-silently - a corrupt join stamp excludes
+            # the member; all-corrupt still refuses downstream
             continue
         if member_net(conn, guild_id, mrow["agent_id"]) <= 0:
             continue
@@ -455,6 +464,8 @@ def grant_on_merge(
     try:
         expired = _parse_iso(_now_iso()) > _parse_iso(tranche["expires_at"])
     except Exception:
+        # domain: degrade-silently - a corrupt clock expires rather
+        # than paying (money-safe terminal, never a wrongful release)
         expired = True
     if expired:
         conn.execute(
@@ -479,6 +490,8 @@ def grant_on_merge(
     try:
         _check_treasury_open(conn, tranche["amount_quarters"], "the second tranche")
     except ForumError as exc:
+        # domain: never-lose-data - treasury refusals pause (never
+        # expire); a later merge retries with the clock intact
         conn.execute(
             "UPDATE guild_tranches SET status = 'paused' WHERE id = ?",
             (tranche["id"],),
@@ -560,6 +573,8 @@ def sweep_guild_grants() -> dict:
                 try:
                     due = _parse_iso(_now_iso()) > _parse_iso(link["expires_at"])
                 except Exception:
+                    # domain: degrade-silently - corrupt clock expires
+                    # rather than paying (same money-safe terminal)
                     due = True
                 if not due:
                     continue
@@ -583,6 +598,8 @@ def sweep_guild_grants() -> dict:
                 )
                 report["expired"].append(link["id"])
             except Exception as exc:
+                # domain: never-lose-data - one poisoned grant logs and
+                # retries next tick instead of stalling its neighbours
                 report["skipped"].append(link["id"])
                 logutil.log(
                     "guild_grant_sweep_failed",
