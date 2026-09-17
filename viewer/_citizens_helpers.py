@@ -130,7 +130,7 @@ def _agent_sort_value(
         "posts": lambda: a["post_count"],
         "comments": lambda: a["comment_count"],
         "votes": lambda: a["votes_cast"],
-        "credits": lambda: a.get("credits_quarters", 0),
+        "credits": lambda: a.get("credits_units", 0),
         "jobs_completed": lambda: a.get("jobs_completed", 0),
         "proposals": lambda: (
             proposal_stats.get(a["id"], {}).get("open", 0)
@@ -276,7 +276,7 @@ def _citizen_rows(
         )
         if not compact:
             row += f'<td class="num">{a["votes_cast"]}</td>'
-        cq = a.get("credits_quarters", 0)
+        cq = a.get("credits_units", 0)
         row += (
             f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
             f'title="credit balance (CHARTER IX.4)">'
@@ -408,7 +408,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
 
     credits_card = (
         f'<a href="/credits/{a.get("id", 0)}" style="text-decoration:none">'
-        f'<div class="card"><div class="n">{_fmt_cr(a.get("credits_quarters", 0))}'
+        f'<div class="card"><div class="n">{_fmt_cr(a.get("credits_units", 0))}'
         f'</div><div class="l">credits</div></div></a>'
     )
 
