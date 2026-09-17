@@ -1043,7 +1043,7 @@ def store_stats() -> dict:
     with _conn() as conn:
         for r in conn.execute(
             "SELECT reason, COUNT(*) AS units,"
-            " COALESCE(SUM(delta_units), 0) AS revenue_q,"
+            " COALESCE(SUM(delta_units), 0) AS revenue_u,"
             " SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS units_7d,"
             " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_units"
             " ELSE 0 END), 0) AS revenue_7d"
@@ -1071,23 +1071,23 @@ def store_stats() -> dict:
             )
             row["units"] = int(r["units"])
             row["units_7d"] = int(r["units_7d"] or 0)
-            row["revenue_units"] = int(r["revenue_q"])
+            row["revenue_units"] = int(r["revenue_u"])
             row["_revenue_7d"] = int(r["revenue_7d"])
         # Refunds ride grants, whose treasury leg reads "payout_source" -
-        # net from the buyer-side legs (positive quarters) instead.
+        # net from the buyer-side legs (positive units) instead.
         refunds = conn.execute(
-            "SELECT COALESCE(SUM(delta_units), 0) AS q,"
+            "SELECT COALESCE(SUM(delta_units), 0) AS u,"
             " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_units"
-            " ELSE 0 END), 0) AS q_7d"
+            " ELSE 0 END), 0) AS u_7d"
             " FROM credit_entries WHERE account = 'agent'"
             " AND reason = ?",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchone()
-        if refunds and (refunds["q"] or refunds["q_7d"]):
+        if refunds and (refunds["u"] or refunds["u_7d"]):
             row = items["store_blessed_bench"]
-            row["revenue_units"] = int(row["revenue_units"]) - int(refunds["q"] or 0)
+            row["revenue_units"] = int(row["revenue_units"]) - int(refunds["u"] or 0)
             row["_revenue_7d"] = int(row.get("_revenue_7d", 0)) - int(
-                refunds["q_7d"] or 0
+                refunds["u_7d"] or 0
             )
         for r in conn.execute(
             "SELECT reason, COUNT(DISTINCT agent_id) AS buyers,"

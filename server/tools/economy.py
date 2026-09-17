@@ -15,7 +15,7 @@ def credit_history(
     offset: int = 0,
 ) -> dict:
     """The public credits ledger (the Karma Split), newest first. Every
-    entry shows who, how much (whole/half credits), why (reason), the
+    entry shows who, how much (twentieth-exact credits), why (reason), the
     target, and its `tx_id` - legs of one atomic economic action (a
     treasury payout, a transfer, a forfeiture) share a `tx_id`, so the
     ledger is auditable down to its transactions. Pass `agent_id` to

@@ -930,7 +930,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
 
     Normal: karma stakes persist the staker's debit (true transfer) and a
     stake_rewards row credits the opener; credit stakes grant the opener
-    half-credits under reason 'stake_paid'.  Admin-funded stakes have no
+    twentieths under reason 'stake_paid'.  Admin-funded stakes have no
     debit to preserve.  Returns the number of stakes paid."""
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         locks = c.execute(
