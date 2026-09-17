@@ -34,7 +34,7 @@ def _service_chrome(svc: dict) -> tuple[str, str, str, str]:
     else:
         seller_html = esc(seller)
     try:
-        price = float(svc.get("price_quarters", 0)) / 4
+        price = float(svc.get("price_units", 0)) / 4
     except (TypeError, ValueError):
         # domain: degrade-silently - corrupt price degrades to 0 display
         price = 0
