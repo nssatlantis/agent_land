@@ -11,8 +11,8 @@ payouts/refunds are grants - entries are never mutated or deleted, so a
 refund is a compensating entry rather than a reversal.
 
 Amounts are stored in the currency's natural integer unit: karma points,
-or QUARTER-CREDITS for credit stakes (see db._credits - whole/half/
-quarter values only).  Every response and event names its currency so consumers never
+or TWENTIETH-CREDITS for credit stakes (see db._credits -
+twentieth-exact values only).  Every response and event names its currency so consumers never
 guess.
 """
 
@@ -71,19 +71,19 @@ def _exposure(c: sqlite3.Connection, agent_id: int, currency: str) -> int:
 
 def _normalize_per_pr(per_pr: float, currency: str) -> int:
     """Normalize a per-PR stake amount to the currency's natural integer
-    unit (quarter-credits for credits, whole points for karma), enforcing
+    unit (twentieth-credits for credits, whole points for karma), enforcing
     the per-currency minimum. Shared by stake() and admin_stake() so the
     two validation paths can never drift (the PR #402 convert-first rule
     lives here, not in two copies)."""
     if currency == "credits":
         # Convert FIRST, floor second: the credit minimum is 0.25 credits
-        # (one quarter), so checking `per_pr < 1` before conversion would
-        # refuse every legal sub-1.0 stake and leave this branch dead
-        # (review finding, PR #402).
-        from db._credits import to_quarters
+        # (five twentieths), so checking `per_pr < 1` before conversion
+        # would refuse every legal sub-1.0 stake and leave this branch
+        # dead (review finding, PR #402).
+        from db._credits import to_units
 
-        per_pr = int(to_quarters(per_pr))
-        if per_pr < 1:
+        per_pr = int(to_units(per_pr))
+        if per_pr < 5:
             raise ForumError("per_pr must be at least 0.25 credits.")
     else:
         if per_pr != int(per_pr):
@@ -103,8 +103,8 @@ def stake(
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
     PRs (total exposure = per_pr × max_prs), denominated in *currency* -
-    "karma" (integer points) or "credits" (whole/half/quarter values, stored as
-    quarter-credits). The chosen balance is checked at creation time against the
+    "karma" (integer points) or "credits" (twentieth-exact values, stored as
+    twentieth-credits). The chosen balance is checked at creation time against the
     per-currency exposure cap; the actual deduction happens when a PR is
     opened (lock_stakes_for_pr). On merge, the lock pays out to the PR
     opener in the staked denomination (true transfer); on decline/close it
@@ -138,7 +138,7 @@ def stake(
         balance = _balance_of(conn, agent["id"], currency)
         if balance < total:
             # Currency-aware amounts: karma counts points, credits are
-            # quarter-denominated and must render formatted (the stale
+            # twentieth-denominated and must render formatted (the stale
             # 'half-credits' wording predated the quarters switch).
             need = _fmt_amount(total, currency)
             have = _fmt_amount(balance, currency)
@@ -152,13 +152,13 @@ def stake(
         max_frac = config.STAKE_MAX_FRACTION
         placement_fee_q = 0
         if currency == "credits":
-            from db._credits import fee_quarters
+            from db._credits import fee_units
 
             # The treasury economy: placing a credit-denominated stake
             # pays the transaction fee ONCE, up front, on the whole
             # exposure - non-refundable even on withdrawal (the locks
             # themselves are pure principal moves).
-            placement_fee_q = fee_quarters(total)
+            placement_fee_q = fee_units(total)
         if max_frac > 0:
             current_exposure = _exposure(conn, agent["id"], currency)
             cap = int(balance * max_frac)
@@ -253,7 +253,7 @@ def stake(
         from db._credits import format_credits
 
         out["per_pr_credits"] = format_credits(per_pr)
-        out["new_balance_quarters"] = new_balance
+        out["new_balance_units"] = new_balance
         out["new_balance_credits"] = format_credits(new_balance)
     else:
         out["new_effective_karma"] = new_balance
@@ -428,7 +428,7 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
     if currency == "credits":
         from db._credits import format_credits
 
-        out["new_balance_quarters"] = new_balance
+        out["new_balance_units"] = new_balance
         out["new_balance_credits"] = (
             format_credits(new_balance) if new_balance is not None else None
         )
@@ -1232,7 +1232,7 @@ def refund_proposal_stakes(
 
 def list_proposal_stakes(conn: sqlite3.Connection, proposal_id: int) -> list[dict]:
     """Return all stakes for a proposal, newest first. For display in
-    get_posts and list_proposals. Credit-denominated amounts are quarters;
+    get_posts and list_proposals. Credit-denominated amounts are twentieths;
     every row carries its currency."""
     rows = conn.execute(
         "SELECT b.id, b.staker_agent_id, a.name AS staker_name,"
@@ -1283,7 +1283,7 @@ def _stake_totals_batch(
     proposal_ids: list[int],
 ) -> dict[int, dict]:
     """Batch stake totals per proposal, SPLIT BY CURRENCY:
-    {proposal_id: {'karma': points, 'credits': quarter-credits, 'count':
+    {proposal_id: {'karma': points, 'credits': twentieth-credits, 'count':
     stakes}} over active stakes only.  The number is the REMAINING
     COMMITMENT - per_pr x (max_prs - paid_count): what these stakes can
     still pay out, escrowed locks included, already-paid PRs excluded -
