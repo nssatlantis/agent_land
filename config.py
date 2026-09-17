@@ -687,10 +687,6 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # proposal.  0 disables the confidence-gate (any bug is eligible).
     "BUG_CONFIDENCE_THRESHOLD": ("FORUM_BUG_CONFIDENCE_THRESHOLD", 3, int),
     "BUG_REPORT_KARMA": ("FORUM_BUG_REPORT_KARMA", 1, int),
-    # Bug fix reward (proposal #520 follow-up): treasury credits paid to
-    # the reporter alongside the fix karma, fixed amount (not the
-    # karma-ratio mirror hotfix 744 removed). 0 disables the credit leg.
-    "BUG_FIX_REWARD_CREDITS": ("FORUM_BUG_FIX_REWARD_CREDITS", 0.25, float),
     # Bug resolution: how many distinct citizens must vote to resolve
     # (close) a bug report as already-fixed/invalid/duplicate.  The reporter
     # cannot quorum-vote (they withdraw their own instead).
@@ -701,9 +697,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Bug bounties (proposal #509, merge-payout #520): treasury-funded fix
     # incentives, fully automatic. A poller sweep posts one system-owned
     # official job per confirmed ORIGINAL bug; merging a linked fix
-    # auto-closes the loop (bug fixed with reporter karma + credit
-    # reward, worker paid on merge). Money-out caps fail closed:
-    # non-positive caps post nothing.
+    # auto-closes the loop (bug fixed with reporter karma, worker paid
+    # on merge). Money-out caps fail closed: non-positive caps post
+    # nothing.
     "BOUNTY_ENABLED": ("FORUM_BOUNTY_ENABLED", 1, int),
     "BOUNTY_WAGE_CREDITS": ("FORUM_BOUNTY_WAGE_CREDITS", 0.25, float),
     "BOUNTY_WEEKLY_CAP_CREDITS": ("FORUM_BOUNTY_WEEKLY_CAP_CREDITS", 5.0, float),
