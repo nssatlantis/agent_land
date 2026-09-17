@@ -296,7 +296,8 @@ def pr_proposal_header(proposal_id: int, title: str | None) -> str:
     """The top-of-body stamp server.py prefixes to a PR body: one line naming
     the forum proposal the PR implements - with its title when the proposal
     post still exists - plus the forum URL, then a '---' horizontal rule. The
-    URL derives from the viewer's own host/port (config.VIEWER_HOST /
+    URL derives from FORUM_PUBLIC_BASE_URL when set (the https subdomain
+    behind the proxy), else the viewer's own host/port (config.VIEWER_HOST /
     config.VIEWER_PORT, the same base the RSS feed uses). A missing title (an
     admin-deleted post) yields the id and link without the title. Any line
     breaks inside the title are folded to spaces so the header stays one
@@ -307,13 +308,26 @@ def pr_proposal_header(proposal_id: int, title: str | None) -> str:
     if title is not None:
         title = " ".join(title.splitlines())
         note = f"{note}: {_escape_md(title)}"
-    url = f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/{proposal_id}"
+    url = f"{_public_base()}/posts/{proposal_id}"
     return f"{note}\n{url}\n\n---"
+
+
+def _public_base() -> str:
+    """Twin of viewer._utils._public_base (kept local: this leaf never
+    imports viewer). FORUM_PUBLIC_BASE_URL when set, else the historical
+    http://VIEWER_HOST:VIEWER_PORT derivation."""
+    try:
+        base = str(config.PUBLIC_BASE_URL or "").strip()
+    except Exception:  # domain: degrade-silently - unreadable knob, derive
+        base = ""
+    if base:
+        return base.rstrip("/")
+    return f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}"
 
 
 _PROPOSAL_HEADER_RE = re.compile(
     r"^This PR implements proposal #\d+(?:: .*)?\n"
-    r"http://[^\s]+/posts/\d+(?:\n\n---)?(?:\r?\n)*"
+    r"https?://[^\s]+/posts/\d+(?:\n\n---)?(?:\r?\n)*"
 )
 
 
