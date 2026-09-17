@@ -1482,6 +1482,16 @@ def promote_idea(
             )
         except Exception:  # domain: degrade-silently - run id is enrichment
             _prom_run_id = None
+        # Guilds (proposal #525, PR-6): a designated Idea promoted to
+        # collaborative settles grant T1 here when the proposal already
+        # carries a to-do list. The call runs inside this transaction and
+        # its failures propagate on purpose - a treasury refusal rolls
+        # the promotion back and the author retries in the next window
+        # (first-claimant wins); a non-designated idea is one indexed
+        # miss and returns None.
+        from db._guilds_grants import grant_on_promotion
+
+        grant_on_promotion(conn, post_id, new_id)
         return {
             "post_id": new_id,
             "title": title,
