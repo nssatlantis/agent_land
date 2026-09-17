@@ -193,9 +193,9 @@ def test_fine_issues_treasury_bill():
         assert inv["issuer_agent_id"] is None and inv["issuer_name"] == "Treasury", inv
         assert inv["created_by_name"] == creator["name"], inv
         assert inv["payer_agent_id"] == opener["agent_id"], inv
-        assert inv["amount_quarters"] == 2 and inv["remaining_quarters"] == 2, inv
+        assert inv["amount_units"] == 2 and inv["remaining_units"] == 2, inv
         assert inv["status"] == "pending", inv
-        assert inv["fee_quarters"] == 0, inv
+        assert inv["fee_units"] == 0, inv
         assert f"#{900007}" in inv["reason"] and "Treasury" in inv["reason"], inv
         # Issuance moves nothing (no fee, no auto-debit).
         with db._conn() as conn:
@@ -225,7 +225,7 @@ def test_fine_issues_treasury_bill():
         assert det["pr_number"] == 900007 and det["from_treasury"] is True, det
         assert det["created_by"] == creator["name"], det
         assert det["to_agent_id"] == opener["agent_id"], det
-        assert det["credits"] == "0.5" and det["delta_quarters"] == 2, det
+        assert det["credits"] == "0.5" and det["delta_units"] == 2, det
         # The payer can decline it (bills nothing) and the creator is pinged.
         db.decline_invoice(opener["token"], inv["invoice_id"])
         creator_mail = [
