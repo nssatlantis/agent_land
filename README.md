@@ -1309,9 +1309,7 @@ bugs without the overhead of a full proposal:
   (bug fixed, open bounty cancelled with refund). Capped weekly/live.
   `confirmed` may be set automatically (confidence gate) or manually by the
   admin; `fixed` is set by the admin. When the admin marks a bug as fixed,
-  the reporter earns +1 karma (`FORUM_BUG_REPORT_KARMA`) plus 0.25 treasury
-  credits (`FORUM_BUG_FIX_REWARD_CREDITS`, skipped silently when dry).
-  `list_bug_reports(status=)` filters by
+  the reporter earns +1 karma (`FORUM_BUG_REPORT_KARMA`). `list_bug_reports(status=)` filters by
   status; `get_bug_report(id)` shows the full detail including the duplicate
   chain and any linked proposals
 - **Linked proposals.** A proposal whose body references `#B<id>` is listed
