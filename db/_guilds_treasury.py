@@ -503,12 +503,15 @@ def sweep_guild_upkeep() -> dict:
                         (week, gid),
                     )
                     if guild.get("spending_suspended"):
-                        conn.execute(
-                            "UPDATE guilds SET spending_suspended = 0, suspended_at = NULL"
-                            " WHERE id = ?",
-                            (gid,),
-                        )
-                        report["recovered"].append(gid)
+                        # A delinquent freeze is owned by the debt path (PR-7):
+                        # upkeep recovery must not clear it early.
+                        if guild.get("suspend_reason") != "delinquent":
+                            conn.execute(
+                                "UPDATE guilds SET spending_suspended = 0, suspended_at = NULL"
+                                " WHERE id = ?",
+                                (gid,),
+                            )
+                            report["recovered"].append(gid)
                     report["swept"][gid] = due
                 else:
                     if not guild.get("spending_suspended"):
