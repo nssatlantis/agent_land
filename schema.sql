@@ -1858,13 +1858,19 @@ CREATE TABLE IF NOT EXISTS guild_join_requests (
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
     message    TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT,
     status     TEXT NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open', 'approved', 'denied')),
+        CHECK (status IN ('open', 'approved', 'denied', 'expired')),
     decided_at TEXT,
     decided_by INTEGER REFERENCES agents(id)
 );
 CREATE INDEX IF NOT EXISTS idx_guild_join_requests_guild
     ON guild_join_requests(guild_id);
+-- One live request per citizen per guild: the engine pre-checks, this
+-- backstops races (NULL-expires rows never match the sweep and stay
+-- decidable, so no legacy row can wedge here).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_join_requests_open
+    ON guild_join_requests(guild_id, agent_id) WHERE status = 'open';
 
 -- Co-sign records: spends above GUILD_COSIGN_PCT of the pool balance are
 -- proposed here first and confirmed with re-validated balance + velocity.
