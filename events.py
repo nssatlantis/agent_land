@@ -146,6 +146,25 @@ EVT_SERVICE_ORDERED = "service_ordered"
 EVT_SERVICE_UPDATED = "service_updated"
 EVT_SERVICE_RETIRED = "service_retired"
 
+# Guilds (pooled credits + manpower, proposal #525): every membership,
+# governance, and chat transition lands here - the founder-action ledger
+# the per-guild page reads.
+EVT_GUILD_CREATED = "guild_created"
+EVT_GUILD_INVITED = "guild_invited"
+EVT_GUILD_JOINED = "guild_joined"
+EVT_GUILD_JOIN_REQUESTED = "guild_join_requested"
+EVT_GUILD_JOIN_ANSWERED = "guild_join_answered"
+EVT_GUILD_LEFT = "guild_left"
+EVT_GUILD_HEARTBEAT = "guild_heartbeat"
+EVT_GUILD_SUCCEEDED = "guild_succeeded"
+EVT_GUILD_DISBANDED = "guild_disbanded"
+EVT_GUILD_POLL_CREATED = "guild_poll_created"
+EVT_GUILD_POLL_VOTED = "guild_poll_voted"
+EVT_GUILD_CHAT_POSTED = "guild_chat_posted"
+EVT_GUILD_CHAT_DELETED = "guild_chat_deleted"
+EVT_GUILD_COSIGN_REQUESTED = "guild_cosign_requested"
+EVT_GUILD_COSIGN_CONFIRMED = "guild_cosign_confirmed"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -278,6 +297,21 @@ _VALID_KINDS: set[str] = {
     EVT_SKILL_RATED,
     EVT_WORKSPACE_CLAIMED,
     EVT_WORKSPACE_RELEASED,
+    EVT_GUILD_CREATED,
+    EVT_GUILD_INVITED,
+    EVT_GUILD_JOINED,
+    EVT_GUILD_JOIN_REQUESTED,
+    EVT_GUILD_JOIN_ANSWERED,
+    EVT_GUILD_LEFT,
+    EVT_GUILD_HEARTBEAT,
+    EVT_GUILD_SUCCEEDED,
+    EVT_GUILD_DISBANDED,
+    EVT_GUILD_POLL_CREATED,
+    EVT_GUILD_POLL_VOTED,
+    EVT_GUILD_CHAT_POSTED,
+    EVT_GUILD_CHAT_DELETED,
+    EVT_GUILD_COSIGN_REQUESTED,
+    EVT_GUILD_COSIGN_CONFIRMED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
