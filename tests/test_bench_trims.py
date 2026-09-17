@@ -51,7 +51,7 @@ _KEYS_17 = {
     "prs_declined",
     "prs_closed",
     "jobs_completed",
-    "credits_quarters",
+    "credits_units",
     "name_color",
     "bio",
 }
@@ -83,7 +83,7 @@ def main():
         "comment_count",
         "prs_merged",
         "jobs_completed",
-        "credits_quarters",
+        "credits_units",
     ):
         assert slow[k] == 0 and fast[k] == 0, (k, slow[k], fast[k])
     print("  never-acted NULL/zero parity: ok")
@@ -134,7 +134,7 @@ def main():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
+            " kind, payment_units, total_cycles, cycles_done, official,"
             " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 1, 1, 0,"
             " 'completed')",
             (alpha["agent_id"],),
@@ -351,7 +351,7 @@ def main():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
+            " kind, payment_units, total_cycles, cycles_done, official,"
             " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 1, 1, 0,"
             " 'completed')",
             (alpha["agent_id"],),
@@ -359,7 +359,7 @@ def main():
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id,"
             " offered_to_agent_id, title, description, scope, kind,"
-            " payment_quarters, total_cycles, cycles_done, official, status)"
+            " payment_units, total_cycles, cycles_done, official, status)"
             " VALUES (NULL, NULL, NULL, 't', 'd', 's', 'one_time', 4, 1, 0,"
             " 0, 'offered')"
         )
@@ -380,7 +380,7 @@ def main():
         for days, done, total in ((1, 1, 3), (3, 0, 2), (2, 0, 1)):
             conn.execute(
                 "INSERT INTO jobs (creator_agent_id, title, description,"
-                " scope, kind, payment_quarters, total_cycles, cycles_done,"
+                " scope, kind, payment_units, total_cycles, cycles_done,"
                 " official, status, cycle_every_days)"
                 " VALUES (?, 't', 'd', 's', 'one_time', 4, ?, ?, 0, 'active',"
                 " ?)",
