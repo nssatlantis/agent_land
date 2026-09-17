@@ -683,6 +683,32 @@ def test_checkpoint_replays_the_chain_not_just_sums():
     assert cp["ok"] is False
 
 
+def test_verify_ledger_public_pages_past_first_page():
+    """#B30: verify_ledger_public must page through the whole ledger.
+    history() clamps limit to MAX_PAGE_SIZE, so the old offset += 200 stride
+    skipped rows 100-199 whenever the ledger held more than one page and
+    reported the chain broken. Seed enough entries to span several pages and
+    assert the public chain verifies end-to-end."""
+    with db._conn(immediate=True) as conn:
+        for _ in range(250):
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+                " account) VALUES (NULL, -1, 'page_stride_seed', 'treasury')",
+            )
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+                " account) VALUES (NULL, 1, 'page_stride_seed', 'treasury')",
+            )
+    seal = db.write_checkpoint()
+    pub = db.verify_ledger_public()
+    assert pub["present"] is True
+    assert pub["entries_replayed"] == seal["entry_count"], (
+        "every sealed entry must be replayed, not skipped past page one"
+    )
+    assert pub["chain_ok"] is True
+    assert pub["recomputed_hash"] == seal["running_hash"]
+
+
 def test_negative_admin_cap_clamps_shut():
     """A negative cap knob clamps to 0 - every adjustment then needs a
     proposal. A typo must never unlock unlimited minting (review note
