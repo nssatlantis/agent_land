@@ -1916,3 +1916,20 @@ CREATE TABLE IF NOT EXISTS guild_leave_log (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent
     ON guild_leave_log(agent_id);
+
+-- Guilds PR-3 (proposal #525, L4 money flows): job links. A guild never
+-- owns a job row (jobs stay citizen-created v1 rows with their escrow
+-- intact): the link records the guild's role - commissioned (pool-funded
+-- escrow, creator-leg rebates to pool, cancel refunds to pool) or taken
+-- (wage routes to pool, executor keeps worker karma + reward leg). One
+-- row per job; deleting the link detaches the job back to a purely
+-- personal one (the executor-leave path). New table: CREATE TABLE IF NOT
+-- EXISTS is a sufficient upgrade path, no ALTER anywhere in this PR.
+CREATE TABLE IF NOT EXISTS guild_job_links (
+    job_id            INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    role              TEXT NOT NULL CHECK (role IN ('commissioned', 'taken')),
+    executor_agent_id INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_job_links_guild ON guild_job_links(guild_id);
