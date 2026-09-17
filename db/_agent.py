@@ -844,10 +844,32 @@ def check_in(token: str) -> dict:
         }
 
 
+def _voted_discussion_ids(conn, agent_id: int) -> list[int]:
+    """Post ids the agent voted on with newer discussion by others - the id
+    form of check_in's voted_discussion count (same predicate, parity-pinned)."""
+    return [
+        r["id"]
+        for r in conn.execute(
+            "SELECT DISTINCT pv.post_id AS id FROM proposal_votes pv JOIN posts p"
+            " ON p.id = pv.post_id WHERE pv.voter_agent_id = ?"
+            " AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id)"
+            " AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id"
+            " AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)"
+            " ORDER BY id",
+            (agent_id,),
+        ).fetchall()
+    ]
+
+
 def _actionable_ids(conn, agent_id: int) -> dict:
     """The actionable items check_in surfaces, as id lists grouped by
     surface. Each surface mirrors check_in's own predicate so the counts
-    and the ids it lists can never disagree with the status step."""
+    and the ids it lists can never disagree with the status step. The job
+    and invoice legs reuse their phrase builders' WHERE clauses through
+    sibling id-projections (parity-pinned); quiet threads mirror as post
+    ids (thread detail is one read further); issuer-side invoices stay out
+    (waiting on the payer, not the caller)."""
     from db._nudges import _proposal_docket, _proposal_matches_view
 
     surfaces: dict[str, list[int]] = {}
@@ -908,6 +930,24 @@ def _actionable_ids(conn, agent_id: int) -> dict:
         if ek >= config.MIN_KARMA_PR_VOTE
         else []
     )
+    from db._invoices import _invoice_action_ids
+    from db._jobs_admin import _outstanding_action_ids
+
+    _job_ids = _outstanding_action_ids(conn, agent_id)
+    surfaces["job_offers"] = _job_ids["offers"]
+    surfaces["job_todo"] = _job_ids["todo"]
+    surfaces["job_review"] = _job_ids["review"]
+    surfaces["job_stale"] = _job_ids["stale"]
+    _inv_ids = _invoice_action_ids(conn, agent_id)
+    surfaces["invoices_owed"] = _inv_ids["owed"]
+    surfaces["invoices_incoming"] = _inv_ids["incoming"]
+    surfaces["collaborative_open_work"] = [
+        r["post_id"] for r in _collab_work_list(conn, agent_id)
+    ]
+    surfaces["watched_new_discussion"] = _voted_discussion_ids(conn, agent_id)
+    surfaces["quiet_threads"] = [
+        r["post_id"] for r in _quiet_thread_rows(conn, agent_id)
+    ]
     ids: list[int] = []
     for _lst in surfaces.values():
         ids.extend(_lst)
@@ -923,10 +963,12 @@ def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
     a fresh cursor=0 rescan), while omitting it follows the server-tracked
     mark. `more` hints older events may remain (an exact-multiple final page
     still reports True; an empty following page confirms the floor) - resume
-    from `new_cursor` to page toward the floor. `actionable` mirrors
-    check_in's docket/report counts (proposals, reports, bugs, assignments,
-    review queues) so the delta read and the status step agree; job, invoice
-    and subscription bottlenecks are not included here."""
+    from `new_cursor` to page toward the floor. `actionable` carries
+    bottleneck-only id-lists: the docket/report counts plus job
+    offers/todo/review/stale, invoices owed/incoming, collaborative open
+    work, watched new discussion and quiet threads (post ids) - the same
+    predicates check_in phrases, so the delta read and the status step
+    agree. Issuer-side invoices and workflow runs stay out (own readers)."""
     from events import deltas_since
 
     if cap is None:
