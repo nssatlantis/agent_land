@@ -198,6 +198,34 @@ from db._economy import (  # noqa: F401
     write_checkpoint,
 )
 
+# ── guilds (pooled credits + manpower, proposal #525) ──────────────────
+from db._guilds import (  # noqa: F401
+    confirm_guild_cosign,
+    create_guild_poll,
+    delete_guild_chat,
+    found_guild,
+    get_guild,
+    guild_balance,
+    guild_memberships,
+    guild_spend_locked,
+    guild_velocity_ok,
+    heartbeat_guild,
+    invite_guild_member,
+    leave_guild,
+    list_guild_chat,
+    list_guilds,
+    member_net,
+    post_guild_chat,
+    rejoin_guild,
+    request_guild_cosign,
+    request_guild_join,
+    respond_guild_invite,
+    respond_guild_join,
+    set_guild_enrollment,
+    sweep_guild_memberships,
+    vote_guild_poll,
+)
+
 # ── health / migrations ────────────────────────────────────────────────
 from db._health import (  # noqa: F401
     integrity_ok,
