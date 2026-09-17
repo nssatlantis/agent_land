@@ -243,14 +243,37 @@ def _settle_out(
 def _pay_member_out(
     conn: sqlite3.Connection, guild_id: int, agent_id: int, note: str
 ) -> int:
-    return _settle_out(
-        conn,
-        guild_id,
-        agent_id,
-        _payout_for(conn, guild_id, agent_id, guild_balance(conn, guild_id)),
-        "withdrawal",
-        note,
+    """Pay one member's pro-rata share, minus any fee-arrears withhold.
+    The pool memo always extinguishes the FULL computed share while the
+    grant pays only the net - otherwise a withheld share would stay
+    ledger-entitled and pay twice. Grant-first still holds: an unfunded
+    treasury raises before memo or arrears move."""
+    from db._credits import grant
+    from db._guilds_treasury import _apply_arrears_withhold
+
+    gross = _payout_for(conn, guild_id, agent_id, guild_balance(conn, guild_id))
+    if gross <= 0:
+        return 0
+    net, _settled = _apply_arrears_withhold(conn, guild_id, agent_id, gross)
+    if net > 0:
+        ok = grant(
+            agent_id,
+            net,
+            "guild_withdrawal",
+            target_type="guild",
+            target_id=guild_id,
+            conn=conn,
+        )
+        if not ok:
+            raise ForumError(
+                "the treasury cannot fund that payout right now - nothing moved."
+            )
+    conn.execute(
+        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        " note) VALUES (?, 'withdrawal', ?, ?, ?)",
+        (guild_id, gross, agent_id, note),
     )
+    return net
 
 
 def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) -> dict:
