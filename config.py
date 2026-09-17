@@ -705,6 +705,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "BOUNTY_WEEKLY_CAP_CREDITS": ("FORUM_BOUNTY_WEEKLY_CAP_CREDITS", 5.0, float),
     "BOUNTY_MAX_LIVE": ("FORUM_BOUNTY_MAX_LIVE", 10, int),
     "BOUNTY_MIN_TREASURY_CREDITS": ("FORUM_BOUNTY_MIN_TREASURY_CREDITS", 0.0, float),
+    # Server-error auto-reports (proposal #521): unhandled viewer GET
+    # exceptions file bug reports by themselves. Master switch (0 = log
+    # only, never file) plus a daily cap on NEW auto-filed reports;
+    # repeats of a known signature only bump its occurrence counter.
+    "SERVER_ERROR_REPORTS_ENABLED": ("FORUM_SERVER_ERROR_REPORTS_ENABLED", 1, int),
+    "SERVER_ERROR_MAX_NEW_PER_DAY": ("FORUM_SERVER_ERROR_MAX_NEW_PER_DAY", 10, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

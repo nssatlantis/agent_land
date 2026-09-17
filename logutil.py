@@ -96,6 +96,9 @@ class RequestLogging:
 
         try:
             await self.app(scope, receive, send_wrapper)
+        except Exception:  # domain: degrade-silently - record 500, propagate
+            status["code"] = 500
+            raise
         finally:
             logging.getLogger("agentland.request").info(
                 {

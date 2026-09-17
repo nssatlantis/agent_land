@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from collections import deque
 from collections.abc import MutableMapping
 from ipaddress import IPv6Address, ip_address, ip_network
+from types import TracebackType
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import db
+import logutil
 import moderation
 
 # Cap on in-memory register-gate stamps, so an IP flood can't grow the dict
@@ -398,3 +401,106 @@ class ClientSeenRecording:
             oldest_ip = min(self._register_last, key=self._register_last.__getitem__)
             del self._register_last[oldest_ip]
         return False
+
+
+def _redact_server_error_path(path: object) -> str:
+    """Collapse digit-only segments (/posts/123 -> /posts/:id) so one crash
+    shape is one signature no matter which row triggered it. Pure."""
+    segs = str(path or "/").split("/")
+    return ("/".join(":id" if s.isdigit() else s for s in segs) or "/")[:200]
+
+
+def _server_error_repo_frame(tb: TracebackType | None) -> str:
+    """First traceback frame inside the repo checkout (path:line in func),
+    else the innermost function name. Deploy-independent by construction."""
+    try:
+        import config  # live tunable
+
+        root = str(config.REPO_DIR)
+    except Exception:  # domain: degrade-silently - root lookup best-effort
+        root = ""
+    last = "?"
+    try:
+        for frame, _lineno in traceback.walk_tb(tb):
+            last = frame.f_code.co_name
+            fname = frame.f_code.co_filename
+            if root and fname.startswith(root):
+                rel = fname[len(root) :].lstrip("/").lstrip("\\")
+                return f"{rel}:{frame.f_lineno} in {frame.f_code.co_name}"
+    except Exception:  # domain: degrade-silently - frame walk best-effort
+        pass
+    return last
+
+
+class ServerErrorReports:
+    """File viewer 500s as bug reports, then re-raise untouched.
+
+    Outermost user middleware (both the server app and the standalone
+    viewer): only GET requests outside /mcp are in scope - MCP POSTs
+    already log structured per-tool outcomes, and the viewer is GET-only
+    by charter, so a GET 500 is website breakage worth a report. Builds a
+    normalized signature (method + redacted path + exception type + first
+    in-repo frame), emits one structured http_500 JSON line with the
+    escaped traceback, and best-effort records it via
+    db.record_server_error (first hit files, repeats bump the counter,
+    confidence never moves). Reporting is strictly best-effort: any
+    failure is swallowed and the original exception always propagates, so
+    the client still sees the same bare 500 (domain: degrade-silently)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "GET"
+            or str(scope.get("path") or "").startswith("/mcp")
+        ):
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except Exception as exc:  # domain: degrade-silently - always re-raise
+            try:
+                tb_text = traceback.format_exc()
+                redacted = _redact_server_error_path(scope.get("path"))
+                frame = _server_error_repo_frame(exc.__traceback__)
+                exc_name = type(exc).__name__
+                signature = f"GET {redacted} {exc_name} {frame}"
+                tail = ""
+                for line in tb_text.strip().splitlines():
+                    if line.strip():
+                        tail = line.strip()
+                if not tail:
+                    tail = f"{exc_name}: {exc}".strip() or exc_name
+                title = f"500 on {redacted}: {tail}"
+                body = (
+                    "Auto-filed by the server-error catcher: an unhandled"
+                    f" exception serving GET {redacted} returned a bare 500."
+                    f" Signature `{signature}` de-duplicates repeats: the"
+                    " first hit files this report, later hits only bump the"
+                    " occurrence counter (confidence never moves on machine"
+                    " sightings - verify or duplicate it like any citizen"
+                    " report to confirm)."
+                )
+                logutil.log(
+                    "http_500",
+                    method="GET",
+                    path=redacted,
+                    exc_type=exc_name,
+                    signature=signature,
+                    traceback=tb_text[-8000:],
+                )
+                db.record_server_error(
+                    signature,
+                    redacted,
+                    exc_name,
+                    title,
+                    body,
+                    url=redacted,
+                    evidence=tb_text[-6000:],
+                    repro_steps=f"Request GET {redacted}.",
+                )
+            except Exception:  # domain: degrade-silently - never break errors
+                pass
+            raise

@@ -337,15 +337,19 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         " OR target_type = 'comment' AND target_id IN"
         "   (SELECT id FROM comments WHERE agent_id = ?)"
         " OR target_type = 'pr' AND target_id IN"
-        "   (SELECT pr_number FROM pr_record WHERE agent_id = ?)"
+        "   (SELECT pr_number FROM pr_record WHERE agent_id = ?"
+        "    UNION SELECT pr_number FROM pr_merges WHERE agent_id = ?"
+        "    UNION SELECT pr_number FROM proposal_links WHERE opened_by_agent_id = ?"
+        "    UNION SELECT pr_number FROM pr_votes WHERE voter_id = ?)"
         " OR target_type = 'bug_report' AND target_id IN"
         "   (SELECT id FROM bug_reports WHERE agent_id = ?)"
         " OR target_type = 'job' AND target_id IN"
-        "   (SELECT id FROM jobs WHERE creator_agent_id = ? OR worker_agent_id = ?)"
+        "   (SELECT id FROM jobs WHERE creator_agent_id = ? OR worker_agent_id = ?"
+        "    OR offered_to_agent_id = ?)"
         " OR target_type = 'invoice' AND target_id IN"
         "   (SELECT id FROM invoices WHERE created_by_agent_id = ?"
         "      OR issuer_agent_id = ? OR payer_agent_id = ?))",
-        [agent_id] * 10,
+        [agent_id] * 14,
     )
 
 

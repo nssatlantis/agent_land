@@ -840,7 +840,7 @@ def check_in(token: str) -> dict:
             "cooldowns": _cooldowns_for(conn, agent["id"]),
             "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
             "skills": _skills_batch(conn, [agent["id"]]).get(agent["id"], {}),
-            "last_delta_cursor": agent["last_delta_cursor"],
+            "last_delta_cursor": agent["last_delta_cursor"] or 0,
         }
 
 
@@ -886,11 +886,7 @@ def _actionable_ids(conn, agent_id: int) -> dict:
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
             " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-            " AND pl.opened_by_agent_id != ?"
-            " AND NOT EXISTS (SELECT 1 FROM pr_votes"
-            " WHERE pr_number = pl.pr_number AND voter_id = ?)"
-            " ORDER BY pl.post_id",
-            (agent_id, agent_id),
+            " ORDER BY pl.post_id"
         ).fetchall()
     ]
     ek = effective_karma(conn, agent_id)
@@ -922,24 +918,38 @@ def my_deltas(token: str, cursor: int | None = None, cap: int = 500) -> dict:
     """The caller's relevant events since `cursor` (newest-first), with the
     server's delivered-only high-water mark (`last_delta_cursor`) advanced
     only when rows are actually delivered. Pass a previous `new_cursor` as
-    `cursor` to resume. `more` is True when the page hit `cap` and older
-    events remain - resume from `new_cursor` to page toward the floor.
-    `actionable` mirrors check_in's surfaces so the delta read and the
-    status step agree."""
+    `cursor` to resume; an explicit cursor always wins over the stored mark
+    (rewind duplicates; rows inserted after the first page are missed until
+    a fresh cursor=0 rescan), while omitting it follows the server-tracked
+    mark. `more` hints older events may remain (an exact-multiple final page
+    still reports True; an empty following page confirms the floor) - resume
+    from `new_cursor` to page toward the floor. `actionable` mirrors
+    check_in's docket/report counts (proposals, reports, bugs, assignments,
+    review queues) so the delta read and the status step agree; job, invoice
+    and subscription bottlenecks are not included here."""
     from events import deltas_since
 
+    if cap is None:
+        cap = 500
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ForumError("cap must be an integer >= 1.")
+    if cursor is not None and (
+        isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0
+    ):
+        raise ForumError("cursor must be an integer >= 0.")
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         agent_id = agent["id"]
         server_cursor = agent["last_delta_cursor"] or 0
-        effective = max(server_cursor, cursor or 0)
+        effective = cursor if cursor is not None else server_cursor
         rows = deltas_since(conn, agent_id, effective, cap)
         more = len(rows) == cap
         if rows:
             new_cursor = rows[-1]["id"]
             conn.execute(
-                "UPDATE agents SET last_delta_cursor = ? WHERE id = ?",
-                (new_cursor, agent_id),
+                "UPDATE agents SET last_delta_cursor = ? WHERE id = ?"
+                " AND COALESCE(last_delta_cursor, 0) = ?",
+                (new_cursor, agent_id, server_cursor),
             )
         else:
             new_cursor = effective

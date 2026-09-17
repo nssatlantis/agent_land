@@ -1198,11 +1198,27 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     claimed_by      INTEGER REFERENCES agents(id),
     claimed_at      TEXT,
     claimed_proposal_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
-    bounty_job_id   INTEGER REFERENCES jobs(id) ON DELETE SET NULL
+    bounty_job_id   INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    auto_signature TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_status ON bug_reports(status);
+
+-- Server-error auto-report hits (proposal #521): one row per crash
+-- signature with its occurrence counter and the linked auto-filed report.
+CREATE TABLE IF NOT EXISTS server_error_hits (
+    signature   TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    exc_type    TEXT NOT NULL,
+    first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_seen   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    report_id   INTEGER REFERENCES bug_reports(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_server_error_hits_report
+    ON server_error_hits(report_id);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_url ON bug_reports(url);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_created ON bug_reports(created_at);
 -- NOTE: idx_bug_reports_severity lives in db/_core/_boot_collab.py, not here:

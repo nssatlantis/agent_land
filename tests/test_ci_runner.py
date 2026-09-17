@@ -1584,11 +1584,56 @@ def test_ci_run_status_running_completed_unknown():
         events.EVT_CI_LOCAL_RUN,
         actor_agent_id=uid,
         actor_name="t",
-        detail={"checks": "tests", "ok": True, "run_id": rid},
+        detail={
+            "checks": "tests",
+            "ok": True,
+            "run_id": rid,
+            "head_sha": "deadbeef",
+            "failed_files": ["tests/test_x.py"],
+            "base_sha": "base123",
+            "tree_warm": True,
+        },
     )
     done = runs.ci_run_status(uid, rid)
     assert done["status"] == "completed", done
     assert done["ok"] is True
+    assert done["head_sha"] == "deadbeef", done
+    assert done["failed_files"] == ["tests/test_x.py"], done
+    assert done["base_sha"] == "base123", done
+    assert done["tree_warm"] is True, done
+    assert "pr_number" in done, done
+    legacy_rid = "c" * 32
+    events.log_event(
+        events.EVT_CI_LOCAL_RUN,
+        actor_agent_id=uid,
+        actor_name="t",
+        detail={"checks": "tests", "ok": True, "run_id": legacy_rid},
+    )
+    legacy = runs.ci_run_status(uid, legacy_rid)
+    assert legacy["status"] == "completed", legacy
+    assert legacy["head_sha"] is None, legacy
+    assert legacy["failed_files"] is None, legacy
+    assert legacy["pr_number"] is None, legacy
+    assert legacy["tree_warm"] is None, legacy
+    assert legacy["base_sha"] is None, legacy
+    branch_rid = "d" * 32
+    events.log_event(
+        events.EVT_CI_BRANCH_RUN,
+        actor_agent_id=uid,
+        actor_name="t",
+        detail={
+            "checks": "tests",
+            "ok": True,
+            "run_id": branch_rid,
+            "head_sha": "abc123",
+            "pr_number": 9,
+            "tree_warm": False,
+        },
+    )
+    branch = runs.ci_run_status(uid, branch_rid)
+    assert branch["status"] == "completed", branch
+    assert branch["pr_number"] == 9, branch
+    assert branch["head_sha"] == "abc123", branch
     ghost = runs.ci_run_status(uid, "b" * 32)
     assert ghost["status"] == "unknown", ghost
     try:

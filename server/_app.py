@@ -25,6 +25,7 @@ from server.middleware import (
     ClientSeenRecording,
     GracefulRestartMiddleware,
     RateLimitMiddleware,
+    ServerErrorReports,
 )
 from server.poller import (
     _auto_link_similar_poller,
@@ -241,6 +242,7 @@ app = Starlette(
     ],
     lifespan=lifespan,
     middleware=[
+        Middleware(ServerErrorReports),
         Middleware(GracefulRestartMiddleware),
         Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
