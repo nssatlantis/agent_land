@@ -6,6 +6,7 @@ untouched, pool claim up by the grant).
 """
 
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -220,6 +221,14 @@ def test_designate_gates():
         raise AssertionError("lonely idea designated")
     except Exception as exc:
         assert "commenter" in str(exc), exc
+    # Author self-serve does not count: author plus one outsider refuses.
+    db.create_comment(mate["token"], lonely, "my own bump")
+    db.create_comment(mate["token"], lonely, "my own bump again")
+    try:
+        db.designate_guild_project(founder["token"], guild["id"], lonely)
+        raise AssertionError("self-served idea designated")
+    except Exception as exc:
+        assert "commenter" in str(exc), exc
     # Non-founder cannot designate.
     c2 = _new_agent("gg-g2")
     ready = _old_idea(mate, "ready", [c1, c2])
@@ -311,16 +320,28 @@ def test_non_collaborative_promotion_expires_link():
     assert row["t1_tranche_id"] is None
 
 
-def test_eligibility_snapshot_excludes_late_zero_arrears():
+def test_eligibility_snapshot_three_arms():
+    # Tenure + deposit + arrears, each pinned: the founder never deposits
+    # (zero net, same terms as everyone), a funded member carries an open
+    # arrears row, and a funded member joins after designation. Only the
+    # clean mate is eligible: 1 x 1cr = 4q, split 2/2.
     founder, guild = _found()
     gid = guild["id"]
     mate = _mate(founder, guild)
-    db.guild_deposit(founder["token"], gid, 25.0)
+    third = _new_agent("gg-e3")
+    _fund(third["agent_id"], 60)
+    inv = db.invite_guild_member(founder["token"], gid, third["name"])
+    db.respond_guild_invite(third["token"], inv["invite_id"], True)
+    db.guild_deposit(third["token"], gid, 5.0)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
+            " week, quarters, status) VALUES (?, ?, '2026-W38', 1, 'open')",
+            (gid, third["agent_id"]),
+        )
     c1, c2 = _new_agent("gg-e1"), _new_agent("gg-e2")
     idea = _old_idea(mate, "elig", [c1, c2])
     db.designate_guild_project(founder["token"], gid, idea)
-    # Late joiner (after designation), zero-net founder takes nothing:
-    # founder withdraws everything first.
     late = _new_agent("gg-late")
     _fund(late["agent_id"], 60)
     inv = db.invite_guild_member(founder["token"], gid, late["name"])
@@ -328,11 +349,19 @@ def test_eligibility_snapshot_excludes_late_zero_arrears():
     db.guild_deposit(late["token"], gid, 5.0)
     prop = _promote(mate, idea, True)
     link = _link_for_post(prop["post_id"])
-    assert link is not None, "T1 should settle"
-    ids = sorted(__import__("json").loads(link["eligible_agent_ids"]))
-    assert late["agent_id"] not in ids, ids
-    # Founder deposited 100q net and mate 40q: both eligible here.
-    assert sorted(ids) == sorted([founder["agent_id"], mate["agent_id"]]), ids
+    assert link is not None and link["t1_tranche_id"] is not None, link
+    ids = sorted(json.loads(link["eligible_agent_ids"]))
+    assert ids == [mate["agent_id"]], ids
+    assert link["eligible_count"] == 1, link
+    with db._conn() as conn:
+        amounts = {
+            r["tier"]: r["amount_quarters"]
+            for r in conn.execute(
+                "SELECT tier, amount_quarters FROM guild_tranches WHERE id IN (?, ?)",
+                (link["t1_tranche_id"], link["t2_tranche_id"]),
+            ).fetchall()
+        }
+    assert amounts == {"T1": 2, "T2": 2}, amounts
 
 
 def test_t2_settles_on_merge_freeze_and_expiry():
@@ -426,29 +455,77 @@ def test_decay_cap_and_completed_counts_merges_only():
 
 
 def test_cap_binds_before_decay():
-    # Armed 1cr cap on a 2-member (2cr raw) grant: 4q total, split 2/2.
+    # Cap applies BEFORE decay (not after): complete one grant, then arm
+    # a 1cr cap on the decay-75 second grant. Cap-first: 4*75//100 = 3
+    # (1/2); decay-first would give min(4, 8*75//100 = 6) = 4 (2/2).
     founder, guild = _found()
     mate = _mate(founder, guild)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
     c1, c2 = _new_agent("gg-cp1"), _new_agent("gg-cp2")
-    idea = _old_idea(mate, "capped", [c1, c2])
-    db.designate_guild_project(founder["token"], guild["id"], idea)
-    old = _arm("FORUM_GUILD_GRANT_CAP", "1.0")
+    idea1 = _old_idea(mate, "cap1", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea1)
+    prop1 = _promote(mate, idea1, True)
+    pr1 = _merge(prop1["post_id"])
+    with db._conn(immediate=True) as conn:
+        out = db.grant_on_merge(conn, prop1["post_id"], pr1)
+    assert out is not None and out["status"] == "released", out
+    idea2 = _old_idea(mate, "cap2", [c1, c2])
+    old_cap = _arm("FORUM_GUILD_GRANT_CAP", "1.0")
+    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
     try:
-        prop = _promote(mate, idea, True)
+        db.designate_guild_project(founder["token"], guild["id"], idea2)
+        prop2 = _promote(mate, idea2, True)
     finally:
-        _unarm(old, "FORUM_GUILD_GRANT_CAP")
-    link = _link_for_post(prop["post_id"])
-    assert link is not None, "capped T1 should settle"
+        _unarm(old_cap, "FORUM_GUILD_GRANT_CAP")
+        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
+    link2 = _link_for_post(prop2["post_id"])
+    assert link2 is not None and link2["decay_pct"] == 75, link2
     with db._conn() as conn:
         amounts = {
             r["tier"]: r["amount_quarters"]
             for r in conn.execute(
                 "SELECT tier, amount_quarters FROM guild_tranches WHERE id IN (?, ?)",
-                (link["t1_tranche_id"], link["t2_tranche_id"]),
+                (link2["t1_tranche_id"], link2["t2_tranche_id"]),
             ).fetchall()
         }
-    assert amounts == {"T1": 2, "T2": 2}, amounts
+    assert amounts == {"T1": 1, "T2": 2}, amounts
+
+
+def test_decay_dust_completes_without_pay():
+    # Fourth repeat at decay 25 with one eligible member: 4*25//100 = 1q,
+    # below the smallest splittable tranche - the link completes with no
+    # tranches and no pay (documented; expiry-style terminal, no merge).
+    founder, guild = _found()
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-x1"), _new_agent("gg-x2")
+    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
+    try:
+        last = None
+        for rnd in range(4):
+            idea = _old_idea(founder, f"dust{rnd}", [c1, c2])
+            db.designate_guild_project(founder["token"], guild["id"], idea)
+            prop = _promote(founder, idea, True)
+            if rnd < 3:
+                pr = _merge(prop["post_id"])
+                with db._conn(immediate=True) as conn:
+                    out = db.grant_on_merge(conn, prop["post_id"], pr)
+                assert out is not None and out["status"] == "released", out
+            else:
+                last = prop["post_id"]
+    finally:
+        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
+    link = _link_for_post(last)
+    assert link is not None and link["status"] == "complete", link
+    assert link["decay_pct"] == 25, link
+    assert link["t1_tranche_id"] is None and link["t2_tranche_id"] is None
+    # Rounds 1-3 paid 4+3+2q; the dust round added nothing.
+    with db._conn() as conn:
+        paid = conn.execute(
+            "SELECT COALESCE(SUM(quarters), 0) FROM guild_ledger"
+            " WHERE guild_id = ? AND kind IN ('grant_t1', 'grant_t2')",
+            (guild["id"],),
+        ).fetchone()[0]
+    assert paid == 9, paid
 
 
 def test_budget_and_cooldown_gates():
@@ -487,6 +564,55 @@ def test_budget_and_cooldown_gates():
         assert "cooldown" in str(exc), exc
 
 
+def test_t2_savepoint_isolates_grant_failure():
+    # The poller runs grant_on_merge inside SAVEPOINT guild_grant_t2: a
+    # grant bug rolls back only grant rows while the outer transaction
+    # commits. Pinned at the seam with a poisoned treasury check.
+    import db._guilds_grants as _gg
+
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-s1"), _new_agent("gg-s2")
+    idea = _old_idea(mate, "savepoint", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    prop = _promote(mate, idea, True)
+    pid = prop["post_id"]
+    pr = _merge(pid)
+    real = _gg._check_treasury_open
+
+    def _boom(conn, amount_q, what):
+        raise RuntimeError("treasury probe down")
+
+    _gg._check_treasury_open = _boom
+    try:
+        with db._conn(immediate=True) as conn:
+            conn.execute("SAVEPOINT gg_probe")
+            try:
+                db.grant_on_merge(conn, pid, pr)
+                raise AssertionError("poisoned settle did not raise")
+            except RuntimeError:
+                conn.execute("ROLLBACK TO SAVEPOINT gg_probe")
+            finally:
+                conn.execute("RELEASE SAVEPOINT gg_probe")
+            outer_mark = conn.execute(
+                "SELECT COUNT(*) FROM guild_ledger WHERE guild_id = ?"
+                " AND kind = 'grant_t2'",
+                (guild["id"],),
+            ).fetchone()[0]
+    finally:
+        _gg._check_treasury_open = real
+    assert outer_mark == 0, "grant rows leaked past the rollback"
+    link = _link_for_post(pid)
+    assert link is not None and link["status"] == "active", link
+    with db._conn() as conn:
+        tranche = conn.execute(
+            "SELECT status FROM guild_tranches WHERE id = ?",
+            (link["t2_tranche_id"],),
+        ).fetchone()
+    assert tranche["status"] == "proposed", dict(tranche)
+
+
 def test_double_settle_idempotent():
     founder, guild, mate, idea, pid, pr = _cycle("idem")
     pool_once = _pool(guild["id"])
@@ -513,7 +639,9 @@ if __name__ == "__main__":
     test_t1_on_promote_with_todos_and_conservation()
     test_t1_waits_for_todos_then_first_todo_settles()
     test_non_collaborative_promotion_expires_link()
-    test_eligibility_snapshot_excludes_late_zero_arrears()
+    test_eligibility_snapshot_three_arms()
+    test_decay_dust_completes_without_pay()
+    test_t2_savepoint_isolates_grant_failure()
     test_t2_settles_on_merge_freeze_and_expiry()
     test_decay_cap_and_completed_counts_merges_only()
     test_cap_binds_before_decay()
