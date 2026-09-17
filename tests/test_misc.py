@@ -100,12 +100,12 @@ def main():
         boot_conn.close()
     with db._conn() as conn:
         held = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'escrow'"
         ).fetchone()[0]
-    assert held == 4, f"the live 1.0cr holding is present, got {held}q"
+    assert held == 20, f"the live 1.0cr holding is present, got {held}u"
     again = db._economy.backfill_escrow_account()
-    assert again["already_live"] is True and again["backfilled_quarters"] == 0, (
+    assert again["already_live"] is True and again["backfilled_units"] == 0, (
         "second run is a no-op"
     )
 
@@ -1522,7 +1522,7 @@ def main():
         import db._credits as _skill_cr
 
         with db._conn() as conn:
-            _skill_cr.grant(_sk["agent_id"], 4, "skill_mig_seed", conn=conn)
+            _skill_cr.grant(_sk["agent_id"], 20, "skill_mig_seed", conn=conn)
             conn.execute(
                 "INSERT INTO pr_merges (pr_number, agent_id, merged_at)"
                 " VALUES (?, ?, ?)",
@@ -1779,7 +1779,7 @@ def main():
         )
         with db._conn() as conn:
             plan = conn.execute(
-                "EXPLAIN QUERY PLAN SELECT agent_id, SUM(delta_quarters)"
+                "EXPLAIN QUERY PLAN SELECT agent_id, SUM(delta_units)"
                 " FROM credit_entries WHERE account = 'agent'"
                 " GROUP BY agent_id",
             ).fetchall()
@@ -1799,7 +1799,7 @@ def main():
     _OLD_CREDIT_DDL = """CREATE TABLE credit_entries (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         agent_id       INTEGER REFERENCES agents(id),
-        delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+        delta_units INTEGER NOT NULL CHECK (delta_units != 0),
         reason         TEXT NOT NULL,
         target_type    TEXT,
         target_id      INTEGER,
@@ -1811,7 +1811,7 @@ def main():
 
     def _seed_credit(conn):
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (NULL, 1000, 'genesis', 'treasury')"
         )
 
@@ -3226,8 +3226,8 @@ def main():
                 "issuer_agent_id",
                 "payer_agent_id",
                 "created_by_agent_id",
-                "amount_quarters",
-                "remaining_quarters",
+                "amount_units",
+                "remaining_units",
                 "reason",
                 "status",
                 "due_at",
@@ -3258,7 +3258,7 @@ def main():
         import db._credits as _cr
 
         with db._conn() as conn:
-            assert _cr.grant(mig_issuer["agent_id"], 4, "invmig_seed", conn=conn)
+            assert _cr.grant(mig_issuer["agent_id"], 20, "invmig_seed", conn=conn)
         seed_post = db.create_post(mig_issuer["token"], "mig karma", "body")
         db.vote(mig_payer["token"], "post", seed_post["post_id"], 1)
         mig_inv = db.create_invoice(
@@ -3268,10 +3268,10 @@ def main():
         db.init_db()  # second boot: table survives, open invoice intact
         with db._conn() as conn:
             again = conn.execute(
-                "SELECT status, remaining_quarters FROM invoices WHERE id = ?",
+                "SELECT status, remaining_units FROM invoices WHERE id = ?",
                 (mig_inv["invoice_id"],),
             ).fetchone()
-        assert (again["status"], again["remaining_quarters"]) == ("pending", 4)
+        assert (again["status"], again["remaining_units"]) == ("pending", 20)
     finally:
         db.DB_PATH = saved_db_path
     print("  invoices migration: ok")
@@ -3297,7 +3297,7 @@ def main():
         import db._credits as _cr2
 
         with db._conn() as conn:
-            assert _cr2.grant(bench_buyer["agent_id"], 40, "benchmig_seed", conn=conn)
+            assert _cr2.grant(bench_buyer["agent_id"], 200, "benchmig_seed", conn=conn)
         rep = db.buy_store_item(bench_buyer["token"], "blessed_bench")
         assert rep["owned"] == 1, "buying works on the migrated table"
         db.init_db()  # second boot: no crash, bank survives
@@ -3438,6 +3438,250 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
     print("  threads note pointer migration: ok")
+
+    # --- migration: quarters -> twentieths (proposal #536, option B) ----
+    # The honest "old schema" is a live twentieth database downgraded to
+    # quarters (rename back + /5, marker + meta removed). init_db() must
+    # rename every credit column, scale values by exactly 5 (credit stakes
+    # only - karma rows untouched), record the cutover, and keep every
+    # pre-migration checkpoint verifying via the //5 chain rule.
+    saved_db_path = db.DB_PATH
+    old_karma_min = os.environ.get("FORUM_JOB_CREATOR_MIN_KARMA")
+    os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "1"
+    import importlib as _ilm
+
+    from tests._setup import config as _cfg
+
+    _ilm.reload(_cfg)
+    try:
+        db.DB_PATH = str(_TMP / "quarter_twentieth_migration.db")
+        db.init_db()
+        qm_creator = db.register_agent("qmig-creator")
+        qm_worker = db.register_agent("qmig-worker")
+        qm_issuer = db.register_agent("qmig-issuer")
+        qm_payer = db.register_agent("qmig-payer")
+        import db._credits as _qcr
+
+        with db._conn() as conn:
+            assert _qcr.grant(qm_creator["agent_id"], 400, "qmig_seed", conn=conn)
+            assert _qcr.grant(qm_issuer["agent_id"], 100, "qmig_seed", conn=conn)
+        qm_post = db.create_post(qm_creator["token"], "qmig karma", "body")
+        db.vote(qm_payer["token"], "post", qm_post["post_id"], 1)
+        qm_ipost = db.create_post(qm_issuer["token"], "qmig issuer karma", "body")
+        db.vote(qm_payer["token"], "post", qm_ipost["post_id"], 1)
+        qm_job = db.create_job(
+            qm_creator["token"], "qmig job", "d", 1.0, ["s"], kind="one_time"
+        )
+        qm_prop = db.create_proposal(qm_creator["token"], "Qmig stakes", "Body")
+        qm_cstake = db.stake(
+            qm_creator["token"],
+            qm_prop["post_id"],
+            per_pr=1.0,
+            max_prs=1,
+            currency="credits",
+        )
+        qm_kstake = db.stake(
+            qm_creator["token"],
+            qm_prop["post_id"],
+            per_pr=1,
+            max_prs=1,
+            currency="karma",
+        )
+        db.lock_stakes_for_pr(None, qm_prop["post_id"], 960001, qm_worker["agent_id"])
+        qm_inv = db.create_invoice(
+            qm_issuer["token"], qm_payer["name"], 1.0, "qmig ask"
+        )
+        qm_svc = db.create_service(
+            qm_creator["token"], "Qmig svc", "d", 1.0, ["step one"]
+        )
+        # Downgrade to the quarter shape (exact /5 - every seeded value is
+        # a multiple of 5 by construction).
+        with db._conn() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migration_markers"
+                " (name TEXT PRIMARY KEY)"
+            )
+            conn.execute(
+                "ALTER TABLE credit_entries RENAME COLUMN delta_units TO delta_quarters"
+            )
+            conn.execute(
+                "UPDATE credit_entries SET delta_quarters = delta_quarters / 5"
+            )
+            for _t, _o, _n in (
+                ("jobs", "payment_units", "payment_quarters"),
+                ("jobs", "taker_deposit_units", "taker_deposit_quarters"),
+                ("jobs", "deposit_bonus_units", "deposit_bonus_quarters"),
+                ("jobs", "treasury_escrow_units", "treasury_escrow_quarters"),
+                ("services", "price_units", "price_quarters"),
+                ("invoices", "amount_units", "amount_quarters"),
+                ("invoices", "remaining_units", "remaining_quarters"),
+                ("economy_checkpoints", "total_supply_u", "total_supply_q"),
+                ("economy_checkpoints", "treasury_u", "treasury_q"),
+            ):
+                conn.execute(f"ALTER TABLE {_t} RENAME COLUMN {_o} TO {_n}")
+            conn.execute("UPDATE jobs SET payment_quarters = payment_quarters / 5")
+            conn.execute("UPDATE services SET price_quarters = price_quarters / 5")
+            conn.execute(
+                "UPDATE invoices SET amount_quarters = amount_quarters / 5,"
+                " remaining_quarters = remaining_quarters / 5"
+            )
+            conn.execute(
+                "UPDATE proposal_stakes SET per_pr = per_pr / 5 WHERE currency = 'credits'"
+            )
+            conn.execute(
+                "UPDATE stake_locks SET amount = amount / 5 WHERE stake_id IN"
+                " (SELECT id FROM proposal_stakes WHERE currency = 'credits')"
+            )
+            conn.execute(
+                "DELETE FROM schema_migration_markers WHERE name ="
+                " 'credit_entries_quarter_to_twentieth'"
+            )
+            conn.execute(
+                "DELETE FROM economy_meta WHERE key IN ('credit_unit', 'credit_unit_cutover')"
+            )
+        # The old seal commits to quarter deltas. The live twentieth code
+        # cannot run on the downgraded shape, so seal with raw SQL using
+        # the same chain algorithm over the quarter rows.
+        from db._economy import _chain_hash as _qm_chain
+
+        with db._conn() as conn:
+            _qrows = conn.execute(
+                "SELECT id, account, delta_quarters, reason, target_type,"
+                " target_id, created_at FROM credit_entries ORDER BY id ASC"
+            ).fetchall()
+            _running = "genesis"
+            for _r in _qrows:
+                _running = _qm_chain(
+                    _running,
+                    {
+                        "id": _r["id"],
+                        "account": _r["account"],
+                        "delta_units": _r["delta_quarters"],
+                        "reason": _r["reason"],
+                        "target_type": _r["target_type"],
+                        "target_id": _r["target_id"],
+                        "created_at": _r["created_at"],
+                    },
+                )
+            _supply_q = sum(r["delta_quarters"] for r in _qrows)
+            _treasury_q = sum(
+                r["delta_quarters"] for r in _qrows if r["account"] == "treasury"
+            )
+            conn.execute(
+                "INSERT INTO economy_checkpoints (created_at, last_entry_id,"
+                " entry_count, total_supply_q, treasury_q, running_hash)"
+                " VALUES (datetime('now'), ?, ?, ?, ?, ?)",
+                (_qrows[-1]["id"], len(_qrows), _supply_q, _treasury_q, _running),
+            )
+            old_row = conn.execute(
+                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            old_supply = old_row["total_supply_q"]
+        db.init_db()  # upgrade: rename + *5 + cutover
+        with db._conn() as conn:
+            old_seal_id = conn.execute(
+                "SELECT id FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            old_row = conn.execute(
+                "SELECT * FROM economy_checkpoints WHERE id = ?", (old_seal_id,)
+            ).fetchone()
+            old_supply_scaled = old_row["total_supply_u"]
+            ce_cols = {r[1] for r in conn.execute("PRAGMA table_info(credit_entries)")}
+            assert "delta_units" in ce_cols and "delta_quarters" not in ce_cols, ce_cols
+            j_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+            assert "payment_units" in j_cols and "payment_quarters" not in j_cols
+            cp_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(economy_checkpoints)")
+            }
+            assert {"total_supply_u", "treasury_u"} <= cp_cols, cp_cols
+            mark = conn.execute(
+                "SELECT 1 FROM schema_migration_markers WHERE name ="
+                " 'credit_entries_quarter_to_twentieth'"
+            ).fetchone()
+            assert mark is not None, "migration records its marker"
+            meta = {
+                r[0]: r[1]
+                for r in conn.execute(
+                    "SELECT key, value FROM economy_meta WHERE key LIKE 'credit_unit%'"
+                ).fetchall()
+            }
+            assert meta.get("credit_unit") == "twentieths", meta
+            cutover = int(meta.get("credit_unit_cutover", "0"))
+            assert cutover > 0, meta
+            # Values scaled back to the seeded twentieths. Creator math:
+            # +400 grant, -20 job escrow, -20 stake lock, -5 service fee
+            # (no percentage fees: the suite env sets TX_FEE_PERCENT=0).
+            balances = {
+                r["agent_id"]: r["s"]
+                for r in conn.execute(
+                    "SELECT agent_id, COALESCE(SUM(delta_units), 0) AS s"
+                    " FROM credit_entries WHERE account = 'agent' GROUP BY agent_id"
+                ).fetchall()
+            }
+            assert balances[qm_creator["agent_id"]] == 400 - 20 - 20 - 5, balances
+            job_row = conn.execute(
+                "SELECT payment_units FROM jobs WHERE id = ?", (qm_job["job_id"],)
+            ).fetchone()
+            assert job_row["payment_units"] == 20, dict(job_row)
+            inv_row = conn.execute(
+                "SELECT amount_units, remaining_units FROM invoices WHERE id = ?",
+                (qm_inv["invoice_id"],),
+            ).fetchone()
+            assert (inv_row["amount_units"], inv_row["remaining_units"]) == (20, 20)
+            svc_row = conn.execute(
+                "SELECT price_units FROM services WHERE id = ?", (qm_svc["id"],)
+            ).fetchone()
+            assert svc_row["price_units"] == 20, dict(svc_row)
+            c_stake = conn.execute(
+                "SELECT per_pr FROM proposal_stakes WHERE id = ?",
+                (qm_cstake["stake_id"],),
+            ).fetchone()
+            assert c_stake["per_pr"] == 20, dict(c_stake)
+            k_stake = conn.execute(
+                "SELECT per_pr FROM proposal_stakes WHERE id = ?",
+                (qm_kstake["stake_id"],),
+            ).fetchone()
+            assert k_stake["per_pr"] == 1, dict(k_stake)
+            lock_row = conn.execute(
+                "SELECT amount FROM stake_locks WHERE stake_id = ?",
+                (qm_cstake["stake_id"],),
+            ).fetchone()
+            assert lock_row["amount"] == 20, dict(lock_row)
+            # The pre-migration seal still verifies (//5 chain rule) and its
+            # stored totals scaled with the ledger.
+            check = db._economy._verify_checkpoint(conn, old_row)
+            assert check["ok"] is True, check
+            assert old_supply_scaled == old_supply * 5, (old_supply_scaled, old_supply)
+        # Post-migration activity at sub-quarter resolution + a fresh seal.
+        with db._conn() as conn:
+            assert _qcr.grant(qm_worker["agent_id"], 2, "qmig_dime", conn=conn)
+        db.write_checkpoint()
+        with db._conn() as conn:
+            new_row = conn.execute(
+                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert db._economy._verify_checkpoint(conn, new_row)["ok"] is True
+        db.init_db()  # second boot: no re-multiply, no crash
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            ).fetchone()[0]
+            live = conn.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            ).fetchone()[0]
+            assert again == live
+            seal_count = conn.execute(
+                "SELECT COUNT(*) FROM economy_checkpoints"
+            ).fetchone()[0]
+            assert seal_count >= 2, "both seals survive the second boot"
+    finally:
+        db.DB_PATH = saved_db_path
+        if old_karma_min is None:
+            os.environ.pop("FORUM_JOB_CREATOR_MIN_KARMA", None)
+        else:
+            os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = old_karma_min
+        _ilm.reload(_cfg)
+    print("  quarter->twentieth migration: ok")
 
     print("test_misc: all assertions passed")
     import shutil
