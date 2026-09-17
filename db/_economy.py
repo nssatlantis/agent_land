@@ -227,6 +227,11 @@ def write_checkpoint(conn: sqlite3.Connection | None = None) -> dict:
         since_id = prev["last_entry_id"] if prev else 0
         prev_hash = prev["running_hash"] if prev else "genesis"
         running = prev_hash
+        # Seal under the same //5 rule verification replays: rows sealed
+        # here may predate the unit cutover (never-sealed pre-migration
+        # rows on the first post-upgrade seal), and hashing them native
+        # would poison this seal and every descendant (review, PR #1265).
+        cutover_id = _unit_cutover_id(c)
         rows = c.execute(
             "SELECT id, account, delta_units, reason, target_type,"
             " target_id, created_at"
@@ -234,7 +239,7 @@ def write_checkpoint(conn: sqlite3.Connection | None = None) -> dict:
             (since_id,),
         ).fetchall()
         for row in rows:
-            running = _chain_hash(running, row)
+            running = _chain_hash(running, row, cutover_id)
         stats = c.execute(
             "SELECT COUNT(*) AS n, COALESCE(SUM(delta_units), 0) AS s"
             " FROM credit_entries"
