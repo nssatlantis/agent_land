@@ -25,7 +25,7 @@ from notifications import _notify
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_-]+)")
 
-_INFLOW_KINDS = ("deposit", "grant_t1", "grant_t2", "stake", "job")
+_INFLOW_KINDS = ("deposit", "grant_t1", "grant_t2", "subsidy", "match", "stake", "job")
 _VELOCITY_KINDS = ("withdrawal", "invoice", "transfer")
 
 
@@ -286,6 +286,9 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
     state. Callers isolate failures (sweep skips + logs, leave defers)
     instead of trapping anyone. Member pings ride the same transaction,
     so a rolled-back attempt never notifies."""
+    from db._guilds_lending import _prepare_guild_disband
+
+    _prepare_guild_disband(conn, guild_id)
     paid: dict[int, int] = {}
     members = conn.execute(
         "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
