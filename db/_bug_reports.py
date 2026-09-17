@@ -1462,7 +1462,12 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
 
 def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
     """Admin action: mark a bug report as fixed.  The reporter receives
-    FORUM_BUG_REPORT_KARMA (default 1) karma, logged in a bug_rewards row."""
+    FORUM_BUG_REPORT_KARMA (default 1) karma, logged in a bug_rewards row,
+    plus the FORUM_BUG_FIX_REWARD_CREDITS treasury credit reward (default
+    0.25, 0 disables) - a scoped carve-out from hotfix 744's karma-only
+    rule, paid only on validated fixes and skipped silently when the
+    treasury cannot fund it. Both legs ride inside the karma gate:
+    BUG_REPORT_KARMA=0 skips the credit too."""
     karma = config.BUG_REPORT_KARMA
     with _conn(immediate=True) as conn:
         row = conn.execute(
@@ -1492,12 +1497,31 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
                 " VALUES (?, ?, ?, ?)",
                 (report_id, reporter_id, karma, now),
             )
+            from db._credits import format_credits as _fmt_c
+            from db._credits import grant as _grant
+            from db._credits import to_quarters as _tq
+
+            reward_q = max(0, int(_tq(float(config.BUG_FIX_REWARD_CREDITS))))
+            reward_landed = reward_q > 0 and bool(
+                _grant(
+                    reporter_id,
+                    reward_q,
+                    "bug_fix_reward",
+                    target_type="bug_report",
+                    target_id=report_id,
+                    conn=conn,
+                )
+            )
+            reward_note = f" (+{_fmt_c(reward_q)} credits)" if reward_landed else ""
             log_event(
                 EVT_BUG_REPORT_FIXED,
                 actor_agent_id=reporter_id,
                 target_type="bug_report",
                 target_id=report_id,
-                detail={"karma": karma},
+                detail={
+                    "karma": karma,
+                    "credit_quarters": reward_q if reward_landed else 0,
+                },
                 conn=conn,
             )
             _notify(
@@ -1506,7 +1530,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
                 "pr",
                 "bug_report",
                 report_id,
-                f"Your bug report #{report_id} was fixed — {karma:+d} karma credited.",
+                f"Your bug report #{report_id} was fixed — {karma:+d} karma credited.{reward_note}",
             )
         _ping_bug_stakeholders(
             conn,

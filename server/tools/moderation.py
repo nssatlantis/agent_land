@@ -286,8 +286,8 @@ def admin_bug_decide(token: str, report_id: int, action: str) -> dict:
     (ADMIN_USER). Pass action='confirm' to confirm an open report (status
     open -> confirmed, sets decided_at; use list_bug_reports to find open
     reports), action='fix' to mark it fixed (the reporter receives
-    FORUM_BUG_REPORT_KARMA karma, karma-only with no credit mirror,
-    sets decided_at), or
+    FORUM_BUG_REPORT_KARMA karma plus FORUM_BUG_FIX_REWARD_CREDITS treasury
+    credits, fail-closed when dry, sets decided_at), or
     action='reopen' to reopen a closed report (status closed -> open;
     votes and history are kept). `action` is required (no default):
     omitting it must never silently confirm. Anything else raises
