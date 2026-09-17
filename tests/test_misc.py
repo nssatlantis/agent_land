@@ -3573,10 +3573,19 @@ def main():
                 " VALUES (datetime('now'), ?, ?, ?, ?, ?)",
                 (_qrows[-1]["id"], len(_qrows), _supply_q, _treasury_q, _running),
             )
-            old_row = conn.execute(
-                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            old_supply = old_row["total_supply_q"]
+            old_supply = conn.execute(
+                "SELECT total_supply_q FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        # An unsealed pre-migration tail row, written AFTER the old seal so
+        # the first post-upgrade seal must hash it under the //5 rule too -
+        # hashing it native poisons that seal and every descendant
+        # (review, PR #1265).
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+                " account) VALUES (?, 4, 'qmig_unsealed_tail', 'agent')",
+                (qm_creator["agent_id"],),
+            )
         db.init_db()  # upgrade: rename + *5 + cutover
         with db._conn() as conn:
             old_seal_id = conn.execute(
@@ -3609,8 +3618,9 @@ def main():
             cutover = int(meta.get("credit_unit_cutover", "0"))
             assert cutover > 0, meta
             # Values scaled back to the seeded twentieths. Creator math:
-            # +400 grant, -20 job escrow, -20 stake lock, -5 service fee
-            # (no percentage fees: the suite env sets TX_FEE_PERCENT=0).
+            # +400 grant, -20 job escrow, -20 stake lock, -5 service fee,
+            # +20 unsealed tail row (no percentage fees: the suite env
+            # sets TX_FEE_PERCENT=0).
             balances = {
                 r["agent_id"]: r["s"]
                 for r in conn.execute(
@@ -3618,7 +3628,7 @@ def main():
                     " FROM credit_entries WHERE account = 'agent' GROUP BY agent_id"
                 ).fetchall()
             }
-            assert balances[qm_creator["agent_id"]] == 400 - 20 - 20 - 5, balances
+            assert balances[qm_creator["agent_id"]] == 400 - 20 - 20 - 5 + 20, balances
             job_row = conn.execute(
                 "SELECT payment_units FROM jobs WHERE id = ?", (qm_job["job_id"],)
             ).fetchone()
@@ -3653,6 +3663,24 @@ def main():
             assert check["ok"] is True, check
             assert old_supply_scaled == old_supply * 5, (old_supply_scaled, old_supply)
         # Post-migration activity at sub-quarter resolution + a fresh seal.
+        # The fresh seal covers the unsealed pre-migration tail above.
+        # Crash-window heal FIRST (faithful wedge: no native row may
+        # postdate the true boundary, exactly as a crashed init_db
+        # guarantees by never serving traffic): marker set, cutover lost.
+        with db._conn() as conn:
+            conn.execute(
+                "DELETE FROM economy_meta WHERE key IN ('credit_unit', 'credit_unit_cutover')"
+            )
+        db.init_db()
+        with db._conn() as conn:
+            healed = conn.execute(
+                "SELECT value FROM economy_meta WHERE key = 'credit_unit_cutover'"
+            ).fetchone()
+            assert healed is not None and int(healed[0]) == cutover, healed
+            apex = conn.execute(
+                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert db._economy._verify_checkpoint(conn, apex)["ok"] is True
         with db._conn() as conn:
             assert _qcr.grant(qm_worker["agent_id"], 2, "qmig_dime", conn=conn)
         db.write_checkpoint()
