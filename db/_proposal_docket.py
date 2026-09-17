@@ -437,7 +437,7 @@ def _assemble_proposal_list(
             d["tags"] = tags_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
-        d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
+        d["stake_total_credits_units"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
         d["active_workspaces"] = ws_counts_by_post.get(d["id"], 0)
         if not for_counts:
@@ -571,7 +571,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
     if view == "staking":
         return (
             p.get("stake_total_karma", 0) > 0
-            or p.get("stake_total_credits_quarters", 0) > 0
+            or p.get("stake_total_credits_units", 0) > 0
         )
     return True  # 'all' (and any future default)
 
@@ -695,7 +695,7 @@ def my_proposals(token: str) -> dict:
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = stake_totals.get(d["id"])
             d["stake_total_karma"] = bt["karma"] if bt else 0
-            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
+            d["stake_total_credits_units"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             _summary = todos_by_post.get(d["id"])
             d["todo_open_items"] = (
@@ -802,7 +802,7 @@ def assigned_proposals(token: str) -> dict:
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = stake_totals.get(d["id"])
             d["stake_total_karma"] = bt["karma"] if bt else 0
-            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
+            d["stake_total_credits_units"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             _summary = todos_by_post.get(d["id"])
             d["todo_open_items"] = (
