@@ -176,6 +176,12 @@ EVT_GUILD_JOB_TAKEN = "guild_job_taken"
 EVT_GUILD_JOB_DETACHED = "guild_job_detached"
 EVT_GUILD_INVOICE_PAID = "guild_invoice_paid"
 
+# Guilds PR-4 (proposal #525, treasury flows): pool-backed stakes,
+# upkeep issuance, and the weekly sweep summary.
+EVT_GUILD_STAKE_PLACED = "guild_stake_placed"
+EVT_GUILD_UPKEEP_ISSUED = "guild_upkeep_issued"
+EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -330,6 +336,9 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_JOB_TAKEN,
     EVT_GUILD_JOB_DETACHED,
     EVT_GUILD_INVOICE_PAID,
+    EVT_GUILD_STAKE_PLACED,
+    EVT_GUILD_UPKEEP_ISSUED,
+    EVT_GUILD_UPKEEP_SWEPT,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
