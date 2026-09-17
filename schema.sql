@@ -1729,6 +1729,7 @@ CREATE TABLE IF NOT EXISTS guilds (
     last_upkeep_week    TEXT,
     enrollment          TEXT NOT NULL DEFAULT 'invite_only'
         CHECK (enrollment IN ('open', 'invite_only')),
+    mission             TEXT NOT NULL DEFAULT '',
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     CHECK (name <> '')
 );
