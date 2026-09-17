@@ -818,6 +818,14 @@ def pay_invoice(
             "SELECT * FROM guild_fee_invoices WHERE invoice_id = ?",
             (row["id"],),
         ).fetchone()
+        debt_link = (
+            None
+            if fee_link is not None
+            else conn.execute(
+                "SELECT * FROM guild_debt_invoices WHERE invoice_id = ?",
+                (row["id"],),
+            ).fetchone()
+        )
         if fee_link is not None:
             # Guild upkeep bill: settle poolward (member wallet parks in
             # the treasury, the pool takes a deposit memo, arrears settle
@@ -830,6 +838,19 @@ def pay_invoice(
                 "fee_credits": format_credits(0),
                 "fee_quarters": 0,
                 "guild_pool": True,
+            }
+        elif debt_link is not None:
+            # Guild payback bill: the founder's wallet parks in the
+            # treasury and the debt tracks the remainder (part-pay
+            # allowed) instead of paying any issuer. A cleared debt
+            # refreshes the spending freeze inside the settler.
+            from db._guilds_lending import settle_guild_debt_payment
+
+            settle_guild_debt_payment(conn, dict(debt_link), payer["id"], pay_q)
+            receipt = {
+                "fee_credits": format_credits(0),
+                "fee_quarters": 0,
+                "guild_debt": True,
             }
         else:
             receipt = transfer_credits(
