@@ -76,13 +76,19 @@ def _require_spend_allowed(
     what: str,
     velocity_exempt: bool = False,
 ) -> None:
-    """The shared spend gate for pool outflows: unlocked roster, velocity
-    window (unless the flow is escrow-exempt), and a covering co-sign above
-    the 15% band. Deposits (inflows) never call this."""
+    """The shared spend gate for pool outflows: unlocked roster, no
+    upkeep suspension, velocity window (unless the flow is escrow-exempt),
+    and a covering co-sign above the 15% band. Deposits (inflows) never
+    call this."""
     if guild_spend_locked(conn, guild["id"]):
         raise ForumError(
             f"guild {guild['name']!r} holds fewer than 2 members - spending"
             " is re-locked (receive/deposit/refund/distribution only)."
+        )
+    if guild.get("spending_suspended"):
+        raise ForumError(
+            f"guild {guild['name']!r} is suspended for upkeep shortfall -"
+            " spending waits for recovery (receive/deposit only)."
         )
     if not velocity_exempt and not guild_velocity_ok(
         conn, guild["id"], amount_quarters
@@ -171,10 +177,12 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
 
 def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
     """Pay pool quarters to the founder's wallet: pool deducts the full
-    amount, the founder receives amount minus the 2% fee. Gated on the
-    spend lock, the velocity window, and the co-sign band; grant-first, so
-    an unfunded treasury refuses before anything moves."""
+    amount, the founder receives amount minus arrears-withhold minus the
+    2% fee. Gated on the spend lock, upkeep suspension, the velocity
+    window, and the co-sign band; grant-first, so an unfunded treasury
+    refuses before anything moves."""
     from db._credits import exact_from_credits, grant
+    from db._guilds_treasury import _apply_arrears_withhold
 
     quarters = int(exact_from_credits(float(amount_credits), what="withdrawal"))
     if quarters <= 0:
@@ -185,20 +193,23 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
         if guild_balance(conn, guild_id) < quarters:
             raise ForumError("the pool does not cover that withdrawal.")
         _require_spend_allowed(conn, guild, quarters, "withdrawal")
-        fee_q = _guild_fee_q(quarters)
+        net, withheld = _apply_arrears_withhold(conn, guild_id, agent["id"], quarters)
+        fee_q = _guild_fee_q(net) if net > 0 else 0
         # Grant-first: the treasury leg lands before the pool memo exists.
-        ok = grant(
-            agent["id"],
-            quarters - fee_q,
-            "guild_withdrawal",
-            target_type="guild",
-            target_id=guild_id,
-            conn=conn,
-        )
-        if not ok:
-            raise ForumError(
-                "the treasury cannot fund that withdrawal right now - nothing moved."
+        if net > 0:
+            ok = grant(
+                agent["id"],
+                net - fee_q,
+                "guild_withdrawal",
+                target_type="guild",
+                target_id=guild_id,
+                conn=conn,
             )
+            if not ok:
+                raise ForumError(
+                    "the treasury cannot fund that withdrawal right now -"
+                    " nothing moved."
+                )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'founder withdrawal')",
@@ -211,13 +222,18 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
             actor_agent_id=agent["id"],
             target_type="guild",
             target_id=guild_id,
-            detail={"quarters": quarters, "fee_quarters": fee_q},
+            detail={
+                "quarters": quarters,
+                "arrears_withheld": withheld,
+                "fee_quarters": fee_q,
+            },
             conn=conn,
         )
         return {
             "guild_id": guild_id,
-            "paid_quarters": quarters - fee_q,
+            "paid_quarters": net - fee_q,
             "fee_quarters": fee_q,
+            "arrears_withheld": withheld,
             "pool_balance": guild_balance(conn, guild_id),
         }
 
@@ -366,6 +382,11 @@ def prepare_guild_commission(
         raise ForumError(
             f"guild {guild['name']!r} holds fewer than 2 members -"
             " commissioning is re-locked."
+        )
+    if guild.get("spending_suspended"):
+        raise ForumError(
+            f"guild {guild['name']!r} is suspended for upkeep shortfall -"
+            " commissioning waits for recovery."
         )
     total = escrow_q
     if guild_balance(conn, guild_id) < total:
@@ -720,6 +741,7 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
     unfunded grant rolls the whole dissolve back."""
     from db._credits import grant
     from db._guilds import _payout_for
+    from db._guilds_treasury import _apply_arrears_withhold
 
     gid = guild["id"]
     balance = guild_balance(conn, gid)
@@ -734,25 +756,28 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
         if share <= 0:
             paid[aid] = 0
             continue
-        fee_q = _guild_fee_q(share)
-        ok = grant(
-            aid,
-            share - fee_q,
-            "guild_dissolve",
-            target_type="guild",
-            target_id=gid,
-            conn=conn,
-        )
-        if not ok:
-            raise ForumError(
-                "the treasury cannot fund that distribution right now - nothing moved."
+        net, _withheld = _apply_arrears_withhold(conn, gid, aid, share)
+        fee_q = _guild_fee_q(net) if net > 0 else 0
+        if net > 0:
+            ok = grant(
+                aid,
+                net - fee_q,
+                "guild_dissolve",
+                target_type="guild",
+                target_id=gid,
+                conn=conn,
             )
+            if not ok:
+                raise ForumError(
+                    "the treasury cannot fund that distribution right now -"
+                    " nothing moved."
+                )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'dissolve distribution')",
             (gid, share, aid),
         )
-        paid[aid] = share - fee_q
+        paid[aid] = net - fee_q
     remainder = guild_balance(conn, gid)
     if remainder > 0:
         conn.execute(
