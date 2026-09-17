@@ -35,7 +35,7 @@ def _make_creator(name: str):
     with db._conn() as conn:
         from db._credits import grant
 
-        grant(ag["agent_id"], 400, "test_seed", conn=conn)
+        grant(ag["agent_id"], 2000, "test_seed", conn=conn)
     p = db.create_post(ag["token"], f"t {name}", "b")
     db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
     return ag
@@ -44,14 +44,14 @@ def _make_creator(name: str):
 def _supply() -> int:
     with db._conn() as conn:
         return conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries",
         ).fetchone()[0]
 
 
 def _escrow() -> int:
     with db._conn() as conn:
         return conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'escrow'",
         ).fetchone()[0]
 
@@ -59,7 +59,7 @@ def _escrow() -> int:
 def _treasury() -> int:
     with db._conn() as conn:
         return conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'treasury'",
         ).fetchone()[0]
 
@@ -88,17 +88,17 @@ def test_citizen_post_pairs_legs_supply_neutral():
     s0, e0 = _supply(), _escrow()
     job = _post_citizen(creator)
     assert _supply() == s0, "posting into escrow never moves supply"
-    assert _escrow() == e0 + 24, "the full wage x cycles sits in escrow"
+    assert _escrow() == e0 + 120, "the full wage x cycles sits in escrow"
     with db._conn() as conn:
         legs = conn.execute(
-            "SELECT account, delta_quarters FROM credit_entries"
+            "SELECT account, delta_units FROM credit_entries"
             " WHERE reason IN ('job_escrow', 'job_escrow_held')"
             " AND target_id = ? ORDER BY id",
             (job["job_id"],),
         ).fetchall()
-    assert [(r["account"], r["delta_quarters"]) for r in legs] == [
-        ("agent", -24),
-        ("escrow", 24),
+    assert [(r["account"], r["delta_units"]) for r in legs] == [
+        ("agent", -120),
+        ("escrow", 120),
     ]
     assert db.economy_overview()["conservation"]["ok"] is True
 
@@ -112,8 +112,8 @@ def test_accept_draws_escrow_down():
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(creator["token"], job["job_id"], "accept")
     assert _supply() == s0, "payout from escrow never moves supply"
-    assert _escrow() == e0 + 16, "one wage drew the holding down"
-    assert _bal(worker["agent_id"]) >= 8, "the wage landed"
+    assert _escrow() == e0 + 80, "one wage drew the holding down"
+    assert _bal(worker["agent_id"]) >= 40, "the wage landed"
 
 
 def test_cancel_releases_to_creator():
@@ -143,8 +143,8 @@ def test_official_post_pairs_treasury_escrow():
         cycles=4,
     )
     assert _supply() == s0
-    assert _escrow() == e0 + 32
-    assert _treasury() == t0 - 32
+    assert _escrow() == e0 + 160
+    assert _treasury() == t0 - 160
 
 
 def test_official_wage_and_cancel_settle():
@@ -165,11 +165,11 @@ def test_official_wage_and_cancel_settle():
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(sponsor["token"], job["job_id"], "accept")
-    assert _supply() == s0 and _escrow() == e0 + 24
-    assert _bal(worker["agent_id"]) >= 8
+    assert _supply() == s0 and _escrow() == e0 + 120
+    assert _bal(worker["agent_id"]) >= 40
     db.admin_cancel_job("maintainer", job["job_id"])
     assert _supply() == s0 and _escrow() == e0
-    assert _treasury() == t0 - 10, "only the two reward quarters left"
+    assert _treasury() == t0 - 50, "one wage out, remainder refunded, two rewards left"
 
 
 def test_reactivate_guard_refuses_stacked_escrow():
@@ -194,14 +194,14 @@ def test_reactivate_guard_refuses_stacked_escrow():
     # Resolve exactly like a cancel would, so later tests see a clean book.
     with db._conn(immediate=True) as c:
         escrow_to_treasury(
-            32,
+            160,
             "job_cancelled_treasury_return",
             target_type="job",
             target_id=jid,
             conn=c,
         )
         c.execute(
-            "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+            "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
             (jid,),
         )
     assert db._economy.verify_conservation()["ok"] is True
@@ -224,17 +224,17 @@ def test_backfill_repairs_legacy_holding():
             (jid,),
         )
     assert _escrow() == e_pre, "the holding vanished with its leg"
-    assert _supply() == s_pre - 24, "the legacy shape destroyed supply"
+    assert _supply() == s_pre - 120, "the legacy shape destroyed supply"
     with db._conn(immediate=True) as c:
         c.execute("DELETE FROM economy_meta WHERE key = 'escrow_account_live'")
     res = db._economy.backfill_escrow_account()
-    assert res["backfilled_quarters"] == 24 and res["jobs"] == 1
+    assert res["backfilled_units"] == 120 and res["jobs"] == 1
     assert _supply() == s_pre, "the repair restores destroyed supply"
-    assert _escrow() == e_pre + 24
+    assert _escrow() == e_pre + 120
     assert db._economy.verify_conservation()["ok"] is True
     res2 = db._economy.backfill_escrow_account()
     assert res2["already_live"] is True
-    assert res2["backfilled_quarters"] == 0
+    assert res2["backfilled_units"] == 0
 
 
 def test_verifier_catches_unpaired_post_cutover_leg():
@@ -291,7 +291,7 @@ def test_group_renders_escrow_parties():
             {
                 "tx_id": 1,
                 "account": "agent",
-                "delta_quarters": -24,
+                "delta_units": -24,
                 "reason": "job_escrow",
                 "created_at": "2026-01-01T00:00:00.000Z",
                 "agent_name": "alice",
@@ -299,7 +299,7 @@ def test_group_renders_escrow_parties():
             {
                 "tx_id": 1,
                 "account": "escrow",
-                "delta_quarters": 24,
+                "delta_units": 24,
                 "reason": "job_escrow_held",
                 "created_at": "2026-01-01T00:00:00.000Z",
                 "agent_name": None,
@@ -313,7 +313,7 @@ def test_group_renders_escrow_parties():
             {
                 "tx_id": 2,
                 "account": "agent",
-                "delta_quarters": 8,
+                "delta_units": 8,
                 "reason": "job_payout",
                 "created_at": "2026-01-01T00:00:00.000Z",
                 "agent_name": "bob",
@@ -321,7 +321,7 @@ def test_group_renders_escrow_parties():
             {
                 "tx_id": 2,
                 "account": "escrow",
-                "delta_quarters": -8,
+                "delta_units": -8,
                 "reason": "job_payout_release",
                 "created_at": "2026-01-01T00:00:00.000Z",
                 "agent_name": None,
