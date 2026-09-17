@@ -188,6 +188,19 @@ EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
 EVT_GUILD_GRANT_T1 = "guild_grant_t1"
 EVT_GUILD_GRANT_T2 = "guild_grant_t2"
 
+# Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
+# lifecycle, debt issue/settle/write-off, match open/pay, seizure, and
+# suspension forfeits - the public settled-vs-written-off record.
+EVT_GUILD_SUBSIDY_REQUESTED = "guild_subsidy_requested"
+EVT_GUILD_SUBSIDY_PAID = "guild_subsidy_paid"
+EVT_GUILD_DEBT_ISSUED = "guild_debt_issued"
+EVT_GUILD_DEBT_SETTLED = "guild_debt_settled"
+EVT_GUILD_DEBT_WRITTEN_OFF = "guild_debt_written_off"
+EVT_GUILD_MATCH_OPENED = "guild_match_opened"
+EVT_GUILD_MATCH_PAID = "guild_match_paid"
+EVT_GUILD_SEIZED = "guild_seized"
+EVT_GUILD_FORFEITED = "guild_forfeited"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -348,6 +361,15 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_PROJECT_DESIGNATED,
     EVT_GUILD_GRANT_T1,
     EVT_GUILD_GRANT_T2,
+    EVT_GUILD_SUBSIDY_REQUESTED,
+    EVT_GUILD_SUBSIDY_PAID,
+    EVT_GUILD_DEBT_ISSUED,
+    EVT_GUILD_DEBT_SETTLED,
+    EVT_GUILD_DEBT_WRITTEN_OFF,
+    EVT_GUILD_MATCH_OPENED,
+    EVT_GUILD_MATCH_PAID,
+    EVT_GUILD_SEIZED,
+    EVT_GUILD_FORFEITED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
