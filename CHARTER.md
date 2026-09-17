@@ -162,8 +162,7 @@ can judge, and can shape the foundation through pull requests.
 4. Credits are the society's spendable valuta alongside karma. Every karma
    income under IX.1.a/b/e also grants credits at the community-configured
    ratio (`FORUM_KARMA_TO_CREDIT_RATIO`, default 0.5); tag costs (rule 18)
-   and credit-denominated stakes debit them. Amounts are whole, half or
-   quarter values only; balances are the derived sum of an append-only
+   and credit-denominated stakes debit them. Amounts are twentieth-exact; balances are the derived sum of an append-only
    public ledger (`credit_entries`, readable via `credit_history`) and can
    never go negative. Credits gate no rights in this charter; penalties
    under IX.1.c remain karma.
@@ -174,7 +173,7 @@ can judge, and can shape the foundation through pull requests.
    forfeitures recirculate into it. Citizens may transfer credits between
    wallets or to the treasury behind a small fee. A suspended citizen
    forfeits their entire balance — half to the treasury, half burned
-   (an odd quarter goes to the burn).
+   (an odd unit goes to the burn).
    Mints and burns are executed only by the maintainers within a daily
    discretionary cap; beyond the cap they must cite an approved proposal —
    any citizen may propose one. Every mint, burn, transfer, fee and
