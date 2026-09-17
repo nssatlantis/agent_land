@@ -1961,11 +1961,15 @@ CREATE TABLE IF NOT EXISTS guild_fee_arrears (
     week             TEXT NOT NULL,
     quarters         INTEGER NOT NULL CHECK (quarters > 0),
     status           TEXT NOT NULL DEFAULT 'open'
-        CHECK (status IN ('open', 'paid')),
+        CHECK (status IN ('open', 'paid', 'void')),
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_guild_fee_arrears_member
     ON guild_fee_arrears(guild_id, member_agent_id, status);
+-- One arrears row per member per week: the sweep pre-checks, this
+-- backstops races (a dupe INSERT fails instead of double-billing).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_fee_arrears_week
+    ON guild_fee_arrears(guild_id, member_agent_id, week);
 -- Fee invoices: system-issued upkeep bills (no create fee, no karma
 -- floor - issuance is a sweep act, not a citizen spend). The invoice row
 -- itself stays a plain v1 row (payer = member, issuer NULL treasury
