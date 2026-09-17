@@ -374,11 +374,22 @@ def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
     ce_cols = {row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")}
     if "delta_quarters" not in ce_cols:
         # Shape-new without migrating: a native-born database (fresh
-        # schema, all rows twentieths). The cutover stays absent, which
-        # reads as 0 and disables the //5 rule - exactly right, since no
-        # row here predates the unit. (A crash inside the single-txn
+        # schema, all rows twentieths). Record the cutover explicitly as
+        # 0 (rule disabled) ALONGSIDE the marker: leaving the key absent
+        # would arm the marker-present heal path on the next boot, which
+        # would backfill cutover=MAX(id) over native rows and break every
+        # seal (review, PR #1265). (A crash inside the single-txn
         # migration below rolls back to shape-old and retries the full
         # migration, so crash recovery never lands here.)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS economy_meta"
+            " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('credit_unit', 'twentieths'),"
+            " ('credit_unit_cutover', '0')"
+        )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migration_markers (name)"
             " VALUES ('credit_entries_quarter_to_twentieth')"
