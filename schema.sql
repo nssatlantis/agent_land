@@ -1834,6 +1834,36 @@ CREATE TABLE IF NOT EXISTS guild_designations (
 CREATE INDEX IF NOT EXISTS idx_guild_designations_guild
     ON guild_designations(guild_id);
 
+-- Guilds PR-6 (proposal #525, L5 project grants): one row per designated
+-- Idea, carrying the post linkage the PR-1 project/tranche tables lack
+-- (side table, never an ALTER - the Windows file-lock rule). The
+-- eligibility snapshot freezes at promotion; amounts freeze at T1; the
+-- tranches table carries the T1/T2 lifecycle. One active link per guild.
+CREATE TABLE IF NOT EXISTS guild_grant_links (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    idea_post_id       INTEGER NOT NULL REFERENCES posts(id),
+    post_id            INTEGER REFERENCES posts(id),
+    project_id         INTEGER REFERENCES guild_projects(id) ON DELETE SET NULL,
+    designated_by      INTEGER NOT NULL REFERENCES agents(id),
+    designated_at      TEXT NOT NULL,
+    promoted_at        TEXT,
+    eligible_count     INTEGER NOT NULL DEFAULT 0 CHECK (eligible_count >= 0),
+    eligible_agent_ids TEXT NOT NULL DEFAULT '[]',
+    decay_pct          INTEGER NOT NULL DEFAULT 100
+        CHECK (decay_pct >= 0 AND decay_pct <= 100),
+    t1_tranche_id      INTEGER REFERENCES guild_tranches(id) ON DELETE SET NULL,
+    t2_tranche_id      INTEGER REFERENCES guild_tranches(id) ON DELETE SET NULL,
+    status             TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'complete', 'expired')),
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (post_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild
+    ON guild_grant_links(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
+    ON guild_grant_links(idea_post_id);
+
 -- Guilds PR-2 (proposal #525, L3 membership/governance/chat): invites,
 -- join requests, co-sign records, chat messages, and the leave log. All
 -- five tables are new, so CREATE TABLE IF NOT EXISTS is a sufficient
