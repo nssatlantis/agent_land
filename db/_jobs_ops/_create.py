@@ -69,12 +69,12 @@ def _validate_steps(steps: list[str]) -> list[str]:
 def _validate_taker_deposit(taker_deposit_credits: float | None, kind: str) -> int:
     """Validate the taker-deposit amount for create_job and
     create_job_official (which carried identical 25-line blocks) and
-    return it in quarters. Raises ForumError on bad values or below-minimum
+    return it in units. Raises ForumError on bad values or below-minimum
     amounts. The credits import stays function-local, like every other
     db._credits use in this file, so the mock.patch("db._credits.*") seams
     keep working."""
     from db._credits import format_credits as _fc
-    from db._credits import to_quarters as _tq
+    from db._credits import to_units as _tu
 
     if taker_deposit_credits is None:
         taker_deposit_credits = float(
@@ -83,11 +83,11 @@ def _validate_taker_deposit(taker_deposit_credits: float | None, kind: str) -> i
             else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
         )
     try:
-        taker_deposit_q = int(_tq(float(taker_deposit_credits)))
+        taker_deposit_q = int(_tu(float(taker_deposit_credits)))
     except Exception as exc:
         raise ForumError(f"bad taker_deposit value: {exc}") from None
-    min_one = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
-    min_rec = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
+    min_one = int(_tu(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(_tu(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
     min_needed = min_one if kind == "one_time" else min_rec
     if taker_deposit_q < min_needed:
         raise ForumError(
@@ -157,10 +157,10 @@ def _validated_job_intake(
             f"recurring jobs run every 1 to {max_every} days "
             "(FORUM_JOB_MAX_CYCLE_EVERY_DAYS)."
         )
-    from db._credits import to_quarters
+    from db._credits import to_units
 
-    payment_q = int(to_quarters(float(payment_credits)))
-    if payment_q < 1:
+    payment_q = int(to_units(float(payment_credits)))
+    if payment_q < 5:
         raise ForumError("payment must be at least 0.25 credits.")
     return (
         title,
@@ -188,8 +188,8 @@ def _insert_job_with_steps(
     cycle_every_days,
     official,
     steps,
-    taker_deposit_quarters: int = 0,
-    treasury_escrow_quarters: int = 0,
+    taker_deposit_units: int = 0,
+    treasury_escrow_units: int = 0,
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: int = 0,
@@ -201,8 +201,8 @@ def _insert_job_with_steps(
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
         " title, description, scope, kind, cycle_every_days,"
-        " payment_quarters, total_cycles, official, taker_deposit_quarters,"
-        " treasury_escrow_quarters, service_id, service_terms,"
+        " payment_units, total_cycles, official, taker_deposit_units,"
+        " treasury_escrow_units, service_id, service_terms,"
         " long_running, auto_pay_on_merge, status)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -216,8 +216,8 @@ def _insert_job_with_steps(
             payment_q,
             cycles,
             official,
-            taker_deposit_quarters,
-            treasury_escrow_quarters,
+            taker_deposit_units,
+            treasury_escrow_units,
             service_id,
             service_terms,
             long_running,
@@ -275,8 +275,8 @@ def _handle_taker_deposit(
             conn=conn,
         )
         conn.execute(
-            "UPDATE jobs SET deposit_bonus_quarters ="
-            " deposit_bonus_quarters + ? WHERE id = ?",
+            "UPDATE jobs SET deposit_bonus_units ="
+            " deposit_bonus_units + ? WHERE id = ?",
             (half_escrow, job_id),
         )
 
@@ -336,7 +336,7 @@ def create_job(
         cycle_every_days=cycle_every_days,
     )
     escrow_q = payment_q * cycles
-    from db._credits import exact_from_credits, fee_quarters
+    from db._credits import exact_from_credits, fee_units
 
     listing_fee_q = 0
     if float(config.JOB_LISTING_FEE_CREDITS) > 0:
@@ -344,7 +344,7 @@ def create_job(
             float(config.JOB_LISTING_FEE_CREDITS),
             what="the listing fee",
         )
-    placement_fee_q = fee_quarters(escrow_q)
+    placement_fee_q = fee_units(escrow_q)
     fees_q = listing_fee_q + placement_fee_q
 
     from events import EVT_JOB_CREATED, log_event
@@ -392,8 +392,8 @@ def create_job(
             cycle_every_days=cycle_every_days,
             official=0,
             steps=steps,
-            taker_deposit_quarters=taker_deposit_q,
-            treasury_escrow_quarters=0,
+            taker_deposit_units=taker_deposit_q,
+            treasury_escrow_units=0,
             service_id=service_id,
             service_terms=service_terms,
             long_running=long_running_q,
@@ -430,7 +430,7 @@ def create_job(
                 "kind": kind,
                 "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
-                "payment_quarters": payment_q,
+                "payment_units": payment_q,
                 "total_cycles": cycles,
                 "escrow_credits": _fmt_q(escrow_q),
                 "fee_credits": _fmt_q(fees_q),
@@ -535,8 +535,8 @@ def create_job_official(
             cycle_every_days=cycle_every_days,
             official=1,
             steps=steps,
-            taker_deposit_quarters=taker_deposit_q,
-            treasury_escrow_quarters=treasury_escrow_q,
+            taker_deposit_units=taker_deposit_q,
+            treasury_escrow_units=treasury_escrow_q,
         )
         if treasury_escrow_q > 0:
             from db._credits import treasury_balance
@@ -567,7 +567,7 @@ def create_job_official(
                 "kind": kind,
                 "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
-                "payment_quarters": payment_q,
+                "payment_units": payment_q,
                 "total_cycles": cycles,
                 "escrow_credits": _fmt_q(treasury_escrow_q),
                 "fee_credits": _fmt_q(0),
