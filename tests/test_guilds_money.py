@@ -2,11 +2,13 @@
 
 Covers deposits/withdrawals (+2% mover-pays fee, lock/velocity/co-sign
 gates), pool-funded invoice payments, commissioned jobs (pool escrow,
-floor bypass, creator-leg rebate, cancel/expiry refunds to pool),
-executor-taken jobs (wage to pool, detach on leave), and voluntary
-disband (zero vs fee'd dissolve). Stakes variant + upkeep ride PR-4.
+floor bypass, fee-free commissions, single lock memo, cancel/expiry
+refunds to pool), executor-taken jobs (wage to pool, detach on leave),
+and voluntary disband (zero vs fee'd dissolve). Stakes variant + upkeep
+ride PR-4.
 """
 
+import importlib
 import os
 import sys
 import tempfile
@@ -86,6 +88,25 @@ def _run_cycle(worker_token: str, creator_token: str, job_id: int):
         db.tick_job_step(worker_token, job_id, step["id"], True)
     db.submit_job(worker_token, job_id, "done")
     return db.review_job(creator_token, job_id, "accept", "")
+
+
+def _arm(env_key: str, value: str):
+    from tests._setup import config as _cfg
+
+    old = os.environ.get(env_key)
+    os.environ[env_key] = value
+    importlib.reload(_cfg)
+    return old
+
+
+def _unarm(old, env_key: str):
+    from tests._setup import config as _cfg
+
+    if old is None:
+        os.environ.pop(env_key, None)
+    else:
+        os.environ[env_key] = old
+    importlib.reload(_cfg)
 
 
 def test_deposit_fee_and_memo():
@@ -217,8 +238,10 @@ def test_commission_escrow_and_accept_legs():
         _bal(worker["agent_id"]),
         w_before,
     )
-    # ...while the founder's 0.25cr creator leg rebated poolward, not paid.
-    assert _bal(founder["agent_id"]) == f_before, (
+    # ...and the founder's 0.25cr creator leg paid personally (v1
+    # identical): the pool's single spend is the commission lock memo,
+    # accepted wages draw that locked escrow down with no further memos.
+    assert _bal(founder["agent_id"]) == f_before + 1, (
         _bal(founder["agent_id"]),
         f_before,
     )
@@ -229,11 +252,77 @@ def test_commission_escrow_and_accept_legs():
             (gid,),
         ).fetchall()
     kinds = [(r[0], r[1]) for r in rows]
-    # Rows are unsigned (direction rides the kind): 20q escrow lock +
-    # 20q wage outflow as job_escrow, 1q creator rebate as job.
-    assert sum(q for k, q in kinds if k == "job_escrow") == 40, kinds
-    assert sum(q for k, q in kinds if k == "job") == 1, kinds
-    assert _pool(gid) == 100 - 40 + 1, _pool(gid)
+    # Rows are unsigned (direction rides the kind): the 20q escrow lock
+    # is the single spend - no per-cycle wage memo, no creator rebate.
+    assert sum(q for k, q in kinds if k == "job_escrow") == 20, kinds
+    assert sum(q for k, q in kinds if k == "job") == 0, kinds
+    assert _pool(gid) == 100 - 20, _pool(gid)
+
+
+def test_commission_fee_free_with_nonzero_job_fees():
+    # Fail-before pin for the phantom-fee finding: with a 10% placement
+    # fee armed, a 20q commission carries fees_q > 0, yet the pool takes
+    # only the 20q lock memo - no 'fee' row, gate on escrow alone.
+    founder, guild, mate = _guild_with_mate()
+    gid = guild["id"]
+    db.guild_deposit(founder["token"], gid, 25.0)  # 100q
+    old = _arm("FORUM_TX_FEE_PERCENT", "10")
+    try:
+        cos = db.request_guild_cosign(founder["token"], gid, "pricey", 22)
+        db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
+        db.create_job(
+            founder["token"],
+            "Pricey website",
+            "build it",
+            5.0,
+            ["design", "ship"],
+            guild_id=gid,
+        )
+    finally:
+        _unarm(old, "FORUM_TX_FEE_PERCENT")
+    assert _pool(gid) == 100 - 20, _pool(gid)
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, quarters FROM guild_ledger WHERE guild_id = ?",
+            (gid,),
+        ).fetchall()
+    kinds = [(r[0], r[1]) for r in rows]
+    assert all(k != "fee" for k, _ in kinds), kinds
+    assert sum(q for k, q in kinds if k == "job_escrow") == 20, kinds
+
+
+def test_disband_cancel_actor_is_founder():
+    # Fail-before pin for the event-actor finding: the disband resolver
+    # attributes live commissioned cancels to the passed actor (the
+    # disbanding founder on the voluntary path), never the worker.
+    from db._guilds_money import resolve_guild_jobs_for_disband
+
+    founder, guild, mate = _guild_with_mate()
+    gid = guild["id"]
+    db.guild_deposit(founder["token"], gid, 25.0)
+    worker = _new_agent("gm-cancelled")
+    _fund(worker["agent_id"], 10)
+    cos = db.request_guild_cosign(founder["token"], gid, "doomed", 20)
+    db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
+    job = db.create_job(
+        founder["token"], "Doomed", "never ships", 5.0, ["x"], guild_id=gid
+    )
+    db.claim_job(worker["token"], job["job_id"])
+    with db._conn(immediate=True) as conn:
+        out = resolve_guild_jobs_for_disband(
+            conn, gid, actor_agent_id=founder["agent_id"]
+        )
+    assert out["cancelled"] == [job["job_id"]], out
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT actor_agent_id, target_id FROM events WHERE kind = ?"
+            " AND target_id = ?",
+            ("job_cancelled", job["job_id"]),
+        ).fetchall()
+    assert rows, "no job_cancelled event for the resolver cancel"
+    assert all(r["actor_agent_id"] == founder["agent_id"] for r in rows), [
+        dict(r) for r in rows
+    ]
 
 
 def test_commission_guards():
