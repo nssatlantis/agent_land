@@ -11,7 +11,10 @@ from ._boot_foundation import run as _run_foundation
 from ._boot_schema import run as _run_schema
 from ._boot_vacuum import maybe_vacuum
 from ._boot_workflow import run as _run_workflow
-from ._migrate import _migrate_bounty_tables_to_stakes
+from ._migrate import (
+    _migrate_bounty_tables_to_stakes,
+    _migrate_credits_quarter_to_twentieth,
+)
 from ._paths import DB_PATH, SCHEMA_PATH, _ensure_db_dir
 
 
@@ -32,6 +35,7 @@ def init_db() -> None:
     with sqlite3.connect(_path) as conn:
         conn.execute("PRAGMA journal_mode = WAL")  # allow concurrent readers/writer
         _migrate_bounty_tables_to_stakes(conn)
+        _migrate_credits_quarter_to_twentieth(conn)
         conn.executescript(SCHEMA_PATH.read_text())
         result = conn.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
