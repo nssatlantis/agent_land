@@ -477,16 +477,19 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
 
 
 def _runway_estimate(
-    flows_7d: dict,
+    flows_window: dict,
     treasury_quarters: int,
     *,
+    window_days: int = 14,
     enabled: bool,
 ) -> dict:
     """The treasury runway gauge: how long the treasury lasts at the
-    trailing 7-day net burn. Mints count as income and burns as expense
-    (the user-authored decision), joined by the organic payouts/returns so
-    the number reflects the true seven-day net drain. Purely advisory -
-    observability over /economy, it never touches payout behavior.
+    trailing window's net burn (window_days, default 14). Mints count as
+    income and burns as expense (the user-authored decision), joined by the
+    organic payouts/returns so the number reflects the true net drain over
+    the window. Days are treasury-quarters over per-day burn, both in
+    quarters. Purely advisory - observability over /economy, it never
+    touches payout behavior.
 
     Status semantics (degrade-silently - a weird overview is never allowed
     to break /economy):
@@ -497,41 +500,46 @@ def _runway_estimate(
       - exhausted: the treasury is already empty.
       - ok: net burn > 0 with a funded treasury - days is the estimate.
     """
+    window_days = max(1, int(window_days))
     if not enabled:
         return {
             "enabled": False,
             "status": "disabled",
             "days": None,
-            "net_burn_7d_quarters": 0,
-            "in_7d_quarters": 0,
-            "out_7d_quarters": 0,
+            "window_days": window_days,
+            "net_burn_window_quarters": 0,
+            "in_window_quarters": 0,
+            "out_window_quarters": 0,
         }
     income = (
-        flows_7d.get("minted_quarters", 0)
-        + flows_7d.get("fees_in_quarters", 0)
-        + flows_7d.get("forfeit_intake_quarters", 0)
-        + flows_7d.get("spend_intake_quarters", 0)
-        + flows_7d.get("transfer_intake_quarters", 0)
-        + flows_7d.get("payout_returns_in_quarters", 0)
+        flows_window.get("minted_quarters", 0)
+        + flows_window.get("fees_in_quarters", 0)
+        + flows_window.get("forfeit_intake_quarters", 0)
+        + flows_window.get("spend_intake_quarters", 0)
+        + flows_window.get("transfer_intake_quarters", 0)
+        + flows_window.get("payout_returns_in_quarters", 0)
     )
-    expense = flows_7d.get("burned_quarters", 0) + flows_7d.get(
+    expense = flows_window.get("burned_quarters", 0) + flows_window.get(
         "payouts_out_quarters", 0
     )
     net_burn = expense - income
     base = {
         "enabled": True,
-        "net_burn_7d_quarters": net_burn,
-        "in_7d_quarters": income,
-        "out_7d_quarters": expense,
+        "window_days": window_days,
+        "net_burn_window_quarters": net_burn,
+        "in_window_quarters": income,
+        "out_window_quarters": expense,
     }
     if net_burn <= 0:
         return {**base, "status": "idle", "days": None}
     if treasury_quarters <= 0:
         return {**base, "status": "exhausted", "days": None}
-    # Net burn over 7 days annualised to a per-day rate; credits are
-    # treasury_quarters/4. Round down so the estimate is conservative.
-    per_day = net_burn / 7.0
-    days = int((treasury_quarters / 4.0) / per_day) if per_day > 0 else None
+    # Net burn over the window annualised to a per-day rate, both sides in
+    # quarters - crediting the treasury would divide by the quarter scale
+    # twice and understate the runway by exactly 4x (#B60). Round down so
+    # the estimate is conservative.
+    per_day = net_burn / window_days
+    days = int(treasury_quarters / per_day) if per_day > 0 else None
     return {**base, "status": "ok", "days": days}
 
 
@@ -722,9 +730,13 @@ def economy_overview() -> dict:
 
         supply_q = totals["s"]
         try:
+            _runway_window = max(1, int(config.ECONOMY_RUNWAY_WINDOW_DAYS))
+            _runway_bound = day_dt_to_iso(now_dt - timedelta(days=_runway_window))
+            _runway_flows = _summarize_flows(_flow_rows(conn, _runway_bound))
             runway = _runway_estimate(
-                windows["week"],
+                _runway_flows,
                 treasury_q,
+                window_days=_runway_window,
                 enabled=bool(config.ECONOMY_RUNWAY and config.TREASURY_FUNDS_PAYOUTS),
             )
         except (
