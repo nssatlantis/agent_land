@@ -141,7 +141,7 @@ def test_bug_fix_earns():
     rep = db.file_bug_report(agents["eta"]["token"], "Credits bug", "body", url=None)
     before = _bal(aid)
     db.fix_bug_report(rep["id"])
-    assert _bal(aid) == before + 1, "fix pays the 1q credit reward beside karma"
+    assert _bal(aid) == before, "bug fixes grant karma only, no credits"
     # Karma still granted via bug_rewards
     with db._conn() as conn:
         got = conn.execute(
@@ -149,38 +149,6 @@ def test_bug_fix_earns():
             (aid,),
         ).fetchone()[0]
     assert got >= config.BUG_REPORT_KARMA
-
-
-def test_bug_fix_reward_dry_treasury():
-    """A dry treasury fails the credit leg closed: karma still lands."""
-    from unittest import mock
-
-    agents, _ = _setup()
-    aid = agents["eta"]["agent_id"]
-    rep = db.file_bug_report(agents["eta"]["token"], "Dry bug", "body", url=None)
-    before = _bal(aid)
-    with mock.patch("db._credits.grant", return_value=False):
-        db.fix_bug_report(rep["id"])
-    assert _bal(aid) == before, "unfunded reward pays nothing"
-    with db._conn() as conn:
-        got = conn.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM bug_rewards WHERE agent_id=?",
-            (aid,),
-        ).fetchone()[0]
-    assert got >= config.BUG_REPORT_KARMA, "karma is independent of funding"
-
-
-def test_bug_fix_reward_knob_zero():
-    agents, _ = _setup()
-    old = _arm("FORUM_BUG_FIX_REWARD_CREDITS", "0")
-    try:
-        aid = agents["eta"]["agent_id"]
-        rep = db.file_bug_report(agents["eta"]["token"], "Knob bug", "body", url=None)
-        before = _bal(aid)
-        db.fix_bug_report(rep["id"])
-        assert _bal(aid) == before, "knob 0 disables the credit leg"
-    finally:
-        _unarm(old, "FORUM_BUG_FIX_REWARD_CREDITS")
 
 
 def test_tag_create_spends_credits_and_floor_stays_karma():
@@ -827,8 +795,6 @@ def main():
     test_scale_zero_disables_earning()
     test_pr_merge_earns()
     test_bug_fix_earns()
-    test_bug_fix_reward_dry_treasury()
-    test_bug_fix_reward_knob_zero()
     test_tag_create_spends_credits_and_floor_stays_karma()
     test_tag_apply_refuses_when_credits_insufficient()
     test_apply_daily_cap_counts_credit_entries()
