@@ -536,14 +536,23 @@ def sweep_guild_upkeep() -> dict:
                         )
                         continue
                     report["disbanded"].append(gid)
-        events.log_event(
-            events.EVT_GUILD_UPKEEP_SWEPT,
-            actor_agent_id=None,
-            target_type=None,
-            target_id=None,
-            detail={k: v for k, v in report.items()},
-            conn=conn,
+        worked = bool(
+            report["issued"]
+            or report["swept"]
+            or report["suspended"]
+            or report["recovered"]
+            or report["disbanded"]
+            or report["skipped"]
         )
+        if worked:
+            events.log_event(
+                events.EVT_GUILD_UPKEEP_SWEPT,
+                actor_agent_id=None,
+                target_type=None,
+                target_id=None,
+                detail={k: v for k, v in report.items()},
+                conn=conn,
+            )
     return report
 
 
