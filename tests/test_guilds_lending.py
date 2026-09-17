@@ -237,6 +237,26 @@ def test_request_payback_mints_debt_and_part_pay():
     debt = _debt(guild["id"])
     assert debt is not None and debt["status"] == "settled", debt
     assert debt["remaining_quarters"] == 0, debt
+    # Terminal-transition guards: declined/cancelled payback bills would
+    # brick their debts, so both doors refuse on debt-linked invoices.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_subsidies SET created_at = ? WHERE guild_id = ?",
+            ("2026-08-01T00:00:00.000Z", guild["id"]),
+        )
+    out2 = db.request_guild_subsidy(
+        founder["token"], guild["id"], 1.0, True, "second bridge"
+    )
+    try:
+        db.decline_invoice(founder["token"], out2["invoice_id"])
+        raise AssertionError("debt bill declined")
+    except Exception as exc:
+        assert "payback" in str(exc), exc
+    try:
+        db.cancel_invoice(founder["token"], out2["invoice_id"])
+        raise AssertionError("debt bill cancelled")
+    except Exception as exc:
+        assert "payback" in str(exc) or "forgive" in str(exc), exc
 
 
 def test_over_tier_venue_and_admin_decide():
@@ -245,6 +265,20 @@ def test_over_tier_venue_and_admin_decide():
     out = db.request_guild_subsidy(founder["token"], guild["id"], 5.0, True, "big push")
     assert out["status"] == "requested" and out["tier"] == "admin", out
     assert out["idea_post_id"] is not None
+    # The admin queue is serial: a second request waits for the decision.
+    try:
+        db.request_guild_subsidy(
+            founder["token"], guild["id"], 1.0, True, "jumping queue"
+        )
+        raise AssertionError("concurrent request filed")
+    except Exception as exc:
+        assert "undecided" in str(exc), exc
+    # Oversized reasons refuse before any row exists (venue posts cap).
+    try:
+        db.request_guild_subsidy(founder["token"], guild["id"], 1.0, True, "x" * 9000)
+        raise AssertionError("oversized reason filed")
+    except Exception as exc:
+        assert "8000" in str(exc), exc
     with db._conn() as conn:
         idea = conn.execute(
             "SELECT proposal_kind FROM posts WHERE id = ?",
@@ -261,11 +295,11 @@ def test_over_tier_venue_and_admin_decide():
         founder["token"], out["subsidy_id"], False, admin=True
     )
     assert decided["status"] == "declined", decided
+    # A declined request paid nothing, so it is not "a subsidy taken":
+    # the free second subsidy survives without payback.
     out2 = db.request_guild_subsidy(
-        founder["token"], guild["id"], 1.0, True, "retry small"
+        founder["token"], guild["id"], 1.0, False, "retry small"
     )
-    # Second subsidy for the same guild paid: the 14d tier clock ignores
-    # declined rows, and payback=yes satisfies the softness gate.
     assert out2["status"] == "paid", out2
 
 
@@ -303,7 +337,7 @@ def test_second_needs_payback_and_overdue_blocks():
 
 def test_match_lump_and_window_wash():
     founder, guild = _found()
-    _mate(founder, guild)
+    mate = _mate(founder, guild)
     lump = db.open_guild_match_window(
         founder["token"], guild["id"], "lump", amount_credits=2.0
     )
@@ -320,6 +354,37 @@ def test_match_lump_and_window_wash():
     # not the gross deposits.
     db.guild_deposit(founder["token"], guild["id"], 25.0)
     db.guild_withdraw(founder["token"], guild["id"], 2.0)
+    # Upkeep dues ride kind 'deposit' for the shares math but are dues,
+    # not deposits: five 1q arrears weeks paid mid-window must not move
+    # the match net (gross would read 97q -> 19q).
+    import db._guilds_lending as _gl
+
+    with db._conn() as conn:
+        for week in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+            conn.execute(
+                "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
+                " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
+                (guild["id"], mate["agent_id"], week),
+            )
+        cur = conn.execute(
+            "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
+            " amount_quarters, remaining_quarters, reason, status, due_at)"
+            " VALUES (?, ?, 5, 5, 'upkeep catch-up', 'accepted', ?)",
+            (mate["agent_id"], founder["agent_id"], "2026-09-24T00:00:00.000Z"),
+        )
+        fee_inv = int(cur.lastrowid or 0)
+        conn.execute(
+            "INSERT INTO guild_fee_invoices (invoice_id, guild_id,"
+            " member_agent_id, week) VALUES (?, ?, ?, '2026-W34')",
+            (fee_inv, guild["id"], mate["agent_id"]),
+        )
+    db.pay_invoice(mate["token"], fee_inv)
+    with db._conn() as conn:
+        wrow = conn.execute(
+            "SELECT created_at FROM guild_match_windows WHERE id = ?",
+            (window["window_id"],),
+        ).fetchone()
+        assert _gl._window_net(conn, guild["id"], wrow["created_at"]) == 92
     with db._conn() as conn:
         conn.execute(
             "UPDATE guild_match_windows SET ends_at = ? WHERE id = ?",
@@ -545,6 +610,11 @@ def test_disband_releases_guild_stakes():
     pid = prop["post_id"]
     for name in ("beta", "gamma", "delta"):
         db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
+    # A stranger's personal stake locks the same shared PR number:
+    # disband must not touch it. Created outside the seed transaction
+    # below (registering opens its own write txn - never nest writes).
+    outsider = _new_agent("gl-outsider")
+    _fund(outsider["agent_id"], 100)
     with db._conn() as conn:
         cur = conn.execute(
             "INSERT INTO proposal_stakes (proposal_id, staker_agent_id,"
@@ -563,6 +633,18 @@ def test_disband_releases_guild_stakes():
             " opener_bonus_pct) VALUES (?, ?, 0)",
             (stake_id, gid),
         )
+        cur = conn.execute(
+            "INSERT INTO proposal_stakes (proposal_id, staker_agent_id,"
+            " per_pr, max_prs, currency, status) VALUES (?, ?, 10, 1,"
+            " 'credits', 'active')",
+            (pid, outsider["agent_id"]),
+        )
+        ostr = int(cur.lastrowid or 0)
+        conn.execute(
+            "INSERT INTO stake_locks (stake_id, pr_number, agent_id, amount,"
+            " status) VALUES (?, 99991, ?, 10, 'locked')",
+            (ostr, outsider["agent_id"]),
+        )
     done = db.disband_guild(founder["token"], gid, "dissolve")
     assert done["mode"] == "dissolve", done
     with db._conn() as conn:
@@ -572,8 +654,12 @@ def test_disband_releases_guild_stakes():
         lock = conn.execute(
             "SELECT status FROM stake_locks WHERE stake_id = ?", (stake_id,)
         ).fetchone()
+        stranger = conn.execute(
+            "SELECT status FROM stake_locks WHERE stake_id = ?", (ostr,)
+        ).fetchone()
     assert link is None, "stake link must dissolve with the guild"
     assert lock is not None and lock["status"] == "refunded", dict(lock or {})
+    assert stranger is not None and stranger["status"] == "locked", dict(stranger or {})
 
 
 def test_shared_budget_and_sweep_quiet():
