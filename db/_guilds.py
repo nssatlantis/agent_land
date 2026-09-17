@@ -351,7 +351,7 @@ def _run_succession(conn: sqlite3.Connection, guild: dict, why: str) -> dict:
         # never pay out money that is still locked in job escrow.
         from db._guilds_money import resolve_guild_jobs_for_disband
 
-        resolve_guild_jobs_for_disband(conn, guild["id"])
+        resolve_guild_jobs_for_disband(conn, guild["id"], actor_agent_id=None)
         out = _disband_distribute(conn, guild["id"], f"no heir ({why})")
         events.log_event(
             events.EVT_GUILD_DISBANDED,
