@@ -235,6 +235,16 @@ from db._guilds_grants import (  # noqa: F401
     sweep_guild_grants,
 )
 
+# ── guild soft-lending + delinquency (proposal #525, PR-7) ──────────────
+from db._guilds_lending import (  # noqa: F401
+    decide_guild_subsidy,
+    open_guild_match_window,
+    release_guild_stakes_for_disband,
+    request_guild_subsidy,
+    settle_guild_debt_payment,
+    sweep_guild_lending,
+)
+
 # ── guild pool money (proposal #525, PR-3) ─────────────────────────────
 from db._guilds_money import (  # noqa: F401
     detach_executor_jobs,
