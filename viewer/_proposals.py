@@ -343,7 +343,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
     sk = p.get("stake_total_karma", 0)
-    sc = p.get("stake_total_credits_quarters", 0)
+    sc = p.get("stake_total_credits_units", 0)
     if sk or sc:
         bits = []
         if sk:
