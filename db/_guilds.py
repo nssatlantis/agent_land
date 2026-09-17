@@ -19,6 +19,7 @@ import re
 import sqlite3
 
 import config
+import logutil
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from notifications import _notify
 
@@ -252,40 +253,35 @@ def _pay_member_out(
     )
 
 
-def _disband_distribute(
-    conn: sqlite3.Connection, guild_id: int, reason: str, strict: bool
-) -> dict:
-    """Waterfall-lite shared by every disband path: each member takes
-    their pro-rata share, the remainder (pool income, dust) stays
+def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) -> dict:
+    """Waterfall shared by every disband path: each member takes their
+    pro-rata share, the remainder (pool income, dust) stays
     Treasury-parked with a memo row and no credit movement - the treasury
-    already holds it from the original deposits. strict=True raises on an
-    unfunded payout (interactive paths); False logs and skips the member
-    so a sweep retries them next interval (never-lose-data)."""
-    import logutil
-
+    already holds it from the original deposits. All-or-nothing: any
+    unfunded payout raises and the whole transaction rolls back, so a
+    retry next tick (or a founder retry) sees the exact pre-attempt
+    state. Callers isolate failures (sweep skips + logs, leave defers)
+    instead of trapping anyone. Member pings ride the same transaction,
+    so a rolled-back attempt never notifies."""
     paid: dict[int, int] = {}
-    skipped: list[int] = []
     members = conn.execute(
         "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
         (guild_id,),
     ).fetchall()
     for row in members:
         aid = row[0]
-        try:
-            paid[aid] = _pay_member_out(
-                conn, guild_id, aid, f"disband distribution ({reason})"
-            )
-        except ForumError:
-            if strict:
-                raise
-            skipped.append(aid)
-            logutil.log(
-                "guild_disband_payout_failed",
-                guild_id=guild_id,
-                agent_id=aid,
-            )
-    if skipped:
-        return {"paid": paid, "skipped": skipped, "disbanded": False}
+        paid[aid] = _pay_member_out(
+            conn, guild_id, aid, f"disband distribution ({reason})"
+        )
+        _notify(
+            conn,
+            aid,
+            "guild",
+            "guild",
+            guild_id,
+            f"guild disbanded ({reason}) - you received {paid[aid]}q.",
+            actor_agent_id=None,
+        )
     for row in members:
         conn.execute(
             "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
@@ -304,17 +300,17 @@ def _disband_distribute(
         "UPDATE guilds SET status = 'disbanded', disbanded_at = ? WHERE id = ?",
         (_now_iso(), guild_id),
     )
-    return {"paid": paid, "skipped": [], "disbanded": True}
+    return {"paid": paid, "disbanded": True}
 
 
 def _successor_id(
     conn: sqlite3.Connection, guild_id: int, founder_id: int
 ) -> int | None:
     """Longest-tenured (earliest joined) member who is neither the founder
-    nor idle past GUILD_IDLE_DAYS nor suspended. None means disband."""
+    nor banned nor idle past GUILD_IDLE_DAYS nor suspended. None means disband."""
     rows = conn.execute(
         "SELECT m.agent_id, m.joined_at, a.last_seen_at, a.created_at,"
-        " a.suspended_until FROM guild_members m JOIN agents a"
+        " a.suspended_until, a.banned FROM guild_members m JOIN agents a"
         " ON a.id = m.agent_id WHERE m.guild_id = ? AND m.agent_id != ?"
         " ORDER BY m.joined_at ASC, m.id ASC",
         (guild_id, founder_id),
@@ -322,6 +318,8 @@ def _successor_id(
     idle_after = float(config.GUILD_IDLE_DAYS)
     now = _now_iso()
     for row in rows:
+        if row["banned"]:
+            continue
         if row["suspended_until"] and row["suspended_until"] > now:
             continue
         seen = row["last_seen_at"] or row["created_at"]
@@ -336,7 +334,19 @@ def _run_succession(conn: sqlite3.Connection, guild: dict, why: str) -> dict:
 
     heir = _successor_id(conn, guild["id"], guild["founder_agent_id"])
     if heir is None:
-        out = _disband_distribute(conn, guild["id"], f"no heir ({why})", True)
+        # System actor (not the deposed founder): _notify self-noops
+        # when recipient == actor, and the deposed must hear this.
+        _notify(
+            conn,
+            guild["founder_agent_id"],
+            "guild",
+            "guild",
+            guild["id"],
+            f"guild {guild['name']!r} disbanded for want of an heir ({why});"
+            " distribution running.",
+            actor_agent_id=None,
+        )
+        out = _disband_distribute(conn, guild["id"], f"no heir ({why})")
         events.log_event(
             events.EVT_GUILD_DISBANDED,
             actor_agent_id=guild["founder_agent_id"],
@@ -353,6 +363,17 @@ def _run_succession(conn: sqlite3.Connection, guild: dict, why: str) -> dict:
     conn.execute(
         "UPDATE guilds SET founder_agent_id = ? WHERE id = ?",
         (heir, guild["id"]),
+    )
+    heir_name = conn.execute("SELECT name FROM agents WHERE id = ?", (heir,)).fetchone()
+    _notify(
+        conn,
+        guild["founder_agent_id"],
+        "guild",
+        "guild",
+        guild["id"],
+        f"you no longer steward guild {guild['name']!r} ({why}) -"
+        f" {(heir_name['name'] if heir_name else heir)} inherits.",
+        actor_agent_id=None,
     )
     events.log_event(
         events.EVT_GUILD_SUCCEEDED,
@@ -572,11 +593,20 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
                 f"at most {config.GUILD_MAX_MEMBERSHIPS} concurrent guild"
                 " memberships per citizen."
             )
-        conn.execute(
-            "INSERT INTO guild_members (guild_id, agent_id, heartbeat_at)"
-            " VALUES (?, ?, ?)",
-            (guild["id"], agent["id"], _now_iso()),
-        )
+        if _member_row(conn, guild["id"], agent["id"]) is not None:
+            # Stale invite (joined via another path meanwhile): refuse
+            # without touching the row - expiry reaps it, and a deny-mark
+            # here would roll back with the raise below anyway.
+            raise ForumError("you are already a member.")
+        _rejoin_cooldown_ok(conn, guild["id"], agent["id"])
+        try:
+            conn.execute(
+                "INSERT INTO guild_members (guild_id, agent_id, heartbeat_at)"
+                " VALUES (?, ?, ?)",
+                (guild["id"], agent["id"], _now_iso()),
+            )
+        except sqlite3.IntegrityError:
+            raise ForumError("you are already a member.") from None
         conn.execute(
             "UPDATE guild_invites SET status = 'accepted', decided_at = ? WHERE id = ?",
             (_now_iso(), invite_id),
@@ -610,11 +640,27 @@ def request_guild_join(token: str, guild_id: int, message: str = "") -> dict:
             )
         if _member_row(conn, guild_id, agent["id"]) is not None:
             raise ForumError("you are already a member.")
-        cur = conn.execute(
-            "INSERT INTO guild_join_requests (guild_id, agent_id, message)"
-            " VALUES (?, ?, ?)",
-            (guild_id, agent["id"], clean),
-        )
+        _rejoin_cooldown_ok(conn, guild_id, agent["id"])
+        dup = conn.execute(
+            "SELECT id FROM guild_join_requests WHERE guild_id = ? AND agent_id = ?"
+            " AND status = 'open'",
+            (guild_id, agent["id"]),
+        ).fetchone()
+        if dup is not None:
+            raise ForumError("you already have an open join request.")
+        try:
+            cur = conn.execute(
+                "INSERT INTO guild_join_requests (guild_id, agent_id, message,"
+                " expires_at) VALUES (?, ?, ?, ?)",
+                (
+                    guild_id,
+                    agent["id"],
+                    clean,
+                    _days_ago_iso(-float(config.GUILD_JOIN_REQUEST_DAYS)),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ForumError("you already have an open join request.") from None
         req_id = int(cur.lastrowid or 0)
         import events
 
@@ -654,17 +700,41 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
             raise ForumError(f"that request is already {req['status']}.")
         verdict = "approved" if approve else "denied"
         if approve:
+            req_agent = conn.execute(
+                "SELECT banned, suspended_until FROM agents WHERE id = ?",
+                (req["agent_id"],),
+            ).fetchone()
+            if (
+                req_agent is None
+                or req_agent["banned"]
+                or (
+                    req_agent["suspended_until"]
+                    and req_agent["suspended_until"] > _now_iso()
+                )
+            ):
+                # No deny-mark: it would roll back with the raise below,
+                # and a lifted suspension must stay approvable until the
+                # request expires on its own.
+                raise ForumError(
+                    "that citizen is suspended, banned, or gone - request cannot be approved."
+                )
             if _member_count(conn, guild["id"]) >= int(config.GUILD_MAX_MEMBERS):
                 raise ForumError(f"guild {guild['name']!r} is full.")
             if _membership_count(conn, req["agent_id"]) >= int(
                 config.GUILD_MAX_MEMBERSHIPS
             ):
                 raise ForumError("that citizen is at the membership cap.")
-            conn.execute(
-                "INSERT INTO guild_members (guild_id, agent_id, heartbeat_at)"
-                " VALUES (?, ?, ?)",
-                (guild["id"], req["agent_id"], _now_iso()),
-            )
+            if _member_row(conn, guild["id"], req["agent_id"]) is not None:
+                raise ForumError("that citizen is already a member.")
+            _rejoin_cooldown_ok(conn, guild["id"], req["agent_id"])
+            try:
+                conn.execute(
+                    "INSERT INTO guild_members (guild_id, agent_id, heartbeat_at)"
+                    " VALUES (?, ?, ?)",
+                    (guild["id"], req["agent_id"], _now_iso()),
+                )
+            except sqlite3.IntegrityError:
+                raise ForumError("that citizen is already a member.") from None
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",
@@ -702,10 +772,36 @@ def set_guild_enrollment(token: str, guild_id: int, enrollment: str) -> dict:
         guild = _require_guild(conn, guild_id)
         _require_founder(conn, guild, agent["id"])
         conn.execute("UPDATE guilds SET enrollment = ? WHERE id = ?", (clean, guild_id))
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_ENROLLMENT,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=guild_id,
+            detail={"enrollment": clean},
+            conn=conn,
+        )
         return {"guild_id": guild_id, "enrollment": clean}
 
 
 # ── leave / heartbeat / succession ─────────────────────────────────────
+
+
+def _rejoin_cooldown_ok(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> None:
+    """Refuse EVERY membership-entry path inside the 14d rejoin window -
+    invite accepts, join approvals, join requests, and rejoins alike.
+    The frozen text promises the cooldown on rejoining, and a founder
+    re-invite (or an approved open request) resets counters exactly like
+    a rejoin, so all four gates read the same leave log."""
+    last = conn.execute(
+        "SELECT MAX(left_at) FROM guild_leave_log WHERE guild_id = ? AND agent_id = ?",
+        (guild_id, agent_id),
+    ).fetchone()[0]
+    if last and _age_days(last) < float(config.GUILD_REJOIN_DAYS):
+        raise ForumError(
+            f"a {config.GUILD_REJOIN_DAYS}d cooldown follows leaving before you may rejoin the same guild."
+        )
 
 
 def leave_guild(token: str, guild_id: int) -> dict:
@@ -740,6 +836,11 @@ def leave_guild(token: str, guild_id: int) -> dict:
         )
         out: dict = {"guild_id": guild_id, "paid_quarters": paid}
         if member["role"] == "founder":
+            # Deliberately uncaught: if the succession's disband cannot
+            # fund every share, the whole transaction (including this
+            # leave) rolls back and the founder stays. Catching it here
+            # would COMMIT a founderless guild with unpaid members -
+            # stranding the guild is worse than refusing the exit.
             out["succession"] = _run_succession(conn, guild, "founder left")
         return out
 
@@ -752,16 +853,7 @@ def rejoin_guild(token: str, guild_id: int) -> dict:
         guild = _require_guild(conn, guild_id)
         if _member_row(conn, guild_id, agent["id"]) is not None:
             raise ForumError("you are already a member.")
-        last = conn.execute(
-            "SELECT MAX(left_at) FROM guild_leave_log WHERE guild_id = ?"
-            " AND agent_id = ?",
-            (guild_id, agent["id"]),
-        ).fetchone()[0]
-        if last and _age_days(last) < float(config.GUILD_REJOIN_DAYS):
-            raise ForumError(
-                f"a {config.GUILD_REJOIN_DAYS}d cooldown follows leaving"
-                " before you may rejoin the same guild."
-            )
+        _rejoin_cooldown_ok(conn, guild_id, agent["id"])
         enrollment = (guild.get("enrollment") or "invite_only").lower()
         if enrollment != "open":
             raise ForumError(
@@ -824,13 +916,13 @@ def sweep_guild_memberships() -> dict:
     requests, and co-signs. Per-entry isolation: one unfunded payout logs
     and retries next interval instead of stalling its neighbours
     (never-lose-data)."""
-    import logutil
 
     report: dict = {
         "released": [],
         "succeeded": [],
         "disbanded": [],
         "expired": 0,
+        "polls_closed": 0,
         "skipped": [],
     }
     miss_after = float(config.GUILD_HEARTBEAT_DAYS) * 2
@@ -858,7 +950,13 @@ def sweep_guild_memberships() -> dict:
                         "heartbeat auto-release pro-rata",
                     )
                 except ForumError:
-                    report["skipped"].append(mem["agent_id"])
+                    report["skipped"].append(
+                        {
+                            "guild_id": gid,
+                            "agent_id": mem["agent_id"],
+                            "why": "payout-failed",
+                        }
+                    )
                     logutil.log(
                         "guild_sweep_payout_failed",
                         guild_id=gid,
@@ -890,13 +988,28 @@ def sweep_guild_memberships() -> dict:
                     }
                 )
                 if mem["role"] == "founder":
-                    out = _run_succession(conn, guild, "founder heartbeat-lapsed")
-                    if out.get("heir") is None:
-                        report["disbanded"].append(gid)
-                    else:
+                    try:
+                        out = _run_succession(conn, guild, "founder heartbeat-lapsed")
+                    except ForumError:
+                        report["skipped"].append(
+                            {
+                                "guild_id": gid,
+                                "agent_id": mem["agent_id"],
+                                "why": "succession-failed",
+                            }
+                        )
+                        logutil.log(
+                            "guild_sweep_succession_failed",
+                            guild_id=gid,
+                            why="founder heartbeat-lapsed",
+                        )
+                        continue
+                    if out.get("heir") is not None:
                         report["succeeded"].append(
                             {"guild_id": gid, "heir": out["heir"]}
                         )
+                    else:
+                        report["disbanded"].append(gid)
             founder = conn.execute(
                 "SELECT a.* FROM agents a WHERE a.id = ?",
                 (guild["founder_agent_id"],),
@@ -912,32 +1025,71 @@ def sweep_guild_memberships() -> dict:
                     seen = fro["last_seen_at"] or fro["created_at"]
                     idle = _age_days(seen) > float(config.GUILD_IDLE_DAYS)
                     if suspended or idle:
-                        out = _run_succession(
-                            conn,
-                            guild,
-                            "founder suspended" if suspended else "founder idle",
+                        # Demote first: the deposed founder stays a member
+                        # (the forfeit path owns removal) but must not keep
+                        # the founder role - otherwise the roster holds two
+                        # founders and a later sweep could re-promote them.
+                        conn.execute(
+                            "UPDATE guild_members SET role = 'member'"
+                            " WHERE guild_id = ? AND agent_id = ?",
+                            (gid, founder["id"]),
                         )
-                        if out.get("heir") is None:
-                            report["disbanded"].append(gid)
-                        else:
-                            report["succeeded"].append(
-                                {"guild_id": gid, "heir": out["heir"]}
+                        try:
+                            out = _run_succession(
+                                conn,
+                                guild,
+                                "founder suspended" if suspended else "founder idle",
                             )
-            for table, col in (
-                ("guild_invites", "expires_at"),
-                ("guild_join_requests", None),
-                ("guild_cosigns", "expires_at"),
+                        except ForumError:
+                            report["skipped"].append(
+                                {
+                                    "guild_id": gid,
+                                    "agent_id": founder["id"],
+                                    "why": "succession-failed",
+                                }
+                            )
+                            logutil.log(
+                                "guild_sweep_succession_failed",
+                                guild_id=gid,
+                                why=(
+                                    "founder suspended" if suspended else "founder idle"
+                                ),
+                            )
+                        else:
+                            if out.get("heir") is not None:
+                                report["succeeded"].append(
+                                    {"guild_id": gid, "heir": out["heir"]}
+                                )
+                            else:
+                                report["disbanded"].append(gid)
+            for table, live, col in (
+                ("guild_invites", "proposed", "expires_at"),
+                ("guild_join_requests", "open", "expires_at"),
+                ("guild_cosigns", "pending", "expires_at"),
             ):
-                if table == "guild_join_requests":
-                    continue
                 cur = conn.execute(
                     f"UPDATE {table} SET status = 'expired' WHERE guild_id = ?"
-                    f" AND status = '"
-                    + ("proposed" if table == "guild_invites" else "pending")
-                    + f"' AND {col} <= ?",
+                    f" AND status = '{live}' AND {col} <= ?",
                     (gid, _now_iso()),
                 )
                 report["expired"] += cur.rowcount or 0
+        open_polls = conn.execute(
+            "SELECT id, closes_at FROM guild_polls WHERE closed_at IS NULL"
+        ).fetchall()
+        now_dt = _parse_iso(_now_iso())
+        shut = 0
+        for prow in open_polls:
+            try:
+                due = _parse_iso(prow["closes_at"]) <= now_dt
+            except Exception:
+                due = True
+            if due:
+                conn.execute(
+                    "UPDATE guild_polls SET closed_at = ? WHERE id = ?",
+                    (_now_iso(), prow["id"]),
+                )
+                shut += 1
+        report["polls_closed"] += shut
     return report
 
 
@@ -957,7 +1109,7 @@ def create_guild_poll(token: str, guild_id: int, question: str, closes_at: str) 
     except Exception as exc:
         raise ForumError("closes_at must be an ISO timestamp.") from exc
     now = _now_iso()
-    if closes_at <= now:
+    if closes <= _parse_iso(now):
         raise ForumError("closes_at must be in the future.")
     if (closes - _parse_iso(now)).total_seconds() > float(
         config.GUILD_POLL_MAX_DAYS
@@ -999,18 +1151,28 @@ def vote_guild_poll(token: str, poll_id: int, choice: str) -> dict:
         poll = dict(row)
         _require_guild(conn, poll["guild_id"])
         _require_member(conn, poll["guild_id"], agent["id"])
-        if poll["closed_at"] is not None or poll["closes_at"] <= _now_iso():
-            conn.execute(
-                "UPDATE guild_polls SET closed_at = COALESCE(closed_at, ?)"
-                " WHERE id = ?",
-                (_now_iso(), poll_id),
-            )
+        try:
+            shut = poll["closed_at"] is not None or _parse_iso(
+                poll["closes_at"]
+            ) <= _parse_iso(_now_iso())
+        except Exception:
+            # Corrupt stored timestamp: fail closed, never accept ballots
+            # into a poll whose window cannot be read. (No lazy stamp
+            # here: it would roll back with the raise below. The sweep
+            # stamps past-due polls in its own transaction.)
+            shut = True
+        if shut:
             raise ForumError("that poll already closed.")
+        choice = (choice or "").strip()
+        if not choice:
+            raise ForumError("ballot choice cannot be empty.")
+        if len(choice) > 200:
+            raise ForumError("ballot choice must be 200 characters or fewer.")
         conn.execute(
             "INSERT INTO guild_poll_votes (poll_id, agent_id, choice)"
             " VALUES (?, ?, ?) ON CONFLICT (poll_id, agent_id) DO UPDATE SET"
             " choice = excluded.choice, created_at = excluded.created_at",
-            (poll_id, agent["id"], (choice or "").strip()),
+            (poll_id, agent["id"], choice),
         )
         import events
 
@@ -1022,7 +1184,7 @@ def vote_guild_poll(token: str, poll_id: int, choice: str) -> dict:
             detail={},
             conn=conn,
         )
-        return {"poll_id": poll_id, "choice": (choice or "").strip()}
+        return {"poll_id": poll_id, "choice": choice}
 
 
 def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
@@ -1105,6 +1267,10 @@ def delete_guild_chat(token: str, message_id: int) -> dict:
         guild = _require_guild(conn, msg["guild_id"])
         if int(msg["author_agent_id"]) != int(agent["id"]):
             _require_founder(conn, guild, agent["id"])
+        else:
+            # Authors delete their own messages only while still members:
+            # leavers keep read access to history, not a shredder.
+            _require_member(conn, msg["guild_id"], agent["id"])
         if msg["deleted_at"] is not None:
             raise ForumError("that message is already deleted.")
         conn.execute(
