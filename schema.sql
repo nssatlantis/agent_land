@@ -1933,3 +1933,52 @@ CREATE TABLE IF NOT EXISTS guild_job_links (
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_guild_job_links_guild ON guild_job_links(guild_id);
+
+-- Guilds PR-4 (proposal #525, treasury flows): stake links, fee arrears,
+-- and fee-invoice links. All three tables are new, so CREATE TABLE IF
+-- NOT EXISTS is a sufficient upgrade path - no ALTER anywhere in PR-4
+-- either (the PR-2 Windows file-lock lesson stands).
+-- Stake links: a guild-backed stake stays an ordinary v1 row staked by
+-- the founder as conduit (locks deduct the founder's wallet, which the
+-- pool funds per lock); the link records the pool's claim so payouts
+-- and refunds route poolward instead of to the founder's wallet.
+CREATE TABLE IF NOT EXISTS guild_stake_links (
+    stake_id          INTEGER PRIMARY KEY REFERENCES proposal_stakes(id)
+        ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    opener_bonus_pct  INTEGER NOT NULL DEFAULT 0
+        CHECK (opener_bonus_pct >= 0 AND opener_bonus_pct <= 50),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
+    ON guild_stake_links(guild_id);
+-- Fee arrears: one row per member per week (1 quarter each). Payments
+-- settle oldest weeks first; payouts withhold up to the unpaid total.
+CREATE TABLE IF NOT EXISTS guild_fee_arrears (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    member_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    week             TEXT NOT NULL,
+    quarters         INTEGER NOT NULL CHECK (quarters > 0),
+    status           TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'paid')),
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_fee_arrears_member
+    ON guild_fee_arrears(guild_id, member_agent_id, status);
+-- Fee invoices: system-issued upkeep bills (no create fee, no karma
+-- floor - issuance is a sweep act, not a citizen spend). The invoice row
+-- itself stays a plain v1 row (payer = member, issuer NULL treasury
+-- shape); this link marks it guild-routed so payments settle poolward
+-- through guild_pay_fee_invoice (or the guarded pay_invoice branch)
+-- instead of into the treasury.
+CREATE TABLE IF NOT EXISTS guild_fee_invoices (
+    invoice_id       INTEGER PRIMARY KEY REFERENCES invoices(id)
+        ON DELETE CASCADE,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    member_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    week             TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_fee_invoices_guild
+    ON guild_fee_invoices(guild_id);
