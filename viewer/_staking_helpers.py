@@ -21,7 +21,7 @@ _STAKE_SUMMARY_CACHE_SECONDS = 60.0
 
 def _stake_amount(amount, currency: str) -> str:
     """Format a stake amount in its own currency: karma points as-is,
-    credit quarters as whole/half/quarter decimals."""
+    credit twentieths as exact decimals."""
     if currency == "credits":
         from db._credits import format_credits
 
