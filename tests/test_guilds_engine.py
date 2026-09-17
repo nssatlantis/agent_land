@@ -338,12 +338,28 @@ def test_succession_idle_and_suspended():
     assert any(s["heir"] == heir["agent_id"] for s in report["succeeded"]), report
     assert db.get_guild(gid)["founder_name"] == heir["name"]
     with db._conn() as conn:
+        roles = conn.execute(
+            "SELECT agent_id, role FROM guild_members WHERE guild_id = ?",
+            (gid,),
+        ).fetchall()
+    by_agent = {r[0]: r[1] for r in roles}
+    assert sorted(by_agent.values()).count("founder") == 1, by_agent
+    assert by_agent[founder["agent_id"]] == "member", by_agent
+    with db._conn() as conn:
         conn.execute(
             "UPDATE agents SET suspended_until = ? WHERE id = ?",
             ("2030-01-01T00:00:00.000Z", heir["agent_id"]),
         )
     report2 = db.sweep_guild_memberships()
     assert any(s["heir"] == spare["agent_id"] for s in report2["succeeded"]), report2
+    with db._conn() as conn:
+        roles2 = conn.execute(
+            "SELECT agent_id, role FROM guild_members WHERE guild_id = ?",
+            (gid,),
+        ).fetchall()
+    by_agent2 = {r[0]: r[1] for r in roles2}
+    assert sorted(by_agent2.values()).count("founder") == 1, by_agent2
+    assert by_agent2[heir["agent_id"]] == "member", by_agent2
 
 
 def test_velocity_cosign_spend_lock():
@@ -536,6 +552,387 @@ def test_list_and_get_shape():
         raise AssertionError("bad sort accepted")
     except Exception as exc:
         assert "sort" in str(exc), exc
+
+
+def test_rejoin_cooldown_all_paths():
+    """The 14d cooldown gates every re-entry vector, not just rejoin."""
+    founder, guild = _found()
+    gid = guild["id"]
+    db.set_guild_enrollment(founder["token"], gid, "open")
+    roamer = _new_agent("ge-roamer")
+    inv = db.invite_guild_member(founder["token"], gid, roamer["name"])
+    db.respond_guild_invite(roamer["token"], inv["invite_id"], True)
+    db.leave_guild(roamer["token"], gid)
+    # 1. Fresh invite + accept inside the window refuses.
+    inv2 = db.invite_guild_member(founder["token"], gid, roamer["name"])
+    try:
+        db.respond_guild_invite(roamer["token"], inv2["invite_id"], True)
+        raise AssertionError("invite-path rejoin accepted")
+    except Exception as exc:
+        assert "cooldown" in str(exc), exc
+    # 2. Fresh join request inside the window refuses.
+    try:
+        db.request_guild_join(roamer["token"], gid, "back please")
+        raise AssertionError("request-path rejoin accepted")
+    except Exception as exc:
+        assert "cooldown" in str(exc), exc
+    # 3. Stale request approved inside the window refuses: request while
+    # outside, join via invite, leave, then approve the stale row.
+    outsider = _new_agent("ge-stale-req")
+    req = db.request_guild_join(outsider["token"], gid, "let me in")
+    inv3 = db.invite_guild_member(founder["token"], gid, outsider["name"])
+    db.respond_guild_invite(outsider["token"], inv3["invite_id"], True)
+    db.leave_guild(outsider["token"], gid)
+    try:
+        db.respond_guild_join(founder["token"], req["request_id"], True)
+        raise AssertionError("stale-request approve accepted")
+    except Exception as exc:
+        assert "cooldown" in str(exc), exc
+    # 4. Approving a current member's stale request refuses cleanly.
+    member = _new_agent("ge-stillhere")
+    req2 = db.request_guild_join(member["token"], gid, "hi")
+    inv4 = db.invite_guild_member(founder["token"], gid, member["name"])
+    db.respond_guild_invite(member["token"], inv4["invite_id"], True)
+    try:
+        db.respond_guild_join(founder["token"], req2["request_id"], True)
+        raise AssertionError("approve-while-member accepted")
+    except Exception as exc:
+        assert "already a member" in str(exc), exc
+
+
+def test_join_request_expiry_and_dedup():
+    founder, guild = _found()
+    gid = guild["id"]
+    db.set_guild_enrollment(founder["token"], gid, "open")
+    asker = _new_agent("ge-reqexp")
+    req = db.request_guild_join(asker["token"], gid, "please")
+    try:
+        db.request_guild_join(asker["token"], gid, "please again")
+        raise AssertionError("duplicate open request accepted")
+    except Exception as exc:
+        assert "already have an open" in str(exc), exc
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_join_requests SET expires_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", req["request_id"]),
+        )
+    before = db.sweep_guild_memberships()["expired"]
+    assert before >= 1
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM guild_join_requests WHERE id = ?",
+            (req["request_id"],),
+        ).fetchone()[0]
+    assert status == "expired", status
+    # Expired rows unblock a fresh request.
+    req2 = db.request_guild_join(asker["token"], gid, "again")
+    assert req2["request_id"] != req["request_id"]
+
+
+def test_approve_suspended_requester():
+    founder, guild = _found()
+    gid = guild["id"]
+    db.set_guild_enrollment(founder["token"], gid, "open")
+    asker = _new_agent("ge-suspreq")
+    req = db.request_guild_join(asker["token"], gid, "hello")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2030-01-01T00:00:00.000Z", asker["agent_id"]),
+        )
+    try:
+        db.respond_guild_join(founder["token"], req["request_id"], True)
+        raise AssertionError("suspended requester seated")
+    except Exception as exc:
+        assert "suspended" in str(exc), exc
+    # Pure refusal: the row stays open (a lifted suspension remains
+    # approvable; expiry reaps it otherwise) and nobody is seated.
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM guild_join_requests WHERE id = ?",
+            (req["request_id"],),
+        ).fetchone()[0]
+        members = conn.execute(
+            "SELECT COUNT(*) FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+            (gid, asker["agent_id"]),
+        ).fetchone()[0]
+    assert status == "open" and members == 0
+
+
+def test_banned_heir_skipped():
+    founder, guild = _found()
+    gid = guild["id"]
+    heir = _new_agent("ge-banheir")
+    spare = _new_agent("ge-banspare")
+    for newcomer in (heir, spare):
+        inv = db.invite_guild_member(founder["token"], gid, newcomer["name"])
+        db.respond_guild_invite(newcomer["token"], inv["invite_id"], True)
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (heir["agent_id"],))
+        conn.execute(
+            "UPDATE agents SET last_seen_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", founder["agent_id"]),
+        )
+    report = db.sweep_guild_memberships()
+    assert any(s["heir"] == spare["agent_id"] for s in report["succeeded"]), report
+    with db._conn() as conn:
+        founders = conn.execute(
+            "SELECT COUNT(*) FROM guild_members WHERE guild_id = ? AND role = 'founder'",
+            (gid,),
+        ).fetchone()[0]
+    assert founders == 1
+
+
+def test_cosign_confirm_revalidation():
+    founder, guild = _found("Cosign Reval")
+    gid = guild["id"]
+    comp = _new_agent("ge-revalmate")
+    inv = db.invite_guild_member(founder["token"], gid, comp["name"])
+    db.respond_guild_invite(comp["token"], inv["invite_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 100, ?, 'seed')",
+            (gid, founder["agent_id"]),
+        )
+    c1 = db.request_guild_cosign(founder["token"], gid, "first", 20)
+    assert (
+        db.confirm_guild_cosign(founder["token"], c1["cosign_id"])["confirmed"] is True
+    )
+    # Balance moved below a fresh confirm: refused.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            " VALUES (?, 'withdrawal', 95, 'drain')",
+            (gid,),
+        )
+    c2 = db.request_guild_cosign(founder["token"], gid, "second", 20)
+    try:
+        db.confirm_guild_cosign(founder["token"], c2["cosign_id"])
+        raise AssertionError("moved-below confirm accepted")
+    except Exception as exc:
+        assert "moved below" in str(exc), exc
+    # Velocity breached at confirm with a fresh confirm: refused.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 200, ?, 'refill')",
+            (gid, founder["agent_id"]),
+        )
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            " VALUES (?, 'withdrawal', 60, 'fill window')",
+            (gid,),
+        )
+    c3 = db.request_guild_cosign(founder["token"], gid, "third", 40)
+    try:
+        db.confirm_guild_cosign(founder["token"], c3["cosign_id"])
+        raise AssertionError("velocity-breach confirm accepted")
+    except Exception as exc:
+        assert "velocity" in str(exc), exc
+
+
+def test_unfunded_treasury_isolation():
+    """With payouts disabled, sweeps skip (never abort) and founder
+    leaves defer (never trap) - both retryable once funded."""
+    founder, guild = _found()
+    gid = guild["id"]
+    ghost = _new_agent("ge-unfunded")
+    inv = db.invite_guild_member(founder["token"], gid, ghost["name"])
+    db.respond_guild_invite(ghost["token"], inv["invite_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 20, ?, 'seed')",
+            (gid, ghost["agent_id"]),
+        )
+        conn.execute(
+            "UPDATE guild_members SET joined_at = ?, heartbeat_at = NULL"
+            " WHERE guild_id = ? AND agent_id = ?",
+            ("2020-01-01T00:00:00.000Z", gid, ghost["agent_id"]),
+        )
+    old = _arm("FORUM_CREDITS_ENABLED", "0")
+    try:
+        report = db.sweep_guild_memberships()
+        assert any(
+            s["agent_id"] == ghost["agent_id"] and s["why"] == "payout-failed"
+            for s in report["skipped"]
+        ), report
+        with db._conn() as conn:
+            still = conn.execute(
+                "SELECT COUNT(*) FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+                (gid, ghost["agent_id"]),
+            ).fetchone()[0]
+        assert still == 1, "skipped member must stay rostered for retry"
+    finally:
+        _unarm(old, "FORUM_CREDITS_ENABLED")
+    # Founder leave with an unfunded no-heir disband refuses outright:
+    # catching it would commit a founderless guild with unpaid members,
+    # so the whole transaction rolls back and the founder stays intact.
+    solo_f, solo_g = _found("Unfunded Solo")
+    sgid = solo_g["id"]
+    ghost2 = _new_agent("ge-unfunded2")
+    inv = db.invite_guild_member(solo_f["token"], sgid, ghost2["name"])
+    db.respond_guild_invite(ghost2["token"], inv["invite_id"], True)
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (ghost2["agent_id"],))
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 20, ?, 'seed')",
+            (sgid, ghost2["agent_id"]),
+        )
+    old = _arm("FORUM_CREDITS_ENABLED", "0")
+    try:
+        try:
+            db.leave_guild(solo_f["token"], sgid)
+            raise AssertionError("unfunded-disband leave accepted")
+        except Exception as exc:
+            assert "treasury cannot fund" in str(exc), exc
+        with db._conn() as conn:
+            status = conn.execute(
+                "SELECT status FROM guilds WHERE id = ?", (sgid,)
+            ).fetchone()[0]
+            founder_still = conn.execute(
+                "SELECT role FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+                (sgid, solo_f["agent_id"]),
+            ).fetchone()
+        assert status == "active", status
+        assert founder_still is not None and founder_still[0] == "founder"
+    finally:
+        _unarm(old, "FORUM_CREDITS_ENABLED")
+    # And a founder whose OWN payout is unfundable is refused outright
+    # (stay rostered, retry later) - never half-moved.
+    solo_f2, solo_g2 = _found("Unfunded Solo 2")
+    sgid2 = solo_g2["id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 20, ?, 'seed')",
+            (sgid2, solo_f2["agent_id"]),
+        )
+    old = _arm("FORUM_CREDITS_ENABLED", "0")
+    try:
+        try:
+            db.leave_guild(solo_f2["token"], sgid2)
+            raise AssertionError("unfunded leave accepted")
+        except Exception as exc:
+            assert "treasury cannot fund" in str(exc), exc
+        with db._conn() as conn:
+            still = conn.execute(
+                "SELECT COUNT(*) FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+                (sgid2, solo_f2["agent_id"]),
+            ).fetchone()[0]
+        assert still == 1
+    finally:
+        _unarm(old, "FORUM_CREDITS_ENABLED")
+
+
+def test_succession_pings_and_single_founder():
+    founder, guild = _found()
+    gid = guild["id"]
+    heir = _new_agent("ge-pingheir")
+    inv = db.invite_guild_member(founder["token"], gid, heir["name"])
+    db.respond_guild_invite(heir["token"], inv["invite_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET last_seen_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", founder["agent_id"]),
+        )
+    db.sweep_guild_memberships()
+    with db._conn() as conn:
+        founders = conn.execute(
+            "SELECT agent_id FROM guild_members WHERE guild_id = ? AND role = 'founder'",
+            (gid,),
+        ).fetchall()
+        deposed_role = conn.execute(
+            "SELECT role FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+            (gid, founder["agent_id"]),
+        ).fetchone()
+        pings = conn.execute(
+            "SELECT agent_id, body FROM notifications WHERE ref_id = ? AND kind = 'guild'",
+            (gid,),
+        ).fetchall()
+    assert [r[0] for r in founders] == [heir["agent_id"]], founders
+    assert deposed_role is not None and deposed_role[0] == "member"
+    pinged = {r[0] for r in pings}
+    assert heir["agent_id"] in pinged and founder["agent_id"] in pinged, pinged
+
+
+def test_enrollment_flip_logged():
+    founder, guild = _found()
+    db.set_guild_enrollment(founder["token"], guild["id"], "open")
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, target_type FROM events WHERE target_id = ?"
+            " AND kind = 'guild_enrollment'",
+            (guild["id"],),
+        ).fetchall()
+    assert len(rows) == 1 and rows[0][1] == "guild", rows
+
+
+def test_chat_delete_after_leave_refused():
+    founder, guild = _found()
+    gid = guild["id"]
+    mate = _new_agent("ge-leavemsg")
+    inv = db.invite_guild_member(founder["token"], gid, mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    msg = db.post_guild_chat(mate["token"], gid, "my words")
+    db.leave_guild(mate["token"], gid)
+    try:
+        db.delete_guild_chat(mate["token"], msg["message_id"])
+        raise AssertionError("leaver delete accepted")
+    except Exception as exc:
+        assert "member" in str(exc), exc
+    # Founder can still moderate it.
+    assert db.delete_guild_chat(founder["token"], msg["message_id"])["deleted"] is True
+
+
+def test_poll_choice_and_expiry_rules():
+    founder, guild = _found()
+    gid = guild["id"]
+    mate = _new_agent("ge-pollmate")
+    inv = db.invite_guild_member(founder["token"], gid, mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(days=7)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+    poll = db.create_guild_poll(founder["token"], gid, "Q?", soon)
+    for bad in ("", "   ", "x" * 201):
+        try:
+            db.vote_guild_poll(mate["token"], poll["poll_id"], bad)
+            raise AssertionError(f"choice {bad!r} accepted")
+        except Exception as exc:
+            assert "choice" in str(exc), exc
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_polls SET closes_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", poll["poll_id"]),
+        )
+    try:
+        db.vote_guild_poll(mate["token"], poll["poll_id"], "late")
+        raise AssertionError("expired-poll vote accepted")
+    except Exception as exc:
+        assert "closed" in str(exc), exc
+    # The refusal rolls back, so no lazy stamp persists; the sweep owns
+    # closing and its write commits.
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT closed_at FROM guild_polls WHERE id = ?",
+                (poll["poll_id"],),
+            ).fetchone()[0]
+            is None
+        )
+    shut = db.sweep_guild_memberships()["polls_closed"]
+    assert shut >= 1, shut
+    with db._conn() as conn:
+        closed = conn.execute(
+            "SELECT closed_at FROM guild_polls WHERE id = ?",
+            (poll["poll_id"],),
+        ).fetchone()[0]
+    assert closed is not None
 
 
 if __name__ == "__main__":
