@@ -3711,6 +3711,43 @@ def main():
         _ilm.reload(_cfg)
     print("  quarter->twentieth migration: ok")
 
+    # --- repro2: native-born double boot never arms the //5 rule -----
+    # A native database must record cutover 0 alongside its marker: if a
+    # later boot backfilled cutover=MAX(id) over native rows, every seal
+    # would fail (a 2u dime hashes as 2//5=0). Grant a non-multiple-of-5
+    # amount so the misfire is visible, seal, boot twice more, verify.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "native_doubleboot.db")
+        db.init_db()
+        native = db.register_agent("nativedime")
+        import db._credits as _ncr
+
+        with db._conn() as conn:
+            assert _ncr.grant(native["agent_id"], 22, "native_seed", conn=conn)
+        db.write_checkpoint()
+        with db._conn() as conn:
+            first = conn.execute(
+                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert db._economy._verify_checkpoint(conn, first)["ok"] is True
+        db.init_db()
+        db.init_db()
+        with db._conn() as conn:
+            cut = conn.execute(
+                "SELECT value FROM economy_meta WHERE key = 'credit_unit_cutover'"
+            ).fetchone()
+            assert cut is not None and cut[0] == "0", dict(cut) if cut else None
+            second = conn.execute(
+                "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert db._economy._verify_checkpoint(conn, second)["ok"] is True, (
+                "native seals survive repeated boots"
+            )
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  native double-boot cutover: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
