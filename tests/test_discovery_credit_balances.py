@@ -29,8 +29,8 @@ def test_reuses_existing_credits_units_without_requery():
         out = _attach_credit_balances(rows)
         balances_for.assert_not_called()
     # values reused unchanged; formatted `credits` string still attached
-    assert out[0]["credits_units"] == 8 and out[0]["credits"] == "2"
-    assert out[1]["credits_units"] == 9 and out[1]["credits"] == "2.25"
+    assert out[0]["credits_units"] == 8 and out[0]["credits"] == "0.4"
+    assert out[1]["credits_units"] == 9 and out[1]["credits"] == "0.45"
 
 
 def test_batches_only_ids_missing_credits_units():
@@ -45,6 +45,16 @@ def test_batches_only_ids_missing_credits_units():
         balances_for.return_value = {2: 9, 3: 10}
         out = _attach_credit_balances(rows)
         balances_for.assert_called_once_with([2, 3])
-    assert out[0]["credits_units"] == 8 and out[0]["credits"] == "2"
-    assert out[1]["credits_units"] == 9 and out[1]["credits"] == "2.25"
-    assert out[2]["credits_units"] == 10 and out[2]["credits"] == "2.5"
+    assert out[0]["credits_units"] == 8 and out[0]["credits"] == "0.4"
+    assert out[1]["credits_units"] == 9 and out[1]["credits"] == "0.45"
+    assert out[2]["credits_units"] == 10 and out[2]["credits"] == "0.5"
+
+
+def main():
+    test_reuses_existing_credits_units_without_requery()
+    test_batches_only_ids_missing_credits_units()
+    print("credit-balance attach tests passed")
+
+
+if __name__ == "__main__":
+    main()
