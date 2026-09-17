@@ -706,6 +706,15 @@ async def _pr_outcome_poller() -> None:
         except Exception:  # domain: degrade-silently - grant sweep is advisory
             pass  # the guild grant sweep must never stall the poller
         try:
+            # Guilds (proposal #525, PR-7): soft-lending housekeeping -
+            # matured match windows settle, past-due debts go delinquent
+            # (repayment stays open), long-unpaid debts seize and
+            # disband, suspended members forfeit. Own connection,
+            # per-guild isolation inside; quiet when idle.
+            db.sweep_guild_lending()
+        except Exception:  # domain: degrade-silently - lending sweep advisory
+            pass  # the guild lending sweep must never stall the poller
+        try:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper
             # takes a conn, and the job sweep just above sets the precedent.
