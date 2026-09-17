@@ -354,18 +354,22 @@ def prepare_guild_commission(
     fees_q: int,
 ) -> dict:
     """Gate a guild-funded post: founder, unlocked roster, pool covers the
-    full escrow + fees, co-sign band recorded. The karma floor is
+    escrow, co-sign band recorded. The karma floor is
     deliberately bypassed (founder authority substitutes); velocity does
-    not apply (escrowed jobs are exempt - only the co-sign record gates)."""
+    not apply (escrowed jobs are exempt - only the co-sign record gates).
+    Guild commissions are fee-free to the pool: the v1 personal legs
+    (job_escrow + job_fee spends from the founder's wallet) do not run on
+    the guild path, and the treasury collects no job_fee on guild posts -
+    only the escrow moves, so only the escrow gates."""
     guild = _require_founder_of(conn, guild_id, agent["id"])
     if guild_spend_locked(conn, guild_id):
         raise ForumError(
             f"guild {guild['name']!r} holds fewer than 2 members -"
             " commissioning is re-locked."
         )
-    total = escrow_q + fees_q
+    total = escrow_q
     if guild_balance(conn, guild_id) < total:
-        raise ForumError("the pool does not cover that escrow plus fees.")
+        raise ForumError("the pool does not cover that escrow.")
     if _needs_cosign(guild_balance(conn, guild_id), total):
         if not _cosign_covering(conn, guild_id, total):
             raise ForumError(
@@ -384,9 +388,13 @@ def settle_guild_commission(
     fees_q: int,
 ) -> None:
     """Fund a posted job from the pool: escrow moves treasury -> escrow
-    bank (the worker's later payout draws it down exactly like v1), fees
-    stay Treasury-parked with a memo, and the commissioned link records
-    the pool's claim (cancel refunds route back here)."""
+    bank (the worker's later payout draws it down exactly like v1), and
+    the commissioned link records the pool's claim (cancel refunds route
+    back here). Guild commissions are fee-free: fees_q is accepted and
+    ignored (the v1 job_fee spend never runs on the guild path, so the
+    treasury collects no job_fee on guild posts) - the lock memo is the
+    single spend, and per-cycle wages + creator legs write no further
+    pool memos."""
     import events
     from db._credits import treasury_to_escrow
 
@@ -401,16 +409,13 @@ def settle_guild_commission(
         # Outflow kind: pool-funded escrow leaves spendable balance at
         # once (velocity-exempt by kind - only withdrawal/invoice/
         # transfer count). The cancel return rides kind 'job' back in.
+        # Accepted-cycle wages draw the already-locked escrow down and
+        # write no memo (the lock is the spend); the suppressed
+        # creator-leg reward creates no funds and writes no memo either.
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
             " note) VALUES (?, 'job_escrow', ?, ?, ?)",
             (guild["id"], escrow_q, founder_id, f"job #{job_id} escrow"),
-        )
-    if fees_q > 0:
-        conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
-            " note) VALUES (?, 'fee', ?, ?, ?)",
-            (guild["id"], fees_q, founder_id, f"job #{job_id} fees"),
         )
     conn.execute(
         "INSERT INTO guild_job_links (job_id, guild_id, role) VALUES (?, ?,"
@@ -547,11 +552,16 @@ def detach_executor_jobs(conn: sqlite3.Connection, guild_id: int, agent_id: int)
     return len(rows)
 
 
-def resolve_guild_jobs_for_disband(conn: sqlite3.Connection, guild_id: int) -> dict:
+def resolve_guild_jobs_for_disband(
+    conn: sqlite3.Connection, guild_id: int, actor_agent_id: int | None = None
+) -> dict:
     """Make a guild safe to dissolve: cancel live commissioned jobs
     (unearned escrow returns pool-parked with a worker ping, mirroring
     cancel_job minus the verdict machinery) and detach taken ones to
-    their executors. Every disband path funnels here first."""
+    their executors. Every disband path funnels here first.
+    actor_agent_id attributes the cancel events: the disbanding founder
+    on the voluntary path, None (system) on succession/no-heir paths -
+    never the worker, who did not cancel."""
     import events
     from notifications import _notify as _ping
 
@@ -559,7 +569,8 @@ def resolve_guild_jobs_for_disband(conn: sqlite3.Connection, guild_id: int) -> d
     detached = 0
     rows = conn.execute(
         "SELECT l.job_id, l.role, j.title, j.worker_agent_id,"
-        " j.payment_quarters, j.total_cycles, j.cycles_done FROM guild_job_links l"
+        " j.payment_quarters, j.total_cycles, j.cycles_done, j.official"
+        " FROM guild_job_links l"
         " JOIN jobs j ON j.id = l.job_id WHERE l.guild_id = ?"
         " AND j.status IN ('open', 'offered', 'active')",
         (guild_id,),
@@ -599,7 +610,7 @@ def resolve_guild_jobs_for_disband(conn: sqlite3.Connection, guild_id: int) -> d
         )
         events.log_event(
             events.EVT_JOB_CANCELLED,
-            actor_agent_id=row["worker_agent_id"],
+            actor_agent_id=actor_agent_id,
             target_type="job",
             target_id=row["job_id"],
             detail={"guild_id": guild_id, "why": "guild disbanding"},
@@ -650,7 +661,7 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
                 "that guild has pool-funded jobs still in flight - cancel"
                 " or finish them before disbanding."
             )
-        resolve_guild_jobs_for_disband(conn, guild_id)
+        resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id=agent["id"])
         balance = guild_balance(conn, guild_id)
         paid: dict[int, int] = {}
         if mode == "zero":
