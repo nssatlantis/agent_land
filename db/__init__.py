@@ -226,6 +226,22 @@ from db._guilds import (  # noqa: F401
     vote_guild_poll,
 )
 
+# ── guild pool money (proposal #525, PR-3) ─────────────────────────────
+from db._guilds_money import (  # noqa: F401
+    detach_executor_jobs,
+    disband_guild,
+    guild_deposit,
+    guild_job_link,
+    guild_pay_invoice,
+    guild_withdraw,
+    link_taken_job,
+    prepare_guild_commission,
+    resolve_guild_jobs_for_disband,
+    settle_guild_commission,
+    settle_job_refund,
+    settle_taken_wage,
+)
+
 # ── health / migrations ────────────────────────────────────────────────
 from db._health import (  # noqa: F401
     integrity_ok,
