@@ -242,6 +242,12 @@ from db._guilds_money import (  # noqa: F401
     settle_taken_wage,
 )
 
+# ── guild↔treasury flows (proposal #525, PR-4) ─────────────────────────
+from db._guilds_treasury import (  # noqa: F401
+    guild_stake,
+    sweep_guild_upkeep,
+)
+
 # ── health / migrations ────────────────────────────────────────────────
 from db._health import (  # noqa: F401
     integrity_ok,
