@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import sqlite3
 
+import logutil
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
 from db._guilds import (
     _age_days,
@@ -277,9 +278,13 @@ def settle_guild_stake_payout(
 ) -> None:
     """Split merged-PR winnings: the opener's ex-ante bonus via the same
     always-settling principal return v1 uses, the pool's share as a memo
-    (treasury already holds it - the conduit lock burned founder-side
-    quarters the pool had funded). Zero bonus pays the pool whole."""
-    from db._credits import return_principal
+    PLUS a matching treasury mint. The mint is load-bearing, not double
+    counting: the conduit lock burned real quarters (v1 spend with no
+    destination), so without it the pool memo would be a claim without
+    backing and later payouts would hit an unfunded treasury. Total mint
+    volume equals v1's (bonus to opener + rest to treasury == full payout
+    to opener). Zero bonus pays the pool whole."""
+    from db._credits import _insert_entry, return_principal
 
     bonus = amount * int(link["opener_bonus_pct"]) // 100
     if bonus > 0:
@@ -293,6 +298,15 @@ def settle_guild_stake_payout(
         )
     rest = amount - bonus
     if rest > 0:
+        _insert_entry(
+            conn,
+            None,
+            "treasury",
+            rest,
+            "guild_stake_winnings",
+            "proposal_stake",
+            link["stake_id"],
+        )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
             " VALUES (?, 'stake', ?, ?)",
@@ -308,7 +322,19 @@ def settle_guild_stake_self(conn: sqlite3.Connection, link: dict, amount: int) -
     """Founder opened a PR on their own guild-backed stake: v1 would
     refund the conduit, enriching the founder with pool money. Redirect
     whole to the pool instead (the founder nets zero across fund, lock,
-    and return - the conduit invariant)."""
+    and return - the conduit invariant), minting the burned lock back to
+    the treasury so the memo stays backed."""
+    from db._credits import _insert_entry
+
+    _insert_entry(
+        conn,
+        None,
+        "treasury",
+        amount,
+        "guild_stake_winnings",
+        "proposal_stake",
+        link["stake_id"],
+    )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
         " VALUES (?, 'stake', ?, 'self-stake return to pool')",
@@ -321,7 +347,19 @@ def settle_guild_stake_refund(
 ) -> None:
     """Declined-PR lock refund: the v1 founder refund is skipped (it
     would enrich the conduit with pool money) and the pool takes a memo
-    instead. Founder nets zero across fund, lock, and this return."""
+    instead - plus the matching treasury mint, or the burned lock would
+    leave the memo unbacked (same conservation as the payout above)."""
+    from db._credits import _insert_entry
+
+    _insert_entry(
+        conn,
+        None,
+        "treasury",
+        amount,
+        "guild_stake_refund",
+        "proposal_stake",
+        link["stake_id"],
+    )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
         " VALUES (?, 'stake', ?, 'stake lock refund to pool')",
@@ -362,6 +400,7 @@ def sweep_guild_upkeep() -> dict:
         "suspended": [],
         "recovered": [],
         "disbanded": [],
+        "skipped": [],
     }
     week = _week_key()
     with _conn(immediate=True) as conn:
@@ -382,11 +421,17 @@ def sweep_guild_upkeep() -> dict:
                     (gid, aid, week),
                 ).fetchone()
                 if has_week is None:
-                    conn.execute(
-                        "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-                        " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
-                        (gid, aid, week),
-                    )
+                    try:
+                        conn.execute(
+                            "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
+                            " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
+                            (gid, aid, week),
+                        )
+                    except sqlite3.IntegrityError:
+                        # domain: degrade-silently - a concurrent sweep won
+                        # the week row for this member; the invoice branch
+                        # below still bills the combined open arrears.
+                        pass
                 if _open_fee_invoice(conn, gid, aid) is None:
                     owing = conn.execute(
                         "SELECT COALESCE(SUM(quarters), 0) FROM guild_fee_arrears"
@@ -473,11 +518,23 @@ def sweep_guild_upkeep() -> dict:
                     )
                     report["suspended"].append(gid)
                 elif _age_days(guild.get("suspended_at")) > 14:
-                    from db._guilds import _disband_distribute
+                    # The sole raising call in this sweep: an unfunded
+                    # disband must skip this guild (retry next tick), never
+                    # roll back every other guild's issuance and sweeps.
+                    try:
+                        from db._guilds import _disband_distribute
 
-                    _disband_distribute(
-                        conn, gid, "upkeep grace lapsed (14d suspended)"
-                    )
+                        _disband_distribute(
+                            conn, gid, "upkeep grace lapsed (14d suspended)"
+                        )
+                    except ForumError:
+                        report["skipped"].append(gid)
+                        logutil.log(
+                            "guild_upkeep_failed",
+                            guild_id=gid,
+                            why="grace-disband-unfunded",
+                        )
+                        continue
                     report["disbanded"].append(gid)
         events.log_event(
             events.EVT_GUILD_UPKEEP_SWEPT,
@@ -524,6 +581,18 @@ def settle_guild_fee_payment(
         detail={"guild_id": link["guild_id"], "quarters": pay_q},
         conn=conn,
     )
+
+
+def _void_open_arrears(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Void member arrears no payout will ever settle. Called on disband
+    paths only: live guilds keep dormant rows (a rejoining debtor still
+    owes - the withhold fires on their next payout). Returns rows voided."""
+    cur = conn.execute(
+        "UPDATE guild_fee_arrears SET status = 'void' WHERE guild_id = ?"
+        " AND status = 'open'",
+        (guild_id,),
+    )
+    return cur.rowcount or 0
 
 
 def _settle_arrears(
