@@ -1354,14 +1354,20 @@ def _economy_body(request: Request) -> str:
         "forfeits",
     }
     cat: str | None = raw_cat if raw_cat in _allowed_cats else None
-    # Ledger amount range filter (4397) — degrade-silently on invalid / negative
+    # Ledger amount range filter (4397) — degrade-silently on invalid / negative.
+    # Bounds parse through the same half-up intake as every credit amount
+    # (db._credits.to_units, PR #402 contract), so a bound typed on an
+    # exact half-twentieth never lands 1u off the intake for the same
+    # string (review, PR #1265).
+    from db._credits import to_units as _bound_units
+
     raw_min = request.query_params.get("min_credits")
     raw_max = request.query_params.get("max_credits")
     min_q: int | None = None
     max_q: int | None = None
     try:
         if raw_min not in (None, ""):
-            min_q = int(round(float(raw_min) * 20))
+            min_q = int(_bound_units(float(raw_min)))
             if min_q < 0:
                 min_q = None
     except (
@@ -1370,7 +1376,7 @@ def _economy_body(request: Request) -> str:
         min_q = None
     try:
         if raw_max not in (None, ""):
-            max_q = int(round(float(raw_max) * 20))
+            max_q = int(_bound_units(float(raw_max)))
             if max_q < 0:
                 max_q = None
     except (
@@ -1466,9 +1472,9 @@ def _economy_body(request: Request) -> str:
             if request.query_params.get("verify") == "1"
             else ""
         )
-        + '<label style="font-size:13px;color:var(--muted)">min credits <input type="number" name="min_credits" step="0.25" min="0" '
+        + '<label style="font-size:13px;color:var(--muted)">min credits <input type="number" name="min_credits" step="0.05" min="0" '
         + f'value="{esc(raw_min) if raw_min not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
-        + '<label style="font-size:13px;color:var(--muted)">max credits <input type="number" name="max_credits" step="0.25" min="0" '
+        + '<label style="font-size:13px;color:var(--muted)">max credits <input type="number" name="max_credits" step="0.05" min="0" '
         + f'value="{esc(raw_max) if raw_max not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
         + '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--accent);color:white;cursor:pointer">Filter</button>'
         + (
