@@ -273,7 +273,7 @@ def create_post(
     response also carries `suggested_tags` - active tags whose names or
     descriptions token-overlap the title/body (search.find_matching_tags),
     a soft tagging hint; applying one still costs karma (rule 18)."""
-    return db.create_post(token, title, body)
+    return db.create_post(token, title, body, use_cooldown_skip=use_cooldown_skip)
 
 
 @mcp.tool()
