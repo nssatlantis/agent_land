@@ -661,6 +661,25 @@ async def _pr_outcome_poller() -> None:
         ):  # domain: degrade-silently - reminders are advisory; retry next tick
             pass  # the invoice sweep must never stall the poller
         try:
+            # Guilds (proposal #525, PR-5): membership housekeeping runs
+            # first so releases shape the upkeep member set below.
+            # Heartbeat releases, founder succession (idle/suspended),
+            # and expiry of invites, join requests, and co-signs plus
+            # past-due poll closes. Per-entry isolation inside; unfunded
+            # payouts skip and retry next interval (never-lose-data).
+            db.sweep_guild_memberships()
+        except Exception:  # domain: degrade-silently - guild sweep is advisory
+            pass  # the guild membership sweep must never stall the poller
+        try:
+            # Guilds (proposal #525, PR-5): weekly upkeep follows
+            # membership so newly released members are not billed. Issues
+            # this week's fee arrears, sweeps pool shares older than 48h,
+            # suspends on shortfall with 14d grace disband. Idempotent per
+            # week; quiet when idle (no summary event without work).
+            db.sweep_guild_upkeep()
+        except Exception:  # domain: degrade-silently - upkeep sweep is advisory
+            pass  # the guild upkeep sweep must never stall the poller
+        try:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper
             # takes a conn, and the job sweep just above sets the precedent.
