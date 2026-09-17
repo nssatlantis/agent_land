@@ -21,6 +21,7 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config
 import server.middleware as mw_mod
 from server.middleware import ClientSeenRecording, RateLimitMiddleware
 
@@ -443,13 +444,93 @@ def test_register_gate_separates_proxied_clients():
     def go():
         mw = ClientSeenRecording(_noop_app())
         results["a1"] = _drive(
-            mw, _proxy_scope("192.168.0.40", "203.0.113.9"), REGISTER_BODY
+            mw, _proxy_scope("127.0.0.1", "203.0.113.9"), REGISTER_BODY
         )
         results["b1"] = _drive(
-            mw, _proxy_scope("192.168.0.40", "198.51.100.8"), REGISTER_BODY
+            mw, _proxy_scope("127.0.0.1", "198.51.100.8"), REGISTER_BODY
         )
         results["a2"] = _drive(
-            mw, _proxy_scope("192.168.0.40", "203.0.113.9"), REGISTER_BODY
+            mw, _proxy_scope("127.0.0.1", "203.0.113.9"), REGISTER_BODY
+        )
+
+    _with_env({_REGISTER_DELAY_ENV: "900"}, go)
+    assert results["a1"]["reached"] is True
+    assert results["b1"]["reached"] is True
+    assert results["a2"]["reached"] is False
+    assert results["a2"]["status"] == 429
+
+
+def _proxy_scope(client_ip: str, xff: str | None) -> dict[str, Any]:
+    scope: dict[str, Any] = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "client": (client_ip, 1),
+    }
+    if xff is not None:
+        scope["headers"] = [(b"x-forwarded-for", xff.encode())]
+    return scope
+
+
+def test_client_ip_trusts_xff_last_entry_from_trusted_proxy():
+    scope = _proxy_scope("127.0.0.1", "10.9.9.9, 203.0.113.9")
+    assert mw_mod._client_ip(scope) == "203.0.113.9"
+
+
+def test_client_ip_trusts_xff_from_forum_host_peer():
+    with mock.patch.object(config, "FORUM_HOST", "10.20.30.40"):
+        scope = _proxy_scope("10.20.30.40", "203.0.113.9")
+        assert mw_mod._client_ip(scope) == "203.0.113.9"
+
+
+def _non_proxy_lan_peer() -> str:
+    taken = {str(config.FORUM_HOST or ""), mw_mod._SELF_LAN_IP or ""}
+    for candidate in ("192.168.1.99", "10.9.9.9", "172.16.9.9"):
+        if candidate not in taken:
+            return candidate
+    assert False, "no non-proxy LAN peer available"
+
+
+def test_client_ip_ignores_xff_from_lan_non_proxy():
+    peer = _non_proxy_lan_peer()
+    scope = _proxy_scope(peer, "203.0.113.9")
+    assert mw_mod._client_ip(scope) == peer
+
+
+def test_self_lan_ip_is_trusted_when_detected():
+    self_ip = mw_mod._SELF_LAN_IP
+    if self_ip is None:
+        return
+    assert mw_mod._trusted_proxy_peer(self_ip) is True
+
+
+def test_client_ip_ignores_xff_from_public_peer():
+    scope = _proxy_scope("198.51.100.7", "203.0.113.9")
+    assert mw_mod._client_ip(scope) == "198.51.100.7"
+
+
+def test_client_ip_malformed_xff_falls_back_to_peer():
+    scope = _proxy_scope("192.168.0.40", "not-an-ip")
+    assert mw_mod._client_ip(scope) == "192.168.0.40"
+
+
+def test_client_ip_no_xff_keeps_peer():
+    assert mw_mod._client_ip(_proxy_scope("192.168.0.40", None)) == "192.168.0.40"
+
+
+def test_register_gate_separates_proxied_clients():
+    results: dict[str, Any] = {}
+
+    def go():
+        mw = ClientSeenRecording(_noop_app())
+        results["a1"] = _drive(
+            mw, _proxy_scope("127.0.0.1", "203.0.113.9"), REGISTER_BODY
+        )
+        results["b1"] = _drive(
+            mw, _proxy_scope("127.0.0.1", "198.51.100.8"), REGISTER_BODY
+        )
+        results["a2"] = _drive(
+            mw, _proxy_scope("127.0.0.1", "203.0.113.9"), REGISTER_BODY
         )
 
     _with_env({_REGISTER_DELAY_ENV: "900"}, go)
@@ -499,4 +580,8 @@ if __name__ == "__main__":
     test_client_ip_malformed_xff_falls_back_to_peer()
     test_client_ip_no_xff_keeps_peer()
     test_register_gate_separates_proxied_clients()
+    test_client_ip_trusts_xff_last_entry_from_trusted_proxy()
+    test_client_ip_trusts_xff_from_forum_host_peer()
+    test_client_ip_ignores_xff_from_lan_non_proxy()
+    test_self_lan_ip_is_trusted_when_detected()
     print("test_middleware: all ok")
