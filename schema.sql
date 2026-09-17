@@ -1864,6 +1864,64 @@ CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild
 CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
     ON guild_grant_links(idea_post_id);
 
+-- Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
+-- requests, payback debts (+ their Treasury invoice links), and deposit-
+-- match windows. All four tables are new, so CREATE TABLE IF NOT EXISTS
+-- is a sufficient upgrade path (same pattern as every guild table above).
+CREATE TABLE IF NOT EXISTS guild_subsidies (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    amount_quarters   INTEGER NOT NULL CHECK (amount_quarters > 0),
+    tier              TEXT NOT NULL CHECK (tier IN ('auto', 'admin')),
+    payback           INTEGER NOT NULL DEFAULT 0 CHECK (payback IN (0, 1)),
+    status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
+        ('requested', 'approved', 'declined', 'paid', 'settled', 'written_off')),
+    idea_post_id      INTEGER REFERENCES posts(id),
+    requested_by      INTEGER NOT NULL REFERENCES agents(id),
+    decided_by        INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_subsidies_guild ON guild_subsidies(guild_id);
+CREATE TABLE IF NOT EXISTS guild_debts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id            INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    subsidy_id          INTEGER REFERENCES guild_subsidies(id) ON DELETE SET NULL,
+    principal_quarters  INTEGER NOT NULL CHECK (principal_quarters > 0),
+    remaining_quarters  INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    status              TEXT NOT NULL DEFAULT 'current'
+        CHECK (status IN ('current', 'overdue', 'settled', 'written_off')),
+    due_at              TEXT NOT NULL,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    settled_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_debts_guild ON guild_debts(guild_id);
+CREATE TABLE IF NOT EXISTS guild_debt_invoices (
+    invoice_id      INTEGER PRIMARY KEY REFERENCES invoices(id) ON DELETE CASCADE,
+    guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    debt_id         INTEGER NOT NULL REFERENCES guild_debts(id) ON DELETE CASCADE,
+    member_agent_id INTEGER NOT NULL REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_debt_invoices_guild
+    ON guild_debt_invoices(guild_id);
+CREATE TABLE IF NOT EXISTS guild_match_windows (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    mode             TEXT NOT NULL CHECK (mode IN ('lump', 'window')),
+    pct              REAL NOT NULL DEFAULT 20.0,
+    days             INTEGER NOT NULL DEFAULT 14,
+    cap_quarters     INTEGER NOT NULL CHECK (cap_quarters > 0),
+    amount_quarters  INTEGER NOT NULL DEFAULT 0 CHECK (amount_quarters >= 0),
+    status           TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'paid', 'expired')),
+    opened_by        INTEGER NOT NULL REFERENCES agents(id),
+    ends_at          TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    settled_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_match_windows_guild
+    ON guild_match_windows(guild_id);
+
 -- Guilds PR-2 (proposal #525, L3 membership/governance/chat): invites,
 -- join requests, co-sign records, chat messages, and the leave log. All
 -- five tables are new, so CREATE TABLE IF NOT EXISTS is a sufficient
