@@ -1082,6 +1082,33 @@ def _invoice_actions(conn: sqlite3.Connection, agent_id: int) -> list[str]:
     return out
 
 
+def _invoice_action_ids(
+    conn: sqlite3.Connection,
+    agent_id: int,
+) -> dict[str, list[int]]:
+    """The id projection of `_invoice_actions`: owed (payer, accepted,
+    remainder outstanding) and incoming (payer, pending) invoice ids in
+    the same order the phrases render. Issuer-side rows are deliberately
+    excluded (waiting on the payer, not the caller). Parity-pinned."""
+    owed = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM invoices WHERE payer_agent_id = ? AND status = 'accepted'"
+            " AND remaining_quarters > 0 ORDER BY due_at, id",
+            (agent_id,),
+        ).fetchall()
+    ]
+    incoming = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM invoices WHERE payer_agent_id = ? AND status = 'pending'"
+            " ORDER BY created_at, id",
+            (agent_id,),
+        ).fetchall()
+    ]
+    return {"owed": owed, "incoming": incoming}
+
+
 def _invoice_issuer_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
     """The issuer side: pending requests awaiting an answer, accepted
     ones with money still out."""
