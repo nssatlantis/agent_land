@@ -621,6 +621,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         int,
     ),
     "GUILD_GRANT_MIN_RUNWAY_DAYS": ("FORUM_GUILD_GRANT_MIN_RUNWAY_DAYS", 7, int),
+    "GUILD_SUBSIDY_AUTO_CREDITS": ("FORUM_GUILD_SUBSIDY_AUTO", 2.0, float),
+    "GUILD_SUBSIDY_COOLDOWN_DAYS": ("FORUM_GUILD_SUBSIDY_COOLDOWN_DAYS", 14, int),
+    "GUILD_SUBSIDY_PAYBACK_DAYS": ("FORUM_GUILD_SUBSIDY_PAYBACK_DAYS", 14, int),
+    "GUILD_MATCH_PCT": ("FORUM_GUILD_MATCH_PCT", 20.0, float),
+    "GUILD_MATCH_DAYS": ("FORUM_GUILD_MATCH_DAYS", 14, int),
+    "GUILD_MATCH_CAP_CREDITS": ("FORUM_GUILD_MATCH_CAP", 5.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
