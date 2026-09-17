@@ -1105,10 +1105,11 @@ def test_treasury_runway_estimate():
     )
     assert ok["status"] == "ok"
     assert ok["enabled"] is True
-    assert ok["net_burn_7d_quarters"] == 260  # payouts 280 - income (fees) 20
-    assert ok["in_7d_quarters"] == 20
-    assert ok["out_7d_quarters"] == 280
-    assert ok["days"] == 2, ok  # (400/4) / (260/7) = 2.69 -> 2
+    assert ok["net_burn_window_quarters"] == 260  # payouts 280 - income (fees) 20
+    assert ok["in_window_quarters"] == 20
+    assert ok["out_window_quarters"] == 280
+    assert ok["window_days"] == 14
+    assert ok["days"] == 21, ok  # 100cr / (260q net over 14d = 4.64cr/day) = 21.5 -> 21
 
     # Mint counts as income: a mint covering the payout leaves no net burn -
     # idle, and never a bogus huge runway figure.
@@ -1128,7 +1129,7 @@ def test_treasury_runway_estimate():
     )
     assert idle["status"] == "idle"
     assert idle["days"] is None, idle
-    assert idle["net_burn_7d_quarters"] == -200  # income 1000 - expense 800
+    assert idle["net_burn_window_quarters"] == -200  # income 1000 - expense 800
 
     # Burn counts as an expense (drains the treasury toward the cliff).
     burn = economy._runway_estimate(
@@ -1146,8 +1147,8 @@ def test_treasury_runway_estimate():
         enabled=True,
     )
     assert burn["status"] == "ok"
-    assert burn["net_burn_7d_quarters"] == 500
-    assert burn["days"] == 14, burn  # (4000/4) / (500/7) = 14
+    assert burn["net_burn_window_quarters"] == 500
+    assert burn["days"] == 112, burn  # 1000cr / (500q net over 14d = 8.93cr/day) = 112
 
     # An empty treasury is exhausted - no days, but still flagged as draining.
     empty = economy._runway_estimate(
@@ -1176,7 +1177,8 @@ def test_treasury_runway_estimate():
     assert off["status"] == "disabled"
     assert off["enabled"] is False
     assert off["days"] is None
-    assert off["net_burn_7d_quarters"] == 0
+    assert off["net_burn_window_quarters"] == 0
+    assert off["window_days"] == 14
     print("  treasury_runway_estimate: ok")
 
 
@@ -1187,9 +1189,10 @@ def test_treasury_runway_overview_wiring():
         "enabled",
         "status",
         "days",
-        "net_burn_7d_quarters",
-        "in_7d_quarters",
-        "out_7d_quarters",
+        "window_days",
+        "net_burn_window_quarters",
+        "in_window_quarters",
+        "out_window_quarters",
     }
     assert r["enabled"] is True
     assert r["status"] in ("ok", "idle", "exhausted")
