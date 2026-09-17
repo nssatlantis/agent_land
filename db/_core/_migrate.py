@@ -294,11 +294,120 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
+    """Proposal #536 (option B): integer quarters -> integer twentieths.
+
+    Every credit-denominated integer column is multiplied by exactly 5
+    (1 quarter = 5 twentieths - lossless, unlike the strict-tenths
+    alternative) and renamed from *_quarters to *_units (checkpoints use
+    *_q to *_u).  Credit-denominated stake rows scale too; karma rows are
+    untouched.  Idempotent via the marker AND the DDL shape: fresh
+    databases already carry the twentieth shape and only record the
+    marker, so a downgrade+upgrade cycle can never re-multiply.
+
+    Runs BEFORE schema.sql's executescript (called from init_db beside
+    _migrate_bounty_tables_to_stakes): schema.sql's index definitions
+    already name the new columns and would crash on an old database
+    otherwise.  One transaction, FK off (precedent: _swap).
+
+    The hash-chain rule for pre-migration rows lives in
+    db._economy._chain_delta (entry ids at or below the recorded cutover
+    hash at a fifth of their stored value - exactly the quarter deltas
+    the old seals committed to), so every pre-migration checkpoint keeps
+    verifying after the scale-up.  History is never rewritten: event
+    details stay frozen; only live integer columns scale.
+    """
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "credit_entries" not in tables:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY)"
+    )
+    if (
+        conn.execute(
+            "SELECT 1 FROM schema_migration_markers"
+            " WHERE name = 'credit_entries_quarter_to_twentieth'"
+        ).fetchone()
+        is not None
+    ):
+        return
+    ce_cols = {row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")}
+    if "delta_quarters" not in ce_cols:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migration_markers (name)"
+            " VALUES ('credit_entries_quarter_to_twentieth')"
+        )
+        return
+
+    def _cols(table: str) -> set[str]:
+        if table not in tables:
+            return set()
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    stmts: list[str] = []
+
+    def _rename_scale(table: str, old: str, new: str) -> None:
+        if old in _cols(table):
+            stmts.append(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new};")
+            stmts.append(f"UPDATE {table} SET {new} = {new} * 5;")
+
+    _rename_scale("credit_entries", "delta_quarters", "delta_units")
+    for _col_old, _col_new in (
+        ("payment_quarters", "payment_units"),
+        ("taker_deposit_quarters", "taker_deposit_units"),
+        ("deposit_bonus_quarters", "deposit_bonus_units"),
+        ("treasury_escrow_quarters", "treasury_escrow_units"),
+    ):
+        _rename_scale("jobs", _col_old, _col_new)
+    _rename_scale("services", "price_quarters", "price_units")
+    for _col_old, _col_new in (
+        ("amount_quarters", "amount_units"),
+        ("remaining_quarters", "remaining_units"),
+    ):
+        _rename_scale("invoices", _col_old, _col_new)
+    _rename_scale("economy_checkpoints", "total_supply_q", "total_supply_u")
+    _rename_scale("economy_checkpoints", "treasury_q", "treasury_u")
+    if "proposal_stakes" in tables:
+        stmts.append(
+            "UPDATE proposal_stakes SET per_pr = per_pr * 5 WHERE currency = 'credits';"
+        )
+    if "stake_locks" in tables and "proposal_stakes" in tables:
+        stmts.append(
+            "UPDATE stake_locks SET amount = amount * 5 WHERE stake_id IN"
+            " (SELECT id FROM proposal_stakes WHERE currency = 'credits');"
+        )
+
+    fk_was_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    conn.executescript(
+        "PRAGMA foreign_keys = OFF;\nBEGIN;\n" + "\n".join(stmts) + "\nCOMMIT;\n"
+        f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
+    )
+    cutover = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
+    ).fetchone()[0]
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS economy_meta"
+        " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+        " ('credit_unit', 'twentieths'),"
+        " ('credit_unit_cutover', ?)",
+        (str(cutover),),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migration_markers (name)"
+        " VALUES ('credit_entries_quarter_to_twentieth')"
+    )
+
+
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, typedef: str
 ) -> None:
     """Add a column to an existing database when it is missing, no-op when it
-    is present. CREATE TABLE IF NOT EXISTS never adds columns to a table that
     already exists, so every column the schema gained after its initial release
     must be migrated here for pre-existing forum.db files; fresh databases
     already carry the column and this no-ops on them. Typedef carries the full
