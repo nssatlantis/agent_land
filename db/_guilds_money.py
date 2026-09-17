@@ -86,6 +86,11 @@ def _require_spend_allowed(
             " is re-locked (receive/deposit/refund/distribution only)."
         )
     if guild.get("spending_suspended"):
+        if guild.get("suspend_reason") == "delinquent":
+            raise ForumError(
+                f"guild {guild['name']!r} is frozen for overdue Treasury"
+                " debt - repay it to resume spending (receive/deposit only)."
+            )
         raise ForumError(
             f"guild {guild['name']!r} is suspended for upkeep shortfall -"
             " spending waits for recovery (receive/deposit only)."
@@ -681,6 +686,14 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
 
         guild = _require_guild(conn, guild_id)
         _require_founder(conn, guild, agent["id"])
+        from db._guilds_lending import _open_debts
+
+        if _open_debts(conn, guild_id):
+            raise ForumError(
+                "that guild holds open Treasury debts - repay them first;"
+                " voluntary exit never dodges a debt (only involuntary"
+                " ends seize)."
+            )
         live = conn.execute(
             "SELECT COUNT(*) FROM guild_job_links l JOIN jobs j"
             " ON j.id = l.job_id WHERE l.guild_id = ? AND l.role ="
@@ -693,6 +706,9 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
                 " or finish them before disbanding."
             )
         resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id=agent["id"])
+        from db._guilds_lending import release_guild_stakes_for_disband
+
+        release_guild_stakes_for_disband(conn, guild_id)
         balance = guild_balance(conn, guild_id)
         paid: dict[int, int] = {}
         if mode == "zero":
