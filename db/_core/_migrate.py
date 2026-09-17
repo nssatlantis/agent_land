@@ -294,6 +294,36 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _backfill_unit_cutover(conn: sqlite3.Connection) -> None:
+    """Record the ledger's unit cutover (proposal #536) when missing.
+
+    Idempotent best-effort heal for the marker-set-but-cutover-less
+    state, which only a crash between separate-commit writes can
+    produce (the current migration commits scale + meta + marker
+    atomically). Sound because a crashed init_db never serves traffic:
+    no native row can postdate the true boundary, so MAX(id) still
+    equals it. Never called for native-born databases, whose missing
+    cutover correctly reads as 0 (rule disabled).
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS economy_meta"
+        " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    _has_cutover = conn.execute(
+        "SELECT 1 FROM economy_meta WHERE key = 'credit_unit_cutover'"
+    ).fetchone()
+    if _has_cutover is None:
+        _cut = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('credit_unit', 'twentieths'),"
+            " ('credit_unit_cutover', ?)",
+            (str(_cut),),
+        )
+
+
 def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
     """Proposal #536 (option B): integer quarters -> integer twentieths.
 
@@ -333,9 +363,22 @@ def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
         ).fetchone()
         is not None
     ):
+        # Migrated before. Heal a missing cutover best-effort: the only
+        # way to arrive marker-set-but-cutover-less is a crash between
+        # separate-commit writes (the current code commits scale + meta
+        # + marker atomically, so this is unreachable for it), and a
+        # crashed init_db never serves traffic - so MAX(id) still equals
+        # the true boundary. The backfill is idempotent (review, PR #1265).
+        _backfill_unit_cutover(conn)
         return
     ce_cols = {row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")}
     if "delta_quarters" not in ce_cols:
+        # Shape-new without migrating: a native-born database (fresh
+        # schema, all rows twentieths). The cutover stays absent, which
+        # reads as 0 and disables the //5 rule - exactly right, since no
+        # row here predates the unit. (A crash inside the single-txn
+        # migration below rolls back to shape-old and retries the full
+        # migration, so crash recovery never lands here.)
         conn.execute(
             "INSERT OR IGNORE INTO schema_migration_markers (name)"
             " VALUES ('credit_entries_quarter_to_twentieth')"
@@ -381,26 +424,24 @@ def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
         )
 
     fk_was_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
-    conn.executescript(
-        "PRAGMA foreign_keys = OFF;\nBEGIN;\n" + "\n".join(stmts) + "\nCOMMIT;\n"
-        f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
-    )
-    cutover = conn.execute(
-        "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
-    ).fetchone()[0]
+    # One transaction for scale + cutover + marker: a crash between
+    # separate autocommits would leave shape-new rows with no marker and
+    # no cutover (review, PR #1265). The cutover read runs inside the
+    # same transaction (ids are immutable, so MAX(id) is stable here).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS economy_meta"
         " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
     )
-    conn.execute(
+    conn.executescript(
+        "PRAGMA foreign_keys = OFF;\nBEGIN;\n" + "\n".join(stmts) + "\n"
         "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
         " ('credit_unit', 'twentieths'),"
-        " ('credit_unit_cutover', ?)",
-        (str(cutover),),
-    )
-    conn.execute(
+        " ('credit_unit_cutover',"
+        "  (SELECT COALESCE(MAX(id), 0) FROM credit_entries));\n"
         "INSERT OR IGNORE INTO schema_migration_markers (name)"
-        " VALUES ('credit_entries_quarter_to_twentieth')"
+        " VALUES ('credit_entries_quarter_to_twentieth');\n"
+        "COMMIT;\n"
+        f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
     )
 
 
