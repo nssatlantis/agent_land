@@ -49,7 +49,7 @@ def _job_row(jid):
         return conn.execute(
             "SELECT status, creator_agent_id, official, payment_quarters,"
             " taker_deposit_quarters, treasury_escrow_quarters,"
-            " worker_agent_id FROM jobs WHERE id = ?",
+            " auto_pay_on_merge, worker_agent_id FROM jobs WHERE id = ?",
             (jid,),
         ).fetchone()
 
@@ -110,7 +110,8 @@ def test_spawn_once_per_confirmed_original():
     assert jid is not None and jid in result["posted"], result
     job = _job_row(jid)
     assert job["official"] == 1
-    assert job["creator_agent_id"] == AGENTS["beta"]["agent_id"]
+    assert job["creator_agent_id"] is None, "bounties are system-owned"
+    assert job["auto_pay_on_merge"] == 1, "bounties pay out on merge"
     assert job["payment_quarters"] == 1, "0.25cr wage is 1 quarter"
     assert job["taker_deposit_quarters"] == 0, "bounty deposit is deliberately 0"
     assert job["status"] == "open"
@@ -149,19 +150,37 @@ def test_open_bug_gets_nothing():
     print("  open_bug_gets_nothing: ok")
 
 
-def test_reporter_judges_full_cycle():
+def test_system_pays_worker_reporter_flat():
+    """Full bounty cycle under merge-payout: the worker is paid on merge,
+    the reporter (zero duties, no creator leg) earns nothing here - only
+    the +1 fix karma when the bug itself is fixed."""
+    from unittest import mock
+
     bid = _confirm_bug()
     result = db.sweep_bug_bounties()
     jid = _bug_row(bid)["bounty_job_id"]
     assert jid is not None and jid in result["posted"], result
+    rep_before = _bal(AGENTS["beta"]["agent_id"])
     before = _bal(AGENTS["delta"]["agent_id"])
     db.claim_job(AGENTS["delta"]["token"], jid)
-    db.submit_job(AGENTS["delta"]["token"], jid, "#P1")
-    out = db.review_job(AGENTS["beta"]["token"], jid, "accept")
-    assert out["cycles_done"] == 1
-    assert out["status"] == "completed"
+    _, pr = _fix_chain(bid, claimer="delta")
+    with mock.patch("github.add_pr_label") as lab:
+        db.submit_job(AGENTS["delta"]["token"], jid, f"#PR{pr}")
+        assert lab.call_count == 0, "bounty submits land no hold labels"
+    import db._jobs_ops._auto as _auto
+
+    with mock.patch.object(_auto, "_all_prs_merged", return_value=True):
+        out = db.auto_accept_jobs_for_merged_pr(pr)
+    assert out["accepted"] == [jid], out
+    assert db.get_job(jid)["status"] == "completed"
     assert _bal(AGENTS["delta"]["agent_id"]) == before + 2, "wage 1q + reward 1q"
-    print("  reporter_judges_full_cycle: ok")
+    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before, (
+        "reporter earns no bounty pay"
+    )
+    with db._conn() as conn:
+        rep_parts = db._karma_parts(conn, AGENTS["beta"]["agent_id"])
+    assert rep_parts["job_rewards"] == 0, "void creator leg pays nobody"
+    print("  system_pays_worker_reporter_flat: ok")
 
 
 def test_bounty_deposit_is_zero():
@@ -243,6 +262,40 @@ def test_autofix_via_proposal_link():
     assert result["cancelled"] == [jid], result
     assert _bug_row(bid)["status"] == "fixed"
     print("  autofix_via_proposal_link: ok")
+
+
+def test_unlinked_evidence_no_pay():
+    """An evidence PR that resolves to neither the bug (no fix_pr
+    pointer, no #B proposal cite) pays nothing - otherwise an
+    unrelated merged PR could drain the bounty and orphan the bug
+    (bounty_job_id stays stamped, sweep never reposts)."""
+    from unittest import mock
+
+    bid = _confirm_bug()
+    result = db.sweep_bug_bounties()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result["posted"], result
+    db.claim_job(AGENTS["delta"]["token"], jid)
+    prop = db.create_proposal(
+        AGENTS["delta"]["token"],
+        f"Bounty unrelated {_counter[0]}",
+        "fixes something else entirely",
+        small_fix=True,
+    )
+    pid = prop["post_id"]
+    pr = 93500 + pid
+    db.link_pr_to_proposal(pr, pid, AGENTS["delta"]["agent_id"])
+    before = _bal(AGENTS["delta"]["agent_id"])
+    db.submit_job(AGENTS["delta"]["token"], jid, f"#PR{pr}")
+    import db._jobs_ops._auto as _auto
+
+    with mock.patch.object(_auto, "_all_prs_merged", return_value=True):
+        out = db.auto_accept_jobs_for_merged_pr(pr)
+    assert out["accepted"] == [], out
+    assert out["skipped"].get("unlinked_evidence", 0) == 1, out
+    assert _bug_row(bid)["status"] == "confirmed"
+    assert _bal(AGENTS["delta"]["agent_id"]) == before
+    print("  unlinked_evidence_no_pay: ok")
 
 
 def test_worker_in_flight_stays():
@@ -361,10 +414,11 @@ if __name__ == "__main__":
     test_spawn_once_per_confirmed_original()
     test_dup_retired_gets_no_bounty()
     test_open_bug_gets_nothing()
-    test_reporter_judges_full_cycle()
+    test_system_pays_worker_reporter_flat()
     test_bounty_deposit_is_zero()
     test_autofix_via_fix_pr()
     test_autofix_via_proposal_link()
+    test_unlinked_evidence_no_pay()
     test_worker_in_flight_stays()
     test_live_cap_pause_and_permit()
     test_weekly_cap_binds()

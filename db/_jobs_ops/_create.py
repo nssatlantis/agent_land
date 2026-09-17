@@ -193,6 +193,7 @@ def _insert_job_with_steps(
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: int = 0,
+    auto_pay_on_merge: int = 0,
 ) -> int:
     """Shared row insertion so both creators write identical shapes. The
     service linkage rides the same INSERT (and commit) as the escrow -
@@ -202,8 +203,8 @@ def _insert_job_with_steps(
         " title, description, scope, kind, cycle_every_days,"
         " payment_quarters, total_cycles, official, taker_deposit_quarters,"
         " treasury_escrow_quarters, service_id, service_terms,"
-        " long_running, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " long_running, auto_pay_on_merge, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id,
             offered_to_id,
@@ -220,6 +221,7 @@ def _insert_job_with_steps(
             service_id,
             service_terms,
             long_running,
+            auto_pay_on_merge,
             "offered" if offered_to_id is not None else "open",
         ),
     )

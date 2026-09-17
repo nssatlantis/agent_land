@@ -209,6 +209,9 @@ def _process_closed_pr(pr: dict) -> None:
         # connections - these helpers must never run inside a held
         # write txn). Never raises: races record and continue.
         db._bounty.auto_fix_bugs_for_merged_pr(pr["number"], proposal_post_id)
+        # Merge-payout (proposal #520): system-owned job cycles whose
+        # evidence just fully merged settle in the same slot.
+        db.auto_accept_jobs_for_merged_pr(pr["number"])
     with db._conn() as conn:
         if proposal_post_id:
             status = (

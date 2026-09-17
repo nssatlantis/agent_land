@@ -1430,8 +1430,19 @@ def test_activity_trend_caches_events_window():
         calls["n"] += 1
         return real_qe(since=since, limit=limit)
 
+    import time as _time_mod
+    from unittest import mock
+
+    # Freeze the bucket clock for the pin: the cache key is a 60s
+    # monotonic window, and a boundary straddle under CI load flakes an
+    # otherwise-correct cache (red twice in CI, 16/16 green locally).
+    # Frozen time keeps the pin's meaning - one scan per window.
+    _frozen = mock.patch.object(
+        pulse_mod.time, "monotonic", return_value=_time_mod.monotonic()
+    )
     pulse_mod.query_events = counting_qe
     pulse_mod._trend_cache = None
+    _frozen.start()
     try:
         pulse_mod._activity_trend()
         first = calls["n"]
@@ -1448,6 +1459,7 @@ def test_activity_trend_caches_events_window():
             "single-entry tuple cache: (bucket, rows), never a growing dict"
         )
     finally:
+        _frozen.stop()
         pulse_mod.query_events = real_qe
         pulse_mod._trend_cache = None
 
