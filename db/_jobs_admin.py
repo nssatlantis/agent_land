@@ -240,7 +240,7 @@ def cancel_job(token: str, job_id: int) -> dict:
                 conn=conn,
             )
         treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
         if treasury_remaining > 0:
             from db._credits import escrow_to_treasury
@@ -253,7 +253,7 @@ def cancel_job(token: str, job_id: int) -> dict:
                 conn=conn,
             )
             conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
                 (job["id"],),
             )
         _return_bonus_pool_to_treasury(conn, job)
@@ -270,7 +270,7 @@ def cancel_job(token: str, job_id: int) -> dict:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
-                "refunded_quarters": remaining,
+                "refunded_units": remaining,
                 "worker_agent_id": job["worker_agent_id"],
             },
             conn=conn,
@@ -332,7 +332,7 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
                 conn=conn,
             )
         treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
         if treasury_remaining > 0:
             from db._credits import escrow_to_treasury
@@ -345,7 +345,7 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
                 conn=conn,
             )
             conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
                 (job["id"],),
             )
         _return_bonus_pool_to_treasury(conn, job)
@@ -361,8 +361,8 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
-                "refunded_quarters": remaining,
-                "treasury_refunded_quarters": treasury_remaining,
+                "refunded_units": remaining,
+                "treasury_refunded_units": treasury_remaining,
                 "worker_agent_id": job["worker_agent_id"],
                 "reason": "admin_moderation",
                 "admin": admin,
@@ -420,7 +420,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
                 conn=conn,
             )
         treasury_remaining = (
-            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
         if treasury_remaining > 0:
             from db._credits import escrow_to_treasury
@@ -433,7 +433,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
                 conn=conn,
             )
             conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
                 (job["id"],),
             )
         _return_bonus_pool_to_treasury(conn, job)
@@ -449,7 +449,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
-                "refunded_quarters": remaining,
+                "refunded_units": remaining,
                 "reason": "creator_deleted",
             },
             conn=conn,
@@ -529,7 +529,7 @@ def _return_bonus_pool_to_treasury(conn, job) -> None:
     sits in the escrow account) back to the treasury. Without this the
     pool's holding would inflate the escrow figure forever after the job
     ends."""
-    pool = int(job["deposit_bonus_quarters"] or 0)
+    pool = int(job["deposit_bonus_units"] or 0)
     if pool > 0:
         from db._credits import escrow_to_treasury
 
@@ -541,7 +541,7 @@ def _return_bonus_pool_to_treasury(conn, job) -> None:
             conn=conn,
         )
         conn.execute(
-            "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
+            "UPDATE jobs SET deposit_bonus_units = 0 WHERE id = ?",
             (job["id"],),
         )
 
@@ -576,10 +576,10 @@ def admin_reactivate_job(admin: str, job_id: int) -> dict:
             )
         if int(job["cycles_done"]) >= int(job["total_cycles"]):
             raise ForumError(f"job #{job_id} has no cycles left to re-activate.")
-        remaining_q = int(job["payment_quarters"]) * (
+        remaining_q = int(job["payment_units"]) * (
             int(job["total_cycles"]) - int(job["cycles_done"])
         )
-        prior_held = int(job["treasury_escrow_quarters"] or 0)
+        prior_held = int(job["treasury_escrow_units"] or 0)
         if prior_held > 0:
             raise ForumError(
                 f"job #{job['id']} still holds {_fmt_q(prior_held)} of"
@@ -611,7 +611,7 @@ def admin_reactivate_job(admin: str, job_id: int) -> dict:
         )
         conn.execute(
             "UPDATE jobs SET status = ?, decided_at = NULL,"
-            " treasury_escrow_quarters = ? WHERE id = ?",
+            " treasury_escrow_units = ? WHERE id = ?",
             (new_status, remaining_q, job["id"]),
         )
         log_event(
@@ -622,7 +622,7 @@ def admin_reactivate_job(admin: str, job_id: int) -> dict:
             target_id=job["id"],
             detail={
                 "title": job["title"],
-                "payment_credits": _fmt_q(int(job["payment_quarters"])),
+                "payment_credits": _fmt_q(int(job["payment_units"])),
                 "remaining_cycles": int(job["total_cycles"]) - int(job["cycles_done"]),
                 "worker_agent_id": job["worker_agent_id"],
                 "official": True,
@@ -743,8 +743,8 @@ def sweep_expired_jobs() -> int:
     with _conn(immediate=True) as conn:
         stale = conn.execute(
             "SELECT id, creator_agent_id, title, total_cycles, cycles_done,"
-            " official, payment_quarters, treasury_escrow_quarters,"
-            " deposit_bonus_quarters FROM jobs"
+            " official, payment_units, treasury_escrow_units,"
+            " deposit_bonus_units FROM jobs"
             " WHERE status IN ('open', 'offered')"
             " AND official = 0 AND created_at <= ?",
             (cutoff,),
@@ -763,7 +763,7 @@ def sweep_expired_jobs() -> int:
                     conn=conn,
                 )
             treasury_remaining = (
-                int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+                int(job["treasury_escrow_units"] or 0) if job["official"] else 0
             )
             if treasury_remaining > 0:
                 from db._credits import escrow_to_treasury
@@ -776,7 +776,7 @@ def sweep_expired_jobs() -> int:
                     conn=conn,
                 )
                 conn.execute(
-                    "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                    "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
                     (job["id"],),
                 )
             _return_bonus_pool_to_treasury(conn, job)
@@ -791,7 +791,7 @@ def sweep_expired_jobs() -> int:
                 detail={
                     "title": job["title"],
                     "refunded_credits": _fmt_q(remaining),
-                    "refunded_quarters": remaining,
+                    "refunded_units": remaining,
                 },
                 conn=conn,
             )
@@ -1107,7 +1107,7 @@ def _release_overdue_job(
             conn=conn,
         )
     treasury_remaining = (
-        int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        int(job["treasury_escrow_units"] or 0) if job["official"] else 0
     )
     if treasury_remaining > 0:
         from db._credits import escrow_to_treasury
@@ -1120,7 +1120,7 @@ def _release_overdue_job(
             conn=conn,
         )
         conn.execute(
-            "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+            "UPDATE jobs SET treasury_escrow_units = 0 WHERE id = ?",
             (job_id,),
         )
     _return_bonus_pool_to_treasury(conn, job)
@@ -1150,7 +1150,7 @@ def _release_overdue_job(
             "cycle_no": cycle_no,
             "windows_overdue": windows,
             "refunded_credits": _fmt_q(remaining),
-            "refunded_quarters": remaining,
+            "refunded_units": remaining,
             "penalty_karma": -penalty,
             "worker_agent_id": worker_id,
         },
