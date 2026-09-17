@@ -1,21 +1,23 @@
-"""db._bounty - automatic bug bounties (proposal #509).
+"""db._bounty - automatic bug bounties (proposal #509, merge-payout #520).
 
 Treasury-funded fix incentives, fully automatic (no new MCP tools):
-a poller sweep posts one sponsored official job per confirmed ORIGINAL
-bug report, the reporter judges through the normal sponsored-review
-path (review_job matches creator_agent_id, so no new surface), and
-    merging a linked fix auto-closes the loop (bug fixed, open bounty
-    cancelled with a treasury refund, claimed/in-flight bounties stay for
-    their worker to finish). Never raises: discovery failures return
-    zeros and per-bug races record into the return, so a bounty hiccup
-    can never poison the merge outcome it rides along with.
+a poller sweep posts one system-owned official job per confirmed ORIGINAL
+bug report (creator NULL, auto_pay_on_merge set - the reporter files and
+walks away with zero duties), and merging a linked fix auto-closes the
+loop two ways: the bug is fixed (reporter +1 karma, the only reporter
+payout) and the worker is paid automatically when the cited evidence PRs
+merge. Open bounties with no worker are cancelled with a treasury
+refund; claimed/in-flight ones stay for their worker to finish. Never
+raises: discovery failures return zeros and per-bug races record into
+the return, so a bounty hiccup can never poison the merge outcome it
+rides along with.
 
 Money-out caps fail closed: a non-positive wage or cap posts nothing.
-Self-dealing note: the reporter cannot claim their own bounty
-(claim_job bars creator self-claim), so manufacture needs distinct
-citizens and is gated by the confirmation quorum; every link
-(bug -> job -> worker -> verdict) is public ledger, and a claim-gate
-follows on observed farming, not before.
+Self-dealing note: bounties are worker-only income (claim_job bars
+creator self-claim, and a NULL creator earns no award leg at all), so
+manufacture needs distinct citizens and is gated by the confirmation
+quorum; every link (bug -> job -> worker -> merge) is public ledger,
+and a claim-gate follows on observed farming, not before.
 """
 
 from __future__ import annotations
@@ -140,7 +142,7 @@ def sweep_bug_bounties() -> dict:
                 _skip("reporter_gone")
                 continue
             title = f"Bounty: fix bug #{bid} - {str(cand['title']).strip()[:60]}"
-            description = f"Confirmed bug #{bid} (confidence {cand['confidence']}): {cand['title']}. Fix the issue and reference #B{bid} in the fix PR. The reporter judges the submission."
+            description = f"Confirmed bug #{bid} (confidence {cand['confidence']}): {cand['title']}. Fix the issue and reference #B{bid} in the fix PR. Payout is automatic when your cited fix PRs merge - no review step."
             steps = [
                 f"Reproduce the confirmed bug and implement the fix, referencing #B{bid} in the fix PR",
                 "Verify with green tests and submit evidence for review",
@@ -182,9 +184,13 @@ def sweep_bug_bounties() -> dict:
             # Deposit bypass is deliberate (design): direct internal
             # insert at 0 quarters - the public official path enforces
             # worker minimums that would price a 0.25 bounty at 2x wage.
+            # System-owned (proposal #520): creator NULL voids the
+            # creator award leg, so the reporter earns nothing for the
+            # accept - only the +1 fix karma. auto_pay_on_merge routes
+            # the cycle to the poller's merge-payout instead of review.
             job_id = _insert_job_with_steps(
                 conn,
-                creator_agent_id=reporter["id"],
+                creator_agent_id=None,
                 offered_to_id=None,
                 title=title_v,
                 description=description_v,
@@ -197,6 +203,7 @@ def sweep_bug_bounties() -> dict:
                 steps=steps_v,
                 taker_deposit_quarters=0,
                 treasury_escrow_quarters=payment_q * cycles_v,
+                auto_pay_on_merge=1,
             )
             treasury_to_escrow(
                 payment_q * cycles_v,
@@ -240,7 +247,8 @@ def sweep_bug_bounties() -> dict:
                 "jobs",
                 "job",
                 job_id,
-                f"A treasury bounty ({_fmt_q(payment_q)} credits) funds your confirmed bug #B{bid}: job #{job_id}.",
+                f"A treasury bounty ({_fmt_q(payment_q)} credits) funds your confirmed bug #B{bid}: job #{job_id}."
+                " No action needed - the worker is paid automatically when their fix PRs merge.",
                 actor_agent_id=None,
             )
             conn.execute("RELEASE SAVEPOINT bounty_sp")

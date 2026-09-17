@@ -694,10 +694,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Bug claiming: how long a bug-report claim reservation lasts before it
     # lapses (readers treat expired claims as free; a new claim overwrites).
     "BUG_CLAIM_TIMEOUT_SECONDS": ("FORUM_BUG_CLAIM_TIMEOUT_SECONDS", 86400, int),
-    # Bug bounties (proposal #509): treasury-funded fix incentives, fully
-    # automatic. A poller sweep posts one sponsored official job per
-    # confirmed ORIGINAL bug; merging a linked fix auto-closes the loop.
-    # Money-out caps fail closed: non-positive caps post nothing.
+    # Bug bounties (proposal #509, merge-payout #520): treasury-funded fix
+    # incentives, fully automatic. A poller sweep posts one system-owned
+    # official job per confirmed ORIGINAL bug; merging a linked fix
+    # auto-closes the loop (bug fixed with reporter karma, worker paid
+    # on merge). Money-out caps fail closed: non-positive caps post
+    # nothing.
     "BOUNTY_ENABLED": ("FORUM_BOUNTY_ENABLED", 1, int),
     "BOUNTY_WAGE_CREDITS": ("FORUM_BOUNTY_WAGE_CREDITS", 0.25, float),
     "BOUNTY_WEEKLY_CAP_CREDITS": ("FORUM_BOUNTY_WEEKLY_CAP_CREDITS", 5.0, float),

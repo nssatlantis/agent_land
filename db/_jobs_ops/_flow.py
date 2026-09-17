@@ -297,10 +297,15 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             (job["id"], cycle_no),
         ).fetchone()
         if cycle is not None and cycle["status"] == "submitted":
-            raise ForumError(
-                f"cycle {cycle_no} is already submitted - waiting on the "
-                "creator's review_job() verdict."
-            )
+            if not job["auto_pay_on_merge"]:
+                raise ForumError(
+                    f"cycle {cycle_no} is already submitted - waiting on the "
+                    "creator's review_job() verdict."
+                )
+            # System-owned jobs re-submit freely (evidence swap): the
+            # settle-time re-reads make the row the source of truth, so a
+            # worker recovers from dead evidence without an admin. Falls
+            # through to the upsert below, which replaces the evidence.
         if cycle is not None and cycle["opens_at"] and cycle["opens_at"] > _now_iso():
             raise ForumError(
                 f"cycle {cycle_no} opens at {cycle['opens_at']} and is not "
@@ -359,7 +364,9 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
     # call per evidence PR and must never hold the forum-wide write lock.
     # (The SHAs above were already resolved pre-transaction for the same
     # reason.) A labeling failure never fails the submission itself.
-    if pr_numbers:
+    # Merge-payout jobs (proposal #520) skip the hold entirely: PR
+    # governance is their only gate, and the poller pays out on merge.
+    if pr_numbers and not job["auto_pay_on_merge"]:
         try:
             for prn in pr_numbers:
                 try:
@@ -387,8 +394,17 @@ def _award_cycle_karma(
     if amount == 0 and credit_q == 0:
         return 0
     granted_q = 0
+    auto_paid = (
+        bool(job["auto_pay_on_merge"]) if "auto_pay_on_merge" in job.keys() else False
+    )
     for role, aid in (("worker", worker_id), ("creator", job["creator_agent_id"])):
         if aid is None:
+            continue
+        if role == "creator" and auto_paid:
+            # Merge-payout cycles (proposal #520) award no creator leg:
+            # nobody verdicts them, so nobody earns the reviewer share.
+            # Flagged jobs are creatorless in prod; this voids the leg
+            # even if both were ever set at once.
             continue
         if amount > 0:
             cur = conn.execute(

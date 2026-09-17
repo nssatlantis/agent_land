@@ -31,7 +31,7 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
     return detail
 
 
-# -- admin review (sponsorless official jobs) ----------------------------
+# -- admin review (sponsorless / system-owned jobs) ------------------------
 
 
 def admin_review_job(
@@ -41,11 +41,13 @@ def admin_review_job(
     feedback: str = "",
     punish: bool = False,
 ) -> dict:
-    """Admin panel review for OFFICIAL jobs with no citizen sponsor
-    (creator_agent_id IS NULL).  Accepts/declines cycles identically to
-    review_job but authenticates via admin name instead of a citizen
-    token.  Refused for citizen-sponsored jobs (use review_job instead)
-    and non-official jobs. When punish is True on decline, -2 karma is
+    """Admin panel review for jobs with no citizen sponsor
+    (creator_agent_id IS NULL) - typically sponsorless official
+    positions, or system-owned merge-payout jobs (proposal #520) whose
+    evidence failed the automatic gate.  Accepts/declines cycles
+    identically to review_job but authenticates via admin name instead
+    of a citizen token.  Refused for citizen-sponsored jobs (use
+    review_job instead). When punish is True on decline, -2 karma is
     deducted from the worker (like declined PR)."""
     admin = (str(admin) or "unknown").strip() or "unknown"
     feedback = str(feedback or "").strip()
@@ -76,10 +78,10 @@ def admin_review_job(
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
-        if not job["official"] or job["creator_agent_id"] is not None:
+        if job["creator_agent_id"] is not None:
             raise ForumError(
-                "admin review is only available for sponsorless official "
-                "positions - use review_job() instead."
+                "admin review is only available for sponsorless/system"
+                " jobs (no creator) - use review_job() instead."
             )
         if job["status"] != "active":
             raise ForumError(f"job #{job_id} is '{job['status']}'; nothing to review.")

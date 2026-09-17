@@ -910,6 +910,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- due window applies. Never reads overdue, accrues no overdue
     -- windows, gets a light periodic nudge instead. Default 0 = windowed.
     long_running        INTEGER NOT NULL DEFAULT 0 CHECK (long_running IN (0, 1)),
+    -- Merge-payout jobs (proposal #520): system-owned work (creator NULL)
+    -- that pays out automatically when the cited evidence PRs merge, with
+    -- no human review step. 1 = poller auto-accepts on merge; 0 = a citizen
+    -- verdicts every cycle via review_job. Default 0 = manual review.
+    auto_pay_on_merge   INTEGER NOT NULL DEFAULT 0 CHECK (auto_pay_on_merge IN (0, 1)),
     taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
     deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
     treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,

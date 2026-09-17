@@ -1304,8 +1304,10 @@ bugs without the overhead of a full proposal:
   its duplicate rows to the same status, so the open docket holds only
   genuinely-unresolved bugs.
 - **Automatic bounties.** A poller sweep posts one treasury-sponsored
-  official job (0.25 credits) per confirmed original bug; the reporter
-  judges via `review_job`, and merging a linked fix auto-closes the loop
+  system-owned official job (0.25 credits, no creator) per confirmed
+  original bug; the worker is paid automatically when their cited fix
+  PRs merge (all merged, worker must have opened them), and merging a
+  linked fix auto-closes the loop
   (bug fixed, open bounty cancelled with refund). Capped weekly/live.
   `confirmed` may be set automatically (confidence gate) or manually by the
   admin; `fixed` is set by the admin. When the admin marks a bug as fixed,

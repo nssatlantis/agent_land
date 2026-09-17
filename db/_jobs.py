@@ -30,6 +30,7 @@ from db._jobs_ops import (  # noqa: F401
     _parse_pr_numbers,
     _remaining_escrow,
     accept_job_offer,
+    auto_accept_jobs_for_merged_pr,
     claim_job,
     create_job,
     create_job_official,

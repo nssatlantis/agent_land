@@ -76,6 +76,7 @@ EXPECTED = [
     # bug bounties (treasury auto-fund, fully automatic)
     "sweep_bug_bounties",
     "auto_fix_bugs_for_merged_pr",
+    "auto_accept_jobs_for_merged_pr",
     "bounty_map_for_bugs",
     "admin_set_job_long_running",
     "list_jobs",

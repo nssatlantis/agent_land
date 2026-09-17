@@ -3,7 +3,8 @@
 Package (split verbatim from db/_jobs_ops.py): _helpers holds evidence
 parsing, overdue math and formatting; _detail the detail assembly;
 _create the intake and creation; _board the listing; _flow claiming,
-worker ops and review. Shared by citizen and official paths; the
+worker ops and review; _auto the poller's merge-payout for system-owned
+jobs. Shared by citizen and official paths; the
 admin-only review variants and cancellation/sweep logic live in
 db._jobs_admin. The public facade is db._jobs which re-exports from
 both. This facade re-exports every name the old module exposed so all
@@ -13,6 +14,7 @@ unchanged.
 
 from __future__ import annotations
 
+from ._auto import auto_accept_jobs_for_merged_pr  # noqa: F401
 from ._board import (  # noqa: F401
     _JOB_VIEWS,
     _board_total_cached,
