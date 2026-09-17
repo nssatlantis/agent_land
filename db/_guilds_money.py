@@ -268,6 +268,16 @@ def guild_pay_invoice(
             )
         if inv["remaining_quarters"] <= 0:
             raise ForumError(f"invoice #{inv['id']} is already settled.")
+        fee_link = conn.execute(
+            "SELECT 1 FROM guild_fee_invoices WHERE invoice_id = ?",
+            (inv["id"],),
+        ).fetchone()
+        if fee_link is not None:
+            raise ForumError(
+                f"invoice #{inv['id']} is a guild upkeep bill - it settles"
+                " personally via pay_invoice so the member's arrears clear;"
+                " the pool never pays upkeep for anyone."
+            )
         guild_id = _founder_guild_for(conn, agent["id"])
         from db._guilds import _require_guild
 
@@ -778,6 +788,9 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
             (gid, share, aid),
         )
         paid[aid] = net - fee_q
+    from db._guilds_treasury import _void_open_arrears
+
+    _void_open_arrears(conn, gid)
     remainder = guild_balance(conn, gid)
     if remainder > 0:
         conn.execute(
