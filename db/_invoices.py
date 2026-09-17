@@ -826,7 +826,11 @@ def pay_invoice(
             from db._guilds_treasury import settle_guild_fee_payment
 
             settle_guild_fee_payment(conn, dict(fee_link), payer["id"], pay_q)
-            receipt = {"fee_credits": format_credits(0), "guild_pool": True}
+            receipt = {
+                "fee_credits": format_credits(0),
+                "fee_quarters": 0,
+                "guild_pool": True,
+            }
         else:
             receipt = transfer_credits(
                 payer["id"],
