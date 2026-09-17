@@ -419,7 +419,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill', 'guild')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1833,3 +1833,80 @@ CREATE TABLE IF NOT EXISTS guild_designations (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_designations_guild
     ON guild_designations(guild_id);
+
+-- Guilds PR-2 (proposal #525, L3 membership/governance/chat): invites,
+-- join requests, co-sign records, chat messages, and the leave log. All
+-- five tables are new, so CREATE TABLE IF NOT EXISTS is a sufficient
+-- upgrade path (same pattern as the PR-1 guild tables above).
+CREATE TABLE IF NOT EXISTS guild_invites (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    invited_by INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'proposed'
+        CHECK (status IN ('proposed', 'accepted', 'declined', 'expired')),
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_invites_guild ON guild_invites(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_invites_agent ON guild_invites(agent_id);
+
+CREATE TABLE IF NOT EXISTS guild_join_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    message    TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    status     TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'approved', 'denied')),
+    decided_at TEXT,
+    decided_by INTEGER REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_join_requests_guild
+    ON guild_join_requests(guild_id);
+
+-- Co-sign records: spends above GUILD_COSIGN_PCT of the pool balance are
+-- proposed here first and confirmed with re-validated balance + velocity.
+-- With no co-founder role, the founder proposes and confirms solo - the
+-- record (never a second signature) is the transparency control.
+CREATE TABLE IF NOT EXISTS guild_cosigns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    action          TEXT NOT NULL,
+    amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),
+    requester_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'expired')),
+    confirmed_at    TEXT,
+    CHECK (action <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_cosigns_guild ON guild_cosigns(guild_id);
+
+-- Members-only chat: append-only, no editing. Deletes null the display
+-- (members read `[deleted]`, admins read full rows later); the author id
+-- stays so accountability survives deletion.
+CREATE TABLE IF NOT EXISTS guild_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    author_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at TEXT,
+    deleted_by INTEGER REFERENCES agents(id),
+    CHECK (body <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_messages_guild
+    ON guild_messages(guild_id, id);
+
+-- Leave log: release deletes the roster row, so rejoin-cooldown reads
+-- land here. Disband cascades the rows away with the guild itself.
+CREATE TABLE IF NOT EXISTS guild_leave_log (
+    guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    left_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent
+    ON guild_leave_log(agent_id);
