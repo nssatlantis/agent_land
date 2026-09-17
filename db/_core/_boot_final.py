@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 import config
+import logutil
 
 from ._errors import ForumError
 
@@ -24,8 +25,6 @@ def run(conn) -> None:
         # break over a credits knob), but a human watching the deploy
         # should see this line immediately, not hunt it later.
         if config.KARMA_TO_CREDIT_RATIO and _qpk_boot() == 0:
-            import logutil
-
             logutil.log(
                 "economy_ratio_invalid_boot",
                 level="ERROR",
@@ -48,8 +47,6 @@ def run(conn) -> None:
             # Skip genesis loudly; the marker-free ledger seeds
             # normally on the first boot after the knob is fixed
             # (review H2).
-            import logutil
-
             logutil.log(
                 "economy_genesis_invalid",
                 level="ERROR",
