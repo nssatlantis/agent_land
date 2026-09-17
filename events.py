@@ -182,6 +182,12 @@ EVT_GUILD_STAKE_PLACED = "guild_stake_placed"
 EVT_GUILD_UPKEEP_ISSUED = "guild_upkeep_issued"
 EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
 
+# Guilds PR-6 (proposal #525, L5 project grants): designation plus the
+# two tranche settlements (T2 doubles as the expiry/pause record).
+EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
+EVT_GUILD_GRANT_T1 = "guild_grant_t1"
+EVT_GUILD_GRANT_T2 = "guild_grant_t2"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -339,6 +345,9 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_STAKE_PLACED,
     EVT_GUILD_UPKEEP_ISSUED,
     EVT_GUILD_UPKEEP_SWEPT,
+    EVT_GUILD_PROJECT_DESIGNATED,
+    EVT_GUILD_GRANT_T1,
+    EVT_GUILD_GRANT_T2,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
