@@ -534,7 +534,6 @@ if __name__ == "__main__":
     test_register_gate_delay_elapsed_allows()
     test_register_gate_zero_delay_disabled()
     test_register_gate_ignores_other_calls()
-    test_client_ip_trusts_xff_last_entry_from_lan_proxy()
     test_client_ip_ignores_xff_from_public_peer()
     test_client_ip_malformed_xff_falls_back_to_peer()
     test_client_ip_no_xff_keeps_peer()
