@@ -872,14 +872,14 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 
 -- The job market (CHARTER IX.6): citizens commission work from other
 -- citizens, paid in escrowed credits. The FULL exposure
--- (payment_quarters * total_cycles) moves from the creator's wallet into
+-- (payment_units * total_cycles) moves from the creator's wallet into
 -- the ledger's escrow bank account at posting time (paired -agent /
 -- +escrow legs with reason 'job_escrow', one tx_id) - acceptance can
 -- never renege because the money left the wallet before work began. Each
--- accepted cycle pays one payment_quarters to the worker from escrow
+-- accepted cycle pays one payment_units to the worker from escrow
 -- (release_escrow: escrowed PRINCIPAL, never treasury-funded); declined
 -- cycles pay nothing and their escrow stays held (a decline-return +
--- later resubmit-reaccept would let the same quarters settle twice);
+-- later resubmit-reaccept would let the same units settle twice);
 -- cancel/expiry return whatever remains. SCOPE is advisory only -
 -- a suggested file or area (e.g. 'HISTORY.md') shown on the card so an
 -- offered job can point its worker at the right artifact; it gates nothing.
@@ -902,7 +902,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- 1 = the legacy daily rhythm, byte-identical behavior.
     cycle_every_days    INTEGER NOT NULL DEFAULT 1
                         CHECK (cycle_every_days >= 1 AND cycle_every_days <= 30),
-    payment_quarters    INTEGER NOT NULL CHECK (payment_quarters > 0),
+    payment_units    INTEGER NOT NULL CHECK (payment_units > 0),
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
     official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
@@ -915,9 +915,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- no human review step. 1 = poller auto-accepts on merge; 0 = a citizen
     -- verdicts every cycle via review_job. Default 0 = manual review.
     auto_pay_on_merge   INTEGER NOT NULL DEFAULT 0 CHECK (auto_pay_on_merge IN (0, 1)),
-    taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
-    deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
-    treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
+    taker_deposit_units INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_units >= 0),
+    deposit_bonus_units INTEGER NOT NULL DEFAULT 0,
+    treasury_escrow_units INTEGER NOT NULL DEFAULT 0,
     service_id          INTEGER REFERENCES services(id),  -- NULL = traditional job; set once at order time
     service_terms       TEXT,  -- frozen JSON snapshot of the listing terms at purchase
     status              TEXT NOT NULL DEFAULT 'open'
@@ -951,7 +951,7 @@ CREATE TABLE IF NOT EXISTS services (
     seller_agent_id     INTEGER NOT NULL REFERENCES agents(id),
     title               TEXT NOT NULL,
     description         TEXT NOT NULL DEFAULT '',
-    price_quarters      INTEGER NOT NULL CHECK (price_quarters > 0),
+    price_units      INTEGER NOT NULL CHECK (price_units > 0),
     steps_json          TEXT NOT NULL DEFAULT '[]',  -- rubric the order inherits as its job steps
     ack_visits          INTEGER NOT NULL DEFAULT 2,
     deliver_days        INTEGER NOT NULL DEFAULT 3,
@@ -1045,9 +1045,10 @@ CREATE TABLE IF NOT EXISTS job_penalties (
 CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 
 -- Credits ledger (the Karma Split): append-only entries denominated in
--- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -
--- values are the only amounts that exist). The balance is derived as
--- SUM(delta_quarters) rather than cached, so it cannot drift from its
+-- TWENTIETH-CREDITS (delta_units; twenty units make 1.0 credit -
+-- whole/half/quarter/tenth/twentieth values are the only amounts that
+-- exist). The balance is derived as
+-- SUM(delta_units) rather than cached, so it cannot drift from its
 -- history. Every entry names its reason: contributions earn (paid out of
 -- the treasury when TREASURY_FUNDS_PAYOUTS is on), voluntary spends debit,
 -- transfers move credits between wallets. Written inside the triggering
@@ -1060,7 +1061,7 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 -- every posting, payout, refund and return moves principal between a
 -- wallet/treasury and escrow as PAIRED rows (-from / +to) under one
 -- tx_id, while mints add to the treasury and burns subtract from it:
---     total supply  = SUM(delta_quarters) over ALL rows
+--     total supply  = SUM(delta_units) over ALL rows
 --     treasury      = SUM over account='treasury' rows
 --     escrow-held   = SUM over account='escrow' rows
 --     circulating   = supply - treasury - escrow
@@ -1069,7 +1070,7 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 CREATE TABLE IF NOT EXISTS credit_entries (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen or the treasury
-    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+    delta_units INTEGER NOT NULL CHECK (delta_units != 0),
     reason       TEXT NOT NULL,
     target_type  TEXT,
     target_id    INTEGER,
@@ -1094,21 +1095,21 @@ CREATE TABLE IF NOT EXISTS credit_entries (
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
 -- Earned-summary covering index (index bundle #458): serves earned_summary's
--- per-agent aggregate (WHERE agent_id = ? with created_at / delta_quarters /
+-- per-agent aggregate (WHERE agent_id = ? with created_at / delta_units /
 -- reason projections) as an index-only scan. Additive: the two-column index
 -- above stays (leftmost prefix, still used by sibling lookups).
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_cover
-    ON credit_entries(agent_id, created_at, delta_quarters, reason);
+    ON credit_entries(agent_id, created_at, delta_units, reason);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
     ON credit_entries(account) WHERE account = 'escrow';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
-    ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
+    ON credit_entries(account, agent_id, delta_units) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
-    ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
+    ON credit_entries(created_at, reason, delta_units) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers
-    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_quarters < 0;
+    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_units < 0;
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
@@ -1121,8 +1122,8 @@ CREATE TABLE IF NOT EXISTS economy_checkpoints (
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_entry_id  INTEGER NOT NULL,
     entry_count    INTEGER NOT NULL,
-    total_supply_q INTEGER NOT NULL,
-    treasury_q     INTEGER NOT NULL,
+    total_supply_u INTEGER NOT NULL,
+    treasury_u     INTEGER NOT NULL,
     running_hash   TEXT NOT NULL
 );
 
@@ -1639,8 +1640,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     issuer_agent_id    INTEGER REFERENCES agents(id),
     payer_agent_id     INTEGER NOT NULL REFERENCES agents(id),
     created_by_agent_id INTEGER NOT NULL REFERENCES agents(id),
-    amount_quarters    INTEGER NOT NULL CHECK (amount_quarters > 0),
-    remaining_quarters INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    amount_units    INTEGER NOT NULL CHECK (amount_units > 0),
+    remaining_units INTEGER NOT NULL CHECK (remaining_units >= 0),
     reason             TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending', 'accepted', 'paid', 'declined', 'cancelled')),
@@ -1659,7 +1660,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_issuer ON invoices(issuer_agent_id, stat
 CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by_agent_id);
 -- The poller-tick reminder sweep filters on status alone; none of the
 -- agent-led indexes serve it, so it gets its own partial index.
-CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_quarters)
+CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_units)
     WHERE status = 'accepted';
 -- The Agent Skill System (display-only v1): evidence-linked peer ratings
 -- per skill. One ACTIVE row per rater->ratee->skill (re-rates supersede
