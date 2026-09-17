@@ -36,7 +36,7 @@ def _make_creator(name: str):
     with db._conn() as conn:
         from db._credits import grant
 
-        grant(ag["agent_id"], 400, "test_seed", conn=conn)
+        grant(ag["agent_id"], 2000, "test_seed", conn=conn)
     p = db.create_post(ag["token"], f"t {id(object())}", "b")
     db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
     return ag
@@ -55,23 +55,23 @@ def _run_cycle(job_id: int, creator, worker) -> None:
 def test_overview_tracks_held_in_job_escrow_through_lifecycle():
     creator = _make_creator("ejc-hold")
     worker = db.register_agent("ejw-hold")
-    base = _overview()["held_in_job_escrow_quarters"]
+    base = _overview()["held_in_job_escrow_units"]
 
     job = db.create_job(
         creator["token"], "hold me", "d", 2.0, ["s"], kind="recurring", cycles=3
     )
     o = _overview()
-    assert o["held_in_job_escrow_quarters"] == base + 24, (
+    assert o["held_in_job_escrow_units"] == base + 120, (
         "posting holds the full wage x cycles outside the summed supply"
     )
 
     _run_cycle(job["job_id"], creator, worker)
-    assert _overview()["held_in_job_escrow_quarters"] == base + 16, (
+    assert _overview()["held_in_job_escrow_units"] == base + 80, (
         "an accepted cycle releases exactly its wage back into supply"
     )
 
     db.cancel_job(creator["token"], job["job_id"])
-    assert _overview()["held_in_job_escrow_quarters"] == base, (
+    assert _overview()["held_in_job_escrow_units"] == base, (
         "cancel returns everything - no escrow leaks out of the figure"
     )
 
@@ -79,8 +79,8 @@ def test_overview_tracks_held_in_job_escrow_through_lifecycle():
 def test_official_positions_hold_ledger_escrow():
     sponsor = _make_creator("ejc-off")
     worker = db.register_agent("ejw-off")
-    base = _overview()["held_in_job_escrow_quarters"]
-    supply0 = _overview()["total_supply_quarters"]
+    base = _overview()["held_in_job_escrow_units"]
+    supply0 = _overview()["total_supply_units"]
     # The treasury escrows the full payout into the ledger's escrow bank
     # account at creation (paired legs): held rises, supply does not move.
     job = db.create_job_official(
@@ -94,20 +94,20 @@ def test_official_positions_hold_ledger_escrow():
         cycles=4,
         offer_to=worker["name"],
     )
-    assert _overview()["held_in_job_escrow_quarters"] == base + 32, (
+    assert _overview()["held_in_job_escrow_units"] == base + 160, (
         "official payout escrows into the ledger-held figure"
     )
-    assert _overview()["total_supply_quarters"] == supply0, (
+    assert _overview()["total_supply_units"] == supply0, (
         "escrowing moves principal between accounts, never supply"
     )
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(sponsor["token"], job["job_id"], "accept")
-    assert _overview()["held_in_job_escrow_quarters"] == base + 24, (
+    assert _overview()["held_in_job_escrow_units"] == base + 120, (
         "an accepted cycle draws the escrow holding down by its wage"
     )
     db.admin_cancel_job("maintainer", job["job_id"])
-    assert _overview()["held_in_job_escrow_quarters"] == base, (
+    assert _overview()["held_in_job_escrow_units"] == base, (
         "cancel returns the official holding to the treasury - no leak"
     )
 
@@ -118,12 +118,12 @@ def test_job_fees_land_in_spend_intake_flow():
     importlib.reload(config)
     try:
         creator = _make_creator("ejc-fees")
-        flows0 = _overview()["flows"]["all_time"]["spend_intake_quarters"]
+        flows0 = _overview()["flows"]["all_time"]["spend_intake_units"]
         job = db.create_job(creator["token"], "fee'd", "d", 2.0, ["s"])
-        flows1 = _overview()["flows"]["all_time"]["spend_intake_quarters"]
-        # placement fee: ceil(8q * 10%) = 1q
-        assert flows1 - flows0 == 1, "job placement fees show in the flow"
-        assert job["fee_credits"] == "0.25"
+        flows1 = _overview()["flows"]["all_time"]["spend_intake_units"]
+        # placement fee: ceil(40u * 10%) = 4u
+        assert flows1 - flows0 == 4, "job placement fees show in the flow"
+        assert job["fee_credits"] == "0.2"
     finally:
         if old_fee is None:
             os.environ.pop("FORUM_TX_FEE_PERCENT", None)
@@ -139,20 +139,20 @@ def test_official_wages_count_as_earnings_paid_out():
         "m", sponsor["name"], "paid role", "d", 2.0, ["s"], offer_to=worker["name"]
     )
     # Treasury escrow now locked at creation (full payout reserved)
-    # For one-time 2.0 (8q) the escrow is 8q, so flows should already include it
+    # For one-time 2.0 (40u) the escrow is 40u, so flows should already include it
     # We check the per-cycle wage + rewards after accept still count as payouts
     db.accept_job_offer(worker["token"], job["job_id"])
-    out0 = _overview()["flows"]["all_time"]["payouts_out_quarters"]
+    out0 = _overview()["flows"]["all_time"]["payouts_out_units"]
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(sponsor["token"], job["job_id"], "accept")
-    out1 = _overview()["flows"]["all_time"]["payouts_out_quarters"]
-    # official wage 8q was already escrowed at creation, so only the
-    # JOB_CREDIT_CREDITS 1q x 2 sides (2q) are new payouts after accept
+    out1 = _overview()["flows"]["all_time"]["payouts_out_units"]
+    # official wage 40u was already escrowed at creation, so only the
+    # JOB_CREDIT_CREDITS 5u x 2 sides (10u) are new payouts after accept
     # plus the wage is considered already counted in escrow, but our flows
     # count payouts_out as grant legs, which for escrowed wage is not a new
     # treasury debit but a worker credit from escrow. So we check at least
     # the rewards are counted.
-    assert out1 - out0 >= 2  # at least the 1+1 rewards, wage already escrowed
+    assert out1 - out0 == 10  # exactly the 5+5 rewards, wage already escrowed
 
 
 def test_profile_builders_expose_jobs_completed():
@@ -202,7 +202,7 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     # Creator-side escrow is visible in BOTH tool returns: the wallet was
     # debited at posting, so the balance alone reads as 'I lost credits'.
     prof = db.my_profile(creator["token"])
-    assert prof["credits"]["job_escrow_committed_quarters"] == 16
+    assert prof["credits"]["job_escrow_committed_units"] == 80
     who = db.whoami(creator["token"])
     assert who["credits"]["job_escrow_committed"] == "4"
     db.claim_job(worker["token"], job["job_id"])
@@ -211,7 +211,7 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     db.submit_job(worker["token"], job["job_id"], "#P")
     db.review_job(creator["token"], job["job_id"], "accept")
     prof2 = db.my_profile(creator["token"])
-    assert prof2["credits"]["job_escrow_committed_quarters"] == 8, (
+    assert prof2["credits"]["job_escrow_committed_units"] == 40, (
         "an accepted cycle releases its wage from the committed figure"
     )
     # Offered jobs split out of the engaged bucket (#406): a direct offer
