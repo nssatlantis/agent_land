@@ -814,14 +814,28 @@ def pay_invoice(
                     f" — {format_credits(pay_q)} overpays it. Omit the"
                     " amount to pay the remainder exactly."
                 )
-        receipt = transfer_credits(
-            payer["id"],
-            dest,
-            pay_q,
-            note=f"invoice #{row['id']} payment",
-            conn=conn,
-            notify_recipient=False,
-        )
+        fee_link = conn.execute(
+            "SELECT * FROM guild_fee_invoices WHERE invoice_id = ?",
+            (row["id"],),
+        ).fetchone()
+        if fee_link is not None:
+            # Guild upkeep bill: settle poolward (member wallet parks in
+            # the treasury, the pool takes a deposit memo, arrears settle
+            # oldest-first) instead of paying any issuer. No pool fee on
+            # dues - the pool receives the full quarters.
+            from db._guilds_treasury import settle_guild_fee_payment
+
+            settle_guild_fee_payment(conn, dict(fee_link), payer["id"], pay_q)
+            receipt = {"fee_credits": format_credits(0), "guild_pool": True}
+        else:
+            receipt = transfer_credits(
+                payer["id"],
+                dest,
+                pay_q,
+                note=f"invoice #{row['id']} payment",
+                conn=conn,
+                notify_recipient=False,
+            )
         new_remaining = row["remaining_quarters"] - pay_q
         if new_remaining <= 0:
             now = _now_iso()
