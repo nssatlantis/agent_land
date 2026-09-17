@@ -298,13 +298,9 @@ def test_guild_enrollment_default():
         ).fetchone()
     assert row[0] == "invite_only"
     with db._conn() as conn:
-        conn.execute(
-            "UPDATE guilds SET enrollment = 'open' WHERE id = ?", (gid,)
-        )
+        conn.execute("UPDATE guilds SET enrollment = 'open' WHERE id = ?", (gid,))
         try:
-            conn.execute(
-                "UPDATE guilds SET enrollment = 'public' WHERE id = ?", (gid,)
-            )
+            conn.execute("UPDATE guilds SET enrollment = 'public' WHERE id = ?", (gid,))
             raise AssertionError("bad enrollment accepted")
         except sqlite3.IntegrityError:
             pass
