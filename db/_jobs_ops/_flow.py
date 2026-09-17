@@ -396,13 +396,13 @@ def _award_cycle_karma(
     job: sqlite3.Row,
     cycle_no: int,
     worker_id: int,
-    pool_guild_id: int | None = None,
 ) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma + JOB_CREDIT_CREDITS credits to
     worker AND creator for an accepted cycle.  Returns credit quarters
-    granted (0 when nothing landed). pool_guild_id (guild-commissioned
-    jobs only) rebates the creator's credit leg to the pool - the karma
-    row still attributes to the authorizer, only the quarters move."""
+    granted (0 when nothing landed). The suppressed creator leg on
+    guild-commissioned jobs creates no funds and writes no pool memo:
+    the pool's single spend is the commission lock memo, and accepted
+    wages draw that locked escrow down with no further memos."""
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
     credit_q = max(0, round(config.JOB_CREDIT_CREDITS * 4))
     if amount == 0 and credit_q == 0:
@@ -434,22 +434,8 @@ def _award_cycle_karma(
         if credit_q > 0:
             # Only count granted_q when the credits actually landed, or
             # the accept event would report a credit_amount that was
-            # never paid (review 4427) - the pool memo always lands.
-            if role == "creator" and pool_guild_id is not None:
-                # Commissioned creator leg: Treasury already parks the
-                # pool's funds, so this is a memo row, not a movement.
-                conn.execute(
-                    "INSERT INTO guild_ledger (guild_id, kind, quarters,"
-                    " actor_agent_id, note) VALUES (?, 'job', ?, ?, ?)",
-                    (
-                        pool_guild_id,
-                        credit_q,
-                        aid,
-                        f"job #{job['id']} creator-leg rebate",
-                    ),
-                )
-                granted_q += credit_q
-            elif grant(
+            # never paid (review 4427).
+            if grant(
                 aid,
                 credit_q,
                 "job_reward",
@@ -695,28 +681,7 @@ def _apply_review(
             rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
         else:
             _pay_worker(conn, job, worker_id)
-            pool_guild = (
-                link["guild_id"]
-                if link is not None and link["role"] == "commissioned"
-                else None
-            )
-            if pool_guild is not None:
-                # Pool-funded wage: the escrow account paid the worker
-                # above; the pool takes the outflow memo (job_escrow is
-                # velocity-exempt by kind).
-                conn.execute(
-                    "INSERT INTO guild_ledger (guild_id, kind, quarters,"
-                    " actor_agent_id, note) VALUES (?, 'job_escrow', ?, ?, ?)",
-                    (
-                        pool_guild,
-                        int(job["payment_quarters"]),
-                        job["creator_agent_id"],
-                        f"job #{job['id']} cycle wage",
-                    ),
-                )
-            rewarded = _award_cycle_karma(
-                conn, job, cycle_no, worker_id, pool_guild_id=pool_guild
-            )
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
         new_done = job["cycles_done"] + 1
         completed = new_done >= job["total_cycles"]
         conn.execute(
