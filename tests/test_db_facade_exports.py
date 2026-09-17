@@ -58,7 +58,7 @@ EXPECTED = [
     "pr_vote_tally",
     # credits economy
     "transfer_credits",
-    "to_quarters",
+    "to_units",
     "balance_for",
     # invoiced pull-payments
     "create_invoice",
