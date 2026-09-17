@@ -346,6 +346,12 @@ def _run_succession(conn: sqlite3.Connection, guild: dict, why: str) -> dict:
             " distribution running.",
             actor_agent_id=None,
         )
+        # Resolve pool-funded jobs first: cancelling returns their escrow
+        # pool-parked (taken ones detach), so the distribution below can
+        # never pay out money that is still locked in job escrow.
+        from db._guilds_money import resolve_guild_jobs_for_disband
+
+        resolve_guild_jobs_for_disband(conn, guild["id"])
         out = _disband_distribute(conn, guild["id"], f"no heir ({why})")
         events.log_event(
             events.EVT_GUILD_DISBANDED,
@@ -824,6 +830,11 @@ def leave_guild(token: str, guild_id: int) -> dict:
             " VALUES (?, ?, ?)",
             (guild_id, agent["id"], _now_iso()),
         )
+        # Taken jobs detach to the executor personally (the spec's detach
+        # branch; the 7d successor-grace appointment flow is a follow-up).
+        from db._guilds_money import detach_executor_jobs
+
+        detach_executor_jobs(conn, guild_id, agent["id"])
         import events
 
         events.log_event(
@@ -972,6 +983,9 @@ def sweep_guild_memberships() -> dict:
                     " VALUES (?, ?, ?)",
                     (gid, mem["agent_id"], _now_iso()),
                 )
+                from db._guilds_money import detach_executor_jobs
+
+                detach_executor_jobs(conn, gid, mem["agent_id"])
                 events.log_event(
                     events.EVT_GUILD_LEFT,
                     actor_agent_id=mem["agent_id"],
