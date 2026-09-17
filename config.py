@@ -261,7 +261,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Declined-PR fine (db._invoices.issue_pr_decline_fine): the poller
     # bills the PR opener a Treasury invoice of this many credits on the
     # FIRST explicit decline record, recorded under the ADMIN_USER
-    # citizen. Quarter-denominated (a whole/half/quarter value); 0 turns
+    # citizen. Twentieth-exact (whole/half/quarter/tenth/twentieth); 0 turns
     # the bill off - the PR_DECLINE_KARMA penalty is the real teeth.
     "PR_DECLINE_FINE_CREDITS": ("FORUM_PR_DECLINE_FINE_CREDITS", 0.5, float),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
@@ -391,7 +391,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # day and at TAG_MAX_PER_POST tags per post. Removal by the post's
     # author and retirement by the tag's creator are free. Tag names are
     # capped at TAG_NAME_MAX_LEN characters. Prices must be whole, half or
-    # quarter values - anything finer is refused loudly rather than
+    # twentieth values - anything finer is refused loudly rather than
     # silently rounded.
     "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2.0, float),
     "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1.0, float),
@@ -405,7 +405,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # subscription capacity per purchase, each with a lifetime max-buy cap),
     # cosmetic perks (name color, pinned comment) and a private notepad
     # (unlock plus a per-write fee). Every price is credit-denominated and
-    # must be a whole/half/quarter value; spends recycle INTO the treasury
+    # must be twentieth-exact; spends recycle INTO the treasury
     # (dest_treasury sink, like tag costs). Trust floors and governance
     # thresholds stay on the karma layer - the store never grants karma.
     "STORE_ENABLED": ("FORUM_STORE_ENABLED", 1, int),
@@ -485,11 +485,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # v2 wires it into scoring; the created_at column already exists.
     "SKILL_RATING_TTL_DAYS": ("FORUM_SKILL_RATING_TTL_DAYS", 0, int),
     # The Karma Split: the credits economy. Credits are the spendable
-    # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
-    # 1.0 credit), so whole/half/quarter values are exact and anything
+    # valuta; internally the ledger stores TWENTIETH-CREDITS (20 units =
+    # 1.0 credit), so twentieth-exact values are exact and anything
     # finer cannot exist. CREDITS_ENABLED is the master switch. Every
     # karma income also grants KARMA_TO_CREDIT_RATIO credits per karma
-    # point (default 0.5 = the split; must itself be whole/half/quarter;
+    # point (default 0.5 = the split; must itself be twentieth-exact;
     # 0 disables earning). Tag prices above are credit-denominated; trust
     # floors stay karma.
     "CREDITS_ENABLED": ("FORUM_CREDITS_ENABLED", 1, int),
@@ -500,7 +500,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # (never minted from nothing) - an empty treasury skips the payout and
     # logs a visible credit_payout_unfunded event instead. TX_FEE_PERCENT
     # is a percentage fee on wallet-to-wallet transfers and on placing a
-    # credit-denominated stake (rounded UP to whole quarters, 100% to the
+    # credit-denominated stake (rounded UP to whole units, 100% to the
     # treasury). ADMIN_MINT_DAILY_CAP_CREDITS bounds discretionary admin
     # mints/burns per UTC day; above the cap a currently-approved forum
     # proposal id is required (the community's mint/burn path).
@@ -563,7 +563,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Supply listings (/services storefront, proposal #416): standing
     # offers bought in one action. Orders spawn offered v1 jobs, so money
     # policy mostly rides the job knobs above; these govern the shelf.
-    # Prices are quarter-denominated credits; windows are seller-settable
+    # Prices are twentieth-exact credits; windows are seller-settable
     # within the min/max (ACK in visits, enforced as 24h each, pause tolls).
     "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 3, int),
     "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.5, float),
@@ -594,7 +594,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_DECLINED_KARMA": ("FORUM_JOB_DECLINED_KARMA", -2, int),
     # Credits (not karma) granted to BOTH worker and creator per accepted
     # cycle.  Decoupled from KARMA_TO_CREDIT_RATIO so the job incentive is
-    # independently tunable.  Stored as credits; converted to quarters
+    # independently tunable.  Stored as credits; converted to twentieths
     # internally.
     "JOB_CREDIT_CREDITS": ("FORUM_JOB_CREDIT_CREDITS", 0.25, float),
     "JOB_TITLE_MAX_LEN": ("FORUM_JOB_TITLE_MAX_LEN", 120, int),
