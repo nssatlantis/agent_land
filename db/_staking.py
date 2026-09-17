@@ -114,6 +114,8 @@ def stake(
     wallet-balance gates - the pool's own coverage check already ran and
     each lock is pool-funded just-in-time."""
     currency = _validate_currency(currency)
+    if funded_externally and currency != "credits":
+        raise ForumError("externally funded stakes are credits-only.")
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
 
@@ -363,12 +365,58 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
         if stake_row is None:
             raise ForumError(f"no stake with id {stake_id}.")
         from db._guilds_treasury import _guild_stake_link
+        from db._proposal_status import _proposal_status_for
 
-        if _guild_stake_link(conn, stake_id) is not None:
-            raise ForumError(
-                "guild-backed stakes resolve through PR outcomes, not"
-                " withdrawal - the pool owns the exposure."
+        _glink = _guild_stake_link(conn, stake_id)
+        if _glink is not None:
+            # Guild-backed stakes resolve through PR outcomes while their
+            # proposal is open - but a dead proposal (merged/declined)
+            # with no locks in flight strands pool exposure under the cap
+            # forever, so the founder may release it. No money moves
+            # (nothing is escrowed upfront; the placement-fee memo stays
+            # sunk); the row just flips status and frees the cap.
+            if _proposal_status_for(conn, stake_row["proposal_id"]) == "open":
+                raise ForumError(
+                    "guild-backed stakes resolve through PR outcomes, not"
+                    " withdrawal - the pool owns the exposure."
+                )
+            if stake_row["locked_count"] > 0:
+                raise ForumError(
+                    f"stake #{stake_id} has {stake_row['locked_count']} "
+                    "locked PR(s) in flight - wait for them to resolve."
+                )
+            if stake_row["staker_agent_id"] != agent["id"]:
+                raise ForumError("only the staker may withdraw a stake.")
+            conn.execute(
+                "UPDATE proposal_stakes SET status = 'withdrawn' WHERE id = ?",
+                (stake_id,),
             )
+            from db._credits import balance_for, format_credits
+            from events import EVT_STAKE_WITHDRAWN, log_event
+
+            log_event(
+                EVT_STAKE_WITHDRAWN,
+                actor_agent_id=agent["id"],
+                target_type="proposal_stake",
+                target_id=stake_id,
+                detail={
+                    "proposal_id": stake_row["proposal_id"],
+                    "per_pr": stake_row["per_pr"],
+                    "currency": "credits",
+                    "guild_released": True,
+                },
+                conn=conn,
+            )
+            _new_balance = balance_for(conn, agent["id"])
+            return {
+                "stake_id": stake_id,
+                "currency": "credits",
+                "uncommitted_per_pr": stake_row["per_pr"],
+                "uncommitted_total": stake_row["per_pr"]
+                * (stake_row["max_prs"] - stake_row["paid_count"]),
+                "new_balance_quarters": _new_balance,
+                "new_balance_credits": format_credits(_new_balance),
+            }
         if stake_row["staker_agent_id"] is None:
             raise ForumError("admin-funded stakes cannot be withdrawn.")
         if stake_row["staker_agent_id"] != agent["id"]:
@@ -469,6 +517,17 @@ def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
             raise ForumError(
                 f"stake #{stake_id} has status '{stake_row['status']}' "
                 "and cannot be deleted."
+            )
+        from db._guilds_treasury import _guild_stake_link
+
+        if (
+            _guild_stake_link(conn, stake_id) is not None
+            and stake_row["locked_count"] > 0
+        ):
+            raise ForumError(
+                "guild-backed stakes with locks in flight cannot be admin-"
+                "deleted - their locks resolve through PR outcomes and the"
+                " pool owns the exposure."
             )
         # Refund any locked escrow first (like refund_stake_locks for this stake only)
         if stake_row["locked_count"] > 0:
@@ -838,25 +897,6 @@ def lock_stakes_for_pr(
                 # and the next stake continues.
                 if spend_id is not None:
                     c.execute("DELETE FROM karma_spends WHERE id = ?", (spend_id,))
-                if guild_funded is not None:
-                    # Undo the conduit funding the same way: claw the
-                    # grant back first (same-transaction, always covered),
-                    # then drop the memo row.
-                    from db._credits import spend
-
-                    spend(
-                        staker,
-                        b["per_pr"],
-                        "guild_stake_conduit_revert",
-                        dest_treasury=True,
-                        target_type="proposal_stake",
-                        target_id=b["id"],
-                        conn=c,
-                    )
-                    c.execute("DELETE FROM guild_ledger WHERE id = ?", (guild_funded,))
-                    remaining["credits"][staker] = (
-                        remaining["credits"].get(staker, 0) - b["per_pr"]
-                    )
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
                 if treasury_debited:
@@ -873,6 +913,27 @@ def lock_stakes_for_pr(
                     )
                     if treasury_remaining is not None:
                         treasury_remaining += b["per_pr"]
+                if guild_funded is not None:
+                    # Undo the conduit funding LAST: the revert above
+                    # returned the lock debit, so the founder is back to
+                    # funded level and the claw below is always covered -
+                    # reversing the order bricks the whole batch for a
+                    # conduit founder staking beyond personal means.
+                    from db._credits import spend
+
+                    spend(
+                        staker,
+                        b["per_pr"],
+                        "guild_stake_conduit_revert",
+                        dest_treasury=True,
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        conn=c,
+                    )
+                    c.execute("DELETE FROM guild_ledger WHERE id = ?", (guild_funded,))
+                    remaining["credits"][staker] = (
+                        remaining["credits"].get(staker, 0) - b["per_pr"]
+                    )
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -906,6 +967,25 @@ def lock_stakes_for_pr(
                     c.execute("DELETE FROM karma_spends WHERE id = ?", (spend_id,))
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
+                if guild_funded is not None:
+                    # Same undo as the dupe path above: the revert just
+                    # returned the lock debit, so the claw below is always
+                    # covered, then the memo row goes.
+                    from db._credits import spend
+
+                    spend(
+                        staker,
+                        b["per_pr"],
+                        "guild_stake_conduit_revert",
+                        dest_treasury=True,
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        conn=c,
+                    )
+                    c.execute("DELETE FROM guild_ledger WHERE id = ?", (guild_funded,))
+                    remaining["credits"][staker] = (
+                        remaining["credits"].get(staker, 0) - b["per_pr"]
+                    )
                 if treasury_debited:
                     from db._credits import _insert_entry
 
