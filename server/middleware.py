@@ -22,13 +22,87 @@ import moderation
 _MAX_REGISTER_TRACKED = 4096
 
 
+# Peers whose forwarding headers may be honored: our own TLS-terminating
+# proxy on the LAN (loopback, RFC1918, link-local, ULA). Explicit CIDRs
+# rather than is_private so documentation and TEST-NET ranges never count
+# as trusted, whatever the stdlib version.
+_TRUSTED_PROXY_NETS = (
+    ip_network("127.0.0.0/8"),
+    ip_network("::1/128"),
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("169.254.0.0/16"),
+    ip_network("fe80::/10"),
+    ip_network("fc00::/7"),
+)
+
+
+def _trusted_proxy_peer(peer_ip: str | None) -> bool:
+    """True when the TCP peer is our own proxy on the LAN, so its appended
+    X-Forwarded-For and X-Forwarded-Proto headers may be believed. Anything
+    else (public peers, missing or unparseable IPs) is untrusted: forwarded
+    headers from there are attacker-controlled. Shared with
+    server.admin._auth._safe_referer (lazy import there - leaves never
+    import server)."""
+    if not peer_ip:
+        return False
+    try:
+        addr = ip_address(peer_ip)
+    except ValueError:  # domain: degrade-silently - odd peer string, untrusted
+        return False
+    if isinstance(addr, IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in _TRUSTED_PROXY_NETS)
+
+
+def _forwarded_client(scope: MutableMapping[str, Any]) -> str | None:
+    """The proxy-appended client address from X-Forwarded-For, or None. The
+    proxy appends the peer it saw, so the LAST entry is the real client and
+    anything left of it is client-supplied noise. Validated as an IP -
+    garbage falls back to the direct peer."""
+    try:
+        raw_headers = scope.get("headers") or []
+    except Exception:  # domain: degrade-silently - scope without headers
+        return None
+    last_value: str | None = None
+    for name, value in raw_headers:
+        try:
+            if isinstance(name, (bytes, bytearray)):
+                n = name.decode("latin-1")
+            else:
+                n = str(name)
+            if n.lower() != "x-forwarded-for":
+                continue
+            if isinstance(value, (bytes, bytearray)):
+                last_value = value.decode("latin-1")
+            else:
+                last_value = str(value)
+        except Exception:  # domain: degrade-silently - odd header, skip it
+            continue
+    if not last_value:
+        return None
+    candidate = last_value.split(",")[-1].strip()
+    try:
+        ip_address(candidate)
+    except ValueError:  # domain: degrade-silently - garbage, use the peer
+        return None
+    return candidate
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
-    """The caller's address for an HTTP request - the direct TCP peer, never
-    a client-supplied header (X-Forwarded-For is attacker-controlled and
-    there is no proxy in the LAN deployment). None when the transport did
+    """The caller's address for an HTTP request - the direct TCP peer, unless
+    the peer is our own LAN proxy (see _trusted_proxy_peer), in which case
+    the proxy-appended X-Forwarded-For last entry. XFF from any other peer
+    stays attacker-controlled and is ignored. None when the transport did
     not provide one."""
     client = scope.get("client")
-    return client[0] if client else None
+    peer = client[0] if client else None
+    if peer and _trusted_proxy_peer(peer):
+        forwarded = _forwarded_client(scope)
+        if forwarded:
+            return forwarded
+    return peer
 
 
 def _agent_token_from_jsonrpc(body: bytes) -> str | None:
