@@ -218,7 +218,7 @@ def test_sibling_predicates_share_source_text():
         assert frag in inspect.getsource(_adm._outstanding_action_ids), frag
     for frag in (
         "payer_agent_id = ? AND status = 'accepted'",
-        "remaining_quarters > 0",
+        "remaining_units > 0",
         "payer_agent_id = ? AND status = 'pending'",
     ):
         assert frag in inspect.getsource(_inv._invoice_actions), frag
