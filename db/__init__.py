@@ -226,6 +226,15 @@ from db._guilds import (  # noqa: F401
     vote_guild_poll,
 )
 
+# ── guild project grants (proposal #525, PR-6) ──────────────────────────
+from db._guilds_grants import (  # noqa: F401
+    designate_guild_project,
+    grant_on_first_todo,
+    grant_on_merge,
+    grant_on_promotion,
+    sweep_guild_grants,
+)
+
 # ── guild pool money (proposal #525, PR-3) ─────────────────────────────
 from db._guilds_money import (  # noqa: F401
     detach_executor_jobs,
