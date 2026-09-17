@@ -1243,21 +1243,33 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
         return paid
 
 
-def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
+def refund_stake_locks(
+    conn: sqlite3.Connection | None,
+    pr_number: int,
+    stake_id: int | None = None,
+    reason: str = "pr_declined_or_closed",
+) -> int:
     """Refund stake locks for a declined/closed PR. For each locked
     stake_lock: update status to refunded, decrement locked_count, and
     return the staker's amount (karma stakes: delete the karma_spends
     row, restoring their effective karma; credit stakes: a compensating
-    credit_entries grant). Returns the number of stakes refunded."""
+    credit_entries grant). Pass stake_id to scope the refund to one
+    stake (guild disband releases its own locks without touching other
+    citizens' locks on the same shared PR). The reason rides the event
+    detail and the staker ping. Returns the number of locks refunded."""
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
-        locks = c.execute(
+        query = (
             "SELECT sl.id AS lock_id, sl.stake_id, sl.agent_id, sl.amount,"
             " sl.karma_spend_id, s.staker_agent_id, s.currency"
             " FROM stake_locks sl"
             " JOIN proposal_stakes s ON s.id = sl.stake_id"
-            " WHERE sl.pr_number = ? AND sl.status = 'locked'",
-            (pr_number,),
-        ).fetchall()
+            " WHERE sl.pr_number = ? AND sl.status = 'locked'"
+        )
+        params: list = [pr_number]
+        if stake_id is not None:
+            query += " AND sl.stake_id = ?"
+            params.append(int(stake_id))
+        locks = c.execute(query, params).fetchall()
         refunded = 0
         from events import EVT_STAKE_REFUNDED, log_event
 
@@ -1331,7 +1343,7 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     "pr_number": pr_number,
                     "amount": lk["amount"],
                     "currency": currency,
-                    "reason": "pr_declined_or_closed",
+                    "reason": reason,
                     "amount_display": _fmt_amount(lk["amount"], currency),
                 },
                 conn=c,
@@ -1345,7 +1357,7 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     lk["stake_id"],
                     f"Stake lock of {_fmt_amount(lk['amount'], currency)} "
                     f"{currency} on PR #{pr_number} was refunded "
-                    "(PR declined or closed).",
+                    f"({reason}).",
                 )
             refunded += 1
             # After decrementing locked_count, check if the stake is now
