@@ -304,6 +304,7 @@ before minting a new one:
 | `bench_anchor_cron` | `server/poller/_anchor.py` heartbeat tick | degrade-silently (every outcome server-logged; ledger-audit on due-path non-bless only) |
 | `guild_sweep_payout_failed`, `guild_sweep_succession_failed` | `db/_guilds.py` `sweep_guild_memberships` per-entry isolation | never-lose-data (idempotent retry next sweep; unfunded payouts skip, succession failures defer) |
 | `guild_upkeep_failed` | `db/_guilds_treasury.py` `sweep_guild_upkeep` grace-disband isolation | never-lose-data (unfunded disband skips the guild, retry next sweep) |
+| `guild_grant_sweep_failed` | `db/_guilds_grants.py` `sweep_guild_grants` per-link isolation | never-lose-data (idempotent retry next sweep; expiry re-evaluated) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
