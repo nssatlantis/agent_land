@@ -609,6 +609,18 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_VELOCITY_PCT": ("FORUM_GUILD_VELOCITY_PCT", 30.0, float),
     "GUILD_POLL_MAX_DAYS": ("FORUM_GUILD_POLL_MAX_DAYS", 14, int),
     "GUILD_TX_FEE_PCT": ("FORUM_GUILD_TX_FEE", 2.0, float),
+    "GUILD_GRANT_PER_MEMBER_CREDITS": ("FORUM_GUILD_GRANT_PER_MEMBER", 1.0, float),
+    "GUILD_GRANT_CAP_CREDITS": ("FORUM_GUILD_GRANT_CAP", 10.0, float),
+    "GUILD_GRANT_BUDGET_CREDITS": ("FORUM_GUILD_GRANT_BUDGET", 20.0, float),
+    "GUILD_GRANT_COOLDOWN_DAYS": ("FORUM_GUILD_GRANT_COOLDOWN_DAYS", 14, int),
+    "GUILD_GRANT_T2_DAYS": ("FORUM_GUILD_GRANT_T2_DAYS", 14, int),
+    "GUILD_PROJECT_MIN_AGE_DAYS": ("FORUM_GUILD_PROJECT_MIN_AGE_DAYS", 3, int),
+    "GUILD_PROJECT_MIN_COMMENTERS": (
+        "FORUM_GUILD_PROJECT_MIN_COMMENTERS",
+        2,
+        int,
+    ),
+    "GUILD_GRANT_MIN_RUNWAY_DAYS": ("FORUM_GUILD_GRANT_MIN_RUNWAY_DAYS", 7, int),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
