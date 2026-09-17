@@ -321,7 +321,9 @@ def _public_base() -> str:
     except Exception:  # domain: degrade-silently - unreadable knob, derive
         base = ""
     if base:
-        return base.rstrip("/")
+        stripped = base.rstrip("/")
+        if stripped:
+            return stripped
     return f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}"
 
 
