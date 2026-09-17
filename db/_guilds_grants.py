@@ -98,16 +98,17 @@ def _check_treasury_open(conn: sqlite3.Connection, amount_q: int, what: str) -> 
     from db._credits import exact_from_credits, treasury_balance
 
     budget_q = exact_from_credits(
-        float(config.GUILD_GRANT_BUDGET_CREDITS), what="the grant budget"
+        float(config.GUILD_GRANT_BUDGET_CREDITS), what="the pooled budget"
     )
-    spent_q = conn.execute(
-        "SELECT COALESCE(SUM(t.amount_quarters), 0) FROM guild_tranches t"
-        " WHERE t.status = 'released' AND t.released_at >= ?",
-        (_days_ago_iso(7.0),),
-    ).fetchone()[0]
+    # Unified counter (PR-7): tranches plus paid subsidies plus settled
+    # matches - one budget for every Treasury-to-guild program, so
+    # first-claimant-wins holds across programs, not per program.
+    from db._guilds_lending import _pooled_outflows_since
+
+    spent_q = _pooled_outflows_since(conn, 7.0)
     if int(spent_q or 0) + amount_q > budget_q:
         raise ForumError(
-            f"the pooled 7d grant budget is spent for this window - {what}"
+            f"the pooled 7d Treasury budget is spent for this window - {what}"
             " waits for the next window (first-claimant wins)."
         )
     if int(config.ECONOMY_RUNWAY) > 0:
