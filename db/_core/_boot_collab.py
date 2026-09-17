@@ -432,4 +432,7 @@ def run(conn) -> set:
     # The mailbox gained a 'skill' notification kind (ratees are pinged
     # when rated, proposal #422): same rebuild.
     _widen_notifications_check(conn, "skill")
+    # The mailbox gained a 'guild' notification kind (guild invites, joins,
+    # succession, co-signs, proposal #525): same rebuild.
+    _widen_notifications_check(conn, "guild")
     return existing_tables
