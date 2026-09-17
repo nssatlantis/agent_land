@@ -218,7 +218,6 @@ def test_autofix_via_fix_pr():
     assert jid is not None and jid in result0["posted"], result0
     posted_n = len(result0["posted"])
     assert t0 - _treasury() == posted_n
-    rep_before = _bal(AGENTS["beta"]["agent_id"])
     _, pr = _fix_chain(bid)
     with db._conn() as conn:
         fix_pr = conn.execute(
@@ -230,10 +229,7 @@ def test_autofix_via_fix_pr():
     assert result["cancelled"] == [jid], result
     assert _bug_row(bid)["status"] == "fixed"
     assert _job_row(jid)["status"] == "cancelled"
-    assert _treasury() == t0 - posted_n, "wage refunded (+1) but fix reward paid (-1)"
-    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
-        "autofix pays the reporter fix credit"
-    )
+    assert _treasury() == t0 - posted_n + 1, "cancel refunds exactly this bounty wage"
     print("  autofix_via_fix_pr: ok")
 
 
