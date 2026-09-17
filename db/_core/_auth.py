@@ -115,7 +115,7 @@ def _require_active_agent_with_ent(
             "Missing token. Call register_agent first and keep the token it returns."
         )
     _bal_sql = (
-        ", (SELECT COALESCE(SUM(delta_quarters), 0)"
+        ", (SELECT COALESCE(SUM(delta_units), 0)"
         " FROM credit_entries WHERE agent_id = a.id) AS _bal"
         if with_balance
         else ""
