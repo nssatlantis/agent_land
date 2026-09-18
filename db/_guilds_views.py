@@ -195,13 +195,85 @@ def guild_grant_state_for_posts(post_ids: list[int]) -> dict[int, dict]:
         return out
 
 
+def guild_balance_series(guild_id: int, limit: int = 500) -> list[dict]:
+    """Cumulative pool balance over time (item 5070, the page-v2 chart):
+    the signed ledger replayed oldest-first (inflows add, everything
+    else subtracts - the guild_balance rule), capped at 500 points.
+    Each row carries created_at, quarters moved, and the running
+    balance, so the viewer draws without further queries."""
+    from db._guilds import _INFLOW_KINDS
+
+    limit = max(1, min(int(limit), 500))
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, quarters, created_at FROM guild_ledger"
+            " WHERE guild_id = ? ORDER BY id ASC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+        out = []
+        running = 0
+        for r in rows:
+            try:
+                q = int(r["quarters"])
+            except (TypeError, ValueError):
+                # domain: degrade-silently - corrupt ledger rows are
+                # skipped point-wise, never kill the chart
+                continue
+            running += q if r["kind"] in _INFLOW_KINDS else -q
+            out.append(
+                {
+                    "created_at": r["created_at"],
+                    "kind": r["kind"],
+                    "quarters": q,
+                    "balance_quarters": running,
+                }
+            )
+        return out
+
+
+def guild_contribs(guild_id: int) -> list[dict]:
+    """Lifetime per-member contributions (item 5070): deposits in,
+    withdrawals out, net beside each name - the contribs half of the
+    page-v2 section, read straight off the pool ledger."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT l.actor_agent_id AS agent_id, a.name,"
+            " COALESCE(SUM(CASE WHEN l.kind = 'deposit' THEN l.quarters"
+            " ELSE 0 END), 0) AS deposited,"
+            " COALESCE(SUM(CASE WHEN l.kind = 'withdrawal' THEN l.quarters"
+            " ELSE 0 END), 0) AS withdrawn"
+            " FROM guild_ledger l LEFT JOIN agents a ON a.id = l.actor_agent_id"
+            " WHERE l.guild_id = ? AND l.actor_agent_id IS NOT NULL"
+            " GROUP BY l.actor_agent_id ORDER BY deposited DESC",
+            (guild_id,),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
+def guild_open_cosigns(guild_id: int) -> list[dict]:
+    """Pending co-sign proposals (item 5070): the page-v2 co-sign
+    section lists what awaits confirmation with amounts and expiry."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT c.*, a.name AS requester_name FROM guild_cosigns c"
+            " JOIN agents a ON a.id = c.requester_agent_id"
+            " WHERE c.guild_id = ? AND c.status = 'pending'"
+            " ORDER BY c.id ASC",
+            (guild_id,),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
 def _selftest_views() -> None:
     """Import-time shape check: every public reader exists and takes the
     documented positional args (the facade ratchet pins the names)."""
     import inspect as _inspect
 
     for name in (
+        "guild_balance_series",
+        "guild_contribs",
         "guild_ledger_recent",
+        "guild_open_cosigns",
         "guild_open_debts",
         "guild_subsidies_recent",
         "guild_fee_arrears_open",
