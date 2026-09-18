@@ -1403,12 +1403,16 @@ def history(
     category: str | None = None,
     min_quarters: int | None = None,
     max_quarters: int | None = None,
+    guild_id: int | None = None,
 ) -> dict:
     """The public credits ledger, newest first.  Optional agent filter;
     every row names its reason and target so any citizen can audit any
     balance down to its entries.  Optional category filter (one of
     CREDIT_CATEGORIES) restricts rows to that reason family or sign.
-    Optional min/max_quarters bound the absolute credit amount."""
+    Optional min/max_quarters bound the absolute credit amount.
+    Optional guild_id keeps only legs touching that guild
+    (target_type='guild'), entry-by-entry - the pool's credit-side
+    trail beside its guild_ledger memos."""
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
@@ -1417,6 +1421,9 @@ def history(
         if agent_id is not None:
             clauses.append("e.agent_id = ?")
             params.append(agent_id)
+        if guild_id is not None:
+            clauses.append("e.target_type = 'guild' AND e.target_id = ?")
+            params.append(int(guild_id))
         if category is not None:
             fclause, fparams = _category_clause(category)
             if fclause:

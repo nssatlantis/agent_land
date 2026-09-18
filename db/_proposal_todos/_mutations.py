@@ -344,6 +344,13 @@ def create_todo_list(
             conn,
         )
         _record_todo_edit(conn, post_id, agent["id"])
+        # Guilds (proposal #525, PR-6): the first to-do list on a promoted
+        # designated Idea settles grant T1 (the collab-first-then-todos
+        # order). Same-transaction, failures propagate like the promotion
+        # path; every other post is one indexed miss.
+        from db._guilds_grants import grant_on_first_todo
+
+        grant_on_first_todo(conn, post_id)
         return _todo_list_for(conn, post_id, list_id)
 
 

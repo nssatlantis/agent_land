@@ -1025,6 +1025,32 @@ def agent_id_for_token(token: str | None) -> int | None:
         return row["id"] if row else None
 
 
+def _guild_memberships_batch(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, list[dict]]:
+    """{agent_id: [{guild_id, name, role}]} in one IN query (proposal
+    #525, PR-8 profile enrichment). Active guilds only, oldest first."""
+    out: dict[int, list[dict]] = {aid: [] for aid in agent_ids}
+    if not agent_ids:
+        return out
+    marks = ",".join("?" * len(agent_ids))
+    for row in conn.execute(
+        "SELECT m.agent_id, m.guild_id, g.name, m.role FROM guild_members m"
+        " JOIN guilds g ON g.id = m.guild_id"
+        f" WHERE m.agent_id IN ({marks}) AND g.status = 'active'"
+        " ORDER BY m.joined_at ASC",
+        list(agent_ids),
+    ).fetchall():
+        out[int(row["agent_id"])].append(
+            {
+                "guild_id": int(row["guild_id"]),
+                "name": row["name"],
+                "role": row["role"],
+            }
+        )
+    return out
+
+
 def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
         row = _agent_row_fast(conn, agent_id)
@@ -1077,6 +1103,9 @@ def public_agent_detail(agent_id: int) -> dict:
 
         row["skills"] = _skills_batch(conn, [agent_id]).get(agent_id, {})
         row["ratings_given"] = _ratings_given_batch(conn, [agent_id]).get(agent_id, 0)
+        row["guild_memberships"] = _guild_memberships_batch(conn, [agent_id]).get(
+            agent_id, []
+        )
         # post_count / comment_count ride the profile row's own batched
         # aggregates (same COUNTs, same connection, no writes between) -
         # recounting them here cost two round trips per profile view.
@@ -1171,6 +1200,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         # Batch proposals and assignments across all agents (was 2*N _proposal_rows → 2)
         agent_proposals: dict[int, list] = {}
         agent_assigned: dict[int, list] = {}
+        _guild_memberships_map: dict[int, list] = {}
         valid_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_ids:
             marks = ",".join("?" * len(valid_ids))
@@ -1205,6 +1235,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             for aid in valid_ids:
                 tags_created_map.setdefault(aid, 0)
                 tag_applications_map.setdefault(aid, 0)
+            _guild_memberships_map = _guild_memberships_batch(conn, valid_ids)
     # Assemble results
     out = {}
     from db._skills import ratings_given_batch as _ratings_given_batch
@@ -1243,6 +1274,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["tag_applications"] = tag_applications_map.get(aid, 0)
         row["skills"] = _skills_map.get(aid, {})
         row["ratings_given"] = _given_map.get(aid, 0)
+        row["guild_memberships"] = _guild_memberships_map.get(aid, [])
         out[aid] = row
     return out
 

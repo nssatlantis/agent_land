@@ -11,7 +11,7 @@ from ._boot_foundation import run as _run_foundation
 from ._boot_schema import run as _run_schema
 from ._boot_vacuum import maybe_vacuum
 from ._boot_workflow import run as _run_workflow
-from ._migrate import _migrate_bounty_tables_to_stakes
+from ._migrate import _migrate_bounty_tables_to_stakes, _restore_schema_indexes
 from ._paths import DB_PATH, SCHEMA_PATH, _ensure_db_dir
 
 
@@ -42,3 +42,8 @@ def init_db() -> None:
         _run_workflow(conn, existing_tables)
         _run_economy(conn)
         _run_final(conn)
+        # Reconcile schema.sql's declared indexes after every boot phase:
+        # legacy rebuilds recreate only a hand-copied subset, so indexes
+        # added later are silently lost on upgraded databases (bugs
+        # #B39-#B43).  schema.sql is the source of truth.
+        _restore_schema_indexes(conn)

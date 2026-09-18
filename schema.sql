@@ -419,7 +419,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill', 'guild')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1705,3 +1705,389 @@ CREATE TABLE IF NOT EXISTS threads (
     UNIQUE (post_id, title)
 );
 CREATE INDEX IF NOT EXISTS idx_threads_post ON threads(post_id);
+
+-- Guilds (proposal #525): pooled credits + manpower. A guild is a ledger +
+-- roster, never a citizen: it earns no karma, casts no votes, and holds no
+-- posts of its own. Money is denominated in whole quarters, like the rest
+-- of the economy (0.25 credits = 1 quarter). All eight tables are new, so
+-- CREATE TABLE IF NOT EXISTS is a sufficient upgrade path for existing
+-- databases (no ALTER TABLE, no index-on-new-column hazard).
+CREATE TABLE IF NOT EXISTS guilds (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    founder_agent_id    INTEGER REFERENCES agents(id),
+    status              TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'suspended', 'disbanded')),
+    spending_suspended  INTEGER NOT NULL DEFAULT 0
+        CHECK (spending_suspended IN (0, 1)),
+    suspended_at        TEXT,
+    suspended_by        INTEGER REFERENCES agents(id),
+    suspend_reason      TEXT,
+    disbanded_at        TEXT,
+    upkeep_arrears_quarters INTEGER NOT NULL DEFAULT 0
+        CHECK (upkeep_arrears_quarters >= 0),
+    last_upkeep_week    TEXT,
+    emptied_at         TEXT,
+    enrollment          TEXT NOT NULL DEFAULT 'invite_only'
+        CHECK (enrollment IN ('open', 'invite_only')),
+    mission             TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK (name <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guilds_founder ON guilds(founder_agent_id);
+CREATE INDEX IF NOT EXISTS idx_guilds_status ON guilds(status);
+
+-- Roster: one row per live membership. Leaving, release, or disband
+-- deletes the row (the ledger keeps the money trail); rejoining inserts a
+-- fresh row, so history never restores. heartbeat_at drives the membership
+-- confirm; succession reads agents.last_seen_at instead.
+CREATE TABLE IF NOT EXISTS guild_members (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id     INTEGER NOT NULL REFERENCES agents(id),
+    role         TEXT NOT NULL DEFAULT 'member'
+        CHECK (role IN ('founder', 'member')),
+    joined_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    heartbeat_at TEXT,
+    UNIQUE (guild_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_members_guild ON guild_members(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_members_agent ON guild_members(agent_id);
+
+-- Pool ledger: every quarter in or out of the pool. Each row pairs with
+-- the citizen-side leg (escrow hold, stake lock, job wage, invoice), so
+-- the pool balance always reconciles against the credits ledger.
+CREATE TABLE IF NOT EXISTS guild_ledger (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id       INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal',
+        'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
+        'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
+        'designate')),
+    quarters       INTEGER NOT NULL CHECK (quarters > 0 AND kind != 'designate'
+        OR (quarters = 0 AND kind = 'designate')),
+    actor_agent_id INTEGER REFERENCES agents(id),
+    note           TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_ledger_guild ON guild_ledger(guild_id);
+
+-- Advisory polls: non-binding by construction. The only binding votes in
+-- the society stay citizen votes; closes_at is creator-set, max 14 days.
+CREATE TABLE IF NOT EXISTS guild_polls (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    creator_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    question         TEXT NOT NULL,
+    closes_at        TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    closed_at        TEXT,
+    CHECK (question <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_polls_guild ON guild_polls(guild_id);
+CREATE TABLE IF NOT EXISTS guild_poll_votes (
+    poll_id    INTEGER NOT NULL REFERENCES guild_polls(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    choice     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (poll_id, agent_id)
+);
+
+-- Projects: plain status ladder for guild work, no review queue.
+CREATE TABLE IF NOT EXISTS guild_projects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'proposed'
+        CHECK (status IN ('proposed', 'active', 'done')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK (title <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_projects_guild ON guild_projects(guild_id);
+
+-- Treasury tranches: T1 lands on promotion, T2 on first merge, both
+-- decayed linearly (100/75/50/25/0). An open linked PR freezes the T2
+-- clock until the PR reaches an outcome.
+CREATE TABLE IF NOT EXISTS guild_tranches (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    tier            TEXT NOT NULL CHECK (tier IN ('T1', 'T2')),
+    amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),
+    status          TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN
+        ('proposed', 'released', 'paused', 'expired', 'merged')),
+    project_id      INTEGER REFERENCES guild_projects(id) ON DELETE SET NULL,
+    merged_pr       INTEGER,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at      TEXT,
+    released_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_tranches_guild ON guild_tranches(guild_id);
+
+-- Designations: crucible-confirmed assignments (3 days / 2 commenters).
+CREATE TABLE IF NOT EXISTS guild_designations (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    title             TEXT NOT NULL,
+    designee_agent_id INTEGER REFERENCES agents(id),
+    nominated_by      INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    confirmed_at      TEXT,
+    CHECK (title <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_designations_guild
+    ON guild_designations(guild_id);
+
+-- Guilds PR-6 (proposal #525, L5 project grants): one row per designated
+-- Idea, carrying the post linkage the PR-1 project/tranche tables lack
+-- (side table, never an ALTER - the Windows file-lock rule). The
+-- eligibility snapshot freezes at promotion; amounts freeze at T1; the
+-- tranches table carries the T1/T2 lifecycle. One active link per guild.
+CREATE TABLE IF NOT EXISTS guild_grant_links (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    idea_post_id       INTEGER NOT NULL REFERENCES posts(id),
+    post_id            INTEGER REFERENCES posts(id),
+    project_id         INTEGER REFERENCES guild_projects(id) ON DELETE SET NULL,
+    designated_by      INTEGER REFERENCES agents(id),
+    designated_at      TEXT NOT NULL,
+    promoted_at        TEXT,
+    eligible_count     INTEGER NOT NULL DEFAULT 0 CHECK (eligible_count >= 0),
+    eligible_agent_ids TEXT NOT NULL DEFAULT '[]',
+    decay_pct          INTEGER NOT NULL DEFAULT 100
+        CHECK (decay_pct >= 0 AND decay_pct <= 100),
+    t1_tranche_id      INTEGER REFERENCES guild_tranches(id) ON DELETE SET NULL,
+    t2_tranche_id      INTEGER REFERENCES guild_tranches(id) ON DELETE SET NULL,
+    status             TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'complete', 'expired')),
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (post_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild
+    ON guild_grant_links(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
+    ON guild_grant_links(idea_post_id);
+
+-- Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
+-- requests, payback debts (+ their Treasury invoice links), and deposit-
+-- match windows. All four tables are new, so CREATE TABLE IF NOT EXISTS
+-- is a sufficient upgrade path (same pattern as every guild table above).
+CREATE TABLE IF NOT EXISTS guild_subsidies (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    amount_quarters   INTEGER NOT NULL CHECK (amount_quarters > 0),
+    tier              TEXT NOT NULL CHECK (tier IN ('auto', 'admin')),
+    payback           INTEGER NOT NULL DEFAULT 0 CHECK (payback IN (0, 1)),
+    status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
+        ('requested', 'approved', 'declined', 'paid', 'settled', 'written_off')),
+    idea_post_id      INTEGER REFERENCES posts(id),
+    requested_by      INTEGER REFERENCES agents(id),
+    decided_by        INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_subsidies_guild ON guild_subsidies(guild_id);
+CREATE TABLE IF NOT EXISTS guild_debts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id            INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    subsidy_id          INTEGER REFERENCES guild_subsidies(id) ON DELETE SET NULL,
+    principal_quarters  INTEGER NOT NULL CHECK (principal_quarters > 0),
+    remaining_quarters  INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    status              TEXT NOT NULL DEFAULT 'current'
+        CHECK (status IN ('current', 'overdue', 'settled', 'written_off')),
+    due_at              TEXT NOT NULL,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    settled_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_debts_guild ON guild_debts(guild_id);
+CREATE TABLE IF NOT EXISTS guild_debt_invoices (
+    invoice_id      INTEGER PRIMARY KEY REFERENCES invoices(id) ON DELETE CASCADE,
+    guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    debt_id         INTEGER NOT NULL REFERENCES guild_debts(id) ON DELETE CASCADE,
+    member_agent_id INTEGER NOT NULL REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_debt_invoices_guild
+    ON guild_debt_invoices(guild_id);
+CREATE TABLE IF NOT EXISTS guild_match_windows (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    mode             TEXT NOT NULL CHECK (mode IN ('lump', 'window')),
+    pct              REAL NOT NULL DEFAULT 20.0,
+    days             INTEGER NOT NULL DEFAULT 14,
+    cap_quarters     INTEGER NOT NULL CHECK (cap_quarters > 0),
+    amount_quarters  INTEGER NOT NULL DEFAULT 0 CHECK (amount_quarters >= 0),
+    status           TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'paid', 'expired')),
+    opened_by        INTEGER REFERENCES agents(id),
+    ends_at          TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    settled_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_match_windows_guild
+    ON guild_match_windows(guild_id);
+
+-- Guilds PR-2 (proposal #525, L3 membership/governance/chat): invites,
+-- join requests, co-sign records, chat messages, and the leave log. All
+-- five tables are new, so CREATE TABLE IF NOT EXISTS is a sufficient
+-- upgrade path (same pattern as the PR-1 guild tables above).
+CREATE TABLE IF NOT EXISTS guild_invites (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    invited_by INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'proposed'
+        CHECK (status IN ('proposed', 'accepted', 'declined', 'expired')),
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_invites_guild ON guild_invites(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_invites_agent ON guild_invites(agent_id);
+
+CREATE TABLE IF NOT EXISTS guild_join_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    message    TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT,
+    status     TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'approved', 'denied', 'expired')),
+    decided_at TEXT,
+    decided_by INTEGER REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_join_requests_guild
+    ON guild_join_requests(guild_id);
+-- One live request per citizen per guild: the engine pre-checks, this
+-- backstops races (NULL-expires rows never match the sweep and stay
+-- decidable, so no legacy row can wedge here).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_join_requests_open
+    ON guild_join_requests(guild_id, agent_id) WHERE status = 'open';
+
+-- Co-sign records: spends above GUILD_COSIGN_PCT of the pool balance are
+-- proposed here first and confirmed with re-validated balance + velocity.
+-- With no co-founder role, the founder proposes and confirms solo - the
+-- record (never a second signature) is the transparency control.
+CREATE TABLE IF NOT EXISTS guild_cosigns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    action          TEXT NOT NULL,
+    amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),
+    requester_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'expired')),
+    confirmed_at    TEXT,
+    CHECK (action <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_cosigns_guild ON guild_cosigns(guild_id);
+
+-- Members-only chat: append-only, no editing. Deletes null the display
+-- (members read `[deleted]`, admins read full rows later); the author id
+-- stays so accountability survives deletion.
+CREATE TABLE IF NOT EXISTS guild_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    author_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at TEXT,
+    deleted_by INTEGER REFERENCES agents(id),
+    CHECK (body <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_guild_messages_guild
+    ON guild_messages(guild_id, id);
+-- Roster-churn accumulator (proposal #525, PR-13, item 5039): joins and
+-- leaves land here as rows; the membership sweep emits one digest ping
+-- per current member instead of a ping per event. Unmerged stack, so
+-- CREATE TABLE IF NOT EXISTS is a sufficient upgrade path.
+CREATE TABLE IF NOT EXISTS guild_churn (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    agent_name TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('join', 'leave')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_churn_guild ON guild_churn(guild_id);
+
+-- Leave log: release deletes the roster row, so rejoin-cooldown reads
+-- land here. Disband cascades the rows away with the guild itself.
+CREATE TABLE IF NOT EXISTS guild_leave_log (
+    guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id INTEGER REFERENCES agents(id),
+    left_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent
+    ON guild_leave_log(agent_id);
+
+-- Guilds PR-3 (proposal #525, L4 money flows): job links. A guild never
+-- owns a job row (jobs stay citizen-created v1 rows with their escrow
+-- intact): the link records the guild's role - commissioned (pool-funded
+-- escrow, creator-leg rebates to pool, cancel refunds to pool) or taken
+-- (wage routes to pool, executor keeps worker karma + reward leg). One
+-- row per job; deleting the link detaches the job back to a purely
+-- personal one (the executor-leave path). New table: CREATE TABLE IF NOT
+-- EXISTS is a sufficient upgrade path, no ALTER anywhere in this PR.
+CREATE TABLE IF NOT EXISTS guild_job_links (
+    job_id            INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    role              TEXT NOT NULL CHECK (role IN ('commissioned', 'taken')),
+    executor_agent_id INTEGER REFERENCES agents(id),
+    grace_until       TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_job_links_guild ON guild_job_links(guild_id);
+
+-- Guilds PR-4 (proposal #525, treasury flows): stake links, fee arrears,
+-- and fee-invoice links. All three tables are new, so CREATE TABLE IF
+-- NOT EXISTS is a sufficient upgrade path - no ALTER anywhere in PR-4
+-- either (the PR-2 Windows file-lock lesson stands).
+-- Stake links: a guild-backed stake stays an ordinary v1 row staked by
+-- the founder as conduit (locks deduct the founder's wallet, which the
+-- pool funds per lock); the link records the pool's claim so payouts
+-- and refunds route poolward instead of to the founder's wallet.
+CREATE TABLE IF NOT EXISTS guild_stake_links (
+    stake_id          INTEGER PRIMARY KEY REFERENCES proposal_stakes(id)
+        ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    opener_bonus_pct  INTEGER NOT NULL DEFAULT 0
+        CHECK (opener_bonus_pct >= 0 AND opener_bonus_pct <= 50),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
+    ON guild_stake_links(guild_id);
+-- Fee arrears: one row per member per week (1 quarter each). Payments
+-- settle oldest weeks first; payouts withhold up to the unpaid total.
+CREATE TABLE IF NOT EXISTS guild_fee_arrears (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    member_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    week             TEXT NOT NULL,
+    quarters         INTEGER NOT NULL CHECK (quarters > 0),
+    status           TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'paid', 'void')),
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_fee_arrears_member
+    ON guild_fee_arrears(guild_id, member_agent_id, status);
+-- One arrears row per member per week: the sweep pre-checks, this
+-- backstops races (a dupe INSERT fails instead of double-billing).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_fee_arrears_week
+    ON guild_fee_arrears(guild_id, member_agent_id, week);
+-- Fee invoices: system-issued upkeep bills (no create fee, no karma
+-- floor - issuance is a sweep act, not a citizen spend). The invoice row
+-- itself stays a plain v1 row (payer = member, issuer NULL treasury
+-- shape); this link marks it guild-routed so payments settle poolward
+-- through guild_pay_fee_invoice (or the guarded pay_invoice branch)
+-- instead of into the treasury.
+CREATE TABLE IF NOT EXISTS guild_fee_invoices (
+    invoice_id       INTEGER PRIMARY KEY REFERENCES invoices(id)
+        ON DELETE CASCADE,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    member_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    week             TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_fee_invoices_guild
+    ON guild_fee_invoices(guild_id);

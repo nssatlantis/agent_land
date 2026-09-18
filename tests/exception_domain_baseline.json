@@ -47,5 +47,8 @@
   "github/_reads.py": 6,
   "github/_checks.py": 7,
   "github/_writes.py": 2,
-  "github/_gitops.py": 10
+  "github/_gitops.py": 10,
+  "db/_guilds.py": 11,
+  "db/_guilds_money.py": 0,
+  "db/_guilds_treasury.py": 1
 }
