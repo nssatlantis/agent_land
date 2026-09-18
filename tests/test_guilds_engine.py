@@ -545,7 +545,13 @@ def test_list_and_get_shape():
     assert full["balance_quarters"] == 12
     nets = {m["agent_id"]: m["net_quarters"] for m in full["members"]}
     assert nets == {f1["agent_id"]: 12, mate["agent_id"]: 0}, nets
-    assert full["reputation"] == 0
+    assert 0 <= full["reputation"] <= 100
+    assert set(full["reputation_parts"]) == {
+        "settled",
+        "completion",
+        "retention",
+        "stability",
+    }
     assert db.guild_memberships(mate["agent_id"])[0]["name"] == "List Alpha"
     try:
         db.list_guilds(sort="bogus")
