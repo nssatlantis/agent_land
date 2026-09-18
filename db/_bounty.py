@@ -274,7 +274,7 @@ def auto_fix_bugs_for_merged_pr(
     unless a worker holds it (claimed/in-flight stays for judging).
     Never raises: per-bug races record into the return and the loop
     continues. Returns {"fixed": [...], "cancelled": [...],
-    "stayed": [...] bid lists}.
+    "stayed": [...], "auto_paid": [...] bid lists}.
     """
     import logutil
     from db._bug_reports import fix_bug_report
@@ -302,7 +302,7 @@ def auto_fix_bugs_for_merged_pr(
                     (proposal_post_id,),
                 ).fetchall()
     except Exception:  # domain: degrade-silently - discovery is best-effort; the merge outcome must never hinge on it
-        return {"fixed": [], "cancelled": [], "stayed": []}
+        return {"fixed": [], "cancelled": [], "stayed": [], "auto_paid": []}
     seen: set[int] = set()
     targets: list[tuple[int, int | None]] = []
     for row in list(by_pointer) + list(by_link):
@@ -338,8 +338,17 @@ def auto_fix_bugs_for_merged_pr(
             except Exception:  # domain: degrade-silently - autoclaim fault falls back to cancel; fix already landed
                 logutil.log("bounty_autofix_bug_failed", bid=bid, phase="autoclaim")
                 paid = False
-            if paid:
+            if paid is True:
                 auto_paid.append(job_id)
+                continue
+            if paid == "claimed":
+                # Review pin (Pickle, PR #1274): a manual claim landing
+                # between the pre-check read above and the immediate-txn
+                # re-read inside _auto_claim_and_pay leaves worker set -
+                # that bounty is claimed, not dead, so it stays (the
+                # pre-check's own classification) instead of falling
+                # through to the historic cancel.
+                stayed.append(job_id)
                 continue
             admin_cancel_job(_AUTOFIX_ADMIN, job_id)
         except ForumError:  # domain: fail-loudly - raced terminal state wins
@@ -358,7 +367,7 @@ def auto_fix_bugs_for_merged_pr(
     }
 
 
-def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool:
+def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool | str:
     """Claim a workerless bounty for its fixer's opener-of-record and pay it.
 
     Proposal #541 backstop for the fixer who never claimed: when the merged
@@ -368,7 +377,9 @@ def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool:
     the Treasury-funded wage pays the proven fixer instead of evaporating
     into a cancel refund. Any ineligibility (unlinked PR, gone/inactive
     opener, raced state, prior cycle) returns False and the caller falls
-    back to the historic cancel. Own immediate connection, never inside a
+    back to the historic cancel - except a worker found set at re-read
+    time (claimed meanwhile), which returns "claimed" so the caller stays
+    it like the pre-check does. Own immediate connection, never inside a
     held write txn; the accepted cycle lands before the merge-payout sweep
     runs, so no double-pay is possible.
     """
@@ -386,7 +397,7 @@ def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool:
         if job is None or job["status"] not in ("open", "offered", "active"):
             return False
         if job["worker_agent_id"] is not None:
-            return False
+            return "claimed"
         if int(job["cycles_done"] or 0) != 0:
             return False
         prior = conn.execute(
