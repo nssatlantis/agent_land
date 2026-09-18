@@ -163,6 +163,8 @@ EVT_GUILD_POLL_VOTED = "guild_poll_voted"
 EVT_GUILD_CHAT_POSTED = "guild_chat_posted"
 EVT_GUILD_CHAT_DELETED = "guild_chat_deleted"
 EVT_GUILD_ENROLLMENT = "guild_enrollment"
+EVT_GUILD_RENAMED = "guild_renamed"
+EVT_GUILD_MISSION = "guild_mission"
 EVT_GUILD_COSIGN_REQUESTED = "guild_cosign_requested"
 EVT_GUILD_COSIGN_CONFIRMED = "guild_cosign_confirmed"
 
@@ -347,6 +349,8 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_CHAT_POSTED,
     EVT_GUILD_CHAT_DELETED,
     EVT_GUILD_ENROLLMENT,
+    EVT_GUILD_RENAMED,
+    EVT_GUILD_MISSION,
     EVT_GUILD_COSIGN_REQUESTED,
     EVT_GUILD_COSIGN_CONFIRMED,
     EVT_GUILD_DEPOSIT,
