@@ -2043,8 +2043,9 @@ def list_guilds(
     sort: str = "newest",
 ) -> list[dict]:
     """Guild index: q substring, status filter, member floor, newest /
-    largest / reputation (reputation is the v1 score; at most
-    GUILD_MAX_GUILDS rows ever, so the per-row compute stays trivial)."""
+    largest / reputation (reputation is the v1 score, computed per row;
+    live guilds are capped but disbanded history accumulates, so each
+    row costs a few extra queries on that sort)."""
     if sort not in ("newest", "largest", "reputation"):
         raise ForumError("sort is 'newest', 'largest' or 'reputation'.")
     with _conn() as conn:
