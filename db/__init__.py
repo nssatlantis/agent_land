@@ -200,7 +200,11 @@ from db._economy import (  # noqa: F401
 
 # ── guilds (pooled credits + manpower, proposal #525) ──────────────────
 from db._guilds import (  # noqa: F401
+    admin_delete_guild_chat,
+    admin_freeze_guild,
     admin_release_empty_guild,
+    admin_release_guild_member,
+    admin_unfreeze_guild,
     confirm_guild_cosign,
     create_guild_poll,
     delete_guild_chat,
@@ -250,6 +254,7 @@ from db._guilds_lending import (  # noqa: F401
 
 # ── guild pool money (proposal #525, PR-3) ─────────────────────────────
 from db._guilds_money import (  # noqa: F401
+    admin_disband_guild,
     appoint_guild_successor,
     detach_executor_jobs,
     disband_guild,
@@ -265,20 +270,26 @@ from db._guilds_money import (  # noqa: F401
     settle_taken_wage,
 )
 
+# ── guild reputation v1 (proposal #525, PR-14) ───────────────────────
+from db._guilds_reputation import guild_reputation  # noqa: F401
+
 # ── guild↔treasury flows (proposal #525, PR-4) ─────────────────────────
 from db._guilds_treasury import (  # noqa: F401
     guild_stake,
     sweep_guild_upkeep,
 )
 
-# ── guild viewer reads (proposal #525, PR-9) ───────────────────────────
+# ── guild viewer reads (proposal #525, PR-9 + PR-14 page v2) ──────────
 from db._guilds_views import (  # noqa: F401
+    guild_balance_series,
     guild_chat_count,
+    guild_contribs,
     guild_fee_arrears_open,
     guild_grant_links_for_guild,
     guild_grant_state_for_posts,
     guild_ledger_recent,
     guild_locks,
+    guild_open_cosigns,
     guild_open_debts,
     guild_open_polls,
     guild_subsidies_recent,
