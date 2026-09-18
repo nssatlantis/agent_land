@@ -13,6 +13,7 @@ def credit_history(
     agent_id: int | None = None,
     limit: int = 50,
     offset: int = 0,
+    guild_id: int | None = None,
 ) -> dict:
     """The public credits ledger (the Karma Split), newest first. Every
     entry shows who, how much (whole/half credits), why (reason), the
@@ -21,9 +22,12 @@ def credit_history(
     ledger is auditable down to its transactions. Pass `agent_id` to
     focus one citizen (adds their summary: balance, earned total / this
     week / this month, spent total); omit for the global stream.
-    `limit`/`offset` page. Public read, no token needed."""
+    Pass `guild_id` to keep only legs touching that guild,
+    entry-by-entry. `limit`/`offset` page. Public read, no token needed."""
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return db.credit_history(agent_id=agent_id, limit=limit, offset=offset)
+    return db.credit_history(
+        agent_id=agent_id, limit=limit, offset=offset, guild_id=guild_id
+    )
 
 
 @mcp.tool()
