@@ -412,6 +412,54 @@ def test_reputation_sort_stable_over_history():
     assert founder["agent_id"]
 
 
+def test_admin_release_nets_fee_arrears():
+    # B1 (citizen-one review): admin release rides _pay_member_out, so
+    # open fee arrears withhold exactly like every other payout path.
+    founder, guild = _found()
+    mate = _mate(founder, guild, 10.0)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_fee_arrears (guild_id, member_agent_id, week,"
+            " quarters, status) VALUES (?, ?, '2026-W01', 1, 'open')",
+            (guild["id"], mate["agent_id"]),
+        )
+    out = db.admin_release_guild_member(ADMIN, guild["id"], mate["name"], "refund")
+    assert out["paid"] == 39, out
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM guild_fee_arrears WHERE guild_id = ?"
+            " AND member_agent_id = ?",
+            (guild["id"], mate["agent_id"]),
+        ).fetchone()["status"]
+    assert status == "paid"
+
+
+def test_admin_disband_refuses_open_debts():
+    # B1: admin disband gates on open debts exactly like the voluntary
+    # path - exit never dodges a Treasury debt.
+    founder, guild = _found()
+    _mate(founder, guild, 10.0)
+    db.request_guild_subsidy(founder["token"], guild["id"], 1.0, True, "owed")
+    try:
+        db.admin_disband_guild(ADMIN, guild["id"])
+        raise AssertionError("admin disband landed over open debts")
+    except Exception as exc:
+        assert "debt" in str(exc), exc
+
+
+def test_release_matches_leave_on_open_debts():
+    # B1 parity: debts are guild-level obligations collected by the
+    # seize clock; individual exits (leave or admin release) never gate
+    # on them - exit over voice holds even for indebted guilds.
+    founder, guild = _found()
+    mate = _mate(founder, guild, 10.0)
+    mate2 = _mate(founder, guild, 5.0)
+    db.request_guild_subsidy(founder["token"], guild["id"], 1.0, True, "owed")
+    db.leave_guild(mate["token"], guild["id"])
+    out = db.admin_release_guild_member(ADMIN, guild["id"], mate2["name"], "refund")
+    assert out["paid"] >= 0, out
+
+
 def test_boot_relaxes_guild_attribution():
     """Pre-PR-14 guild tables (NOT NULL attribution legs) rebuild to the
     relaxed shape through init_db. Runs LAST: fresh_db repoints the
@@ -598,6 +646,9 @@ if __name__ == "__main__":
     test_contribs_keep_deleted_citizen()
     test_delete_covers_cosign_debtlink_freezer()
     test_reputation_sort_stable_over_history()
+    test_admin_release_nets_fee_arrears()
+    test_admin_disband_refuses_open_debts()
+    test_release_matches_leave_on_open_debts()
     test_guild_page_v2_sections()
     test_admin_routes_registered()
     test_boot_relaxes_guild_attribution()
