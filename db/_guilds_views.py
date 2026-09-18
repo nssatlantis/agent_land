@@ -234,7 +234,10 @@ def guild_balance_series(guild_id: int, limit: int = 500) -> list[dict]:
 def guild_contribs(guild_id: int) -> list[dict]:
     """Lifetime per-member contributions (item 5070): deposits in,
     withdrawals out, net beside each name - the contribs half of the
-    page-v2 section, read straight off the pool ledger."""
+    page-v2 section, read straight off the pool ledger. Deleted citizens
+    keep their rows (actor NULLs on deletion): they render as
+    "(deleted citizen)" with flows intact, never silently dropped. The
+    one actorless system row (disband remainder) is excluded by note."""
     with _conn() as conn:
         rows = conn.execute(
             "SELECT l.actor_agent_id AS agent_id, a.name,"
@@ -243,7 +246,9 @@ def guild_contribs(guild_id: int) -> list[dict]:
             " COALESCE(SUM(CASE WHEN l.kind = 'withdrawal' THEN l.quarters"
             " ELSE 0 END), 0) AS withdrawn"
             " FROM guild_ledger l LEFT JOIN agents a ON a.id = l.actor_agent_id"
-            " WHERE l.guild_id = ? AND l.actor_agent_id IS NOT NULL"
+            " WHERE l.guild_id = ? AND l.kind IN ('deposit', 'withdrawal')"
+            " AND (l.actor_agent_id IS NOT NULL OR l.note NOT LIKE"
+            " 'disband remainder%')"
             " GROUP BY l.actor_agent_id ORDER BY deposited DESC",
             (guild_id,),
         ).fetchall()
