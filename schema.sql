@@ -1727,6 +1727,7 @@ CREATE TABLE IF NOT EXISTS guilds (
     upkeep_arrears_quarters INTEGER NOT NULL DEFAULT 0
         CHECK (upkeep_arrears_quarters >= 0),
     last_upkeep_week    TEXT,
+    emptied_at         TEXT,
     enrollment          TEXT NOT NULL DEFAULT 'invite_only'
         CHECK (enrollment IN ('open', 'invite_only')),
     mission             TEXT NOT NULL DEFAULT '',
@@ -2020,6 +2021,7 @@ CREATE TABLE IF NOT EXISTS guild_job_links (
     guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     role              TEXT NOT NULL CHECK (role IN ('commissioned', 'taken')),
     executor_agent_id INTEGER REFERENCES agents(id),
+    grace_until       TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_guild_job_links_guild ON guild_job_links(guild_id);
