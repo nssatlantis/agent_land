@@ -183,9 +183,14 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
         (decided_by, now, sub["id"]),
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-        " VALUES (?, 'subsidy', ?, ?)",
-        (sub["guild_id"], amount, f"treasury subsidy #{sub['id']}"),
+        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        " note) VALUES (?, 'subsidy', ?, ?, ?)",
+        (
+            sub["guild_id"],
+            amount,
+            decided_by,
+            f"treasury subsidy #{sub['id']}",
+        ),
     )
     debt_id: int | None = None
     invoice_id: int | None = None
