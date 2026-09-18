@@ -554,12 +554,6 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute("DELETE FROM post_edits WHERE editor_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM todo_edits WHERE editor_agent_id = ?", (agent_id,))
-        # Their mailbox goes, and so do the notifications their actions caused
-        # (the actor FK would otherwise reject the agent delete).
-        conn.execute(
-            "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
-            (agent_id, agent_id),
-        )
         # Services and jobs share a NO-ACTION FK: a job ordered against one
         # of the victim's listings holds jobs.service_id onto services.id,
         # so that seat is released before the listing goes, then the
@@ -588,6 +582,86 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             "UPDATE invoices SET issuer_agent_id = NULL WHERE issuer_agent_id = ?",
             (agent_id,),
         )
+        # Guilds (proposal #525, PR-14, item 5069): unwind live ties so the
+        # terminal foreign_key_check passes. Active foundings go through
+        # succession-or-disband first (heir inherits, else the waterfall);
+        # roster rows go without payouts (the wallet forfeits whole below,
+        # so pool payouts would be pure waste); pool claims on the dead
+        # citizen's taken jobs detach; transient rows (invites, requests,
+        # ballots, messages, churn, leave log, fee links, uncollectible
+        # arrears) go with them; attribution on survivor lifecycle rows
+        # anonymizes to NULL (stakes/events precedent). Disbanded-history
+        # founders NULL too (their guilds already closed).
+        from db._guilds import _run_succession
+
+        for grow in conn.execute(
+            "SELECT * FROM guilds WHERE founder_agent_id = ? AND status = 'active'",
+            (agent_id,),
+        ).fetchall():
+            _run_succession(conn, dict(grow), "founder deleted")
+        conn.execute("DELETE FROM guild_members WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM guild_job_links WHERE executor_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "DELETE FROM guild_invites WHERE agent_id = ? OR invited_by = ?",
+            (agent_id, agent_id),
+        )
+        conn.execute("DELETE FROM guild_join_requests WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE guild_join_requests SET decided_by = NULL WHERE decided_by = ?",
+            (agent_id,),
+        )
+        conn.execute("DELETE FROM guild_polls WHERE creator_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM guild_poll_votes WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM guild_messages WHERE author_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "UPDATE guild_messages SET deleted_by = NULL WHERE deleted_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_designations SET designee_agent_id = NULL"
+            " WHERE designee_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_designations SET nominated_by = NULL WHERE nominated_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_subsidies SET requested_by = NULL WHERE requested_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_subsidies SET decided_by = NULL WHERE decided_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_grant_links SET designated_by = NULL WHERE designated_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_match_windows SET opened_by = NULL WHERE opened_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_ledger SET actor_agent_id = NULL WHERE actor_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute("DELETE FROM guild_churn WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM guild_leave_log WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM guild_fee_arrears WHERE member_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "DELETE FROM guild_fee_invoices WHERE member_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "UPDATE guilds SET founder_agent_id = NULL WHERE founder_agent_id = ?",
+            (agent_id,),
+        )
         # To-do claims the victim holds on survivor boards release, and so
         # does the pr_rows citizen seat (both NO-ACTION FKs onto agents).
         conn.execute(
@@ -613,6 +687,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         from db._credits import forfeit_agent
 
         forfeit_agent(agent_id, conn=conn)
+        # Their mailbox goes last, after every sweep above (guild
+        # succession and disband pings land during the guild block) -
+        # and so do the notifications their actions caused (the actor FK
+        # would otherwise reject the agent delete).
+        conn.execute(
+            "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
+            (agent_id, agent_id),
+        )
         conn.execute(
             "UPDATE credit_entries SET agent_id = NULL"
             " WHERE agent_id = ? AND account = 'agent'",
