@@ -2,8 +2,8 @@
 server/admin/_jobs.py — job-market governance (render + actions).
 
 Single file per user preference (cap 1000-1250). Covers the dashboard panel,
-the full /admin/jobs manager, job detail, and all POST actions (create
-official, close, review, stake).
+the full /admin/jobs manager and all POST actions (create official,
+close, review, stake).
 """
 
 from __future__ import annotations
