@@ -935,6 +935,49 @@ def test_poll_choice_and_expiry_rules():
     assert closed is not None
 
 
+def test_demote_rolls_back_on_succession_failure():
+    # Agent7 PR-2 round: the idle/suspended demote must roll back with a
+    # failed succession, or the guild goes permanently headless (founder
+    # stamp gone, retrigger guard dead). Seed an unfunded solo guild and
+    # suspend its founder: the no-heir disband cannot fund the payout,
+    # so the whole demote+succession rolls back and the role survives
+    # for the retry.
+    founder, guild = _found("Demote Solo")
+    gid = guild["id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 20, ?, 'seed')",
+            (gid, founder["agent_id"]),
+        )
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2099-01-01T00:00:00.000Z", founder["agent_id"]),
+        )
+    old = _arm("FORUM_CREDITS_ENABLED", "0")
+    try:
+        report = db.sweep_guild_memberships()
+        assert any(
+            s["agent_id"] == founder["agent_id"] and s["why"] == "succession-failed"
+            for s in report["skipped"]
+        ), report
+        with db._conn() as conn:
+            role = conn.execute(
+                "SELECT role FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+                (gid, founder["agent_id"]),
+            ).fetchone()[0]
+        assert role == "founder", "failed succession must not demote"
+    finally:
+        _unarm(old, "FORUM_CREDITS_ENABLED")
+    # Funded retry succeeds through the same path (no headless state).
+    report = db.sweep_guild_memberships()
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM guilds WHERE id = ?", (gid,)
+        ).fetchone()[0]
+    assert status == "disbanded", (report, status)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
