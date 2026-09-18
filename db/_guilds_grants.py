@@ -143,6 +143,7 @@ def _idea_guild(conn: sqlite3.Connection, post_id: int) -> int | None:
     try:
         cfg = json.loads(row["proposal_config"])
     except Exception:
+        # domain: degrade-silently - corrupt config degrades to unlinked
         return None
     gid = cfg.get("guild_id") if isinstance(cfg, dict) else None
     return (
