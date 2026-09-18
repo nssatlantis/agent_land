@@ -866,6 +866,39 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
         return {"guild_id": guild_id, "mode": mode, "paid": paid}
 
 
+def admin_disband_guild(admin: str, guild_id: int) -> dict:
+    """Admin disbands any live guild (item 5060): resolves job/stake
+    locks inline, runs the standard waterfall paying every member, then
+    closes. Open debts refuse like the voluntary path. Admin-only by
+    construction (admin panel session gate)."""
+    with _conn(immediate=True) as conn:
+        from db._guilds import _admin_agent, _disband_distribute, _require_guild
+
+        agent = _admin_agent(conn, admin)
+        guild = _require_guild(conn, guild_id)
+        if guild["status"] != "active":
+            raise ForumError("only an active guild can be disbanded.")
+        from db._guilds_lending import _open_debts, release_guild_stakes_for_disband
+
+        if _open_debts(conn, guild_id):
+            raise ForumError("that guild holds open Treasury debts - repay them first.")
+        resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id=agent["id"])
+        release_guild_stakes_for_disband(conn, guild_id)
+        out = _disband_distribute(conn, guild_id, "admin disband")
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_DISBANDED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={"via": "admin-disband"},
+            conn=conn,
+        )
+        out["guild_id"] = int(guild_id)
+        return out
+
+
 def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int]:
     """Waterfall with the per-transfer fee: each member takes their
     pro-rata share minus 2% (pool deducts the full share, the recipient
