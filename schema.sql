@@ -2015,7 +2015,7 @@ CREATE INDEX IF NOT EXISTS idx_guild_churn_guild ON guild_churn(guild_id);
 -- land here. Disband cascades the rows away with the guild itself.
 CREATE TABLE IF NOT EXISTS guild_leave_log (
     guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
-    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    agent_id INTEGER REFERENCES agents(id),
     left_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent
