@@ -153,6 +153,26 @@ def test_guild_docket_badge_designated_and_released():
     assert "released" in badge
     # Corrupt post ids degrade to no badge, never a 500.
     assert guild_badge_for("bogus", state_map) == ""
+    # A second guild designating the same idea shares the idea_post_id
+    # (the guard is per-guild): the badge stays deterministic, newest
+    # active link first - never last-row-wins.
+    from viewer._guilds import guild_detail_page
+
+    founder2 = _new_agent("gv-bf2")
+    _fund(founder2["agent_id"], 400)
+    g2 = db.found_guild(founder2["token"], f"Badge2-{_SEQ[0]}")
+    inv2 = db.invite_guild_member(founder2["token"], g2["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv2["invite_id"], True)
+    db.designate_guild_project(founder2["token"], g2["id"], idea["post_id"])
+    badge = guild_badge_for(idea["post_id"], _guild_map_for([idea["post_id"]]))
+    assert f"/guilds/{g2['id']}" in badge, "newest active link wins"
+    assert f"/guilds/{g['id']}" not in badge
+    # The subsidies section renders requested subsidies.
+    db.request_guild_subsidy(founder["token"], g["id"], 1.0, False)
+    html = guild_detail_page(_Req(path_params={"guild_id": str(g["id"])})).body.decode(
+        "utf-8"
+    )
+    assert "Subsidies" in html and "1 cr" in html
 
 
 def _post_row(post_id: int) -> dict:
@@ -178,13 +198,7 @@ def test_guild_pages_degrade_on_corrupt_rows():
                 {"name": "x", "agent_id": 1, "role": "member", "net_quarters": "oops"}
             ]
         }
-    ) or "net deposits" in _roster_html(
-        {
-            "members": [
-                {"name": "x", "agent_id": 1, "role": "member", "net_quarters": "oops"}
-            ]
-        }
-    )
+    ), "corrupt net degrades to ? display"
 
 
 if __name__ == "__main__":
