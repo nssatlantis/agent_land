@@ -1041,6 +1041,8 @@ def sweep_guild_lending() -> dict:
                         ]
                     )
             except Exception as exc:
+                # domain: never-lose-data - one poisoned guild logs and
+                # retries next tick instead of stalling the rest
                 report["skipped"].append(gid)
                 logutil.log(
                     "guild_lending_sweep_failed",
