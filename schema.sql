@@ -1761,8 +1761,10 @@ CREATE TABLE IF NOT EXISTS guild_ledger (
     guild_id       INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     kind           TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal',
         'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
-        'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer')),
-    quarters       INTEGER NOT NULL CHECK (quarters > 0),
+        'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
+        'designate')),
+    quarters       INTEGER NOT NULL CHECK (quarters > 0
+        OR (quarters = 0 AND kind = 'designate')),
     actor_agent_id INTEGER REFERENCES agents(id),
     note           TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
