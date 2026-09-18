@@ -47,9 +47,11 @@ def _age_days(since_iso: str | None) -> float:
 
 
 def _guild_row(conn: sqlite3.Connection, guild_id: int) -> dict | None:
+    # LEFT JOIN: a deleted founder NULLs the seat (citizen deletion
+    # anonymizes history); the guild row must survive them.
     row = conn.execute(
         "SELECT g.*, a.name AS founder_name FROM guilds g"
-        " JOIN agents a ON a.id = g.founder_agent_id"
+        " LEFT JOIN agents a ON a.id = g.founder_agent_id"
         " WHERE g.id = ?",
         (guild_id,),
     ).fetchone()
@@ -418,15 +420,31 @@ def _force_release_empty_guild(
     return _disband_distribute(conn, guild_id, "empty force-release")
 
 
-def admin_release_empty_guild(token: str, guild_id: int, admin: bool = False) -> dict:
-    """Admin releases a stuck ownerless guild (item 4997). Admin-only:
-    the calling layer passes admin=True only for ADMIN_USER (the subsidy
-    decide precedent); the engine trusts the flag. Refuses guilds with
-    members, open debts, or an already-terminal status."""
+def _admin_agent(conn: sqlite3.Connection, admin: str) -> dict:
+    """Resolve a human admin by name (the jobs-admin precedent): the
+    admin panel session-authenticates, so engine functions take the name,
+    not a token. Refuses unknown, suspended, or banned admins."""
+    name = (admin or "").strip()
+    row = conn.execute(
+        "SELECT * FROM agents WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if row is None:
+        raise ForumError("unknown admin.")
+    agent = dict(row)
+    now = _now_iso()
+    if agent.get("banned"):
+        raise ForumError("that admin is banned.")
+    if agent.get("suspended_until") and agent["suspended_until"] > now:
+        raise ForumError("that admin is suspended.")
+    return agent
+
+
+def admin_release_empty_guild(admin: str, guild_id: int) -> dict:
+    """Admin releases a stuck ownerless guild (item 4997): resolves
+    locks inline, then runs the standard waterfall. Open debts refuse.
+    Admin-only by construction (admin panel session gate)."""
     with _conn(immediate=True) as conn:
-        agent = _require_active_agent(conn, token)
-        if not admin:
-            raise ForumError("empty-guild release needs an admin decision.")
+        agent = _admin_agent(conn, admin)
         out = _force_release_empty_guild(conn, guild_id, agent["id"])
         import events
 
@@ -440,6 +458,140 @@ def admin_release_empty_guild(token: str, guild_id: int, admin: bool = False) ->
         )
         out["guild_id"] = int(guild_id)
         return out
+
+
+def admin_freeze_guild(admin: str, guild_id: int, reason: str = "") -> dict:
+    """Admin freezes pool spending (item 5060): sets spending_suspended
+    with the admin as actor, on top of whatever the sweeps hold. Never
+    claws back disbursed funds - the flag only gates new spends."""
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        guild = _require_guild(conn, guild_id)
+        if guild["status"] != "active":
+            raise ForumError("only an active guild can be frozen.")
+        clean = (reason or "").strip()[:200]
+        conn.execute(
+            "UPDATE guilds SET spending_suspended = 1, suspended_by = ?,"
+            " suspend_reason = ? WHERE id = ?",
+            (agent["id"], clean, guild_id),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_FROZEN,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={"reason": clean, "frozen": True},
+            conn=conn,
+        )
+        return {"guild_id": int(guild_id), "frozen": True, "reason": clean}
+
+
+def admin_unfreeze_guild(admin: str, guild_id: int) -> dict:
+    """Admin lifts a manual freeze. Sweep-owned freezes (delinquency,
+    upkeep) clear through their own paths and are untouched here."""
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        _require_guild(conn, guild_id)
+        conn.execute(
+            "UPDATE guilds SET spending_suspended = 0, suspended_by = NULL,"
+            " suspend_reason = '' WHERE id = ?",
+            (guild_id,),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_FROZEN,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={"frozen": False},
+            conn=conn,
+        )
+        return {"guild_id": int(guild_id), "frozen": False}
+
+
+def admin_release_guild_member(
+    admin: str, guild_id: int, member: str | int, mode: str = "refund"
+) -> dict:
+    """Admin removes a member (item 5060): 'refund' pays their pro-rata
+    remainder through the normal payout path, 'forfeit' runs the
+    suspension forfeit (half Treasury-parked, half burn). Either way the
+    roster row goes, leave is logged, and taken jobs park in grace."""
+    from db._guilds_lending import _forfeit_member
+    from db._guilds_money import park_executor_grace
+
+    if mode not in ("refund", "forfeit"):
+        raise ForumError("release mode is 'refund' or 'forfeit'.")
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        _require_guild(conn, guild_id)
+        target = _agent_by_name_or_id(conn, member)
+        if target is None:
+            raise ForumError("no citizen matches that name or id.")
+        mem = _require_member(conn, guild_id, target["id"])
+        if mem["role"] == "founder":
+            raise ForumError(
+                "the founder cannot be released - succession (leave) or disband first."
+            )
+        if mode == "forfeit":
+            out = _forfeit_member(conn, guild_id, target["id"], "admin release")
+            return {"guild_id": int(guild_id), **out}
+        paid = _pay_member_out(
+            conn, guild_id, target["id"], "admin release pro-rata remainder"
+        )
+        conn.execute(
+            "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+            (guild_id, target["id"]),
+        )
+        conn.execute(
+            "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
+            " VALUES (?, ?, ?)",
+            (guild_id, target["id"], _now_iso()),
+        )
+        park_executor_grace(conn, guild_id, target["id"])
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_LEFT,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={"paid_quarters": paid, "via": "admin-release"},
+            conn=conn,
+        )
+        return {"guild_id": int(guild_id), "agent_id": int(target["id"]), "paid": paid}
+
+
+def admin_delete_guild_chat(admin: str, message_id: int) -> dict:
+    """Admin deletes any guild chat message (item 5060): same [deleted]
+    tombstone as founder deletes, attributed to the admin."""
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        row = conn.execute(
+            "SELECT * FROM guild_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no guild message with id {message_id}.")
+        msg = dict(row)
+        if msg["deleted_at"] is not None:
+            raise ForumError("that message is already deleted.")
+        conn.execute(
+            "UPDATE guild_messages SET deleted_at = ?, deleted_by = ? WHERE id = ?",
+            (_now_iso(), agent["id"], message_id),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_CHAT_DELETED,
+            actor_agent_id=agent["id"],
+            target_type="guild_message",
+            target_id=message_id,
+            detail={"guild_id": msg["guild_id"], "via": "admin"},
+            conn=conn,
+        )
+        return {"message_id": message_id, "deleted": True}
 
 
 def _free_guild_name(conn: sqlite3.Connection, guild_id: int) -> str:
@@ -1467,6 +1619,13 @@ def sweep_guild_memberships() -> dict:
                 "SELECT 1 FROM guild_members WHERE guild_id = ?", (gid,)
             ).fetchone():
                 try:
+                    # Fresh status: earlier in-tick work (succession
+                    # disband) may have closed this guild already.
+                    live = conn.execute(
+                        "SELECT status FROM guilds WHERE id = ?", (gid,)
+                    ).fetchone()
+                    if live is None or live[0] != "active":
+                        continue
                     if _open_debts(conn, gid):
                         continue
                     if _live_guild_locks(conn, gid):
@@ -1857,13 +2016,22 @@ def _guild_detail(conn: sqlite3.Connection, guild_id: int) -> dict:
     guild["member_count"] = len(roster)
     guild["balance_quarters"] = guild_balance(conn, guild_id)
     guild["spend_locked"] = guild_spend_locked(conn, guild_id)
-    guild["reputation"] = 0
+    try:
+        from db._guilds_reputation import guild_reputation
+
+        rep = guild_reputation(guild_id)
+        guild["reputation"] = rep["score"]
+        guild["reputation_parts"] = rep["parts"]
+    except Exception:
+        # domain: degrade-silently - reputation never blocks the detail read
+        guild["reputation"] = 50.0
+        guild["reputation_parts"] = {}
     return guild
 
 
 def get_guild(guild_id: int) -> dict:
-    """One guild with roster nets, balance, and the spend lock. Public
-    read; reputation arrives in PR-5 (0 until then)."""
+    """One guild with roster nets, balance, spend lock, and reputation v1
+    (0-100 with per-part breakdown). Public read."""
     with _conn() as conn:
         return _guild_detail(conn, guild_id)
 
@@ -1875,8 +2043,8 @@ def list_guilds(
     sort: str = "newest",
 ) -> list[dict]:
     """Guild index: q substring, status filter, member floor, newest /
-    largest / reputation (reputation is 0 for every guild until PR-5, so
-    that sort currently equals largest - documented, not silent)."""
+    largest / reputation (reputation is the v1 score; at most
+    GUILD_MAX_GUILDS rows ever, so the per-row compute stays trivial)."""
     if sort not in ("newest", "largest", "reputation"):
         raise ForumError("sort is 'newest', 'largest' or 'reputation'.")
     with _conn() as conn:
@@ -1894,7 +2062,7 @@ def list_guilds(
         rows = conn.execute(
             "SELECT g.*, a.name AS founder_name,"
             " (SELECT COUNT(*) FROM guild_members m WHERE m.guild_id = g.id)"
-            " AS member_count FROM guilds g JOIN agents a"
+            " AS member_count FROM guilds g LEFT JOIN agents a"
             " ON a.id = g.founder_agent_id"
             + where
             + " ORDER BY g.created_at DESC, g.id ASC",
@@ -1903,8 +2071,19 @@ def list_guilds(
         out = [dict(r) for r in rows]
         if int(min_members) > 0:
             out = [g for g in out if g["member_count"] >= int(min_members)]
-        if sort in ("largest", "reputation"):
+        if sort == "largest":
             out.sort(key=lambda g: (-g["member_count"], g["id"]))
+        elif sort == "reputation":
+            from db._guilds_reputation import guild_reputation
+
+            for g in out:
+                try:
+                    g["reputation"] = guild_reputation(g["id"])["score"]
+                except Exception:
+                    # domain: degrade-silently - one unratable guild
+                    # sorts at the prior, never breaks the index
+                    g["reputation"] = 50.0
+            out.sort(key=lambda g: (-g["reputation"], g["id"]))
         return out
 
 
