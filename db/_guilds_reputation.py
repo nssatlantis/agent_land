@@ -2,10 +2,13 @@
 
 A public 0-100 score from four components: settled debts (40),
 completed projects (30), member retention (20), upkeep stability (10) -
-weights knob-tunable and normalized by their sum. Components with no
-data score the 0.5 open prior (the skill-system precedent): a newborn
-guild reads middling, never perfect or damned. Pure compute over
-existing tables; no writes, no new tables, safe to call from readers.
+weights knob-tunable and normalized by the POSITIVE weights' sum.
+Components with no data score the 0.5 open prior (the skill-system
+precedent): a newborn guild reads middling, never perfect or damned.
+Non-positive weights drop their component; a non-finite knob falls
+back to 40/30/20/10 wholesale, and no positive weights at all reads
+the prior (50.0). Pure compute over existing tables; no
+writes, no new tables, safe to call from readers.
 """
 
 from __future__ import annotations
@@ -72,19 +75,28 @@ def guild_reputation(guild_id: int) -> dict:
         except (TypeError, ValueError):
             # domain: degrade-silently - corrupt knobs degrade to 40/30/20/10
             weights = (40.0, 30.0, 20.0, 10.0)
-        total_w = sum(w for w in weights if w > 0) or 1.0
+        import math
+
         parts = {
             "settled": settled,
             "completion": completion,
             "retention": retention,
             "stability": stability,
         }
-        score = round(
-            100
-            * sum(w * v for w, v in zip(weights, parts.values(), strict=True))
-            / total_w,
-            1,
-        )
+        try:
+            raw = [float(w) for w in weights]
+        except (TypeError, ValueError):
+            raw = []
+        if not raw or not all(math.isfinite(w) for w in raw):
+            # domain: degrade-silently - a non-finite knob falls back to
+            # 40/30/20/10 wholesale (renormalizing around corruption would
+            # silently bless a misconfigured treasury signal)
+            raw = [40.0, 30.0, 20.0, 10.0]
+        pos = [(w, v) for w, v in zip(raw, parts.values(), strict=True) if w > 0]
+        if not pos:
+            return {"score": 50.0, "parts": parts}
+        total_w = sum(w for w, _ in pos)
+        score = round(100 * sum(w * v for w, v in pos) / total_w, 1)
         return {"score": score, "parts": parts}
 
 
