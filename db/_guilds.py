@@ -129,16 +129,16 @@ def guild_balance(conn: sqlite3.Connection, guild_id: int) -> int:
 
 
 def member_net(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:
-    """One member's signed pool flow (deposits minus their withdrawals).
-    Pool-owned income (grants/match/winnings) carries no actor, so it never
-    weights anyone's share - shares are deposits-only by construction."""
-    marks = ",".join("?" for _ in _INFLOW_KINDS)
+    """One member's net deposits (deposits minus their withdrawals).
+    Pool-owned income (grants/subsidies/match/taken wages) carries actors
+    on some memos for attribution, but shares are deposits-only by
+    construction (item 5002) - so only the deposit/withdrawal kinds enter
+    the sum, and every other actor-bearing memo weights exactly nothing."""
     row = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN kind IN ("
-        + marks
-        + ") THEN quarters ELSE -quarters END), 0) FROM guild_ledger"
-        " WHERE guild_id = ? AND actor_agent_id = ?",
-        (*_INFLOW_KINDS, guild_id, agent_id),
+        "SELECT COALESCE(SUM(CASE WHEN kind = 'deposit' THEN quarters"
+        " WHEN kind = 'withdrawal' THEN -quarters ELSE 0 END), 0)"
+        " FROM guild_ledger WHERE guild_id = ? AND actor_agent_id = ?",
+        (guild_id, agent_id),
     ).fetchone()
     return int(row[0] or 0)
 
@@ -276,6 +276,108 @@ def _pay_member_out(
     return net
 
 
+def _live_guild_locks(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Live pool claims: open/offered/active job links plus active stake
+    links. Fee invoices are bills, not locks; debts refuse force paths
+    separately under their own seize clock."""
+    jobs = conn.execute(
+        "SELECT COUNT(*) FROM guild_job_links l JOIN jobs j ON j.id = l.job_id"
+        " WHERE l.guild_id = ? AND j.status IN ('open', 'offered', 'active')",
+        (guild_id,),
+    ).fetchone()[0]
+    stakes = conn.execute(
+        "SELECT COUNT(*) FROM guild_stake_links l JOIN proposal_stakes s"
+        " ON s.id = l.stake_id WHERE l.guild_id = ? AND s.status = 'active'",
+        (guild_id,),
+    ).fetchone()[0]
+    return int(jobs or 0) + int(stakes or 0)
+
+
+def _force_release_empty_guild(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    actor_agent_id: int | None = None,
+) -> dict:
+    """Release an ownerless (zero-member) guild: resolve live job/stake
+    locks inline, then run the standard waterfall. Open debts refuse -
+    their seize clock owns them, and force must never steal debt
+    collateral. Members must already be zero; the caller owns that check
+    for the sweep (which verified it) and the admin tool (which states
+    it). Shared by both so manual and automatic releases cannot drift."""
+    from db._guilds_lending import _open_debts, release_guild_stakes_for_disband
+    from db._guilds_money import resolve_guild_jobs_for_disband
+
+    if (
+        conn.execute("SELECT status FROM guilds WHERE id = ?", (guild_id,)).fetchone()
+        is None
+    ):
+        raise ForumError(f"no guild with id {guild_id}.")
+    if _member_count(conn, guild_id) > 0:
+        raise ForumError(
+            "that guild still holds members - force-release is for"
+            " ownerless guilds only."
+        )
+    if _open_debts(conn, guild_id):
+        raise ForumError(
+            "that guild holds open debts - the seize clock owns them,"
+            " force cannot take debt collateral."
+        )
+    resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id)
+    release_guild_stakes_for_disband(conn, guild_id)
+    return _disband_distribute(conn, guild_id, "empty force-release")
+
+
+def admin_release_empty_guild(token: str, guild_id: int, admin: bool = False) -> dict:
+    """Admin releases a stuck ownerless guild (item 4997). Admin-only:
+    the calling layer passes admin=True only for ADMIN_USER (the subsidy
+    decide precedent); the engine trusts the flag. Refuses guilds with
+    members, open debts, or an already-terminal status."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        if not admin:
+            raise ForumError("empty-guild release needs an admin decision.")
+        out = _force_release_empty_guild(conn, guild_id, agent["id"])
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_DISBANDED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={"via": "admin-force-release"},
+            conn=conn,
+        )
+        out["guild_id"] = int(guild_id)
+        return out
+
+
+def _free_guild_name(conn: sqlite3.Connection, guild_id: int) -> str:
+    """Free a disbanded guild's name (item 5066): the row keeps its
+    history under a suffixed name no founding can collide with (the id
+    rides along; a pre-squatted suffix falls through to a counter, so
+    the rename itself can never fail the disband it belongs to). Every
+    disband path calls this after flipping the status."""
+    crow = conn.execute("SELECT name FROM guilds WHERE id = ?", (guild_id,)).fetchone()
+    base = f"{crow['name']} (disbanded #{guild_id})" if crow else f"#{guild_id}"
+    candidate, n = base, 0
+    while True:
+        try:
+            conn.execute(
+                "UPDATE guilds SET name = ? WHERE id = ?",
+                (candidate, guild_id),
+            )
+            return candidate
+        except sqlite3.IntegrityError:
+            # domain: never-lose-data - a squatted suffix retries with a
+            # counter instead of failing the disband mid-waterfall
+            n += 1
+            if n > 100:
+                raise ForumError(
+                    "the disbanded name cannot be freed - try again later."
+                ) from None
+            candidate = f"{base} {n}"
+
+
 def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) -> dict:
     """Waterfall shared by every disband path: each member takes their
     pro-rata share, the remainder (pool income, dust) stays
@@ -329,6 +431,7 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
         "UPDATE guilds SET status = 'disbanded', disbanded_at = ? WHERE id = ?",
         (_now_iso(), guild_id),
     )
+    _free_guild_name(conn, guild_id)
     return {"paid": paid, "disbanded": True}
 
 
@@ -918,11 +1021,12 @@ def leave_guild(token: str, guild_id: int) -> dict:
             " VALUES (?, ?, ?)",
             (guild_id, agent["id"], _now_iso()),
         )
-        # Taken jobs detach to the executor personally (the spec's detach
-        # branch; the 7d successor-grace appointment flow is a follow-up).
-        from db._guilds_money import detach_executor_jobs
+        # Taken jobs park in successor grace (item 5009): the pool keeps
+        # its wage claim for 7d while a successor may be appointed; only
+        # the sweep's lapse detaches them.
+        from db._guilds_money import park_executor_grace
 
-        detach_executor_jobs(conn, guild_id, agent["id"])
+        park_executor_grace(conn, guild_id, agent["id"])
         import events
 
         events.log_event(
@@ -1022,6 +1126,7 @@ def sweep_guild_memberships() -> dict:
         "disbanded": [],
         "expired": 0,
         "polls_closed": 0,
+        "grace_expired": 0,
         "skipped": [],
     }
     miss_after = float(config.GUILD_HEARTBEAT_DAYS) * 2
@@ -1075,9 +1180,9 @@ def sweep_guild_memberships() -> dict:
                         " VALUES (?, ?, ?)",
                         (gid, mem["agent_id"], _now_iso()),
                     )
-                    from db._guilds_money import detach_executor_jobs
+                    from db._guilds_money import park_executor_grace
 
-                    detach_executor_jobs(conn, gid, mem["agent_id"])
+                    park_executor_grace(conn, gid, mem["agent_id"])
                     events.log_event(
                         events.EVT_GUILD_LEFT,
                         actor_agent_id=mem["agent_id"],
@@ -1203,6 +1308,76 @@ def sweep_guild_memberships() -> dict:
                             )
                         else:
                             report["disbanded"].append(gid)
+            # Successor-grace lapse (item 5009): parked taken links whose
+            # clock ran out detach to the executor personally.
+            from db._guilds_money import detach_executor_jobs
+
+            try:
+                lapsed = conn.execute(
+                    "SELECT job_id FROM guild_job_links WHERE guild_id = ?"
+                    " AND role = 'taken' AND grace_until IS NOT NULL"
+                    " AND grace_until <= ?",
+                    (gid, _now_iso()),
+                ).fetchall()
+            except Exception:
+                # domain: degrade-silently - a corrupt clock reads empty;
+                # the next tick retries the read, nothing detaches blind
+                lapsed = []
+            for lrow in lapsed:
+                try:
+                    erow = conn.execute(
+                        "SELECT executor_agent_id FROM guild_job_links"
+                        " WHERE job_id = ?",
+                        (lrow[0],),
+                    ).fetchone()
+                    detach_executor_jobs(conn, gid, int(erow[0]))
+                    report["grace_expired"] += 1
+                except Exception as exc:
+                    # domain: never-lose-data - one poisoned link logs and
+                    # retries next tick instead of stalling its neighbours
+                    report["skipped"].append(
+                        {"guild_id": gid, "job_id": lrow[0], "why": "grace-failed"}
+                    )
+                    logutil.log(
+                        "guild_sweep_grace_failed",
+                        guild_id=gid,
+                        job_id=lrow[0],
+                        error=str(exc),
+                    )
+            # Empty-with-locks timeout (item 4997): an ownerless guild
+            # holding live locks stamps emptied_at; 14d later the sweep
+            # force-releases and disbands. Open debts refuse (their seize
+            # clock owns them); no-lock empties disband at once.
+            from db._guilds_lending import _open_debts
+
+            if not conn.execute(
+                "SELECT 1 FROM guild_members WHERE guild_id = ?", (gid,)
+            ).fetchone():
+                try:
+                    if _open_debts(conn, gid):
+                        continue
+                    if _live_guild_locks(conn, gid):
+                        if guild.get("emptied_at") is None:
+                            conn.execute(
+                                "UPDATE guilds SET emptied_at = ? WHERE id = ?",
+                                (_now_iso(), gid),
+                            )
+                            continue
+                        if _age_days(guild["emptied_at"]) <= float(
+                            config.GUILD_EMPTY_TIMEOUT_DAYS
+                        ):
+                            continue
+                    _force_release_empty_guild(conn, gid)
+                    report["disbanded"].append(gid)
+                except ForumError as exc:
+                    # domain: degrade-silently - a refused/debt-held empty
+                    # guild stays put; the next tick retries the release
+                    report["skipped"].append({"guild_id": gid, "why": str(exc)[:120]})
+                    logutil.log(
+                        "guild_sweep_empty_failed",
+                        guild_id=gid,
+                        error=str(exc),
+                    )
             for table, live, col in (
                 ("guild_invites", "proposed", "expires_at"),
                 ("guild_join_requests", "open", "expires_at"),
