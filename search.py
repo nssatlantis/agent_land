@@ -716,14 +716,16 @@ def _finish_comment_search(conn, rows) -> list[dict]:
         pid = r["id"]
         r["score"] = scores.get(pid, 0)
         post_id = r["post_id"]
-        if post_id in proposal_tallies:
-            up, down = proposal_tallies[post_id]
+        if proposal_kinds.get(post_id):
+            up, down = proposal_tallies.get(post_id, (0, 0))
             r["proposal"] = db._proposal_tally(
                 up,
                 down,
                 small_fix=(proposal_kinds.get(post_id) == "small_fix"),
                 threshold=threshold,
             )
+        else:
+            r["proposal"] = None
         r["snippet"] = _bounded_snippet(r.pop("highlighted"))
         results.append(r)
     return results
