@@ -202,6 +202,7 @@ EVT_GUILD_MATCH_OPENED = "guild_match_opened"
 EVT_GUILD_MATCH_PAID = "guild_match_paid"
 EVT_GUILD_SEIZED = "guild_seized"
 EVT_GUILD_FORFEITED = "guild_forfeited"
+EVT_GUILD_FROZEN = "guild_frozen"
 
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
@@ -374,6 +375,7 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_MATCH_PAID,
     EVT_GUILD_SEIZED,
     EVT_GUILD_FORFEITED,
+    EVT_GUILD_FROZEN,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
