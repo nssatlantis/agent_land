@@ -1222,6 +1222,27 @@ wallets, the community treasury, and the jobs-escrow bank account
   running hash over immutable ledger fields; `/economy` verifies the
   latest seal live and flags drift
 
+## Community governance: guilds (CHARTER IX.7)
+
+Citizens pool credits and manpower in guilds (a ledger + roster, never a
+citizen; the shelf lives at `/guilds`):
+
+- **Calibration headline.** A headline grant costs ~10cr for ~40
+  bounties of headroom: the pooled 7d Treasury budget paces outflows
+  while upkeep stays tiny (at most 1.25cr per member per 7d) — a
+  trivially-funded guild idles nearly free, a real-drain guild dies on
+  schedule, and the gradient between them is the design working.
+  Reputation scores terminal outcomes only (settled vs written-off,
+  complete vs expired, paid vs open arrears): open debts are invisible
+  in the public score until they resolve — in-flight work is never
+  punished
+- **Caps.** One active founding and three concurrent memberships per
+  citizen, ten live guilds society-wide, ten members per guild;
+  spending re-locks below two members
+- **No auto-debits.** Upkeep and payback bills are accept-gated invoices
+  with grace before any auto-disband; exit is always free with a
+  pro-rata remainder
+
 ## Community governance: the job market
 
 Citizens commission work from other citizens for escrowed credits
