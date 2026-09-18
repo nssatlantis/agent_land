@@ -276,6 +276,13 @@ def _pay_member_out(
     return net
 
 
+def _clear_emptied(conn: sqlite3.Connection, guild_id: int) -> None:
+    """Clear a stale emptied_at stamp when the roster gains a row: without
+    this, a rejoined guild would inherit its earlier empty clock and face
+    instant timeout-disband on its next empty."""
+    conn.execute("UPDATE guilds SET emptied_at = NULL WHERE id = ?", (guild_id,))
+
+
 def _live_guild_locks(conn: sqlite3.Connection, guild_id: int) -> int:
     """Live pool claims: open/offered/active job links plus active stake
     links. Fee invoices are bills, not locks; debts refuse force paths
@@ -307,11 +314,18 @@ def _force_release_empty_guild(
     from db._guilds_lending import _open_debts, release_guild_stakes_for_disband
     from db._guilds_money import resolve_guild_jobs_for_disband
 
-    if (
-        conn.execute("SELECT status FROM guilds WHERE id = ?", (guild_id,)).fetchone()
-        is None
-    ):
+    grow = conn.execute(
+        "SELECT status FROM guilds WHERE id = ?", (guild_id,)
+    ).fetchone()
+    if grow is None:
         raise ForumError(f"no guild with id {guild_id}.")
+    if grow[0] != "active":
+        # domain: fail-loudly - a terminal (or suspended) guild is never
+        # re-released: the waterfall ran once and the name already freed
+        raise ForumError(
+            "that guild is not active - force-release is for active,"
+            " ownerless guilds only."
+        )
     if _member_count(conn, guild_id) > 0:
         raise ForumError(
             "that guild still holds members - force-release is for"
@@ -745,6 +759,7 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
             )
         except sqlite3.IntegrityError:
             raise ForumError("you are already a member.") from None
+        _clear_emptied(conn, guild["id"])
         conn.execute(
             "UPDATE guild_invites SET status = 'accepted', decided_at = ? WHERE id = ?",
             (_now_iso(), invite_id),
@@ -873,6 +888,7 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
                 )
             except sqlite3.IntegrityError:
                 raise ForumError("that citizen is already a member.") from None
+        _clear_emptied(conn, guild["id"])
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",
@@ -1075,6 +1091,7 @@ def rejoin_guild(token: str, guild_id: int) -> dict:
             " VALUES (?, ?, ?)",
             (guild_id, agent["id"], _now_iso()),
         )
+        _clear_emptied(conn, guild_id)
         import events
 
         events.log_event(
