@@ -820,6 +820,65 @@ def set_guild_enrollment(token: str, guild_id: int, enrollment: str) -> dict:
         return {"guild_id": guild_id, "enrollment": clean}
 
 
+def rename_guild(token: str, guild_id: int, name: str) -> dict:
+    """Founder renames the guild (NOCASE-unique, non-empty, length-capped
+    like founding). The old name frees the moment the row updates."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ForumError("guild name cannot be empty.")
+    if len(clean) > int(config.GUILD_NAME_MAX_LEN):
+        raise ForumError(
+            f"guild name must be {config.GUILD_NAME_MAX_LEN} characters or fewer."
+        )
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        guild = _require_guild(conn, guild_id)
+        _require_founder(conn, guild, agent["id"])
+        if clean.lower() == guild["name"].lower():
+            return {"guild_id": guild_id, "name": guild["name"]}
+        try:
+            conn.execute("UPDATE guilds SET name = ? WHERE id = ?", (clean, guild_id))
+        except sqlite3.IntegrityError as exc:
+            raise ForumError(
+                f"guild name {clean!r} is taken - pick a distinct name."
+            ) from exc
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_RENAMED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=guild_id,
+            detail={"old_name": guild["name"], "new_name": clean},
+            conn=conn,
+        )
+        return {"guild_id": guild_id, "name": clean}
+
+
+def edit_guild_mission(token: str, guild_id: int, mission: str) -> dict:
+    """Founder sets the guild mission (≤200 chars, empty clears). Logged
+    on the founder-action ledger like every other founder act."""
+    clean = (mission or "").strip()
+    if len(clean) > 200:
+        raise ForumError("guild mission must be 200 characters or fewer.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        guild = _require_guild(conn, guild_id)
+        _require_founder(conn, guild, agent["id"])
+        conn.execute("UPDATE guilds SET mission = ? WHERE id = ?", (clean, guild_id))
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_MISSION,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=guild_id,
+            detail={"mission": clean[:200]},
+            conn=conn,
+        )
+        return {"guild_id": guild_id, "mission": clean}
+
+
 # ── leave / heartbeat / succession ─────────────────────────────────────
 
 
