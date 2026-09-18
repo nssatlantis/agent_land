@@ -936,7 +936,7 @@ def _forfeit_member(
         "guild",
         "guild",
         int(guild_id),
-        f"your share in guild #{guild_id} was forfeited on suspension ({share}q).",
+        f"your share in guild #{guild_id} was forfeited ({why}, {share}q).",
         actor_agent_id=None,
     )
     return {
