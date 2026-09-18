@@ -278,6 +278,140 @@ def test_admin_routes_registered():
         assert p in paths, p
 
 
+def test_reputation_knob_vectors():
+    import importlib
+
+    from tests._setup import config as _cfg
+
+    def _arm(key, value):
+        old = os.environ.get(key)
+        os.environ[key] = value
+        importlib.reload(_cfg)
+        return old
+
+    def _unarm(key, old):
+        if old is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = old
+        importlib.reload(_cfg)
+
+    founder, guild = _found()
+    olds = [_arm("FORUM_GUILD_REP_STABILITY_W", "-10")]
+    try:
+        rep = db.guild_reputation(guild["id"])
+        import math as _math
+
+        assert _math.isfinite(rep["score"]) and 0 <= rep["score"] <= 100, rep
+    finally:
+        _unarm("FORUM_GUILD_REP_STABILITY_W", olds[0])
+    olds = [
+        _arm(k, "0")
+        for k in (
+            "FORUM_GUILD_REP_SETTLED_W",
+            "FORUM_GUILD_REP_COMPLETION_W",
+            "FORUM_GUILD_REP_RETENTION_W",
+            "FORUM_GUILD_REP_STABILITY_W",
+        )
+    ]
+    try:
+        rep = db.guild_reputation(guild["id"])
+        assert rep["score"] == 50.0, rep
+    finally:
+        for k, old in zip(
+            (
+                "FORUM_GUILD_REP_SETTLED_W",
+                "FORUM_GUILD_REP_COMPLETION_W",
+                "FORUM_GUILD_REP_RETENTION_W",
+                "FORUM_GUILD_REP_STABILITY_W",
+            ),
+            olds,
+            strict=True,
+        ):
+            _unarm(k, old)
+    old = _arm("FORUM_GUILD_REP_SETTLED_W", "nan")
+    try:
+        rep = db.guild_reputation(guild["id"])
+        assert rep["score"] == 60.0, rep
+    finally:
+        _unarm("FORUM_GUILD_REP_SETTLED_W", old)
+
+
+def test_heir_keeps_inherit_notice():
+    import moderation
+
+    founder, guild = _found()
+    mate = _mate(founder, guild, 0)
+    moderation.delete_agent(founder["agent_id"], ADMIN)
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT body, read_at FROM notifications WHERE agent_id = ?"
+            " AND kind = 'guild'",
+            (mate["agent_id"],),
+        ).fetchall()
+    inherit = [r for r in rows if "inherit" in r["body"]]
+    assert len(inherit) == 1 and inherit[0]["read_at"] is None, [dict(r) for r in rows]
+
+
+def test_contribs_keep_deleted_citizen():
+    import moderation
+
+    founder, guild = _found()
+    mate = _mate(founder, guild, 10.0)
+    moderation.delete_agent(mate["agent_id"], ADMIN)
+    rows = db.guild_contribs(guild["id"])
+    ghost = [r for r in rows if r["agent_id"] is None]
+    assert len(ghost) == 1 and ghost[0]["deposited"] == 40, rows
+
+
+def test_delete_covers_cosign_debtlink_freezer():
+    import moderation
+
+    founder, guild = _found()
+    _mate(founder, guild, 10.0)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    cos = db.request_guild_cosign(founder["token"], guild["id"], "press", 24)
+    assert cos["cosign_id"]
+    db.request_guild_subsidy(founder["token"], guild["id"], 1.0, True, "owed")
+    freezer = _new_agent("go-freezer")
+    db.admin_freeze_guild(freezer["name"], guild["id"], "review")
+    for aid in (founder["agent_id"], freezer["agent_id"]):
+        out = moderation.delete_agent(aid, ADMIN)
+        assert out["deleted"] is True, out
+    with db._conn() as conn:
+        for table, col in (
+            ("guild_cosigns", "requester_agent_id"),
+            ("guild_debt_invoices", "member_agent_id"),
+        ):
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {col} IN (?, ?)",
+                (founder["agent_id"], freezer["agent_id"]),
+            ).fetchone()[0]
+            assert n == 0, (table, n)
+        frozen = conn.execute(
+            "SELECT spending_suspended, suspended_by FROM guilds WHERE id = ?",
+            (guild["id"],),
+        ).fetchone()
+        assert frozen["spending_suspended"] == 1 and frozen["suspended_by"] is None, (
+            dict(frozen)
+        )
+        vio = conn.execute("PRAGMA foreign_key_check").fetchall()
+        assert vio == [], [dict(r) for r in vio]
+
+
+def test_reputation_sort_stable_over_history():
+    founder, guild = _found()
+    for tag in ("s1", "s2"):
+        ag = _new_agent(f"go-hist-{tag}")
+        _fund(ag["agent_id"], 120)
+        gg = db.found_guild(ag["token"], f"Hist-{tag}-{_SEQ[0]}")
+        db.disband_guild(ag["token"], gg["id"], "zero")
+    first = [(r["id"], r["reputation"]) for r in db.list_guilds(sort="reputation")]
+    second = [(r["id"], r["reputation"]) for r in db.list_guilds(sort="reputation")]
+    assert first == second and len(first) >= 3, first
+    assert founder["agent_id"]
+
+
 def test_boot_relaxes_guild_attribution():
     """Pre-PR-14 guild tables (NOT NULL attribution legs) rebuild to the
     relaxed shape through init_db. Runs LAST: fresh_db repoints the
@@ -382,6 +516,17 @@ def test_boot_relaxes_guild_attribution():
                 " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
                 " settled_at TEXT)"
             )
+            conn.execute("DROP TABLE IF EXISTS guild_leave_log")
+            conn.execute(
+                "CREATE TABLE guild_leave_log ("
+                " guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,"
+                " agent_id INTEGER NOT NULL REFERENCES agents(id),"
+                " left_at TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent"
+                " ON guild_leave_log(agent_id)"
+            )
         g = db.found_guild(ag["token"], "MigGuild")
         db.init_db()
         with db._conn() as conn:
@@ -396,6 +541,7 @@ def test_boot_relaxes_guild_attribution():
                 ("guild_subsidies", "requested_by"),
                 ("guild_grant_links", "designated_by"),
                 ("guild_match_windows", "opened_by"),
+                ("guild_leave_log", "agent_id"),
             ):
                 flags = {
                     r["name"]: r["notnull"]
@@ -426,6 +572,7 @@ def test_boot_relaxes_guild_attribution():
                 r'"(\w+ {2,}INTEGER REFERENCES agents\(id\))"', _boot_src
             )
             assert len(_guards) == 4, _guards
+            _guards.append("agent_id INTEGER REFERENCES agents(id),")
             for _guard in _guards:
                 _hit = conn.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'"
@@ -439,6 +586,7 @@ def test_boot_relaxes_guild_attribution():
 
 if __name__ == "__main__":
     test_reputation_prior_then_settled()
+    test_reputation_knob_vectors()
     test_economy_guild_lines()
     test_history_guild_filter()
     test_admin_freeze_round_trip()
@@ -446,6 +594,10 @@ if __name__ == "__main__":
     test_delete_agent_sweeps_guild_family()
     test_delete_founder_successions_to_heir()
     test_delete_founderless_history_renders()
+    test_heir_keeps_inherit_notice()
+    test_contribs_keep_deleted_citizen()
+    test_delete_covers_cosign_debtlink_freezer()
+    test_reputation_sort_stable_over_history()
     test_guild_page_v2_sections()
     test_admin_routes_registered()
     test_boot_relaxes_guild_attribution()
