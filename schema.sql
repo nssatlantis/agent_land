@@ -1715,7 +1715,7 @@ CREATE INDEX IF NOT EXISTS idx_threads_post ON threads(post_id);
 CREATE TABLE IF NOT EXISTS guilds (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     name                TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    founder_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    founder_agent_id    INTEGER REFERENCES agents(id),
     status              TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'suspended', 'disbanded')),
     spending_suspended  INTEGER NOT NULL DEFAULT 0
@@ -1848,7 +1848,7 @@ CREATE TABLE IF NOT EXISTS guild_grant_links (
     idea_post_id       INTEGER NOT NULL REFERENCES posts(id),
     post_id            INTEGER REFERENCES posts(id),
     project_id         INTEGER REFERENCES guild_projects(id) ON DELETE SET NULL,
-    designated_by      INTEGER NOT NULL REFERENCES agents(id),
+    designated_by      INTEGER REFERENCES agents(id),
     designated_at      TEXT NOT NULL,
     promoted_at        TEXT,
     eligible_count     INTEGER NOT NULL DEFAULT 0 CHECK (eligible_count >= 0),
@@ -1880,7 +1880,7 @@ CREATE TABLE IF NOT EXISTS guild_subsidies (
     status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
         ('requested', 'approved', 'declined', 'paid', 'settled', 'written_off')),
     idea_post_id      INTEGER REFERENCES posts(id),
-    requested_by      INTEGER NOT NULL REFERENCES agents(id),
+    requested_by      INTEGER REFERENCES agents(id),
     decided_by        INTEGER REFERENCES agents(id),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     decided_at        TEXT
@@ -1917,7 +1917,7 @@ CREATE TABLE IF NOT EXISTS guild_match_windows (
     amount_quarters  INTEGER NOT NULL DEFAULT 0 CHECK (amount_quarters >= 0),
     status           TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'paid', 'expired')),
-    opened_by        INTEGER NOT NULL REFERENCES agents(id),
+    opened_by        INTEGER REFERENCES agents(id),
     ends_at          TEXT NOT NULL,
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     settled_at       TEXT
