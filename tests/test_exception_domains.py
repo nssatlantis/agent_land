@@ -136,6 +136,7 @@ FILE_LIST = (
     "viewer/_agents.py",
     "viewer/_citizens_helpers.py",
     "viewer/_feed_helpers.py",
+    "viewer/_guilds.py",
     "viewer/_layout.py",
     "viewer/_pr_helpers.py",
     "viewer/_proposals.py",
