@@ -110,6 +110,13 @@ def _agent_by_name_or_id(conn: sqlite3.Connection, ref: str | int) -> dict | Non
     return dict(row) if row is not None else None
 
 
+def _agent_name(conn: sqlite3.Connection, agent_id: int) -> str:
+    """Display name for churn rows (falls back to #id when the row is
+    gone - the digest must never fail on a renamed citizen)."""
+    row = conn.execute("SELECT name FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    return str(row["name"]) if row is not None else f"#{agent_id}"
+
+
 # ── pool math (pure readers; PR-3 money endpoints reuse them) ──────────
 
 
@@ -283,6 +290,76 @@ def _clear_emptied(conn: sqlite3.Connection, guild_id: int) -> None:
     conn.execute("UPDATE guilds SET emptied_at = NULL WHERE id = ?", (guild_id,))
 
 
+_CHURN_DIGEST_LIMIT = 8
+
+
+def _record_churn(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    agent_id: int,
+    agent_name: str,
+    kind: str,
+) -> None:
+    """Roster-churn accumulator (item 5039): a join or leave lands here as
+    a row, and the sweep emits one digest ping per current member instead
+    of a ping per event. Targeted pings (invites, verdicts, payouts) are
+    untouched - only roster announcements batch."""
+    conn.execute(
+        "INSERT INTO guild_churn (guild_id, agent_id, agent_name, kind)"
+        " VALUES (?, ?, ?, ?)",
+        (guild_id, agent_id, agent_name, kind),
+    )
+
+
+def _sweep_churn_digest(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Emit the pending roster digest (item 5039): "2 joined (a, b),
+    1 left (c)" as ONE unread row per current member, refreshed while
+    unread (the vote-tally digest contract) - a member who already read
+    gets a fresh row on new churn instead. Returns members pinged."""
+    from notifications import _format_tally_names, _notify_tally
+
+    rows = conn.execute(
+        "SELECT agent_name, kind FROM guild_churn WHERE guild_id = ? ORDER BY id ASC",
+        (guild_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+    members = conn.execute(
+        "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
+        (guild_id,),
+    ).fetchall()
+    if not members:
+        conn.execute("DELETE FROM guild_churn WHERE guild_id = ?", (guild_id,))
+        return 0
+    joined = [r["agent_name"] for r in rows if r["kind"] == "join"]
+    left = [r["agent_name"] for r in rows if r["kind"] == "leave"]
+    parts = []
+    if joined:
+        parts.append(
+            f"{len(joined)} joined ({_format_tally_names(joined, _CHURN_DIGEST_LIMIT)})"
+        )
+    if left:
+        parts.append(
+            f"{len(left)} left ({_format_tally_names(left, _CHURN_DIGEST_LIMIT)})"
+        )
+    body = "Roster: " + ", ".join(parts)
+    # Ping first, consume after: a mid-loop failure leaves the rows for
+    # the next tick, and the tally refresh makes the retry dupe-free
+    # (same unread row refreshed, never a second row).
+    for mrow in members:
+        _notify_tally(
+            conn,
+            mrow["agent_id"],
+            "guild",
+            "guild",
+            guild_id,
+            body,
+            match_prefix="Roster: ",
+        )
+    conn.execute("DELETE FROM guild_churn WHERE guild_id = ?", (guild_id,))
+    return len(members)
+
+
 def _live_guild_locks(conn: sqlite3.Connection, guild_id: int) -> int:
     """Live pool claims: open/offered/active job links plus active stake
     links. Fee invoices are bills, not locks; debts refuse force paths
@@ -434,6 +511,8 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
 
     _void_open_arrears(conn, guild_id)
     conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild_id,))
+    # No roster left to digest to: drop pending churn with the roster.
+    conn.execute("DELETE FROM guild_churn WHERE guild_id = ?", (guild_id,))
     remainder = guild_balance(conn, guild_id)
     if remainder > 0:
         conn.execute(
@@ -760,6 +839,7 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
         except sqlite3.IntegrityError:
             raise ForumError("you are already a member.") from None
         _clear_emptied(conn, guild["id"])
+        _record_churn(conn, guild["id"], agent["id"], agent["name"], "join")
         conn.execute(
             "UPDATE guild_invites SET status = 'accepted', decided_at = ? WHERE id = ?",
             (_now_iso(), invite_id),
@@ -889,6 +969,13 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
             except sqlite3.IntegrityError:
                 raise ForumError("that citizen is already a member.") from None
         _clear_emptied(conn, guild["id"])
+        _record_churn(
+            conn,
+            guild["id"],
+            req["agent_id"],
+            _agent_name(conn, req["agent_id"]),
+            "join",
+        )
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",
@@ -1032,6 +1119,7 @@ def leave_guild(token: str, guild_id: int) -> dict:
             "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
             (guild_id, agent["id"]),
         )
+        _record_churn(conn, guild_id, agent["id"], agent["name"], "leave")
         conn.execute(
             "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
             " VALUES (?, ?, ?)",
@@ -1092,6 +1180,7 @@ def rejoin_guild(token: str, guild_id: int) -> dict:
             (guild_id, agent["id"], _now_iso()),
         )
         _clear_emptied(conn, guild_id)
+        _record_churn(conn, guild_id, agent["id"], agent["name"], "join")
         import events
 
         events.log_event(
@@ -1191,6 +1280,13 @@ def sweep_guild_memberships() -> dict:
                     conn.execute(
                         "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
                         (gid, mem["agent_id"]),
+                    )
+                    _record_churn(
+                        conn,
+                        gid,
+                        mem["agent_id"],
+                        _agent_name(conn, mem["agent_id"]),
+                        "leave",
                     )
                     conn.execute(
                         "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
@@ -1395,6 +1491,21 @@ def sweep_guild_memberships() -> dict:
                         guild_id=gid,
                         error=str(exc),
                     )
+            # Roster digest (item 5039): pending joins/leaves go out as one
+            # ping per current member. Individual flows (fee, co-sign,
+            # succession, delinquency, T2, designation, subsidy) keep
+            # their own pings elsewhere - only churn batches here.
+            try:
+                _sweep_churn_digest(conn, gid)
+            except Exception as exc:
+                # domain: degrade-silently - a failed digest drops nothing
+                # (rows were already consumed); members just miss a cycle
+                report["skipped"].append({"guild_id": gid, "why": "digest-failed"})
+                logutil.log(
+                    "guild_sweep_digest_failed",
+                    guild_id=gid,
+                    error=str(exc),
+                )
             for table, live, col in (
                 ("guild_invites", "proposed", "expires_at"),
                 ("guild_join_requests", "open", "expires_at"),
