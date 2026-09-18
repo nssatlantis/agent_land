@@ -510,4 +510,15 @@ def run(conn) -> set:
                 " ON guild_match_windows(guild_id);\n"
             ),
         )
+    if "guild_leave_log" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guild_leave_log",
+            "guild_id, agent_id, left_at",
+            "agent_id INTEGER REFERENCES agents(id),",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent"
+                " ON guild_leave_log(agent_id);\n"
+            ),
+        )
     return existing_tables
