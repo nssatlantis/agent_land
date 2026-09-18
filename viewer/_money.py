@@ -1099,6 +1099,16 @@ def _economy_body(request: Request) -> str:
             "held in job escrow (all)",
             tooltip="Held in the ledger escrow bank account (paired legs, supply-neutral) \u2014 citizen wages, official reservations and deposit pools alike.",
         )
+        + _card(
+            overview.get("held_in_guild_pools_credits", "0"),
+            "held in guild pools",
+            tooltip="Treasury-parked pool balances across active guilds (memo-only claims, supply-neutral).",
+        )
+        + _card(
+            overview.get("held_in_guild_escrow_credits", "0"),
+            "held in guild escrow",
+            tooltip="Remaining escrow on open guild-commissioned jobs (pool-funded, returns pool-parked on cancel).",
+        )
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
