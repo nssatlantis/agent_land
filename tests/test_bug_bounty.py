@@ -562,6 +562,25 @@ def test_bounty_nudge_once_per_link():
     print("  bounty_nudge_once_per_link: ok")
 
 
+def test_autoclaim_claimed_meanwhile_stays():
+    """Review pin (Pickle, PR #1274): a manual claim landing between the
+    pre-check read and the immediate-txn re-read reports "claimed", so the
+    caller stays the bounty instead of cancelling a live claim."""
+    from db._bounty import _auto_claim_and_pay
+
+    bid = _confirm_bug()
+    result0 = _roomy_sweep()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result0["posted"], result0
+    db.claim_job(AGENTS["delta"]["token"], jid)
+    _, pr = _fix_chain(bid, claimer="epsilon")
+    assert _auto_claim_and_pay(pr, bid, jid) == "claimed"
+    job = _job_row(jid)
+    assert job["worker_agent_id"] == AGENTS["delta"]["agent_id"]
+    assert job["status"] not in ("completed", "cancelled"), job["status"]
+    print("  autoclaim_claimed_meanwhile_stays: ok")
+
+
 if __name__ == "__main__":
     test_rebuild_preserves_bounty_column()
     test_live_cap_binds_per_tick()
@@ -581,6 +600,7 @@ if __name__ == "__main__":
     test_autoclaim_unlinked_opener_cancels()
     test_autoclaim_gone_opener_cancels()
     test_bounty_nudge_once_per_link()
+    test_autoclaim_claimed_meanwhile_stays()
     test_live_cap_pause_and_permit()
     test_weekly_cap_binds()
     print("\n== test_bug_bounty: all passed ==")
