@@ -651,7 +651,23 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute("DELETE FROM guild_churn WHERE agent_id = ?", (agent_id,))
-        conn.execute("DELETE FROM guild_leave_log WHERE agent_id = ?", (agent_id,))
+        # Leave rows anonymize (not deleted): retention derives ever/left
+        # from roster + leave log, and deletion must not rewrite the score.
+        conn.execute(
+            "UPDATE guild_leave_log SET agent_id = NULL WHERE agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "DELETE FROM guild_cosigns WHERE requester_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "DELETE FROM guild_debt_invoices WHERE member_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guilds SET suspended_by = NULL WHERE suspended_by = ?",
+            (agent_id,),
+        )
         conn.execute(
             "DELETE FROM guild_fee_arrears WHERE member_agent_id = ?", (agent_id,)
         )
@@ -689,11 +705,16 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         forfeit_agent(agent_id, conn=conn)
         # Their mailbox goes last, after every sweep above (guild
         # succession and disband pings land during the guild block) -
-        # and so do the notifications their actions caused (the actor FK
-        # would otherwise reject the agent delete).
+        # but only their OWN mailbox: pings they caused on survivors
+        # (the heir's inherit notice, actor-attributed) anonymize to
+        # NULL instead, matching the events-ledger policy above.
         conn.execute(
-            "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
-            (agent_id, agent_id),
+            "DELETE FROM notifications WHERE agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE notifications SET actor_agent_id = NULL WHERE actor_agent_id = ?",
+            (agent_id,),
         )
         conn.execute(
             "UPDATE credit_entries SET agent_id = NULL"
