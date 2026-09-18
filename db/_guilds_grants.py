@@ -154,14 +154,19 @@ def _idea_guild(conn: sqlite3.Connection, post_id: int) -> int | None:
     )
 
 
-def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
+def designate_guild_project(
+    token: str, guild_id: int, post_id: int, admin: bool = False
+) -> dict:
     """Founder designates an Idea as the guild's project seed. Gate: the
     post is a live idea by a guild member, at least GUILD_PROJECT_MIN_AGE
     days old with GUILD_PROJECT_MIN_COMMENTERS distinct outside
     commenters (founder and author excluded, both knob-tunable), and the
-    guild holds no other active grant link (one project at a time). The
-    grant itself triggers later, at promotion - this call only records
-    the designation."""
+    guild holds no other active grant link (one project at a time). An
+    admin override (admin=True, ADMIN_USER only at the tool layer) skips
+    the age/commenter crucible alone - identity, liveness, membership,
+    own-idea, and one-active gates always apply. The grant itself
+    triggers later, at promotion - this call only records the
+    designation."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_guild(conn, guild_id)
@@ -201,7 +206,7 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             raise ForumError(
                 "that idea's age cannot be read - try again later."
             ) from exc
-        if age_days < min_age:
+        if not admin and age_days < min_age:
             raise ForumError(
                 f"that idea is {age_days:.1f}d old - designation needs"
                 f" {min_age:g}d on the record."
@@ -215,7 +220,7 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             " AND agent_id NOT IN (?, ?)",
             (int(post_id), int(guild["founder_agent_id"]), int(post["agent_id"])),
         ).fetchone()[0]
-        if int(have or 0) < need:
+        if int(have or 0) < need and not admin:
             raise ForumError(
                 f"that idea has {have or 0} outside commenter(s) -"
                 f" designation needs {need} (founder and author excluded)."
@@ -254,7 +259,8 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             (
                 int(guild_id),
                 agent["id"],
-                f"designated idea #{post_id} ({post['title'][:80]})",
+                f"designated idea #{post_id} ({post['title'][:80]})"
+                + (" [admin override]" if admin else ""),
             ),
         )
         import events
@@ -264,7 +270,11 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             actor_agent_id=agent["id"],
             target_type="guild",
             target_id=int(guild_id),
-            detail={"post_id": int(post_id), "project_id": project_id},
+            detail={
+                "post_id": int(post_id),
+                "project_id": project_id,
+                "admin_override": bool(admin),
+            },
             conn=conn,
         )
         for mrow in conn.execute(
