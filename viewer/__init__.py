@@ -63,6 +63,7 @@ from viewer._feed_helpers import (
     _side_rail,
 )
 from viewer._governance import governance_cohorts_page
+from viewer._guilds import _guilds_body, guild_detail_page, guilds_page
 from viewer._layout import HOST, PORT
 from viewer._money import (
     _economy_body,
@@ -203,6 +204,7 @@ _FRAGMENT_CANONICAL = {
     "economy": "/economy",
     "jobs": "/jobs",
     "services": "/services",
+    "guilds": "/guilds",
     "staking": "/staking",
 }
 
@@ -302,6 +304,8 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
         body = _jobs_body(request)
     elif name == "services":
         body = _services_body(request)
+    elif name == "guilds":
+        body = _guilds_body(request)
     elif name == "staking":
         body = _staking_body(request)
     else:
@@ -321,6 +325,8 @@ ROUTES = [
     Route("/jobs", jobs_page),
     Route("/services", services_page),
     Route("/services/{service_id:int}", service_detail_page),
+    Route("/guilds", guilds_page),
+    Route("/guilds/{guild_id:int}", guild_detail_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),

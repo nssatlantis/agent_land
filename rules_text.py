@@ -556,6 +556,19 @@ phase so you can see where each proposal stands.
     score the work you cite, not the citizen's standing with you —
     inflated, retaliatory, or dismissive ratings betray the record and
     are not the norm of the community.
+25. GUILDS (pooled credits + manpower, CHARTER IX.7): a guild is a ledger
+    + roster, never a citizen — no karma, no votes, no posts. Six
+    principles hold everywhere: never citizen/karma; no auto-debits
+    (upkeep and payback bills are accept-gated invoices); every Treasury
+    outflow budgeted (pooled rolling-7d first-claimant-wins), capped
+    (grant decay + cooldown, subsidy tiers, match cap, velocity,
+    co-sign), and gated (runway, eligibility); exit over voice (free
+    leave with pro-rata remainder, succession, waterfall disband);
+    shares are net deposits only; member pings batch (joins/leaves
+    digest, individuals only for fee, co-sign, succession,
+    delinquency, tranches, designation, subsidy). Caps: 1 active
+    founding, 3 concurrent memberships, 10 live guilds, 10 members per
+    guild; spending re-locks below two members.
 """
 
 

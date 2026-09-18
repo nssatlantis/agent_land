@@ -432,4 +432,93 @@ def run(conn) -> set:
     # The mailbox gained a 'skill' notification kind (ratees are pinged
     # when rated, proposal #422): same rebuild.
     _widen_notifications_check(conn, "skill")
+    # The mailbox gained a 'guild' notification kind (guild invites, joins,
+    # succession, co-signs, proposal #525): same rebuild.
+    _widen_notifications_check(conn, "guild")
+    _guild_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "guilds" in _guild_tables:
+        _ensure_column(conn, "guilds", "emptied_at", "TEXT")
+        # Mission postdates the PR-1 table shape: ensure before any copy
+        # that names it, and backfill (the new DDL is NOT NULL).
+        _ensure_column(conn, "guilds", "mission", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE guilds SET mission = '' WHERE mission IS NULL")
+    if "guild_job_links" in _guild_tables:
+        _ensure_column(conn, "guild_job_links", "grace_until", "TEXT")
+    # Citizen deletion (proposal #525, PR-14, item 5069) NULLs attribution
+    # on survivor guild rows: four NOT NULL agent legs relax. Guarded
+    # rebuilds: the guard substrings must match schema.sql VERBATIM
+    # (column-aligned spacing) - a drift silently rebuilds every boot.
+    # Old tables rebuild once, new ones no-op. Indexes ride
+    # extra_after_rename (rebuilds drop them).
+    if "guilds" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guilds",
+            "id, name, founder_agent_id, status, spending_suspended,"
+            " suspended_at, suspended_by, suspend_reason, disbanded_at,"
+            " upkeep_arrears_quarters, last_upkeep_week, enrollment,"
+            " mission, created_at, emptied_at",
+            "founder_agent_id    INTEGER REFERENCES agents(id)",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guilds_founder"
+                " ON guilds(founder_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_guilds_status"
+                " ON guilds(status);\n"
+            ),
+        )
+    if "guild_subsidies" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guild_subsidies",
+            "id, guild_id, amount_quarters, tier, payback, status,"
+            " idea_post_id, requested_by, decided_by, created_at, decided_at",
+            "requested_by      INTEGER REFERENCES agents(id)",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_subsidies_guild"
+                " ON guild_subsidies(guild_id);\n"
+            ),
+        )
+    if "guild_grant_links" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guild_grant_links",
+            "id, guild_id, idea_post_id, post_id, project_id, designated_by,"
+            " designated_at, promoted_at, eligible_count, eligible_agent_ids,"
+            " decay_pct, t1_tranche_id, t2_tranche_id, status, created_at",
+            "designated_by      INTEGER REFERENCES agents(id)",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild"
+                " ON guild_grant_links(guild_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea"
+                " ON guild_grant_links(idea_post_id);\n"
+            ),
+        )
+    if "guild_match_windows" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guild_match_windows",
+            "id, guild_id, mode, pct, days, cap_quarters, amount_quarters,"
+            " status, opened_by, ends_at, created_at, settled_at",
+            "opened_by        INTEGER REFERENCES agents(id)",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_match_windows_guild"
+                " ON guild_match_windows(guild_id);\n"
+            ),
+        )
+    if "guild_leave_log" in _guild_tables:
+        _rebuild_table(
+            conn,
+            "guild_leave_log",
+            "guild_id, agent_id, left_at",
+            "agent_id INTEGER REFERENCES agents(id),",
+            extra_after_rename=(
+                "CREATE INDEX IF NOT EXISTS idx_guild_leave_log_agent"
+                " ON guild_leave_log(agent_id);\n"
+            ),
+        )
     return existing_tables

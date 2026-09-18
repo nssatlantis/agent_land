@@ -146,6 +146,64 @@ EVT_SERVICE_ORDERED = "service_ordered"
 EVT_SERVICE_UPDATED = "service_updated"
 EVT_SERVICE_RETIRED = "service_retired"
 
+# Guilds (pooled credits + manpower, proposal #525): every membership,
+# governance, and chat transition lands here - the founder-action ledger
+# the per-guild page reads.
+EVT_GUILD_CREATED = "guild_created"
+EVT_GUILD_INVITED = "guild_invited"
+EVT_GUILD_JOINED = "guild_joined"
+EVT_GUILD_JOIN_REQUESTED = "guild_join_requested"
+EVT_GUILD_JOIN_ANSWERED = "guild_join_answered"
+EVT_GUILD_LEFT = "guild_left"
+EVT_GUILD_HEARTBEAT = "guild_heartbeat"
+EVT_GUILD_SUCCEEDED = "guild_succeeded"
+EVT_GUILD_DISBANDED = "guild_disbanded"
+EVT_GUILD_POLL_CREATED = "guild_poll_created"
+EVT_GUILD_POLL_VOTED = "guild_poll_voted"
+EVT_GUILD_CHAT_POSTED = "guild_chat_posted"
+EVT_GUILD_CHAT_DELETED = "guild_chat_deleted"
+EVT_GUILD_ENROLLMENT = "guild_enrollment"
+EVT_GUILD_RENAMED = "guild_renamed"
+EVT_GUILD_MISSION = "guild_mission"
+EVT_GUILD_COSIGN_REQUESTED = "guild_cosign_requested"
+EVT_GUILD_COSIGN_CONFIRMED = "guild_cosign_confirmed"
+
+# Guilds PR-3 (proposal #525, L4 money flows): pool movement and the job
+# rails that touch it - deposits, withdrawals, commissioned/taken links,
+# detachments, and pool-funded invoice payments.
+EVT_GUILD_DEPOSIT = "guild_deposit"
+EVT_GUILD_WITHDRAW = "guild_withdraw"
+EVT_GUILD_JOB_COMMISSIONED = "guild_job_commissioned"
+EVT_GUILD_JOB_TAKEN = "guild_job_taken"
+EVT_GUILD_JOB_DETACHED = "guild_job_detached"
+EVT_GUILD_INVOICE_PAID = "guild_invoice_paid"
+
+# Guilds PR-4 (proposal #525, treasury flows): pool-backed stakes,
+# upkeep issuance, and the weekly sweep summary.
+EVT_GUILD_STAKE_PLACED = "guild_stake_placed"
+EVT_GUILD_UPKEEP_ISSUED = "guild_upkeep_issued"
+EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
+
+# Guilds PR-6 (proposal #525, L5 project grants): designation plus the
+# two tranche settlements (T2 doubles as the expiry/pause record).
+EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
+EVT_GUILD_GRANT_T1 = "guild_grant_t1"
+EVT_GUILD_GRANT_T2 = "guild_grant_t2"
+
+# Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
+# lifecycle, debt issue/settle/write-off, match open/pay, seizure, and
+# suspension forfeits - the public settled-vs-written-off record.
+EVT_GUILD_SUBSIDY_REQUESTED = "guild_subsidy_requested"
+EVT_GUILD_SUBSIDY_PAID = "guild_subsidy_paid"
+EVT_GUILD_DEBT_ISSUED = "guild_debt_issued"
+EVT_GUILD_DEBT_SETTLED = "guild_debt_settled"
+EVT_GUILD_DEBT_WRITTEN_OFF = "guild_debt_written_off"
+EVT_GUILD_MATCH_OPENED = "guild_match_opened"
+EVT_GUILD_MATCH_PAID = "guild_match_paid"
+EVT_GUILD_SEIZED = "guild_seized"
+EVT_GUILD_FORFEITED = "guild_forfeited"
+EVT_GUILD_FROZEN = "guild_frozen"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -278,6 +336,46 @@ _VALID_KINDS: set[str] = {
     EVT_SKILL_RATED,
     EVT_WORKSPACE_CLAIMED,
     EVT_WORKSPACE_RELEASED,
+    EVT_GUILD_CREATED,
+    EVT_GUILD_INVITED,
+    EVT_GUILD_JOINED,
+    EVT_GUILD_JOIN_REQUESTED,
+    EVT_GUILD_JOIN_ANSWERED,
+    EVT_GUILD_LEFT,
+    EVT_GUILD_HEARTBEAT,
+    EVT_GUILD_SUCCEEDED,
+    EVT_GUILD_DISBANDED,
+    EVT_GUILD_POLL_CREATED,
+    EVT_GUILD_POLL_VOTED,
+    EVT_GUILD_CHAT_POSTED,
+    EVT_GUILD_CHAT_DELETED,
+    EVT_GUILD_ENROLLMENT,
+    EVT_GUILD_RENAMED,
+    EVT_GUILD_MISSION,
+    EVT_GUILD_COSIGN_REQUESTED,
+    EVT_GUILD_COSIGN_CONFIRMED,
+    EVT_GUILD_DEPOSIT,
+    EVT_GUILD_WITHDRAW,
+    EVT_GUILD_JOB_COMMISSIONED,
+    EVT_GUILD_JOB_TAKEN,
+    EVT_GUILD_JOB_DETACHED,
+    EVT_GUILD_INVOICE_PAID,
+    EVT_GUILD_STAKE_PLACED,
+    EVT_GUILD_UPKEEP_ISSUED,
+    EVT_GUILD_UPKEEP_SWEPT,
+    EVT_GUILD_PROJECT_DESIGNATED,
+    EVT_GUILD_GRANT_T1,
+    EVT_GUILD_GRANT_T2,
+    EVT_GUILD_SUBSIDY_REQUESTED,
+    EVT_GUILD_SUBSIDY_PAID,
+    EVT_GUILD_DEBT_ISSUED,
+    EVT_GUILD_DEBT_SETTLED,
+    EVT_GUILD_DEBT_WRITTEN_OFF,
+    EVT_GUILD_MATCH_OPENED,
+    EVT_GUILD_MATCH_PAID,
+    EVT_GUILD_SEIZED,
+    EVT_GUILD_FORFEITED,
+    EVT_GUILD_FROZEN,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------

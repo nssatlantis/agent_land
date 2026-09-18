@@ -17,6 +17,7 @@ Leaves:
   _ci          — CI / workspaces dashboard
   _economy     — treasury governance
   _bugs        — bug reports
+  _guilds      — guild governance (index + detail + freeze/release/delete/disband)
 """
 
 from __future__ import annotations
@@ -75,6 +76,15 @@ from server.admin._economy import (  # noqa: F401
     _render_economy,  # noqa: F401
     economy_adjust,  # noqa: F401
 )
+from server.admin._guilds import (  # noqa: F401
+    guild_chat_delete,
+    guild_detail_page,
+    guild_disband,
+    guild_freeze,
+    guild_release_member,
+    guild_unfreeze,
+    guilds_admin_page,
+)
 from server.admin._jobs import (  # noqa: F401  # noqa: F401
     _render_jobs,
     _render_jobs_manager,
@@ -85,7 +95,6 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     create_official_job,
     create_stake,
     delete_stake,
-    jobs_detail_page,
     jobs_manager_page,
 )
 from server.admin._notifications import (  # noqa: F401
@@ -177,6 +186,19 @@ ROUTES = [
     Route("/admin/ci/gc-workspaces", ci_gc_workspaces, methods=["POST"]),
     Route("/admin/notifications", notifications_admin_page),
     Route("/admin/usage", usage_admin_page),
+    Route("/admin/guilds", guilds_admin_page),
+    Route("/admin/guilds/{guild_id:int}", guild_detail_page),
+    Route("/admin/guilds/{guild_id:int}/freeze", guild_freeze, methods=["POST"]),
+    Route("/admin/guilds/{guild_id:int}/unfreeze", guild_unfreeze, methods=["POST"]),
+    Route(
+        "/admin/guilds/{guild_id:int}/release", guild_release_member, methods=["POST"]
+    ),
+    Route("/admin/guilds/{guild_id:int}/disband", guild_disband, methods=["POST"]),
+    Route(
+        "/admin/guilds/chat/{message_id:int}/delete",
+        guild_chat_delete,
+        methods=["POST"],
+    ),
 ]
 
 __all__ = [
@@ -211,7 +233,6 @@ __all__ = [
     "create_stake",
     "delete_stake",
     "jobs_manager_page",
-    "jobs_detail_page",
     "create_official_job",
     "admin_close_job",
     "admin_reactivate_job",
@@ -228,6 +249,13 @@ __all__ = [
     "notifications_admin_page",
     "usage_admin_page",
     "economy_adjust",
+    "guilds_admin_page",
+    "guild_detail_page",
+    "guild_freeze",
+    "guild_unfreeze",
+    "guild_release_member",
+    "guild_chat_delete",
+    "guild_disband",
     "bugs_index",
     "bug_detail",
     "admin_confirm_bug",

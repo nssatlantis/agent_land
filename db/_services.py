@@ -562,13 +562,15 @@ def retire_service(token: str, service_id: int) -> dict:
         return _service_detail(conn, fresh)
 
 
-def order_service(token: str, service_id: int) -> dict:
+def order_service(token: str, service_id: int, guild_id: int | None = None) -> dict:
     """Buy a listing: spawns an ordinary offered v1 job (you escrow, the
     seller accepts via decide_job_offer - the veto is theirs) with the
     linkage riding the same INSERT as the escrow, and returns both. All
     money checks (karma floor, balance, placement fee) are enforced by
     the job path itself - this function adds only service-side state:
-    active, unpaused, not your own, order book not full. Known limit: the
+    active, unpaused, not your own, order book not full. guild_id
+    (proposal #525) commissions from a guild pool instead: the karma
+    floor is bypassed and the full escrow comes out of the pool. Known limit: the
     order-book check and the job INSERT are separate transactions, so two
     simultaneous buyers at cap-1 can both land - harm stays bounded
     because every extra order still needs the seller's accept and the
@@ -644,6 +646,7 @@ def order_service(token: str, service_id: int) -> dict:
         offer_to=row["seller_agent_id"],
         service_id=row["id"],
         service_terms=json.dumps(snapshot),
+        guild_id=guild_id,
     )
     # No post-hoc injection: create_job's own detail read carries
     # service_id/service_terms from the same commit, so the return
