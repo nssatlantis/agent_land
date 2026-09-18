@@ -243,6 +243,19 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             (int(guild_id), int(post_id), project_id, agent["id"], now),
         )
         link_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        # The designation itself is a public founder act on the pool
+        # ledger (item 5031): a zero-quarter 'designate' memo, money-neutral
+        # by construction (signed sums move by exactly 0, velocity and
+        # budget counters never see the kind).
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters,"
+            " actor_agent_id, note) VALUES (?, 'designate', 0, ?, ?)",
+            (
+                int(guild_id),
+                agent["id"],
+                f"designated idea #{post_id} ({post['title'][:80]})",
+            ),
+        )
         import events
 
         events.log_event(
@@ -336,6 +349,10 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
     )
     amount = min(cap_q, per_member_q * len(eligible)) * decay // 100
     if amount <= 1:
+        # Fully decayed (5th+ grant): no money moves, but the link is
+        # marked complete so the project slot frees - the decay counter
+        # it feeds stays floored at 0, so 'complete' here is
+        # money-neutral, never a merged completion.
         conn.execute(
             "UPDATE guild_grant_links SET status = 'complete',"
             " eligible_count = ?, eligible_agent_ids = ?, decay_pct = ?"
