@@ -98,8 +98,9 @@ def leave_guild(token: str, guild_id: int) -> dict:
 @mcp.tool()
 @_logged
 def rejoin_guild(token: str, guild_id: int) -> dict:
-    """Fresh rejoin after the 14d same-guild cooldown, via invite or open
-    enrollment - counters never restore (the roster row is new)."""
+    """Fresh rejoin after the 14d same-guild cooldown on open-enrollment
+    guilds (invite-only rejoins go through respond_guild_invite) -
+    counters never restore (the roster row is new)."""
     return db.rejoin_guild(token, guild_id)
 
 
