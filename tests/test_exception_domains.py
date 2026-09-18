@@ -100,6 +100,7 @@ FILE_LIST = (
     "db/_claiming.py",
     "db/_guilds_grants.py",
     "db/_guilds_lending.py",
+    "db/_guilds_views.py",
     "db/_pr_vote.py",
     "db/_bug_reports.py",
     "db/_subscriptions.py",
