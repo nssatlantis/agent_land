@@ -37,7 +37,7 @@ import db._aggregates as aggregates
 import logutil
 import reports
 from server.gzip_tunable import TunableGZipMiddleware
-from server.middleware import ServerErrorReports
+from server.middleware import NoIndexHeaders, ServerErrorReports
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
@@ -88,7 +88,7 @@ from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._search import search_page
 from viewer._services import _services_body, service_detail_page, services_page
-from viewer._static import static_style_css
+from viewer._static import static_robots_txt, static_style_css
 from viewer._utils import (
     _abs,
     _parse_iso,
@@ -348,6 +348,7 @@ ROUTES = [
     Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
+    Route("/robots.txt", static_robots_txt),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
@@ -380,6 +381,7 @@ app = Starlette(
         Middleware(ServerErrorReports),
         Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
+        Middleware(NoIndexHeaders),
     ],
     lifespan=lifespan,
 )
