@@ -200,6 +200,7 @@ from db._economy import (  # noqa: F401
 
 # ── guilds (pooled credits + manpower, proposal #525) ──────────────────
 from db._guilds import (  # noqa: F401
+    admin_release_empty_guild,
     confirm_guild_cosign,
     create_guild_poll,
     delete_guild_chat,
@@ -249,6 +250,7 @@ from db._guilds_lending import (  # noqa: F401
 
 # ── guild pool money (proposal #525, PR-3) ─────────────────────────────
 from db._guilds_money import (  # noqa: F401
+    appoint_guild_successor,
     detach_executor_jobs,
     disband_guild,
     guild_deposit,
