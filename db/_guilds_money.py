@@ -566,8 +566,8 @@ def detach_executor_jobs(conn: sqlite3.Connection, guild_id: int, agent_id: int)
     """Detach a departing member's taken jobs back to purely personal
     ones (the spec's detach branch - the job, worker, and escrow all stay
     exactly where v1 put them; only the pool claim is dropped). Returns
-    how many links were dropped. The 7d successor-grace appointment flow
-    is a named follow-up, not this call."""
+    how many links were dropped. Disband and grace-lapse paths own this;
+    departures park in grace instead (park_executor_grace)."""
     import events
 
     rows = conn.execute(
@@ -586,6 +586,109 @@ def detach_executor_jobs(conn: sqlite3.Connection, guild_id: int, agent_id: int)
             conn=conn,
         )
     return len(rows)
+
+
+def park_executor_grace(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:
+    """Park a departing executor's taken links in successor grace (item
+    5009): the pool keeps its wage claim for GUILD_SUCCESSOR_GRACE_DAYS
+    while a successor may be appointed; the sweep's lapse detaches them.
+    Returns how many links parked."""
+    import events
+    from db._guilds import _days_ago_iso
+
+    try:
+        days = float(config.GUILD_SUCCESSOR_GRACE_DAYS)
+    except (TypeError, ValueError):
+        # domain: degrade-silently - corrupt knob degrades to the 7d default
+        days = 7.0
+    until = _days_ago_iso(-days)
+    rows = conn.execute(
+        "SELECT job_id FROM guild_job_links WHERE guild_id = ?"
+        " AND role = 'taken' AND executor_agent_id = ?",
+        (guild_id, agent_id),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE guild_job_links SET grace_until = ? WHERE job_id = ?",
+            (until, row[0]),
+        )
+        events.log_event(
+            events.EVT_GUILD_JOB_DETACHED,
+            actor_agent_id=agent_id,
+            target_type="job",
+            target_id=row[0],
+            detail={"guild_id": guild_id, "why": "executor left, grace parked"},
+            conn=conn,
+        )
+    return len(rows)
+
+
+def appoint_guild_successor(token: str, job_id: int, successor: str | int) -> dict:
+    """Founder appoints a member to a grace-parked taken job: the pool's
+    wage claim reassigns (executor + cleared grace) without touching the
+    v1 job row itself - who works it stays exactly where v1 put them, only
+    the pool attribution moves. Refused past grace (the sweep owns lapsed
+    links) and for non-members."""
+    from db._core import _parse_iso
+    from db._guilds import (
+        _agent_by_name_or_id,
+        _require_founder,
+        _require_guild,
+        _require_member,
+    )
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        link = conn.execute(
+            "SELECT * FROM guild_job_links WHERE job_id = ? AND role = 'taken'",
+            (int(job_id),),
+        ).fetchone()
+        if link is None:
+            raise ForumError(f"job #{job_id} carries no taken guild link.")
+        link = dict(link)
+        guild = _require_guild(conn, link["guild_id"])
+        _require_founder(conn, guild, agent["id"])
+        if link.get("grace_until") is None:
+            raise ForumError(
+                f"job #{job_id} is not in successor grace - only parked"
+                " links can be reassigned."
+            )
+        try:
+            lapsed = _parse_iso(_now_iso()) > _parse_iso(link["grace_until"])
+        except Exception as exc:
+            # domain: fail-loudly - a corrupt grace clock refuses the
+            # appointment; the sweep's lapse owns the link instead
+            raise ForumError(
+                f"job #{job_id} has an unreadable grace clock - wait for the sweep."
+            ) from exc
+        if lapsed:
+            raise ForumError(
+                f"job #{job_id} grace already lapsed - the sweep detaches it."
+            )
+        new_exec = _agent_by_name_or_id(conn, successor)
+        if new_exec is None:
+            raise ForumError("no citizen matches that name or id.")
+        _require_member(conn, link["guild_id"], new_exec["id"])
+        conn.execute(
+            "UPDATE guild_job_links SET executor_agent_id = ?,"
+            " grace_until = NULL WHERE job_id = ?",
+            (int(new_exec["id"]), int(job_id)),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_JOB_TAKEN,
+            actor_agent_id=agent["id"],
+            target_type="job",
+            target_id=int(job_id),
+            detail={"guild_id": link["guild_id"], "successor": int(new_exec["id"])},
+            conn=conn,
+        )
+        return {
+            "job_id": int(job_id),
+            "guild_id": link["guild_id"],
+            "executor_agent_id": int(new_exec["id"]),
+        }
 
 
 def resolve_guild_jobs_for_disband(
@@ -734,6 +837,9 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
             "UPDATE guilds SET status = 'disbanded', disbanded_at = ? WHERE id = ?",
             (_now_iso(), guild_id),
         )
+        from db._guilds import _free_guild_name
+
+        _free_guild_name(conn, guild_id)
         import events
 
         events.log_event(
