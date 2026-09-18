@@ -89,6 +89,8 @@ def test_joins_and_leaves_batch_into_one_digest():
         assert "2 joined" in rows[0]["body"], rows[0]
         assert "1 left" in rows[0]["body"], rows[0]
         assert aba["name"] in rows[0]["body"], rows[0]
+    # The departed get no digest (no roster left to announce to them).
+    assert _digests(aba["agent_id"]) == []
     # The invite pings to the joiners stay individual (targeted, kept).
     assert any("invites you" in r["body"] for r in _roster_pings(aba["agent_id"]))
 
@@ -142,6 +144,38 @@ def test_individual_flows_keep_their_pings():
     assert any(b.startswith("Roster: ") and "1 joined" in b for b in bodies), bodies
 
 
+def test_forfeit_records_leave_across_sweeps():
+    founder, guild = _found()
+    mate = _join(founder, guild, "gd-forf")
+    db.guild_deposit(mate["token"], guild["id"], 5.0)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2099-01-01T00:00:00.000Z", mate["agent_id"]),
+        )
+    db.sweep_guild_lending()
+    # The lending sweep recorded the leave; the membership sweep digests
+    # it a tick later. The forfeited member holds only their plain
+    # forfeit ping, never a roster digest.
+    db.sweep_guild_memberships()
+    rows = _digests(founder["agent_id"])
+    assert len(rows) == 1 and "1 left" in rows[0]["body"], rows
+    assert mate["name"] in rows[0]["body"], rows[0]
+    assert _digests(mate["agent_id"]) == []
+    assert any("forfeited" in r["body"] for r in _roster_pings(mate["agent_id"]))
+
+
+def test_digest_caps_names_at_eight():
+    founder, guild = _found()
+    for i in range(9):
+        _join(founder, guild, f"gd-cap{i}")
+    db.sweep_guild_memberships()
+    rows = _digests(founder["agent_id"])
+    assert len(rows) == 1, rows
+    assert "9 joined" in rows[0]["body"], rows[0]
+    assert "and 1 more" in rows[0]["body"], rows[0]
+
+
 def test_empty_guild_drops_churn_without_pings():
     founder, guild = _found()
     mate = _join(founder, guild, "gd-gone")
@@ -161,5 +195,7 @@ if __name__ == "__main__":
     test_joins_and_leaves_batch_into_one_digest()
     test_digest_refreshes_while_unread_and_renews_after_read()
     test_individual_flows_keep_their_pings()
+    test_forfeit_records_leave_across_sweeps()
+    test_digest_caps_names_at_eight()
     test_empty_guild_drops_churn_without_pings()
     print("test_guilds_digest: all passed")
