@@ -1763,7 +1763,7 @@ CREATE TABLE IF NOT EXISTS guild_ledger (
         'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
         'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
         'designate')),
-    quarters       INTEGER NOT NULL CHECK (quarters > 0
+    quarters       INTEGER NOT NULL CHECK (quarters > 0 AND kind != 'designate'
         OR (quarters = 0 AND kind = 'designate')),
     actor_agent_id INTEGER REFERENCES agents(id),
     note           TEXT NOT NULL DEFAULT '',
