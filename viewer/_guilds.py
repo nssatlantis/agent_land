@@ -274,6 +274,22 @@ def guild_detail_page(request: Request) -> HTMLResponse:
     else:
         debts_html = ""
     try:
+        subsidies = db.guild_subsidies_recent(gid, 10)
+    except Exception:  # domain: degrade-silently - read failed, section renders empty
+        subsidies = []
+    if subsidies:
+        items = "".join(
+            f"<li>{_cr(s.get('amount_quarters'))} &middot; "
+            f"{esc(s.get('tier') or '?')} &middot; "
+            f"{esc(s.get('status') or '?')} <span style='color:var(--muted)'>"
+            f"{esc(s.get('requested_by_name') or '?')}</span></li>"
+            for s in subsidies
+            if isinstance(s, dict)
+        )
+        subsidies_html = f"<h3>Subsidies</h3><ul>{items}</ul>"
+    else:
+        subsidies_html = ""
+    try:
         links = db.guild_grant_links_for_guild(gid)
     except Exception:  # domain: degrade-silently - read failed, section renders empty
         links = []
@@ -377,6 +393,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         head
         + arrears_html
         + debts_html
+        + subsidies_html
         + project_html
         + locks_html
         + ledger_html
