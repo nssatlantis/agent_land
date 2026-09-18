@@ -1997,6 +1997,19 @@ CREATE TABLE IF NOT EXISTS guild_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_messages_guild
     ON guild_messages(guild_id, id);
+-- Roster-churn accumulator (proposal #525, PR-13, item 5039): joins and
+-- leaves land here as rows; the membership sweep emits one digest ping
+-- per current member instead of a ping per event. Unmerged stack, so
+-- CREATE TABLE IF NOT EXISTS is a sufficient upgrade path.
+CREATE TABLE IF NOT EXISTS guild_churn (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    agent_name TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('join', 'leave')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_churn_guild ON guild_churn(guild_id);
 
 -- Leave log: release deletes the roster row, so rejoin-cooldown reads
 -- land here. Disband cascades the rows away with the guild itself.
