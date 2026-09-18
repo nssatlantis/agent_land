@@ -408,141 +408,152 @@ def sweep_guild_upkeep() -> dict:
         for grow in guilds:
             guild = dict(grow)
             gid = guild["id"]
-            members = conn.execute(
-                "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
-                (gid,),
-            ).fetchall()
-            issued_here = 0
-            for mrow in members:
-                aid = mrow[0]
-                has_week = conn.execute(
-                    "SELECT 1 FROM guild_fee_arrears WHERE guild_id = ?"
-                    " AND member_agent_id = ? AND week = ? LIMIT 1",
-                    (gid, aid, week),
-                ).fetchone()
-                if has_week is None:
-                    try:
-                        conn.execute(
-                            "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-                            " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
-                            (gid, aid, week),
-                        )
-                    except sqlite3.IntegrityError:
-                        # domain: degrade-silently - a concurrent sweep won
-                        # the week row for this member; the invoice branch
-                        # below still bills the combined open arrears.
-                        pass
-                if _open_fee_invoice(conn, gid, aid) is None:
-                    owing = conn.execute(
-                        "SELECT COALESCE(SUM(quarters), 0) FROM guild_fee_arrears"
-                        " WHERE guild_id = ? AND member_agent_id = ?"
-                        " AND status = 'open'",
-                        (gid, aid),
-                    ).fetchone()[0]
-                    if owing and owing > 0:
-                        cur = conn.execute(
-                            "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
-                            " amount_quarters, remaining_quarters, reason, status,"
-                            " due_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-                            (
+            try:
+                members = conn.execute(
+                    "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
+                    (gid,),
+                ).fetchall()
+                issued_here = 0
+                for mrow in members:
+                    aid = mrow[0]
+                    has_week = conn.execute(
+                        "SELECT 1 FROM guild_fee_arrears WHERE guild_id = ?"
+                        " AND member_agent_id = ? AND week = ? LIMIT 1",
+                        (gid, aid, week),
+                    ).fetchone()
+                    if has_week is None:
+                        try:
+                            conn.execute(
+                                "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
+                                " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
+                                (gid, aid, week),
+                            )
+                        except sqlite3.IntegrityError:
+                            # domain: degrade-silently - a concurrent sweep won
+                            # the week row for this member; the invoice branch
+                            # below still bills the combined open arrears.
+                            pass
+                    if _open_fee_invoice(conn, gid, aid) is None:
+                        owing = conn.execute(
+                            "SELECT COALESCE(SUM(quarters), 0) FROM guild_fee_arrears"
+                            " WHERE guild_id = ? AND member_agent_id = ?"
+                            " AND status = 'open'",
+                            (gid, aid),
+                        ).fetchone()[0]
+                        if owing and owing > 0:
+                            cur = conn.execute(
+                                "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
+                                " amount_quarters, remaining_quarters, reason, status,"
+                                " due_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                                (
+                                    aid,
+                                    guild["founder_agent_id"],
+                                    owing,
+                                    owing,
+                                    f"guild {guild['name']!r} upkeep week {week}",
+                                    _days_ago_iso(-7),
+                                ),
+                            )
+                            inv_id = int(cur.lastrowid or 0)
+                            conn.execute(
+                                "INSERT INTO guild_fee_invoices (invoice_id, guild_id,"
+                                " member_agent_id, week) VALUES (?, ?, ?, ?)",
+                                (inv_id, gid, aid, week),
+                            )
+                            _notify(
+                                conn,
                                 aid,
-                                guild["founder_agent_id"],
-                                owing,
-                                owing,
-                                f"guild {guild['name']!r} upkeep week {week}",
-                                _days_ago_iso(-7),
-                            ),
-                        )
-                        inv_id = int(cur.lastrowid or 0)
+                                "economy",
+                                "invoice",
+                                inv_id,
+                                f"guild {guild['name']!r} upkeep fee due ({owing}q"
+                                f" for week {week}) - accept and pay it.",
+                            )
+                            issued_here += 1
+                            report["issued"] += 1
+                if issued_here:
+                    events.log_event(
+                        events.EVT_GUILD_UPKEEP_ISSUED,
+                        actor_agent_id=guild["founder_agent_id"],
+                        target_type="guild",
+                        target_id=gid,
+                        detail={"week": week, "invoices": issued_here},
+                        conn=conn,
+                    )
+                due = min(5, len(members))
+                if guild.get("last_upkeep_week") == week:
+                    continue
+                old_enough = conn.execute(
+                    "SELECT 1 FROM guild_fee_invoices l JOIN invoices i"
+                    " ON i.id = l.invoice_id WHERE l.guild_id = ?"
+                    " AND i.created_at <= ? LIMIT 1",
+                    (gid, _days_ago_iso(2)),
+                ).fetchone()
+                if old_enough is None:
+                    continue
+                pool = guild_balance(conn, gid)
+                if due > 0 and pool >= due:
+                    conn.execute(
+                        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+                        " VALUES (?, 'fee', ?, 'weekly upkeep sweep to Treasury')",
+                        (gid, due),
+                    )
+                    conn.execute(
+                        "UPDATE guilds SET last_upkeep_week = ? WHERE id = ?",
+                        (week, gid),
+                    )
+                    if guild.get("spending_suspended"):
                         conn.execute(
-                            "INSERT INTO guild_fee_invoices (invoice_id, guild_id,"
-                            " member_agent_id, week) VALUES (?, ?, ?, ?)",
-                            (inv_id, gid, aid, week),
+                            "UPDATE guilds SET spending_suspended = 0, suspended_at = NULL"
+                            " WHERE id = ?",
+                            (gid,),
                         )
-                        _notify(
-                            conn,
-                            aid,
-                            "economy",
-                            "invoice",
-                            inv_id,
-                            f"guild {guild['name']!r} upkeep fee due ({owing}q"
-                            f" for week {week}) - accept and pay it.",
+                        report["recovered"].append(gid)
+                    report["swept"][gid] = due
+                else:
+                    if not guild.get("spending_suspended"):
+                        conn.execute(
+                            "UPDATE guilds SET spending_suspended = 1, suspended_at = ?"
+                            " WHERE id = ?",
+                            (_now_iso(), gid),
                         )
-                        issued_here += 1
-                        report["issued"] += 1
-            if issued_here:
-                events.log_event(
-                    events.EVT_GUILD_UPKEEP_ISSUED,
-                    actor_agent_id=guild["founder_agent_id"],
-                    target_type="guild",
-                    target_id=gid,
-                    detail={"week": week, "invoices": issued_here},
-                    conn=conn,
-                )
-            due = min(5, len(members))
-            if guild.get("last_upkeep_week") == week:
-                continue
-            old_enough = conn.execute(
-                "SELECT 1 FROM guild_fee_invoices l JOIN invoices i"
-                " ON i.id = l.invoice_id WHERE l.guild_id = ?"
-                " AND i.created_at <= ? LIMIT 1",
-                (gid, _days_ago_iso(2)),
-            ).fetchone()
-            if old_enough is None:
-                continue
-            pool = guild_balance(conn, gid)
-            if due > 0 and pool >= due:
-                conn.execute(
-                    "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-                    " VALUES (?, 'fee', ?, 'weekly upkeep sweep to Treasury')",
-                    (gid, due),
-                )
-                conn.execute(
-                    "UPDATE guilds SET last_upkeep_week = ? WHERE id = ?",
-                    (week, gid),
-                )
-                if guild.get("spending_suspended"):
-                    conn.execute(
-                        "UPDATE guilds SET spending_suspended = 0, suspended_at = NULL"
-                        " WHERE id = ?",
-                        (gid,),
-                    )
-                    report["recovered"].append(gid)
-                report["swept"][gid] = due
-            else:
-                if not guild.get("spending_suspended"):
-                    conn.execute(
-                        "UPDATE guilds SET spending_suspended = 1, suspended_at = ?"
-                        " WHERE id = ?",
-                        (_now_iso(), gid),
-                    )
-                    report["suspended"].append(gid)
-                elif _age_days(guild.get("suspended_at")) > 14:
-                    # The sole raising call in this sweep: an unfunded
-                    # disband must skip this guild (retry next tick), never
-                    # roll back every other guild's issuance and sweeps.
-                    try:
-                        from db._guilds import _disband_distribute
+                        report["suspended"].append(gid)
+                    elif _age_days(guild.get("suspended_at")) > 14:
+                        # The sole raising call in this sweep: an unfunded
+                        # disband must skip this guild (retry next tick), never
+                        # roll back every other guild's issuance and sweeps.
+                        try:
+                            from db._guilds import _disband_distribute
 
-                        _disband_distribute(
-                            conn, gid, "upkeep grace lapsed (14d suspended)"
-                        )
-                    except ForumError:
-                        report["skipped"].append(gid)
-                        logutil.log(
-                            "guild_upkeep_failed",
-                            guild_id=gid,
-                            why="grace-disband-unfunded",
-                        )
-                        continue
-                    report["disbanded"].append(gid)
+                            _disband_distribute(
+                                conn, gid, "upkeep grace lapsed (14d suspended)"
+                            )
+                        except ForumError:
+                            report["skipped"].append(gid)
+                            logutil.log(
+                                "guild_upkeep_failed",
+                                guild_id=gid,
+                                why="grace-disband-unfunded",
+                            )
+                            continue
+                        report["disbanded"].append(gid)
+            except Exception as exc:
+                # domain: never-lose-data - one poisoned guild logs and
+                # retries next tick instead of rolling back its neighbours
+                # (the membership sweep isolates per entry the same way).
+                report["skipped"].append(gid)
+                logutil.log(
+                    "guild_upkeep_failed",
+                    guild_id=gid,
+                    error=str(exc),
+                )
+                continue
         worked = bool(
             report["issued"]
             or report["swept"]
             or report["suspended"]
             or report["recovered"]
             or report["disbanded"]
-            or report["skipped"]
         )
         if worked:
             events.log_event(
