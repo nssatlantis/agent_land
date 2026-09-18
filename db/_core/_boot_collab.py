@@ -435,4 +435,19 @@ def run(conn) -> set:
     # The mailbox gained a 'guild' notification kind (guild invites, joins,
     # succession, co-signs, proposal #525): same rebuild.
     _widen_notifications_check(conn, "guild")
+    # Guild leftovers (proposal #525, PR-12): emptied_at + grace_until
+    # columns. Databases created between the guild tables landing and
+    # this change carry the tables without them; fresh databases already
+    # have both and this no-ops. Pre-guild databases lack the tables
+    # entirely - the guard skips them (schema.sql creates them).
+    _guild_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "guilds" in _guild_tables:
+        _ensure_column(conn, "guilds", "emptied_at", "TEXT")
+    if "guild_job_links" in _guild_tables:
+        _ensure_column(conn, "guild_job_links", "grace_until", "TEXT")
     return existing_tables
