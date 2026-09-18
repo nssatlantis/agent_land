@@ -96,7 +96,7 @@ def test_guild_detail_sections_and_404s():
         "deposit",
         "Chat",
         "list_guild_chat",
-        "unranked",
+        "Reputation:",
     ):
         assert section in html, section
     # Unknown + malformed ids degrade to 404, never a 500.
