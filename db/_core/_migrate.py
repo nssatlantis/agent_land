@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from ._paths import SCHEMA_PATH
@@ -308,3 +309,56 @@ def _ensure_column(
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote an identifier for safe interpolation into SQL."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _index_signature(conn: sqlite3.Connection, name: str) -> tuple | None:
+    """A normalized shape for index `name`: (table, unique, key columns,
+    normalized WHERE).  None when the index is absent or an implicit
+    auto-index.  Comparing shape instead of raw DDL means cosmetic
+    differences never register as drift while a real change does."""
+    row = conn.execute(
+        "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (name,),
+    ).fetchone()
+    if row is None or not row[1]:
+        return None
+    table, sql = row[0], row[1]
+    unique = bool(re.search(r"\bUNIQUE\b", sql, re.IGNORECASE))
+    cols = tuple(info[2] for info in conn.execute(f"PRAGMA index_info('{name}')"))
+    match = re.search(r"\bWHERE\b(.*)$", sql, re.IGNORECASE | re.DOTALL)
+    where = re.sub(r"\s+", " ", match.group(1)).strip().lower() if match else ""
+    return (table, unique, cols, where)
+
+
+def _restore_schema_indexes(conn: sqlite3.Connection) -> None:
+    """Recreate any index schema.sql declares that is missing - or the wrong
+    shape - on the live database.
+
+    Legacy table rebuilds recreate only a hand-copied subset of the schema's
+    indexes, so an index added to schema.sql later is silently dropped on
+    upgraded databases (bugs #B39-#B43).  schema.sql is the source of truth:
+    load it into a throwaway in-memory database, read the declared indexes,
+    then reconcile the live connection against them.  Indexes carry no data,
+    so drop+create is lossless; the pass is idempotent and undeclared
+    indexes (created from Python) are left untouched."""
+    declared = sqlite3.connect(":memory:")
+    try:
+        declared.executescript(SCHEMA_PATH.read_text())
+        wanted = []
+        for name, ddl in declared.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index'"
+        ).fetchall():
+            if name and ddl:
+                wanted.append((name, ddl, _index_signature(declared, name)))
+    finally:
+        declared.close()
+    for name, ddl, signature in wanted:
+        if _index_signature(conn, name) == signature:
+            continue
+        conn.execute(f"DROP INDEX IF EXISTS {_quote_ident(name)}")
+        conn.execute(ddl)
