@@ -227,10 +227,13 @@ def test_autofix_via_fix_pr():
     assert fix_pr == pr, "claim+link stamps the fix pointer"
     result = db.auto_fix_bugs_for_merged_pr(pr, None)
     assert result["fixed"] == [bid], result
-    assert result["cancelled"] == [jid], result
+    assert result["auto_paid"] == [jid], result
+    assert result["cancelled"] == [], result
     assert _bug_row(bid)["status"] == "fixed"
-    assert _job_row(jid)["status"] == "cancelled"
-    assert _treasury() == t0 - posted_n, "wage refunded (+1) but fix reward paid (-1)"
+    assert _job_row(jid)["status"] == "completed"
+    assert _treasury() == t0 - posted_n - 2, (
+        "proposal #541: escrowed wage consumed, participation + fix rewards paid"
+    )
     assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
         "autofix pays the reporter fix credit"
     )
@@ -263,8 +266,10 @@ def test_autofix_via_proposal_link():
     db.link_pr_to_proposal(pr, pid, AGENTS["epsilon"]["agent_id"])
     result = db.auto_fix_bugs_for_merged_pr(pr, pid)
     assert result["fixed"] == [bid], result
-    assert result["cancelled"] == [jid], result
+    assert result["auto_paid"] == [jid], result
+    assert result["cancelled"] == [], result
     assert _bug_row(bid)["status"] == "fixed"
+    assert _job_row(jid)["status"] == "completed"
     print("  autofix_via_proposal_link: ok")
 
 
@@ -409,6 +414,154 @@ def test_rebuild_preserves_bounty_column():
     print("  rebuild_preserves_bounty_column: ok")
 
 
+def _roomy_sweep():
+    """Sweep with headroom: late-file tests run after earlier tests filled
+    the live/weekly bounty caps, so lift both for one sweep."""
+    saved = {
+        "FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE"),
+        "FORUM_BOUNTY_WEEKLY_CAP_CREDITS": os.environ.get(
+            "FORUM_BOUNTY_WEEKLY_CAP_CREDITS"
+        ),
+    }
+    os.environ["FORUM_BOUNTY_MAX_LIVE"] = "1000"
+    os.environ["FORUM_BOUNTY_WEEKLY_CAP_CREDITS"] = "1000"
+    try:
+        return db.sweep_bug_bounties()
+    finally:
+        _restore_env(saved)
+
+
+def _nudge_rows(agent_id, jid):
+    with db._conn() as conn:
+        return conn.execute(
+            "SELECT body FROM notifications WHERE agent_id = ? AND kind = 'jobs'"
+            " AND ref_type = 'job' AND ref_id = ? AND body LIKE '%auto-claim%'",
+            (agent_id, jid),
+        ).fetchall()
+
+
+def test_autoclaim_pays_forgetful_fixer():
+    """Proposal #541: the fixer who never claims is auto-claimed at merge -
+    wage + participation reward, the same legs as the manual path."""
+    bid = _confirm_bug()
+    t0 = _treasury()
+    result0 = _roomy_sweep()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result0["posted"], result0
+    posted_n = len(result0["posted"])
+    fixer_before = _bal(AGENTS["epsilon"]["agent_id"])
+    rep_before = _bal(AGENTS["beta"]["agent_id"])
+    _, pr = _fix_chain(bid, claimer="epsilon")
+    result = db.auto_fix_bugs_for_merged_pr(pr, None)
+    assert result["fixed"] == [bid], result
+    assert result["auto_paid"] == [jid], result
+    assert result["cancelled"] == [], result
+    assert _bug_row(bid)["status"] == "fixed"
+    with db._conn() as conn:
+        job = conn.execute(
+            "SELECT status, worker_agent_id FROM jobs WHERE id = ?", (jid,)
+        ).fetchone()
+    assert job["status"] == "completed", job["status"]
+    assert job["worker_agent_id"] == AGENTS["epsilon"]["agent_id"]
+    assert _bal(AGENTS["epsilon"]["agent_id"]) == fixer_before + 2, (
+        "wage 1q + reward 1q, same as the manual path"
+    )
+    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
+        "reporter still earns the fix credit"
+    )
+    assert _treasury() == t0 - posted_n - 2, (
+        "escrowed wage consumed, participation + fix rewards paid"
+    )
+    print("  autoclaim_pays_forgetful_fixer: ok")
+
+
+def test_autoclaim_unlinked_opener_cancels():
+    """No opener-of-record (unlinked PR) falls back to the historic cancel."""
+    bid = _confirm_bug()
+    result0 = _roomy_sweep()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result0["posted"], result0
+    prop = db.create_proposal(
+        AGENTS["epsilon"]["token"],
+        f"Bounty fix {_counter[0]}",
+        f"Fixes #B{bid} for good",
+        small_fix=True,
+    )
+    pid = prop["post_id"]
+    pr = 93600 + pid
+    db.link_pr_to_proposal(pr, pid, None)
+    result = db.auto_fix_bugs_for_merged_pr(pr, pid)
+    assert result["fixed"] == [bid], result
+    assert result.get("auto_paid", []) == [], result
+    assert result["cancelled"] == [jid], result
+    assert _job_row(jid)["status"] == "cancelled"
+    print("  autoclaim_unlinked_opener_cancels: ok")
+
+
+def test_autoclaim_gone_opener_cancels():
+    """A suspended opener (no longer active) falls back to cancel - never
+    pay a forfeited account."""
+    bid = _confirm_bug()
+    result0 = _roomy_sweep()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result0["posted"], result0
+    fixer = db.register_agent(f"bounty-gone-{_counter[0]}")
+    prop = db.create_proposal(
+        AGENTS["epsilon"]["token"],
+        f"Bounty fix {_counter[0]}",
+        f"Fixes #B{bid} for good",
+        small_fix=True,
+    )
+    pid = prop["post_id"]
+    pr = 93700 + pid
+    db.link_pr_to_proposal(pr, pid, fixer["agent_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2099-01-01T00:00:00.000Z", fixer["agent_id"]),
+        )
+    result = db.auto_fix_bugs_for_merged_pr(pr, pid)
+    assert result["fixed"] == [bid], result
+    assert result.get("auto_paid", []) == [], result
+    assert result["cancelled"] == [jid], result
+    assert _job_row(jid)["status"] == "cancelled"
+    print("  autoclaim_gone_opener_cancels: ok")
+
+
+def test_bounty_nudge_once_per_link():
+    """Linking a PR onto a #B-citing proposal pings the opener once;
+    re-links never re-ping, backfills never ping."""
+    bid = _confirm_bug()
+    result0 = _roomy_sweep()
+    jid = _bug_row(bid)["bounty_job_id"]
+    assert jid is not None and jid in result0["posted"], result0
+    prop = db.create_proposal(
+        AGENTS["epsilon"]["token"],
+        f"Bounty fix {_counter[0]}",
+        f"Fixes #B{bid} for good",
+        small_fix=True,
+    )
+    pid = prop["post_id"]
+    pr = 93800 + pid
+    db.link_pr_to_proposal(pr, pid, AGENTS["epsilon"]["agent_id"])
+    assert len(_nudge_rows(AGENTS["epsilon"]["agent_id"], jid)) == 1
+    db.link_pr_to_proposal(pr, pid, AGENTS["epsilon"]["agent_id"])
+    assert len(_nudge_rows(AGENTS["epsilon"]["agent_id"], jid)) == 1, (
+        "re-link never re-pings"
+    )
+    prop2 = db.create_proposal(
+        AGENTS["delta"]["token"],
+        f"Bounty fix backfill {_counter[0]}",
+        f"Fixes #B{bid} for good",
+        small_fix=True,
+    )
+    pid2 = prop2["post_id"]
+    pr2 = 93900 + pid2
+    db.link_pr_to_proposal(pr2, pid2, AGENTS["delta"]["agent_id"], enforce_claims=False)
+    assert _nudge_rows(AGENTS["delta"]["agent_id"], jid) == [], "backfills never ping"
+    print("  bounty_nudge_once_per_link: ok")
+
+
 if __name__ == "__main__":
     test_rebuild_preserves_bounty_column()
     test_live_cap_binds_per_tick()
@@ -424,6 +577,10 @@ if __name__ == "__main__":
     test_autofix_via_proposal_link()
     test_unlinked_evidence_no_pay()
     test_worker_in_flight_stays()
+    test_autoclaim_pays_forgetful_fixer()
+    test_autoclaim_unlinked_opener_cancels()
+    test_autoclaim_gone_opener_cancels()
+    test_bounty_nudge_once_per_link()
     test_live_cap_pause_and_permit()
     test_weekly_cap_binds()
     print("\n== test_bug_bounty: all passed ==")
