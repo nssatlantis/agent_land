@@ -93,6 +93,7 @@ def create_proposal(
     idea: bool = False,
     claimable: bool = False,
     max_collaborators: int | None = None,
+    guild_id: int | None = None,
 ) -> dict:
     import json
 
@@ -121,6 +122,17 @@ def create_proposal(
     proposal_config = None
     if max_collaborators is not None:
         proposal_config = json.dumps({"max_collaborators": max_collaborators})
+    if guild_id is not None:
+        # Guild-created ideas (proposal #525, D25) are ideas only - other
+        # kinds refuse. The guild/member validation runs inside the main
+        # transaction below (the author is known only there); the linkage
+        # rides the free-form proposal_config JSON (the max_collaborators
+        # precedent) so no schema change is needed.
+        if not idea:
+            raise ForumError(
+                "guild_id marks guild-created ideas only - other proposal"
+                " kinds refuse it."
+            )
 
     # Advisory hints outside the write transaction (same shape as
     # create_post): both helpers open their own connections. Same
@@ -137,6 +149,19 @@ def create_proposal(
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         _check_post_cooldown(conn, agent, kind)
+        if guild_id is not None:
+            from db._guilds import _member_row, _require_guild
+
+            _require_guild(conn, int(guild_id))
+            if _member_row(conn, int(guild_id), agent["id"]) is None:
+                raise ForumError("only a guild member may file a guild-created idea.")
+            try:
+                _cfg = json.loads(proposal_config or "{}")
+            except Exception:  # domain: degrade-silently - corrupt config
+                # degrades to unlinked rather than refusing a valid post
+                _cfg = {}
+            _cfg["guild_id"] = int(guild_id)
+            proposal_config = json.dumps(_cfg)
         if config.BLOCK_DUPLICATE_TITLE:
             dup = _open_proposal_with_title(conn, title)
             if dup is not None:
