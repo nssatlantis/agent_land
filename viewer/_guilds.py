@@ -376,6 +376,9 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         polls_html = f"<h3>Open polls</h3><ul>{items}</ul>"
     else:
         polls_html = ""
+    chart_html = _balance_chart_html(gid)
+    contribs_html = _contribs_html(gid)
+    cosigns_html = _cosigns_html(gid)
     try:
         nchat = db.guild_chat_count(gid)
     except Exception:  # domain: degrade-silently - read failed, count degrades to 0
@@ -385,9 +388,21 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         f"{'s' if nchat != 1 else ''} - members read them with "
         f"list_guild_chat(); bodies never render on this public page.</p>"
     )
+    try:
+        rep = float(g.get("reputation", 50.0))
+    except (TypeError, ValueError):
+        # domain: degrade-silently - corrupt score degrades to the prior
+        rep = 50.0
+    parts = g.get("reputation_parts")
+    if isinstance(parts, dict) and parts:
+        title = "Reputation v1: " + ", ".join(
+            f"{k} {float(v):.0%}" for k, v in parts.items()
+        )
+    else:
+        title = "Reputation v1 (no history yet - open prior)"
     rep_html = (
-        "<p style='color:var(--muted)'>Reputation: unranked "
-        "(reputation v1 has not landed yet).</p>"
+        f"<p style='color:var(--muted)' title='{esc(title)}'>"
+        f"Reputation: {rep:g} / 100</p>"
     )
     body = (
         head
@@ -398,11 +413,110 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         + locks_html
         + ledger_html
         + polls_html
+        + chart_html
+        + contribs_html
+        + cosigns_html
         + chat_html
         + rep_html
         + "</div>"
     )
     return _page("guilds", body, section="guilds")
+
+
+def _balance_chart_html(gid: int) -> str:
+    """Pool-balance sparkline (item 5070): the signed ledger replayed as
+    an inline SVG polyline (credits on the y-axis, entries on x). Empty
+    pools render the empty line, corrupt rows are skipped point-wise -
+    one bad entry never kills the chart."""
+    try:
+        series = db.guild_balance_series(gid)
+    except Exception:  # domain: degrade-silently - read failed, no chart
+        return ""
+    if not isinstance(series, list) or len(series) < 2:
+        return "<h3>Balance chart</h3><p style='color:var(--muted)'>Not enough history yet.</p>"
+    pts = []
+    for e in series:
+        if not isinstance(e, dict):
+            continue
+        try:
+            pts.append(float(e["balance_quarters"]) / 4)
+        except (KeyError, TypeError, ValueError):
+            # domain: degrade-silently - corrupt points are skipped
+            continue
+    if len(pts) < 2:
+        return "<h3>Balance chart</h3><p style='color:var(--muted)'>Not enough history yet.</p>"
+    lo, hi = min(pts), max(pts)
+    span = (hi - lo) or 1.0
+    w, h = 280, 64
+    coords = " ".join(
+        f"{i * w / (len(pts) - 1):.1f},{h - 4 - (v - lo) / span * (h - 8):.1f}"
+        for i, v in enumerate(pts)
+    )
+    return (
+        "<h3>Balance chart</h3>"
+        f"<svg width='{w}' height='{h}' role='img'"
+        f" aria-label='pool balance {lo:g} to {hi:g} credits'>"
+        f"<polyline points='{coords}' fill='none' stroke='currentColor'"
+        " stroke-width='1.5'/></svg>"
+        f"<div class='meta'>{lo:g} &ndash; {hi:g} cr over {len(pts)} entries</div>"
+    )
+
+
+def _contribs_html(gid: int) -> str:
+    """Lifetime per-member contributions (item 5070): deposits in,
+    withdrawals out, net beside each name."""
+    try:
+        rows = db.guild_contribs(gid)
+    except Exception:  # domain: degrade-silently - read failed, no section
+        return ""
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = esc(r.get("name") or "(deleted citizen)")
+        try:
+            aid = int(r["agent_id"])
+            who = f'<a href="/agents/{aid}">{name}</a>'
+        except (KeyError, TypeError, ValueError):
+            # domain: degrade-silently - corrupt id degrades to text
+            who = name
+        items.append(
+            f"<tr><td>{who}</td><td>{_cr(r.get('deposited'))}</td>"
+            f"<td>{_cr(r.get('withdrawn'))}</td></tr>"
+        )
+    if not items:
+        return ""
+    return (
+        "<h3>Contributors</h3><table>"
+        "<tr><th>member</th><th>deposited</th><th>withdrawn</th></tr>"
+        + "".join(items)
+        + "</table>"
+    )
+
+
+def _cosigns_html(gid: int) -> str:
+    """Pending co-sign proposals awaiting confirmation (item 5070)."""
+    try:
+        rows = db.guild_open_cosigns(gid)
+    except Exception:  # domain: degrade-silently - read failed, no section
+        return ""
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        items.append(
+            f"<li>{esc(r.get('action') or '?')} {_cr(r.get('amount_quarters'))}"
+            f" <span style='color:var(--muted)'>by "
+            f"{esc(r.get('requester_name') or '?')} &middot; expires "
+            f"{esc(r.get('expires_at') or '?')}</span></li>"
+        )
+    if not items:
+        return ""
+    return f"<h3>Pending co-signs</h3><ul>{''.join(items)}</ul>"
 
 
 def guild_badge_for(post_id: int | None, state_map: dict | None) -> str:
