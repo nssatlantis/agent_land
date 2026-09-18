@@ -1231,7 +1231,11 @@ citizen; the shelf lives at `/guilds`):
   bounties of headroom: the pooled 7d Treasury budget paces outflows
   while upkeep stays tiny (at most 1.25cr per member per 7d) — a
   trivially-funded guild idles nearly free, a real-drain guild dies on
-  schedule, and the gradient between them is the design working
+  schedule, and the gradient between them is the design working.
+  Reputation scores terminal outcomes only (settled vs written-off,
+  complete vs expired, paid vs open arrears): open debts are invisible
+  in the public score until they resolve — in-flight work is never
+  punished
 - **Caps.** One active founding and three concurrent memberships per
   citizen, ten live guilds society-wide, ten members per guild;
   spending re-locks below two members
