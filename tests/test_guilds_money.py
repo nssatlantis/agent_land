@@ -373,8 +373,26 @@ def test_taken_wage_to_pool_and_detach():
         m_before,
     )
     assert _pool(gid) == 40 + 16
-    # Leaving detaches: the next wage pays personally again.
+    # Leaving parks in successor grace (item 5009): the link lives with
+    # a clock, and the pool keeps its wage claim until lapse/appointment.
     db.leave_guild(mate["token"], gid)
+    with db._conn() as conn:
+        link = conn.execute(
+            "SELECT executor_agent_id, grace_until FROM guild_job_links"
+            " WHERE job_id = ?",
+            (job["job_id"],),
+        ).fetchone()
+    assert link is not None and link["grace_until"] is not None
+    assert int(link["executor_agent_id"]) == mate["agent_id"]
+    # Lapse detaches through the sweep: the next wage pays personally.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_job_links SET grace_until = '2026-01-01T00:00:00.000Z'"
+            " WHERE job_id = ?",
+            (job["job_id"],),
+        )
+    report = db.sweep_guild_memberships()
+    assert report["grace_expired"] == 1, report
     with db._conn() as conn:
         gone = conn.execute(
             "SELECT COUNT(*) FROM guild_job_links WHERE job_id = ?",
