@@ -1029,18 +1029,24 @@ def sweep_guild_memberships() -> dict:
                         # (the forfeit path owns removal) but must not keep
                         # the founder role - otherwise the roster holds two
                         # founders and a later sweep could re-promote them.
-                        conn.execute(
-                            "UPDATE guild_members SET role = 'member'"
-                            " WHERE guild_id = ? AND agent_id = ?",
-                            (gid, founder["id"]),
-                        )
+                        # Savepoint: a failed succession rolls the demotion
+                        # back with it, so a retry never meets a headless
+                        # guild whose founder stamp is already gone.
+                        conn.execute("SAVEPOINT guild_succession")
                         try:
+                            conn.execute(
+                                "UPDATE guild_members SET role = 'member'"
+                                " WHERE guild_id = ? AND agent_id = ?",
+                                (gid, founder["id"]),
+                            )
                             out = _run_succession(
                                 conn,
                                 guild,
                                 "founder suspended" if suspended else "founder idle",
                             )
                         except ForumError:
+                            conn.execute("ROLLBACK TO SAVEPOINT guild_succession")
+                            conn.execute("RELEASE guild_succession")
                             report["skipped"].append(
                                 {
                                     "guild_id": gid,
@@ -1055,13 +1061,14 @@ def sweep_guild_memberships() -> dict:
                                     "founder suspended" if suspended else "founder idle"
                                 ),
                             )
+                            continue
+                        conn.execute("RELEASE guild_succession")
+                        if out.get("heir") is not None:
+                            report["succeeded"].append(
+                                {"guild_id": gid, "heir": out["heir"]}
+                            )
                         else:
-                            if out.get("heir") is not None:
-                                report["succeeded"].append(
-                                    {"guild_id": gid, "heir": out["heir"]}
-                                )
-                            else:
-                                report["disbanded"].append(gid)
+                            report["disbanded"].append(gid)
             for table, live, col in (
                 ("guild_invites", "proposed", "expires_at"),
                 ("guild_join_requests", "open", "expires_at"),
