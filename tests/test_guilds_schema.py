@@ -172,15 +172,31 @@ def test_members_unique_and_fk():
 
 
 def test_ledger_quarters_positive_and_kind():
-    """Ledger rows carry strictly positive quarters of a known kind."""
+    """Ledger rows carry strictly positive quarters of a known kind -
+    every kind in the CHECK executes, so a typo in any token fails."""
     founder = _new_agent("gs-ledger")
     with db._conn() as conn:
         gid = _mk_guild(conn, founder["agent_id"], "Ledger Guild")
-        conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters)"
-            " VALUES (?, 'deposit', 4)",
-            (gid,),
-        )
+        for kind in (
+            "deposit",
+            "withdrawal",
+            "upkeep",
+            "fee",
+            "grant_t1",
+            "grant_t2",
+            "subsidy",
+            "match",
+            "stake",
+            "job",
+            "job_escrow",
+            "stake_lock",
+            "invoice",
+            "transfer",
+        ):
+            conn.execute(
+                "INSERT INTO guild_ledger (guild_id, kind, quarters) VALUES (?, ?, 4)",
+                (gid, kind),
+            )
         for bad in (0, -3):
             try:
                 conn.execute(
@@ -230,6 +246,17 @@ def test_tranche_tier_status_checks():
             raise AssertionError("zero tranche accepted")
         except sqlite3.IntegrityError:
             pass
+        for status in ("proposed", "released", "paused", "expired", "merged"):
+            conn.execute(
+                "INSERT INTO guild_tranches (guild_id, tier, amount_quarters,"
+                " status) VALUES (?, 'T2', 4, ?)",
+                (gid, status),
+            )
+        row = conn.execute(
+            "SELECT status FROM guild_tranches WHERE guild_id = ? AND tier = 'T1'",
+            (gid,),
+        ).fetchone()
+        assert row[0] == "proposed", "tranche status must default to proposed"
 
 
 def test_poll_vote_unique():
@@ -286,6 +313,31 @@ def test_project_designation_shapes():
             raise AssertionError("empty designation accepted")
         except sqlite3.IntegrityError:
             pass
+        for table, col, extra in (
+            ("guild_polls", "question", True),
+            ("guild_projects", "title", False),
+        ):
+            # Valid siblings, so only the empty text can trip the CHECK.
+            if extra:
+                conn.execute(
+                    "INSERT INTO guild_polls (guild_id, creator_agent_id,"
+                    " question, closes_at) VALUES (?, ?, 'Q?', '2099-01-01T00:00:00.000Z')",
+                    (gid, founder["agent_id"]),
+                )
+                stmt = (
+                    "INSERT INTO guild_polls (guild_id, creator_agent_id,"
+                    " question, closes_at) VALUES (?, ?, '',"
+                    " '2099-01-01T00:00:00.000Z')"
+                )
+                params: tuple = (gid, founder["agent_id"])
+            else:
+                stmt = f"INSERT INTO {table} (guild_id, {col}) VALUES (?, '')"
+                params = (gid,)
+            try:
+                conn.execute(stmt, params)
+                raise AssertionError(f"empty {table}.{col} accepted")
+            except sqlite3.IntegrityError:
+                pass
 
 
 def test_guild_enrollment_default():
@@ -294,9 +346,10 @@ def test_guild_enrollment_default():
     with db._conn() as conn:
         gid = _mk_guild(conn, founder["agent_id"], "Enroll Guild")
         row = conn.execute(
-            "SELECT enrollment FROM guilds WHERE id = ?", (gid,)
+            "SELECT enrollment, mission FROM guilds WHERE id = ?", (gid,)
         ).fetchone()
     assert row[0] == "invite_only"
+    assert row[1] == "", "mission must default to empty"
     with db._conn() as conn:
         conn.execute("UPDATE guilds SET enrollment = 'open' WHERE id = ?", (gid,))
         try:
