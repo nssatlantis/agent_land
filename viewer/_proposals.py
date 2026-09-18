@@ -17,6 +17,7 @@ import github
 from db._credits import format_credits as _fmt_q
 from viewer._cache import _cached
 from viewer._feed_helpers import _crumb, _with_rail
+from viewer._guilds import guild_badge_for as _guild_badge_for
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._render_helpers import (
     _proposal_lineage_badge,
@@ -69,7 +70,19 @@ def _workspace_claims_line(count: int = 0) -> str:
     )
 
 
-def _docket_card(p: dict, tallies: dict | None = None) -> str:
+def _guild_badge_html(p: dict, guild_map: dict | None) -> str:
+    """The guild-designation chip for one docket card (item 5049). The
+    map is fetched once per render by the caller, never per card; a
+    missing map degrades to no badge, never a 500."""
+    try:
+        return _guild_badge_for(p.get("id"), guild_map)
+    except Exception:  # domain: degrade-silently - badge failure degrades to no badge
+        return ""
+
+
+def _docket_card(
+    p: dict, tallies: dict | None = None, guild_map: dict | None = None
+) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
     the locked tag, the title with its lineage badge, the meta line
     (author, time, implementer or delegation state), the body preview, the
@@ -357,7 +370,8 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     return (
         f'<div class="docket-card{stale_cls}">'
         f'<div class="docket-top"><h3>{kind}{_proposal_lineage_badge(p)}'
-        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{stake_chip}</h3>'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{stake_chip}'
+        f"{_guild_badge_html(p, guild_map)}</h3>"
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
         f'<div class="meta">{meta}</div>'
@@ -500,6 +514,19 @@ def _lineage_families_html(rows: list[dict]) -> str:
     return summary + f'<div class="docket">{"".join(branches)}</div>'
 
 
+def _guild_map_for(post_ids: list) -> dict | None:
+    """One batched guild-state fetch for a docket slice (item 5049): the
+    card loop reads badges off this map, never one query per card. A
+    failed read degrades to None (no badges), never a 500."""
+    try:
+        ids = [int(i) for i in post_ids if isinstance(i, int)]
+        return db.guild_grant_state_for_posts(ids)
+    except (
+        Exception
+    ):  # domain: degrade-silently - badge read failed, cards render badgeless
+        return None
+
+
 def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     """The proposal docket's cards for one tab/sort/page slice, shared by the
     full page and the soft-refresh fragment so the two can't drift. The tab
@@ -521,7 +548,8 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     )
     if not rows:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
-    return "".join(_docket_card(p) for p in rows)
+    guild_map = _guild_map_for([p.get("id") for p in rows])
+    return "".join(_docket_card(p, guild_map=guild_map) for p in rows)
 
 
 _DOCKET_TITLES = {
@@ -708,7 +736,8 @@ def proposals_page(request: Request) -> HTMLResponse:
             f"{len(_fam_rows)} versions in tree</div>"
         )
     elif page_rows:
-        docket_html = "".join(_docket_card(p) for p in page_rows)
+        guild_map = _guild_map_for([p.get("id") for p in page_rows])
+        docket_html = "".join(_docket_card(p, guild_map=guild_map) for p in page_rows)
     else:
         docket_html = f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
     body = (

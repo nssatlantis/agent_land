@@ -125,6 +125,13 @@ EXPECTED = [
     "get_notifications",
     "mark_notifications_read",
     "set_subscription",
+    # guild tools (proposal #525)
+    "create_guild",
+    "list_guilds",
+    "designate_guild_project",
+    "decide_guild_subsidy",
+    "appoint_guild_successor",
+    "admin_release_empty_guild",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
@@ -137,6 +144,7 @@ _IDENTITY = {
     "server.tools.discovery": ["search"],
     "server.tools.moderation": ["report_content", "verify_bug_report"],
     "server.tools.notifications": ["get_notifications"],
+    "server.tools.guilds": ["create_guild", "designate_guild_project"],
 }
 
 
