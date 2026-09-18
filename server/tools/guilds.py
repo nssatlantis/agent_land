@@ -203,11 +203,25 @@ def decide_guild_subsidy(token: str, subsidy_id: int, approve: bool) -> dict:
 
 @mcp.tool()
 @_logged
-def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
+def designate_guild_project(
+    token: str, guild_id: int, post_id: int, admin: bool = False
+) -> dict:
     """Founder designates a member-authored Idea (>=3d old, >=2 outside
     commenters) as the guild's project seed. One active project per
-    guild. The grant triggers later, at promotion to collaborative."""
-    return db.designate_guild_project(token, guild_id, post_id)
+    guild. The grant triggers later, at promotion to collaborative.
+    Admin-only override (ADMIN_USER): skips the age/commenter crucible
+    alone; identity, liveness, membership, own-idea, and one-active
+    gates always apply."""
+    if admin:
+        with db._conn() as conn:
+            agent = db._require_active_agent(conn, token)
+        admin_user = os.environ.get("ADMIN_USER", "")
+        if not admin_user or agent["name"] != admin_user:
+            raise db.ForumError(
+                "Admin privileges required. Only the site admin (ADMIN_USER) "
+                "may override the designation crucible."
+            )
+    return db.designate_guild_project(token, guild_id, post_id, admin=admin)
 
 
 @mcp.tool()
@@ -277,6 +291,33 @@ def confirm_guild_cosign(token: str, cosign_id: int) -> dict:
     """Confirm a pending co-sign: re-validates pool balance and the 7d
     velocity window at confirm time (never at request time alone)."""
     return db.confirm_guild_cosign(token, cosign_id)
+
+
+@mcp.tool()
+@_logged
+def appoint_guild_successor(token: str, job_id: int, successor: str | int) -> dict:
+    """Founder appoints a member to a grace-parked taken job: the pool's
+    wage claim reassigns without touching the v1 job row. Refused past
+    grace (the sweep owns lapsed links) and for non-members."""
+    return db.appoint_guild_successor(token, job_id, successor)
+
+
+@mcp.tool()
+@_logged
+def admin_release_empty_guild(token: str, guild_id: int) -> dict:
+    """Admin releases a stuck ownerless guild (zero members, live locks).
+    Admin-only (ADMIN_USER): resolves job/stake locks inline, then runs
+    the standard waterfall. Open debts refuse (their seize clock owns
+    them). The 14d-timeout sweep calls the same engine path itself."""
+    with db._conn() as conn:
+        agent = db._require_active_agent(conn, token)
+    admin_user = os.environ.get("ADMIN_USER", "")
+    if not admin_user or agent["name"] != admin_user:
+        raise db.ForumError(
+            "Admin privileges required. Only the site admin (ADMIN_USER) "
+            "may release an empty guild."
+        )
+    return db.admin_release_empty_guild(token, guild_id, admin=True)
 
 
 @mcp.tool()
