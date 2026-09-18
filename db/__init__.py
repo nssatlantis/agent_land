@@ -269,6 +269,19 @@ from db._guilds_treasury import (  # noqa: F401
     sweep_guild_upkeep,
 )
 
+# ── guild viewer reads (proposal #525, PR-9) ───────────────────────────
+from db._guilds_views import (  # noqa: F401
+    guild_chat_count,
+    guild_fee_arrears_open,
+    guild_grant_links_for_guild,
+    guild_grant_state_for_posts,
+    guild_ledger_recent,
+    guild_locks,
+    guild_open_debts,
+    guild_open_polls,
+    guild_subsidies_recent,
+)
+
 # ── health / migrations ────────────────────────────────────────────────
 from db._health import (  # noqa: F401
     integrity_ok,
