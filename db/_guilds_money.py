@@ -833,6 +833,7 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
                 (guild_id, row[0], _now_iso()),
             )
         conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild_id,))
+        conn.execute("DELETE FROM guild_churn WHERE guild_id = ?", (guild_id,))
         conn.execute(
             "UPDATE guilds SET status = 'disbanded', disbanded_at = ? WHERE id = ?",
             (_now_iso(), guild_id),
