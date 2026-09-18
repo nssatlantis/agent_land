@@ -85,7 +85,6 @@ from server.admin._jobs import (  # noqa: F401  # noqa: F401
     create_official_job,
     create_stake,
     delete_stake,
-    jobs_detail_page,
     jobs_manager_page,
 )
 from server.admin._notifications import (  # noqa: F401
@@ -211,7 +210,6 @@ __all__ = [
     "create_stake",
     "delete_stake",
     "jobs_manager_page",
-    "jobs_detail_page",
     "create_official_job",
     "admin_close_job",
     "admin_reactivate_job",
