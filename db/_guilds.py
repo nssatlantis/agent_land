@@ -1498,8 +1498,9 @@ def sweep_guild_memberships() -> dict:
             try:
                 _sweep_churn_digest(conn, gid)
             except Exception as exc:
-                # domain: degrade-silently - a failed digest drops nothing
-                # (rows were already consumed); members just miss a cycle
+                # domain: degrade-silently - a failed digest consumes
+                # nothing (DELETE runs only after all pings); rows retry
+                # next tick and the tally refresh keeps it dupe-free
                 report["skipped"].append({"guild_id": gid, "why": "digest-failed"})
                 logutil.log(
                     "guild_sweep_digest_failed",
