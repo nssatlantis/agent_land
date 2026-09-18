@@ -161,6 +161,134 @@ def test_sweep_failure_isolation_mirrors_poller():
     print("  sweep failure isolation mirrors poller: ok")
 
 
+def test_upkeep_runs_when_membership_throws():
+    # The poller's contract at unit level: upkeep never depends on the
+    # membership sweep succeeding on the same tick.
+    founder, guild = _found()
+    mate = _new_agent("gp-mate2")
+    _fund(mate["agent_id"], 60)
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    real = db.sweep_guild_memberships
+
+    def _boom():
+        raise RuntimeError("membership down")
+
+    db.sweep_guild_memberships = _boom  # type: ignore[method-assign]
+    try:
+        try:
+            db.sweep_guild_memberships()
+        except Exception:  # domain: degrade-silently - poller-block shape
+            pass
+        report = db.sweep_guild_upkeep()
+    finally:
+        db.sweep_guild_memberships = real  # type: ignore[method-assign]
+    assert report["issued"] >= 2, f"upkeep must run despite membership: {report}"
+    print("  upkeep runs when membership throws: ok")
+
+
+def test_poisoned_guild_does_not_roll_back_neighbours():
+    import db._guilds_treasury as _treas
+
+    founder, guild = _found()
+    mate = _new_agent("gp-mate3")
+    _fund(mate["agent_id"], 60)
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    founder2, guild2 = _found()
+    # Fund the healthy guild so its sweep succeeds outright (pool must
+    # cover dues) while the poisoned one skips.
+    _fund(founder["agent_id"], 60)
+    db.guild_deposit(founder["token"], guild["id"], 10.0)
+    # Age invoices past the 48h sweep gate so the pool reads actually
+    # execute (fresh guilds skip before them). Guild 1 sweeps clean
+    # while guild 2's poisoned read skips without rolling it back.
+    db.sweep_guild_upkeep()
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE invoices SET created_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE id IN (SELECT invoice_id FROM guild_fee_invoices"
+            " WHERE guild_id IN (?, ?))",
+            (guild["id"], guild2["id"]),
+        )
+    real_balance = _treas.guild_balance
+
+    def _poison(conn, gid):
+        if gid == guild2["id"]:
+            raise RuntimeError("poisoned pool read")
+        return real_balance(conn, gid)
+
+    # Patch where the sweep looks it up (treasury bound the name at
+    # import); patching db._guilds would miss every call site.
+    _treas.guild_balance = _poison  # type: ignore[method-assign]
+    try:
+        report = db.sweep_guild_upkeep()
+    finally:
+        _treas.guild_balance = real_balance  # type: ignore[method-assign]
+    assert guild2["id"] in report["skipped"], f"poisoned guild must skip: {report}"
+    assert report["swept"].get(guild["id"], 0) > 0, (
+        f"healthy guild must still sweep: {report}"
+    )
+    print("  poisoned guild does not roll back neighbours: ok")
+
+
+def test_persistent_skip_stays_quiet():
+    import db._guilds as _gm
+
+    founder, guild = _found()
+    gid = guild["id"]
+    # Bill and age one invoice, then suspend directly: the sweep must
+    # reach the grace-disband arm (issuance alone never suspends a
+    # funded pool, so the flag is seeded like the arrears pins do).
+    db.sweep_guild_upkeep()
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE invoices SET created_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE id IN (SELECT invoice_id FROM guild_fee_invoices"
+            " WHERE guild_id = ?)",
+            (gid,),
+        )
+        conn.execute(
+            "UPDATE guilds SET spending_suspended = 1,"
+            " suspended_at = '2020-01-01T00:00:00.000Z' WHERE id = ?",
+            (gid,),
+        )
+    # Fault-inject the disband itself (treasury looks the name up
+    # inside the guarded block, so patch the source module): the guild
+    # must skip quietly on every tick, never disband, never log.
+    real_disband = _gm._disband_distribute
+
+    def _unfunded(conn, gid_arg, reason):
+        raise db.ForumError("the treasury cannot fund that payout.")
+
+    _gm._disband_distribute = _unfunded  # type: ignore[method-assign]
+    try:
+        db.sweep_guild_upkeep()
+        before = len(_upkeep_events())
+        report = db.sweep_guild_upkeep()
+        assert gid in report["skipped"], f"unfunded disband must skip: {report}"
+        assert len(_upkeep_events()) == before, "persistent skip must stay quiet"
+    finally:
+        _gm._disband_distribute = real_disband  # type: ignore[method-assign]
+    print("  persistent skip stays quiet: ok")
+
+
+def test_second_work_sweep_issues_nothing_new():
+    founder, guild = _found()
+    mate = _new_agent("gp-mate4")
+    _fund(mate["agent_id"], 60)
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    before = len(_upkeep_events())
+    first = db.sweep_guild_upkeep()
+    assert first["issued"] >= 2, first
+    assert len(_upkeep_events()) == before + 1
+    second = db.sweep_guild_upkeep()
+    assert second["issued"] == 0, f"same-week re-sweep must not rebill: {second}"
+    assert len(_upkeep_events()) == before + 1, "same-week re-sweep must stay quiet"
+    print("  second work sweep issues nothing new: ok")
+
+
 def test_membership_sweep_report_shape():
     report = db.sweep_guild_memberships()
     for key in (
@@ -183,5 +311,9 @@ if __name__ == "__main__":
     test_upkeep_idle_is_quiet()
     test_upkeep_work_logs_exactly_once()
     test_sweep_failure_isolation_mirrors_poller()
+    test_upkeep_runs_when_membership_throws()
+    test_poisoned_guild_does_not_roll_back_neighbours()
+    test_persistent_skip_stays_quiet()
+    test_second_work_sweep_issues_nothing_new()
     test_membership_sweep_report_shape()
     print("\n== test_guilds_poller: all passed ==")
