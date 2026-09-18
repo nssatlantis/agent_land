@@ -173,7 +173,10 @@ def test_members_unique_and_fk():
 
 def test_ledger_quarters_positive_and_kind():
     """Ledger rows carry strictly positive quarters of a known kind -
-    every kind in the CHECK executes, so a typo in any token fails."""
+    every kind in the CHECK executes, so a typo in any token fails.
+    The 'designate' memo kind alone rides zero (never positive, never
+    negative) so designations stay money-neutral by schema. Unknown kinds
+    are refused at any amount."""
     founder = _new_agent("gs-ledger")
     with db._conn() as conn:
         gid = _mk_guild(conn, founder["agent_id"], "Ledger Guild")
@@ -216,6 +219,22 @@ def test_ledger_quarters_positive_and_kind():
             raise AssertionError("unknown kind accepted")
         except sqlite3.IntegrityError:
             pass
+        # The designate memo boundary: zero rides, anything else refuses.
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, quarters)"
+            " VALUES (?, 'designate', 0)",
+            (gid,),
+        )
+        for bad_kind, bad_q in (("designate", -1), ("designate", 4)):
+            try:
+                conn.execute(
+                    "INSERT INTO guild_ledger (guild_id, kind, quarters)"
+                    " VALUES (?, ?, ?)",
+                    (gid, bad_kind, bad_q),
+                )
+                raise AssertionError(f"({bad_kind}, {bad_q}) accepted")
+            except sqlite3.IntegrityError:
+                pass
 
 
 def test_tranche_tier_status_checks():
