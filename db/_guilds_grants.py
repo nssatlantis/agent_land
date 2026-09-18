@@ -4,7 +4,8 @@ L5 treasury programs: a designated Idea promoted to collaborative unlocks
 1cr x eligible members (cap 10cr), split into equal tranches - T1 on
 promotion (when the proposal carries a to-do list), T2 on the first
 linked PR merge. Linear decay max(0, 1-0.25 x completed) per repeat;
-only merged work increments the completed count.
+merged and fully-decayed completions increment the count - decayed ones
+fire only at the 0 floor, so the floor is stable.
 
 Money model (memo-only, like the upkeep sweep): deposits park real funds
 in the treasury, so the pool's claim is already backed - a grant just
