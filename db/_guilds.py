@@ -986,7 +986,9 @@ def sweep_guild_memberships() -> dict:
                         mem["agent_id"],
                         "heartbeat auto-release pro-rata",
                     )
-                except ForumError:
+                except Exception as exc:
+                    # domain: never-lose-data - any payout failure (funds
+                    # or infra) skips this member; the next tick retries.
                     report["skipped"].append(
                         {
                             "guild_id": gid,
@@ -998,58 +1000,84 @@ def sweep_guild_memberships() -> dict:
                         "guild_sweep_payout_failed",
                         guild_id=gid,
                         agent_id=mem["agent_id"],
+                        error=str(exc),
                     )
                     continue
-                conn.execute(
-                    "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
-                    (gid, mem["agent_id"]),
-                )
-                conn.execute(
-                    "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
-                    " VALUES (?, ?, ?)",
-                    (gid, mem["agent_id"], _now_iso()),
-                )
-                from db._guilds_money import detach_executor_jobs
+                try:
+                    conn.execute(
+                        "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
+                        (gid, mem["agent_id"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO guild_leave_log (guild_id, agent_id, left_at)"
+                        " VALUES (?, ?, ?)",
+                        (gid, mem["agent_id"], _now_iso()),
+                    )
+                    from db._guilds_money import detach_executor_jobs
 
-                detach_executor_jobs(conn, gid, mem["agent_id"])
-                events.log_event(
-                    events.EVT_GUILD_LEFT,
-                    actor_agent_id=mem["agent_id"],
-                    target_type="guild",
-                    target_id=gid,
-                    detail={"paid_quarters": paid, "via": "heartbeat-sweep"},
-                    conn=conn,
-                )
-                report["released"].append(
-                    {
-                        "guild_id": gid,
-                        "agent_id": mem["agent_id"],
-                        "paid_quarters": paid,
-                    }
-                )
-                if mem["role"] == "founder":
-                    try:
-                        out = _run_succession(conn, guild, "founder heartbeat-lapsed")
-                    except ForumError:
-                        report["skipped"].append(
-                            {
-                                "guild_id": gid,
-                                "agent_id": mem["agent_id"],
-                                "why": "succession-failed",
-                            }
-                        )
-                        logutil.log(
-                            "guild_sweep_succession_failed",
-                            guild_id=gid,
-                            why="founder heartbeat-lapsed",
-                        )
-                        continue
-                    if out.get("heir") is not None:
-                        report["succeeded"].append(
-                            {"guild_id": gid, "heir": out["heir"]}
-                        )
-                    else:
-                        report["disbanded"].append(gid)
+                    detach_executor_jobs(conn, gid, mem["agent_id"])
+                    events.log_event(
+                        events.EVT_GUILD_LEFT,
+                        actor_agent_id=mem["agent_id"],
+                        target_type="guild",
+                        target_id=gid,
+                        detail={"paid_quarters": paid, "via": "heartbeat-sweep"},
+                        conn=conn,
+                    )
+                    report["released"].append(
+                        {
+                            "guild_id": gid,
+                            "agent_id": mem["agent_id"],
+                            "paid_quarters": paid,
+                        }
+                    )
+                    if mem["role"] == "founder":
+                        try:
+                            out = _run_succession(
+                                conn, guild, "founder heartbeat-lapsed"
+                            )
+                        except Exception as exc:
+                            # domain: never-lose-data - any succession
+                            # failure defers this founder; the next tick
+                            # retries (the outer tail guard is the backstop).
+                            report["skipped"].append(
+                                {
+                                    "guild_id": gid,
+                                    "agent_id": mem["agent_id"],
+                                    "why": "succession-failed",
+                                }
+                            )
+                            logutil.log(
+                                "guild_sweep_succession_failed",
+                                guild_id=gid,
+                                why="founder heartbeat-lapsed",
+                                error=str(exc),
+                            )
+                            continue
+                        if out.get("heir") is not None:
+                            report["succeeded"].append(
+                                {"guild_id": gid, "heir": out["heir"]}
+                            )
+                        else:
+                            report["disbanded"].append(gid)
+                except Exception as exc:
+                    # domain: never-lose-data - post-payout tail
+                    # (release rows, detach, events, succession)
+                    # isolates per member like the payout above.
+                    report["skipped"].append(
+                        {
+                            "guild_id": gid,
+                            "agent_id": mem["agent_id"],
+                            "why": "release-failed",
+                        }
+                    )
+                    logutil.log(
+                        "guild_sweep_payout_failed",
+                        guild_id=gid,
+                        agent_id=mem["agent_id"],
+                        error=str(exc),
+                    )
+                    continue
             founder = conn.execute(
                 "SELECT a.* FROM agents a WHERE a.id = ?",
                 (guild["founder_agent_id"],),
@@ -1084,7 +1112,10 @@ def sweep_guild_memberships() -> dict:
                                 guild,
                                 "founder suspended" if suspended else "founder idle",
                             )
-                        except ForumError:
+                        except Exception as exc:
+                            # domain: never-lose-data - any succession
+                            # failure rolls the demotion back with it and
+                            # defers; the next tick retries a founded guild.
                             conn.execute("ROLLBACK TO SAVEPOINT guild_succession")
                             conn.execute("RELEASE guild_succession")
                             report["skipped"].append(
@@ -1100,6 +1131,7 @@ def sweep_guild_memberships() -> dict:
                                 why=(
                                     "founder suspended" if suspended else "founder idle"
                                 ),
+                                error=str(exc),
                             )
                             continue
                         conn.execute("RELEASE guild_succession")
