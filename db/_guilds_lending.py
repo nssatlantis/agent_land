@@ -884,7 +884,7 @@ def _forfeit_member(
     if share > 0:
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
-            " note) VALUES (?, 'transfer', ?, ?, ?)",
+            " note) VALUES (?, 'withdrawal', ?, ?, ?)",
             (int(guild_id), share, int(agent_id), f"suspension forfeit ({why})"),
         )
         to_treasury = share // 2
