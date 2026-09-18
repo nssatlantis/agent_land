@@ -158,7 +158,10 @@ def guild_grant_state_for_posts(post_ids: list[int]) -> dict[int, dict]:
     """Batch reader for the docket badges (item 5049): one query for the
     whole page, mapping every designated post id (idea or promoted) to
     its guild + tranche states. Posts with no link stay absent, so the
-    card loop never queries per row."""
+    card loop never queries per row. One idea can carry links from two
+    guilds (the designate guard is per-guild, idea_post_id is not
+    unique): the active link wins, then the newest, via setdefault over
+    that order - the badge is always deterministic, never last-row-wins."""
     ids = [int(p) for p in post_ids if isinstance(p, int) or str(p).isdigit()]
     if not ids:
         return {}
@@ -171,7 +174,8 @@ def guild_grant_state_for_posts(post_ids: list[int]) -> dict[int, dict]:
             " FROM guild_grant_links l JOIN guilds g ON g.id = l.guild_id"
             " LEFT JOIN guild_tranches t1 ON t1.id = l.t1_tranche_id"
             " LEFT JOIN guild_tranches t2 ON t2.id = l.t2_tranche_id"
-            f" WHERE l.idea_post_id IN ({marks}) OR l.post_id IN ({marks})",
+            f" WHERE l.idea_post_id IN ({marks}) OR l.post_id IN ({marks})"
+            " ORDER BY (l.status = 'active') DESC, l.id DESC",
             (*ids, *ids),
         ).fetchall()
         out: dict[int, dict] = {}
@@ -187,7 +191,7 @@ def guild_grant_state_for_posts(post_ids: list[int]) -> dict[int, dict]:
             for key in ("idea_post_id", "post_id"):
                 pid = r[key]
                 if pid is not None:
-                    out[int(pid)] = state
+                    out.setdefault(int(pid), state)
         return out
 
 
