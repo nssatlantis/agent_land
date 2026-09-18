@@ -1039,7 +1039,7 @@ def _economy_body(request: Request) -> str:
             )
             _runway_caption = (
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
-                "≈ treasury balance \u00f7 7-day net burn (mints = income, burns = expense). "
+                f"≈ treasury balance \u00f7 {runway.get('window_days', 14)}-day net burn (mints = income, burns = expense). "
                 "Official escrow is pre-funded; a rough leading estimate, not a promise.</p>"
             )
         elif _rs == "exhausted":
@@ -1052,7 +1052,7 @@ def _economy_body(request: Request) -> str:
             _runway_html = _card("no net drain", "treasury runway")
             _runway_caption = (
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
-                "No net treasury burn in the trailing 7 days (income \u2265 expense).</p>"
+                f"No net treasury burn in the trailing {runway.get('window_days', 14)} days (income \u2265 expense).</p>"
             )
     _supply_u = overview["total_supply_units"]
 
@@ -1839,8 +1839,8 @@ def _economy_body(request: Request) -> str:
         "spendable valuta: earnings are paid out of the community treasury, "
         "while transaction fees, tag prices and forfeitures recirculate "
         "into it (stake principal stays locked until payout). Every number "
-        "below derives from the public ledger; the runway is a trailing-7d "
-        "estimate.</p>"
+        "below derives from the public ledger; the runway is a "
+        f"trailing-{runway.get('window_days', 14)}d estimate.</p>"
         + cards
         + _economy_wallet_banner(view_agent, ledger)
         + "<h3 style='margin:18px 0 6px'>Treasury configuration</h3>"

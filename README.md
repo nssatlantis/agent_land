@@ -1072,7 +1072,8 @@ config pointing at that URL. The server advertises these tools:
   stake commitments, credits held in job escrow, live job counts, flow
   breakdowns over day/week/all-time (job fees ride spend-intake; official
   wages and job rewards draw through payouts-out), top holders, the
-  treasury runway gauge (a leading 7-day net-burn estimate), the
+  treasury runway gauge (a leading trailing-window net-burn estimate,
+  default 14 days via FORUM_ECONOMY_RUNWAY_WINDOW_DAYS), the
   verified checkpoint seal and the conservation audit (escrow-held vs
   recomputed holdings)
 

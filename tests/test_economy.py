@@ -684,6 +684,32 @@ def test_checkpoint_replays_the_chain_not_just_sums():
     assert cp["ok"] is False
 
 
+def test_verify_ledger_public_pages_past_first_page():
+    """#B30: verify_ledger_public must page through the whole ledger.
+    history() clamps limit to MAX_PAGE_SIZE, so the old offset += 200 stride
+    skipped rows 100-199 whenever the ledger held more than one page and
+    reported the chain broken. Seed enough entries to span several pages and
+    assert the public chain verifies end-to-end."""
+    with db._conn(immediate=True) as conn:
+        for _ in range(250):
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+                " account) VALUES (NULL, -1, 'page_stride_seed', 'treasury')",
+            )
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+                " account) VALUES (NULL, 1, 'page_stride_seed', 'treasury')",
+            )
+    seal = db.write_checkpoint()
+    pub = db.verify_ledger_public()
+    assert pub["present"] is True
+    assert pub["entries_replayed"] == seal["entry_count"], (
+        "every sealed entry must be replayed, not skipped past page one"
+    )
+    assert pub["chain_ok"] is True
+    assert pub["recomputed_hash"] == seal["running_hash"]
+
+
 def test_negative_admin_cap_clamps_shut():
     """A negative cap knob clamps to 0 - every adjustment then needs a
     proposal. A typo must never unlock unlimited minting (review note
@@ -1078,10 +1104,11 @@ def test_treasury_runway_estimate():
     )
     assert ok["status"] == "ok"
     assert ok["enabled"] is True
-    assert ok["net_burn_7d_units"] == 260  # payouts 280 - income (fees) 20
-    assert ok["in_7d_units"] == 20
-    assert ok["out_7d_units"] == 280
-    assert ok["days"] == 2, ok  # (2000/20) / (260/7) = 2.69 -> 2
+    assert ok["net_burn_window_units"] == 260  # payouts 280 - income (fees) 20
+    assert ok["in_window_units"] == 20
+    assert ok["out_window_units"] == 280
+    assert ok["window_days"] == 14
+    assert ok["days"] == 107, ok  # 2000 / (260/14) = 107.69 -> 107
 
     # Mint counts as income: a mint covering the payout leaves no net burn -
     # idle, and never a bogus huge runway figure.
@@ -1101,7 +1128,7 @@ def test_treasury_runway_estimate():
     )
     assert idle["status"] == "idle"
     assert idle["days"] is None, idle
-    assert idle["net_burn_7d_units"] == -200  # income 1000 - expense 800
+    assert idle["net_burn_window_units"] == -200  # income 1000 - expense 800
 
     # Burn counts as an expense (drains the treasury toward the cliff).
     burn = economy._runway_estimate(
@@ -1119,8 +1146,8 @@ def test_treasury_runway_estimate():
         enabled=True,
     )
     assert burn["status"] == "ok"
-    assert burn["net_burn_7d_units"] == 500
-    assert burn["days"] == 14, burn  # (20000/20) / (500/7) = 14
+    assert burn["net_burn_window_units"] == 500
+    assert burn["days"] == 560, burn  # 20000 / (500/14) = 560.0 -> 560
 
     # An empty treasury is exhausted - no days, but still flagged as draining.
     empty = economy._runway_estimate(
@@ -1149,7 +1176,8 @@ def test_treasury_runway_estimate():
     assert off["status"] == "disabled"
     assert off["enabled"] is False
     assert off["days"] is None
-    assert off["net_burn_7d_units"] == 0
+    assert off["net_burn_window_units"] == 0
+    assert off["window_days"] == 14
     print("  treasury_runway_estimate: ok")
 
 
@@ -1160,9 +1188,10 @@ def test_treasury_runway_overview_wiring():
         "enabled",
         "status",
         "days",
-        "net_burn_7d_units",
-        "in_7d_units",
-        "out_7d_units",
+        "window_days",
+        "net_burn_window_units",
+        "in_window_units",
+        "out_window_units",
     }
     assert r["enabled"] is True
     assert r["status"] in ("ok", "idle", "exhausted")

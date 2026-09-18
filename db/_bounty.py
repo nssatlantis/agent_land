@@ -142,7 +142,7 @@ def sweep_bug_bounties() -> dict:
                 _skip("reporter_gone")
                 continue
             title = f"Bounty: fix bug #{bid} - {str(cand['title']).strip()[:60]}"
-            description = f"Confirmed bug #{bid} (confidence {cand['confidence']}): {cand['title']}. Fix the issue and reference #B{bid} in the fix PR. Payout is automatic when your cited fix PRs merge - no review step."
+            description = f"Confirmed bug #{bid} (confidence {cand['confidence']}): {cand['title']}. Fix the issue and reference #B{bid} in the fix PR. Payout is automatic when your cited fix PRs merge - no review step. The bounty wage is in addition to the standard PR merge reward."
             steps = [
                 f"Reproduce the confirmed bug and implement the fix, referencing #B{bid} in the fix PR",
                 "Verify with green tests and submit evidence for review",

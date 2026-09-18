@@ -1965,7 +1965,7 @@ def test_economy_labels_bundle_b():
     html = _economy_body(_Req())
     assert "unavailable" not in html.lower(), "happy path shows no fallback"
     assert "forfeitures recirculate" in html, "intro names forfeitures"
-    assert "trailing-7d" in html, "intro qualifies runway"
+    assert "trailing-14d" in html, "intro qualifies runway"
     assert "All time" in html, "burn legend names window"
     assert "held in job escrow (all)" in html, "card scope labeled"
     assert "non-official" in html, "escrow scope labeled"

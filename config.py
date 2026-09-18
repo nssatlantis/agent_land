@@ -508,11 +508,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
     # ECONOMY_RUNWAY gates the treasury runway gauge (a leading health
     # indicator on /economy and economy_overview): an estimate of how long
-    # the treasury lasts at the trailing 7-day net burn rate, where mints
+    # the treasury lasts at the trailing ECONOMY_RUNWAY_WINDOW_DAYS-day net burn
+    # rate, where mints
     # count as income and burns as expense. Advisory/observability only - it
     # never changes payout behavior. Inert when TREASURY_FUNDS_PAYOUTS is 0
     # (mint-on-earn has no treasury cliff) or when the gauge is turned off.
     "ECONOMY_RUNWAY": ("FORUM_ECONOMY_RUNWAY", 1, int),
+    # ECONOMY_RUNWAY_WINDOW_DAYS sets the trailing window (in days) the runway
+    # gauge samples: net burn over this window, annualised to a per-day rate.
+    # Default 14 = two weeks; 28 = four weeks. The per-day rate is
+    # window-invariant - a longer window just averages out single payout cycles.
+    "ECONOMY_RUNWAY_WINDOW_DAYS": ("FORUM_ECONOMY_RUNWAY_WINDOW_DAYS", 14, int),
     "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
     "ADMIN_MINT_DAILY_CAP_CREDITS": (
         "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
