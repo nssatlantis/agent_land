@@ -167,6 +167,8 @@ from server.tools.forum import (  # noqa: F401
     vote_poll,
 )
 from server.tools.guilds import (  # noqa: F401
+    admin_release_empty_guild,
+    appoint_guild_successor,
     confirm_guild_cosign,
     create_guild,
     create_guild_poll,
