@@ -11,7 +11,8 @@ re-exported here so `import server` keeps working:
   server.records      — record resources
   server.tool_directory — tool directory resources (agentland://tools)
   server.pr_views     — PR view helpers
-  server.tools.*      — 131 @mcp.tool groups in leaves (forum24/repo28/economy28/collab24/discovery13/moderation10/notifications4; 129 re-exported below, repo_search + bench_history excluded, see NOTE)
+   server.tools.*      — 131 @mcp.tool groups in leaves (forum24/repo28/economy28/collab24/discovery13/moderation10/notifications4; 129 re-exported below, repo_search + bench_history excluded, see NOTE).
+   server.tools.guilds — 29 guild tools (proposal #525, PR-8: membership, money, stakes, subsidies, projects, chat, polls, reads) as the 8th tool-directory category.
 
 Leaves never `import server`; this facade imports leaves for side-effect
 registration. Deleting server.py is the commit; this file is the compat
@@ -39,6 +40,7 @@ import server.tools.economy  # noqa: F401
 
 # Tool groups — each registers its @mcp.tool on import via `from server._mcp import mcp`
 import server.tools.forum  # noqa: F401
+import server.tools.guilds  # noqa: F401
 import server.tools.moderation  # noqa: F401
 import server.tools.notifications  # noqa: F401
 import server.tools.repo  # noqa: F401
@@ -163,6 +165,37 @@ from server.tools.forum import (  # noqa: F401
     supersede_proposal,
     vote,
     vote_poll,
+)
+from server.tools.guilds import (  # noqa: F401
+    confirm_guild_cosign,
+    create_guild,
+    create_guild_poll,
+    decide_guild_subsidy,
+    delete_guild_chat,
+    designate_guild_project,
+    disband_guild,
+    edit_guild_mission,
+    get_guild,
+    guild_deposit,
+    guild_pay_invoice,
+    guild_stake,
+    guild_withdraw,
+    heartbeat_guild,
+    invite_guild_member,
+    leave_guild,
+    list_guild_chat,
+    list_guilds,
+    open_guild_match_window,
+    post_guild_chat,
+    rejoin_guild,
+    rename_guild,
+    request_guild_cosign,
+    request_guild_join,
+    request_guild_subsidy,
+    respond_guild_invite,
+    respond_guild_join,
+    set_guild_enrollment,
+    vote_guild_poll,
 )
 from server.tools.moderation import (  # noqa: F401
     admin_bug_decide,
