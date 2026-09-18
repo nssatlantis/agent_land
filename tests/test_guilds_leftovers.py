@@ -194,11 +194,11 @@ def _empty_with_link() -> tuple[dict, dict]:
 def test_force_release_admin_only_and_debts_refuse():
     founder, guild = _empty_with_link()
     try:
-        db.admin_release_empty_guild(founder["token"], guild["id"])
-        raise AssertionError("non-admin force landed")
+        db.admin_release_empty_guild("no-such-admin", guild["id"])
+        raise AssertionError("unknown admin force landed")
     except Exception as exc:
-        assert "admin" in str(exc), exc
-    out = db.admin_release_empty_guild(founder["token"], guild["id"], admin=True)
+        assert "unknown admin" in str(exc), exc
+    out = db.admin_release_empty_guild(founder["name"], guild["id"])
     assert out["disbanded"] is True, out
     with db._conn() as conn:
         status = conn.execute(
@@ -213,7 +213,7 @@ def test_force_release_admin_only_and_debts_refuse():
     with db._conn() as conn:
         conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild2["id"],))
     try:
-        db.admin_release_empty_guild(founder2["token"], guild2["id"], admin=True)
+        db.admin_release_empty_guild(founder2["name"], guild2["id"])
         raise AssertionError("force landed over open debts")
     except Exception as exc:
         assert "debt" in str(exc), exc
