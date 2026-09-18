@@ -132,6 +132,26 @@ def _check_treasury_open(conn: sqlite3.Connection, amount_q: int, what: str) -> 
         )
 
 
+def _idea_guild(conn: sqlite3.Connection, post_id: int) -> int | None:
+    """The guild that filed this idea via propose guild_id (if any).
+    Corrupt config degrades to unlinked rather than refusing."""
+    row = conn.execute(
+        "SELECT proposal_config FROM posts WHERE id = ?", (int(post_id),)
+    ).fetchone()
+    if row is None or not row["proposal_config"]:
+        return None
+    try:
+        cfg = json.loads(row["proposal_config"])
+    except Exception:
+        return None
+    gid = cfg.get("guild_id") if isinstance(cfg, dict) else None
+    return (
+        int(gid)
+        if isinstance(gid, int) or (isinstance(gid, str) and gid.isdigit())
+        else None
+    )
+
+
 def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
     """Founder designates an Idea as the guild's project seed. Gate: the
     post is a live idea by a guild member, at least GUILD_PROJECT_MIN_AGE
@@ -162,6 +182,12 @@ def designate_guild_project(token: str, guild_id: int, post_id: int) -> dict:
             raise ForumError(
                 "only the guild's own ideas are designatable - the author"
                 " is not a member."
+            )
+        linked = _idea_guild(conn, int(post_id))
+        if linked is not None and linked != int(guild_id):
+            raise ForumError(
+                f"idea #{post_id} was filed by another guild - only own"
+                " ideas are designatable."
             )
         min_age = float(config.GUILD_PROJECT_MIN_AGE_DAYS)
         try:
