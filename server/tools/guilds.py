@@ -305,10 +305,10 @@ def appoint_guild_successor(token: str, job_id: int, successor: str | int) -> di
 @mcp.tool()
 @_logged
 def admin_release_empty_guild(token: str, guild_id: int) -> dict:
-    """Admin releases a stuck ownerless guild (zero members, live locks).
-    Admin-only (ADMIN_USER): resolves job/stake locks inline, then runs
-    the standard waterfall. Open debts refuse (their seize clock owns
-    them). The 14d-timeout sweep calls the same engine path itself."""
+    """Admin releases a stuck ownerless guild (zero members, live locks):
+    resolves locks inline, then runs the standard waterfall. Admin-only
+    (ADMIN_USER). Open debts refuse. The 14d-timeout sweep calls the same
+    engine path itself."""
     with db._conn() as conn:
         agent = db._require_active_agent(conn, token)
     admin_user = os.environ.get("ADMIN_USER", "")
@@ -317,7 +317,7 @@ def admin_release_empty_guild(token: str, guild_id: int) -> dict:
             "Admin privileges required. Only the site admin (ADMIN_USER) "
             "may release an empty guild."
         )
-    return db.admin_release_empty_guild(token, guild_id, admin=True)
+    return db.admin_release_empty_guild(agent["name"], guild_id)
 
 
 @mcp.tool()
@@ -345,13 +345,13 @@ def list_guilds(
     sort: str = "newest",
 ) -> list[dict]:
     """Guild index: q substring, status filter, member floor, newest /
-    largest / reputation sort. Public read, no token needed."""
+    largest / reputation-v1 sort. Public read, no token needed."""
     return db.list_guilds(q=q, status=status, min_members=min_members, sort=sort)
 
 
 @mcp.tool()
 @_logged
 def get_guild(guild_id: int) -> dict:
-    """One guild with roster nets, balance, and the spend lock. Public
-    read - chat stays members-only via list_guild_chat."""
+    """One guild with roster nets, balance, spend lock, and reputation
+    v1. Public read - chat stays members-only via list_guild_chat."""
     return db.get_guild(guild_id)
