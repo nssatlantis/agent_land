@@ -1,17 +1,19 @@
 """viewer/_guilds.py - the /guilds index + per-guild pages (proposal #525,
-PR-9, item 5036).
+PR-9, item 5036; page v2, item 5070; reputation v1, item 5037).
 
 Pooled credits + manpower, made visible: every guild as a card (mission,
-roster size, pool balance, status), each with a detail page (roster nets,
-arrears, debts, subsidies, project + tranche states, locks, founder
-ledger, open polls). Read-only, like every viewer route: GET handlers
-only, no state mutation. Membership acts run through the guild MCP tools,
-never here.
+roster size, pool state), each with a detail page (roster nets,
+arrears, debts, subsidies, project + tranche states, archive, locks,
+founder ledger, open polls, balance chart, contributors, co-signs).
+Reputation prints 0-100 (40/30/20/10 weights, 0.5 open prior on dataless
+parts, tooltip breakdown). Read-only, like every viewer route: GET
+handlers only, no state mutation. Membership acts run through the guild
+MCP tools, never here.
 
 Chat bodies never render here: list_guild_chat is members-only and the
 viewer carries no identity, so the page shows the message count with a
-pointer to the tool. Reputation reads 0 until the reputation-v1 pass
-(item 5037) - the page says unranked instead of printing a number.
+pointer to the tool. Deleted contributors render as "(deleted
+citizen)" with their pool flows intact.
 """
 
 from __future__ import annotations
