@@ -205,6 +205,18 @@ def test_force_release_admin_only_and_debts_refuse():
             "SELECT status FROM guilds WHERE id = ?", (guild["id"],)
         ).fetchone()["status"]
     assert status == "disbanded"
+    # Open debts refuse: the seize clock owns them, force cannot take
+    # debt collateral.
+    founder2, guild2 = _found()
+    _mate(founder2, guild2, 10.0)
+    db.request_guild_subsidy(founder2["token"], guild2["id"], 1.0, True, "owed")
+    with db._conn() as conn:
+        conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild2["id"],))
+    try:
+        db.admin_release_empty_guild(founder2["token"], guild2["id"], admin=True)
+        raise AssertionError("force landed over open debts")
+    except Exception as exc:
+        assert "debt" in str(exc), exc
 
 
 def test_empty_timeout_disbands_after_14d():
@@ -243,6 +255,34 @@ def test_guild_principles_in_rules():
         assert keyword in text, keyword
 
 
+def test_boot_migrates_guild_columns():
+    """Old guild tables gain the PR-12 columns through init_db (the
+    mid-stack upgrade path: tables landed in PR-1 without them). Runs
+    LAST: fresh_db repoints the process at an isolated database."""
+    import shutil
+
+    from tests._setup import fresh_db
+
+    tmp = fresh_db("agentland_test_guilds_migrate_")
+    try:
+        with db._conn() as conn:
+            # Rewind the two tables to their pre-PR-12 shape, then prove
+            # init_db migrates them forward.
+            conn.execute("ALTER TABLE guilds DROP COLUMN emptied_at")
+            conn.execute("ALTER TABLE guild_job_links DROP COLUMN grace_until")
+        db.init_db()
+        with db._conn() as conn:
+            gcols = {r[1] for r in conn.execute("PRAGMA table_info(guilds)").fetchall()}
+            jcols = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(guild_job_links)").fetchall()
+            }
+        assert "emptied_at" in gcols, sorted(gcols)
+        assert "grace_until" in jcols, sorted(jcols)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_member_net_counts_deposits_only()
     test_taken_wage_does_not_weight_shares()
@@ -252,4 +292,5 @@ if __name__ == "__main__":
     test_force_release_admin_only_and_debts_refuse()
     test_empty_timeout_disbands_after_14d()
     test_guild_principles_in_rules()
+    test_boot_migrates_guild_columns()
     print("test_guilds_leftovers: all passed")
