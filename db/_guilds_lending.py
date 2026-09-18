@@ -906,6 +906,11 @@ def _forfeit_member(
         "DELETE FROM guild_members WHERE guild_id = ? AND agent_id = ?",
         (int(guild_id), int(agent_id)),
     )
+    from db._guilds import _agent_name, _record_churn
+
+    _record_churn(
+        conn, int(guild_id), int(agent_id), _agent_name(conn, int(agent_id)), "leave"
+    )
     conn.execute(
         "INSERT INTO guild_leave_log (guild_id, agent_id, left_at) VALUES (?, ?, ?)",
         (int(guild_id), int(agent_id), _now_iso()),
