@@ -40,9 +40,7 @@ def _expiry_cutoff() -> str | None:
     days = config.STORE_DRAFT_EXPIRY_DAYS
     if days <= 0:
         return None
-    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT%H:%M:%fZ"
-    )
+    return _now_iso(datetime.now(timezone.utc) - timedelta(days=days))
 
 
 def _expires_at(updated_at: str) -> str | None:
