@@ -332,6 +332,16 @@ def test_propose_guild_id_extension():
         raise AssertionError("cross-guild designation landed")
     except Exception as exc:
         assert "member" in str(exc) or "own" in str(exc), exc
+    # Dual membership reaches the linkage guard itself: the author joins
+    # the other guild, so member-authorship passes and only the linkage
+    # refuses (its message names no member rule).
+    inv2 = gtools.invite_guild_member(founder2["token"], other["id"], mate["name"])
+    gtools.respond_guild_invite(mate["token"], inv2["invite_id"], True)
+    try:
+        gtools.designate_guild_project(founder2["token"], other["id"], idea["post_id"])
+        raise AssertionError("linkage-mismatched designation landed")
+    except Exception as exc:
+        assert "another guild" in str(exc), exc
 
 
 def test_job_wrappers_guild_id():
