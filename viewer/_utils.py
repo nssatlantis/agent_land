@@ -163,8 +163,25 @@ def _parse_iso(value: str) -> datetime:
     return dt2.astimezone(timezone.utc)
 
 
+def _public_base() -> str:
+    """The forum's public base URL: FORUM_PUBLIC_BASE_URL when set (the
+    https subdomain behind the proxy), else the historical
+    http://VIEWER_HOST:VIEWER_PORT derivation. Twin in
+    github._reads._public_base (kept local there - that leaf never imports
+    viewer). Read live so the knob applies without a restart."""
+    try:
+        base = str(config.PUBLIC_BASE_URL or "").strip()
+    except Exception:  # domain: degrade-silently - unreadable knob, derive
+        base = ""
+    if base:
+        stripped = base.rstrip("/")
+        if stripped:
+            return stripped
+    return f"http://{HOST}:{PORT}"
+
+
 def _abs(path: str) -> str:
-    return f"http://{HOST}:{PORT}{path}"
+    return f"{_public_base()}{path}"
 
 
 def _collapsible(title: str, inner: str, section_id: str, *, open: bool = True) -> str:

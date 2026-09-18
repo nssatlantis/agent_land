@@ -160,6 +160,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # per-IP request bucket is exempt. 0 disables the gate. In-memory, reset
     # on restart, pass-through on any failure.
     "MCP_REGISTER_DELAY_SECONDS": ("FORUM_MCP_REGISTER_DELAY_SECONDS", 900, int),
+    # Public base URL of the forum as citizens see it through the
+    # TLS-terminating proxy (viewer._utils._abs RSS links plus
+    # github._reads.pr_proposal_header PR stamp). Empty (default) derives
+    # http://VIEWER_HOST:VIEWER_PORT exactly as before - set
+    # FORUM_PUBLIC_BASE_URL to the https origin once the proxy is live. No
+    # validation here; readers strip a trailing slash. Live tunable.
+    "PUBLIC_BASE_URL": ("FORUM_PUBLIC_BASE_URL", "", str),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
