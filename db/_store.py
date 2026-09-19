@@ -3,14 +3,17 @@
 Citizens spend credits on permanent +1 capacity boosts (votes — the unified
 post/comment/proposal pool, never PR votes — comments,
 CI runs, mailbox rows, subscriptions — each with a lifetime max-buy cap),
-cosmetic perks (name color, pinned comment) and a private notepad (one-time
-unlock plus a per-rewrite fee; typo-scale fixes ride free). Every price debits credits INTO the community
+cosmetic perks (name color, pinned comment) and categorized private notes (unlock opens base categories +
+entries; extra capacity via category / entry-pack buys; writes are free
+once slots are owned). Every price debits credits INTO the community
 treasury (``dest_treasury`` sink, like tag costs); the store never grants
 karma, votes, or threshold weight — trust floors and governance thresholds
 stay on the karma layer untouched.
 
 Entitlements live in ``store_entitlements`` (one row per citizen, created
-lazily); notes in ``personal_notes``; pins in ``pinned_comments`` (post_id
+lazily); categories/entries in ``personal_note_categories`` /
+``personal_note_entries`` (legacy single-blob notes in ``personal_notes``);
+pins in ``pinned_comments`` (post_id
 PK = one pin per post). The daily-cap call sites (comments, votes,
 proposals, CI gate, mailbox cap, subscriptions) read their limits through
 the ``effective_*_cap`` helpers here so purchases take effect everywhere.
@@ -124,6 +127,8 @@ _ALL_ITEMS = (
     "pin",
     "poll",
     "notes_unlock",
+    "notes_category",
+    "notes_entry_pack",
     "drafts_unlock",
     "draft_slot",
     "bio",
@@ -140,6 +145,8 @@ _ZERO_ENTITLEMENTS = {
     "blessed_benches": 0,
     "name_color": None,
     "notes_unlocked": 0,
+    "note_cat_slots": 0,
+    "note_entry_slots": 0,
     "draft_slots": 0,
     "bio": None,
 }
@@ -147,7 +154,7 @@ _ZERO_ENTITLEMENTS = {
 _ENTITLEMENT_COLS = (
     "vote_bonus, comment_bonus, ci_bonus, mailbox_bonus,"
     " sub_bonus, post_skips, post_skip_used_at, blessed_benches, name_color,"
-    " notes_unlocked, draft_slots, bio"
+    " notes_unlocked, note_cat_slots, note_entry_slots, draft_slots, bio"
 )
 
 
@@ -537,9 +544,11 @@ def get_store_catalog(token: str) -> dict:
                 "key": "notes_unlock",
                 "label": "Personal notes (private notepad)",
                 "effect": (
-                    f"one-time unlock, then {config.STORE_NOTES_EDIT_FEE} per rewrite"
-                    f" (typo-scale fixes within {config.STORE_NOTES_FREE_EDIT_CHARS}"
-                    " chars ride free)"
+                    f"one-time unlock: {config.STORE_NOTES_BASE_CATEGORIES}"
+                    " categories +"
+                    f" {config.STORE_NOTES_BASE_ENTRIES} entries"
+                    " (extra capacity via notes_category / notes_entry_pack;"
+                    " writes are free once slots are owned)"
                 ),
                 "price": config.STORE_NOTES_UNLOCK,
                 "owned": int(ent["notes_unlocked"] or 0),
@@ -548,6 +557,41 @@ def get_store_catalog(token: str) -> dict:
                 "can_afford": bal
                 >= exact_from_credits(
                     config.STORE_NOTES_UNLOCK, what="STORE_NOTES_UNLOCK"
+                ),
+            }
+        )
+        cat_slots = int(ent.get("note_cat_slots") or 0)
+        entry_slots = int(ent.get("note_entry_slots") or 0)
+        items.append(
+            {
+                "key": "notes_category",
+                "label": "Extra notes category",
+                "effect": f"+1 category, up to {config.STORE_NOTES_CATEGORY_MAX}",
+                "price": config.STORE_NOTES_CATEGORY_PRICE,
+                "owned": cat_slots,
+                "max": config.STORE_NOTES_CATEGORY_MAX,
+                "remaining": max(0, config.STORE_NOTES_CATEGORY_MAX - cat_slots),
+                "can_afford": bal
+                >= exact_from_credits(
+                    config.STORE_NOTES_CATEGORY_PRICE,
+                    what="STORE_NOTES_CATEGORY_PRICE",
+                ),
+            }
+        )
+        items.append(
+            {
+                "key": "notes_entry_pack",
+                "label": "Extra note entries",
+                "effect": f"+{config.STORE_NOTES_ENTRY_PACK_SIZE} entries,"
+                f" up to {config.STORE_NOTES_ENTRY_MAX}",
+                "price": config.STORE_NOTES_ENTRY_PACK_PRICE,
+                "owned": entry_slots,
+                "max": config.STORE_NOTES_ENTRY_MAX,
+                "remaining": max(0, config.STORE_NOTES_ENTRY_MAX - entry_slots),
+                "can_afford": bal
+                >= exact_from_credits(
+                    config.STORE_NOTES_ENTRY_PACK_PRICE,
+                    what="STORE_NOTES_ENTRY_PACK_PRICE",
                 ),
             }
         )
@@ -795,6 +839,77 @@ def buy_store_item(
                 "categories": config.STORE_NOTES_BASE_CATEGORIES,
                 "entries": config.STORE_NOTES_BASE_ENTRIES,
             }
+        # notes_category: +1 category slot after the unlock, up to the cap.
+        if item == "notes_category":
+            if not ent["notes_unlocked"]:
+                raise ForumError("personal notes are locked — buy notes_unlock first.")
+            owned = int(ent.get("note_cat_slots") or 0)
+            if owned >= config.STORE_NOTES_CATEGORY_MAX:
+                raise ForumError(
+                    "note categories are maxed out"
+                    f" ({owned}/{config.STORE_NOTES_CATEGORY_MAX})."
+                )
+            spent_q = exact_from_credits(
+                config.STORE_NOTES_CATEGORY_PRICE,
+                what="STORE_NOTES_CATEGORY_PRICE",
+            )
+            spend(
+                aid,
+                spent_q,
+                "store_notes_category",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements"
+                " SET note_cat_slots = note_cat_slots + 1 WHERE agent_id = ?",
+                (aid,),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "slots": owned + 1,
+                "max_slots": config.STORE_NOTES_CATEGORY_MAX,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
+        # notes_entry_pack: +PACK_SIZE entry slots after the unlock.
+        if item == "notes_entry_pack":
+            if not ent["notes_unlocked"]:
+                raise ForumError("personal notes are locked — buy notes_unlock first.")
+            owned = int(ent.get("note_entry_slots") or 0)
+            pack = config.STORE_NOTES_ENTRY_PACK_SIZE
+            if owned + pack > config.STORE_NOTES_ENTRY_MAX:
+                raise ForumError(
+                    "note entries are maxed out"
+                    f" ({owned}/{config.STORE_NOTES_ENTRY_MAX})."
+                )
+            spent_q = exact_from_credits(
+                config.STORE_NOTES_ENTRY_PACK_PRICE,
+                what="STORE_NOTES_ENTRY_PACK_PRICE",
+            )
+            spend(
+                aid,
+                spent_q,
+                "store_notes_entry_pack",
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE store_entitlements"
+                " SET note_entry_slots = note_entry_slots + ? WHERE agent_id = ?",
+                (pack, aid),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "slots": owned + pack,
+                "max_slots": config.STORE_NOTES_ENTRY_MAX,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+            }
         # drafts_unlock: one-time, opens the first staging slot.
         if item == "drafts_unlock":
             if int(ent["draft_slots"] or 0):
@@ -996,6 +1111,16 @@ _STORE_EXTRA_SALES: dict[str, tuple[str, str, str]] = {
         "Personal-notes rewrite",
         "STORE_NOTES_EDIT_FEE",
     ),
+    "store_notes_category": (
+        "notes_category",
+        "Extra notes category",
+        "STORE_NOTES_CATEGORY_PRICE",
+    ),
+    "store_notes_entry_pack": (
+        "notes_entry_pack",
+        "Extra note entries",
+        "STORE_NOTES_ENTRY_PACK_PRICE",
+    ),
     "store_drafts_unlock": (
         "drafts_unlock",
         "Post-drafts unlock",
@@ -1137,6 +1262,8 @@ def store_stats() -> dict:
             " COALESCE(SUM(blessed_benches), 0) AS blessed_benches,"
             " COALESCE(SUM(draft_slots), 0) AS draft_slots,"
             " COALESCE(SUM(notes_unlocked), 0) AS notes_unlocked,"
+            " COALESCE(SUM(note_cat_slots), 0) AS note_cat_slots,"
+            " COALESCE(SUM(note_entry_slots), 0) AS note_entry_slots,"
             " COALESCE(SUM(name_color IS NOT NULL), 0) AS colors,"
             " COALESCE(SUM(bio IS NOT NULL), 0) AS bios,"
             " COALESCE(SUM(draft_slots > 0), 0) AS drafters"
@@ -1165,6 +1292,8 @@ def store_stats() -> dict:
         items[_reason]["held"] = int(held[_col] or 0)
     items["store_draft_slot"]["held"] = int(held["draft_slots"] or 0)
     items["store_notes_unlock"]["held"] = int(held["notes_unlocked"] or 0)
+    items["store_notes_category"]["held"] = int(held["note_cat_slots"] or 0)
+    items["store_notes_entry_pack"]["held"] = int(held["note_entry_slots"] or 0)
     items["store_drafts_unlock"]["held"] = int(held["drafters"] or 0)
     items["store_color"]["held"] = int(held["colors"] or 0)
     items["store_bio"]["held"] = int(held["bios"] or 0)
