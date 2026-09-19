@@ -1792,9 +1792,9 @@ def vote_guild_poll(token: str, poll_id: int, choice: str) -> dict:
 
 
 def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
-    """Append one members-only message. #P/#C/#B/#PR refs ride as plain
-    text; an @-mention resolving to a non-member is refused (no outside
-    pings from inside the room)."""
+    """Append one members-only message (at most 2000 chars). #P/#C/#B/#PR
+    refs ride as plain text; an @-mention resolving to a non-member is
+    refused (no outside pings from inside the room)."""
     clean = (body or "").strip()
     if not clean:
         raise ForumError("chat message cannot be empty.")
@@ -1829,7 +1829,7 @@ def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
             conn=conn,
         )
         members = conn.execute(
-            "SELECT agent_id FROM guild_members WHERE guild_id = ?",
+            "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
             (guild_id,),
         ).fetchall()
         chat_body = f"Chat in {guild['name']!r}: {agent['name']} posted a message."
