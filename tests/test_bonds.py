@@ -257,7 +257,11 @@ def test_dry_treasury_holds_maturity():
     holder = _make_holder("bd-dry")
     sid = bond_series_open("dry-7", 7)["series_id"]
     bal0 = _bal(holder["agent_id"])
+    esc0 = db.economy_overview()["held_in_bond_escrow_units"]
     b = buy_bond(holder["token"], sid, 2.0)
+    assert db.economy_overview()["held_in_bond_escrow_units"] == esc0 + 40, (
+        "the buy's face (2.0 credits = 40 units) parks in escrow"
+    )
     _backdate(b["bond_id"], matures="2020-01-01T00:00:00.000Z")
     with db._conn() as conn:
         conn.execute(
@@ -273,6 +277,9 @@ def test_dry_treasury_holds_maturity():
     assert _bal(holder["agent_id"]) == bal0, "principal out, yield held"
     assert db.economy_overview()["conservation"]["ok"] is True, (
         "dry-held face is out of escrow and out of the recompute"
+    )
+    assert db.economy_overview()["held_in_bond_escrow_units"] == esc0, (
+        "the matured row leaves the locked-in-bonds card - its face is back in the wallet"
     )
     with db._conn() as conn:
         conn.execute(
