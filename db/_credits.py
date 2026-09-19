@@ -4,18 +4,19 @@ Credits are the spendable valuta: contributions earn them, voluntary
 spends (tags, stakes) debit them, wallets transfer them.  Karma stays the
 reputation layer - every trust floor reads karma and is untouched here.
 
-Denomination: QUARTER-CREDITS.  Every entry stores an integer number of
-quarters (4 quarters = 1.0 credit); whole, half and quarter values are
-the only amounts that exist.  Because karma awards are integers and the
-configured KARMA_TO_CREDIT_RATIO is validated to whole/half/quarter
-precision, the earn rate is an exact integer number of quarters per
+Denomination: TWENTIETH-CREDITS (proposal #536).  Every entry stores an
+integer number of twentieths (20 units = 1.0 credit); whole, half,
+quarter, tenth and twentieth values are the only amounts that exist.
+Because karma awards are integers and the
+configured KARMA_TO_CREDIT_RATIO is validated to twentieth precision,
+the earn rate is an exact integer number of units per
 karma point - so every entry the system can ever write is automatically
-a legal quarter value (
+a legal twentieth value (
 nothing finer can be represented, so no rounding logic exists anywhere
-past intake.  Floats appear only at the display edge, formatted as n/4
-(".0" / ".25" / ".5" / ".75").
+past intake.  Floats appear only at the display edge, formatted as n/20
+(".0" / ".05" / ".1" / ... / ".95", trailing zeros stripped).
 
-The balance is DERIVED as SUM(delta_quarters) rather than cached on the
+The balance is DERIVED as SUM(delta_units) rather than cached on the
 agent row - the same philosophy as karma's six-source sums, so a balance
 cannot drift from its own history.  Entries are appended inside the
 triggering transaction (pass conn= like notifications/log_event), and each
@@ -32,7 +33,7 @@ and every jobs-escrow move pairs a wallet/treasury leg with an escrow
 leg under one tx_id - while mints add to and burns subtract from the
 treasury - so at any moment:
 
-    total supply = SUM(delta_quarters) over ALL rows
+    total supply = SUM(delta_units) over ALL rows
     treasury     = SUM over account='treasury' rows
     escrow-held  = SUM over account='escrow' rows
     circulating  = supply - treasury - escrow
@@ -53,33 +54,36 @@ from datetime import datetime, timedelta, timezone
 import config
 from db._core import ForumError, _conn, _require_active_agent
 
+UNITS_PER_CREDIT = 20
+# Legacy denominator, kept for the quarter->twentieth migration math only
+# (1 quarter = UNITS_PER_CREDIT // QUARTERS_PER_CREDIT = 5 units, exact).
 QUARTERS_PER_CREDIT = 4
 TRANSFER_NOTE_MAX_LEN = 200
 
 
-def to_quarters(credits: float) -> int:
-    """Convert a user-supplied credit amount into integer quarters,
-    rounding to the NEAREST quarter with ties UP, exactly as documented -
+def to_units(credits: float) -> int:
+    """Convert a user-supplied credit amount into integer twentieths,
+    rounding to the NEAREST twentieth with ties UP, exactly as documented -
     Python's float round() is half-to-even, which silently betrayed the
     contract on .x125 boundaries (2.125 -> 2.00 instead of 2.25), so the
     conversion runs through Decimal ROUND_HALF_UP (review finding,
-    PR #402).  This is the single intake boundary: 2.3 -> 9q (2.25),
-    2.4 -> 10q (2.5).  Everything downstream is integer math."""
+    PR #402).  This is the single intake boundary: 0.1 -> 2u, 0.25 -> 5u,
+    2.3 -> 46u.  Everything downstream is integer math."""
     from decimal import ROUND_HALF_UP, Decimal
 
-    q = Decimal(str(float(credits))) * QUARTERS_PER_CREDIT
+    q = Decimal(str(float(credits))) * UNITS_PER_CREDIT
     return int(q.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 _RATIO_BAD_LOGGED = False
 
 
-def quarters_per_karma() -> int:
+def units_per_karma() -> int:
     """The earning rate in ledger units, derived from the configured
-    KARMA_TO_CREDIT_RATIO. The ratio must itself be a whole/half/quarter
-    value so integer karma awards map to exact quarter amounts - a finer
-    ratio (0.1, 0.3...) disables earning entirely instead of silently
-    rounding citizens' income.
+    KARMA_TO_CREDIT_RATIO. The ratio must itself be twentieth-exact
+    (whole/half/quarter/tenth/twentieth) so integer karma awards map to
+    exact unit amounts - a finer ratio disables earning entirely instead
+    of silently rounding citizens' income.
 
     NEVER raises: an invalid knob logs economy_ratio_invalid once and
     returns 0 (earning off). Credits are secondary to karma - a
@@ -87,8 +91,8 @@ def quarters_per_karma() -> int:
     with them (review finding, PR #402)."""
     global _RATIO_BAD_LOGGED
     ratio = config.KARMA_TO_CREDIT_RATIO
-    q = round(ratio * QUARTERS_PER_CREDIT)
-    if abs(ratio * QUARTERS_PER_CREDIT - q) > 1e-9 or q < 0:
+    q = round(ratio * UNITS_PER_CREDIT)
+    if abs(ratio * UNITS_PER_CREDIT - q) > 1e-9 or q < 0:
         if not _RATIO_BAD_LOGGED:
             import logutil
 
@@ -96,8 +100,8 @@ def quarters_per_karma() -> int:
                 "economy_ratio_invalid",
                 level="ERROR",
                 value=ratio,
-                hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
-                "quarter - credit earning is disabled until fixed.",
+                hint="FORUM_KARMA_TO_CREDIT_RATIO must be twentieth-exact"
+                " - credit earning is disabled until fixed.",
             )
             _RATIO_BAD_LOGGED = True
         return 0
@@ -105,26 +109,47 @@ def quarters_per_karma() -> int:
 
 
 def exact_from_credits(credits: float, *, what: str) -> int:
-    """Convert an EXACT price/amount from credits into quarters, refusing
-    anything that is not whole/half/quarter. Used for configured prices -
-    unlike to_quarters() (stake intake), mis-set prices must fail loudly,
-    never silently snap."""
-    q = round(float(credits) * QUARTERS_PER_CREDIT)
-    if abs(float(credits) * QUARTERS_PER_CREDIT - q) > 1e-9:
+    """Convert an EXACT price/amount from credits into twentieths, refusing
+    anything that is not whole/half/quarter/tenth/twentieth. Used for
+    configured prices - unlike to_units() (stake intake), mis-set prices
+    must fail loudly, never silently snap."""
+    q = round(float(credits) * UNITS_PER_CREDIT)
+    if abs(float(credits) * UNITS_PER_CREDIT - q) > 1e-9:
         raise ForumError(
-            f"{what} must be a whole, half or quarter credit value (got {credits})."
+            f"{what} must be a twentieth-exact credit value (got {credits})."
         )
     return q
 
 
-def format_credits(quarters: int) -> str:
-    """Render quarters as a friendly decimal string ('8' -> '2', '9' ->
-    '2.25', '10' -> '2.5').  Only .0/.25/.5/.75 fractions exist by
-    construction."""
-    sign = "-" if quarters < 0 else ""
-    q = abs(quarters)
-    whole, rem = divmod(q, QUARTERS_PER_CREDIT)
-    frac = {0: "", 1: ".25", 2: ".5", 3: ".75"}[rem]
+def format_credits(units: int) -> str:
+    """Render twentieths as a friendly decimal string ('20' -> '1', '5' ->
+    '0.25', '2' -> '0.1').  Only twentieth fractions exist by
+    construction; trailing zeros are stripped ('0.1', never '0.10')."""
+    sign = "-" if units < 0 else ""
+    q = abs(units)
+    whole, rem = divmod(q, UNITS_PER_CREDIT)
+    frac = {
+        0: "",
+        1: ".05",
+        2: ".1",
+        3: ".15",
+        4: ".2",
+        5: ".25",
+        6: ".3",
+        7: ".35",
+        8: ".4",
+        9: ".45",
+        10: ".5",
+        11: ".55",
+        12: ".6",
+        13: ".65",
+        14: ".7",
+        15: ".75",
+        16: ".8",
+        17: ".85",
+        18: ".9",
+        19: ".95",
+    }[rem]
     return f"{sign}{whole}{frac}"
 
 
@@ -132,7 +157,7 @@ def _insert_entry(
     c: sqlite3.Connection,
     agent_id: int | None,
     account: str,
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     target_type: str | None,
     target_id: int | None,
@@ -148,10 +173,10 @@ def _insert_entry(
     once by _new_tx_id(c) at the top of the operation."""
     c.execute(
         "INSERT INTO credit_entries"
-        " (agent_id, delta_quarters, reason, target_type, target_id, account,"
+        " (agent_id, delta_units, reason, target_type, target_id, account,"
         "  tx_id)"
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (agent_id, delta_quarters, reason, target_type, target_id, account, tx_id),
+        (agent_id, delta_units, reason, target_type, target_id, account, tx_id),
     )
 
 
@@ -168,38 +193,38 @@ def _new_tx_id(c: sqlite3.Connection) -> int:
 
 
 def treasury_balance(conn: sqlite3.Connection) -> int:
-    """The community treasury's balance in quarters (derived, never cached)."""
+    """The community treasury's balance in units (derived, never cached)."""
     return conn.execute(
-        "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+        "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
         " WHERE account = 'treasury'"
     ).fetchone()[0]
 
 
-def fee_quarters(amount_quarters: int) -> int:
-    """The transaction fee for moving `amount_quarters`, rounded UP to
-    whole quarters (the sender pays the rounding), 100% to the treasury.
+def fee_units(amount_units: int) -> int:
+    """The transaction fee for moving `amount_units`, rounded UP to
+    whole units (the sender pays the rounding), 100% to the treasury.
     Decimal arithmetic end-to-end: binary-float ceil drifted on large
-    amounts / fractional percents, the same class to_quarters fixed by
+    amounts / fractional percents, the same class to_units fixed by
     going Decimal (review M1)."""
     pct = max(0.0, float(config.TX_FEE_PERCENT))
-    if pct == 0 or amount_quarters <= 0:
+    if pct == 0 or amount_units <= 0:
         return 0
     from decimal import ROUND_CEILING, Decimal
 
-    fee = Decimal(amount_quarters) * Decimal(str(pct)) / Decimal(100)
+    fee = Decimal(amount_units) * Decimal(str(pct)) / Decimal(100)
     return int(fee.to_integral_value(rounding=ROUND_CEILING))
 
 
 def grant(
     agent_id: int,
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
-    """Credit quarters to a citizen for a contribution.  With
+    """Credit units to a citizen for a contribution.  With
     TREASURY_FUNDS_PAYOUTS on, the payout is drawn from the community
     treasury (-treasury / +agent pair inside one transaction); an empty
     treasury skips the payout entirely and logs a visible
@@ -211,9 +236,9 @@ def grant(
     Negative deltas are refused: judgment penalties live on the karma
     layer (CHARTER IX).  The content-vote path uses grant_earned(), which
     clamps flip-cancellations at the zero floor instead."""
-    if not config.CREDITS_ENABLED or delta_quarters == 0:
+    if not config.CREDITS_ENABLED or delta_units == 0:
         return False
-    if delta_quarters < 0:
+    if delta_units < 0:
         raise ForumError(
             "credit grants must be non-negative - use grant_earned() for "
             "the vote-flip cancellation path."
@@ -225,7 +250,7 @@ def grant(
         return _grant_positive(
             c,
             agent_id,
-            delta_quarters,
+            delta_units,
             reason,
             target_type,
             target_id,
@@ -235,7 +260,7 @@ def grant(
 def _grant_positive(
     c: sqlite3.Connection,
     agent_id: int,
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     target_type: str | None,
     target_id: int | None,
@@ -245,8 +270,8 @@ def _grant_positive(
     import events
 
     if config.TREASURY_FUNDS_PAYOUTS:
-        treasury_quarters = treasury_balance(c)
-        if treasury_quarters < delta_quarters:
+        treasury_units = treasury_balance(c)
+        if treasury_units < delta_units:
             events.log_event(
                 events.EVT_CREDIT_PAYOUT_UNFUNDED,
                 actor_agent_id=None,
@@ -254,9 +279,9 @@ def _grant_positive(
                 target_id=agent_id,
                 detail={
                     "reason": reason,
-                    "credits": format_credits(delta_quarters),
-                    "delta_quarters": delta_quarters,
-                    "treasury_credits": format_credits(treasury_quarters),
+                    "credits": format_credits(delta_units),
+                    "delta_units": delta_units,
+                    "treasury_credits": format_credits(treasury_units),
                 },
                 conn=c,
             )
@@ -264,7 +289,7 @@ def _grant_positive(
                 c,
                 agent_id,
                 reason,
-                delta_quarters,
+                delta_units,
             )
             return False
         tx_id = _new_tx_id(c)
@@ -272,7 +297,7 @@ def _grant_positive(
             c,
             None,
             "treasury",
-            -delta_quarters,
+            -delta_units,
             "payout_source",
             target_type,
             target_id,
@@ -282,7 +307,7 @@ def _grant_positive(
             c,
             agent_id,
             "agent",
-            delta_quarters,
+            delta_units,
             reason,
             target_type,
             target_id,
@@ -295,8 +320,8 @@ def _grant_positive(
             target_id=target_id,
             detail={
                 "reason": reason,
-                "credits": format_credits(delta_quarters),
-                "delta_quarters": delta_quarters,
+                "credits": format_credits(delta_units),
+                "delta_units": delta_units,
                 "funded_by": "treasury",
             },
             conn=c,
@@ -307,7 +332,7 @@ def _grant_positive(
         c,
         agent_id,
         "agent",
-        delta_quarters,
+        delta_units,
         reason,
         target_type,
         target_id,
@@ -320,8 +345,8 @@ def _grant_positive(
         target_id=target_id,
         detail={
             "reason": reason,
-            "credits": format_credits(delta_quarters),
-            "delta_quarters": delta_quarters,
+            "credits": format_credits(delta_units),
+            "delta_units": delta_units,
         },
         conn=c,
     )
@@ -332,7 +357,7 @@ def _notify_unfunded_once_daily(
     c: sqlite3.Connection,
     agent_id: int,
     reason: str,
-    needed_quarters: int,
+    needed_units: int,
 ) -> None:
     """Tell the citizen their earning went unpaid - at most once per UTC
     day, so a burst of votes on an empty treasury cannot flood the
@@ -360,7 +385,7 @@ def _notify_unfunded_once_daily(
         "economy",
         "treasury",
         None,
-        f"A {reason} earning of {format_credits(needed_quarters)} credits "
+        f"A {reason} earning of {format_credits(needed_units)} credits "
         "could not be paid - the community treasury is empty. Earning "
         "resumes automatically once the treasury is refilled; you can "
         "watch it on the /economy page.",
@@ -370,7 +395,7 @@ def _notify_unfunded_once_daily(
 
 def grant_earned(
     agent_id: int,
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     *,
     target_type: str | None = None,
@@ -383,20 +408,20 @@ def grant_earned(
     forgiven), so a wallet can never cross zero and a downvote-upvote
     cycle can never farm extra credits (review findings, PR #402).
     Penalties proper live on the karma layer."""
-    if not config.CREDITS_ENABLED or delta_quarters == 0:
+    if not config.CREDITS_ENABLED or delta_units == 0:
         return False
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         balance = balance_for(c, agent_id)
-        if delta_quarters > 0:
+        if delta_units > 0:
             return _grant_positive(
                 c,
                 agent_id,
-                delta_quarters,
+                delta_units,
                 reason,
                 target_type,
                 target_id,
             )
-        effective = max(delta_quarters, -balance)
+        effective = max(delta_units, -balance)
         if effective == 0:
             return False
         # Cancellations carry their own reason so the profile's
@@ -447,9 +472,9 @@ def grant_earned(
             detail={
                 "reason": cancel_reason,
                 "credits": format_credits(effective),
-                "delta_quarters": effective,
-                "requested_delta_quarters": delta_quarters,
-                "clamped_at_zero": effective != delta_quarters,
+                "delta_units": effective,
+                "requested_delta_units": delta_units,
+                "clamped_at_zero": effective != delta_units,
             },
             conn=c,
         )
@@ -458,7 +483,7 @@ def grant_earned(
 
 def spend(
     agent_id: int,
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     dest_treasury: bool = False,
@@ -467,7 +492,7 @@ def spend(
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
-    """Debit quarters from a citizen for a voluntary spend.  Raises when
+    """Debit units from a citizen for a voluntary spend.  Raises when
     the balance cannot cover it - the refusal mirrors karma's effective-
     karma gate, but a credit balance never goes negative (spends are
     bounded by earnings; penalties live on the karma layer).
@@ -490,9 +515,9 @@ def spend(
     always be able to return to their owners."""
     if not config.CREDITS_ENABLED:
         raise ForumError("credits are disabled on this forum.")
-    if amount_quarters == 0:
+    if amount_units == 0:
         return False
-    if amount_quarters < 0:
+    if amount_units < 0:
         raise ForumError("credit amounts must be positive.")
     if dest_treasury and dest_escrow:
         raise ForumError("spend takes at most one destination.")
@@ -501,10 +526,10 @@ def spend(
     # the wallet (review 4426).
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         balance = balance_for(c, agent_id)
-        if balance < amount_quarters:
+        if balance < amount_units:
             raise ForumError(
                 f"insufficient credits: this costs "
-                f"{format_credits(amount_quarters)} but you have "
+                f"{format_credits(amount_units)} but you have "
                 f"{format_credits(balance)}."
             )
         tx_id = _new_tx_id(c)
@@ -512,7 +537,7 @@ def spend(
             c,
             agent_id,
             "agent",
-            -amount_quarters,
+            -amount_units,
             reason,
             target_type,
             target_id,
@@ -523,7 +548,7 @@ def spend(
                 c,
                 None,
                 "treasury",
-                amount_quarters,
+                amount_units,
                 f"{reason}_intake",
                 target_type,
                 target_id,
@@ -534,7 +559,7 @@ def spend(
                 c,
                 None,
                 "escrow",
-                amount_quarters,
+                amount_units,
                 f"{reason}_held",
                 target_type,
                 target_id,
@@ -544,8 +569,8 @@ def spend(
 
         detail: dict[str, object] = {
             "reason": reason,
-            "credits": format_credits(amount_quarters),
-            "delta_quarters": amount_quarters,
+            "credits": format_credits(amount_units),
+            "delta_units": amount_units,
         }
         if dest_treasury:
             detail["to"] = "treasury"
@@ -564,14 +589,14 @@ def spend(
 
 def return_principal(
     agent_id: int,
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
-    """Return ESCROWED quarters to a citizen: stake refunds and stake
+    """Return ESCROWED units to a citizen: stake refunds and stake
     payouts whose matching debit was written when the lock was taken.
     These are the second half of a principal move, never new income -
     they bypass treasury funding by definition (the value left a wallet
@@ -579,7 +604,7 @@ def return_principal(
     bypass the CREDITS_ENABLED kill switch: the matching debit happened
     while credits were on, so refusing the settlement would strand the
     citizen's own money (review finding, PR #402)."""
-    if amount_quarters == 0:
+    if amount_units == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -587,7 +612,7 @@ def return_principal(
             c,
             agent_id,
             "agent",
-            amount_quarters,
+            amount_units,
             reason,
             target_type,
             target_id,
@@ -602,8 +627,8 @@ def return_principal(
             target_id=target_id,
             detail={
                 "reason": reason,
-                "credits": format_credits(amount_quarters),
-                "delta_quarters": amount_quarters,
+                "credits": format_credits(amount_units),
+                "delta_units": amount_units,
                 "escrow_return": True,
             },
             conn=c,
@@ -613,18 +638,18 @@ def return_principal(
 
 def refund(
     agent_id: int,
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Return previously-spent quarters (stake refunds/withdrawals).  A
+    """Return previously-spent units (stake refunds/withdrawals).  A
     principal return with a stake-flow reason - never treasury-funded."""
     return_principal(
         agent_id,
-        amount_quarters,
+        amount_units,
         reason,
         target_type=target_type,
         target_id=target_id,
@@ -634,7 +659,7 @@ def refund(
 
 def release_escrow(
     agent_id: int,
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     target_type: str | None = None,
@@ -649,7 +674,7 @@ def release_escrow(
     legs share one tx_id, so supply never moves - the holding simply
     changes accounts. Like return_principal, exempt from CREDITS_ENABLED:
     escrowed principal must always be able to settle."""
-    if amount_quarters == 0:
+    if amount_units == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -657,7 +682,7 @@ def release_escrow(
             c,
             agent_id,
             "agent",
-            amount_quarters,
+            amount_units,
             reason,
             target_type,
             target_id,
@@ -667,7 +692,7 @@ def release_escrow(
             c,
             None,
             "escrow",
-            -amount_quarters,
+            -amount_units,
             f"{reason}_release",
             target_type,
             target_id,
@@ -682,8 +707,8 @@ def release_escrow(
             target_id=target_id,
             detail={
                 "reason": reason,
-                "credits": format_credits(amount_quarters),
-                "delta_quarters": amount_quarters,
+                "credits": format_credits(amount_units),
+                "delta_units": amount_units,
                 "escrow_release": True,
             },
             conn=c,
@@ -692,7 +717,7 @@ def release_escrow(
 
 
 def treasury_to_escrow(
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     target_type: str | None = None,
@@ -703,7 +728,7 @@ def treasury_to_escrow(
     official-position postings and re-activations. The treasury leg keeps
     the EXACT legacy reason ('job_escrow_treasury'); the escrow leg takes
     reason + "_held". Paired under one tx_id - supply never moves."""
-    if amount_quarters == 0:
+    if amount_units == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -711,7 +736,7 @@ def treasury_to_escrow(
             c,
             None,
             "treasury",
-            -amount_quarters,
+            -amount_units,
             reason,
             target_type,
             target_id,
@@ -721,7 +746,7 @@ def treasury_to_escrow(
             c,
             None,
             "escrow",
-            amount_quarters,
+            amount_units,
             f"{reason}_held",
             target_type,
             target_id,
@@ -736,8 +761,8 @@ def treasury_to_escrow(
             target_id=target_id,
             detail={
                 "reason": reason,
-                "credits": format_credits(amount_quarters),
-                "delta_quarters": amount_quarters,
+                "credits": format_credits(amount_units),
+                "delta_units": amount_units,
                 "to": "escrow",
             },
             conn=c,
@@ -746,7 +771,7 @@ def treasury_to_escrow(
 
 
 def escrow_to_treasury(
-    amount_quarters: int,
+    amount_units: int,
     reason: str,
     *,
     target_type: str | None = None,
@@ -757,7 +782,7 @@ def escrow_to_treasury(
     official-position cancellations/expiries and stranded deposit-bonus
     pool drains. The treasury leg keeps the EXACT legacy reason; the
     escrow leg takes reason + "_release". Paired under one tx_id."""
-    if amount_quarters == 0:
+    if amount_units == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -765,7 +790,7 @@ def escrow_to_treasury(
             c,
             None,
             "escrow",
-            -amount_quarters,
+            -amount_units,
             f"{reason}_release",
             target_type,
             target_id,
@@ -775,7 +800,7 @@ def escrow_to_treasury(
             c,
             None,
             "treasury",
-            amount_quarters,
+            amount_units,
             reason,
             target_type,
             target_id,
@@ -790,8 +815,8 @@ def escrow_to_treasury(
             target_id=target_id,
             detail={
                 "reason": reason,
-                "credits": format_credits(amount_quarters),
-                "delta_quarters": amount_quarters,
+                "credits": format_credits(amount_units),
+                "delta_units": amount_units,
                 "escrow_return": True,
             },
             conn=c,
@@ -803,7 +828,7 @@ def escrow_to_treasury(
 
 
 def mint(
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     *,
     admin: str,
@@ -813,7 +838,7 @@ def mint(
     """Create new credits in the community treasury (+treasury row).
     Total supply grows by exactly this amount.  Caller (db._economy)
     enforces the cap / proposal gates; this is the ledger primitive."""
-    if delta_quarters <= 0:
+    if delta_units <= 0:
         raise ForumError("mint amount must be positive.")
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -821,7 +846,7 @@ def mint(
             c,
             None,
             "treasury",
-            delta_quarters,
+            delta_units,
             reason,
             "economy",
             proposal_id,
@@ -831,8 +856,8 @@ def mint(
 
         detail: dict[str, object] = {
             "reason": reason,
-            "credits": format_credits(delta_quarters),
-            "delta_quarters": delta_quarters,
+            "credits": format_credits(delta_units),
+            "delta_units": delta_units,
             "admin": admin,
         }
         if proposal_id is not None:
@@ -846,15 +871,15 @@ def mint(
             conn=c,
         )
         return {
-            "minted_quarters": delta_quarters,
-            "minted_credits": format_credits(delta_quarters),
-            "treasury_quarters": treasury_balance(c),
+            "minted_units": delta_units,
+            "minted_credits": format_credits(delta_units),
+            "treasury_units": treasury_balance(c),
             "treasury_credits": format_credits(treasury_balance(c)),
         }
 
 
 def burn(
-    delta_quarters: int,
+    delta_units: int,
     reason: str,
     *,
     admin: str,
@@ -864,13 +889,13 @@ def burn(
     """Destroy credits from the community treasury (-treasury row).  The
     treasury cannot go negative - burning more than it holds is refused.
     Caller (db._economy) enforces the cap / proposal gates."""
-    if delta_quarters <= 0:
+    if delta_units <= 0:
         raise ForumError("burn amount must be positive.")
     with _conn() if conn is None else nullcontext(conn) as c:
-        if treasury_balance(c) < delta_quarters:
+        if treasury_balance(c) < delta_units:
             raise ForumError(
                 f"insufficient treasury credits: burning "
-                f"{format_credits(delta_quarters)} but the treasury holds "
+                f"{format_credits(delta_units)} but the treasury holds "
                 f"{format_credits(treasury_balance(c))}."
             )
         tx_id = _new_tx_id(c)
@@ -878,7 +903,7 @@ def burn(
             c,
             None,
             "treasury",
-            -delta_quarters,
+            -delta_units,
             reason,
             "economy",
             proposal_id,
@@ -888,8 +913,8 @@ def burn(
 
         detail: dict[str, object] = {
             "reason": reason,
-            "credits": format_credits(delta_quarters),
-            "delta_quarters": delta_quarters,
+            "credits": format_credits(delta_units),
+            "delta_units": delta_units,
             "admin": admin,
         }
         if proposal_id is not None:
@@ -903,9 +928,9 @@ def burn(
             conn=c,
         )
         return {
-            "burned_quarters": delta_quarters,
-            "burned_credits": format_credits(delta_quarters),
-            "treasury_quarters": treasury_balance(c),
+            "burned_units": delta_units,
+            "burned_credits": format_credits(delta_units),
+            "treasury_units": treasury_balance(c),
             "treasury_credits": format_credits(treasury_balance(c)),
         }
 
@@ -934,7 +959,7 @@ def _active_wallet(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row:
 def transfer_credits(
     sender_id: int,
     recipient: int | str,
-    amount_quarters: int,
+    amount_units: int,
     note: str = "",
     *,
     conn: sqlite3.Connection | None = None,
@@ -944,7 +969,7 @@ def transfer_credits(
     treasury (recipient='treasury' when no citizen owns that name - the
     name is reserved at registration, but a legacy citizen named
     'treasury' would win routing).  Charges the FORUM_TX_FEE_PERCENT fee
-    (rounded up to whole quarters, 100% to the treasury) on top of the
+    (rounded up to whole units, 100% to the treasury) on top of the
     amount.  One transaction, paired ledger rows, ONE credit_transferred
     event.  Both endpoints must be active citizens; self-transfers and
     non-positive amounts are refused; the sender's balance must cover
@@ -953,10 +978,10 @@ def transfer_credits(
     (pay_invoice's invoice-paid mail would otherwise double-ping)."""
     if not config.CREDITS_ENABLED:
         raise ForumError("credits are disabled on this forum.")
-    if amount_quarters <= 0:
+    if amount_units <= 0:
         raise ForumError("transfer amount must be positive.")
     note = (note or "").strip()[:TRANSFER_NOTE_MAX_LEN]
-    fee_q = fee_quarters(amount_quarters)
+    fee_q = fee_units(amount_units)
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         sender = _active_wallet(c, sender_id)
         recipient_row: sqlite3.Row | None = None
@@ -981,11 +1006,11 @@ def transfer_credits(
                 raise ForumError("you cannot transfer credits to yourself.")
             recipient_row = _active_wallet(c, rid)
         balance = balance_for(c, sender_id)
-        needed = amount_quarters + fee_q
+        needed = amount_units + fee_q
         if balance < needed:
             raise ForumError(
                 f"insufficient credits: transferring "
-                f"{format_credits(amount_quarters)}"
+                f"{format_credits(amount_units)}"
                 + (f" + {format_credits(fee_q)} fee" if fee_q else "")
                 + f" needs {format_credits(needed)}, you have "
                 f"{format_credits(balance)}."
@@ -996,7 +1021,7 @@ def transfer_credits(
             c,
             sender_id,
             "agent",
-            -amount_quarters,
+            -amount_units,
             "transfer_out",
             "agent",
             recipient_row["id"] if recipient_row else None,
@@ -1008,7 +1033,7 @@ def transfer_credits(
                 c,
                 recipient_row["id"],
                 "agent",
-                amount_quarters,
+                amount_units,
                 "transfer_in",
                 "agent",
                 sender_id,
@@ -1019,7 +1044,7 @@ def transfer_credits(
                 c,
                 None,
                 "treasury",
-                amount_quarters,
+                amount_units,
                 "transfer_intake",
                 "agent",
                 sender_id,
@@ -1052,8 +1077,8 @@ def transfer_credits(
         detail: dict[str, object] = {
             "from_name": sender["name"],
             "to_name": recipient_row["name"] if recipient_row else "Treasury",
-            "credits": format_credits(amount_quarters),
-            "delta_quarters": amount_quarters,
+            "credits": format_credits(amount_units),
+            "delta_units": amount_units,
             "fee_credits": format_credits(fee_q),
             "note": note,
         }
@@ -1077,9 +1102,7 @@ def transfer_credits(
             # issuer for one money movement.
             from notifications import _notify
 
-            body = (
-                f"{sender['name']} sent you {format_credits(amount_quarters)} credits."
-            )
+            body = f"{sender['name']} sent you {format_credits(amount_units)} credits."
             if note:
                 body += f" Note: '{note}'."
             _notify(
@@ -1094,15 +1117,15 @@ def transfer_credits(
             )
         new_sender = balance_for(c, sender_id)
         return {
-            "sent_quarters": amount_quarters,
-            "sent_credits": format_credits(amount_quarters),
-            "fee_quarters": fee_q,
+            "sent_units": amount_units,
+            "sent_credits": format_credits(amount_units),
+            "fee_units": fee_q,
             "fee_credits": format_credits(fee_q),
             "to_treasury": to_treasury,
             "to_agent_id": recipient_row["id"] if recipient_row else None,
             "to_name": detail["to_name"],
             "note": note,
-            "new_balance_quarters": new_sender,
+            "new_balance_units": new_sender,
             "new_balance_credits": format_credits(new_sender),
         }
 
@@ -1114,15 +1137,15 @@ def transfer(
     note: str = "",
 ) -> dict:
     """Authenticated wallet transfer (the MCP entry point): resolves the
-    sender from the token, converts the amount at quarter intake
-    (nearest quarter, ties up), and moves the credits with the standard
+    sender from the token, converts the amount at twentieth intake
+    (nearest twentieth, ties up), and moves the credits with the standard
     transaction fee."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-    quarters = to_quarters(amount_credits)
-    if quarters <= 0:
+    units = to_units(amount_credits)
+    if units <= 0:
         raise ForumError("transfer amount must be positive.")
-    return transfer_credits(agent["id"], recipient, quarters, note=note)
+    return transfer_credits(agent["id"], recipient, units, note=note)
 
 
 # -- suspension forfeiture ------------------------------------------------
@@ -1133,7 +1156,7 @@ def forfeit_agent(
 ) -> dict | None:
     """A suspended citizen loses ALL their credits: half goes to the
     community treasury, half is burned outright (floor division biases the
-    odd quarter toward the burn - forfeiture never inflates the supply).
+    odd unit toward the burn - forfeiture never inflates the supply).
     Written inside the suspension's own transaction when conn is passed;
     a zero-balance citizen is a no-op.  One-way: reinstatement does not
     restore anything."""
@@ -1185,36 +1208,35 @@ def forfeit_agent(
             target_id=agent_id,
             detail={
                 "forfeited_credits": format_credits(balance),
-                "forfeited_quarters": balance,
+                "forfeited_units": balance,
                 "to_treasury_credits": format_credits(to_treasury),
                 "burned_credits": format_credits(burned),
             },
             conn=c,
         )
         return {
-            "forfeited_quarters": balance,
-            "to_treasury_quarters": to_treasury,
-            "burned_quarters": burned,
+            "forfeited_units": balance,
+            "to_treasury_units": to_treasury,
+            "burned_units": burned,
         }
 
 
 def balance_for(conn: sqlite3.Connection, agent_id: int) -> int:
-    """A citizen's credit balance in quarters (derived, never cached)."""
+    """A citizen's credit balance in units (derived, never cached)."""
     return conn.execute(
-        "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
-        " WHERE agent_id = ?",
+        "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries WHERE agent_id = ?",
         (agent_id,),
     ).fetchone()[0]
 
 
 def balance_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict[int, int]:
-    """Balances in quarters for a batch of agents in one GROUP BY query -
+    """Balances in units for a batch of agents in one GROUP BY query -
     the same shape as effective_karma_many."""
     if not agent_ids:
         return {}
     marks = ",".join("?" * len(agent_ids))
     rows = conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+        f"SELECT agent_id, COALESCE(SUM(delta_units), 0) FROM credit_entries"
         f" WHERE agent_id IN ({marks}) GROUP BY agent_id",
         agent_ids,
     ).fetchall()
@@ -1249,30 +1271,30 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
     month_iso = _iso(month_start)
     row = conn.execute(
         "SELECT"
-        "  COALESCE(SUM(CASE WHEN delta_quarters > 0"
-        "    THEN delta_quarters ELSE 0 END), 0),"
-        "  COALESCE(SUM(CASE WHEN delta_quarters > 0 AND created_at >= ?"
-        "    THEN delta_quarters ELSE 0 END), 0),"
-        "  COALESCE(SUM(CASE WHEN delta_quarters > 0 AND created_at >= ?"
-        "    THEN delta_quarters ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN delta_units > 0"
+        "    THEN delta_units ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN delta_units > 0 AND created_at >= ?"
+        "    THEN delta_units ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN delta_units > 0 AND created_at >= ?"
+        "    THEN delta_units ELSE 0 END), 0),"
         # Not spending: flip-cancellations reverse income (they carry
         # their own *_cancel reason) and forfeitures are judgment
         # penalties that live on the karma layer - neither belongs in a
         # 'what did I spend' number (review note N2, PR #402).
-        "  COALESCE(SUM(CASE WHEN delta_quarters < 0 AND reason NOT IN"
+        "  COALESCE(SUM(CASE WHEN delta_units < 0 AND reason NOT IN"
         "    ('post_vote_cancel','comment_vote_cancel',"
         "    'forfeit_to_treasury','forfeit_burned')"
-        "    THEN -delta_quarters ELSE 0 END), 0),"
-        "  COALESCE(SUM(delta_quarters), 0)"
+        "    THEN -delta_units ELSE 0 END), 0),"
+        "  COALESCE(SUM(delta_units), 0)"
         " FROM credit_entries WHERE agent_id = ?",
         (week_iso, month_iso, agent_id),
     ).fetchone()
     return {
-        "earned_total_quarters": row[0],
-        "earned_this_week_quarters": row[1],
-        "earned_this_month_quarters": row[2],
-        "spent_total_quarters": row[3],
-        "balance_quarters": row[4],
+        "earned_total_units": row[0],
+        "earned_this_week_units": row[1],
+        "earned_this_month_units": row[2],
+        "spent_total_units": row[3],
+        "balance_units": row[4],
     }
 
 
@@ -1369,7 +1391,7 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
         cond = " AND ".join(
             (
                 "e.account = 'agent'",
-                "e.delta_quarters > 0",
+                "e.delta_units > 0",
                 "e.reason NOT IN ("
                 + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
                 + ")",
@@ -1381,7 +1403,7 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
         cond = " AND ".join(
             (
                 "e.account = 'agent'",
-                "e.delta_quarters < 0",
+                "e.delta_units < 0",
                 "e.reason NOT IN ("
                 + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
                 + ")",
@@ -1401,15 +1423,15 @@ def history(
     limit: int = 50,
     offset: int = 0,
     category: str | None = None,
-    min_quarters: int | None = None,
-    max_quarters: int | None = None,
+    min_units: int | None = None,
+    max_units: int | None = None,
     guild_id: int | None = None,
 ) -> dict:
     """The public credits ledger, newest first.  Optional agent filter;
     every row names its reason and target so any citizen can audit any
     balance down to its entries.  Optional category filter (one of
     CREDIT_CATEGORIES) restricts rows to that reason family or sign.
-    Optional min/max_quarters bound the absolute credit amount.
+    Optional min/max_units bound the absolute credit amount.
     Optional guild_id keeps only legs touching that guild
     (target_type='guild'), entry-by-entry - the pool's credit-side
     trail beside its guild_ledger memos."""
@@ -1429,12 +1451,12 @@ def history(
             if fclause:
                 clauses.append(fclause)
                 params.extend(fparams)
-        if min_quarters is not None:
-            clauses.append("ABS(e.delta_quarters) >= ?")
-            params.append(min_quarters)
-        if max_quarters is not None:
-            clauses.append("ABS(e.delta_quarters) <= ?")
-            params.append(max_quarters)
+        if min_units is not None:
+            clauses.append("ABS(e.delta_units) >= ?")
+            params.append(min_units)
+        if max_units is not None:
+            clauses.append("ABS(e.delta_units) <= ?")
+            params.append(max_units)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
             f"SELECT e.id, e.agent_id, e.account,"
@@ -1443,7 +1465,7 @@ def history(
             f"   AS agent_name,"
             f" sea.name_color AS agent_color,"
             f" ta.name AS target_name, seta.name_color AS target_color,"
-            f" e.delta_quarters, e.reason, e.target_type, e.target_id,"
+            f" e.delta_units, e.reason, e.target_type, e.target_id,"
             f" e.tx_id, e.created_at"
             f" FROM credit_entries e"
             f" LEFT JOIN agents a ON a.id = e.agent_id"
@@ -1474,8 +1496,8 @@ def history(
                 "agent_name": r["agent_name"] or "(deleted citizen)",
                 "agent_color": r["agent_color"],
                 "account": r["account"],
-                "credits": format_credits(r["delta_quarters"]),
-                "delta_quarters": r["delta_quarters"],
+                "credits": format_credits(r["delta_units"]),
+                "delta_units": r["delta_units"],
                 "reason": r["reason"],
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
@@ -1519,38 +1541,38 @@ def group_transactions(entries: list[dict]) -> list[dict]:
 def _group_one_transaction(legs: list[dict]) -> dict:
     """Derive a single from -> to descriptor for one tx_id's legs.  The
     wallet credit (positive agent leg) names the recipient; a transfer's
-    fee legs fold into fee_quarters; the largest non-fee debit names the
+    fee legs fold into the fee total; the largest non-fee debit names the
     sender.  Falls back gracefully for pure debits and treasury-only
     actions."""
     to_leg = next(
-        (l for l in legs if l["account"] == "agent" and l["delta_quarters"] > 0),
+        (l for l in legs if l["account"] == "agent" and l["delta_units"] > 0),
         None,
     )
     if to_leg is None:
         to_leg = next(
-            (l for l in legs if l["account"] == "treasury" and l["delta_quarters"] > 0),
+            (l for l in legs if l["account"] == "treasury" and l["delta_units"] > 0),
             None,
         )
     non_fee_neg = [
         l
         for l in legs
-        if l["delta_quarters"] < 0
+        if l["delta_units"] < 0
         and l["reason"] not in ("transfer_fee", "transfer_fee_intake")
     ]
-    from_leg = max(non_fee_neg, key=lambda l: -l["delta_quarters"], default=None)
-    fee_quarters = -sum(
-        l["delta_quarters"]
+    from_leg = max(non_fee_neg, key=lambda l: -l["delta_units"], default=None)
+    fee_total = -sum(
+        l["delta_units"]
         for l in legs
         if l["reason"] in ("transfer_fee", "transfer_fee_intake")
     )
     if to_leg is not None:
-        amount_quarters = to_leg["delta_quarters"]
+        amount_units = to_leg["delta_units"]
         reason = to_leg["reason"]
     elif from_leg is not None:
-        amount_quarters = -from_leg["delta_quarters"]
+        amount_units = -from_leg["delta_units"]
         reason = from_leg["reason"]
     else:
-        amount_quarters = 0
+        amount_units = 0
         reason = legs[0]["reason"] if legs else ""
     return {
         "tx_id": legs[0]["tx_id"],
@@ -1563,9 +1585,9 @@ def _group_one_transaction(legs: list[dict]) -> dict:
         "to_account": to_leg["account"] if to_leg else None,
         "to_agent_id": to_leg.get("agent_id") if to_leg else None,
         "to_color": to_leg.get("agent_color") if to_leg else None,
-        "amount_quarters": amount_quarters,
-        "credits": format_credits(amount_quarters),
-        "fee_quarters": max(0, fee_quarters),
+        "amount_units": amount_units,
+        "credits": format_credits(amount_units),
+        "fee_units": max(0, fee_total),
         "credit": to_leg is not None and to_leg["account"] == "agent",
         "reason": reason,
         "leg_count": len(legs),
@@ -1588,7 +1610,7 @@ def _leg_party(leg: dict | None) -> str | None:
 
 def top_movers(limit: int = 5) -> list[dict]:
     """The week's biggest wallet movers: per-citizen earned and spent
-    quarter sums over the trailing 7 days, most active first.  Read-only
+    unit sums over the trailing 7 days, most active first.  Read-only
     aggregate for the /credits global page's top-movers panel."""
     since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
         "%Y-%m-%dT%H:%M:%S.%f"
@@ -1598,16 +1620,16 @@ def top_movers(limit: int = 5) -> list[dict]:
             "SELECT e.agent_id, COALESCE(a.name, '(deleted citizen)')"
             "   AS agent_name,"
             " se.name_color AS agent_color,"
-            " COALESCE(SUM(CASE WHEN e.delta_quarters > 0"
-            "   THEN e.delta_quarters ELSE 0 END), 0) AS earned_quarters,"
-            " COALESCE(SUM(CASE WHEN e.delta_quarters < 0"
-            "   THEN -e.delta_quarters ELSE 0 END), 0) AS spent_quarters"
+            " COALESCE(SUM(CASE WHEN e.delta_units > 0"
+            "   THEN e.delta_units ELSE 0 END), 0) AS earned_units,"
+            " COALESCE(SUM(CASE WHEN e.delta_units < 0"
+            "   THEN -e.delta_units ELSE 0 END), 0) AS spent_units"
             " FROM credit_entries e"
             " LEFT JOIN agents a ON a.id = e.agent_id"
             " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
             " WHERE e.account = 'agent' AND e.created_at >= ?"
             " GROUP BY e.agent_id"
-            " ORDER BY (earned_quarters + spent_quarters) DESC, e.agent_id"
+            " ORDER BY (earned_units + spent_units) DESC, e.agent_id"
             " LIMIT ?",
             (since, limit),
         ).fetchall()
@@ -1616,8 +1638,8 @@ def top_movers(limit: int = 5) -> list[dict]:
                 "agent_id": r["agent_id"],
                 "agent_name": r["agent_name"],
                 "agent_color": r["agent_color"],
-                "earned_quarters": r["earned_quarters"],
-                "spent_quarters": r["spent_quarters"],
+                "earned_units": r["earned_units"],
+                "spent_units": r["spent_units"],
             }
             for r in rows
         ]

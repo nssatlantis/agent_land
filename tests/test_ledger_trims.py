@@ -41,7 +41,7 @@ def main():
     with db._conn() as conn:
         for _i in range(3):
             conn.execute(
-                "INSERT INTO credit_entries (agent_id, delta_quarters,"
+                "INSERT INTO credit_entries (agent_id, delta_units,"
                 " reason, account) VALUES (?, 4, 'post_vote', 'agent')",
                 (alpha["agent_id"],),
             )
@@ -50,7 +50,7 @@ def main():
     assert led["total"] == 3 and len(led["entries"]) == 3, led["total"]
     assert led["has_more"] is False
     assert set(led) == {"entries", "total", "has_more", "summary"}
-    assert led["summary"]["balance_quarters"] == 12, led["summary"]
+    assert led["summary"]["balance_units"] == 12, led["summary"]
     print("  tail-page total inference: ok")
 
     # --- 2. overshoot-empty page still COUNTs --------------------------------
@@ -80,7 +80,7 @@ def main():
     # --- 4. filtered tail + limit edge ------------------------------------------
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (?, -6, 'tag_apply', 'agent')",
             (alpha["agent_id"],),
         )
@@ -95,14 +95,14 @@ def main():
     # --- 5. fresh-DB conservation reads (0, 0), ok ------------------------------
     # Empty escrow table: double COALESCE must yield 0/0, never None==0.
     audit = verify_conservation()
-    assert audit["escrow_quarters"] == 0, audit
+    assert audit["escrow_units"] == 0, audit
     assert audit["null_tx_rows"] == 0, audit
-    assert audit["recomputed_quarters"] == 0, audit
+    assert audit["recomputed_units"] == 0, audit
     assert audit["ok"] is True, audit
     assert list(audit) == [
         "ok",
-        "escrow_quarters",
-        "recomputed_quarters",
+        "escrow_units",
+        "recomputed_units",
         "tx_violations",
         "null_tx_rows",
         "cutover_entry_id",
@@ -113,22 +113,22 @@ def main():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
+            " kind, payment_units, total_cycles, cycles_done, official,"
             " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 3, 1, 0,"
             " 'active')",
             (alpha["agent_id"],),
         )
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
-            " status, treasury_escrow_quarters) VALUES (?, 't', 'd', 's',"
+            " kind, payment_units, total_cycles, cycles_done, official,"
+            " status, treasury_escrow_units) VALUES (?, 't', 'd', 's',"
             " 'one_time', 4, 1, 0, 1, 'offered', 7)",
             (alpha["agent_id"],),
         )
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
-            " status, deposit_bonus_quarters) VALUES (?, 't', 'd', 's',"
+            " kind, payment_units, total_cycles, cycles_done, official,"
+            " status, deposit_bonus_units) VALUES (?, 't', 'd', 's',"
             " 'one_time', 4, 1, 1, 0, 'completed', 9)",
             (alpha["agent_id"],),
         )
@@ -136,7 +136,7 @@ def main():
         # (no max() clamp - that would change Rule-B verdicts).
         conn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, scope,"
-            " kind, payment_quarters, total_cycles, cycles_done, official,"
+            " kind, payment_units, total_cycles, cycles_done, official,"
             " status) VALUES (?, 't', 'd', 's', 'one_time', 4, 1, 3, 0,"
             " 'active')",
             (alpha["agent_id"],),
@@ -149,13 +149,13 @@ def main():
     # --- 7. paired tx legs + conservation statement count --------------------------
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account, target_type, target_id, tx_id) VALUES (?, -8,"
             " 'job_escrow', 'agent', 'job', 1, 424251)",
             (alpha["agent_id"],),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account, target_type, target_id, tx_id) VALUES (NULL, 8,"
             " 'job_escrow', 'escrow', 'job', 1, 424251)"
         )

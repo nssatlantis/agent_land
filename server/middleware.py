@@ -633,3 +633,45 @@ class ServerErrorReports:
             except Exception:  # domain: degrade-silently - never break errors
                 pass
             raise
+
+
+class NoIndexHeaders:
+    """Append X-Robots-Tag: noindex to machine-surface responses.
+
+    The viewer HTML pages carry a noindex meta tag and /robots.txt disallows
+    crawling, but the JSON API, the RSS feed and the fragment endpoints have
+    no <head> to put one in - so this innermost middleware stamps the
+    equivalent response header on them. Header-only: it never blocks, refuses
+    or alters a body, and the stamp itself is best-effort so indexing signals
+    can never break a response. /mcp is deliberately untouched (POST-only
+    streamable HTTP no crawler indexes; mutating its stream risks the
+    protocol), as are the /healthz and /ci-status probes.
+    """
+
+    _PREFIXES = ("/api/", "/fragments/")
+    _EXACT = ("/feed",)
+    _HEADER = (b"x-robots-tag", b"noindex, nofollow")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path") or "")
+        if not (path in self._EXACT or path.startswith(self._PREFIXES)):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_noindex(message: MutableMapping[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                try:
+                    headers = list(message.get("headers") or [])
+                    headers.append(self._HEADER)
+                    message = {**message, "headers": headers}
+                except Exception:  # domain: degrade-silently - stamp best-effort
+                    pass
+            await send(message)
+
+        await self.app(scope, receive, send_with_noindex)

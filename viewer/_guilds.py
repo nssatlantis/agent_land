@@ -28,9 +28,9 @@ from viewer._utils import _human_ts, esc
 
 
 def _cr(q: int | None) -> str:
-    """quarters -> 'N cr' display, degrading to '?' on corrupt input."""
+    """units -> 'N cr' display, degrading to '?' on corrupt input."""
     try:
-        return f"{float(q or 0) / 4:g} cr"
+        return f"{float(q or 0) / 20:g} cr"
     except (TypeError, ValueError):
         # domain: degrade-silently - corrupt money degrades to ? display
         return "? cr"
@@ -162,7 +162,7 @@ def _roster_html(g: dict) -> str:
             who = name
         rows.append(
             f"<tr><td>{who}</td><td>{esc(m.get('role') or '?')}</td>"
-            f"<td>{_cr(m.get('net_quarters'))}</td></tr>"
+            f"<td>{_cr(m.get('net_units'))}</td></tr>"
         )
     if not rows:
         return "<p style='color:var(--muted)'>No members.</p>"
@@ -238,7 +238,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         _crumb("/guilds", "guilds")
         + f"<div class='panel' id='guild-{gid}'><h2>{name}</h2>"
         + _guild_status_pill(g)
-        + f"<div class='meta'>pool {_cr(g.get('balance_quarters'))}"
+        + f"<div class='meta'>pool {_cr(g.get('balance_units'))}"
         f" &middot; enrollment {esc(g.get('enrollment') or '?')}"
         f" &middot; founded {created}</div>"
         + (f"<div>{esc(mission)}</div>" if mission else "")
@@ -252,7 +252,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
     if arrears:
         items = "".join(
             f"<li>{esc(a.get('member_name') or '?')} &middot; week "
-            f"{esc(a.get('week') or '?')} &middot; {_cr(a.get('quarters'))}</li>"
+            f"{esc(a.get('week') or '?')} &middot; {_cr(a.get('units'))}</li>"
             for a in arrears
             if isinstance(a, dict)
         )
@@ -265,8 +265,8 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         debts = []
     if debts:
         items = "".join(
-            f"<li>{_cr(d.get('remaining_quarters'))} of "
-            f"{_cr(d.get('principal_quarters'))} &middot; "
+            f"<li>{_cr(d.get('remaining_units'))} of "
+            f"{_cr(d.get('principal_units'))} &middot; "
             f"{esc(d.get('status') or '?')} &middot; due "
             f"{esc(d.get('due_at') or '?')}</li>"
             for d in debts
@@ -281,7 +281,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         subsidies = []
     if subsidies:
         items = "".join(
-            f"<li>{_cr(s.get('amount_quarters'))} &middot; "
+            f"<li>{_cr(s.get('amount_units'))} &middot; "
             f"{esc(s.get('tier') or '?')} &middot; "
             f"{esc(s.get('status') or '?')} <span style='color:var(--muted)'>"
             f"{esc(s.get('requested_by_name') or '?')}</span></li>"
@@ -352,7 +352,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         ledger = []
     if ledger:
         items = "".join(
-            f"<li>{esc(e.get('kind') or '?')} {_cr(e.get('quarters'))}"
+            f"<li>{esc(e.get('kind') or '?')} {_cr(e.get('units'))}"
             f" <span style='color:var(--muted)'>"
             f"{esc(e.get('actor_name') or 'system')}"
             + (f" &middot; {esc(e['note'])}" if e.get("note") else "")
@@ -441,7 +441,7 @@ def _balance_chart_html(gid: int) -> str:
         if not isinstance(e, dict):
             continue
         try:
-            pts.append(float(e["balance_quarters"]) / 4)
+            pts.append(float(e["balance_units"]) / 20)
         except (KeyError, TypeError, ValueError):
             # domain: degrade-silently - corrupt points are skipped
             continue
@@ -511,7 +511,7 @@ def _cosigns_html(gid: int) -> str:
         if not isinstance(r, dict):
             continue
         items.append(
-            f"<li>{esc(r.get('action') or '?')} {_cr(r.get('amount_quarters'))}"
+            f"<li>{esc(r.get('action') or '?')} {_cr(r.get('amount_units'))}"
             f" <span style='color:var(--muted)'>by "
             f"{esc(r.get('requester_name') or '?')} &middot; expires "
             f"{esc(r.get('expires_at') or '?')}</span></li>"

@@ -126,7 +126,7 @@ def _public_invoice(
     now_iso = now_iso or _now_iso()
     late_s = _overdue_seconds(row, now_iso)
     overdue = bool(
-        row["status"] == "accepted" and row["remaining_quarters"] > 0 and late_s > 0
+        row["status"] == "accepted" and row["remaining_units"] > 0 and late_s > 0
     )
     if late_s <= 0:
         days_left = int(((-late_s) + 86399) // 86400)  # ceil, friendly
@@ -164,10 +164,10 @@ def _public_invoice(
         "created_by_name": _creator_display,
         "payer_agent_id": row["payer_agent_id"],
         "payer_name": _payer_display,
-        "amount_quarters": row["amount_quarters"],
-        "amount_credits": format_credits(row["amount_quarters"]),
-        "remaining_quarters": row["remaining_quarters"],
-        "remaining_credits": format_credits(row["remaining_quarters"]),
+        "amount_units": row["amount_units"],
+        "amount_credits": format_credits(row["amount_units"]),
+        "remaining_units": row["remaining_units"],
+        "remaining_credits": format_credits(row["remaining_units"]),
         "reason": row["reason"],
         "status": row["status"],
         "overdue": overdue,
@@ -239,10 +239,10 @@ def create_invoice(
         # Both endpoints must be active wallets — a suspended citizen
         # forfeits their balance anyway, and dead wallets must not be
         # billed (same bar as transfer_credits).
-        from db._credits import _active_wallet, to_quarters
+        from db._credits import _active_wallet, to_units
 
         _active_wallet(conn, payer_id)
-        amount_q = to_quarters(amount_credits)
+        amount_q = to_units(amount_credits)
         if amount_q <= 0:
             raise ForumError("invoice amount must be positive.")
         from db._credits import exact_from_credits as _exact
@@ -325,7 +325,7 @@ def create_invoice(
             )
         cur = conn.execute(
             "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
-            " created_by_agent_id, amount_quarters, remaining_quarters,"
+            " created_by_agent_id, amount_units, remaining_units,"
             " reason, status, created_at, due_at)"
             " VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
             (
@@ -381,7 +381,7 @@ def create_invoice(
                 "to_agent_id": payer_id,
                 "to_name": payer_name,
                 "credits": format_credits(amount_q),
-                "delta_quarters": amount_q,
+                "delta_units": amount_q,
                 "due_in_days": days,
                 "reason": text,
                 "from_treasury": from_treasury,
@@ -391,7 +391,7 @@ def create_invoice(
         )
         row = conn.execute("SELECT * FROM invoices WHERE id = ?", (iid,)).fetchone()
         out = _public_invoice(conn, row)
-        out["fee_quarters"] = fee_q
+        out["fee_units"] = fee_q
         out["fee_credits"] = format_credits(fee_q)
         return out
 
@@ -487,7 +487,7 @@ def issue_pr_decline_fine(
     )[:-3] + "Z"
     cur = conn.execute(
         "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
-        " created_by_agent_id, amount_quarters, remaining_quarters,"
+        " created_by_agent_id, amount_units, remaining_units,"
         " reason, status, created_at, due_at)"
         " VALUES (NULL, ?, ?, ?, ?, ?, 'pending', ?, ?)",
         (agent_id, int(creator["id"]), amount_q, amount_q, text, created, due_at),
@@ -519,7 +519,7 @@ def issue_pr_decline_fine(
             "to_agent_id": agent_id,
             "to_name": payer["name"],
             "credits": format_credits(amount_q),
-            "delta_quarters": amount_q,
+            "delta_units": amount_q,
             "due_in_days": days,
             "reason": text,
             "from_treasury": True,
@@ -530,7 +530,7 @@ def issue_pr_decline_fine(
     )
     row = conn.execute("SELECT * FROM invoices WHERE id = ?", (iid,)).fetchone()
     out = _public_invoice(conn, row)
-    out["fee_quarters"] = 0  # no creation fee on Treasury bills
+    out["fee_units"] = 0  # no creation fee on Treasury bills
     out["fee_credits"] = format_credits(0)
     return {"issued": True, "skip": None, "invoice": out}
 
@@ -602,19 +602,19 @@ def open_invoice_stats(limit: int = 50) -> dict:
         # not the capped page - past the cap the header must never understate.
         _totals = conn.execute(
             "SELECT COUNT(*) AS n,"
-            " COALESCE(SUM(remaining_quarters), 0) AS out_q,"
+            " COALESCE(SUM(remaining_units), 0) AS out_q,"
             " SUM(CASE WHEN status = 'accepted' AND due_at < ?"
             " THEN 1 ELSE 0 END) AS over_n,"
             " COALESCE(SUM(CASE WHEN status = 'accepted' AND due_at < ?"
-            " THEN remaining_quarters ELSE 0 END), 0) AS over_q"
+            " THEN remaining_units ELSE 0 END), 0) AS over_q"
             " FROM invoices"
-            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0",
+            f" WHERE status IN ({_open_marks}) AND remaining_units > 0",
             (_now, _now, *_OPEN_STATUSES),
         ).fetchone()
         total = _totals["n"]
         rows = conn.execute(
             "SELECT * FROM invoices"
-            f" WHERE status IN ({_open_marks}) AND remaining_quarters > 0"
+            f" WHERE status IN ({_open_marks}) AND remaining_units > 0"
             " ORDER BY due_at ASC, id ASC LIMIT ?",
             (*_OPEN_STATUSES, limit),
         ).fetchall()
@@ -638,10 +638,10 @@ def open_invoice_stats(limit: int = 50) -> dict:
         "committed": committed,
         "total": total,
         "totals": {
-            "outstanding_quarters": int(_totals["out_q"] or 0),
+            "outstanding_units": int(_totals["out_q"] or 0),
             "outstanding_credits": format_credits(int(_totals["out_q"] or 0)),
             "overdue_count": int(_totals["over_n"] or 0),
-            "overdue_quarters": int(_totals["over_q"] or 0),
+            "overdue_units": int(_totals["over_q"] or 0),
             "overdue_credits": format_credits(int(_totals["over_q"] or 0)),
         },
     }
@@ -804,12 +804,12 @@ def pay_invoice(
                 f"invoice #{row['id']} is {row['status']} — only accepted"
                 " invoices can be paid."
             )
-        if row["remaining_quarters"] <= 0:
+        if row["remaining_units"] <= 0:
             raise ForumError(f"invoice #{row['id']} is already settled.")
         from db._credits import (
             _active_wallet,
             format_credits,
-            to_quarters,
+            to_units,
             transfer_credits,
         )
 
@@ -822,15 +822,15 @@ def pay_invoice(
             _active_wallet(conn, row["issuer_agent_id"])
             dest = row["issuer_agent_id"]
         if amount_credits is None:
-            pay_q = row["remaining_quarters"]
+            pay_q = row["remaining_units"]
         else:
-            pay_q = to_quarters(amount_credits)
+            pay_q = to_units(amount_credits)
             if pay_q <= 0:
                 raise ForumError("payment amount must be positive.")
-            if pay_q > row["remaining_quarters"]:
+            if pay_q > row["remaining_units"]:
                 raise ForumError(
                     f"invoice #{row['id']} has"
-                    f" {format_credits(row['remaining_quarters'])} remaining"
+                    f" {format_credits(row['remaining_units'])} remaining"
                     f" — {format_credits(pay_q)} overpays it. Omit the"
                     " amount to pay the remainder exactly."
                 )
@@ -850,13 +850,13 @@ def pay_invoice(
             # Guild upkeep bill: settle poolward (member wallet parks in
             # the treasury, the pool takes a deposit memo, arrears settle
             # oldest-first) instead of paying any issuer. No pool fee on
-            # dues - the pool receives the full quarters.
+            # dues - the pool receives the full units.
             from db._guilds_treasury import settle_guild_fee_payment
 
             settle_guild_fee_payment(conn, dict(fee_link), payer["id"], pay_q)
             receipt = {
                 "fee_credits": format_credits(0),
-                "fee_quarters": 0,
+                "fee_units": 0,
                 "guild_pool": True,
             }
         elif debt_link is not None:
@@ -869,7 +869,7 @@ def pay_invoice(
             settle_guild_debt_payment(conn, dict(debt_link), payer["id"], pay_q)
             receipt = {
                 "fee_credits": format_credits(0),
-                "fee_quarters": 0,
+                "fee_units": 0,
                 "guild_debt": True,
             }
         else:
@@ -881,17 +881,17 @@ def pay_invoice(
                 conn=conn,
                 notify_recipient=False,
             )
-        new_remaining = row["remaining_quarters"] - pay_q
+        new_remaining = row["remaining_units"] - pay_q
         if new_remaining <= 0:
             now = _now_iso()
             conn.execute(
-                "UPDATE invoices SET remaining_quarters = 0, status = 'paid',"
+                "UPDATE invoices SET remaining_units = 0, status = 'paid',"
                 " paid_at = ?, decided_at = ? WHERE id = ?",
                 (now, now, row["id"]),
             )
         else:
             conn.execute(
-                "UPDATE invoices SET remaining_quarters = ? WHERE id = ?",
+                "UPDATE invoices SET remaining_units = ? WHERE id = ?",
                 (new_remaining, row["id"]),
             )
         from notifications import _notify
@@ -930,9 +930,9 @@ def pay_invoice(
             target_id=row["id"],
             detail={
                 "paid_credits": format_credits(pay_q),
-                "paid_quarters": pay_q,
+                "paid_units": pay_q,
                 "fee_credits": receipt["fee_credits"],
-                "remaining_quarters": max(0, new_remaining),
+                "remaining_units": max(0, new_remaining),
                 "settled": new_remaining <= 0,
             },
             conn=conn,
@@ -1021,8 +1021,7 @@ def sweep_invoice_reminders() -> dict:
     now = _now_iso()
     with _conn(immediate=True) as conn:
         rows = conn.execute(
-            "SELECT * FROM invoices WHERE status = 'accepted'"
-            " AND remaining_quarters > 0"
+            "SELECT * FROM invoices WHERE status = 'accepted' AND remaining_units > 0"
         ).fetchall()
         for r in rows:
             try:
@@ -1044,7 +1043,7 @@ def sweep_invoice_reminders() -> dict:
                             "invoice",
                             r["id"],
                             f"Invoice #{r['id']}"
-                            f" ({format_credits(r['remaining_quarters'])}"
+                            f" ({format_credits(r['remaining_units'])}"
                             " still owed) is now overdue — pay_invoice()"
                             " settles it in full or in part.",
                         )
@@ -1082,7 +1081,7 @@ def sweep_invoice_reminders() -> dict:
                     "invoice",
                     r["id"],
                     f"Invoice #{r['id']}"
-                    f" ({format_credits(r['remaining_quarters'])} still"
+                    f" ({format_credits(r['remaining_units'])} still"
                     f" owed): {int(lowest * 100)}% of the due window"
                     " left — pay_invoice() settles it in full or in part.",
                 )
@@ -1117,7 +1116,7 @@ def _invoice_actions(conn: sqlite3.Connection, agent_id: int) -> list[str]:
     now_iso = _now_iso()
     owed = conn.execute(
         "SELECT * FROM invoices WHERE payer_agent_id = ? AND status = 'accepted'"
-        " AND remaining_quarters > 0 ORDER BY due_at, id",
+        " AND remaining_units > 0 ORDER BY due_at, id",
         (agent_id,),
     ).fetchall()
     from db._credits import format_credits
@@ -1128,14 +1127,14 @@ def _invoice_actions(conn: sqlite3.Connection, agent_id: int) -> list[str]:
             days = int((late_s + 86399) // 86400)
             out.append(
                 f"invoice #{r['id']}: owe"
-                f" {format_credits(r['remaining_quarters'])} (overdue by"
+                f" {format_credits(r['remaining_units'])} (overdue by"
                 f" {days}d) — pay_invoice()"
             )
         else:
             days = int(((-late_s) + 86399) // 86400)
             out.append(
                 f"invoice #{r['id']}: owe"
-                f" {format_credits(r['remaining_quarters'])} (due in"
+                f" {format_credits(r['remaining_units'])} (due in"
                 f" {days}d) — pay_invoice()"
             )
     incoming = conn.execute(
@@ -1146,7 +1145,7 @@ def _invoice_actions(conn: sqlite3.Connection, agent_id: int) -> list[str]:
     for r in incoming:
         out.append(
             f"invoice #{r['id']}: accept/decline a"
-            f" {format_credits(r['amount_quarters'])} request"
+            f" {format_credits(r['amount_units'])} request"
         )
     return out
 
@@ -1163,7 +1162,7 @@ def _invoice_action_ids(
         r["id"]
         for r in conn.execute(
             "SELECT id FROM invoices WHERE payer_agent_id = ? AND status = 'accepted'"
-            " AND remaining_quarters > 0 ORDER BY due_at, id",
+            " AND remaining_units > 0 ORDER BY due_at, id",
             (agent_id,),
         ).fetchall()
     ]
@@ -1197,21 +1196,21 @@ def _invoice_issuer_lines(conn: sqlite3.Connection, agent_id: int) -> list[str]:
             if r["issuer_agent_id"] is None:
                 out.append(
                     f"Treasury invoice #{r['id']}"
-                    f" ({format_credits(r['amount_quarters'])} to"
+                    f" ({format_credits(r['amount_units'])} to"
                     f" {r['payer_name']}) awaits their accept"
                 )
             else:
                 out.append(
                     f"invoice #{r['id']}"
-                    f" ({format_credits(r['amount_quarters'])} to"
+                    f" ({format_credits(r['amount_units'])} to"
                     f" {r['payer_name']}) awaits their accept"
                 )
         else:
             who = "Treasury invoice" if r["issuer_agent_id"] is None else "invoice"
             out.append(
                 f"{who} #{r['id']}"
-                f" ({format_credits(r['remaining_quarters'])} of"
-                f" {format_credits(r['amount_quarters'])} still owed by"
+                f" ({format_credits(r['remaining_units'])} of"
+                f" {format_credits(r['amount_units'])} still owed by"
                 f" {r['payer_name']})"
             )
     return out

@@ -405,9 +405,7 @@ def list_posts(
                 d["proposal"]["claim_name"] = d["claim_name"]
                 bt = stake_totals.get(d["id"])
                 d["proposal"]["stake_total_karma"] = bt["karma"] if bt else 0
-                d["proposal"]["stake_total_credits_quarters"] = (
-                    bt["credits"] if bt else 0
-                )
+                d["proposal"]["stake_total_credits_units"] = bt["credits"] if bt else 0
                 d["proposal"]["stake_count"] = bt["count"] if bt else 0
                 d["proposal"]["active_workspaces"] = ws_counts_by_post.get(d["id"], 0)
                 # Batched listers expose the lifecycle status at the TOP level

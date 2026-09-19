@@ -50,7 +50,7 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
         for b in stakes:
             remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
 
-            # per_pr is stored in quarters for credits; display in credits
+            # per_pr is stored in twentieths for credits; display in credits
 
             from db._credits import format_credits as _fmt
 
@@ -79,10 +79,10 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
         f'<form method="post" action="/admin/proposals/{proposal_id}/stake"'
         f' style="display:inline">{_csrf_field(request)}'
         '<label style="font-size:13px;color:var(--muted)">per PR: '
-        '<input name="per_pr" type="number" min="0.25" step="0.25"'
+        '<input name="per_pr" type="number" min="0.05" step="0.05"'
         ' value="0.25" style="width:60px"'
         " onchange=\"this.step=this.form.currency.value=='karma'"
-        "? '1' : '0.25'; this.min=this.step; if(this.form.currency.value=='karma' && parseFloat(this.value)<1) this.value=1; if(this.form.currency.value=='credits' && this.value=='1' && this.defaultValue=='1') this.value='0.25'\"></label> "
+        "? '1' : '0.05'; this.min=this.step; if(this.form.currency.value=='karma' && parseFloat(this.value)<1) this.value=1; if(this.form.currency.value=='credits' && this.value=='1' && this.defaultValue=='1') this.value='0.05'\"></label> "
         '<label style="font-size:13px;color:var(--muted)">currency: '
         '<select name="currency" style="font-size:13px">'
         '<option value="credits">credits</option>'

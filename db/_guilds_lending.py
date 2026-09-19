@@ -10,7 +10,7 @@ cover resolve before any row exists.
 Money model (memo-only, like grants/upkeep): support payments write
 pool-claim memos with no account movement - deposits already park the
 backing in the treasury. Payback debts are the exception that proves
-the rule: the founder repays real quarters from their wallet into the
+the rule: the founder repays real units from their wallet into the
 treasury via the invoice rail (the upkeep-fee precedent), and the debt
 ledger tracks the remainder.
 
@@ -50,17 +50,17 @@ def _pooled_outflows_since(conn: sqlite3.Connection, days: float) -> int:
     tranches plus paid subsidies plus settled matches. The single budget
     counter every program gates on (D29 first-claimant-wins)."""
     tranches = conn.execute(
-        "SELECT COALESCE(SUM(amount_quarters), 0) FROM guild_tranches"
+        "SELECT COALESCE(SUM(amount_units), 0) FROM guild_tranches"
         " WHERE status = 'released' AND released_at >= ?",
         (_days_ago_iso(days),),
     ).fetchone()[0]
     subsidies = conn.execute(
-        "SELECT COALESCE(SUM(amount_quarters), 0) FROM guild_subsidies"
+        "SELECT COALESCE(SUM(amount_units), 0) FROM guild_subsidies"
         " WHERE status IN ('paid', 'settled') AND decided_at >= ?",
         (_days_ago_iso(days),),
     ).fetchone()[0]
     matches = conn.execute(
-        "SELECT COALESCE(SUM(amount_quarters), 0) FROM guild_match_windows"
+        "SELECT COALESCE(SUM(amount_units), 0) FROM guild_match_windows"
         " WHERE status = 'paid' AND settled_at >= ?",
         (_days_ago_iso(days),),
     ).fetchone()[0]
@@ -117,7 +117,7 @@ def _any_overdue(conn: sqlite3.Connection) -> bool:
         return True
     row = conn.execute(
         "SELECT 1 FROM guild_debts WHERE status = 'current'"
-        " AND remaining_quarters > 0 AND due_at <= ? LIMIT 1",
+        " AND remaining_units > 0 AND due_at <= ? LIMIT 1",
         (now,),
     ).fetchone()
     return row is not None
@@ -147,7 +147,7 @@ def _refresh_spending_freeze(conn: sqlite3.Connection, guild_id: int) -> None:
     now = _now_iso()
     bad = conn.execute(
         "SELECT 1 FROM guild_debts WHERE guild_id = ?"
-        " AND status IN ('current', 'overdue') AND remaining_quarters > 0"
+        " AND status IN ('current', 'overdue') AND remaining_units > 0"
         " AND due_at <= ? LIMIT 1",
         (int(guild_id), now),
     ).fetchone()
@@ -174,7 +174,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
     """Release an approved subsidy: pooled-budget gate, pool memo, debt +
     Treasury invoice when payback=yes. Grant-first: any refusal raises
     before the memo, the debt, or the status move exists."""
-    amount = int(sub["amount_quarters"])
+    amount = int(sub["amount_units"])
     _check_pooled_open(conn, amount, "that subsidy")
     now = _now_iso()
     conn.execute(
@@ -183,7 +183,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
         (decided_by, now, sub["id"]),
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'subsidy', ?, ?, ?)",
         (
             sub["guild_id"],
@@ -199,8 +199,8 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
     if sub["payback"]:
         due_at = _days_ago_iso(-float(config.GUILD_SUBSIDY_PAYBACK_DAYS))
         cur = conn.execute(
-            "INSERT INTO guild_debts (guild_id, subsidy_id, principal_quarters,"
-            " remaining_quarters, status, due_at)"
+            "INSERT INTO guild_debts (guild_id, subsidy_id, principal_units,"
+            " remaining_units, status, due_at)"
             " VALUES (?, ?, ?, ?, 'current', ?)",
             (sub["guild_id"], sub["id"], amount, amount, due_at),
         )
@@ -216,7 +216,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
         )
         cur = conn.execute(
             "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
-            " amount_quarters, remaining_quarters, reason, status, due_at)"
+            " amount_units, remaining_units, reason, status, due_at)"
             " VALUES (?, ?, ?, ?, ?, 'pending', ?)",
             (
                 payer,
@@ -239,7 +239,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
             "economy",
             "invoice",
             invoice_id,
-            f"guild subsidy #{sub['id']} payback due ({amount}q) - accept and pay it.",
+            f"guild subsidy #{sub['id']} payback due ({amount}u) - accept and pay it.",
             actor_agent_id=None,
         )
         import events
@@ -252,7 +252,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
             detail={
                 "debt_id": debt_id,
                 "subsidy_id": sub["id"],
-                "principal_quarters": amount,
+                "principal_units": amount,
                 "due_at": due_at,
             },
             conn=conn,
@@ -264,7 +264,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
         target_id=sub["guild_id"],
         detail={
             "subsidy_id": sub["id"],
-            "amount_quarters": amount,
+            "amount_units": amount,
             "payback": bool(sub["payback"]),
             "debt_id": debt_id,
         },
@@ -273,7 +273,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
     return {
         "subsidy_id": sub["id"],
         "status": "paid",
-        "amount_quarters": amount,
+        "amount_units": amount,
         "debt_id": debt_id,
         "invoice_id": invoice_id,
     }
@@ -356,7 +356,7 @@ def request_guild_subsidy(
                 " wait for the admin decision first (nothing moved)."
             )
         cur = conn.execute(
-            "INSERT INTO guild_subsidies (guild_id, amount_quarters, tier,"
+            "INSERT INTO guild_subsidies (guild_id, amount_units, tier,"
             " payback, status, requested_by) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 int(guild_id),
@@ -394,10 +394,10 @@ def request_guild_subsidy(
             " VALUES (?, ?, ?, 'idea')",
             (
                 agent["id"],
-                f"Subsidy venue: guild {guild['name']!r} asks {amount}q",
+                f"Subsidy venue: guild {guild['name']!r} asks {amount}u",
                 (clean + "\n\n" if clean else "")
                 + f"Guild {guild['name']!r} requests a Treasury subsidy of"
-                f" {amount} quarters"
+                f" {amount} units"
                 + (" with payback." if payback else ".")
                 + f" Decided on subsidy #{sub_id}.",
             ),
@@ -426,7 +426,7 @@ def request_guild_subsidy(
             "subsidy_id": sub_id,
             "status": "requested",
             "tier": "admin",
-            "amount_quarters": amount,
+            "amount_units": amount,
             "idea_post_id": idea_post_id,
         }
 
@@ -482,8 +482,7 @@ def decide_guild_subsidy(
             "guild",
             "guild",
             sub["guild_id"],
-            f"subsidy #{sub['id']} approved - {out['amount_quarters']}q"
-            " paid to the pool.",
+            f"subsidy #{sub['id']} approved - {out['amount_units']}u paid to the pool.",
             actor_agent_id=agent["id"],
         )
         return out
@@ -519,13 +518,13 @@ def open_guild_match_window(
             now = _now_iso()
             cur = conn.execute(
                 "INSERT INTO guild_match_windows (guild_id, mode, pct, days,"
-                " cap_quarters, amount_quarters, status, opened_by, ends_at,"
+                " cap_units, amount_units, status, opened_by, ends_at,"
                 " settled_at) VALUES (?, 'lump', 0, 0, ?, ?, 'paid', ?, ?, ?)",
                 (int(guild_id), amount, amount, agent["id"], now, now),
             )
             window_id = int(cur.lastrowid or 0)
             conn.execute(
-                "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+                "INSERT INTO guild_ledger (guild_id, kind, units, note)"
                 " VALUES (?, 'match', ?, ?)",
                 (int(guild_id), amount, f"treasury deposit-match #{window_id}"),
             )
@@ -539,11 +538,11 @@ def open_guild_match_window(
                 detail={
                     "window_id": window_id,
                     "mode": "lump",
-                    "amount_quarters": amount,
+                    "amount_units": amount,
                 },
                 conn=conn,
             )
-            return {"window_id": window_id, "status": "paid", "amount_quarters": amount}
+            return {"window_id": window_id, "status": "paid", "amount_units": amount}
         use_pct = float(config.GUILD_MATCH_PCT) if pct is None else float(pct)
         use_days = int(config.GUILD_MATCH_DAYS) if days is None else int(days)
         use_cap = (
@@ -570,7 +569,7 @@ def open_guild_match_window(
         now = _now_iso()
         cur = conn.execute(
             "INSERT INTO guild_match_windows (guild_id, mode, pct, days,"
-            " cap_quarters, status, opened_by, ends_at)"
+            " cap_units, status, opened_by, ends_at)"
             " VALUES (?, 'window', ?, ?, ?, 'open', ?, ?)",
             (
                 int(guild_id),
@@ -593,7 +592,7 @@ def open_guild_match_window(
                 "window_id": window_id,
                 "pct": use_pct,
                 "days": use_days,
-                "cap_quarters": use_cap,
+                "cap_units": use_cap,
             },
             conn=conn,
         )
@@ -611,7 +610,7 @@ def _window_net(conn: sqlite3.Connection, guild_id: int, since_iso: str) -> int:
     kind 'deposit' for the shares math but are dues, not deposits, so
     the window skips that note."""
     rows = conn.execute(
-        "SELECT kind, quarters FROM guild_ledger WHERE guild_id = ?"
+        "SELECT kind, units FROM guild_ledger WHERE guild_id = ?"
         " AND actor_agent_id IS NOT NULL AND created_at >= ?"
         " AND kind IN ('deposit', 'withdrawal')"
         " AND note != 'upkeep fee payment'",
@@ -619,7 +618,7 @@ def _window_net(conn: sqlite3.Connection, guild_id: int, since_iso: str) -> int:
     ).fetchall()
     net = 0
     for row in rows:
-        net += row["quarters"] if row["kind"] == "deposit" else -row["quarters"]
+        net += row["units"] if row["kind"] == "deposit" else -row["units"]
     return max(0, net)
 
 
@@ -628,7 +627,7 @@ def _settle_match_window(conn: sqlite3.Connection, window: dict) -> dict:
     pooled gate. A zero net expires the window (no pay, no event beyond
     the ledger-quiet record)."""
     net = _window_net(conn, window["guild_id"], window["created_at"])
-    pay = min(int(window["cap_quarters"]), int(net * float(window["pct"]) // 100))
+    pay = min(int(window["cap_units"]), int(net * float(window["pct"]) // 100))
     if pay <= 0:
         conn.execute(
             "UPDATE guild_match_windows SET status = 'expired', settled_at = ?"
@@ -638,17 +637,17 @@ def _settle_match_window(conn: sqlite3.Connection, window: dict) -> dict:
         return {"window_id": window["id"], "status": "expired"}
     _check_pooled_open(conn, pay, "that match")
     conn.execute(
-        "UPDATE guild_match_windows SET status = 'paid', amount_quarters = ?,"
+        "UPDATE guild_match_windows SET status = 'paid', amount_units = ?,"
         " settled_at = ? WHERE id = ?",
         (pay, _now_iso(), window["id"]),
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'match', ?, ?)",
         (
             window["guild_id"],
             pay,
-            f"treasury deposit-match #{window['id']} ({net}q net)",
+            f"treasury deposit-match #{window['id']} ({net}u net)",
         ),
     )
     import events
@@ -658,17 +657,17 @@ def _settle_match_window(conn: sqlite3.Connection, window: dict) -> dict:
         actor_agent_id=None,
         target_type="guild",
         target_id=window["guild_id"],
-        detail={"window_id": window["id"], "amount_quarters": pay, "net_quarters": net},
+        detail={"window_id": window["id"], "amount_units": pay, "net_units": net},
         conn=conn,
     )
-    return {"window_id": window["id"], "status": "paid", "amount_quarters": pay}
+    return {"window_id": window["id"], "status": "paid", "amount_units": pay}
 
 
 def settle_guild_debt_payment(
     conn: sqlite3.Connection, link: dict, payer_id: int, pay_q: int
 ) -> None:
     """Settle one payback payment into the Treasury: the founder's wallet
-    parks the quarters, the debt tracks the remainder oldest-first (one
+    parks the units, the debt tracks the remainder oldest-first (one
     debt per invoice here, so oldest-first is exact), and a cleared debt
     refreshes the spending freeze. Shared by pay_invoice's debt branch
     (the single payment path - no separate tool needed)."""
@@ -690,16 +689,16 @@ def settle_guild_debt_payment(
         return
     debt = dict(debt)
     # Terminal rows are closed: a written_off remainder was Treasury
-    # loss on the record, and paying into it would move real quarters
+    # loss on the record, and paying into it would move real units
     # against a dead row with no status change. Settle only live debts.
     if debt["status"] not in ("current", "overdue"):
         raise ForumError(
             f"that debt is {debt['status']} - closed debts take no payments."
         )
-    remaining = max(0, int(debt["remaining_quarters"]) - pay_q)
+    remaining = max(0, int(debt["remaining_units"]) - pay_q)
     if remaining <= 0:
         conn.execute(
-            "UPDATE guild_debts SET remaining_quarters = 0, status = 'settled',"
+            "UPDATE guild_debts SET remaining_units = 0, status = 'settled',"
             " settled_at = ? WHERE id = ?",
             (_now_iso(), debt["id"]),
         )
@@ -716,7 +715,7 @@ def settle_guild_debt_payment(
         _refresh_spending_freeze(conn, debt["guild_id"])
     else:
         conn.execute(
-            "UPDATE guild_debts SET remaining_quarters = ? WHERE id = ?",
+            "UPDATE guild_debts SET remaining_units = ? WHERE id = ?",
             (remaining, debt["id"]),
         )
 
@@ -737,8 +736,8 @@ def _log_debt_written_off(
         target_id=int(guild_id),
         detail={
             "debt_id": int(debt_id),
-            "seized_quarters": seized_q,
-            "written_off_quarters": written_q,
+            "seized_units": seized_q,
+            "written_off_units": written_q,
         },
         conn=conn,
     )
@@ -754,19 +753,19 @@ def _seize_for_debts(conn: sqlite3.Connection, guild_id: int) -> dict:
     guild disbands right after, so velocity is moot)."""
     debts = _open_debts(conn, guild_id)
     if not debts:
-        return {"seized_quarters": 0, "debts": []}
+        return {"seized_units": 0, "debts": []}
     balance = guild_balance(conn, guild_id)
     taken = 0
     outcome: list[dict] = []
     if balance > 0:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'transfer', ?, 'debt seizure to Treasury')",
             (int(guild_id), balance),
         )
     for debt in debts:
         if taken >= balance:
-            rest = int(debt["remaining_quarters"])
+            rest = int(debt["remaining_units"])
             conn.execute(
                 "UPDATE guild_debts SET status = 'written_off',"
                 " settled_at = ? WHERE id = ?",
@@ -775,19 +774,19 @@ def _seize_for_debts(conn: sqlite3.Connection, guild_id: int) -> dict:
             outcome.append({"debt_id": debt["id"], "written_off": rest})
             _log_debt_written_off(conn, guild_id, debt["id"], 0, rest)
             continue
-        cover = min(balance - taken, int(debt["remaining_quarters"]))
+        cover = min(balance - taken, int(debt["remaining_units"]))
         taken += cover
-        rest = int(debt["remaining_quarters"]) - cover
+        rest = int(debt["remaining_units"]) - cover
         if rest <= 0:
             conn.execute(
-                "UPDATE guild_debts SET remaining_quarters = 0,"
+                "UPDATE guild_debts SET remaining_units = 0,"
                 " status = 'settled', settled_at = ? WHERE id = ?",
                 (_now_iso(), debt["id"]),
             )
             outcome.append({"debt_id": debt["id"], "seized": cover})
         else:
             conn.execute(
-                "UPDATE guild_debts SET remaining_quarters = ?,"
+                "UPDATE guild_debts SET remaining_units = ?,"
                 " status = 'written_off', settled_at = ? WHERE id = ?",
                 (rest, _now_iso(), debt["id"]),
             )
@@ -802,10 +801,10 @@ def _seize_for_debts(conn: sqlite3.Connection, guild_id: int) -> dict:
         actor_agent_id=None,
         target_type="guild",
         target_id=int(guild_id),
-        detail={"seized_quarters": taken, "debts": outcome},
+        detail={"seized_units": taken, "debts": outcome},
         conn=conn,
     )
-    return {"seized_quarters": taken, "debts": outcome}
+    return {"seized_units": taken, "debts": outcome}
 
 
 def release_guild_stakes_for_disband(conn: sqlite3.Connection, guild_id: int) -> dict:
@@ -852,7 +851,7 @@ def release_guild_stakes_for_disband(conn: sqlite3.Connection, guild_id: int) ->
             (link["stake_id"],),
         )
         released.append(int(link["stake_id"]))
-    return {"released": released, "restored_quarters": restored}
+    return {"released": released, "restored_units": restored}
 
 
 def _prepare_guild_disband(conn: sqlite3.Connection, guild_id: int) -> dict:
@@ -874,7 +873,7 @@ def _forfeit_member(
 ) -> dict:
     """5027: a suspended/banned member is auto-released with their share
     forfeited - half stays Treasury-parked (no movement, like the upkeep
-    remainder), half burns outright (odd quarter to the burn; forfeiture
+    remainder), half burns outright (odd unit to the burn; forfeiture
     never inflates the supply). The pool memo extinguishes the FULL
     share, so nothing pays twice. Never a refund, never a shelter."""
     from db._credits import _insert_entry, _new_tx_id
@@ -883,7 +882,7 @@ def _forfeit_member(
     share = _payout_for(conn, guild_id, agent_id, guild_balance(conn, guild_id))
     if share > 0:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, ?)",
             (int(guild_id), share, int(agent_id), f"suspension forfeit ({why})"),
         )
@@ -924,9 +923,9 @@ def _forfeit_member(
         target_id=int(guild_id),
         detail={
             "agent_id": int(agent_id),
-            "forfeited_quarters": share,
-            "to_treasury_quarters": to_treasury,
-            "burned_quarters": burned,
+            "forfeited_units": share,
+            "to_treasury_units": to_treasury,
+            "burned_units": burned,
         },
         conn=conn,
     )
@@ -936,13 +935,13 @@ def _forfeit_member(
         "guild",
         "guild",
         int(guild_id),
-        f"your share in guild #{guild_id} was forfeited ({why}, {share}q).",
+        f"your share in guild #{guild_id} was forfeited ({why}, {share}u).",
         actor_agent_id=None,
     )
     return {
         "agent_id": int(agent_id),
-        "forfeited_quarters": share,
-        "burned_quarters": burned,
+        "forfeited_units": share,
+        "burned_units": burned,
     }
 
 
@@ -979,7 +978,7 @@ def sweep_guild_lending() -> dict:
                 dead = False
                 for debt in _open_debts(conn, gid):
                     if (
-                        int(debt["remaining_quarters"]) > 0
+                        int(debt["remaining_units"]) > 0
                         and debt["due_at"] <= now
                         and debt["status"] == "current"
                     ):
@@ -995,14 +994,14 @@ def sweep_guild_lending() -> dict:
                             "guild",
                             gid,
                             f"guild debt #{debt['id']} is past due"
-                            f" ({debt['remaining_quarters']}q) - spending"
+                            f" ({debt['remaining_units']}u) - spending"
                             " frozen until it clears.",
                             actor_agent_id=None,
                         )
                         report["overdue"].append(debt["id"])
                     elif (
                         debt["status"] == "overdue"
-                        and int(debt["remaining_quarters"]) > 0
+                        and int(debt["remaining_units"]) > 0
                         and debt["due_at"]
                         <= _days_ago_iso(float(config.GUILD_SUBSIDY_PAYBACK_DAYS))
                     ):

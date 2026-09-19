@@ -22,9 +22,9 @@ import db._credits as _cr  # noqa: E402
 import db._store as _store  # noqa: E402
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "admin_adjust", conn=conn)
+        assert _cr.grant(agent_id, units, "admin_adjust", conn=conn)
 
 
 def _price(knob: str) -> int:
@@ -42,8 +42,8 @@ def main():
     agents, _ = setup()
     buyer_a = db.register_agent("stats-alpha")
     buyer_b = db.register_agent("stats-beta")
-    _fund(buyer_a["agent_id"], 400)
-    _fund(buyer_b["agent_id"], 400)
+    _fund(buyer_a["agent_id"], 2000)
+    _fund(buyer_b["agent_id"], 2000)
 
     vote_q = _price("STORE_VOTE_PRICE")
     ci_q = _price("STORE_CI_PRICE")
@@ -97,7 +97,7 @@ def main():
             "reason",
             "units",
             "units_7d",
-            "revenue_quarters",
+            "revenue_units",
             "revenue_credits",
             "buyers",
             "buyers_7d",
@@ -111,13 +111,13 @@ def main():
         "backdated buy leaves the window"
     )
     assert (vote["buyers"], vote["buyers_7d"]) == (2, 1), "buyers windowed too"
-    assert vote["revenue_quarters"] == 2 * vote_q, "revenue exact in quarters"
+    assert vote["revenue_units"] == 2 * vote_q, "revenue exact in units"
     assert vote["held"] == 2, "two vote boosts installed"
     ci = _row(stats, "store_ci")
-    assert (ci["units"], ci["buyers"], ci["revenue_quarters"]) == (1, 1, ci_q)
-    assert _row(stats, "store_color")["revenue_quarters"] == color_q
-    assert _row(stats, "store_bio")["revenue_quarters"] == bio_q
-    assert _row(stats, "store_notes_unlock")["revenue_quarters"] == notes_q
+    assert (ci["units"], ci["buyers"], ci["revenue_units"]) == (1, 1, ci_q)
+    assert _row(stats, "store_color")["revenue_units"] == color_q
+    assert _row(stats, "store_bio")["revenue_units"] == bio_q
+    assert _row(stats, "store_notes_unlock")["revenue_units"] == notes_q
     assert _row(stats, "store_blessed_bench")["price_credits"] == (
         config.STORE_BLESSED_BENCH_PRICE
     )
@@ -136,7 +136,7 @@ def main():
     # Refund netting: the buy counts as a unit, the price nets to zero.
     bench = _row(stats, "store_blessed_bench")
     assert bench["units"] == 1, "take+refund keeps the unit"
-    assert bench["revenue_quarters"] == 0, f"refund nets revenue ({bench})"
+    assert bench["revenue_units"] == 0, f"refund nets revenue ({bench})"
     assert bench["held"] == 0, "taken bank stays spent"
 
     # Predicate-shape pins (sargable rewrite): unknown future reasons still
@@ -144,22 +144,22 @@ def main():
     # all ledger writers emit lowercase literals only).
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (?, ?, 'store_future_gadget', 'agent')",
             (buyer_a["agent_id"], -vote_q),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (NULL, ?, 'store_future_gadget_intake', 'treasury')",
             (vote_q,),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (?, ?, 'STORE_vote', 'agent')",
             (buyer_a["agent_id"], -vote_q),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (NULL, ?, 'STORE_vote_intake', 'treasury')",
             (vote_q,),
         )
@@ -167,7 +167,7 @@ def main():
     future = _row(stats2, "store_future_gadget")
     assert future["label"].startswith("Other ("), "unknown reason buckets Other"
     assert (future["units"], future["buyers"]) == (1, 1), "future reason counted"
-    assert future["revenue_quarters"] == vote_q, "future revenue exact"
+    assert future["revenue_units"] == vote_q, "future revenue exact"
     assert not any(i["reason"] == "STORE_vote" for i in stats2["items"]), (
         "uppercase reason excluded from buyers"
     )
@@ -181,11 +181,11 @@ def main():
 
     totals = stats["totals"]
     assert totals["units"] == sum(i["units"] for i in stats["items"]), "units add up"
-    assert totals["revenue_quarters"] == sum(
-        i["revenue_quarters"] for i in stats["items"]
-    ), "revenue adds up"
-    assert totals["revenue_credits"] == _cr.format_credits(totals["revenue_quarters"])
-    assert totals["revenue_7d_quarters"] == totals["revenue_quarters"] - vote_q, (
+    assert totals["revenue_units"] == sum(i["revenue_units"] for i in stats["items"]), (
+        "revenue adds up"
+    )
+    assert totals["revenue_credits"] == _cr.format_credits(totals["revenue_units"])
+    assert totals["revenue_7d_units"] == totals["revenue_units"] - vote_q, (
         "backdated sale leaves the 7d revenue"
     )
     assert totals["buyers"] == 2 and totals["buyers_7d"] == 2, "both buyers counted"
@@ -198,7 +198,7 @@ def main():
         db.init_db()
         empty = db.store_stats()
         assert empty["totals"]["units"] == 0
-        assert empty["totals"]["revenue_quarters"] == 0
+        assert empty["totals"]["revenue_units"] == 0
         assert empty["totals"]["buyers"] == 0
         assert empty["installed"]["citizens_served"] == 0
         assert all(i["units"] == 0 and i["held"] == 0 for i in empty["items"])

@@ -70,7 +70,7 @@ def _unarm(old, env_key: str):
     importlib.reload(config)
 
 
-def test_vote_earns_quarters_and_flips_adjust():
+def test_vote_earns_units_and_flips_adjust():
     agents, pid = _setup()
     author_id = AGENTS["gamma"]["agent_id"]  # the fresh post's author
     before = _bal(author_id)
@@ -128,11 +128,11 @@ def test_pr_merge_earns():
     before = _bal(aid)
     ok = db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
     assert ok is True
-    quarters = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
-    assert _bal(aid) == before + quarters
+    units = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
+    assert _bal(aid) == before + units
     # Idempotent: a second detection must not double-grant.
     db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
-    assert _bal(aid) == before + quarters
+    assert _bal(aid) == before + units
 
 
 def test_bug_fix_earns():
@@ -141,7 +141,7 @@ def test_bug_fix_earns():
     rep = db.file_bug_report(agents["eta"]["token"], "Credits bug", "body", url=None)
     before = _bal(aid)
     db.fix_bug_report(rep["id"])
-    assert _bal(aid) == before + 1, "fix pays the 1q credit reward beside karma"
+    assert _bal(aid) == before + 5, "fix pays the 5u (0.25cr) reward beside karma"
     # Karma still granted via bug_rewards
     with db._conn() as conn:
         got = conn.execute(
@@ -196,11 +196,13 @@ def test_tag_create_spends_credits_and_floor_stays_karma():
     import db._credits as _cr_fund
 
     with db._conn() as _c:
-        _cr_fund.grant(aid, 8, "admin_adjust", target_type="test", target_id=1, conn=_c)
+        _cr_fund.grant(
+            aid, 40, "admin_adjust", target_type="test", target_id=1, conn=_c
+        )
     old = _arm("FORUM_TAG_CREATE_COST", "2.0")
     try:
         balance_before = _bal(aid)
-        cost_q = 8  # 2.0 credits
+        cost_q = 40  # 2.0 credits
         assert balance_before >= cost_q
         db.create_tag(agents["alpha"]["token"], "credit-tag")
         assert _bal(aid) == balance_before - cost_q
@@ -222,7 +224,7 @@ def test_tag_apply_refuses_when_credits_insufficient():
     with db._conn() as conn:
         cr.grant(
             agents["alpha"]["agent_id"],
-            8,
+            40,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -235,7 +237,7 @@ def test_tag_apply_refuses_when_credits_insufficient():
     # scenario since the shared setup defaults tags to free.)
     import db._credits as cr2
 
-    old_apply = _arm("FORUM_TAG_APPLY_COST", "1.0")  # 4 quarters
+    old_apply = _arm("FORUM_TAG_APPLY_COST", "1.0")  # 20 units
     try:
         with db._conn() as conn:
             bal_now = cr2.balance_for(conn, agents["fresh"]["agent_id"])
@@ -265,8 +267,8 @@ def test_apply_daily_cap_counts_credit_entries():
 
     with db._conn() as conn:
         cr.grant(
-            agents["beta"]["agent_id"],
-            400,
+            agents["delta"]["agent_id"],
+            200,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -304,12 +306,12 @@ def test_credit_stake_lock_pay_flow():
     with db._conn() as conn:
         cr.grant(
             agents["alpha"]["agent_id"],
-            40,
+            200,
             "admin_adjust",
             target_type="test",
             target_id=1,
             conn=conn,
-        )  # 20 cr
+        )  # 10 cr
         cr.grant(
             agents["delta"]["agent_id"],
             40,
@@ -322,13 +324,13 @@ def test_credit_stake_lock_pay_flow():
         agents["alpha"]["token"], prop_id, per_pr=2.5, max_prs=2, currency="credits"
     )
     assert result["currency"] == "credits"
-    assert result["per_pr"] == 10, "2.5 credits snap to 10 quarters"
+    assert result["per_pr"] == 50, "2.5 credits snap to 50 units"
     assert result["per_pr_credits"] == "2.5"
-    # Rounding intake: fractional input snapped to nearest quarter.
+    # Rounding intake: fractional input snapped to nearest twentieth.
     r2 = db.stake(
         agents["delta"]["token"], prop_id, per_pr=2.3, max_prs=1, currency="credits"
     )
-    assert r2["per_pr"] == 9 and r2["per_pr_credits"] == "2.25"
+    assert r2["per_pr"] == 46 and r2["per_pr_credits"] == "2.3"
 
 
 def test_credit_stake_exposure_cap_is_per_currency():
@@ -340,7 +342,7 @@ def test_credit_stake_exposure_cap_is_per_currency():
     with db._conn() as conn:
         cr.grant(
             agents["epsilon"]["agent_id"],
-            4,
+            20,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -388,7 +390,7 @@ def test_history_and_balances_shapes():
     assert {"entries", "total", "has_more", "summary"} <= set(hist)
     if hist["entries"]:
         e = hist["entries"][0]
-        assert {"credits", "delta_quarters", "reason", "agent_name"} <= set(e)
+        assert {"credits", "delta_units", "reason", "agent_name"} <= set(e)
     glob = db.credit_history(limit=5)
     assert len(glob["entries"]) <= 5
     balances = db.balances_for(
@@ -406,10 +408,10 @@ def test_history_category_filters():
 
     agents, _ = _setup()
     with db._conn() as conn:
-        cr.mint(100, "admin_mint", admin="test", conn=conn)  # fund the treasury
+        cr.mint(500, "admin_mint", admin="test", conn=conn)  # fund the treasury
         assert cr.grant(
             agents["alpha"]["agent_id"],
-            8,
+            40,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -441,12 +443,12 @@ def test_history_category_filters():
     assert not (earned_reasons & {"transfer_in", "transfer_intake"}), (
         "named families are bucketed under their tab, not earned"
     )
-    assert all(e["delta_quarters"] > 0 and e["account"] == "agent" for e in earned)
+    assert all(e["delta_units"] > 0 and e["account"] == "agent" for e in earned)
 
     spent = db.credit_history(limit=500, category="spent")["entries"]
     spent_reasons = {e["reason"] for e in spent}
     assert "transfer_out" not in spent_reasons and "transfer_fee" not in spent_reasons
-    assert all(e["delta_quarters"] < 0 and e["account"] == "agent" for e in spent)
+    assert all(e["delta_units"] < 0 and e["account"] == "agent" for e in spent)
 
     trans = db.credit_history(limit=500, category="transfers")["entries"]
     assert {"transfer_out", "transfer_in", "transfer_fee", "transfer_fee_intake"} <= {
@@ -454,8 +456,8 @@ def test_history_category_filters():
     }
 
     with db._conn() as conn:
-        cr.burn(10, "admin_burn", admin="test", conn=conn)
-        cr.mint(10, "proposal_mint", admin="test", proposal_id=7, conn=conn)
+        cr.burn(50, "admin_burn", admin="test", conn=conn)
+        cr.mint(50, "proposal_mint", admin="test", proposal_id=7, conn=conn)
     minted = {
         e["reason"] for e in db.credit_history(limit=500, category="minted")["entries"]
     }
@@ -467,7 +469,7 @@ def test_history_category_filters():
 
     victim = db.register_agent("cat-forfeit-victim")
     with db._conn() as conn:
-        cr.grant(victim["agent_id"], 12, "admin_adjust", conn=conn)
+        cr.grant(victim["agent_id"], 60, "admin_adjust", conn=conn)
         cr.forfeit_agent(victim["agent_id"], conn=conn)
     forfeited = {
         e["reason"]
@@ -477,7 +479,7 @@ def test_history_category_filters():
 
     shopper = db.register_agent("cat-store-shopper")
     with db._conn() as conn:
-        cr.grant(shopper["agent_id"], 400, "admin_adjust", conn=conn)
+        cr.grant(shopper["agent_id"], 2000, "admin_adjust", conn=conn)
     db.buy_store_item(shopper["token"], "vote_boost")
     store_reasons = {
         e["reason"] for e in db.credit_history(limit=500, category="store")["entries"]
@@ -505,12 +507,10 @@ def test_history_category_filters():
     ):
         _rows = db.credit_history(limit=500, category=_cat)["entries"]
         assert all(any(f in e["reason"].lower() for f in _frags) for e in _rows), _cat
-    assert db.credit_history(limit=500, min_quarters=10**9)["entries"] == []
-    assert db.credit_history(limit=500, max_quarters=0)["entries"] == []
-    bounded = db.credit_history(limit=500, category="transfers", min_quarters=1)[
-        "entries"
-    ]
-    assert bounded and all(abs(e["delta_quarters"]) >= 1 for e in bounded)
+    assert db.credit_history(limit=500, min_units=10**9)["entries"] == []
+    assert db.credit_history(limit=500, max_units=0)["entries"] == []
+    bounded = db.credit_history(limit=500, category="transfers", min_units=1)["entries"]
+    assert bounded and all(abs(e["delta_units"]) >= 1 for e in bounded)
 
 
 def test_tx_id_groups_atomic_flows():
@@ -524,7 +524,7 @@ def test_tx_id_groups_atomic_flows():
     # A treasury payout (2 legs) and a transfer (amount + fee legs) must
     # each be one transaction, with distinct tx_ids.
     with db._conn() as conn:
-        cr.grant(s["agent_id"], 40, "admin_adjust", conn=conn)
+        cr.grant(s["agent_id"], 200, "admin_adjust", conn=conn)
     old_fee = _arm("FORUM_TX_FEE_PERCENT", "1.0")
     try:
         db.transfer(s["token"], r["agent_id"], 1.0, note="tx group")
@@ -555,8 +555,8 @@ def test_tx_id_groups_atomic_flows():
         f"transfer descriptor names sender + recipient, got "
         f"{tx['from_name']} -> {tx['to_name']}"
     )
-    assert tx["amount_quarters"] == 4  # 1.0 credit = 4 quarters
-    assert tx["fee_quarters"] == 1  # 1% of 1.0 credit = 1 quarter
+    assert tx["amount_units"] == 20  # 1.0 credit = 20 units
+    assert tx["fee_units"] == 1  # 1% of 1.0 credit ceils to 1 unit (0.05)
     assert tx["credit"] is True
     assert tx["from_agent_id"] == s["agent_id"], "sender id rides the descriptor"
     assert tx["to_agent_id"] == r["agent_id"], "recipient id rides the descriptor"
@@ -576,7 +576,7 @@ def test_group_transactions_legacy_null_passthrough():
         "agent_name": "zed",
         "account": "agent",
         "credits": "-1.00",
-        "delta_quarters": -4,
+        "delta_units": -20,
         "reason": "spend",
         "target_type": "item",
         "target_id": 9,
@@ -590,7 +590,7 @@ def test_group_transactions_legacy_null_passthrough():
     assert g["tx_id"] is None
     assert g["from_name"] == "zed"
     assert g["to_name"] is None
-    assert g["amount_quarters"] == 4
+    assert g["amount_units"] == 20
     assert g["credit"] is False  # a pure debit has no positive agent leg
     assert g["leg_count"] == 1
 
@@ -606,7 +606,7 @@ def test_history_target_name_only_for_agent_targets():
     # NON-agent target id; without the target_type guard the LEFT JOIN
     # would fabricate beta's name onto an unrelated "post" row.
     with db._conn() as conn:
-        cr.mint(100, "admin_mint", admin="test", conn=conn)
+        cr.mint(500, "admin_mint", admin="test", conn=conn)
         assert cr.grant(
             agents["gamma"]["agent_id"],
             8,
@@ -630,7 +630,7 @@ def test_history_limit_clamped_to_max_page_size():
 
     with db._conn() as conn:
         for _ in range(config.MAX_PAGE_SIZE + 10):
-            cr.mint(1, "admin_mint", admin="test", conn=conn)
+            cr.mint(5, "admin_mint", admin="test", conn=conn)
     rows = db.credit_history(limit=10**6)
     assert len(rows["entries"]) == config.MAX_PAGE_SIZE, (
         "limit must clamp to MAX_PAGE_SIZE"
@@ -652,9 +652,9 @@ def test_top_movers_shape():
 
     agents, _ = _setup()
     with db._conn() as conn:
-        cr.mint(200, "admin_mint", admin="test", conn=conn)
-        assert cr.grant(agents["alpha"]["agent_id"], 4, "admin_adjust", conn=conn)
-        assert cr.grant(agents["beta"]["agent_id"], 12, "admin_adjust", conn=conn)
+        cr.mint(1000, "admin_mint", admin="test", conn=conn)
+        assert cr.grant(agents["alpha"]["agent_id"], 20, "admin_adjust", conn=conn)
+        assert cr.grant(agents["beta"]["agent_id"], 60, "admin_adjust", conn=conn)
     movers = db.top_movers(limit=5)
     assert movers, "the setup grants land inside the 7-day window"
     first = movers[0]
@@ -662,16 +662,16 @@ def test_top_movers_shape():
         "agent_id",
         "agent_name",
         "agent_color",
-        "earned_quarters",
-        "spent_quarters",
+        "earned_units",
+        "spent_units",
     }
     assert "agent_color" in first, "name_color rides the top-movers rows"
-    assert first["earned_quarters"] >= 12, (
-        "beta's 12-quarter grant puts them at (or near) the top"
+    assert first["earned_units"] >= 12, (
+        "beta's 12-unit grant puts them at (or near) the top"
     )
     assert (
-        max((m["earned_quarters"] + m["spent_quarters"]) for m in movers)
-        == first["earned_quarters"] + first["spent_quarters"]
+        max((m["earned_units"] + m["spent_units"]) for m in movers)
+        == first["earned_units"] + first["spent_units"]
     ), "most active first"
 
 
@@ -702,8 +702,8 @@ def test_concurrent_spends_cannot_overspend():
 
     wallet = db.register_agent("race-wallet")
     with db._conn() as conn:
-        cr.mint(100, "admin_mint", admin="test", conn=conn)
-        assert cr.grant(wallet["agent_id"], 16, "test_seed", conn=conn)
+        cr.mint(500, "admin_mint", admin="test", conn=conn)
+        assert cr.grant(wallet["agent_id"], 80, "test_seed", conn=conn)
 
     outcomes: list[str] = []
     barrier = threading.Barrier(2)
@@ -719,7 +719,7 @@ def test_concurrent_spends_cannot_overspend():
         except Exception as exc:  # noqa: BLE001 - collected below
             errors.append(exc)
 
-    threads = [threading.Thread(target=voter, args=(16,)) for _ in range(2)]
+    threads = [threading.Thread(target=voter, args=(80,)) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
@@ -750,7 +750,7 @@ def test_credit_stake_lifecycle_lock_pay_refund():
     with db._conn() as conn:
         cr.grant(
             agents["alpha"]["agent_id"],
-            40,
+            200,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -758,7 +758,7 @@ def test_credit_stake_lifecycle_lock_pay_refund():
         )  # 10 cr
         cr.grant(
             agents["delta"]["agent_id"],
-            40,
+            200,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -771,10 +771,10 @@ def test_credit_stake_lifecycle_lock_pay_refund():
     assert r["stake_id"] > 0
     after_stake = _bal(agents["alpha"]["agent_id"])
 
-    # --- PR #1 opens: lock debits 6 quarters (1.5 cr)
+    # --- PR #1 opens: lock debits 30 units (1.5 cr)
     locked = db.lock_stakes_for_pr(None, prop_id, 9700, agents["delta"]["agent_id"])
     assert locked == 1
-    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 6
+    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 30
 
     # --- PR #1 merges: opener paid in credits; staker stays debited
     with db._conn() as conn:
@@ -783,19 +783,19 @@ def test_credit_stake_lifecycle_lock_pay_refund():
         )
         paid = db.pay_stake_rewards(conn, 9700)
     assert paid == 1
-    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 6, (
+    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 30, (
         "the staker's debit persists as a true transfer"
     )
     with db._conn() as conn:
         rows = conn.execute(
-            "SELECT reason, delta_quarters FROM credit_entries"
+            "SELECT reason, delta_units FROM credit_entries"
             " WHERE agent_id = ? AND reason IN ('stake_paid','stake_refund')"
             " ORDER BY id",
             (agents["delta"]["agent_id"],),
         ).fetchall()
-    assert any(
-        r["reason"] == "stake_paid" and r["delta_quarters"] == 6 for r in rows
-    ), "opener must receive a stake_paid grant"
+    assert any(r["reason"] == "stake_paid" and r["delta_units"] == 30 for r in rows), (
+        "opener must receive a stake_paid grant"
+    )
     with db._conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM stake_rewards").fetchone()[0] == 0, (
             "credit stakes must never write karma reward rows"
@@ -805,11 +805,11 @@ def test_credit_stake_lifecycle_lock_pay_refund():
     before_decline = _bal(agents["alpha"]["agent_id"])
     locked2 = db.lock_stakes_for_pr(None, prop_id, 9701, agents["epsilon"]["agent_id"])
     assert locked2 == 1
-    assert _bal(agents["alpha"]["agent_id"]) == before_decline - 6
+    assert _bal(agents["alpha"]["agent_id"]) == before_decline - 30
     refunded = db.refund_stake_locks(None, 9701)
     assert refunded == 1
     assert _bal(agents["alpha"]["agent_id"]) == before_decline, (
-        "decline restores the exact quarter amount"
+        "decline restores the exact unit amount"
     )
     with db._conn() as conn:
         reasons = [
@@ -823,7 +823,7 @@ def test_credit_stake_lifecycle_lock_pay_refund():
 
 
 def main():
-    test_vote_earns_quarters_and_flips_adjust()
+    test_vote_earns_units_and_flips_adjust()
     test_scale_zero_disables_earning()
     test_pr_merge_earns()
     test_bug_fix_earns()

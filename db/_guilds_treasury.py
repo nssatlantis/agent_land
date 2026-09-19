@@ -1,7 +1,7 @@
 """db._guilds_treasury — guild↔treasury flows (proposal #525, PR-4).
 
 Stakes, upkeep, and arrears on top of the PR-2 engine and PR-3 money.
-Conservation model (unchanged): pool quarters are a memo - deposits park
+Conservation model (unchanged): pool units are a memo - deposits park
 in the treasury, payouts grant back down, grant-first everywhere.
 
 Guild stakes ride the v1 machinery through a founder-conduit: the stake
@@ -53,7 +53,7 @@ def _guild_stake_link(conn: sqlite3.Connection, stake_id: int) -> dict | None:
 def _guild_exposure(
     conn: sqlite3.Connection, guild_id: int, proposal_id: int | None = None
 ) -> int:
-    """Committed guild-stake exposure in quarters: per_pr x (max_prs -
+    """Committed guild-stake exposure in units: per_pr x (max_prs -
     paid) over active linked stakes, optionally for one proposal. Locks
     draw it down one per-PR at a time; paid PRs release it."""
     params: list = [guild_id]
@@ -89,24 +89,24 @@ def _apply_arrears_withhold(
     settling oldest weeks first. The withheld share stays pool-owned -
     the pool deducts the full share while the recipient nets the rest,
     so the debt clears without a second movement. Returns (net, settled).
-    Whole rows only (every arrears row is exactly 1 quarter)."""
+    Whole rows only (every arrears row is exactly 5 units)."""
     if payout <= 0:
         return (0, 0)
     rows = _unpaid_arrears(conn, guild_id, agent_id)
-    owed = sum(r["quarters"] for r in rows)
+    owed = sum(r["units"] for r in rows)
     if owed <= 0:
         return (payout, 0)
     remaining = min(payout, owed)
     settled = 0
     for row in rows:
-        if remaining < row["quarters"]:
+        if remaining < row["units"]:
             break
         conn.execute(
             "UPDATE guild_fee_arrears SET status = 'paid' WHERE id = ?",
             (row["id"],),
         )
-        remaining -= row["quarters"]
-        settled += row["quarters"]
+        remaining -= row["units"]
+        settled += row["units"]
     return (payout - settled, settled)
 
 
@@ -120,7 +120,7 @@ def guild_stake(
     max_prs: int,
     bonus_pct: int = 0,
 ) -> dict:
-    """Stake pool quarters on a proposal (credits only). The founder
+    """Stake pool units on a proposal (credits only). The founder
     stakes as conduit - v1 lock mechanics run untouched - while the pool
     funds each lock just-in-time and takes the winnings. Caps read the
     pool, not the founder: exposure per proposal <= 33% of balance,
@@ -184,12 +184,12 @@ def guild_stake(
                 "that exposure exceeds the founder's solo band - record a"
                 " co-sign first (request_guild_cosign + confirm)."
             )
-        from db._credits import fee_quarters
+        from db._credits import fee_units
 
-        placement_q = fee_quarters(total)
+        placement_q = fee_units(total)
         if placement_q:
             conn.execute(
-                "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+                "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
                 " note) VALUES (?, 'fee', ?, ?, 'stake placement fee')",
                 (gid, placement_q, agent["id"]),
             )
@@ -201,7 +201,7 @@ def guild_stake(
         out = _v1_stake(
             token,
             int(proposal_id),
-            per_pr / 4,
+            per_pr / 20,
             int(max_prs),
             currency="credits",
             funded_externally=True,
@@ -262,7 +262,7 @@ def fund_guild_stake_lock(
     if not ok:
         return None
     cur = conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'stake_lock', ?, ?, 'stake lock funding')",
         (link["guild_id"], per_pr, staker_id),
     )
@@ -279,7 +279,7 @@ def settle_guild_stake_payout(
     """Split merged-PR winnings: the opener's ex-ante bonus via the same
     always-settling principal return v1 uses, the pool's share as a memo
     PLUS a matching treasury mint. The mint is load-bearing, not double
-    counting: the conduit lock burned real quarters (v1 spend with no
+    counting: the conduit lock burned real units (v1 spend with no
     destination), so without it the pool memo would be a claim without
     backing and later payouts would hit an unfunded treasury. Total mint
     volume equals v1's (bonus to opener + rest to treasury == full payout
@@ -308,12 +308,12 @@ def settle_guild_stake_payout(
             link["stake_id"],
         )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'stake', ?, ?)",
             (
                 link["guild_id"],
                 rest,
-                f"stake winnings (PR #{pr_number}, bonus {bonus}q to opener)",
+                f"stake winnings (PR #{pr_number}, bonus {bonus}u to opener)",
             ),
         )
 
@@ -336,7 +336,7 @@ def settle_guild_stake_self(conn: sqlite3.Connection, link: dict, amount: int) -
         link["stake_id"],
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'stake', ?, 'self-stake return to pool')",
         (link["guild_id"], amount),
     )
@@ -361,7 +361,7 @@ def settle_guild_stake_refund(
         link["stake_id"],
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'stake', ?, 'stake lock refund to pool')",
         (link["guild_id"], amount),
     )
@@ -385,7 +385,7 @@ def _open_fee_invoice(
 
 def sweep_guild_upkeep() -> dict:
     """Weekly upkeep sweep (poller wiring lands in PR-5, like the
-    membership sweep): issue this week's 1-quarter fee arrears per
+    membership sweep): issue this week's 5-unit fee arrears per
     member (one invoice per member covering all open arrears, at most
     one open each), then sweep pool shares older than 48h to the
     treasury, suspend on shortfall (self-healing on recovery), and
@@ -425,7 +425,7 @@ def sweep_guild_upkeep() -> dict:
                         try:
                             conn.execute(
                                 "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-                                " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
+                                " week, units, status) VALUES (?, ?, ?, 5, 'open')",
                                 (gid, aid, week),
                             )
                         except sqlite3.IntegrityError:
@@ -435,7 +435,7 @@ def sweep_guild_upkeep() -> dict:
                             pass
                     if _open_fee_invoice(conn, gid, aid) is None:
                         owing = conn.execute(
-                            "SELECT COALESCE(SUM(quarters), 0) FROM guild_fee_arrears"
+                            "SELECT COALESCE(SUM(units), 0) FROM guild_fee_arrears"
                             " WHERE guild_id = ? AND member_agent_id = ?"
                             " AND status = 'open'",
                             (gid, aid),
@@ -443,7 +443,7 @@ def sweep_guild_upkeep() -> dict:
                         if owing and owing > 0:
                             cur = conn.execute(
                                 "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
-                                " amount_quarters, remaining_quarters, reason, status,"
+                                " amount_units, remaining_units, reason, status,"
                                 " due_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
                                 (
                                     aid,
@@ -466,7 +466,7 @@ def sweep_guild_upkeep() -> dict:
                                 "economy",
                                 "invoice",
                                 inv_id,
-                                f"guild {guild['name']!r} upkeep fee due ({owing}q"
+                                f"guild {guild['name']!r} upkeep fee due ({owing}u"
                                 f" for week {week}) - accept and pay it.",
                             )
                             issued_here += 1
@@ -480,7 +480,7 @@ def sweep_guild_upkeep() -> dict:
                         detail={"week": week, "invoices": issued_here},
                         conn=conn,
                     )
-                due = min(5, len(members))
+                due = min(25, 5 * len(members))
                 if guild.get("last_upkeep_week") == week:
                     continue
                 old_enough = conn.execute(
@@ -494,7 +494,7 @@ def sweep_guild_upkeep() -> dict:
                 pool = guild_balance(conn, gid)
                 if due > 0 and pool >= due:
                     conn.execute(
-                        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+                        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
                         " VALUES (?, 'fee', ?, 'weekly upkeep sweep to Treasury')",
                         (gid, due),
                     )
@@ -589,7 +589,7 @@ def settle_guild_fee_payment(
         conn=conn,
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'deposit', ?, ?, 'upkeep fee payment')",
         (link["guild_id"], pay_q, payer_id),
     )
@@ -601,7 +601,7 @@ def settle_guild_fee_payment(
         actor_agent_id=payer_id,
         target_type="invoice",
         target_id=link["invoice_id"],
-        detail={"guild_id": link["guild_id"], "quarters": pay_q},
+        detail={"guild_id": link["guild_id"], "units": pay_q},
         conn=conn,
     )
 
@@ -624,16 +624,16 @@ def _settle_arrears(
     """Settle open arrears oldest-first from a payment. Returns the
     unapplied leftover (overpayments stay on the invoice remaining)."""
     rows = conn.execute(
-        "SELECT id, quarters FROM guild_fee_arrears WHERE guild_id = ?"
+        "SELECT id, units FROM guild_fee_arrears WHERE guild_id = ?"
         " AND member_agent_id = ? AND status = 'open' ORDER BY week ASC, id ASC",
         (guild_id, agent_id),
     ).fetchall()
     leftover = paid_q
     for row in rows:
-        if leftover < row["quarters"]:
+        if leftover < row["units"]:
             break
         conn.execute(
             "UPDATE guild_fee_arrears SET status = 'paid' WHERE id = ?", (row["id"],)
         )
-        leftover -= row["quarters"]
+        leftover -= row["units"]
     return leftover

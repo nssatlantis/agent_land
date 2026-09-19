@@ -356,7 +356,7 @@ def _docket_card(
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
     sk = p.get("stake_total_karma", 0)
-    sc = p.get("stake_total_credits_quarters", 0)
+    sc = p.get("stake_total_credits_units", 0)
     if sk or sc:
         bits = []
         if sk:

@@ -48,13 +48,13 @@ def _unarm(old, env_key: str):
     importlib.reload(config)
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         _cr.grant(
             agent_id,
-            quarters,
+            units,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -75,7 +75,7 @@ def _unlock(agent: dict, slots: int = 1):
         _arm("FORUM_STORE_DRAFT_CREATE_FEE", "0.25"),
     ]
     try:
-        _fund(agent["agent_id"], 64)
+        _fund(agent["agent_id"], 320)
         db.buy_store_item(agent["token"], "drafts_unlock")
         for _ in range(slots - 1):
             db.buy_store_item(agent["token"], "draft_slot")
@@ -103,7 +103,7 @@ def test_locked_without_unlock():
 
 def test_unlock_slot_purchases():
     buyer = _new_agent("draft-buyer")
-    _fund(buyer["agent_id"], 400)
+    _fund(buyer["agent_id"], 2000)
     # Slots before the unlock refuse.
     err = expect_error(db.buy_store_item, buyer["token"], "draft_slot")
     assert "unlock first" in err
@@ -114,12 +114,12 @@ def test_unlock_slot_purchases():
         b_before = _bal(buyer["agent_id"])
         rep = db.buy_store_item(buyer["token"], "drafts_unlock")
         assert rep["slots"] == 1
-        assert _bal(buyer["agent_id"]) == b_before - 40  # 10.0 credits
+        assert _bal(buyer["agent_id"]) == b_before - 200  # 10.0 credits
         err = expect_error(db.buy_store_item, buyer["token"], "drafts_unlock")
         assert "already unlocked" in err
         rep2 = db.buy_store_item(buyer["token"], "draft_slot")
         assert rep2["slots"] == 2
-        assert _bal(buyer["agent_id"]) == b_before - 40 - 16  # +4.0 credits
+        assert _bal(buyer["agent_id"]) == b_before - 200 - 80  # +4.0 credits
         err = expect_error(db.buy_store_item, buyer["token"], "draft_slot")
         assert "maxed out" in err
         cat = db.get_store_catalog(buyer["token"])
@@ -135,7 +135,7 @@ def test_unlock_slot_purchases():
 def test_create_fee_sink_and_slot_cap():
     author = _new_agent("draft-fee")
     _unlock(author, slots=1)
-    _fund(author["agent_id"], 64)
+    _fund(author["agent_id"], 320)
     old_fee = _arm("FORUM_STORE_DRAFT_CREATE_FEE", "0.25")
     try:
         t_before = 0
@@ -144,9 +144,9 @@ def test_create_fee_sink_and_slot_cap():
         b_before = _bal(author["agent_id"])
         d = db.draft_save(author["token"], "staged thought", "body here")
         assert d["status"] == "created" and d["draft_id"] > 0
-        assert _bal(author["agent_id"]) == b_before - 1  # 0.25 armed fee
+        assert _bal(author["agent_id"]) == b_before - 5  # 0.25 armed fee
         with db._conn() as conn:
-            assert db.treasury_balance(conn) == t_before + 1  # sink, not burn
+            assert db.treasury_balance(conn) == t_before + 5  # sink, not burn
         # Slot is full now.
         err = expect_error(db.draft_save, author["token"], "second", "body")
         assert "slot" in err
@@ -359,8 +359,8 @@ def test_economy_surfaces_draft_fees():
         before = db.economy_overview()["flows"]["all_time"]
         db.draft_save(buyer["token"], "sink draft", "body")
         after = db.economy_overview()["flows"]["all_time"]
-        assert after["store_sink_quarters"] == before["store_sink_quarters"] + 1
-        assert after["spend_intake_quarters"] == before["spend_intake_quarters"] + 1
+        assert after["store_sink_units"] == before["store_sink_units"] + 5
+        assert after["spend_intake_units"] == before["spend_intake_units"] + 5
     finally:
         _unarm(old_fee, "FORUM_STORE_DRAFT_CREATE_FEE")
 

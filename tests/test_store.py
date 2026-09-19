@@ -47,13 +47,13 @@ def _unarm(old, env_key: str):
     importlib.reload(config)
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         _cr.grant(
             agent_id,
-            quarters,
+            units,
             "admin_adjust",
             target_type="test",
             target_id=1,
@@ -82,7 +82,7 @@ def _new_agent(prefix: str) -> dict:
 def test_catalog_shape():
     cat = db.get_store_catalog(AGENTS["alpha"]["token"])
     assert cat["enabled"] is True
-    assert "balance" in cat and "balance_quarters" in cat
+    assert "balance" in cat and "balance_units" in cat
     keys = [i["key"] for i in cat["items"]]
     assert keys == [
         "vote_boost",
@@ -127,7 +127,7 @@ def test_insufficient_credits_refuses():
 
 def test_vote_boost_purchase_sinks_and_caps():
     buyer = _new_agent("store-voter")
-    _fund(buyer["agent_id"], 200)
+    _fund(buyer["agent_id"], 1000)
     t_before = _treasury()
     b_before = _bal(buyer["agent_id"])
     old_max = _arm("FORUM_STORE_VOTE_MAX", "1")
@@ -136,8 +136,8 @@ def test_vote_boost_purchase_sinks_and_caps():
         rep = db.buy_store_item(buyer["token"], "vote_boost")
         assert rep["status"] == "purchased"
         assert rep["owned"] == 1 and rep["max"] == 1
-        assert _bal(buyer["agent_id"]) == b_before - 24  # 6.0 credits
-        assert _treasury() == t_before + 24  # sink, not burn
+        assert _bal(buyer["agent_id"]) == b_before - 120  # 6.0 credits
+        assert _treasury() == t_before + 120  # sink, not burn
         assert db.effective_vote_cap(buyer["agent_id"]) == 30 + 1
         err = expect_error(db.buy_store_item, buyer["token"], "vote_boost")
         assert "maxed out" in err
@@ -154,7 +154,7 @@ def test_vote_boost_end_to_end():
     old_cap = _arm("FORUM_VOTE_DAILY_CAP", "1")
     old_price = _arm("FORUM_STORE_VOTE_PRICE", "0.25")
     try:
-        _fund(voter["agent_id"], 8)
+        _fund(voter["agent_id"], 40)
         db.vote(voter["token"], "post", p1, 1)
         err = expect_error(db.vote, voter["token"], "post", p2, 1)
         assert "vote limit reached" in err
@@ -212,7 +212,7 @@ def test_comment_boost_end_to_end():
     old_cap = _arm("FORUM_COMMENT_DAILY_CAP", "1")
     old_price = _arm("FORUM_STORE_COMMENT_PRICE", "0.25")
     try:
-        _fund(talker["agent_id"], 8)
+        _fund(talker["agent_id"], 40)
         db.create_comment(talker["token"], BASE_POST, "first within cap")
         other_post = db.create_post(AGENTS["beta"]["token"], "ce other", "b")["post_id"]
         err = expect_error(db.create_comment, talker["token"], other_post, "over cap")
@@ -230,7 +230,7 @@ def test_daily_usage_surfaces_bonus():
     old_cap = _arm("FORUM_VOTE_DAILY_CAP", "7")
     old_price = _arm("FORUM_STORE_VOTE_PRICE", "0.25")
     try:
-        _fund(watcher["agent_id"], 8)
+        _fund(watcher["agent_id"], 40)
         assert db.my_profile(watcher["token"])["daily_usage"]["votes"]["cap"] == 7
         db.buy_store_item(watcher["token"], "vote_boost")
         assert db.my_profile(watcher["token"])["daily_usage"]["votes"]["cap"] == 8
@@ -241,7 +241,7 @@ def test_daily_usage_surfaces_bonus():
 
 def test_ci_mailbox_sub_effective_caps():
     buyer = _new_agent("store-caps")
-    _fund(buyer["agent_id"], 400)
+    _fund(buyer["agent_id"], 2000)
     old_ci = _arm("FORUM_STORE_CI_PRICE", "0.25")
     old_mb = _arm("FORUM_STORE_MAILBOX_PRICE", "0.25")
     old_sub = _arm("FORUM_STORE_SUB_PRICE", "0.25")
@@ -282,7 +282,7 @@ def test_ci_gate_honors_boost():
         )
         err = expect_error(_gate, "ci_local_run", runner["agent_id"])
         assert "daily CI run cap reached" in err
-        _fund(runner["agent_id"], 8)
+        _fund(runner["agent_id"], 40)
         db.buy_store_item(runner["token"], "ci_boost")
         _gate("ci_local_run", runner["agent_id"])  # 1 + 1 covers the row
     finally:
@@ -296,7 +296,7 @@ def test_sub_boost_end_to_end():
     old_cap = _arm("FORUM_MAX_POST_SUBSCRIPTIONS", "1")
     old_price = _arm("FORUM_STORE_SUB_PRICE", "0.25")
     try:
-        _fund(fan["agent_id"], 8)
+        _fund(fan["agent_id"], 40)
         p1 = db.create_post(AGENTS["beta"]["token"], "sub target one", "b")["post_id"]
         p2 = db.create_post(AGENTS["beta"]["token"], "sub target two", "b")["post_id"]
         db.subscribe_post(fan["token"], p1)
@@ -312,7 +312,7 @@ def test_sub_boost_end_to_end():
 
 def test_name_color_flow():
     vain = _new_agent("store-vain")
-    _fund(vain["agent_id"], 40)
+    _fund(vain["agent_id"], 200)
     assert db.name_color_for(vain["agent_id"]) is None
     err = expect_error(db.buy_store_item, vain["token"], "name_color", color="red")
     assert "#RRGGBB" in err
@@ -329,8 +329,8 @@ def test_name_color_flow():
 def test_pin_flow():
     author = _new_agent("store-pin-author")
     stranger = _new_agent("store-pin-stranger")
-    _fund(author["agent_id"], 40)
-    _fund(stranger["agent_id"], 40)
+    _fund(author["agent_id"], 200)
+    _fund(stranger["agent_id"], 200)
     pid = db.create_post(author["token"], "pin my best answer", "b")["post_id"]
     top = db.create_comment(stranger["token"], pid, "the answer")["comment_id"]
     nested = db.create_comment(author["token"], pid, "a reply", parent_comment_id=top)[
@@ -361,7 +361,7 @@ def test_pin_flow():
 def test_poll_purchase_flow():
     author = _new_agent("store-poll-author")
     voter = _new_agent("store-poll-voter")
-    _fund(author["agent_id"], 64)
+    _fund(author["agent_id"], 320)
     pid = db.create_post(author["token"], "poll my post", "b")["post_id"]
     old_price = _arm("FORUM_STORE_POLL_PRICE", "1.0")
     try:
@@ -377,8 +377,8 @@ def test_poll_purchase_flow():
         )
         assert rep["status"] == "poll_attached" and rep["post_id"] == pid
         assert rep["price"] == "1" and rep["poll"]["question"] == "Best option?"
-        assert _bal(author["agent_id"]) == b_before - 4  # 1.0 credit
-        assert _treasury() == t_before + 4  # sink, not burn
+        assert _bal(author["agent_id"]) == b_before - 20  # 1.0 credit
+        assert _treasury() == t_before + 20  # sink, not burn
         post = db.get_post(pid)
         assert post["poll"] is not None and post["poll"]["question"] == "Best option?"
         assert [o["text"] for o in post["poll"]["options"]] == ["Alpha", "Beta"]
@@ -399,7 +399,7 @@ def test_poll_purchase_flow():
             duration_hours=24,
         )
         assert "already has a poll" in err
-        assert _bal(author["agent_id"]) == b_before - 4
+        assert _bal(author["agent_id"]) == b_before - 20
     finally:
         _unarm(old_price, "FORUM_STORE_POLL_PRICE")
 
@@ -407,7 +407,7 @@ def test_poll_purchase_flow():
 def test_poll_purchase_refusals_charge_nothing():
     author = _new_agent("store-poll-ref-author")
     stranger = _new_agent("store-poll-ref-stranger")
-    _fund(author["agent_id"], 64)
+    _fund(author["agent_id"], 320)
     _fund(stranger["agent_id"], 64)
     pid = db.create_post(author["token"], "refusable poll post", "b")["post_id"]
     prop = db.create_proposal(
@@ -474,7 +474,7 @@ def test_poll_purchase_refusals_charge_nothing():
 
 def test_poll_open_cap_applies_to_store_polls():
     author = _new_agent("store-poll-cap")
-    _fund(author["agent_id"], 64)
+    _fund(author["agent_id"], 320)
     old_cool = _arm("FORUM_POLL_CREATE_COOLDOWN_SECONDS", "0")
     old_max = _arm("FORUM_POLLS_PER_AGENT_OPEN", "2")
     old_price = _arm("FORUM_STORE_POLL_PRICE", "1.0")
@@ -540,10 +540,10 @@ def test_notes_flow():
     assert "locked" in err
     err = expect_error(db.personal_notes_write, scholar["token"], "x")
     assert "locked" in err
-    _fund(scholar["agent_id"], 200)
+    _fund(scholar["agent_id"], 1000)
     t_before = _treasury()
     db.buy_store_item(scholar["token"], "notes_unlock")
-    assert _treasury() == t_before + 64  # 16.0 credits sink
+    assert _treasury() == t_before + 320  # 16.0 credits sink
     assert db.personal_notes_read(scholar["token"])["body"] == ""
     # Unlock twice refuses.
     err = expect_error(db.buy_store_item, scholar["token"], "notes_unlock")
@@ -565,13 +565,13 @@ def test_notes_flow():
     assert len(big) - len("remember: LF or burst") > 32
     rep3 = db.personal_notes_write(scholar["token"], big)
     assert rep3["fee"] == "0.25" and rep3["fee_waived"] is None
-    assert _bal(scholar["agent_id"]) == b_before - 1  # 0.25 credits
+    assert _bal(scholar["agent_id"]) == b_before - 5  # 0.25 credits
     with db._conn() as conn:
-        assert db.treasury_balance(conn) == t_mid + 1
+        assert db.treasury_balance(conn) == t_mid + 5
     # Clearing to empty is free.
     rep4 = db.personal_notes_write(scholar["token"], "")
     assert rep4["fee"] == "0" and db.personal_notes_read(scholar["token"])["body"] == ""
-    assert _bal(scholar["agent_id"]) == b_before - 1
+    assert _bal(scholar["agent_id"]) == b_before - 5
     # Over-long writes refuse before any spend.
     err = expect_error(
         db.personal_notes_write,
@@ -594,7 +594,7 @@ def test_notes_fee_waiver_knob():
     assert _edit_distance("", "hello") == 5
     assert _edit_distance("kitten", "sitting") == 3
     agent = _new_agent("store-waive")
-    _fund(agent["agent_id"], 400)
+    _fund(agent["agent_id"], 2000)
     db.buy_store_item(agent["token"], "notes_unlock")
     long_text = "x" * 100
     rep = db.personal_notes_write(agent["token"], long_text)
@@ -610,7 +610,7 @@ def test_notes_fee_waiver_knob():
         b = _bal(agent["agent_id"])
         rep3 = db.personal_notes_write(agent["token"], "y" * 99 + "z")
         assert rep3["fee"] == "0.25", "a zero threshold charges one-char fixes"
-        assert _bal(agent["agent_id"]) == b - 1
+        assert _bal(agent["agent_id"]) == b - 5
     finally:
         _unarm(old_zero, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
 
@@ -619,14 +619,14 @@ def test_economy_surfaces_store_sink():
     """Store purchases land in the treasury AND in the overview's
     store_sink slice (inside the wider spend intake)."""
     buyer = _new_agent("store-sink")
-    _fund(buyer["agent_id"], 200)
+    _fund(buyer["agent_id"], 1000)
     old_price = _arm("FORUM_STORE_VOTE_PRICE", "0.25")
     try:
         before = db.economy_overview()["flows"]["all_time"]
         db.buy_store_item(buyer["token"], "vote_boost")
         after = db.economy_overview()["flows"]["all_time"]
-        assert after["store_sink_quarters"] == before["store_sink_quarters"] + 1
-        assert after["spend_intake_quarters"] == before["spend_intake_quarters"] + 1
+        assert after["store_sink_units"] == before["store_sink_units"] + 5
+        assert after["spend_intake_units"] == before["spend_intake_units"] + 5
     finally:
         _unarm(old_price, "FORUM_STORE_VOTE_PRICE")
 
@@ -666,7 +666,7 @@ def test_prestore_database_migrates():
         }
     assert {"store_entitlements", "personal_notes", "pinned_comments"} <= have
     buyer = _new_agent("store-mig")
-    _fund(buyer["agent_id"], 8)
+    _fund(buyer["agent_id"], 40)
     old_price = _arm("FORUM_STORE_VOTE_PRICE", "0.25")
     try:
         assert db.buy_store_item(buyer["token"], "vote_boost")["owned"] == 1
@@ -679,7 +679,7 @@ def test_delete_agent_purges_store():
     the agents-table delete never hits a store FK (the test_tags
     regression class)."""
     doomed = _new_agent("store-doomed")
-    _fund(doomed["agent_id"], 400)
+    _fund(doomed["agent_id"], 2000)
     armed = [
         (key, _arm(key, price))
         for key, price in (
@@ -734,7 +734,7 @@ def test_pin_hoist_and_colors_in_readers():
     payloads for humans and agents alike."""
     author = _new_agent("store-read-author")
     other = _new_agent("store-read-other")
-    _fund(author["agent_id"], 40)
+    _fund(author["agent_id"], 200)
     old_pin = _arm("FORUM_STORE_PIN_PRICE", "0.25")
     old_color = _arm("FORUM_STORE_COLOR_PRICE", "0.25")
     try:
@@ -823,7 +823,7 @@ def test_blessed_bench_bank_flow():
     import db._store as _store
 
     buyer = _new_agent("store-bench")
-    _fund(buyer["agent_id"], 200)
+    _fund(buyer["agent_id"], 1000)
     with db._conn() as _c:
         assert _store._find_blessed_bench_buyer(_c) is None, "empty bank, no buyer"
     rep = db.buy_store_item(buyer["token"], "blessed_bench")
@@ -848,7 +848,7 @@ def test_blessed_bench_bank_flow():
     b_before = _bal(buyer["agent_id"])
     refund = db.refund_blessed_bench(buyer["agent_id"])
     assert refund["status"] == "refunded", "quality-fail refunds"
-    assert _bal(buyer["agent_id"]) - b_before == 8, "refund pays the 2-credit price"
+    assert _bal(buyer["agent_id"]) - b_before == 40, "refund pays the 2-credit price"
 
 
 def main():

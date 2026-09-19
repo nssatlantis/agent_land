@@ -35,22 +35,22 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     from db._credits import grant as _grant
 
     with db._conn() as conn:
-        _grant(agent_id, quarters, "test_seed", conn=conn)
+        _grant(agent_id, units, "test_seed", conn=conn)
 
 
 def _found() -> tuple[dict, dict]:
     ag = _new_agent("gx-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], f"Leftover-{_SEQ[0]}")
 
 
 def _mate(founder: dict, guild: dict, deposit: float = 10.0) -> dict:
     mate = _new_agent("gx-mate")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     if deposit:
@@ -71,26 +71,26 @@ def test_member_net_counts_deposits_only():
     # must NOT weight shares (item 5002).
     db.request_guild_subsidy(founder["token"], guild["id"], 1.0, False, "small")
     with db._conn() as conn:
-        assert db.member_net(conn, guild["id"], founder["agent_id"]) == 100, (
+        assert db.member_net(conn, guild["id"], founder["agent_id"]) == 500, (
             "subsidy inflated the founder net"
         )
-        assert db.member_net(conn, guild["id"], mate["agent_id"]) == 40
+        assert db.member_net(conn, guild["id"], mate["agent_id"]) == 200
 
 
 def test_taken_wage_does_not_weight_shares():
     founder, guild = _found()
     mate = _mate(founder, guild, 10.0)
     outer = _new_agent("gx-outer")
-    _fund(outer["agent_id"], 120)
+    _fund(outer["agent_id"], 600)
     job = db.create_job(outer["token"], "Outer task", "do it", 4.0, ["go"])
     db.claim_job(mate["token"], job["job_id"], guild_id=guild["id"])
     for step in db.get_job(job["job_id"])["steps"]:
         db.tick_job_step(mate["token"], job["job_id"], step["id"], True)
     db.submit_job(mate["token"], job["job_id"], "done")
     db.review_job(outer["token"], job["job_id"], "accept", "")
-    # Wage (16q) went poolward with the executor as memo actor: the net
+    # Wage (80u) went poolward with the executor as memo actor: the net
     # stays deposit-only.
-    assert _net(guild["id"], mate["agent_id"]) == 40
+    assert _net(guild["id"], mate["agent_id"]) == 200
 
 
 def test_disband_frees_name():
@@ -105,7 +105,7 @@ def test_disband_frees_name():
     # A fresh founder (no re-found cooldown of their own) takes the
     # freed name immediately.
     ag = _new_agent("gx-re")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     g2 = db.found_guild(ag["token"], name)
     assert g2["name"] == name
 
@@ -115,7 +115,7 @@ def test_grace_parks_appoints_and_lapses():
     mate = _mate(founder, guild, 10.0)
     heir = _mate(founder, guild, 0)
     outer = _new_agent("gx-outer2")
-    _fund(outer["agent_id"], 120)
+    _fund(outer["agent_id"], 600)
     job = db.create_job(outer["token"], "Outer task 2", "do it", 4.0, ["go"])
     db.claim_job(mate["token"], job["job_id"], guild_id=guild["id"])
     # Leave parks in grace: the link lives, pool keeps its claim.
@@ -183,7 +183,7 @@ def _empty_with_link() -> tuple[dict, dict]:
     founder, guild = _found()
     mate = _mate(founder, guild, 10.0)
     outer = _new_agent("gx-outer3")
-    _fund(outer["agent_id"], 120)
+    _fund(outer["agent_id"], 600)
     job = db.create_job(outer["token"], "Outer task 3", "do it", 4.0, ["go"])
     db.claim_job(mate["token"], job["job_id"], guild_id=guild["id"])
     with db._conn() as conn:

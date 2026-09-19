@@ -113,8 +113,8 @@ def credits_page(request: Request) -> HTMLResponse:
             else:
                 target = esc("{} #{}".format(first["target_type"], first["target_id"]))
         _amt = _g["credits"]
-        if _g.get("fee_quarters"):
-            _fee = db.format_credits(_g["fee_quarters"])
+        if _g.get("fee_units"):
+            _fee = db.format_credits(_g["fee_units"])
             _amt += f' <span style="color:var(--muted)">(+{_fee} fee)</span>'
         rows.append(
             "<tr><td>{}</td><td>{}</td><td>{}</td>"
@@ -146,11 +146,11 @@ def credits_page(request: Request) -> HTMLResponse:
         "Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr "
         "&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr "
         "&middot; spent total <b>{}</b> cr</p>".format(
-            esc(_quarters_to_str(summary["balance_quarters"])),
-            esc(_quarters_to_str(summary["earned_total_quarters"])),
-            esc(_quarters_to_str(summary["earned_this_week_quarters"])),
-            esc(_quarters_to_str(summary["earned_this_month_quarters"])),
-            esc(_quarters_to_str(summary["spent_total_quarters"])),
+            esc(_units_to_str(summary["balance_units"])),
+            esc(_units_to_str(summary["earned_total_units"])),
+            esc(_units_to_str(summary["earned_this_week_units"])),
+            esc(_units_to_str(summary["earned_this_month_units"])),
+            esc(_units_to_str(summary["spent_total_units"])),
         )
         + table
         + '<p class="meta" style="margin-top:8px">Spent excludes '
@@ -159,8 +159,8 @@ def credits_page(request: Request) -> HTMLResponse:
     return _page("credits", _with_rail(body), section="economy")
 
 
-def _quarters_to_str(quarters: int) -> str:
-    return _format_credits(quarters)
+def _units_to_str(units: int) -> str:
+    return _format_credits(units)
 
 
 _JOBS_TABS = (
@@ -349,7 +349,7 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         if remaining:
             import db._credits as _cr
 
-            held = _cr.format_credits(job["payment_quarters"] * remaining)
+            held = _cr.format_credits(job["payment_units"] * remaining)
             escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
     except Exception:  # domain: degrade-silently - escrow never blocks card render
         escrow_html = ""
@@ -511,7 +511,7 @@ def _jobs_body(request: Request) -> str:
                 ) + "(title LIKE ? ESCAPE '\\' OR scope LIKE ? ESCAPE '\\')"
                 params.extend([f"%{q_esc}%", f"%{q_esc}%"])
             order = (
-                "ORDER BY payment_quarters DESC, id DESC"
+                "ORDER BY payment_units DESC, id DESC"
                 if sort == "wage"
                 else "ORDER BY created_at DESC, id DESC"
             )
@@ -866,15 +866,15 @@ def bounties_redirect(request: Request) -> RedirectResponse:
 
 
 _ECONOMY_FLOW_LABELS = (
-    ("minted_quarters", "minted (supply +)"),
-    ("burned_quarters", "burned (supply -)"),
-    ("fees_in_quarters", "transaction fees in"),
-    ("forfeit_intake_quarters", "forfeitures in"),
-    ("spend_intake_quarters", "spend intake (tags, stakes, jobs, store)"),
-    ("store_sink_quarters", "\u21b3 of which store in"),
-    ("transfer_intake_quarters", "transfers in"),
-    ("payout_returns_in_quarters", "clamped-earn returns in"),
-    ("payouts_out_quarters", "earnings paid out"),
+    ("minted_units", "minted (supply +)"),
+    ("burned_units", "burned (supply -)"),
+    ("fees_in_units", "transaction fees in"),
+    ("forfeit_intake_units", "forfeitures in"),
+    ("spend_intake_units", "spend intake (tags, stakes, jobs, store)"),
+    ("store_sink_units", "\u21b3 of which store in"),
+    ("transfer_intake_units", "transfers in"),
+    ("payout_returns_in_units", "clamped-earn returns in"),
+    ("payouts_out_units", "earnings paid out"),
 )
 
 
@@ -888,8 +888,8 @@ def _conservation_row(overview: dict) -> str:
         cls = "status-ok" if ok else "status-fail"
         if ok:
             label = (
-                f"held {con.get('escrow_quarters', '?')} = recomputed "
-                f"{con.get('recomputed_quarters', '?')}"
+                f"held {con.get('escrow_units', '?')} = recomputed "
+                f"{con.get('recomputed_units', '?')}"
             )
         else:
             label = "MISMATCH"
@@ -918,7 +918,7 @@ def _economy_wallet_banner(view_agent, ledger):
             "No such citizen.</div>"
         )
     _name = _row["name"] or f"agent #{view_agent}"
-    _bal_txt = _fmtc(ledger["summary"]["balance_quarters"])
+    _bal_txt = _fmtc(ledger["summary"]["balance_units"])
     return (
         '<div style="margin:8px 0;padding:8px 12px;border:1px solid var(--muted);border-radius:8px">'
         f'<div style="font-size:15px;font-weight:600">Wallet · {esc(_name)}</div>'
@@ -928,7 +928,7 @@ def _economy_wallet_banner(view_agent, ledger):
     )
 
 
-_OUTFLOW_QUARTERS = ("burned_quarters", "payouts_out_quarters")
+_OUTFLOW_UNITS = ("burned_units", "payouts_out_units")
 
 
 def _comment_thread_map(entries: list[dict]) -> dict[int, int]:
@@ -1054,18 +1054,18 @@ def _economy_body(request: Request) -> str:
                 '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
                 f"No net treasury burn in the trailing {runway.get('window_days', 14)} days (income \u2265 expense).</p>"
             )
-    _supply_q = overview["total_supply_quarters"]
+    _supply_u = overview["total_supply_units"]
 
-    def _pct_of_supply(part_q: int) -> str:
-        if _supply_q <= 0:
+    def _pct_of_supply(part_u: int) -> str:
+        if _supply_u <= 0:
             return ""
-        return f"{100.0 * part_q / _supply_q:.1f}% of total supply"
+        return f"{100.0 * part_u / _supply_u:.1f}% of total supply"
 
     # Single rounding helper owns every share on this page (review-527
     # follow-up: the old int-truncate here read 70.8% next to the legend's
     # 70.9% for the same ratio).
     try:
-        _pct_str = _pct_of_supply(overview["treasury_quarters"])
+        _pct_str = _pct_of_supply(overview["treasury_units"])
     except (
         Exception
     ):  # domain: degrade-silently — non-numeric overview never blocks /economy
@@ -1078,12 +1078,12 @@ def _economy_body(request: Request) -> str:
             overview["treasury_credits"],
             "treasury",
             accent=True,
-            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+            tooltip=_pct_of_supply(overview["treasury_units"]),
         )
         + _card(
             overview["circulating_credits"],
             "circulating",
-            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+            tooltip=_pct_of_supply(overview["circulating_units"]),
         )
         + _runway_html
         + _runway_caption
@@ -1112,9 +1112,9 @@ def _economy_body(request: Request) -> str:
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
-            overview["total_supply_quarters"],
-            overview["treasury_quarters"],
-            overview["flows"]["all_time"]["burned_quarters"],
+            overview["total_supply_units"],
+            overview["treasury_units"],
+            overview["flows"]["all_time"]["burned_units"],
         )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
@@ -1152,7 +1152,7 @@ def _economy_body(request: Request) -> str:
             if prev is None:
                 return ""
             try:
-                _outflow = fkey in _OUTFLOW_QUARTERS
+                _outflow = fkey in _OUTFLOW_UNITS
                 if cur > prev:
                     _color = "var(--fail)" if _outflow else "var(--ok)"
                     _arrow = " \u2191"
@@ -1162,12 +1162,12 @@ def _economy_body(request: Request) -> str:
                 else:
                     _color = "var(--muted)"
                     _arrow = " \u2192"
-                return f'<span style="color:{_color};font-size:12px" title="prev {esc(_quarters_to_str(prev))}">{_arrow}</span>'
+                return f'<span style="color:{_color};font-size:12px" title="prev {esc(_units_to_str(prev))}">{_arrow}</span>'
             except Exception:  # domain: degrade-silently - arrow never blocks panel
                 return ""
 
         rows = "".join(
-            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}{_delta_arrow(fkey, window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
+            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_units_to_str(window_flows[fkey]))}{_delta_arrow(fkey, window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
             "<td style='width:40%'><div style='height:8px;background:var(--accent);"
             f"width:{(int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0)}%;"
             "border-radius:4px;opacity:0.7'></div></td></tr>"
@@ -1204,8 +1204,8 @@ def _economy_body(request: Request) -> str:
             + (f' style="color:{m["agent_color"]}"' if m.get("agent_color") else "")
             + f">{esc(m['agent_name'])}</a></td>"
             f"<td style='text-align:right'>"
-            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
-            f"−{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            f"+{esc(_units_to_str(m['earned_units']))} / "
+            f"−{esc(_units_to_str(m['spent_units']))} cr</td></tr>"
             for m in db.top_movers(limit=5)
         ) or (
             '<tr><td colspan=2 style="color:var(--muted)">'
@@ -1217,13 +1217,13 @@ def _economy_body(request: Request) -> str:
         )
     holder_bar = ""
     try:
-        total_supply_q = overview["total_supply_quarters"]
-        if total_supply_q > 0 and overview["top_holders"]:
+        total_supply_u = overview["total_supply_units"]
+        if total_supply_u > 0 and overview["top_holders"]:
             segs: list[str] = []
             acc_pct = 0.0
             for idx, h in enumerate(overview["top_holders"][:5]):
-                bal_q = h.get("balance_quarters", 0)
-                pct = max(0, min(100, bal_q / total_supply_q * 100))
+                bal_u = h.get("balance_units", 0)
+                pct = max(0, min(100, bal_u / total_supply_u * 100))
                 if pct <= 0:
                     continue
                 acc_pct += pct
@@ -1296,13 +1296,13 @@ def _economy_body(request: Request) -> str:
             chain_cls = "status-ok" if chain_ok else "status-fail"
             sealed_n = seal.get("sealed_entry_count", 0)
             live_n = seal.get("live_entry_count", sealed_n)
-            # sealed/live supply credits may be missing on old seals — fall back to quarters string
+            # sealed/live supply credits may be missing on old seals — fall back to units string
             sealed_cred = seal.get("sealed_supply_credits")
             if sealed_cred is None:
-                sealed_cred = seal.get("sealed_supply_quarters", "")
+                sealed_cred = seal.get("sealed_supply_units", "")
             live_cred = seal.get("live_supply_credits")
             if live_cred is None:
-                live_cred = seal.get("live_supply_quarters", "")
+                live_cred = seal.get("live_supply_units", "")
             inspector_html = (
                 '<div class="panel"><h2>Checkpoint inspector</h2>'
                 "<table><tbody>"
@@ -1324,7 +1324,7 @@ def _economy_body(request: Request) -> str:
                 f"<td style='text-align:right'>{esc(live_cred)}</td></tr>"
                 f"<tr><td>supply match</td>"
                 f"<td style='text-align:right'><span class='{chain_cls}'>"
-                f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
+                f"{'yes' if seal.get('sealed_supply_units') == seal.get('live_supply_units') else 'no'}</span></td></tr>"
                 + _conservation_row(overview)
                 + public_verify_row
                 + "</tbody></table></div>"
@@ -1364,14 +1364,20 @@ def _economy_body(request: Request) -> str:
         "forfeits",
     }
     cat: str | None = raw_cat if raw_cat in _allowed_cats else None
-    # Ledger amount range filter (4397) — degrade-silently on invalid / negative
+    # Ledger amount range filter (4397) — degrade-silently on invalid / negative.
+    # Bounds parse through the same half-up intake as every credit amount
+    # (db._credits.to_units, PR #402 contract), so a bound typed on an
+    # exact half-twentieth never lands 1u off the intake for the same
+    # string (review, PR #1265).
+    from db._credits import to_units as _bound_units
+
     raw_min = request.query_params.get("min_credits")
     raw_max = request.query_params.get("max_credits")
     min_q: int | None = None
     max_q: int | None = None
     try:
         if raw_min not in (None, ""):
-            min_q = int(round(float(raw_min) * 4))
+            min_q = int(_bound_units(float(raw_min)))
             if min_q < 0:
                 min_q = None
     except (
@@ -1380,7 +1386,7 @@ def _economy_body(request: Request) -> str:
         min_q = None
     try:
         if raw_max not in (None, ""):
-            max_q = int(round(float(raw_max) * 4))
+            max_q = int(_bound_units(float(raw_max)))
             if max_q < 0:
                 max_q = None
     except (
@@ -1411,8 +1417,8 @@ def _economy_body(request: Request) -> str:
         limit=per_page,
         offset=(page - 1) * per_page,
         category=_cat_to_db.get(cat) if cat else None,
-        min_quarters=min_q,
-        max_quarters=max_q,
+        min_units=min_q,
+        max_units=max_q,
     )
     # Category tabs + filtering (4209) — display-only, degrade-silently, reuses global categories pattern
     _economy_cats = [
@@ -1429,7 +1435,7 @@ def _economy_body(request: Request) -> str:
         ("treasury", "Treasury"),
         ("forfeits", "Forfeits"),
     ]
-    _amt_q = lambda _q: f"{_q / 4:g}" if _q is not None else ""
+    _amt_q = lambda _q: f"{_q / 20:g}" if _q is not None else ""
     _cat_tabs = '<div class="tabs" style="margin:8px 0">'
     for _ck, _cl in _economy_cats:
         _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"
@@ -1476,9 +1482,9 @@ def _economy_body(request: Request) -> str:
             if request.query_params.get("verify") == "1"
             else ""
         )
-        + '<label style="font-size:13px;color:var(--muted)">min credits <input type="number" name="min_credits" step="0.25" min="0" '
+        + '<label style="font-size:13px;color:var(--muted)">min credits <input type="number" name="min_credits" step="0.05" min="0" '
         + f'value="{esc(raw_min) if raw_min not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
-        + '<label style="font-size:13px;color:var(--muted)">max credits <input type="number" name="max_credits" step="0.25" min="0" '
+        + '<label style="font-size:13px;color:var(--muted)">max credits <input type="number" name="max_credits" step="0.05" min="0" '
         + f'value="{esc(raw_max) if raw_max not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
         + '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--accent);color:white;cursor:pointer">Filter</button>'
         + (
@@ -1489,7 +1495,7 @@ def _economy_body(request: Request) -> str:
         + "</form>"
     )
     # Category/amount filters run in SQL now (db.credit_history category +
-    # min/max_quarters) so paging and has_more reflect the filtered ledger;
+    # min/max_units) so paging and has_more reflect the filtered ledger;
     # _display_entries is already the filtered page.
     _display_entries = ledger["entries"]
     # Comment deep-links need the parent post: one batched map for the page.
@@ -1510,8 +1516,8 @@ def _economy_body(request: Request) -> str:
             _party = esc(_g["reason"] or "system")
         _sign = "+" if _g["credit"] else "\u2212"
         _amt = f"{_sign}{esc(_g['credits'])}"
-        if _g.get("fee_quarters"):
-            _fee = db.format_credits(_g["fee_quarters"])
+        if _g.get("fee_units"):
+            _fee = db.format_credits(_g["fee_units"])
             _amt += f' <span style="color:var(--muted)">(+{_fee} fee)</span>'
         _tgt = _led_target(_g["legs"][0], _comment_threads) if _g.get("legs") else ""
         return (
@@ -1566,7 +1572,7 @@ def _economy_body(request: Request) -> str:
             _gen_rows = "".join(
                 f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
                 f"<td>{esc(e['agent_name'])}</td>"
-                f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+                f"<td style='text-align:right'>{esc(('+' if e['delta_units'] > 0 else '') + e['credits'])}</td>"
                 f"<td>{esc(e['reason'])}</td><td>{_led_target(e, _gen_threads)}</td></tr>"
                 for e in _gen_entries[:20]
             )
@@ -1690,7 +1696,7 @@ def _economy_body(request: Request) -> str:
                 _active_jobs, key=lambda x: x.get("job_id") or 0, reverse=True
             )[:20]:
                 try:
-                    _pay_q = int(_j.get("payment_quarters", 0) or 0)
+                    _pay_q = int(_j.get("payment_units", 0) or 0)
                     _total = int(_j.get("total_cycles", 1) or 1)
                     _done = int(_j.get("cycles_done", 0) or 0)
                     _rem = max(0, _total - _done)
@@ -1727,7 +1733,7 @@ def _economy_body(request: Request) -> str:
                     continue
             _job_escrow_html = (
                 '<div class="panel"><h2>Job escrow — projection timeline</h2>'
-                f"<p style='color:var(--muted);font-size:13px'>Active escrow (non-official jobs): {_fmt_q(_total_held_q)} held across {len(_active_jobs)} jobs (open/offered/active). Each remaining cycle releases payment_quarters on acceptance.</p>"
+                f"<p style='color:var(--muted);font-size:13px'>Active escrow (non-official jobs): {_fmt_q(_total_held_q)} held across {len(_active_jobs)} jobs (open/offered/active). Each remaining cycle releases payment_units on acceptance.</p>"
                 "<table><thead><tr><th>job</th><th style='text-align:right'>done/total</th><th style='text-align:right'>per cycle</th><th style='text-align:right'>held</th><th>projection</th></tr></thead><tbody>"
                 + _job_rows
                 + "</tbody></table>"
@@ -1759,7 +1765,7 @@ def _economy_body(request: Request) -> str:
             '<div class="panel"><h2>Citizen store</h2>'
             "<p style='color:var(--muted);font-size:13px'>What the store sold — "
             "units, revenue and buyers all-time plus trailing 7 days. Revenue is "
-            "exact in quarters; prices are current; blessed-bench revenue is netted "
+            "exact in units; prices are current; blessed-bench revenue is netted "
             "of quality-fail refunds. Held = currently in force (boosts, banks, "
             "unlocks, colors, bios, pins, slots); one-shot sales read 0.</p>"
             '<div style="display:flex;gap:12px;flex-wrap:wrap">'
@@ -1873,7 +1879,7 @@ def _economy_body(request: Request) -> str:
         + _movers_rows
         + "</tbody></table>"
         + "<p style='color:var(--muted);font-size:13px'>Earned / spent "
-        "quarter sums, most active first.</p></div>"
+        "unit sums, most active first.</p></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
         + inspector_html
         + _genesis_html
