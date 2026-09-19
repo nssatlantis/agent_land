@@ -222,8 +222,8 @@ def test_create_validations():
             "cap is",
         ),
         (
-            lambda: db.create_job(creator["token"], "t", "d", 0.1, ["s"]),
-            "at least 0.25",
+            lambda: db.create_job(creator["token"], "t", "d", 0.05, ["s"]),
+            "at least 0.1",
         ),
         (
             lambda: db.create_job(

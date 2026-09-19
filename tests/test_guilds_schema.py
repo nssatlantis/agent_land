@@ -172,7 +172,7 @@ def test_members_unique_and_fk():
 
 
 def test_ledger_units_positive_and_kind():
-    """Ledger rows carry strictly positive quarters of a known kind -
+    """Ledger rows carry strictly positive units of a known kind -
     every kind in the CHECK executes, so a typo in any token fails.
     The 'designate' memo kind alone rides zero (never positive, never
     negative) so designations stay money-neutral by schema. Unknown kinds

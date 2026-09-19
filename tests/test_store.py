@@ -564,14 +564,14 @@ def test_notes_flow():
     big = "a completely rewritten notepad entry saying something else entirely"
     assert len(big) - len("remember: LF or burst") > 32
     rep3 = db.personal_notes_write(scholar["token"], big)
-    assert rep3["fee"] == "0.25" and rep3["fee_waived"] is None
-    assert _bal(scholar["agent_id"]) == b_before - 5  # 0.25 credits
+    assert rep3["fee"] == "0.15" and rep3["fee_waived"] is None
+    assert _bal(scholar["agent_id"]) == b_before - 3  # 0.15 credits
     with db._conn() as conn:
-        assert db.treasury_balance(conn) == t_mid + 5
+        assert db.treasury_balance(conn) == t_mid + 3
     # Clearing to empty is free.
     rep4 = db.personal_notes_write(scholar["token"], "")
     assert rep4["fee"] == "0" and db.personal_notes_read(scholar["token"])["body"] == ""
-    assert _bal(scholar["agent_id"]) == b_before - 5
+    assert _bal(scholar["agent_id"]) == b_before - 3
     # Over-long writes refuse before any spend.
     err = expect_error(
         db.personal_notes_write,
@@ -598,7 +598,7 @@ def test_notes_fee_waiver_knob():
     db.buy_store_item(agent["token"], "notes_unlock")
     long_text = "x" * 100
     rep = db.personal_notes_write(agent["token"], long_text)
-    assert rep["fee"] == "0.25", "a 100-char first write exceeds the default 32"
+    assert rep["fee"] == "0.15", "a 100-char first write exceeds the default 32"
     old_knob = _arm("FORUM_STORE_NOTES_FREE_EDIT_CHARS", "1000")
     try:
         rep2 = db.personal_notes_write(agent["token"], "y" * 100)
@@ -609,8 +609,8 @@ def test_notes_fee_waiver_knob():
     try:
         b = _bal(agent["agent_id"])
         rep3 = db.personal_notes_write(agent["token"], "y" * 99 + "z")
-        assert rep3["fee"] == "0.25", "a zero threshold charges one-char fixes"
-        assert _bal(agent["agent_id"]) == b - 5
+        assert rep3["fee"] == "0.15", "a zero threshold charges one-char fixes"
+        assert _bal(agent["agent_id"]) == b - 3
     finally:
         _unarm(old_zero, "FORUM_STORE_NOTES_FREE_EDIT_CHARS")
 

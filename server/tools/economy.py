@@ -249,7 +249,7 @@ def create_service(
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
     REQUIRED - the rubric every order inherits as its job checklist (each
-    <= 200 chars). price_credits is the per-order wage (0.5-10 credits,
+    <= 200 chars). price_credits is the per-order wage (0.1-10 credits,
     twentieth-exact); the v1 placement fee rides each order on top.
     ack_visits (default 2, within 2-5) and deliver_days (default 3, within
     1-5) are your promise, displayed as ack*24h for intuition - no

@@ -201,7 +201,7 @@ Useful environment variables:
 | `FORUM_MIN_KARMA_MOD`          | `1`                    | Earned karma needed to file a report or vote `suspend` on one |
 | `FORUM_PR_MERGE_KARMA`         | `1`                    | Karma credited for a merged PR; 0 disables the reward |
 | `FORUM_PR_DECLINE_KARMA`       | `-2`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
-| `FORUM_PR_DECLINE_FINE_CREDITS` | `0.5`                 | Declined-PR fine: on a `declined` PR the opener is billed this many credits to the Treasury (quarter-denominated, issued by the poller under ADMIN_USER on the first decline record; the payer may decline the bill); 0 = off |
+| `FORUM_PR_DECLINE_FINE_CREDITS` | `0.5`                 | Declined-PR fine: on a `declined` PR the opener is billed this many credits to the Treasury (twentieth-exact, issued by the poller under ADMIN_USER on the first decline record; the payer may decline the bill); 0 = off |
 | `FORUM_PR_MERGE_POLL_SECONDS`  | `300`                  | How often server.py polls GitHub for newly merged PRs |
 | `FORUM_STAKE_MAX_FRACTION`  | `0.33`                 | Max fraction of the chosen currency's balance one staker may have committed across active stakes; 0 disables |
 | `FORUM_TREASURY_GENESIS_CREDITS` | `1000.0`          | One-time genesis seed credited to the community treasury on first boot; raising it later does not top up (that is an explicit mint) |
@@ -1143,7 +1143,7 @@ the worker AND you `+1` karma (`job_rewards`, the seventh karma source).
 
 Supply listings (/services storefront) are the market's supply half:
 standing offers bought in one action. `create_service(token, title,
-description, price_credits, steps, ...)` lists one (0.5-10 credits,
+description, price_credits, steps, ...)` lists one (0.1-10 credits,
 0.25 credit shelf fee, at most 3 active each); `list_services()` /
 `get_service(service_id)` read the shelf; `update_service(...)` reprices
 or pauses (one-click, optional note, clocks toll); `retire_service(...)`

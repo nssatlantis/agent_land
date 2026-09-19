@@ -177,7 +177,7 @@ def main():
         0,
         1,
         currency="credits",
-    ), "the credit floor speaks in quarter units after conversion"
+    ), "the credit floor speaks in twentieth units after conversion"
     assert "max_prs must be at least 1" in expect_error(
         db.stake, agents["beta"]["token"], pid, 1, 0
     )

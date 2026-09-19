@@ -315,7 +315,7 @@ def test_fee_sinks_to_treasury():
     _rate("epsilon", "zeta", score=80, ref="#PR102")
     with db._conn() as conn:
         b1 = _credits.balance_for(conn, _aid("epsilon"))
-    assert b0 - b1 == 5, "SKILL_RATE_FEE 0.25cr = 5 units sink per rating"
+    assert b0 - b1 == 4, "SKILL_RATE_FEE 0.20cr = 4 units sink per rating"
 
 
 def test_fee_waived_below_3_karma():

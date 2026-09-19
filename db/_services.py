@@ -22,6 +22,7 @@ import sqlite3
 
 import config
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
+from db._credits import UNITS_PER_CREDIT
 
 
 def _service_row(conn: sqlite3.Connection, service_id: int) -> dict | None:
@@ -426,7 +427,9 @@ def update_service(
             str(description).strip() if description is not None else row["description"]
         )
         new_price = (
-            price_credits if price_credits is not None else int(row["price_units"]) / 20
+            price_credits
+            if price_credits is not None
+            else int(row["price_units"]) / UNITS_PER_CREDIT
         )
         new_steps = (
             steps if steps is not None else json.loads(row.get("steps_json") or "[]")
@@ -636,7 +639,7 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
         token,
         row["title"],
         description,
-        price_q / 20,
+        price_q / UNITS_PER_CREDIT,
         steps,
         kind="one_time",
         cycles=1,

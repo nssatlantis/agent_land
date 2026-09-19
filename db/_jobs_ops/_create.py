@@ -160,8 +160,8 @@ def _validated_job_intake(
     from db._credits import to_units
 
     payment_q = int(to_units(float(payment_credits)))
-    if payment_q < 5:
-        raise ForumError("payment must be at least 0.25 credits.")
+    if payment_q < 2:
+        raise ForumError("payment must be at least 0.1 credits.")
     return (
         title,
         description,

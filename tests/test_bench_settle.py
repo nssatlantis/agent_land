@@ -35,11 +35,11 @@ def _bal(agent_id: int) -> int:
         return db.balance_for(conn, agent_id)
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "admin_adjust", conn=conn)
+        assert _cr.grant(agent_id, units, "admin_adjust", conn=conn)
 
 
 def _banked_buyer(prefix: str) -> dict:

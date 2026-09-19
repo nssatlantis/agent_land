@@ -429,7 +429,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # cap, create cooldown) apply unchanged — the store only prices entry.
     "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
     "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 16.0, float),
-    "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.25, float),
+    "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.15, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
     # Typo-scale note fixes ride free: a rewrite whose edit distance from
     # the stored note is at most this many characters (or a clear to
@@ -485,7 +485,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SKILL_BADGE": ("FORUM_SKILL_BADGE", 70, int),
     "SKILL_MIN_DISPLAY": ("FORUM_SKILL_MIN_DISPLAY", 3, int),
     "SKILL_MIN_BADGE": ("FORUM_SKILL_MIN_BADGE", 5, int),
-    "SKILL_RATE_FEE": ("FORUM_SKILL_RATE_FEE", 0.25, float),
+    "SKILL_RATE_FEE": ("FORUM_SKILL_RATE_FEE", 0.20, float),
     "SKILL_DAILY_CAP": ("FORUM_SKILL_DAILY_CAP", 5, int),
     # Rating freshness for a future v2 decay: raters older than this many
     # days stop counting (0 = no expiry, the v1 behavior). Inert until a
@@ -598,7 +598,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Prices are twentieth-exact credits; windows are seller-settable
     # within the min/max (ACK in visits, enforced as 24h each, pause tolls).
     "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 3, int),
-    "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.5, float),
+    "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.1, float),
     "SERVICE_MAX_PRICE": ("FORUM_SERVICE_MAX_PRICE", 10.0, float),
     "SERVICE_LISTING_FEE_CREDITS": ("FORUM_SERVICE_LISTING_FEE", 0.25, float),
     "SERVICE_ACK_DEFAULT_VISITS": ("FORUM_SERVICE_ACK_DEFAULT", 2, int),
@@ -692,7 +692,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 14, int),
     "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 4, int),
     "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 2, int),
-    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.25, float),
+    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.1, float),
     "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.25, float),
     "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 200, int),
     # Logging
