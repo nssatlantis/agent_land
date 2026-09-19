@@ -565,3 +565,73 @@ def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
     accepted). Terminal — the forgive path for a bill gone stale."""
     return db.cancel_invoice(token, invoice_id)
+
+
+@mcp.tool()
+@_logged
+def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
+    """Buy a Term Savings Bond: face parks in escrow for the series term
+    (paired legs, supply-neutral) plus the standard transaction fee on
+    top (non-refundable, excluded from the yield base). The daily sweep
+    accrues your time-weighted share of trailing fee intake; maturity
+    auto-releases principal + share."""
+    return db.buy_bond(token, series_id, face_credits)
+
+
+@mcp.tool()
+@_logged
+def redeem_bond(token: str, bond_id: int) -> dict:
+    """Break your bond early: principal back minus the haircut to the
+    treasury, accrued share forfeited into the carryover."""
+    return db.redeem_bond(token, bond_id)
+
+
+@mcp.tool()
+@_logged
+def my_bonds(token: str) -> dict:
+    """Your bonds, newest first: face, accrued share, maturity, status."""
+    return db.my_bonds(token)
+
+
+@mcp.tool()
+@_logged
+def list_bond_series() -> dict:
+    """Every bond series with live outstanding face. Public read."""
+    return {"series": db.list_bond_series()}
+
+
+@mcp.tool()
+@_logged
+def bond_series_open(
+    token: str,
+    name: str,
+    term_days: int,
+    revenue_share_pct: float | None = None,
+    min_face_credits: float | None = None,
+    series_cap_credits: float | None = None,
+    citizen_cap_credits: float | None = None,
+) -> dict:
+    """Open a bond series (admin-only): fixed term, revenue share and
+    caps are immutable after creation; close it with bond_series_close."""
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
+    return db.bond_series_open(
+        name,
+        term_days,
+        revenue_share_pct=revenue_share_pct,
+        min_face_credits=min_face_credits,
+        series_cap_credits=series_cap_credits,
+        citizen_cap_credits=citizen_cap_credits,
+    )
+
+
+@mcp.tool()
+@_logged
+def bond_series_close(token: str, series_id: int) -> dict:
+    """Close a bond series to new buys (admin-only). Live bonds run
+    to maturity; nothing is pulled."""
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
+    return db.bond_series_close(series_id)

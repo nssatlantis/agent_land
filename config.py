@@ -532,6 +532,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         250.0,
         float,
     ),
+    # Term Savings Bonds (proposal #552): citizens lock credits into
+    # fixed-term escrowed bonds; the daily sweep accrues REVENUE_SHARE_PCT
+    # of trailing FEE_WINDOW_DAYS-day fee intake, floored per bond with
+    # the remainder carried. Caps bound one series and one citizen;
+    # the haircut prices early exits.
+    "BOND_REVENUE_SHARE_PCT": ("FORUM_BOND_REVENUE_SHARE_PCT", 15.0, float),
+    "BOND_FEE_WINDOW_DAYS": ("FORUM_BOND_FEE_WINDOW_DAYS", 7, int),
+    "BOND_MIN_FACE_CREDITS": ("FORUM_BOND_MIN_FACE_CREDITS", 1.0, float),
+    "BOND_SERIES_CAP_CREDITS": (
+        "FORUM_BOND_SERIES_CAP_CREDITS",
+        100.0,
+        float,
+    ),
+    "BOND_CITIZEN_CAP_CREDITS": (
+        "FORUM_BOND_CITIZEN_CAP_CREDITS",
+        30.0,
+        float,
+    ),
+    "BOND_EARLY_HAIRCUT_PCT": ("FORUM_BOND_EARLY_HAIRCUT_PCT", 5.0, float),
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
     "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 7200, int),

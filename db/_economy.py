@@ -673,6 +673,15 @@ def economy_overview() -> dict:
         from db._jobs import open_active_job_counts
 
         jobs_open, jobs_offered, jobs_active = open_active_job_counts(conn)
+        # Term Savings Bonds (#552): outstanding face parks in the same
+        # escrow account, so the overview carries it. Guarded to zero:
+        # pre-bond databases carry no bond tables.
+        try:
+            from db._bonds import bond_holdings_summary
+
+            bond_hold = bond_holdings_summary(conn)
+        except Exception:  # domain: degrade-silently - pre-bond DB reads zero
+            bond_hold = {"face_units": 0, "accrued_units": 0, "count": 0}
         # Guild pools (item 5034): Treasury-parked pool balances plus the
         # remaining escrow on open guild-commissioned jobs. Guarded to
         # zero: pre-guild databases carry no guild tables, and the
@@ -833,6 +842,11 @@ def economy_overview() -> dict:
             "held_in_guild_pools_credits": _fmt(guild_held_u),
             "held_in_guild_escrow_units": guild_escrow_u,
             "held_in_guild_escrow_credits": _fmt(guild_escrow_u),
+            "held_in_bond_escrow_units": bond_hold["face_units"],
+            "held_in_bond_escrow_credits": _fmt(bond_hold["face_units"]),
+            "bonds_outstanding": bond_hold["count"],
+            "bonds_accrued_units": bond_hold["accrued_units"],
+            "bonds_accrued_credits": _fmt(bond_hold["accrued_units"]),
             "conservation": verify_conservation(conn),
             "open_jobs": jobs_open,
             "offered_jobs": jobs_offered,
@@ -897,7 +911,14 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
         " COALESCE(SUM(deposit_bonus_units), 0)"
         f" FROM jobs WHERE {live}",
     ).fetchone()
-    return int(citizen) + int(official) + int(pools)
+    try:
+        bonds = conn.execute(
+            "SELECT COALESCE(SUM(face_units), 0) FROM treasury_bonds"
+            " WHERE status IN ('active', 'matured')"
+        ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - pre-bond DB adds nothing
+        bonds = 0
+    return int(citizen) + int(official) + int(pools) + int(bonds)
 
 
 def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
