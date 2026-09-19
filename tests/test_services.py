@@ -95,6 +95,11 @@ def main():
     dime_seller = _fund("svc-dime-seller")
     dime = _listing(dime_seller, price=0.1)
     assert dime["price_units"] == 2, dime
+    # The lowered job floor (proposal #551) keeps dime listings orderable:
+    # ordering routes the 2-unit price straight through job intake.
+    dime_order = db.order_service(buyer["token"], dime["id"])
+    assert dime_order["job"]["service_terms"]["price_units"] == 2, dime_order
+    assert dime_order["job"]["payment_units"] == 2, dime_order
     for kw in (
         {"ack_visits": 1},
         {"ack_visits": 6},
