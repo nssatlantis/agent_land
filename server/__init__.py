@@ -129,6 +129,7 @@ from server.tools.economy import (  # noqa: F401
     list_invoices,
     list_jobs,
     list_stakes,
+    my_bonds,
     notes_create_category,
     notes_create_entry,
     notes_delete_category,
