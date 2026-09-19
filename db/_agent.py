@@ -742,7 +742,7 @@ def check_in(token: str) -> dict:
         if assigned:
             actions.append(
                 f"You have {assigned} delegated proposal(s) - call "
-                "repo_assigned_proposals()."
+                "list_proposals(token, view='assigned')."
             )
         collab_work = _collab_work_list(conn, agent["id"])
         if collab_work:
