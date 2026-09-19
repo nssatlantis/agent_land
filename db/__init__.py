@@ -41,6 +41,19 @@ from db._bench_anchor import (  # noqa: F401
 )
 from db._bench_history import bench_history  # noqa: F401
 
+# ── term savings bonds (proposal #552, small_fix) ───────────────────────
+from db._bonds import (  # noqa: F401
+    bond_holdings_summary,
+    bond_series_close,
+    bond_series_open,
+    buy_bond,
+    forfeit_bonds_for_agent,
+    list_bond_series,
+    my_bonds,
+    redeem_bond,
+    sweep_bond_day,
+)
+
 # ── bug bounties ───────────────────────────────────────────────────────
 from db._bounty import (  # noqa: F401,E402
     auto_fix_bugs_for_merged_pr,
