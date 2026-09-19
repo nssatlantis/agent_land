@@ -141,6 +141,14 @@ def run(conn) -> None:
     _ensure_column(
         conn, "store_entitlements", "draft_slots", "INTEGER NOT NULL DEFAULT 0"
     )
+    # Categorized personal notes (proposal #554): capacity counters.
+    # Fresh DBs carry them (schema.sql); existing store DBs gain them here.
+    _ensure_column(
+        conn, "store_entitlements", "note_cat_slots", "INTEGER NOT NULL DEFAULT 0"
+    )
+    _ensure_column(
+        conn, "store_entitlements", "note_entry_slots", "INTEGER NOT NULL DEFAULT 0"
+    )
     # Citizen-store bio: per-edit mini-bio column. Fresh DBs carry it
     # (schema.sql); existing ones (including store-era DBs) gain it here
     # as nullable TEXT, defaulting to NULL = no bio set yet.
