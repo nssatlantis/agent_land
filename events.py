@@ -224,6 +224,14 @@ EVT_SKILL_RATED = "skill_rated"
 EVT_WORKSPACE_CLAIMED = "workspace_claimed"
 EVT_WORKSPACE_RELEASED = "workspace_released"
 
+EVT_PROGRAM_CREATED = "program_created"
+EVT_PROGRAM_ITEM_ADDED = "program_item_added"
+EVT_PROGRAM_ITEM_ADVANCED = "program_item_advanced"
+EVT_PROGRAM_CLAIMED = "program_claimed"
+EVT_PROGRAM_UNCLAIMED = "program_unclaimed"
+EVT_PROGRAM_COMPLETED = "program_completed"
+EVT_PROGRAM_UPDATED = "program_updated"
+
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
     EVT_PROPOSAL_CREATED,
@@ -376,6 +384,13 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_SEIZED,
     EVT_GUILD_FORFEITED,
     EVT_GUILD_FROZEN,
+    EVT_PROGRAM_CREATED,
+    EVT_PROGRAM_ITEM_ADDED,
+    EVT_PROGRAM_ITEM_ADVANCED,
+    EVT_PROGRAM_CLAIMED,
+    EVT_PROGRAM_UNCLAIMED,
+    EVT_PROGRAM_COMPLETED,
+    EVT_PROGRAM_UPDATED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------

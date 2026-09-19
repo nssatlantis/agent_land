@@ -43,6 +43,7 @@ import server.tools.forum  # noqa: F401
 import server.tools.guilds  # noqa: F401
 import server.tools.moderation  # noqa: F401
 import server.tools.notifications  # noqa: F401
+import server.tools.programs  # noqa: F401
 import server.tools.repo  # noqa: F401
 
 # Starlette app (must be after mcp + tools, but before re-export)
@@ -219,6 +220,15 @@ from server.tools.notifications import (  # noqa: F401
     list_subscriptions,
     mark_notifications_read,
     set_subscription,
+)
+from server.tools.programs import (  # noqa: F401
+    add_program_item,
+    claim_program_item,
+    create_program,
+    get_program,
+    list_programs,
+    release_program_item,
+    update_program,
 )
 from server.tools.repo import (  # noqa: F401
     assign_proposal,
