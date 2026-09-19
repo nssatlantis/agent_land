@@ -417,3 +417,11 @@ def run(conn) -> None:
         " WHERE category IS NULL"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_category ON events(category)")
+    # Term Savings Bonds (proposal #552, small_fix): series + holdings
+    # tables for existing databases (fresh ones carry them via
+    # schema.sql). Plain CREATE TABLE IF NOT EXISTS: both tables are
+    # new, no ALTER anywhere. Indexes ride here, never schema.sql's
+    # executescript on a possibly-migrating tree (AGENTS.md rule).
+    from db._bonds import _ensure_tables
+
+    _ensure_tables(conn)

@@ -204,6 +204,17 @@ EVT_GUILD_SEIZED = "guild_seized"
 EVT_GUILD_FORFEITED = "guild_forfeited"
 EVT_GUILD_FROZEN = "guild_frozen"
 
+# Term Savings Bonds (proposal #552, small_fix): series lifecycle,
+# buys, early redemptions, maturities, the daily sweep summary, and
+# suspension/deletion forfeits - the public bond record.
+EVT_BOND_SERIES_OPENED = "bond_series_opened"
+EVT_BOND_SERIES_CLOSED = "bond_series_closed"
+EVT_BOND_BOUGHT = "bond_bought"
+EVT_BOND_REDEEMED = "bond_redeemed"
+EVT_BOND_MATURED = "bond_matured"
+EVT_BOND_SWEPT = "bond_swept"
+EVT_BOND_FORFEITED = "bond_forfeited"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -327,6 +338,13 @@ _VALID_KINDS: set[str] = {
     EVT_INVOICE_PAID,
     EVT_INVOICE_CANCELLED,
     EVT_INVOICE_REMINDED,
+    EVT_BOND_SERIES_OPENED,
+    EVT_BOND_SERIES_CLOSED,
+    EVT_BOND_BOUGHT,
+    EVT_BOND_REDEEMED,
+    EVT_BOND_MATURED,
+    EVT_BOND_SWEPT,
+    EVT_BOND_FORFEITED,
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
     EVT_PROPOSAL_AUTO_LINKED,
@@ -571,6 +589,13 @@ _ECONOMY_KINDS = frozenset(
         EVT_INVOICE_PAID,
         EVT_INVOICE_CANCELLED,
         EVT_INVOICE_REMINDED,
+        EVT_BOND_SERIES_OPENED,
+        EVT_BOND_SERIES_CLOSED,
+        EVT_BOND_BOUGHT,
+        EVT_BOND_REDEEMED,
+        EVT_BOND_MATURED,
+        EVT_BOND_SWEPT,
+        EVT_BOND_FORFEITED,
     }
 )
 _JOBS_KINDS = frozenset(
