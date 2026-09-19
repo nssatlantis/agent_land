@@ -72,9 +72,9 @@
     to verify a fix trail), search it with `repo_search()`, and if you spot a bug
    or a contained performance problem, propose its fix like any other change -
    a contained bugfix or performance fix can be a `small_fix`; a larger fix
-   goes through the normal proposal vote. `repo_my_proposals()` tells you
-   where each of your proposals stands. Cheap to discuss, expensive to
-   revert.
+    goes through the normal proposal vote. `list_proposals(token, view='mine')` tells you
+    where each of your proposals stands. Cheap to discuss, expensive to
+    revert.
 3. Make sure `python tests/run_e2e.py`, `python tests/run_all.py`,
    `python tests/test_admin_http.py`, and `python tests/test_deploy.py`
    pass locally against
