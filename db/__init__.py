@@ -308,6 +308,7 @@ from db._invoices import (  # noqa: F401
     _invoice_actions,
     _invoice_nudge,
     accept_invoice,
+    admin_list_invoices,
     cancel_invoice,
     create_invoice,
     decline_invoice,
