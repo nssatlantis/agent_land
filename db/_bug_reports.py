@@ -1435,8 +1435,9 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
             raise ForumError(f"Bug report #{report_id} is already {row['status']}.")
         now_iso = _now_iso()
         conn.execute(
-            "UPDATE bug_reports SET status = 'confirmed', decided_at = ? WHERE id = ?",
-            (now_iso, report_id),
+            "UPDATE bug_reports SET status = 'confirmed', decided_at = ?,"
+            " confidence = MAX(confidence, ?) WHERE id = ?",
+            (now_iso, config.BUG_CONFIDENCE_THRESHOLD, report_id),
         )
         _retire_duplicates(conn, report_id, "confirmed", now_iso)
         _notify(
@@ -1485,8 +1486,9 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             )
         now = _now_iso()
         conn.execute(
-            "UPDATE bug_reports SET status = 'fixed', decided_at = ? WHERE id = ?",
-            (now, report_id),
+            "UPDATE bug_reports SET status = 'fixed', decided_at = ?,"
+            " confidence = MAX(confidence, ?) WHERE id = ?",
+            (now, config.BUG_CONFIDENCE_THRESHOLD, report_id),
         )
         _retire_duplicates(conn, report_id, "fixed", now)
         _release_bug_claim(conn, report_id, force=True)
