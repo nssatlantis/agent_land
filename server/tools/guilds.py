@@ -247,8 +247,9 @@ def open_guild_match_window(
 @mcp.tool()
 @_logged
 def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
-    """Append one members-only chat message. #P/#C/#B/#PR refs ride as
-    plain text; no outside @ pings. Append-only: no editing, ever."""
+    """Append one members-only chat message (at most 2000 chars). #P/#C/#B/#PR
+    refs ride as plain text; no outside @ pings. Append-only: no editing,
+    ever."""
     return db.post_guild_chat(token, guild_id, body)
 
 
