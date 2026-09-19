@@ -822,7 +822,7 @@ def main():
     # proposal with no to-do list yet is pointed at create_todo_list / get_todos
     # in whoami and my_profile - informational only, nothing gates on it.
     # Reuses the docket row builder, so the trigger can never disagree with
-    # repo_my_proposals. A proposal with lists, a merged one, and a locked
+    # list_proposals rows. A proposal with lists, a merged one, and a locked
     # (superseded) one are all silent.
     ptn = db.register_agent("todo-nudge")
     pt_prop = db.create_proposal(
