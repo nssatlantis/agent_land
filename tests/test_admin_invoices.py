@@ -157,11 +157,41 @@ def test_bad_status_refused_and_total_survives_paging():
     assert _ids(paged) != _ids(full), "page must be capped"
 
 
+def test_search_composes_with_every_status():
+    tag, ids = _seed()
+    payer = AGENTS["gamma"]
+    over = db.admin_list_invoices(status="overdue", agent_query=payer["name"])
+    assert _mine(over, tag) == {ids["overdue"]}, over
+    pend = db.admin_list_invoices(status="pending", agent_query=str(payer["agent_id"]))
+    assert _mine(pend, tag) == {ids["pending"], ids["treasury"]}, pend
+    opened = db.admin_list_invoices(status="open", agent_query="no-such-citizen-xyz")
+    assert opened["total"] == 0 and opened["invoices"] == [], opened
+    uni = db.admin_list_invoices(agent_query="²")
+    assert uni["total"] == 0 and uni["invoices"] == [], uni
+
+
+def test_status_vocabulary_matches_admin_tabs():
+    import db._invoices as _inv
+
+    assert list(_inv._ADMIN_INVOICE_STATUSES) == [
+        "all",
+        "open",
+        "overdue",
+        "pending",
+        "accepted",
+        "paid",
+        "declined",
+        "cancelled",
+    ]
+
+
 if __name__ == "__main__":
     test_all_tab_covers_every_state()
     test_literal_tabs_are_exact()
     test_open_and_overdue_predicates()
     test_treasury_marker_rides_along()
     test_agent_search_by_name_and_id()
+    test_search_composes_with_every_status()
+    test_status_vocabulary_matches_admin_tabs()
     test_bad_status_refused_and_total_survives_paging()
-    print("test_admin_invoices: 6 passed")
+    print("test_admin_invoices: 8 passed")
