@@ -1,6 +1,6 @@
 """Tests for project-ledger completeness (proposal #525, PR-10, item 5031).
 
-The designation is a public founder act on the pool ledger (zero-quarter
+The designation is a public founder act on the pool ledger (zero-unit
 'designate' memo, money-neutral by construction), and subsidy memos carry
 their decider. Merge completion closes the loop: link complete, project
 done, slot freed. Seeded via the db API, never fixtures.

@@ -10,6 +10,7 @@ import config
 import github
 import logutil
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._credits import UNITS_PER_CREDIT
 
 from ._create import _handle_taker_deposit
 from ._detail import _JOB_COLS, _detail_or_raise
@@ -404,7 +405,7 @@ def _award_cycle_karma(
     the pool's single spend is the commission lock memo, and accepted
     wages draw that locked escrow down with no further memos."""
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
-    credit_q = max(0, round(config.JOB_CREDIT_CREDITS * 20))
+    credit_q = max(0, round(config.JOB_CREDIT_CREDITS * UNITS_PER_CREDIT))
     if amount == 0 and credit_q == 0:
         return 0
     granted_q = 0

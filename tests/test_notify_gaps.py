@@ -29,11 +29,11 @@ def _mail(token, **kw):
     return notifications.notifications(token, **kw)
 
 
-def _fund(agent_id: int, quarters: int = 40) -> None:
+def _fund(agent_id: int, units: int = 40) -> None:
     import db._credits as _cr
 
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "notifygaps_seed", conn=conn)
+        assert _cr.grant(agent_id, units, "notifygaps_seed", conn=conn)
 
 
 def _bodies(token, kind=None):

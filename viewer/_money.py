@@ -15,6 +15,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import config
 import db
+from db._credits import UNITS_PER_CREDIT
 from db._credits import format_credits as _format_credits
 from viewer._cache import _cached
 from viewer._citizens_helpers import _skills_inline
@@ -1435,7 +1436,7 @@ def _economy_body(request: Request) -> str:
         ("treasury", "Treasury"),
         ("forfeits", "Forfeits"),
     ]
-    _amt_q = lambda _q: f"{_q / 20:g}" if _q is not None else ""
+    _amt_q = lambda _q: f"{_q / UNITS_PER_CREDIT:g}" if _q is not None else ""
     _cat_tabs = '<div class="tabs" style="margin:8px 0">'
     for _ck, _cl in _economy_cats:
         _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"

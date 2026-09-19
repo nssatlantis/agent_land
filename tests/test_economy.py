@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db._economy as economy  # noqa: E402
 import events  # noqa: E402
+from db._credits import UNITS_PER_CREDIT  # noqa: E402
 from tests._setup import config, db, moderation, reports, setup  # noqa: E402
 
 db.init_db()
@@ -83,9 +84,9 @@ def test_genesis_seeded_exactly_once():
             " WHERE account = 'treasury' AND reason = 'genesis'"
         ).fetchall()
     assert len(rows) == 1, "exactly one genesis row"
-    assert rows[0]["delta_units"] == round(config.TREASURY_GENESIS_CREDITS * 20), (
-        "genesis size matches the knob"
-    )
+    assert rows[0]["delta_units"] == round(
+        config.TREASURY_GENESIS_CREDITS * UNITS_PER_CREDIT
+    ), "genesis size matches the knob"
     db.init_db()  # a second boot must not top up
     with db._conn() as conn:
         n = conn.execute(
@@ -254,7 +255,7 @@ def test_funded_payout_writes_pair_and_keeps_supply():
     before_t, before_g, before_supply = _treasury(), _bal(gamma), _supply()
     ok = db.award_pr_merge_karma(890001, gamma, "2026-08-26T00:00:00.000Z")
     assert ok is True
-    earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
+    earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * UNITS_PER_CREDIT
     assert _bal(gamma) == before_g + earned
     assert _treasury() == before_t - earned
     assert _supply() == before_supply, "payout pairs never mint"
@@ -282,7 +283,7 @@ def test_unfunded_payout_skips_with_event():
     kinds = [e for e in _events("credit_payout_unfunded")]
     assert kinds, "the skip is visible as its own event"
     _detail = kinds[-1].get("detail") or {}
-    _earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
+    _earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * UNITS_PER_CREDIT
     assert _detail.get("delta_units") == _earned, _detail
     assert _detail.get("treasury_credits") == db.format_credits(0), _detail
 
@@ -406,7 +407,7 @@ def test_burn_refuses_more_than_treasury_holds():
     msg = expect_error(
         db.economy_admin_adjust,
         "burn",
-        (held + 20) / 20.0,
+        (held + UNITS_PER_CREDIT) / UNITS_PER_CREDIT,
         "over-drain",
         admin="tester",
     )

@@ -584,6 +584,50 @@ def test_open_invoice_stats():
     print("  open invoice stats ok")
 
 
+def test_invoice_minimum():
+    """The dime minimum (proposal #551): 0.1cr bills route with 2 units
+    outstanding and pay end-to-end; anything below refuses loudly."""
+    issuer, payer = AGENTS["beta"], AGENTS["gamma"]
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
+    import db._credits as _cr
+
+    dime = db.create_invoice(
+        issuer["token"], payer["name"], 0.1, "dime bill", due_in_days=7
+    )
+    assert dime["status"] == "pending", dime
+    assert dime["remaining_units"] == 2, dime
+    db.accept_invoice(payer["token"], dime["invoice_id"])
+    old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
+    os.environ["FORUM_TX_FEE_PERCENT"] = "10"
+    try:
+        with db._conn() as conn:
+            before_payer = _cr.balance_for(conn, payer["agent_id"])
+            before_issuer = _cr.balance_for(conn, issuer["agent_id"])
+        out = db.pay_invoice(payer["token"], dime["invoice_id"])
+        assert out["status"] == "paid", out
+        # 10% of 2u, rounded up: 1u fee. Payer covers 3u; the issuer nets 2u.
+        assert out["payment"]["fee_units"] == 1, out["payment"]
+        with db._conn() as conn:
+            assert before_payer - _cr.balance_for(conn, payer["agent_id"]) == 3
+            assert _cr.balance_for(conn, issuer["agent_id"]) - before_issuer == 2
+    finally:
+        if old_fee is None:
+            os.environ.pop("FORUM_TX_FEE_PERCENT", None)
+        else:
+            os.environ["FORUM_TX_FEE_PERCENT"] = old_fee
+    small = expect_error(
+        db.create_invoice,
+        issuer["token"],
+        payer["name"],
+        0.05,
+        "nickel bill",
+        due_in_days=7,
+    )
+    assert "at least 0.1" in small, small
+    print("  invoice dime minimum: ok")
+
+
 if __name__ == "__main__":
     for fn in [
         test_create_get_list,
@@ -604,6 +648,7 @@ if __name__ == "__main__":
         test_treasury_decline_notifies_creator,
         test_nudges_and_events,
         test_open_invoice_stats,
+        test_invoice_minimum,
     ]:
         fn()
     print("test_invoices: all assertions passed")

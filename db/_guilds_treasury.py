@@ -25,6 +25,7 @@ import sqlite3
 
 import logutil
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._credits import UNITS_PER_CREDIT
 from db._guilds import (
     _age_days,
     _days_ago_iso,
@@ -201,7 +202,7 @@ def guild_stake(
         out = _v1_stake(
             token,
             int(proposal_id),
-            per_pr / 20,
+            per_pr / UNITS_PER_CREDIT,
             int(max_prs),
             currency="credits",
             funded_externally=True,

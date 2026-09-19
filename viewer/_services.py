@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
+from db._credits import UNITS_PER_CREDIT
 from viewer._citizens_helpers import _skills_inline
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
@@ -34,7 +35,7 @@ def _service_chrome(svc: dict) -> tuple[str, str, str, str]:
     else:
         seller_html = esc(seller)
     try:
-        price = float(svc.get("price_units", 0)) / 20
+        price = float(svc.get("price_units", 0)) / UNITS_PER_CREDIT
     except (TypeError, ValueError):
         # domain: degrade-silently - corrupt price degrades to 0 display
         price = 0
