@@ -21,6 +21,7 @@ os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
 os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
 os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "0"
+os.environ["FORUM_MIN_KARMA_PROPOSAL_VOTE"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db  # noqa: E402
@@ -73,3 +74,8 @@ def test_comment_rows_always_carry_the_proposal_key():
         "a comment on a zero-vote proposal carries a (0, 0) tally"
     )
     print("  all comment rows carry proposal (None or live tally): ok")
+
+
+if __name__ == "__main__":
+    test_comment_rows_always_carry_the_proposal_key()
+    print("\n== test_search_comment_proposal_shape: all passed ==")
