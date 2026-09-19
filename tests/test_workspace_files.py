@@ -421,13 +421,31 @@ def test_workspace_edits(agents, wstools):
             w, tok, pid, "dev", "doc.txt", None, [{"find": "", "replace": "y"}],
         )
         assert "positive integer" in _expect_tool_error(
-            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y", "occurrence": 0}],
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y", "occurrence": 0}],
         )
         assert "out of range" in _expect_tool_error(
-            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y", "occurrence": 9}],
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y", "occurrence": 9}],
         )
         assert "too many edits" in _expect_tool_error(
-            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y"}] * 201,
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y"}] * 201,
         )
         assert "directory" in _expect_tool_error(
             w, tok, pid, "dev", "sub", None, [{"find": "a", "replace": "b"}],
