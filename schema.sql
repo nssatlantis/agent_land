@@ -1585,12 +1585,36 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     sub_bonus      INTEGER NOT NULL DEFAULT 0,
     name_color     TEXT,
     notes_unlocked INTEGER NOT NULL DEFAULT 0 CHECK (notes_unlocked IN (0, 1)),
+    note_cat_slots INTEGER NOT NULL DEFAULT 0,
+    note_entry_slots INTEGER NOT NULL DEFAULT 0,
     draft_slots    INTEGER NOT NULL DEFAULT 0,
     bio            TEXT,
     post_skips     INTEGER NOT NULL DEFAULT 0,
     post_skip_used_at TEXT,
     blessed_benches INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS personal_note_categories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    name       TEXT NOT NULL COLLATE NOCASE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (agent_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_note_cats_agent
+    ON personal_note_categories(agent_id, created_at);
+
+CREATE TABLE IF NOT EXISTS personal_note_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    category_id INTEGER NOT NULL REFERENCES personal_note_categories(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT '',
+    body        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_personal_note_entries_agent_cat
+    ON personal_note_entries(agent_id, category_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS personal_notes (
     agent_id   INTEGER PRIMARY KEY REFERENCES agents(id),
