@@ -54,14 +54,20 @@ def _join(founder: dict, guild: dict, prefix: str = "gcn-mate") -> dict:
     return mate
 
 
-def _chats(agent_id: int) -> list[dict]:
+def _chats(agent_id: int, guild_id: int) -> list[dict]:
     with db._conn() as conn:
         rows = conn.execute(
             "SELECT id, body, read_at FROM notifications WHERE agent_id = ?"
-            " AND kind = 'guild' AND body LIKE 'Chat in %' ORDER BY id ASC",
-            (agent_id,),
+            " AND kind = 'guild' AND ref_type = 'guild' AND ref_id = ?"
+            " AND body LIKE 'Chat in %' ORDER BY id ASC",
+            (agent_id, guild_id),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _chat_count() -> int:
+    with db._conn() as conn:
+        return conn.execute("SELECT COUNT(*) FROM guild_messages").fetchone()[0]
 
 
 def test_chat_pings_members_but_not_author():
@@ -69,31 +75,36 @@ def test_chat_pings_members_but_not_author():
     mate = _join(founder, guild)
     posted = db.post_guild_chat(founder["token"], guild["id"], "hello room")
     assert posted["message_id"] is not None, posted
-    rows = _chats(mate["agent_id"])
+    rows = _chats(mate["agent_id"], guild["id"])
     assert len(rows) == 1, rows
     assert guild["name"] in rows[0]["body"], rows[0]
     assert founder["name"] in rows[0]["body"], rows[0]
-    assert _chats(founder["agent_id"]) == []
+    assert _chats(founder["agent_id"], guild["id"]) == []
 
 
-def test_chat_refreshes_while_unread_and_renews_after_read():
+def test_chat_refresh_rewrites_author_and_renews_after_read():
     founder, guild = _found()
     mate = _join(founder, guild)
+    third = _join(founder, guild, "gcn-third")
     db.post_guild_chat(founder["token"], guild["id"], "first")
-    first = _chats(mate["agent_id"])
+    first = _chats(mate["agent_id"], guild["id"])
     assert len(first) == 1, first
-    # A second message refreshes the same unread row (no second ping).
-    db.post_guild_chat(founder["token"], guild["id"], "second")
-    refreshed = _chats(mate["agent_id"])
+    assert founder["name"] in first[0]["body"], first[0]
+    # A message from another author refreshes the same unread row AND
+    # rewrites it to the latest author (a skipped UPDATE would pass an
+    # id-only pin, so assert the body flip too).
+    db.post_guild_chat(third["token"], guild["id"], "second")
+    refreshed = _chats(mate["agent_id"], guild["id"])
     assert len(refreshed) == 1, refreshed
     assert refreshed[0]["id"] == first[0]["id"], "unread chat must refresh in place"
-    # A message from the mate pings the founder, and leaves the mate's own
-    # unread row alone (self rows never refresh - the guard votes use too).
+    assert third["name"] in refreshed[0]["body"], refreshed[0]
+    # The poster's own unread row is left alone (self rows never refresh -
+    # the same guard votes and the roster digest use).
     db.post_guild_chat(mate["token"], guild["id"], "third")
-    second = _chats(founder["agent_id"])
-    assert len(second) == 1, second
-    assert mate["name"] in second[0]["body"], second[0]
-    assert len(_chats(mate["agent_id"])) == 1
+    founder_rows = _chats(founder["agent_id"], guild["id"])
+    assert len(founder_rows) == 1, founder_rows
+    assert mate["name"] in founder_rows[0]["body"], founder_rows[0]
+    assert len(_chats(third["agent_id"], guild["id"])) == 1
     # After reading, a new message opens a fresh row.
     with db._conn() as conn:
         conn.execute(
@@ -101,15 +112,36 @@ def test_chat_refreshes_while_unread_and_renews_after_read():
             ("2026-09-18T00:00:00.000Z", first[0]["id"]),
         )
     db.post_guild_chat(founder["token"], guild["id"], "fourth")
-    third = _chats(mate["agent_id"])
-    assert len(third) == 2, third
+    renewed = _chats(mate["agent_id"], guild["id"])
+    assert len(renewed) == 2, renewed
+
+
+def test_chat_tallies_are_per_guild():
+    founder, guild_a = _found()
+    _mate = _join(founder, guild_a, "gcn-dual")
+    co_founder = _new_agent("gcn-cofounder")
+    _fund(co_founder["agent_id"], 600)
+    guild_b = db.found_guild(co_founder["token"], f"ChatNotifyB-{_SEQ[0]}")
+    inv = db.invite_guild_member(co_founder["token"], guild_b["id"], _mate["name"])
+    db.respond_guild_invite(_mate["token"], inv["invite_id"], True)
+    db.post_guild_chat(founder["token"], guild_a["id"], "in A")
+    db.post_guild_chat(co_founder["token"], guild_b["id"], "in B")
+    rows_a = _chats(_mate["agent_id"], guild_a["id"])
+    rows_b = _chats(_mate["agent_id"], guild_b["id"])
+    assert len(rows_a) == 1 and guild_a["name"] in rows_a[0]["body"], rows_a
+    assert len(rows_b) == 1 and guild_b["name"] in rows_b[0]["body"], rows_b
+    # A second post in A refreshes only A's row.
+    db.post_guild_chat(founder["token"], guild_a["id"], "again in A")
+    assert len(_chats(_mate["agent_id"], guild_a["id"])) == 1
+    assert len(_chats(_mate["agent_id"], guild_b["id"])) == 1
+    assert _chats(_mate["agent_id"], guild_b["id"])[0]["id"] == rows_b[0]["id"]
 
 
 def test_solo_guild_chat_pings_nobody():
     founder, guild = _found()
     posted = db.post_guild_chat(founder["token"], guild["id"], "talking to myself")
     assert posted["message_id"] is not None, posted
-    assert _chats(founder["agent_id"]) == []
+    assert _chats(founder["agent_id"], guild["id"]) == []
 
 
 def test_chat_and_roster_prefixes_do_not_clobber():
@@ -124,7 +156,7 @@ def test_chat_and_roster_prefixes_do_not_clobber():
         ).fetchall()
     assert len(roster) == 1, roster
     db.post_guild_chat(mate["token"], guild["id"], "hi all")
-    chats = _chats(founder["agent_id"])
+    chats = _chats(founder["agent_id"], guild["id"])
     assert len(chats) == 1, chats
     with db._conn() as conn:
         roster_after = conn.execute(
@@ -136,19 +168,25 @@ def test_chat_and_roster_prefixes_do_not_clobber():
     assert roster_after[0]["id"] == roster[0]["id"], "chat must not eat the roster row"
 
 
-def test_chat_over_cap_still_refused():
+def test_chat_over_cap_refused_without_side_effects():
     founder, guild = _found()
+    mate = _join(founder, guild)
+    before = _chat_count()
     try:
         db.post_guild_chat(founder["token"], guild["id"], "x" * 2001)
         raise AssertionError("over-cap chat posted")
     except Exception as exc:
         assert "2000" in str(exc), exc
+    # The refused post leaves no message row and no mail behind.
+    assert _chat_count() == before
+    assert _chats(mate["agent_id"], guild["id"]) == []
 
 
 if __name__ == "__main__":
     test_chat_pings_members_but_not_author()
-    test_chat_refreshes_while_unread_and_renews_after_read()
+    test_chat_refresh_rewrites_author_and_renews_after_read()
+    test_chat_tallies_are_per_guild()
     test_solo_guild_chat_pings_nobody()
     test_chat_and_roster_prefixes_do_not_clobber()
-    test_chat_over_cap_still_refused()
-    print("test_guild_chat_notify: 5 passed")
+    test_chat_over_cap_refused_without_side_effects()
+    print("test_guild_chat_notify: 6 passed")
