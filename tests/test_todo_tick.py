@@ -2,8 +2,9 @@
 
 tick_todo_item flips one item's done flag (author / delegate / active
 collab claimer), the widened proposal_todo_note nudge fires when unticked
-items sit behind a live PR, todo_open_items rides on docket (mine /
-assigned) rows, and proposal_todo_reminder feeds repo_propose_change's
+items sit behind a live PR, todo_open_items rides on db.my_proposals /
+db.assigned_proposals rows (and the list_proposals mine/assigned views that
+re-derive it), and proposal_todo_reminder feeds repo_propose_change's
 response.
 """
 
