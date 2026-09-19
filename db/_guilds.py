@@ -650,7 +650,7 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
             "guild",
             "guild",
             guild_id,
-            f"guild disbanded ({reason}) - you received {paid[aid]}q.",
+            f"guild disbanded ({reason}) - you received {paid[aid]}u.",
             actor_agent_id=None,
         )
     for row in members:

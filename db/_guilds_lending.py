@@ -239,7 +239,7 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
             "economy",
             "invoice",
             invoice_id,
-            f"guild subsidy #{sub['id']} payback due ({amount}q) - accept and pay it.",
+            f"guild subsidy #{sub['id']} payback due ({amount}u) - accept and pay it.",
             actor_agent_id=None,
         )
         import events
@@ -394,7 +394,7 @@ def request_guild_subsidy(
             " VALUES (?, ?, ?, 'idea')",
             (
                 agent["id"],
-                f"Subsidy venue: guild {guild['name']!r} asks {amount}q",
+                f"Subsidy venue: guild {guild['name']!r} asks {amount}u",
                 (clean + "\n\n" if clean else "")
                 + f"Guild {guild['name']!r} requests a Treasury subsidy of"
                 f" {amount} units"
@@ -482,7 +482,7 @@ def decide_guild_subsidy(
             "guild",
             "guild",
             sub["guild_id"],
-            f"subsidy #{sub['id']} approved - {out['amount_units']}q paid to the pool.",
+            f"subsidy #{sub['id']} approved - {out['amount_units']}u paid to the pool.",
             actor_agent_id=agent["id"],
         )
         return out
@@ -647,7 +647,7 @@ def _settle_match_window(conn: sqlite3.Connection, window: dict) -> dict:
         (
             window["guild_id"],
             pay,
-            f"treasury deposit-match #{window['id']} ({net}q net)",
+            f"treasury deposit-match #{window['id']} ({net}u net)",
         ),
     )
     import events
@@ -935,7 +935,7 @@ def _forfeit_member(
         "guild",
         "guild",
         int(guild_id),
-        f"your share in guild #{guild_id} was forfeited ({why}, {share}q).",
+        f"your share in guild #{guild_id} was forfeited ({why}, {share}u).",
         actor_agent_id=None,
     )
     return {
@@ -994,7 +994,7 @@ def sweep_guild_lending() -> dict:
                             "guild",
                             gid,
                             f"guild debt #{debt['id']} is past due"
-                            f" ({debt['remaining_units']}q) - spending"
+                            f" ({debt['remaining_units']}u) - spending"
                             " frozen until it clears.",
                             actor_agent_id=None,
                         )

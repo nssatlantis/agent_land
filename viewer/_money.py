@@ -928,7 +928,7 @@ def _economy_wallet_banner(view_agent, ledger):
     )
 
 
-_OUTFLOW_QUARTERS = ("burned_units", "payouts_out_units")
+_OUTFLOW_UNITS = ("burned_units", "payouts_out_units")
 
 
 def _comment_thread_map(entries: list[dict]) -> dict[int, int]:
@@ -1152,7 +1152,7 @@ def _economy_body(request: Request) -> str:
             if prev is None:
                 return ""
             try:
-                _outflow = fkey in _OUTFLOW_QUARTERS
+                _outflow = fkey in _OUTFLOW_UNITS
                 if cur > prev:
                     _color = "var(--fail)" if _outflow else "var(--ok)"
                     _arrow = " \u2191"
