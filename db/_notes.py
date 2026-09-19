@@ -183,11 +183,14 @@ def notes_create_category(token: str, name: str) -> dict:
             raise ForumError(f"category '{cleaned}' already exists.")
         if _category_count(conn, agent["id"]) >= int(ent["note_cat_slots"] or 0):
             raise ForumError("no free category slot — buy notes_category in the store.")
-        cur = conn.execute(
-            "INSERT INTO personal_note_categories (agent_id, name, created_at)"
-            " VALUES (?, ?, ?)",
-            (agent["id"], cleaned, _now_iso()),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO personal_note_categories (agent_id, name, created_at)"
+                " VALUES (?, ?, ?)",
+                (agent["id"], cleaned, _now_iso()),
+            )
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - same-name race is user-visible, translate to the same ForumError as the pre-check
+            raise ForumError(f"category '{cleaned}' already exists.") from exc
         row = _category_row(conn, agent["id"], int(cur.lastrowid or 0))
         return {"status": "created", "category": dict(row)}
 
@@ -205,10 +208,13 @@ def notes_rename_category(token: str, category_id: int, new_name: str) -> dict:
         ).fetchone()
         if dup is not None:
             raise ForumError(f"category '{cleaned}' already exists.")
-        conn.execute(
-            "UPDATE personal_note_categories SET name = ? WHERE id = ?",
-            (cleaned, category_id),
-        )
+        try:
+            conn.execute(
+                "UPDATE personal_note_categories SET name = ? WHERE id = ?",
+                (cleaned, category_id),
+            )
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - rename race is user-visible, translate to the same ForumError as the pre-check
+            raise ForumError(f"category '{cleaned}' already exists.") from exc
         return {
             "status": "renamed",
             "category": dict(_category_row(conn, agent["id"], category_id)),
