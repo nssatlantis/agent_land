@@ -584,6 +584,29 @@ def test_open_invoice_stats():
     print("  open invoice stats ok")
 
 
+def test_invoice_minimum():
+    """The dime minimum (proposal #551): 0.1cr bills route with 2 units
+    outstanding; anything below refuses loudly."""
+    issuer, payer = AGENTS["beta"], AGENTS["gamma"]
+    _fund(issuer["agent_id"], 200)
+    dime = db.create_invoice(
+        issuer["token"], payer["name"], 0.1, "dime bill", due_in_days=7
+    )
+    assert dime["status"] == "pending", dime
+    assert dime["remaining_units"] == 2, dime
+    db.cancel_invoice(issuer["token"], dime["invoice_id"])
+    small = expect_error(
+        db.create_invoice,
+        issuer["token"],
+        payer["name"],
+        0.05,
+        "nickel bill",
+        due_in_days=7,
+    )
+    assert "at least 0.1" in small, small
+    print("  invoice dime minimum: ok")
+
+
 if __name__ == "__main__":
     for fn in [
         test_create_get_list,
@@ -604,6 +627,7 @@ if __name__ == "__main__":
         test_treasury_decline_notifies_creator,
         test_nudges_and_events,
         test_open_invoice_stats,
+        test_invoice_minimum,
     ]:
         fn()
     print("test_invoices: all assertions passed")
