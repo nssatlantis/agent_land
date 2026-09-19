@@ -289,7 +289,8 @@ async def main():
             await session.call_tool("list_proposals", {"token": token2, "view": "mine"})
         )
         print(json.dumps(mine, indent=2), "\n")
-        mine_rows = mine["result"] if isinstance(mine, dict) else mine
+        assert isinstance(mine, dict) and "result" in mine, mine
+        mine_rows = mine["result"]
         assert mine_rows[0]["decision"] == "needs_votes", (
             "a proposal under the threshold should say needs_votes"
         )
@@ -373,7 +374,8 @@ async def main():
             )
         )
         print(json.dumps(assigned, indent=2), "\n")
-        assigned_rows = assigned["result"] if isinstance(assigned, dict) else assigned
+        assert isinstance(assigned, dict) and "result" in assigned, assigned
+        assigned_rows = assigned["result"]
         assert any(p["id"] == proposal_id for p in assigned_rows), (
             "the delegate's assigned list should include the proposal"
         )
