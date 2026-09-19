@@ -968,7 +968,7 @@ def pr_diff(number: int) -> dict:
             "GET", f"pulls/{number}/files?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
         )
         files.extend(batch)
-        if len(batch) < _GITHUB_MAX_PER_PAGE:
+        if len(batch) < _GITHUB_MAX_PER_PAGE or page >= _PR_PAGE_CAP:
             break
         page += 1
     result = {
