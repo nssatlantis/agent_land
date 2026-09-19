@@ -463,14 +463,17 @@ def my_bonds(token: str) -> dict:
 
 
 def bond_holdings_summary(conn=None) -> dict:
-    """Outstanding face + accrued across live bonds. Degrade-silently
-    for the overview: pre-bond databases read zero."""
+    """Outstanding face + accrued across live bonds. Only 'active' bonds
+    count, mirroring Rule B's escrow recompute (_live_escrow_holdings):
+    a dry-held 'matured' bond released its face to the wallet, so it is
+    no longer locked in escrow. Degrade-silently for the overview:
+    pre-bond databases read zero."""
     try:
         with _conn() if conn is None else nullcontext(conn) as c:
             row = c.execute(
                 "SELECT COALESCE(SUM(face_units), 0),"
                 " COALESCE(SUM(accrued_units), 0), COUNT(*)"
-                " FROM treasury_bonds WHERE status IN ('active', 'matured')"
+                " FROM treasury_bonds WHERE status = 'active'"
             ).fetchone()
             return {
                 "face_units": int(row[0]),
