@@ -234,6 +234,47 @@ def test_cooldown_gate():
         _restore()
 
 
+def test_cooldown_gate_names_recent_run_id():
+    """When the cooldown-causing run carries a run_id receipt, the refusal
+    names it so the operator can query its verdict (repo_ci_run_status)
+    instead of guessing which run is throttling."""
+    uid = _uid()
+    rid = "ab" * 16
+    events.log_event(
+        events.EVT_CI_RUN,
+        actor_agent_id=uid,
+        detail={"checks": "tests", "run_id": rid},
+    )
+    _shadow("CI_RUN_COOLDOWN_SECONDS", 300)
+    try:
+        ci_runner.run_checks(uid, "t", "tests")
+        raise AssertionError("expected ForumError")
+    except db.ForumError as exc:
+        msg = str(exc)
+        assert "cooldown" in msg
+        assert rid in msg
+        assert "repo_ci_run_status(run_id=" in msg
+    finally:
+        _restore()
+
+
+def test_cooldown_gate_plain_when_no_recent_run_id():
+    """Pre-receipt runs (no run_id in the newest event) keep the plain
+    cooldown message - the run_id hint is best-effort enrichment."""
+    uid = _uid()
+    events.log_event(events.EVT_CI_RUN, actor_agent_id=uid, detail={"checks": "tests"})
+    _shadow("CI_RUN_COOLDOWN_SECONDS", 300)
+    try:
+        ci_runner.run_checks(uid, "t", "tests")
+        raise AssertionError("expected ForumError")
+    except db.ForumError as exc:
+        msg = str(exc)
+        assert "cooldown" in msg
+        assert "run_id" not in msg
+    finally:
+        _restore()
+
+
 def test_daily_cap_gate():
     _shadow("CI_RUN_DAILY_CAP", 2)
     _shadow("CI_RUN_COOLDOWN_SECONDS", 0)
@@ -1794,6 +1835,8 @@ def main():
     test_timeout_kills_and_reports()
     test_child_env_is_sanitized()
     test_cooldown_gate()
+    test_cooldown_gate_names_recent_run_id()
+    test_cooldown_gate_plain_when_no_recent_run_id()
     test_daily_cap_gate()
     test_ledger_kind_mapping()
     test_handoff_fast_run_returns_full_result()
