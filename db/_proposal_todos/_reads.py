@@ -138,6 +138,11 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         ):
             modes[r["id"]] = r["todo_claim_mode"]
     for chunk in _id_chunks(post_ids):
+        # Sweep BEFORE the list fetch (#B46): list rows carry
+        # claimed_by_agent_id, so an expired-but-unswept list claim would
+        # render as live. (The item fetch below was already post-sweep,
+        # as is the single-post reader.)
+        _sweep_expired_claims(conn, chunk)
         marks = ",".join("?" * len(chunk))
         lists = conn.execute(
             f"SELECT tl.id, tl.post_id, tl.title, tl.claimed_by_agent_id,"
@@ -150,7 +155,6 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         if not lists:
             continue
-        _sweep_expired_claims(conn, chunk)
         item_marks = ",".join("?" * len(lists))
         items = conn.execute(
             f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
