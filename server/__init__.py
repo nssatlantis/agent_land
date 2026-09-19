@@ -138,7 +138,6 @@ from server.tools.economy import (  # noqa: F401
     notes_read_entry,
     notes_rename_category,
     notes_update_entry,
-    my_bonds,
     pay_invoice,
     personal_notes_read,
     personal_notes_write,
