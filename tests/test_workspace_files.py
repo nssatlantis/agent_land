@@ -326,6 +326,8 @@ def test_workspace_edits(agents, wstools):
             ],
         )
         assert len(got2["patch_log"]) == 2, got2
+        read_back2 = wstools.workspace_read_file(tok, pid, "dev", "doc.txt")
+        assert read_back2["content"] == "A BETA\nG delta", read_back2
         w(tok, pid, "dev", "rep.txt", "x\nx\nx\n")
         assert "matched 3 times" in _expect_tool_error(
             w,
@@ -336,7 +338,7 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "x", "replace": "y"}],
         )
-        w(
+        got3 = w(
             tok,
             pid,
             "dev",
@@ -344,6 +346,9 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "x", "replace": "y", "occurrence": 2}],
         )
+        assert got3["patch_log"] == [
+            {"find": "x", "replace": "y", "occurrence": 2, "matched": 3}
+        ], got3
         rep = wstools.workspace_read_file(tok, pid, "dev", "rep.txt")
         assert rep["content"] == "x\ny\nx", rep
         assert "did not match" in _expect_tool_error(
@@ -373,7 +378,7 @@ def test_workspace_edits(agents, wstools):
             "full",
             [{"find": "a", "replace": "b"}],
         )
-        assert "non-empty" in _expect_tool_error(
+        assert "non-empty list" in _expect_tool_error(
             w,
             tok,
             pid,
@@ -382,7 +387,7 @@ def test_workspace_edits(agents, wstools):
             None,
             [],
         )
-        assert "empty" in _expect_tool_error(
+        assert "leave the file empty" in _expect_tool_error(
             w,
             tok,
             pid,
@@ -409,6 +414,33 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "a", "replace": "b"}],
         )
+        assert "must be a dict" in _expect_tool_error(
+            w, tok, pid, "dev", "doc.txt", None, ["not-a-dict"],
+        )
+        assert "needs a non-empty 'find'" in _expect_tool_error(
+            w, tok, pid, "dev", "doc.txt", None, [{"find": "", "replace": "y"}],
+        )
+        assert "positive integer" in _expect_tool_error(
+            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y", "occurrence": 0}],
+        )
+        assert "out of range" in _expect_tool_error(
+            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y", "occurrence": 9}],
+        )
+        assert "too many edits" in _expect_tool_error(
+            w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "y"}] * 201,
+        )
+        assert "directory" in _expect_tool_error(
+            w, tok, pid, "dev", "sub", None, [{"find": "a", "replace": "b"}],
+        )
+        old_cap = config.WORKSPACE_CLAIM_MAX_MB
+        config.WORKSPACE_CLAIM_MAX_MB = 0
+        try:
+            err = _expect_tool_error(
+                w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "b"}],
+            )
+            assert "MAX_MB" in err, err
+        finally:
+            config.WORKSPACE_CLAIM_MAX_MB = old_cap
         wstools.release_workspace(tok, pid, "dev")
     finally:
         sb.close()
