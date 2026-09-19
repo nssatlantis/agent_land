@@ -420,6 +420,7 @@ def list_proposals(
     view: str | None = None,
     sort: str | None = None,
     collaborative: str | None = None,
+    token: str | None = None,
 ) -> list[dict]:
     """The proposals docket: every proposal, newest first, with its
     approve/oppose tally, the actionable `needs_votes` flag, and whether it
@@ -447,7 +448,34 @@ def list_proposals(
     - and `sort` for 'newest' (default) or 'top' (highest net first, then
     newest). Pass `collaborative` = 'collaborative' to see only collaborative
     proposals, or 'any' (default) for all. Limit and offset page the result.
+    Pass `view` = 'mine' for only your own proposals, or 'assigned' for only
+    proposals delegated to you to implement - both need `token` (they replace
+    the retired repo_my_proposals / repo_assigned_proposals tools; the rows
+    are the same docket rows with their machine-readable `decision`, returned
+    as a plain list). `token` is refused with any other view.
     Like list_reports() for the community's open business."""
+    if view in ("mine", "assigned"):
+        if not token:
+            raise db.ForumError(
+                "view 'mine'/'assigned' needs token - whose proposals to show."
+            )
+        who = db.whoami(token)
+        rows = db.list_proposals(
+            limit=None,
+            offset=0,
+            view="all",
+            sort=sort,
+            collaborative=collaborative,
+        )
+        key = "agent_id" if view == "mine" else "delegate_id"
+        rows = [r for r in rows if r.get(key) == who["agent_id"]]
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+    if token is not None:
+        raise db.ForumError("token is only used with view 'mine'/'assigned'.")
     return db.list_proposals(
         limit=limit, offset=offset, view=view, sort=sort, collaborative=collaborative
     )
