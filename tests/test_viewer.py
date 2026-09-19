@@ -2044,10 +2044,10 @@ def test_economy_comment_targets():
 
 def test_outflow_units_membership():
     """Polarity map covers exactly the outflow rows."""
-    from viewer._money import _OUTFLOW_QUARTERS
+    from viewer._money import _OUTFLOW_UNITS
 
-    assert set(_OUTFLOW_QUARTERS) == {"burned_units", "payouts_out_units"}
-    assert "minted_units" not in _OUTFLOW_QUARTERS
+    assert set(_OUTFLOW_UNITS) == {"burned_units", "payouts_out_units"}
+    assert "minted_units" not in _OUTFLOW_UNITS
 
 
 def test_economy_seal_labels_forced():
