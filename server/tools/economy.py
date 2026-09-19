@@ -630,7 +630,7 @@ def bond_series_open(
 @_logged
 def bond_series_close(token: str, series_id: int) -> dict:
     """Close a bond series to new buys (admin-only). Live bonds run
-    to maturity; nothing is pulled."""
+    to maturity with accrual continuing; nothing is pulled."""
     from server.tools.moderation import _require_admin
 
     _require_admin(token)

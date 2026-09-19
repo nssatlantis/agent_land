@@ -215,7 +215,7 @@ def bond_series_open(
 
 def bond_series_close(series_id: int) -> dict:
     """Close a series to new buys (admin-only at the tool layer). Live
-    bonds run to maturity; nothing is pulled."""
+    bonds run to maturity with accrual continuing; nothing is pulled."""
     with _conn(immediate=True) as conn:
         _ensure_tables(conn)
         row = _series_row(conn, series_id)
@@ -592,8 +592,10 @@ def sweep_bond_day() -> dict:
             base = 0
         accrued_total = 0
         try:
+            # Open AND closed series accrue: closing stops new buys,
+            # never the yield on locked bonds (#1287 review).
             series_rows = conn.execute(
-                "SELECT * FROM bond_series WHERE status = 'open'"
+                "SELECT * FROM bond_series WHERE status IN ('open', 'closed')"
             ).fetchall()
         except Exception:  # domain: degrade-silently - pre-bond DB accrues nothing
             series_rows = []

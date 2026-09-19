@@ -35,7 +35,7 @@ from db._bonds import (  # noqa: E402
 from db._credits import mint as _mint  # noqa: E402
 
 with db._conn(immediate=True) as _c:  # noqa: E402
-    _mint(40000, "test_suite_topup", admin="test-suite", conn=_c)
+    _mint(200000, "test_suite_topup", admin="test-suite", conn=_c)
 
 
 def _make_holder(name: str, seed_units: int = 4000):
@@ -271,6 +271,9 @@ def test_dry_treasury_holds_maturity():
     assert got["status"] == "matured", got
     assert got["accrued_units"] == 10000000, got
     assert _bal(holder["agent_id"]) == bal0, "principal out, yield held"
+    assert db.economy_overview()["conservation"]["ok"] is True, (
+        "dry-held face is out of escrow and out of the recompute"
+    )
     with db._conn() as conn:
         conn.execute(
             "UPDATE treasury_bonds SET accrued_units = 40 WHERE id = ?",
@@ -365,6 +368,26 @@ def test_yield_base_counts_store_and_stake_fees():
             tx_id=tx2,
         )
     assert _base_now() - before == 100
+
+
+def test_closed_series_still_accrues():
+    from db._bonds import bond_series_close
+
+    holder = _make_holder("bd-closed")
+    peer = _make_holder("bd-closed-peer")
+    saved = _arm_fee(10.0)
+    try:
+        sid = bond_series_open("closed-7", 7)["series_id"]
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1000)
+        b = buy_bond(holder["token"], sid, 10.0)
+        bond_series_close(sid)
+        _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        _reset_sweep_day()
+        sweep_bond_day()
+        got = [x for x in my_bonds(holder["token"])["bonds"]][0]
+        assert got["accrued_units"] > 0, got
+    finally:
+        _unarm_fee(saved)
 
 
 def test_redeem_refuses_foreign_and_dead():

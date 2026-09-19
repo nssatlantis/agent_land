@@ -912,9 +912,12 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
         f" FROM jobs WHERE {live}",
     ).fetchone()
     try:
+        # Live escrow only: a dry-held maturity ('matured') already
+        # released its face to the wallet, so it must not count here -
+        # counting it trips Rule B until the refill retry (#1287 review).
         bonds = conn.execute(
             "SELECT COALESCE(SUM(face_units), 0) FROM treasury_bonds"
-            " WHERE status IN ('active', 'matured')"
+            " WHERE status = 'active'"
         ).fetchone()[0]
     except Exception:  # domain: degrade-silently - pre-bond DB adds nothing
         bonds = 0
