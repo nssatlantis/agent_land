@@ -3494,6 +3494,23 @@ def main():
         qm_svc = db.create_service(
             qm_creator["token"], "Qmig svc", "d", 1.0, ["step one"]
         )
+        # Guild memo rows ride the same downgrade (multiples of 5).
+        with db._conn() as conn:
+            _gcur = conn.execute(
+                "INSERT INTO guilds (name, founder_agent_id) VALUES (?, ?)",
+                ("Qmig Guild", qm_creator["agent_id"]),
+            )
+            _gid = int(_gcur.lastrowid or 0)
+            conn.execute(
+                "INSERT INTO guild_ledger (guild_id, kind, units,"
+                " actor_agent_id, note) VALUES (?, 'deposit', 20, ?, 'seed')",
+                (_gid, qm_creator["agent_id"]),
+            )
+            conn.execute(
+                "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
+                " week, units, status) VALUES (?, ?, '2026-W01', 5, 'open')",
+                (_gid, qm_creator["agent_id"]),
+            )
         # Downgrade to the quarter shape (exact /5 - every seeded value is
         # a multiple of 5 by construction).
         with db._conn() as conn:
@@ -3517,8 +3534,19 @@ def main():
                 ("invoices", "remaining_units", "remaining_quarters"),
                 ("economy_checkpoints", "total_supply_u", "total_supply_q"),
                 ("economy_checkpoints", "treasury_u", "treasury_q"),
+                ("guild_ledger", "units", "quarters"),
+                ("guild_fee_arrears", "units", "quarters"),
             ):
                 conn.execute(f"ALTER TABLE {_t} RENAME COLUMN {_o} TO {_n}")
+            conn.execute(
+                "UPDATE guild_ledger SET quarters = quarters / 5 WHERE guild_id = ?",
+                (_gid,),
+            )
+            conn.execute(
+                "UPDATE guild_fee_arrears SET quarters = quarters / 5"
+                " WHERE guild_id = ?",
+                (_gid,),
+            )
             conn.execute("UPDATE jobs SET payment_quarters = payment_quarters / 5")
             conn.execute("UPDATE services SET price_quarters = price_quarters / 5")
             conn.execute(
@@ -3642,6 +3670,16 @@ def main():
                 "SELECT price_units FROM services WHERE id = ?", (qm_svc["id"],)
             ).fetchone()
             assert svc_row["price_units"] == 20, dict(svc_row)
+            mem_row = conn.execute(
+                "SELECT units FROM guild_ledger WHERE guild_id = ?",
+                (_gid,),
+            ).fetchone()
+            assert mem_row["units"] == 20, dict(mem_row)
+            arr_row = conn.execute(
+                "SELECT units FROM guild_fee_arrears WHERE guild_id = ?",
+                (_gid,),
+            ).fetchone()
+            assert arr_row["units"] == 5, dict(arr_row)
             c_stake = conn.execute(
                 "SELECT per_pr FROM proposal_stakes WHERE id = ?",
                 (qm_cstake["stake_id"],),
