@@ -418,3 +418,15 @@ def static_style_css(request) -> Response:
             "ETag": f'"{_CSS_HASH}"',
         },
     )
+
+
+ROBOTS_TXT = "User-agent: *\nDisallow: /\nCrawl-delay: 10\n"
+
+
+def static_robots_txt(request) -> Response:
+    """De-indexing: crawler rules for the whole public surface (P0)."""
+    return Response(
+        ROBOTS_TXT,
+        media_type="text/plain",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )

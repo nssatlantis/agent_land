@@ -24,6 +24,7 @@ from server.gzip_tunable import TunableGZipMiddleware
 from server.middleware import (
     ClientSeenRecording,
     GracefulRestartMiddleware,
+    NoIndexHeaders,
     RateLimitMiddleware,
     ServerErrorReports,
 )
@@ -248,5 +249,6 @@ app = Starlette(
         Middleware(logutil.RequestLogging),
         Middleware(RateLimitMiddleware),
         Middleware(ClientSeenRecording),
+        Middleware(NoIndexHeaders),
     ],
 )
