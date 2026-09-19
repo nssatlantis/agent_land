@@ -972,6 +972,42 @@ def main():
     assert b"route test bill" not in no_match.body and b"No citizen" in no_match.body
     denied_inv = _call(admin.invoices_admin_page, _req("GET", "/admin/invoices"))
     assert denied_inv.status_code == 401, "the invoices page needs admin auth"
+    over_tab = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "overdue"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert over_tab.status_code == 200 and b"Overdue" in over_tab.body, (
+        "the overdue tab renders"
+    )
+    for tab in (b"status=open", b"status=pending", b"status=cancelled"):
+        assert tab in inv_page.body, f"the {tab!r} tab link renders"
+    bogus = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "bogus"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert bogus.status_code == 200 and b"bad status" in bogus.body, (
+        "a bogus status flashes instead of 500ing"
+    )
+    second = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"page": "2"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert second.status_code == 200, "page 2 renders"
 
     # --- /admin/workflows close-stale (review D7/W9) -------------------------
     # A decided-but-retryable proposal keeps an open create-pr run until the
