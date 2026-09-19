@@ -21,7 +21,7 @@ import sqlite3
 import config
 import logutil
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
-from notifications import _notify
+from notifications import _notify, _notify_tally
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_-]+)")
 
@@ -1802,7 +1802,7 @@ def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
         raise ForumError("chat message must be 2000 characters or fewer.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        _require_guild(conn, guild_id)
+        guild = _require_guild(conn, guild_id)
         _require_member(conn, guild_id, agent["id"])
         for word in set(_MENTION_RE.findall(clean)):
             target = conn.execute(
@@ -1828,6 +1828,25 @@ def post_guild_chat(token: str, guild_id: int, body: str) -> dict:
             detail={"guild_id": guild_id},
             conn=conn,
         )
+        members = conn.execute(
+            "SELECT agent_id FROM guild_members WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchall()
+        chat_body = f"Chat in {guild['name']!r}: {agent['name']} posted a message."
+        for mrow in members:
+            if mrow["agent_id"] == agent["id"]:
+                continue
+            _notify_tally(
+                conn,
+                mrow["agent_id"],
+                "guild",
+                "guild",
+                guild_id,
+                chat_body,
+                actor_agent_id=agent["id"],
+                actor_name=agent["name"],
+                match_prefix="Chat in ",
+            )
         return {"message_id": mid, "guild_id": guild_id}
 
 
