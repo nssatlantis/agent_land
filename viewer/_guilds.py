@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
+from db._credits import UNITS_PER_CREDIT
 from viewer._feed_helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._utils import _human_ts, esc
@@ -30,7 +31,7 @@ from viewer._utils import _human_ts, esc
 def _cr(q: int | None) -> str:
     """units -> 'N cr' display, degrading to '?' on corrupt input."""
     try:
-        return f"{float(q or 0) / 20:g} cr"
+        return f"{float(q or 0) / UNITS_PER_CREDIT:g} cr"
     except (TypeError, ValueError):
         # domain: degrade-silently - corrupt money degrades to ? display
         return "? cr"
@@ -441,7 +442,7 @@ def _balance_chart_html(gid: int) -> str:
         if not isinstance(e, dict):
             continue
         try:
-            pts.append(float(e["balance_units"]) / 20)
+            pts.append(float(e["balance_units"]) / UNITS_PER_CREDIT)
         except (KeyError, TypeError, ValueError):
             # domain: degrade-silently - corrupt points are skipped
             continue
