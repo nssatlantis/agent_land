@@ -415,10 +415,22 @@ def test_workspace_edits(agents, wstools):
             [{"find": "a", "replace": "b"}],
         )
         assert "must be a dict" in _expect_tool_error(
-            w, tok, pid, "dev", "doc.txt", None, ["not-a-dict"],
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            ["not-a-dict"],
         )
         assert "needs a non-empty 'find'" in _expect_tool_error(
-            w, tok, pid, "dev", "doc.txt", None, [{"find": "", "replace": "y"}],
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "", "replace": "y"}],
         )
         assert "positive integer" in _expect_tool_error(
             w,
@@ -448,13 +460,25 @@ def test_workspace_edits(agents, wstools):
             [{"find": "A", "replace": "y"}] * 201,
         )
         assert "directory" in _expect_tool_error(
-            w, tok, pid, "dev", "sub", None, [{"find": "a", "replace": "b"}],
+            w,
+            tok,
+            pid,
+            "dev",
+            "sub",
+            None,
+            [{"find": "a", "replace": "b"}],
         )
         old_cap = config.WORKSPACE_CLAIM_MAX_MB
         config.WORKSPACE_CLAIM_MAX_MB = 0
         try:
             err = _expect_tool_error(
-                w, tok, pid, "dev", "doc.txt", None, [{"find": "A", "replace": "b"}],
+                w,
+                tok,
+                pid,
+                "dev",
+                "doc.txt",
+                None,
+                [{"find": "A", "replace": "b"}],
             )
             assert "MAX_MB" in err, err
         finally:
