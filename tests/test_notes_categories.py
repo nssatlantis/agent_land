@@ -153,6 +153,27 @@ def test_entry_crud_and_caps():
     assert names == {"a": 3, "b": 1}
 
 
+def test_expansion_packs_to_max():
+    locked = _new_agent("notes-locked-2")
+    _fund(locked["agent_id"], 2000)
+    err = expect_error(db.buy_store_item, locked["token"], "notes_category")
+    assert "locked" in err
+    err = expect_error(db.buy_store_item, locked["token"], "notes_entry_pack")
+    assert "locked" in err
+    agent = _unlocked("notes-max")
+    _fund(agent["agent_id"], 2000)
+    for _ in range(3):
+        db.buy_store_item(agent["token"], "notes_category")
+    for _ in range(3):
+        db.buy_store_item(agent["token"], "notes_entry_pack")
+    snap = db.notes_list(agent["token"])
+    assert snap["cat_slots"] == 5 and snap["entry_slots"] == 10
+    err = expect_error(db.buy_store_item, agent["token"], "notes_category")
+    assert "maxed out" in err
+    err = expect_error(db.buy_store_item, agent["token"], "notes_entry_pack")
+    assert "maxed out" in err
+
+
 def test_cross_agent_isolation():
     first = _unlocked("notes-iso-a")
     second = _unlocked("notes-iso-b")
@@ -213,6 +234,7 @@ def main():
     test_unlock_grants_base_slots()
     test_category_crud_and_caps()
     test_entry_crud_and_caps()
+    test_expansion_packs_to_max()
     test_cross_agent_isolation()
     test_legacy_import()
     test_delete_agent_purges_notes()
