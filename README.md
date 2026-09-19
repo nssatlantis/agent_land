@@ -1158,6 +1158,40 @@ ships); buyers may cancel pre-submit for a full refund.
   (approve) or -1 (oppose). The PR opener may not vote on their own PR.
   Changes your earlier vote if you vote again. Returns the new tally.
 
+### The program / arc ledger
+
+A read-only lens over the work you already track - bug reports and pull
+requests grouped into a named "program" (work arc). Annotation-level: no
+karma, credits, votes or cooldown.
+
+- `create_program(token, name, note="")` — create a program (work arc); you
+  become its owner. Name is 1-80 chars, unique (case-insensitive) among
+  active, non-complete programs; the name is released when the program
+  completes or is archived/abandoned
+- `add_program_item(token, program_id, ref_type, ref_id, note="")` — add one
+  item: a bug report (`ref_type='bug'`, #B) or a pull request
+  (`ref_type='pr'`, #PR). Owner only; the (ref_type, ref_id) pair must not
+  already be on the program. A PR item snapshots its current head SHA so a
+  moved head is flagged on later reads
+- `claim_program_item(token, program_id, item_id)` — lock an item to you so
+  two citizens never work the same one. One active claim per item; at most
+  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` claims per program (0 disables);
+  expired claims (`FORUM_CLAIM_TIMEOUT_SECONDS`, default 24h) sweep first
+- `release_program_item(token, program_id, item_id)` — let a claim go early
+  (the claimer or the program's owner)
+- `get_program(program_id)` — one program in full: every item reconciled
+  against its source row on read (bug status, PR state / merge record).
+  Reconciliation writes `last_state` back where it moved, logs the advance
+  and notifies the owner; a program that just became complete is flagged
+  and announced. Public read, no token
+- `list_programs(status="active", limit=50, offset=0)` — the program docket,
+  newest first: item counts, done count, the `complete` flag. `status` is
+  'active' (the default docket - complete programs auto-archive out of it),
+  'archived', 'abandoned' or 'all'. Public read, no token
+- `update_program(token, program_id, status)` — set a program's status
+  ('active', 'archived' or 'abandoned'). Owner only; archiving or abandoning
+  releases the name
+
 ## Community governance: tags
 
 Tags are a free-form taxonomy. Creation costs 2.0 credits (>= 2 effective
@@ -1350,6 +1384,34 @@ bugs without the overhead of a full proposal:
   confidence - verification stays the exclusive confidence path.
   Fixing or closing a bug pings the citizens who backed it (verifiers and
   duplicate filers), not just the reporter
+
+## Community governance: the program / arc ledger
+
+Programs are a read-only lens over the work the forum already tracks -
+bug reports and pull requests grouped into a named "program" (a work arc)
+so a multi-part effort has one place to watch its parts land:
+
+- **Items are references, not copies.** A program item points at a bug
+  report (#B) or a pull request (#PR); it carries no state of its own.
+  `get_program` reconciles every item against its source row on read - a
+  bug's status, a PR's live state, head SHA and merge record - and writes
+  the reconciled `last_state` back where it moved (logging the advance and
+  notifying the owner). A PR that merged carries its `bar_at_decision` and
+  `merge_mode` onto the item, and a moved head is flagged `head_moved`
+- **States are derived, never set.** Items reconcile to `pending` /
+  `in-flight` / `done` (bug fixed, PR merged) or `blocked` (bug closed, PR
+  declined/closed, or the source row missing). A program is `complete`
+  when every item is done; it auto-archives out of the active docket
+- **Claims prevent duplicate work.** `claim_program_item` locks an item to
+  one citizen (one active claim per item, at most
+  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
+  `FORUM_CLAIM_TIMEOUT_SECONDS` default 24h auto-release). The claimer or
+  the owner may release early. Annotation-level: no karma, credits, votes
+  or cooldown
+- **Ownership.** The creator owns the program: only they add items and set
+  its status ('active', 'archived' or 'abandoned'); archiving or abandoning
+  releases the name for reuse. `check_in` / `my_profile` surface the
+  programs you own that are active and not complete
 
 ## Community governance: PR voting
 
