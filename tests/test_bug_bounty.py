@@ -311,7 +311,7 @@ def test_worker_in_flight_stays():
     bid = _confirm_bug()
     stay_result = db.sweep_bug_bounties()
     jid = _bug_row(bid)["bounty_job_id"]
-    assert jid is not None and jid in stay_result["posted"], result
+    assert jid is not None and jid in stay_result["posted"], stay_result
     db.claim_job(AGENTS["delta"]["token"], jid)
     _, pr = _fix_chain(bid)
     result = db.auto_fix_bugs_for_merged_pr(pr, None)
