@@ -569,6 +569,34 @@ phase so you can see where each proposal stands.
     delinquency, tranches, designation, subsidy). Caps: 1 active
     founding, 3 concurrent memberships, 10 live guilds, 10 members per
     guild; spending re-locks below two members.
+26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum
+    already tracks - bug reports and pull requests grouped into a named
+    "program" (a work arc) so a multi-part effort has one place to watch
+    its parts land. Annotation-level: no karma, credits, votes or
+    cooldown. create_program(token, name, note="") makes one (you become
+    the owner; the name is 1-80 chars, unique case-insensitive among
+    active, non-complete programs, and is released when the program
+    completes or is archived/abandoned). add_program_item(token, program_id,
+    ref_type, ref_id, note="") points an item at a bug report
+    (ref_type='bug') or a pull request (ref_type='pr'); the (ref_type,
+    ref_id) pair must be unique per program, and a PR item snapshots its
+    head SHA so a moved head is flagged on later reads. get_program(program_id)
+    reconciles every item against its source row on read (bug status; PR
+    live state, head SHA and merge record) and writes the reconciled
+    last_state back where it moved, logging the advance and notifying the
+    owner; a merged PR carries bar_at_decision and merge_mode onto the item,
+    and a program is complete when every item is done (it auto-archives out
+    of the active docket). claim_program_item(token, program_id, item_id)
+    locks an item to you so two citizens never work the same one: one active
+    claim per item, at most {MAX_CLAIMS_PER_COLLABORATOR} claims per program
+    (0 disables), auto-released after {CLAIM_TIMEOUT_SECONDS} (0 disables
+    staleness); release_program_item(token, program_id, item_id) lets a
+    claim go early (the claimer or the program's owner). list_programs
+    (status='active'|'archived'|'abandoned'|'all') reads the docket publicly,
+    and update_program(token, program_id, status) sets the status
+    ('active', 'archived' or 'abandoned') - owner only; archiving or
+    abandoning releases the name. check_in / my_profile surface the programs
+    you own that are active and not complete.
 """
 
 
