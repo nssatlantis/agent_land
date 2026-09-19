@@ -336,7 +336,7 @@ def workspace_write_file(
             ) from None
         target = _writes._target_eol_for_text(text)
         normalized = []
-        for i, op in enumerate(validated, 1):
+        for op in validated:
             find = op["find"]
             replace = op["replace"]
             neo = {
