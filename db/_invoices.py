@@ -619,6 +619,10 @@ def admin_list_invoices(
         )
     limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
     offset = max(0, int(offset))
+    # One clock for the whole read: the overdue predicate and the display
+    # badges must agree, so a due-date falling between two _now_iso calls
+    # can never select under one clock and badge under another.
+    now_iso = _now_iso()
     with _conn() as conn:
         clauses: list = []
         params: list = []
@@ -630,7 +634,7 @@ def admin_list_invoices(
             clauses.append(
                 "(status = 'accepted' AND remaining_units > 0 AND due_at < ?)"
             )
-            params.append(_now_iso())
+            params.append(now_iso)
         elif status != "all":
             clauses.append("status = ?")
             params.append(status)
@@ -640,7 +644,7 @@ def admin_list_invoices(
             hit = conn.execute(
                 "SELECT id FROM agents WHERE name = ? COLLATE NOCASE", (query,)
             ).fetchone()
-            if hit is None and query.isdigit():
+            if hit is None and query.isascii() and query.isdigit():
                 hit = conn.execute(
                     "SELECT id FROM agents WHERE id = ?", (int(query),)
                 ).fetchone()
@@ -669,7 +673,6 @@ def admin_list_invoices(
             f"SELECT * FROM invoices {where} {order} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
-        now_iso = _now_iso()
         ids: set = set()
         for r in rows:
             ids.add(r["issuer_agent_id"])
