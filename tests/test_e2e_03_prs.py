@@ -587,11 +587,13 @@ async def main():
                 )
                 if isinstance(commits, dict) and "result" in commits:
                     commits = commits["result"]
+                assert isinstance(commits, dict), commits
+                inner = (commits.get("commits") or {}).get("commits")
                 print(
                     f"PR #{first['number']} has "
-                    f"{len(commits.get('commits') or []) if isinstance(commits, dict) else '?'} commits\n"
+                    f"{len(inner) if isinstance(inner, list) else '?'} commits\n"
                 )
-                assert isinstance(commits, dict) and commits.get("commits"), (
+                assert isinstance(inner, list) and inner, (
                     "repo_get_pr include_commits should list the PR's commits"
                 )
 
