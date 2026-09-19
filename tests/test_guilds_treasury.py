@@ -325,8 +325,8 @@ def test_upkeep_issue_pay_sweep():
             ("2020-01-01T00:00:00.000Z", gid),
         )
     report3 = db.sweep_guild_upkeep()
-    assert report3["swept"].get(gid) == 2, report3
-    assert _pool(gid) == 503, _pool(gid)
+    assert report3["swept"].get(gid) == 10, report3
+    assert _pool(gid) == 495, _pool(gid)
     with db._conn() as conn:
         week = conn.execute(
             "SELECT last_upkeep_week FROM guilds WHERE id = ?", (gid,)
@@ -346,7 +346,7 @@ def test_upkeep_suspend_recover_grace():
             " FROM guild_fee_invoices WHERE guild_id = ?)",
             ("2020-01-01T00:00:00.000Z", gid),
         )
-    # Pool 1u < due 2u: suspend, no sweep.
+    # Pool 1u < due 10u: suspend, no sweep.
     report = db.sweep_guild_upkeep()
     assert report["suspended"] == [gid], report
     assert report["swept"] == {}
@@ -364,7 +364,7 @@ def test_upkeep_suspend_recover_grace():
     db.guild_deposit(mate["token"], gid, 2.5)  # +50u: pool 51
     report2 = db.sweep_guild_upkeep()
     assert report2["recovered"] == [gid], report2
-    assert report2["swept"].get(gid) == 2, report2
+    assert report2["swept"].get(gid) == 10, report2
     with db._conn() as conn:
         flag2 = conn.execute(
             "SELECT spending_suspended FROM guilds WHERE id = ?", (gid,)
@@ -678,7 +678,7 @@ def test_sweep_isolation_poisoned_guild():
         report = db.sweep_guild_upkeep()
         # Healthy guild sweeps through (memos only, no grants needed);
         # the poisoned one skips without aborting the tick.
-        assert report["swept"].get(gid) == 2, report
+        assert report["swept"].get(gid) == 10, report
         assert pgid in report["skipped"], report
         with db._conn() as conn:
             status = conn.execute(
