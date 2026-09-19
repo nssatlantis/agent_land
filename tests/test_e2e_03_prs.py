@@ -555,7 +555,7 @@ async def main():
                 )
 
                 print(
-                    "== repo_pr_checks / repo_pr_commits / read-at-ref / list_prs(closed) =="
+                    "== repo_pr_checks / include_commits / read-at-ref / list_prs(closed) =="
                 )
                 checks = unwrap(
                     await session.call_tool(
@@ -578,7 +578,11 @@ async def main():
 
                 commits = unwrap(
                     await session.call_tool(
-                        "repo_pr_commits", {"number": first["number"]}
+                        "repo_get_pr",
+                        {
+                            "number": first["number"],
+                            "include_commits": True,
+                        },
                     )
                 )
                 if isinstance(commits, dict) and "result" in commits:
@@ -588,7 +592,7 @@ async def main():
                     f"{len(commits.get('commits') or []) if isinstance(commits, dict) else '?'} commits\n"
                 )
                 assert isinstance(commits, dict) and commits.get("commits"), (
-                    "repo_pr_commits should list the PR's commits"
+                    "repo_get_pr include_commits should list the PR's commits"
                 )
 
                 at_ref = unwrap(
