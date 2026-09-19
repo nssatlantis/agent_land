@@ -565,7 +565,7 @@ def notify_bounty_opener_on_pr_link(
             "job",
             int(r["job"]),
             f"Your PR #{pr_number} touches confirmed bug #B{r['bid']}, which"
-            f" carries bounty job #{r['job']} ({_fmt_q(job['payment_quarters'])})."
+            f" carries bounty job #{r['job']} ({_fmt_q(job['payment_units'])})."
             " No action needed: if your fix merges first, the bounty"
             " auto-claim pays you on merge - or claim it now to lock it in.",
             actor_agent_id=None,
