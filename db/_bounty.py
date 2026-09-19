@@ -7,7 +7,7 @@ walks away with zero duties), and merging a linked fix auto-closes the
 loop two ways: the bug is fixed (reporter +1 karma, the only reporter
 payout) and the worker is paid automatically when the cited evidence PRs
 merge. Open bounties with no worker are cancelled with a treasury
-refund; claimed/in-flight ones stay for their worker to finish. Never
+refund; claimed/in-flight ones stay for their worker to finish (proposal #541: a workerless bounty whose fixing PR has a known active opener auto-claims for them instead of cancelling). Never
 raises: discovery failures return zeros and per-bug races record into
 the return, so a bounty hiccup can never poison the merge outcome it
 rides along with.
@@ -22,6 +22,7 @@ and a claim-gate follows on observed farming, not before.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -273,7 +274,7 @@ def auto_fix_bugs_for_merged_pr(
     unless a worker holds it (claimed/in-flight stays for judging).
     Never raises: per-bug races record into the return and the loop
     continues. Returns {"fixed": [...], "cancelled": [...],
-    "stayed": [...] bid lists}.
+    "stayed": [...], "auto_paid": [...] bid lists}.
     """
     import logutil
     from db._bug_reports import fix_bug_report
@@ -282,6 +283,7 @@ def auto_fix_bugs_for_merged_pr(
     fixed: list[int] = []
     cancelled: list[int] = []
     stayed: list[int] = []
+    auto_paid: list[int] = []
     try:
         with _conn() as conn:
             by_pointer = conn.execute(
@@ -300,7 +302,7 @@ def auto_fix_bugs_for_merged_pr(
                     (proposal_post_id,),
                 ).fetchall()
     except Exception:  # domain: degrade-silently - discovery is best-effort; the merge outcome must never hinge on it
-        return {"fixed": [], "cancelled": [], "stayed": []}
+        return {"fixed": [], "cancelled": [], "stayed": [], "auto_paid": []}
     seen: set[int] = set()
     targets: list[tuple[int, int | None]] = []
     for row in list(by_pointer) + list(by_link):
@@ -331,6 +333,23 @@ def auto_fix_bugs_for_merged_pr(
             ):
                 stayed.append(job_id)
                 continue
+            try:
+                paid = _auto_claim_and_pay(pr_number, bid, job_id)
+            except Exception:  # domain: degrade-silently - autoclaim fault falls back to cancel; fix already landed
+                logutil.log("bounty_autofix_bug_failed", bid=bid, phase="autoclaim")
+                paid = False
+            if paid is True:
+                auto_paid.append(job_id)
+                continue
+            if paid == "claimed":
+                # Review pin (Pickle, PR #1274): a manual claim landing
+                # between the pre-check read above and the immediate-txn
+                # re-read inside _auto_claim_and_pay leaves worker set -
+                # that bounty is claimed, not dead, so it stays (the
+                # pre-check's own classification) instead of falling
+                # through to the historic cancel.
+                stayed.append(job_id)
+                continue
             admin_cancel_job(_AUTOFIX_ADMIN, job_id)
         except ForumError:  # domain: fail-loudly - raced terminal state wins
             stayed.append(job_id)
@@ -340,7 +359,225 @@ def auto_fix_bugs_for_merged_pr(
             stayed.append(job_id)
             continue
         cancelled.append(job_id)
-    return {"fixed": fixed, "cancelled": cancelled, "stayed": stayed}
+    return {
+        "fixed": fixed,
+        "cancelled": cancelled,
+        "stayed": stayed,
+        "auto_paid": auto_paid,
+    }
+
+
+def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool | str:
+    """Claim a workerless bounty for its fixer's opener-of-record and pay it.
+
+    Proposal #541 backstop for the fixer who never claimed: when the merged
+    fix PR attributes to a known active citizen, the bounty claims itself
+    for them and settles through the shared _apply_review accept path (wage
+    + worker participation reward; the NULL-creator leg voids as usual), so
+    the Treasury-funded wage pays the proven fixer instead of evaporating
+    into a cancel refund. Any ineligibility (unlinked PR, gone/inactive
+    opener, raced state, prior cycle) returns False and the caller falls
+    back to the historic cancel - except a worker found set at re-read
+    time (claimed meanwhile), which returns "claimed" so the caller stays
+    it like the pre-check does. Own immediate connection, never inside a
+    held write txn; the accepted cycle lands before the merge-payout sweep
+    runs, so no double-pay is possible.
+    """
+    import logutil
+    from db._jobs_ops._detail import _JOB_COLS
+    from db._jobs_ops._flow import _apply_review
+    from events import EVT_JOB_CLAIMED, log_event
+    from notifications import _notify
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if job is None or job["status"] not in ("open", "offered", "active"):
+            return False
+        if job["worker_agent_id"] is not None:
+            return "claimed"
+        if int(job["cycles_done"] or 0) != 0:
+            return False
+        prior = conn.execute(
+            "SELECT 1 FROM job_cycles WHERE job_id = ?"
+            " AND status IN ('submitted', 'accepted')",
+            (job_id,),
+        ).fetchone()
+        if prior is not None:
+            return False
+        opener = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        opener_id = (
+            int(opener["opened_by_agent_id"])
+            if opener is not None and opener["opened_by_agent_id"] is not None
+            else None
+        )
+        if opener_id is None:
+            return False
+        fixer = _active_reporter(conn, opener_id)
+        if fixer is None:
+            return False
+        conn.execute(
+            "UPDATE jobs SET worker_agent_id = ?, status = 'active' WHERE id = ?",
+            (opener_id, job_id),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO job_cycles (job_id, cycle_no, status)"
+            " VALUES (?, 1, 'awaiting')",
+            (job_id,),
+        )
+        log_event(
+            EVT_JOB_CLAIMED,
+            actor_agent_id=opener_id,
+            actor_name=fixer["name"],
+            target_type="job",
+            target_id=job_id,
+            detail={
+                "how": "auto-claim",
+                "title": job["title"],
+                "creator_agent_id": job["creator_agent_id"],
+                "deposit_units": 0,
+                "admin": _AUTOFIX_ADMIN,
+                "fix_pr": pr_number,
+                "bug_id": bid,
+            },
+            conn=conn,
+        )
+        evidence = f"#PR{pr_number} (bounty auto-claim for #B{bid})"
+        conn.execute(
+            "INSERT INTO job_cycles (job_id, cycle_no, evidence,"
+            " evidence_pr_numbers, evidence_pr_shas, status,"
+            " submitted_at)"
+            " VALUES (?, 1, ?, ?, ?, 'submitted', ?)"
+            " ON CONFLICT(job_id, cycle_no) DO UPDATE SET"
+            " evidence = excluded.evidence,"
+            " evidence_pr_numbers = excluded.evidence_pr_numbers,"
+            " evidence_pr_shas = excluded.evidence_pr_shas,"
+            " status = 'submitted', feedback = NULL,"
+            " submitted_at = excluded.submitted_at,"
+            " decided_at = NULL",
+            (
+                job_id,
+                evidence,
+                json.dumps([pr_number]),
+                # SHAs unknown here by design: the payout gate checks PR
+                # numbers only, and resolving SHAs would put network I/O
+                # inside the write txn.
+                json.dumps([None]),
+                _now_iso(),
+            ),
+        )
+        job2 = conn.execute(
+            f"SELECT {_JOB_COLS} FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        cycle = conn.execute(
+            "SELECT * FROM job_cycles WHERE job_id = ? AND cycle_no = 1",
+            (job_id,),
+        ).fetchone()
+        _apply_review(
+            conn,
+            job2,
+            cycle,
+            "accept",
+            "",
+            actor_id=opener_id,
+            actor_name=fixer["name"],
+            admin_name=_AUTOFIX_ADMIN,
+            on_behalf_of=None,
+            forfeit_deposit=False,
+            punish=False,
+            accept_msg_prefix="Bounty auto-claim",
+            decline_msg_prefix="Bounty auto-claim",
+        )
+        _notify(
+            conn,
+            opener_id,
+            "jobs",
+            "job",
+            job_id,
+            f"Bounty auto-claim paid job #{job_id} ('{job['title']}') to you:"
+            f" your merged PR #{pr_number} fixed #B{bid} and no worker had"
+            " claimed it. No action needed.",
+            actor_agent_id=None,
+        )
+    logutil.log(
+        "bounty_autoclaim_paid",
+        bid=bid,
+        job_id=job_id,
+        worker=opener_id,
+        fix_pr=pr_number,
+    )
+    return True
+
+
+def notify_bounty_opener_on_pr_link(
+    conn: sqlite3.Connection, post_id: int, pr_number: int, agent_id: int | None
+) -> int:
+    """PR-link bounty nudge (proposal #541): when a PR links to a proposal
+    citing a confirmed bug whose bounty is open and workerless, ping the
+    opener once per (agent, job) so a fixer who never looks at the jobs
+    board still learns the wage exists (and that it auto-pays them on
+    merge). Once-per-pair by design: a second PR on the same proposal
+    does not re-ping an already-told opener. The '%auto-claim%' match
+    also covers the auto-claim paid notice, so no nudge fires after
+    payment either. Returns pings sent. Best-effort by contract -
+    callers guard it so a nudge failure can never break link recording.
+    """
+    from db._jobs_ops._helpers import _fmt_q
+    from notifications import _notify
+
+    try:
+        if agent_id is None:
+            return 0
+        rows = conn.execute(
+            "SELECT b.id AS bid, b.bounty_job_id AS job"
+            " FROM bug_report_links l JOIN bug_reports b ON b.id = l.report_id"
+            " WHERE l.post_id = ? AND b.status = 'confirmed'",
+            (post_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:  # domain: degrade-silently - nudge is
+        # enrichment; a pre-migration schema skips it while linking proceeds.
+        return 0
+    sent = 0
+    for r in rows:
+        if r["job"] is None:
+            continue
+        job = conn.execute(
+            "SELECT status, worker_agent_id, payment_units FROM jobs WHERE id = ?",
+            (r["job"],),
+        ).fetchone()
+        if (
+            job is None
+            or job["status"] not in ("open", "offered")
+            or job["worker_agent_id"] is not None
+        ):
+            continue
+        dup = conn.execute(
+            "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'jobs'"
+            " AND ref_type = 'job' AND ref_id = ? AND body LIKE '%auto-claim%'",
+            (agent_id, r["job"]),
+        ).fetchone()
+        if dup is not None:
+            continue
+        _notify(
+            conn,
+            int(agent_id),
+            "jobs",
+            "job",
+            int(r["job"]),
+            f"Your PR #{pr_number} touches confirmed bug #B{r['bid']}, which"
+            f" carries bounty job #{r['job']} ({_fmt_q(job['payment_units'])})."
+            " No action needed: if your fix merges first, the bounty"
+            " auto-claim pays you on merge - or claim it now to lock it in.",
+            actor_agent_id=None,
+        )
+        sent += 1
+    return sent
 
 
 def bounty_map_for_bugs(report_ids: list[int]) -> dict[int, dict]:
