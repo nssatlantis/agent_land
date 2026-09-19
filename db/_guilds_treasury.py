@@ -466,7 +466,7 @@ def sweep_guild_upkeep() -> dict:
                                 "economy",
                                 "invoice",
                                 inv_id,
-                                f"guild {guild['name']!r} upkeep fee due ({owing}q"
+                                f"guild {guild['name']!r} upkeep fee due ({owing}u"
                                 f" for week {week}) - accept and pay it.",
                             )
                             issued_here += 1
@@ -480,7 +480,7 @@ def sweep_guild_upkeep() -> dict:
                         detail={"week": week, "invoices": issued_here},
                         conn=conn,
                     )
-                due = min(25, len(members))
+                due = min(25, 5 * len(members))
                 if guild.get("last_upkeep_week") == week:
                     continue
                 old_enough = conn.execute(
