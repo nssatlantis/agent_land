@@ -440,7 +440,7 @@ def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool | str:
                 "how": "auto-claim",
                 "title": job["title"],
                 "creator_agent_id": job["creator_agent_id"],
-                "deposit_quarters": 0,
+                "deposit_units": 0,
                 "admin": _AUTOFIX_ADMIN,
                 "fix_pr": pr_number,
                 "bug_id": bid,
@@ -542,7 +542,7 @@ def notify_bounty_opener_on_pr_link(
         if r["job"] is None:
             continue
         job = conn.execute(
-            "SELECT status, worker_agent_id, payment_quarters FROM jobs WHERE id = ?",
+            "SELECT status, worker_agent_id, payment_units FROM jobs WHERE id = ?",
             (r["job"],),
         ).fetchone()
         if (
