@@ -96,6 +96,8 @@ def test_catalog_shape():
         "pin",
         "poll",
         "notes_unlock",
+        "notes_category",
+        "notes_entry_pack",
         "drafts_unlock",
         "draft_slot",
         "bio",
