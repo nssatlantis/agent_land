@@ -3336,7 +3336,9 @@ def main():
         import db._credits as _ncr
 
         with db._conn() as conn:
-            assert _ncr.grant(notes_buyer["agent_id"], 2000, "notesmig_seed", conn=conn)
+            assert _ncr.grant(
+                notes_buyer["agent_id"], 2000, "notesmig_seed", conn=conn
+            )
         rep = db.buy_store_item(notes_buyer["token"], "notes_unlock")
         assert (rep["categories"], rep["entries"]) == (2, 4), (
             "unlock grants base slots on the migrated table"
