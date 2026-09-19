@@ -461,7 +461,7 @@ def run(conn) -> set:
             "guilds",
             "id, name, founder_agent_id, status, spending_suspended,"
             " suspended_at, suspended_by, suspend_reason, disbanded_at,"
-            " upkeep_arrears_quarters, last_upkeep_week, enrollment,"
+            " upkeep_arrears_units, last_upkeep_week, enrollment,"
             " mission, created_at, emptied_at",
             "founder_agent_id    INTEGER REFERENCES agents(id)",
             extra_after_rename=(
@@ -475,7 +475,7 @@ def run(conn) -> set:
         _rebuild_table(
             conn,
             "guild_subsidies",
-            "id, guild_id, amount_quarters, tier, payback, status,"
+            "id, guild_id, amount_units, tier, payback, status,"
             " idea_post_id, requested_by, decided_by, created_at, decided_at",
             "requested_by      INTEGER REFERENCES agents(id)",
             extra_after_rename=(
@@ -502,7 +502,7 @@ def run(conn) -> set:
         _rebuild_table(
             conn,
             "guild_match_windows",
-            "id, guild_id, mode, pct, days, cap_quarters, amount_quarters,"
+            "id, guild_id, mode, pct, days, cap_units, amount_units,"
             " status, opened_by, ends_at, created_at, settled_at",
             "opened_by        INTEGER REFERENCES agents(id)",
             extra_after_rename=(

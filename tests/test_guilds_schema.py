@@ -171,7 +171,7 @@ def test_members_unique_and_fk():
             pass
 
 
-def test_ledger_quarters_positive_and_kind():
+def test_ledger_units_positive_and_kind():
     """Ledger rows carry strictly positive quarters of a known kind -
     every kind in the CHECK executes, so a typo in any token fails.
     The 'designate' memo kind alone rides zero (never positive, never
@@ -197,22 +197,22 @@ def test_ledger_quarters_positive_and_kind():
             "transfer",
         ):
             conn.execute(
-                "INSERT INTO guild_ledger (guild_id, kind, quarters) VALUES (?, ?, 4)",
+                "INSERT INTO guild_ledger (guild_id, kind, units) VALUES (?, ?, 4)",
                 (gid, kind),
             )
         for bad in (0, -3):
             try:
                 conn.execute(
-                    "INSERT INTO guild_ledger (guild_id, kind, quarters)"
+                    "INSERT INTO guild_ledger (guild_id, kind, units)"
                     " VALUES (?, 'deposit', ?)",
                     (gid, bad),
                 )
-                raise AssertionError(f"quarters={bad} accepted")
+                raise AssertionError(f"units={bad} accepted")
             except sqlite3.IntegrityError:
                 pass
         try:
             conn.execute(
-                "INSERT INTO guild_ledger (guild_id, kind, quarters)"
+                "INSERT INTO guild_ledger (guild_id, kind, units)"
                 " VALUES (?, 'printing', 4)",
                 (gid,),
             )
@@ -221,15 +221,14 @@ def test_ledger_quarters_positive_and_kind():
             pass
         # The designate memo boundary: zero rides, anything else refuses.
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters)"
+            "INSERT INTO guild_ledger (guild_id, kind, units)"
             " VALUES (?, 'designate', 0)",
             (gid,),
         )
         for bad_kind, bad_q in (("designate", -1), ("designate", 4)):
             try:
                 conn.execute(
-                    "INSERT INTO guild_ledger (guild_id, kind, quarters)"
-                    " VALUES (?, ?, ?)",
+                    "INSERT INTO guild_ledger (guild_id, kind, units) VALUES (?, ?, ?)",
                     (gid, bad_kind, bad_q),
                 )
                 raise AssertionError(f"({bad_kind}, {bad_q}) accepted")
@@ -243,13 +242,13 @@ def test_tranche_tier_status_checks():
     with db._conn() as conn:
         gid = _mk_guild(conn, founder["agent_id"], "Tranche Guild")
         conn.execute(
-            "INSERT INTO guild_tranches (guild_id, tier, amount_quarters)"
+            "INSERT INTO guild_tranches (guild_id, tier, amount_units)"
             " VALUES (?, 'T1', 40)",
             (gid,),
         )
         try:
             conn.execute(
-                "INSERT INTO guild_tranches (guild_id, tier, amount_quarters)"
+                "INSERT INTO guild_tranches (guild_id, tier, amount_units)"
                 " VALUES (?, 'T3', 40)",
                 (gid,),
             )
@@ -258,7 +257,7 @@ def test_tranche_tier_status_checks():
             pass
         try:
             conn.execute(
-                "INSERT INTO guild_tranches (guild_id, tier, amount_quarters)"
+                "INSERT INTO guild_tranches (guild_id, tier, amount_units)"
                 " VALUES (?, 'T2', 0)",
                 (gid,),
             )
@@ -267,7 +266,7 @@ def test_tranche_tier_status_checks():
             pass
         for status in ("proposed", "released", "paused", "expired", "merged"):
             conn.execute(
-                "INSERT INTO guild_tranches (guild_id, tier, amount_quarters,"
+                "INSERT INTO guild_tranches (guild_id, tier, amount_units,"
                 " status) VALUES (?, 'T2', 4, ?)",
                 (gid, status),
             )

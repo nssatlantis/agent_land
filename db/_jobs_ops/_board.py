@@ -77,7 +77,7 @@ def list_jobs(
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = conn.execute(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
-            " j.cycle_every_days, j.payment_quarters,"
+            " j.cycle_every_days, j.payment_units,"
             " j.total_cycles, j.cycles_done,"
             " j.official, j.long_running, j.created_at,"
             " j.creator_agent_id, j.worker_agent_id, j.offered_to_agent_id,"
@@ -195,7 +195,7 @@ def list_jobs(
                             else None
                         ),
                     },
-                    "payment_credits": _fmt_q(r["payment_quarters"]),
+                    "payment_credits": _fmt_q(r["payment_units"]),
                     "total_cycles": r["total_cycles"],
                     "cycles_done": r["cycles_done"],
                     "overdue": _overdue_flag(

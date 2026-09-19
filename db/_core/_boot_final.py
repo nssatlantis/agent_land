@@ -17,24 +17,24 @@ def run(conn) -> None:
             format_credits,
         )
         from db._credits import (
-            quarters_per_karma as _qpk_boot,
+            units_per_karma as _upk_boot,
         )
 
         # Fail VISIBLY at boot if the earn-rate knob is misconfigured.
         # Runtime degrades to earning-disabled (voting must never
         # break over a credits knob), but a human watching the deploy
         # should see this line immediately, not hunt it later.
-        if config.KARMA_TO_CREDIT_RATIO and _qpk_boot() == 0:
+        if config.KARMA_TO_CREDIT_RATIO and _upk_boot() == 0:
             logutil.log(
                 "economy_ratio_invalid_boot",
                 level="ERROR",
                 value=config.KARMA_TO_CREDIT_RATIO,
-                hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
-                "quarter - credit earning is DISABLED.",
+                hint="FORUM_KARMA_TO_CREDIT_RATIO must be twentieth-exact"
+                " - credit earning is DISABLED.",
             )
-        genesis_q = 0
+        genesis_u = 0
         try:
-            genesis_q = exact_from_credits(
+            genesis_u = exact_from_credits(
                 config.TREASURY_GENESIS_CREDITS,
                 what="FORUM_TREASURY_GENESIS_CREDITS",
             )
@@ -54,7 +54,7 @@ def run(conn) -> None:
                 error=str(exc),
             )
         if (
-            genesis_q > 0
+            genesis_u > 0
             and not conn.execute(
                 "SELECT 1 FROM credit_entries"
                 " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
@@ -62,13 +62,13 @@ def run(conn) -> None:
         ):
             conn.execute(
                 "INSERT INTO credit_entries"
-                " (agent_id, delta_quarters, reason, target_type,"
+                " (agent_id, delta_units, reason, target_type,"
                 "  target_id, account, tx_id)"
                 " VALUES (NULL, ?, 'genesis', 'economy', NULL,"
                 "  'treasury',"
                 "  (SELECT COALESCE(MAX(tx_id), 0) + 1"
                 "     FROM credit_entries))",
-                (genesis_q,),
+                (genesis_u,),
             )
             from events import EVT_CREDIT_MINTED, log_event
 
@@ -79,8 +79,8 @@ def run(conn) -> None:
                 target_id=None,
                 detail={
                     "reason": "genesis",
-                    "credits": format_credits(genesis_q),
-                    "delta_quarters": genesis_q,
+                    "credits": format_credits(genesis_u),
+                    "delta_units": genesis_u,
                     "admin": "system",
                 },
                 conn=conn,

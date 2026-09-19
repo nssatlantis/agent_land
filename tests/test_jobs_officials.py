@@ -46,7 +46,7 @@ def _treasury() -> int:
 def _supply() -> int:
     with db._conn() as conn:
         return conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries",
         ).fetchone()[0]
 
 
@@ -80,7 +80,7 @@ def test_create_official_waives_gate_and_escrow():
     assert job["official"] is True
     assert job["status"] == "offered"
     assert job["total_cycles"] == 4, "beyond the citizen cap of 7 is fine"
-    assert job["payment_quarters"] == 8
+    assert job["payment_units"] == 40
     assert _bal(sponsor["agent_id"]) == 0, "no escrow, no fees"
     assert any("OFFICIAL position was offered" in b for _, b in _mail(worker["token"]))
     # The citizen gate still bites a plain create_job.
@@ -124,19 +124,19 @@ def test_accept_pays_wage_from_treasury_supply_neutral():
     job = db.create_job_official(
         "m", sponsor["name"], "role", "d", 2.0, ["s"], offer_to=worker["name"]
     )
-    # Treasury escrow locked at creation (8q * 7 cycles = 56q for default recurring)
-    assert _treasury() == t0 - 56, "official escrow locks full payout at creation"
+    # Treasury escrow locked at creation (40u * 7 cycles = 280u for default recurring)
+    assert _treasury() == t0 - 280, "official escrow locks full payout at creation"
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P1")
     out = db.review_job(sponsor["token"], job["job_id"], "accept")
     assert out["cycles_done"] == 1
-    # Wage 8q was already escrowed (56q at creation), now paid from escrow; JOB_CREDIT_CREDITS 1q each still from treasury
-    assert _bal(worker["agent_id"]) == 8 + 1
-    assert _bal(sponsor["agent_id"]) == 1
-    # After one accept of 7-cycle job: creation moves 56 treasury->escrow
-    # (supply-neutral), rewards -2 treasury (paired), wage pays from escrow
-    # (supply-neutral) => treasury -58, supply unchanged throughout.
-    assert _treasury() == t0 - 58  # -56 escrow + -2 rewards
+    # Wage 40u was already escrowed (280u at creation), now paid from escrow; JOB_CREDIT_CREDITS 5u each still from treasury
+    assert _bal(worker["agent_id"]) == 40 + 5
+    assert _bal(sponsor["agent_id"]) == 5
+    # After one accept of 7-cycle job: creation moves 280 treasury->escrow
+    # (supply-neutral), rewards -10 treasury (paired), wage pays from escrow
+    # (supply-neutral) => treasury -290, supply unchanged throughout.
+    assert _treasury() == t0 - 290  # -280 escrow + -10 rewards
     assert _supply() == s0, "escrow moves principal; supply never moves"
     with db._conn() as conn:
         kw = db._karma_parts(conn, worker["agent_id"])
@@ -178,7 +178,7 @@ def test_unfunded_treasury_skips_wage_but_serves_cycle():
     assert out["cycles_done"] == 2, (
         "escrowed wage still counts as served even when treasury dry"
     )
-    assert _bal(worker["agent_id"]) == bal + 8, (
+    assert _bal(worker["agent_id"]) == bal + 40, (
         "escrowed wage pays even when treasury dry"
     )
     # No economy unfunded notice for escrowed official wages
@@ -198,7 +198,7 @@ def test_cancel_and_admin_close_move_nothing_for_officials():
     assert _bal(sponsor["agent_id"]) == s_bal, "no citizen escrow to return"
     assert _bal(worker["agent_id"]) == w_bal
     # Official cancel refunds treasury escrow (full payout reserved at creation)
-    assert _treasury() == t0 + 56, "treasury escrow refunded on cancel"
+    assert _treasury() == t0 + 280, "treasury escrow refunded on cancel"
     mails = [b for _, b in _mail(worker["token"])]
     assert any("Admin moderation (maintainer) closed" in m for m in mails)
     # Expiry sweep spares official positions - standing roles never
@@ -396,7 +396,7 @@ def test_admin_panel_flow_end_to_end():
         conn.execute(
             "UPDATE jobs SET status = 'expired',"
             " decided_at = '2026-02-01T00:00:00.000Z',"
-            " treasury_escrow_quarters = 0 WHERE id = ?",
+            " treasury_escrow_units = 0 WHERE id = ?",
             (rej["job_id"],),
         )
     r = asyncio.run(
@@ -497,14 +497,14 @@ def test_reactivate_expired_official_restores_offer_and_reescrows():
         conn.execute(
             "UPDATE jobs SET status = 'expired',"
             " decided_at = '2026-02-01T00:00:00.000Z',"
-            " treasury_escrow_quarters = 0 WHERE id = ?",
+            " treasury_escrow_units = 0 WHERE id = ?",
             (jid,),
         )
     out = db.admin_reactivate_job("maintainer", jid)
     assert out["status"] == "offered" and out["official"] is True
     with db._conn() as conn:
         esc = conn.execute(
-            "SELECT treasury_escrow_quarters FROM jobs WHERE id = ?", (jid,)
+            "SELECT treasury_escrow_units FROM jobs WHERE id = ?", (jid,)
         ).fetchone()[0]
         kinds = [
             r[0]
@@ -513,8 +513,8 @@ def test_reactivate_expired_official_restores_offer_and_reescrows():
                 (jid,),
             ).fetchall()
         ]
-    assert esc == 56, "remaining payout re-escrowed from treasury"
-    assert _treasury() == t0 - 56
+    assert esc == 280, "remaining payout re-escrowed from treasury"
+    assert _treasury() == t0 - 280
     assert "job_reactivated" in kinds
     mails = [b for _, b in _mail(worker["token"])]
     assert any("re-activated" in m for m in mails)
@@ -542,15 +542,15 @@ def test_reactivate_cancelled_official_keeps_worker_and_reescrows_remainder():
     t0 = _treasury()
     db.admin_cancel_job("maintainer", jid)
     assert db.get_job(jid)["status"] == "cancelled"
-    assert _treasury() == t0 + 40, "cancel refunds the 5-cycle remainder"
+    assert _treasury() == t0 + 200, "cancel refunds the 5-cycle remainder"
     out = db.admin_reactivate_job("maintainer", jid)
     assert out["status"] == "active"
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT worker_agent_id, treasury_escrow_quarters FROM jobs WHERE id = ?",
+            "SELECT worker_agent_id, treasury_escrow_units FROM jobs WHERE id = ?",
             (jid,),
         ).fetchone()
-    assert row[0] == worker["agent_id"] and row[1] == 40
+    assert row[0] == worker["agent_id"] and row[1] == 200
     assert _treasury() == t0, "re-activation re-locks the remainder"
     # Refusals: live jobs, unknown ids, citizen-shaped rows, dry treasury.
     try:
@@ -577,7 +577,7 @@ def test_reactivate_cancelled_official_keeps_worker_and_reescrows_remainder():
     broke = db.create_job_official("m", sponsor["name"], "broke role", "d", 2.0, ["s"])
     with db._conn(immediate=True) as conn:
         conn.execute(
-            "UPDATE jobs SET status = 'expired', treasury_escrow_quarters = 0"
+            "UPDATE jobs SET status = 'expired', treasury_escrow_units = 0"
             " WHERE id = ?",
             (broke["job_id"],),
         )
@@ -770,7 +770,7 @@ def test_create_official_deposit_default_and_explicit():
         for j in db.list_jobs(view="all", limit=500)["jobs"]
         if j["title"] == "Deposit Default"
     )
-    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 4
+    assert db.get_job(row["job_id"])["taker_deposit_units"] == 20
     req, _ = _panel_req(
         "POST",
         "/admin/jobs/create-official",
@@ -783,7 +783,7 @@ def test_create_official_deposit_default_and_explicit():
         for j in db.list_jobs(view="all", limit=500)["jobs"]
         if j["title"] == "Deposit Explicit"
     )
-    assert db.get_job(row["job_id"])["taker_deposit_quarters"] == 10
+    assert db.get_job(row["job_id"])["taker_deposit_units"] == 50
     req, _ = _panel_req(
         "POST",
         "/admin/jobs/create-official",

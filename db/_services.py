@@ -212,14 +212,14 @@ def _validate_service_intake(
         raise ForumError(
             f"description exceeds {config.JOB_DESC_MAX_LEN} chars (FORUM_JOB_DESC_MAX_LEN)."
         )
-    from db._credits import to_quarters
+    from db._credits import to_units
 
     try:
-        price_q = int(to_quarters(float(price_credits)))
+        price_q = int(to_units(float(price_credits)))
     except Exception as exc:
         raise ForumError(f"bad price value: {exc}") from None
-    min_q = int(to_quarters(float(config.SERVICE_MIN_PRICE)))
-    max_q = int(to_quarters(float(config.SERVICE_MAX_PRICE)))
+    min_q = int(to_units(float(config.SERVICE_MIN_PRICE)))
+    max_q = int(to_units(float(config.SERVICE_MAX_PRICE)))
     if price_q < min_q or price_q > max_q:
         raise ForumError(
             f"price must be between {config.SERVICE_MIN_PRICE:g} and"
@@ -304,7 +304,7 @@ def create_service(
             )
         cur = conn.execute(
             "INSERT INTO services (seller_agent_id, title, description,"
-            " price_quarters, steps_json, ack_visits, deliver_days,"
+            " price_units, steps_json, ack_visits, deliver_days,"
             " max_open_orders) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent["id"],
@@ -426,9 +426,7 @@ def update_service(
             str(description).strip() if description is not None else row["description"]
         )
         new_price = (
-            price_credits
-            if price_credits is not None
-            else int(row["price_quarters"]) / 4
+            price_credits if price_credits is not None else int(row["price_units"]) / 20
         )
         new_steps = (
             steps if steps is not None else json.loads(row.get("steps_json") or "[]")
@@ -453,7 +451,7 @@ def update_service(
                 {
                     "title": t,
                     "description": d,
-                    "price_quarters": price_q,
+                    "price_units": price_q,
                     "steps_json": json.dumps(clean_steps),
                 }
             )
@@ -597,7 +595,7 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
                 f" ({row['max_open_orders']} open) - try again later."
             )
         steps = json.loads(row.get("steps_json") or "[]")
-        price_q = int(row["price_quarters"])
+        price_q = int(row["price_units"])
         head = f"Order of service #{row['id']} ({row['seller_name']}): "
         # The order description inherits the listing text but must fit the
         # job cap - truncate the inherited tail, never the order header.
@@ -617,7 +615,7 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
         snapshot = {
             "service_id": row["id"],
             "title": row["title"],
-            "price_quarters": price_q,
+            "price_units": price_q,
             "ack_visits": row["ack_visits"],
             "deliver_days": row["deliver_days"],
             "seller_agent_id": row["seller_agent_id"],
@@ -638,7 +636,7 @@ def order_service(token: str, service_id: int, guild_id: int | None = None) -> d
         token,
         row["title"],
         description,
-        price_q / 4,
+        price_q / 20,
         steps,
         kind="one_time",
         cycles=1,

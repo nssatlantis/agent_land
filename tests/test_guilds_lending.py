@@ -39,13 +39,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         ok = _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_lending_seed",
             target_type="test",
             target_id=1,
@@ -64,7 +64,7 @@ def _treasury() -> int:
 def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account IN ('agent', 'treasury', 'escrow')"
         ).fetchone()
     return int(row[0] or 0)
@@ -91,7 +91,7 @@ def _unarm(old, env_key: str):
 
 def _found(name: str | None = None) -> tuple[dict, dict]:
     ag = _new_agent("gl-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], name or f"Lending-{_SEQ[0]}")
 
 
@@ -102,7 +102,7 @@ def _mate(
     deposit_cr: float = 10.0,
 ) -> dict:
     mate = _new_agent(prefix)
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     db.guild_deposit(mate["token"], guild["id"], deposit_cr)
@@ -185,12 +185,12 @@ def test_tables_upgrade_and_kinds():
     founder, guild = _found()
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'subsidy', 7, 'kind pin')",
             (guild["id"],),
         )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'match', 5, 'kind pin')",
             (guild["id"],),
         )
@@ -209,9 +209,9 @@ def test_request_auto_pays_and_conservation():
     out = db.request_guild_subsidy(
         founder["token"], guild["id"], 1.0, False, "seed money"
     )
-    assert out["status"] == "paid" and out["amount_quarters"] == 4, out
+    assert out["status"] == "paid" and out["amount_units"] == 20, out
     assert out["debt_id"] is None and out["invoice_id"] is None
-    assert _pool(guild["id"]) == pool_before + 4
+    assert _pool(guild["id"]) == pool_before + 20
     assert _supply() == supply_before, "subsidy must be memo-only"
     assert _treasury() == treasury_before, "subsidy must not move the treasury"
 
@@ -226,17 +226,17 @@ def test_request_payback_mints_debt_and_part_pay():
     assert out["status"] == "paid" and out["debt_id"] is not None, out
     debt = _debt(guild["id"])
     assert debt is not None and debt["status"] == "current", debt
-    assert debt["remaining_quarters"] == 4, debt
+    assert debt["remaining_units"] == 20, debt
     _accept_invoice(founder, out["invoice_id"])
-    _fund(founder["agent_id"], 40)
+    _fund(founder["agent_id"], 200)
     db.pay_invoice(founder["token"], out["invoice_id"], 0.5)
     debt = _debt(guild["id"])
-    assert debt is not None and debt["remaining_quarters"] == 2, debt
+    assert debt is not None and debt["remaining_units"] == 10, debt
     assert debt["status"] == "current", debt
     db.pay_invoice(founder["token"], out["invoice_id"])
     debt = _debt(guild["id"])
     assert debt is not None and debt["status"] == "settled", debt
-    assert debt["remaining_quarters"] == 0, debt
+    assert debt["remaining_units"] == 0, debt
     # Terminal-transition guards: declined/cancelled payback bills would
     # brick their debts, so both doors refuse on debt-linked invoices.
     with db._conn() as conn:
@@ -285,7 +285,7 @@ def test_over_tier_venue_and_admin_decide():
             (out["idea_post_id"],),
         ).fetchone()
     assert idea is not None and idea["proposal_kind"] == "idea", dict(idea or {})
-    assert _pool(guild["id"]) == 40, "requested pays nothing"
+    assert _pool(guild["id"]) == 200, "requested pays nothing"
     try:
         db.decide_guild_subsidy(founder["token"], out["subsidy_id"], True)
         raise AssertionError("non-admin decided")
@@ -341,7 +341,7 @@ def test_match_lump_and_window_wash():
     lump = db.open_guild_match_window(
         founder["token"], guild["id"], "lump", amount_credits=2.0
     )
-    assert lump["status"] == "paid" and lump["amount_quarters"] == 8, lump
+    assert lump["status"] == "paid" and lump["amount_units"] == 40, lump
     window = db.open_guild_match_window(founder["token"], guild["id"], "window")
     assert window["status"] == "open", window
     try:
@@ -350,26 +350,26 @@ def test_match_lump_and_window_wash():
     except Exception as exc:
         assert "one at a time" in str(exc), exc
     # Wash: deposits land after the window opens, then most is withdrawn;
-    # the match pays on the net remainder (100 - 8 = 92q -> 18q at 20%),
+    # the match pays on the net remainder (500 - 40 = 460u -> 92u at 20%),
     # not the gross deposits.
     db.guild_deposit(founder["token"], guild["id"], 25.0)
     db.guild_withdraw(founder["token"], guild["id"], 2.0)
     # Upkeep dues ride kind 'deposit' for the shares math but are dues,
-    # not deposits: five 1q arrears weeks paid mid-window must not move
-    # the match net (gross would read 97q -> 19q).
+    # not deposits: five 5u arrears weeks paid mid-window must not move
+    # the match net (gross would read 485u -> 97u).
     import db._guilds_lending as _gl
 
     with db._conn() as conn:
         for week in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
             conn.execute(
                 "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-                " week, quarters, status) VALUES (?, ?, ?, 1, 'open')",
+                " week, units, status) VALUES (?, ?, ?, 5, 'open')",
                 (guild["id"], mate["agent_id"], week),
             )
         cur = conn.execute(
             "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
-            " amount_quarters, remaining_quarters, reason, status, due_at)"
-            " VALUES (?, ?, 5, 5, 'upkeep catch-up', 'accepted', ?)",
+            " amount_units, remaining_units, reason, status, due_at)"
+            " VALUES (?, ?, 25, 25, 'upkeep catch-up', 'accepted', ?)",
             (mate["agent_id"], founder["agent_id"], "2026-09-24T00:00:00.000Z"),
         )
         fee_inv = int(cur.lastrowid or 0)
@@ -384,7 +384,7 @@ def test_match_lump_and_window_wash():
             "SELECT created_at FROM guild_match_windows WHERE id = ?",
             (window["window_id"],),
         ).fetchone()
-        assert _gl._window_net(conn, guild["id"], wrow["created_at"]) == 92
+        assert _gl._window_net(conn, guild["id"], wrow["created_at"]) == 460
     with db._conn() as conn:
         conn.execute(
             "UPDATE guild_match_windows SET ends_at = ? WHERE id = ?",
@@ -393,13 +393,13 @@ def test_match_lump_and_window_wash():
     report = db.sweep_guild_lending()
     paid = [m for m in report["matches"] if m["window_id"] == window["window_id"]]
     assert paid and paid[0]["status"] == "paid", report
-    assert paid[0]["amount_quarters"] == 18, paid
+    assert paid[0]["amount_units"] == 92, paid
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT amount_quarters FROM guild_match_windows WHERE id = ?",
+            "SELECT amount_units FROM guild_match_windows WHERE id = ?",
             (window["window_id"],),
         ).fetchone()
-    assert row is not None and row["amount_quarters"] == 18, dict(row or {})
+    assert row is not None and row["amount_units"] == 92, dict(row or {})
 
 
 def test_delinquency_freeze_and_repay_and_upkeep_guard():
@@ -439,7 +439,7 @@ def test_delinquency_freeze_and_repay_and_upkeep_guard():
     assert grow["suspend_reason"] == "delinquent", dict(grow)
     # Repay in full: settled debt refreshes the freeze.
     _accept_invoice(founder, out["invoice_id"])
-    _fund(founder["agent_id"], 40)
+    _fund(founder["agent_id"], 200)
     db.pay_invoice(founder["token"], out["invoice_id"])
     with db._conn() as conn:
         grow = conn.execute(
@@ -450,7 +450,7 @@ def test_delinquency_freeze_and_repay_and_upkeep_guard():
 
 
 def test_seize_waterfall_full_and_partial():
-    # Full cover: pool 140q vs 4q debt - debt settles, rest disbands away.
+    # Full cover: pool 700u vs 20u debt - debt settles, rest disbands away.
     founder, guild = _found()
     _mate(founder, guild)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
@@ -463,7 +463,7 @@ def test_seize_waterfall_full_and_partial():
             "SELECT status FROM guilds WHERE id = ?", (guild["id"],)
         ).fetchone()
         debt = conn.execute(
-            "SELECT status, remaining_quarters FROM guild_debts WHERE id = ?",
+            "SELECT status, remaining_units FROM guild_debts WHERE id = ?",
             (out["debt_id"],),
         ).fetchone()
         members = conn.execute(
@@ -476,10 +476,10 @@ def test_seize_waterfall_full_and_partial():
     assert _pool(guild["id"]) == 0
     # Partial: pool spent below the debts via an escrow-exempt
     # commission (velocity caps plain withdrawals ~30%, and the subsidy
-    # itself funds the pool it draws against). Deposits 1+1q, two 4q
-    # subsidies (cooldown stood down), 3q escrowed job completes: pool
-    # 10-3 = 7q vs 8q debts - first settles 4q, second seizes 3q and
-    # writes off 1q.
+    # itself funds the pool it draws against). Deposits 5+5u, two 20u
+    # subsidies (cooldown stood down), 15u escrowed job completes: pool
+    # 50-15 = 35u vs 40u debts - first settles 20u, second seizes 15u and
+    # writes off 5u.
     founder2, guild2 = _found()
     _mate(founder2, guild2, prefix="gl-m2", deposit_cr=0.25)
     db.guild_deposit(founder2["token"], guild2["id"], 0.25)
@@ -495,7 +495,7 @@ def test_seize_waterfall_full_and_partial():
         founder2["token"], guild2["id"], 1.0, True, "doomed too"
     )
     assert out_a["status"] == "paid" and out2["status"] == "paid"
-    cos = db.request_guild_cosign(founder2["token"], guild2["id"], "big-job", 3)
+    cos = db.request_guild_cosign(founder2["token"], guild2["id"], "big-job", 15)
     db.confirm_guild_cosign(founder2["token"], cos["cosign_id"])
     job = db.create_job(
         founder2["token"],
@@ -506,20 +506,20 @@ def test_seize_waterfall_full_and_partial():
         guild_id=guild2["id"],
     )
     worker = _new_agent("gl-worker")
-    _fund(worker["agent_id"], 40)
+    _fund(worker["agent_id"], 200)
     db.claim_job(worker["token"], job["job_id"])
     live = db.get_job(job["job_id"])
     for step in live["steps"]:
         db.tick_job_step(worker["token"], job["job_id"], step["id"], True)
     db.submit_job(worker["token"], job["job_id"], "done")
     db.review_job(founder2["token"], job["job_id"], "accept", "")
-    assert _pool(guild2["id"]) == 7, _pool(guild2["id"])
+    assert _pool(guild2["id"]) == 35, _pool(guild2["id"])
     _backdate_debt_due(out2["debt_id"], "2020-01-01T00:00:00.000Z")
     db.sweep_guild_lending()
     db.sweep_guild_lending()
     with db._conn() as conn:
         debt2 = conn.execute(
-            "SELECT status, remaining_quarters FROM guild_debts WHERE id = ?",
+            "SELECT status, remaining_units FROM guild_debts WHERE id = ?",
             (out2["debt_id"],),
         ).fetchone()
         evts = conn.execute(
@@ -529,7 +529,7 @@ def test_seize_waterfall_full_and_partial():
             "SELECT status FROM guilds WHERE id = ?", (guild2["id"],)
         ).fetchone()
     assert debt2 is not None and debt2["status"] == "written_off", dict(debt2 or {})
-    assert debt2["remaining_quarters"] == 1, dict(debt2)
+    assert debt2["remaining_units"] == 5, dict(debt2)
     assert gone is not None and gone["status"] == "disbanded", dict(gone or {})
     assert evts >= 1
 
@@ -545,7 +545,7 @@ def test_voluntary_disband_refuses_open_debts():
     except Exception as exc:
         assert "debt" in str(exc), exc
     _accept_invoice(founder, out["invoice_id"])
-    _fund(founder["agent_id"], 40)
+    _fund(founder["agent_id"], 200)
     db.pay_invoice(founder["token"], out["invoice_id"])
     done = db.disband_guild(founder["token"], guild["id"], "dissolve")
     assert done["mode"] == "dissolve", done
@@ -565,17 +565,17 @@ def test_forfeit_split_and_founder_succession():
         )
     report = db.sweep_guild_lending()
     assert mate["agent_id"] in report["forfeited"], report
-    # Mate net 40q on a 140q pool: pro-rata min(40, 140*40//140)=40q;
-    # memo extinguishes 40, burn takes 20, pool keeps the parked 20.
-    assert _pool(gid) == pool_before - 40, (_pool(gid), pool_before)
-    assert _supply() == supply_before - 20, "burn must destroy supply"
+    # Mate net 200u on a 700u pool: pro-rata min(200, 700*200//700)=200u;
+    # memo extinguishes 200, burn takes 100, pool keeps the parked 100.
+    assert _pool(gid) == pool_before - 200, (_pool(gid), pool_before)
+    assert _supply() == supply_before - 100, "burn must destroy supply"
     with db._conn() as conn:
         gone = conn.execute(
             "SELECT 1 FROM guild_members WHERE guild_id = ? AND agent_id = ?",
             (gid, mate["agent_id"]),
         ).fetchone()
         burn = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE reason = 'forfeit_burned'"
         ).fetchone()[0]
     assert gone is None, "forfeited member must be released"
@@ -614,7 +614,7 @@ def test_disband_releases_guild_stakes():
     # disband must not touch it. Created outside the seed transaction
     # below (registering opens its own write txn - never nest writes).
     outsider = _new_agent("gl-outsider")
-    _fund(outsider["agent_id"], 100)
+    _fund(outsider["agent_id"], 500)
     with db._conn() as conn:
         cur = conn.execute(
             "INSERT INTO proposal_stakes (proposal_id, staker_agent_id,"

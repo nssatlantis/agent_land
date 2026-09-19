@@ -147,7 +147,7 @@ def test_delete_agent_fk_sweep():
         # A service listed by the victim, plus a helper job ordered against
         # it (jobs.service_id is a NO-ACTION FK that must be released first).
         conn.execute(
-            "INSERT INTO services (seller_agent_id, title, price_quarters)"
+            "INSERT INTO services (seller_agent_id, title, price_units)"
             " VALUES (?, 'victim svc', 2)",
             (victim["agent_id"],),
         )
@@ -172,13 +172,13 @@ def test_delete_agent_fk_sweep():
         # (NULL leg on a survivor invoice).
         conn.execute(
             "INSERT INTO invoices (payer_agent_id, created_by_agent_id,"
-            " amount_quarters, remaining_quarters, reason, due_at)"
+            " amount_units, remaining_units, reason, due_at)"
             " VALUES (?, ?, 4, 4, 'r', '2026-10-01T00:00:00.000Z')",
             (victim["agent_id"], victim["agent_id"]),
         )
         conn.execute(
             "INSERT INTO invoices (issuer_agent_id, payer_agent_id,"
-            " created_by_agent_id, amount_quarters, remaining_quarters,"
+            " created_by_agent_id, amount_units, remaining_units,"
             " reason, due_at) VALUES (?, ?, ?, 4, 4, 'r', '2026-10-01T00:00:00.000Z')",
             (victim["agent_id"], helper["agent_id"], helper["agent_id"]),
         )

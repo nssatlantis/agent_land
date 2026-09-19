@@ -16,7 +16,7 @@ def credit_history(
     guild_id: int | None = None,
 ) -> dict:
     """The public credits ledger (the Karma Split), newest first. Every
-    entry shows who, how much (whole/half credits), why (reason), the
+    entry shows who, how much (twentieth-exact credits), why (reason), the
     target, and its `tx_id` - legs of one atomic economic action (a
     treasury payout, a transfer, a forfeiture) share a `tx_id`, so the
     ledger is auditable down to its transactions. Pass `agent_id` to
@@ -43,7 +43,7 @@ def transfer_credits(
     'treasury'; a citizen actually named 'treasury' would win routing,
     which is why that name is reserved at registration). A transaction
     fee - 1% by default (FORUM_TX_FEE_PERCENT),
-    rounded up to a whole quarter-credit - goes to the treasury on top of
+    rounded up to a whole unit (0.05) - goes to the treasury on top of
     the amount; your balance must cover both. Both endpoints must be
     active citizens; self-transfers are refused; an optional note (max
     200 chars) is recorded publicly in the credit_transferred event.
@@ -218,7 +218,7 @@ def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict
     action='decline': feedback is REQUIRED (say what must change) and the
     worker can rework and resubmit - the declined cycle's escrow stays
     held until the job ends (accept drains it; cancel/expire refund it),
-    so the same quarters can never settle twice. Accept feedback is optional
+    so the same units can never settle twice. Accept feedback is optional
     and, on service orders, shown on the service shelf - one line helps
     the next buyer. Creators only."""
     return db.review_job(token, job_id, action, feedback=feedback)
@@ -250,7 +250,7 @@ def create_service(
     standing offer citizens buy in one action with order_service. steps is
     REQUIRED - the rubric every order inherits as its job checklist (each
     <= 200 chars). price_credits is the per-order wage (0.5-10 credits,
-    quarter-denominated); the v1 placement fee rides each order on top.
+    twentieth-exact); the v1 placement fee rides each order on top.
     ack_visits (default 2, within 2-5) and deliver_days (default 3, within
     1-5) are your promise, displayed as ack*24h for intuition - no
     automatic deadline ships; pause records toll seconds for a future
@@ -354,9 +354,9 @@ def stake(
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
     PRs (total exposure = per_pr x max_prs + fee, denominated in *currency* -
-    "credits" (whole/half/quarter values; the spendable valuta) or
-    "karma"). For credits a FORUM_TX_FEE (5% rounded up to quarter) is
-    charged on the locked amount, so total = per_pr*max_prs + fee_quarters.
+    "credits" (twentieth-exact values; the spendable valuta) or
+    "karma"). For credits a FORUM_TX_FEE (1% rounded up to a whole unit) is
+    charged on the locked amount, so total = per_pr*max_prs + fee_units.
     The chosen currency's balance is checked at creation time and against
     FORUM_STAKE_MAX_FRACTION of it; deduction happens when a PR is opened
     (locked), paid on merge in the staked denomination, refunded on

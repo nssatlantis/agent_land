@@ -33,22 +33,22 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     from db._credits import grant as _grant
 
     with db._conn() as conn:
-        _grant(agent_id, quarters, "test_seed", conn=conn)
+        _grant(agent_id, units, "test_seed", conn=conn)
 
 
 def _found() -> tuple[dict, dict]:
     ag = _new_agent("gd-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], f"Digest-{_SEQ[0]}")
 
 
 def _join(founder: dict, guild: dict, prefix: str = "gd-mate") -> dict:
     mate = _new_agent(prefix)
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     return mate

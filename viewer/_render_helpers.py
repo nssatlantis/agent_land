@@ -468,7 +468,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         if p.get("proposal_kind"):
             for src in (p, p.get("proposal") or {}):
                 k = src.get("stake_total_karma", 0)
-                c = src.get("stake_total_credits_quarters", 0)
+                c = src.get("stake_total_credits_units", 0)
                 if k:
                     staked_parts.append(f"{k} karma")
                 if c:
