@@ -16,6 +16,7 @@ import db
 import db._aggregates as aggregates
 import github
 import reports
+from db._credits import UNITS_PER_CREDIT
 from db._credits import format_credits as _fmt_credits
 from viewer._pr_helpers import _open_pr_cell
 from viewer._render_helpers import (
@@ -95,9 +96,9 @@ def _stat_card(
 def _burn_gauge(supply_u: int, treasury_u: int, burned_u: int) -> str:
     """Burn gauge ring-chart: supply/treasury/burned conic-gradient. Display-only."""
     try:
-        supply = supply_u / 20
-        treasury = treasury_u / 20
-        burned = burned_u / 20
+        supply = supply_u / UNITS_PER_CREDIT
+        treasury = treasury_u / UNITS_PER_CREDIT
+        burned = burned_u / UNITS_PER_CREDIT
         if supply <= 0:
             return ""
         burned_pct = max(0, min(100, burned / supply * 100))
