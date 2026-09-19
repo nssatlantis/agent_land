@@ -37,13 +37,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         ok = _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_grants_seed",
             target_type="test",
             target_id=1,
@@ -69,7 +69,7 @@ def _treasury() -> int:
 def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account IN ('agent', 'treasury', 'escrow')"
         ).fetchone()
     return int(row[0] or 0)
@@ -96,13 +96,13 @@ def _unarm(old, env_key: str):
 
 def _found(name: str | None = None) -> tuple[dict, dict]:
     ag = _new_agent("gg-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], name or f"Grants-{_SEQ[0]}")
 
 
 def _mate(founder: dict, guild: dict, prefix: str = "gg-mate") -> dict:
     mate = _new_agent(prefix)
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     db.guild_deposit(mate["token"], guild["id"], 10.0)
@@ -270,7 +270,7 @@ def test_t1_on_promote_with_todos_and_conservation():
     # split 4/4.
     assert link["eligible_count"] == 2, link
     assert link["decay_pct"] == 100, link
-    assert _pool(gid) == pool_before + 4, (_pool(gid), pool_before)
+    assert _pool(gid) == pool_before + 20, (_pool(gid), pool_before)
     assert _supply() == supply_before, "T1 must be memo-only (supply fixed)"
     assert _treasury() == treasury_before, "T1 must not move the treasury"
     with db._conn() as conn:
@@ -282,8 +282,8 @@ def test_t1_on_promote_with_todos_and_conservation():
             "SELECT * FROM guild_tranches WHERE id = ?",
             (link["t2_tranche_id"],),
         ).fetchone()
-    assert t1["status"] == "released" and t1["amount_quarters"] == 4
-    assert t2["status"] == "proposed" and t2["amount_quarters"] == 4
+    assert t1["status"] == "released" and t1["amount_units"] == 20
+    assert t2["status"] == "proposed" and t2["amount_units"] == 20
     assert t2["expires_at"] is not None
 
 
@@ -302,7 +302,7 @@ def test_t1_waits_for_todos_then_first_todo_settles():
     db.create_todo_list(mate["token"], prop["post_id"], "now", [{"text": "go"}])
     link = _link_for_post(prop["post_id"])
     assert link is not None and link["t1_tranche_id"] is not None, link
-    assert _pool(guild["id"]) == pool_before + 4
+    assert _pool(guild["id"]) == pool_before + 20
 
 
 def test_non_collaborative_promotion_expires_link():
@@ -329,21 +329,21 @@ def test_eligibility_snapshot_three_arms():
     gid = guild["id"]
     mate = _mate(founder, guild)
     third = _new_agent("gg-e3")
-    _fund(third["agent_id"], 60)
+    _fund(third["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], gid, third["name"])
     db.respond_guild_invite(third["token"], inv["invite_id"], True)
     db.guild_deposit(third["token"], gid, 5.0)
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-            " week, quarters, status) VALUES (?, ?, '2026-W38', 1, 'open')",
+            " week, units, status) VALUES (?, ?, '2026-W38', 5, 'open')",
             (gid, third["agent_id"]),
         )
     c1, c2 = _new_agent("gg-e1"), _new_agent("gg-e2")
     idea = _old_idea(mate, "elig", [c1, c2])
     db.designate_guild_project(founder["token"], gid, idea)
     late = _new_agent("gg-late")
-    _fund(late["agent_id"], 60)
+    _fund(late["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], gid, late["name"])
     db.respond_guild_invite(late["token"], inv["invite_id"], True)
     db.guild_deposit(late["token"], gid, 5.0)
@@ -355,20 +355,20 @@ def test_eligibility_snapshot_three_arms():
     assert link["eligible_count"] == 1, link
     with db._conn() as conn:
         amounts = {
-            r["tier"]: r["amount_quarters"]
+            r["tier"]: r["amount_units"]
             for r in conn.execute(
-                "SELECT tier, amount_quarters FROM guild_tranches WHERE id IN (?, ?)",
+                "SELECT tier, amount_units FROM guild_tranches WHERE id IN (?, ?)",
                 (link["t1_tranche_id"], link["t2_tranche_id"]),
             ).fetchall()
         }
-    assert amounts == {"T1": 2, "T2": 2}, amounts
+    assert amounts == {"T1": 10, "T2": 10}, amounts
 
 
 def test_t2_settles_on_merge_freeze_and_expiry():
     founder, guild, mate, idea, pid, pr = _cycle("t2")
     link = _link_for_post(pid)
     assert link is not None and link["status"] == "complete", link
-    assert _pool(guild["id"]) == 100 + 40 + 4 + 4, _pool(guild["id"])
+    assert _pool(guild["id"]) == 500 + 200 + 20 + 20, _pool(guild["id"])
     # Freeze: another merge while a second PR is still open waits.
     founder2, guild2 = _found()
     mate2 = _mate(founder2, guild2)
@@ -448,15 +448,15 @@ def test_decay_cap_and_completed_counts_merges_only():
     assert link2 is not None and link2["decay_pct"] == 75, link2
     with db._conn() as conn:
         t1 = conn.execute(
-            "SELECT amount_quarters FROM guild_tranches WHERE id = ?",
+            "SELECT amount_units FROM guild_tranches WHERE id = ?",
             (link2["t1_tranche_id"],),
         ).fetchone()
-    assert t1["amount_quarters"] == 3, dict(t1)
+    assert t1["amount_units"] == 15, dict(t1)
 
 
 def test_cap_binds_before_decay():
     # Cap applies BEFORE decay (not after): complete one grant, then arm
-    # a 1cr cap on the decay-75 second grant. Cap-first: 4*75//100 = 3
+    # a 1cr cap on the decay-75 second grant. Cap-first: 20*75//100 = 15
     # (1/2); decay-first would give min(4, 8*75//100 = 6) = 4 (2/2).
     founder, guild = _found()
     mate = _mate(founder, guild)
@@ -482,17 +482,17 @@ def test_cap_binds_before_decay():
     assert link2 is not None and link2["decay_pct"] == 75, link2
     with db._conn() as conn:
         amounts = {
-            r["tier"]: r["amount_quarters"]
+            r["tier"]: r["amount_units"]
             for r in conn.execute(
-                "SELECT tier, amount_quarters FROM guild_tranches WHERE id IN (?, ?)",
+                "SELECT tier, amount_units FROM guild_tranches WHERE id IN (?, ?)",
                 (link2["t1_tranche_id"], link2["t2_tranche_id"]),
             ).fetchall()
         }
-    assert amounts == {"T1": 1, "T2": 2}, amounts
+    assert amounts == {"T1": 7, "T2": 8}, amounts
 
 
 def test_decay_dust_completes_without_pay():
-    # Fourth repeat at decay 25 with one eligible member: 4*25//100 = 1q,
+    # Fifth repeat at decay 0 with one eligible member: 20*0//100 = 0u,
     # below the smallest splittable tranche - the link completes with no
     # tranches and no pay (documented; expiry-style terminal, no merge).
     founder, guild = _found()
@@ -501,11 +501,11 @@ def test_decay_dust_completes_without_pay():
     old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
     try:
         last = None
-        for rnd in range(4):
+        for rnd in range(5):
             idea = _old_idea(founder, f"dust{rnd}", [c1, c2])
             db.designate_guild_project(founder["token"], guild["id"], idea)
             prop = _promote(founder, idea, True)
-            if rnd < 3:
+            if rnd < 4:
                 pr = _merge(prop["post_id"])
                 with db._conn(immediate=True) as conn:
                     out = db.grant_on_merge(conn, prop["post_id"], pr)
@@ -516,16 +516,16 @@ def test_decay_dust_completes_without_pay():
         _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
     link = _link_for_post(last)
     assert link is not None and link["status"] == "complete", link
-    assert link["decay_pct"] == 25, link
+    assert link["decay_pct"] == 0, link
     assert link["t1_tranche_id"] is None and link["t2_tranche_id"] is None
-    # Rounds 1-3 paid 4+3+2q; the dust round added nothing.
+    # Rounds 1-4 paid 20+15+10+5u; the dust round added nothing.
     with db._conn() as conn:
         paid = conn.execute(
-            "SELECT COALESCE(SUM(quarters), 0) FROM guild_ledger"
+            "SELECT COALESCE(SUM(units), 0) FROM guild_ledger"
             " WHERE guild_id = ? AND kind IN ('grant_t1', 'grant_t2')",
             (guild["id"],),
         ).fetchone()[0]
-    assert paid == 9, paid
+    assert paid == 50, paid
 
 
 def test_budget_and_cooldown_gates():

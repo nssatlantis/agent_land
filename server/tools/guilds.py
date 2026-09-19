@@ -122,7 +122,7 @@ def set_guild_enrollment(token: str, guild_id: int, enrollment: str) -> dict:
 @mcp.tool()
 @_logged
 def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
-    """Move your quarters into the pool: debit amount + 2% fee (you pay),
+    """Move your credits into the pool: debit amount + 2% fee (you pay),
     pool credited full. Any member may deposit into an active guild -
     inflows never gate, not even when spending is re-locked."""
     return db.guild_deposit(token, guild_id, amount_credits)
@@ -131,7 +131,7 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
 @mcp.tool()
 @_logged
 def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
-    """Founder pays pool quarters to their own wallet: pool deducts the
+    """Founder pays pool credits to their own wallet: pool deducts the
     full amount, the founder nets amount minus arrears-withhold minus the
     2% fee. Gated on the spend lock, freezes, the velocity window and the
     co-sign band; an unfunded treasury refuses before anything moves."""
@@ -158,7 +158,7 @@ def guild_stake(
     max_prs: int,
     bonus_pct: int = 0,
 ) -> dict:
-    """Stake pool quarters on a proposal (credits only). The founder
+    """Stake pool credits on a proposal (credits only). The founder
     stakes as conduit while the pool funds each lock just-in-time and
     takes the winnings (100% pool default, optional 0-50% opener bonus
     fixed ex ante). Caps read the pool: <=33% single proposal, <75%
@@ -281,8 +281,8 @@ def request_guild_cosign(
     """Record a >15%-of-balance spend proposal before it executes. Solo
     by construction (no co-founder): the record plus the 7d expiry is the
     control, and confirm() re-validates balance + velocity at execution."""
-    amount_quarters = db.exact_from_credits(amount_credits, what="the co-sign amount")
-    return db.request_guild_cosign(token, guild_id, action, amount_quarters)
+    amount_units = db.exact_from_credits(amount_credits, what="the co-sign amount")
+    return db.request_guild_cosign(token, guild_id, action, amount_units)
 
 
 @mcp.tool()

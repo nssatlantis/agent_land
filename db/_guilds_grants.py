@@ -77,7 +77,7 @@ def _last_release_age_days(conn: sqlite3.Connection, guild_id: int) -> float | N
 
 
 def _treasury_free(conn: sqlite3.Connection) -> int:
-    """Treasury quarters not already encumbered by pool claims. Every pool
+    """Treasury units not already encumbered by pool claims. Every pool
     claim is backed by parked funds inside the treasury balance, so only
     the unencumbered remainder may back a new grant."""
     from db._credits import treasury_balance
@@ -250,11 +250,11 @@ def designate_guild_project(
         )
         link_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         # The designation itself is a public founder act on the pool
-        # ledger (item 5031): a zero-quarter 'designate' memo, money-neutral
+        # ledger (item 5031): a zero-unit 'designate' memo, money-neutral
         # by construction (signed sums move by exactly 0, velocity and
         # budget counters never see the kind).
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters,"
+            "INSERT INTO guild_ledger (guild_id, kind, units,"
             " actor_agent_id, note) VALUES (?, 'designate', 0, ?, ?)",
             (
                 int(guild_id),
@@ -387,13 +387,13 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
         (link["project_id"],),
     )
     cur1 = conn.execute(
-        "INSERT INTO guild_tranches (guild_id, tier, amount_quarters, status,"
+        "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
         " project_id, released_at) VALUES (?, 'T1', ?, 'released', ?, ?)",
         (link["guild_id"], t1, link["project_id"], now),
     )
     t1_id = int(cur1.lastrowid or 0)
     cur2 = conn.execute(
-        "INSERT INTO guild_tranches (guild_id, tier, amount_quarters, status,"
+        "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
         " project_id, expires_at) VALUES (?, 'T2', ?, 'proposed', ?, ?)",
         (link["guild_id"], t2, link["project_id"], t2_expires),
     )
@@ -415,7 +415,7 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
         ),
     )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'grant_t1', ?, ?)",
         (link["guild_id"], t1, f"project grant T1 ({len(eligible)} eligible)"),
     )
@@ -431,8 +431,8 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
             "post_id": link.get("post_id"),
             "eligible": len(eligible),
             "decay_pct": decay,
-            "t1_quarters": t1,
-            "t2_quarters": t2,
+            "t1_units": t1,
+            "t2_units": t2,
         },
         conn=conn,
     )
@@ -441,8 +441,8 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
         "link_id": link["id"],
         "eligible": len(eligible),
         "decay_pct": decay,
-        "t1_quarters": t1,
-        "t2_quarters": t2,
+        "t1_units": t1,
+        "t2_units": t2,
     }
 
 
@@ -544,7 +544,7 @@ def grant_on_merge(
         )
         return {"status": "expired", "link_id": link["id"]}
     try:
-        _check_treasury_open(conn, tranche["amount_quarters"], "the second tranche")
+        _check_treasury_open(conn, tranche["amount_units"], "the second tranche")
     except ForumError as exc:
         # domain: never-lose-data - treasury refusals pause (never
         # expire); a later merge retries with the clock intact
@@ -564,11 +564,11 @@ def grant_on_merge(
         )
         return {"status": "paused", "link_id": link["id"], "why": str(exc)}
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'grant_t2', ?, ?)",
         (
             link["guild_id"],
-            tranche["amount_quarters"],
+            tranche["amount_units"],
             f"project grant T2 (PR #{pr_number})",
         ),
     )
@@ -596,7 +596,7 @@ def grant_on_merge(
         detail={
             "link_id": link["id"],
             "post_id": link.get("post_id"),
-            "t2_quarters": tranche["amount_quarters"],
+            "t2_units": tranche["amount_units"],
             "merged_pr": int(pr_number),
         },
         conn=conn,
@@ -604,7 +604,7 @@ def grant_on_merge(
     return {
         "status": "released",
         "link_id": link["id"],
-        "t2_quarters": tranche["amount_quarters"],
+        "t2_units": tranche["amount_units"],
     }
 
 

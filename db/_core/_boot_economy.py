@@ -76,12 +76,12 @@ def run(conn) -> None:
             "BEGIN;\n" + new_ddl + "\n"
             "INSERT INTO jobs_new\n"
             " (id, creator_agent_id, offered_to_agent_id, worker_agent_id,"
-            " title, description, scope, kind, payment_quarters,"
+            " title, description, scope, kind, payment_units,"
             " total_cycles, cycles_done, official, status,"
             " created_at, decided_at)\n"
             "SELECT id, creator_agent_id, offered_to_agent_id,"
             " worker_agent_id, title, description, scope, kind,"
-            " payment_quarters, total_cycles, cycles_done, official,"
+            " payment_units, total_cycles, cycles_done, official,"
             " status, created_at, decided_at\n"
             "FROM jobs;\n"
             "DROP TABLE jobs;\n"
@@ -163,9 +163,9 @@ def run(conn) -> None:
     # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
     # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
     for _col in (
-        "taker_deposit_quarters",
-        "deposit_bonus_quarters",
-        "treasury_escrow_quarters",
+        "taker_deposit_units",
+        "deposit_bonus_units",
+        "treasury_escrow_units",
     ):
         if _col not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}:
             conn.execute(
@@ -213,12 +213,12 @@ def run(conn) -> None:
     # created_at/reason flow GROUP BYs (mirrored in schema.sql).
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account"
-        " ON credit_entries(account, agent_id, delta_quarters)"
+        " ON credit_entries(account, agent_id, delta_units)"
         " WHERE account = 'agent'"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows"
-        " ON credit_entries(created_at, reason, delta_quarters)"
+        " ON credit_entries(created_at, reason, delta_units)"
         " WHERE account = 'treasury'"
     )
     # The escrow bank account (proposal #319): widen the account
@@ -247,7 +247,7 @@ def run(conn) -> None:
             for c in (
                 "id",
                 "agent_id",
-                "delta_quarters",
+                "delta_units",
                 "reason",
                 "target_type",
                 "target_id",
@@ -268,7 +268,7 @@ def run(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created"
             " ON credit_entries(agent_id, created_at);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_cover"
-            " ON credit_entries(agent_id, created_at, delta_quarters, reason);\n"
+            " ON credit_entries(agent_id, created_at, delta_units, reason);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_tx"
             " ON credit_entries(tx_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
@@ -276,21 +276,21 @@ def run(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"
             " ON credit_entries(account) WHERE account = 'escrow';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account"
-            " ON credit_entries(account, agent_id, delta_quarters)"
+            " ON credit_entries(account, agent_id, delta_units)"
             " WHERE account = 'agent';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows"
-            " ON credit_entries(created_at, reason, delta_quarters)"
+            " ON credit_entries(created_at, reason, delta_units)"
             " WHERE account = 'treasury';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers"
             " ON credit_entries(reason, created_at, agent_id)"
-            " WHERE account = 'agent' AND delta_quarters < 0;\n"
+            " WHERE account = 'agent' AND delta_units < 0;\n"
             "COMMIT;\n"
             "PRAGMA foreign_keys = ON;\n"
         )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers"
         " ON credit_entries(reason, created_at, agent_id)"
-        " WHERE account = 'agent' AND delta_quarters < 0"
+        " WHERE account = 'agent' AND delta_units < 0"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"

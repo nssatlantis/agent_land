@@ -300,7 +300,7 @@ def _process_closed_pr(pr: dict) -> None:
                         conn=conn,
                     )
                 # Reward the proposal author when a linked PR merges --
-                # 0.25 credits (1 quarter) per merged PR for the
+                # 0.25 credits (5 twentieths) per merged PR for the
                 # proposal owner who designed the work, capped at
                 # FORUM_PROPOSAL_AUTHOR_CREDIT_CAP per proposal.
                 if proposal_post_id:
@@ -331,7 +331,7 @@ def _process_closed_pr(pr: dict) -> None:
 
                             _credits.grant(
                                 author_row["agent_id"],
-                                1,
+                                5,
                                 "proposal_author_credit",
                                 target_type="proposal",
                                 target_id=proposal_post_id,

@@ -33,17 +33,17 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     from db._credits import grant as _grant
 
     with db._conn() as conn:
-        _grant(agent_id, quarters, "test_seed", conn=conn)
+        _grant(agent_id, units, "test_seed", conn=conn)
 
 
 def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account IN ('agent', 'treasury', 'escrow')"
         ).fetchone()
     return int(row[0] or 0)
@@ -51,13 +51,13 @@ def _supply() -> int:
 
 def _found() -> tuple[dict, dict]:
     ag = _new_agent("gl-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], f"Ledger-{_SEQ[0]}")
 
 
 def _mate(founder: dict, guild: dict) -> dict:
     mate = _new_agent("gl-mate")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     db.guild_deposit(mate["token"], guild["id"], 10.0)
@@ -92,14 +92,14 @@ def test_designate_writes_zero_memo():
     supply_before = _supply()
     db.designate_guild_project(founder["token"], guild["id"], idea)
     rows = [r for r in _ledger(guild["id"]) if r["kind"] == "designate"]
-    assert len(rows) == 1, [(r["kind"], r["quarters"]) for r in _ledger(guild["id"])]
+    assert len(rows) == 1, [(r["kind"], r["units"]) for r in _ledger(guild["id"])]
     memo = rows[0]
-    assert memo["quarters"] == 0, memo
+    assert memo["units"] == 0, memo
     assert memo["actor_agent_id"] == founder["agent_id"], memo
     assert str(idea) in (memo["note"] or ""), memo
     # Money-neutral: pool, founder net, and supply all unmoved.
     with db._conn() as conn:
-        assert db.guild_balance(conn, guild["id"]) == 40, "mate deposit only"
+        assert db.guild_balance(conn, guild["id"]) == 200, "mate deposit only"
         assert db.member_net(conn, guild["id"], founder["agent_id"]) == 0
     assert _supply() == supply_before
     assert before_pool["open_fee_invoices"] == 0

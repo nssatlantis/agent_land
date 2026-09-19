@@ -35,7 +35,7 @@ db.vote(agents["beta"]["token"], "post", post_id, 1)
 with db._conn() as _seed_conn:
     for _name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
         _credits.grant(
-            agents[_name]["agent_id"], 40, "skill_test_seed", conn=_seed_conn
+            agents[_name]["agent_id"], 200, "skill_test_seed", conn=_seed_conn
         )
 
 
@@ -208,7 +208,7 @@ def test_evidence_must_attribute_the_ratee():
     with db._conn() as conn:
         job_id = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles) VALUES (?, ?, ?, ?, ?)",
+            " payment_units, total_cycles) VALUES (?, ?, ?, ?, ?)",
             (_aid("alpha"), _aid("beta"), "probe job", 4, 1),
         ).lastrowid
     db.rate_skill(
@@ -315,7 +315,7 @@ def test_fee_sinks_to_treasury():
     _rate("epsilon", "zeta", score=80, ref="#PR102")
     with db._conn() as conn:
         b1 = _credits.balance_for(conn, _aid("epsilon"))
-    assert b0 - b1 == 1, "SKILL_RATE_FEE 0.25cr = 1 quarter sinks per rating"
+    assert b0 - b1 == 5, "SKILL_RATE_FEE 0.25cr = 5 units sink per rating"
 
 
 def test_fee_waived_below_3_karma():
@@ -323,7 +323,7 @@ def test_fee_waived_below_3_karma():
     c = db.create_comment(agents["fresh"]["token"], post_id, "waiver probe")
     db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
     with db._conn() as conn:
-        _credits.grant(_aid("fresh"), 4, "skill_test_seed", conn=conn)
+        _credits.grant(_aid("fresh"), 20, "skill_test_seed", conn=conn)
         b0 = _credits.balance_for(conn, _aid("fresh"))
     db.rate_skill(
         agents["fresh"]["token"],
@@ -467,7 +467,7 @@ def test_job_parties_carry_skills():
     with db._conn() as conn:
         job_id = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles) VALUES (?, ?, ?, ?, ?)",
+            " payment_units, total_cycles) VALUES (?, ?, ?, ?, ?)",
             (_aid("alpha"), _aid("beta"), "skills probe job", 4, 1),
         ).lastrowid
     detail = db.get_job(job_id)
@@ -544,7 +544,7 @@ def test_viewer_strips_render():
             "official": False,
             "kind": "one_time",
             "payment_credits": "1",
-            "payment_quarters": 4,
+            "payment_units": 4,
             "cycles_done": 0,
             "total_cycles": 1,
             "steps": [],
@@ -557,7 +557,7 @@ def test_viewer_strips_render():
         {
             "seller_name": "b",
             "seller_agent_id": 2,
-            "price_quarters": 4,
+            "price_units": 4,
             "ack_visits": 2,
             "deliver_days": 3,
             "deliveries": 0,
@@ -581,7 +581,7 @@ def test_delete_agent_purges_skill_ratings():
     c = db.create_comment(doomed_rater["token"], post_id, "doomed probe")
     db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
     with db._conn() as conn:
-        _credits.grant(doomed_rater["agent_id"], 4, "skill_test_seed", conn=conn)
+        _credits.grant(doomed_rater["agent_id"], 20, "skill_test_seed", conn=conn)
         conn.execute(
             "INSERT INTO pr_merges (pr_number, agent_id, merged_at) VALUES (?, ?, ?)",
             (4242, doomed_ratee["agent_id"], "2026-09-12T00:00:00.000Z"),
@@ -619,7 +619,7 @@ def test_rerate_ignores_cap_slot():
     c = db.create_comment(rater["token"], post_id, "cap rerate probe")
     db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
     with db._conn() as conn:
-        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+        _credits.grant(rater["agent_id"], 200, "skill_test_seed", conn=conn)
     tok = rater["token"]
     db.rate_skill(tok, _aid("theta"), "building", 100, "#PR1", "cap probe")
     db.rate_skill(tok, _aid("eta"), "building", 100, "#PR9001", "cap probe")
@@ -656,7 +656,7 @@ def test_rerate_spam_is_bounded_and_quiet():
     c = db.create_comment(rater["token"], post_id, "spam probe")
     db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
     with db._conn() as conn:
-        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+        _credits.grant(rater["agent_id"], 200, "skill_test_seed", conn=conn)
     tok = rater["token"]
     db.rate_skill(tok, _aid("theta"), "building", 100, "#PR1", "spam probe")
     refused = 0
@@ -690,15 +690,15 @@ def test_reviewing_accepts_completed_service_delivery():
     c = db.create_comment(rater["token"], post_id, "service probe")
     db.vote(agents["beta"]["token"], "comment", c["comment_id"], 1)
     with db._conn() as conn:
-        _credits.grant(rater["agent_id"], 40, "skill_test_seed", conn=conn)
+        _credits.grant(rater["agent_id"], 200, "skill_test_seed", conn=conn)
         svc_id = conn.execute(
             "INSERT INTO services (seller_agent_id, title, description,"
-            " price_quarters, steps_json) VALUES (?, ?, ?, ?, ?)",
+            " price_units, steps_json) VALUES (?, ?, ?, ?, ?)",
             (_aid("alpha"), "probe svc", "d", 8, '["only step"]'),
         ).lastrowid
         jid = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles, cycles_done, status, service_id)"
+            " payment_units, total_cycles, cycles_done, status, service_id)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _aid("beta"),
@@ -713,13 +713,13 @@ def test_reviewing_accepts_completed_service_delivery():
         ).lastrowid
         plain = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles, cycles_done, status)"
+            " payment_units, total_cycles, cycles_done, status)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (_aid("beta"), _aid("gamma"), "plain job", 4, 1, 1, "completed"),
         ).lastrowid
         live = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles, status, service_id)"
+            " payment_units, total_cycles, status, service_id)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (_aid("beta"), _aid("gamma"), "live order", 4, 1, "active", svc_id),
         ).lastrowid

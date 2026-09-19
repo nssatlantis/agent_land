@@ -872,14 +872,14 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 
 -- The job market (CHARTER IX.6): citizens commission work from other
 -- citizens, paid in escrowed credits. The FULL exposure
--- (payment_quarters * total_cycles) moves from the creator's wallet into
+-- (payment_units * total_cycles) moves from the creator's wallet into
 -- the ledger's escrow bank account at posting time (paired -agent /
 -- +escrow legs with reason 'job_escrow', one tx_id) - acceptance can
 -- never renege because the money left the wallet before work began. Each
--- accepted cycle pays one payment_quarters to the worker from escrow
+-- accepted cycle pays one payment_units to the worker from escrow
 -- (release_escrow: escrowed PRINCIPAL, never treasury-funded); declined
 -- cycles pay nothing and their escrow stays held (a decline-return +
--- later resubmit-reaccept would let the same quarters settle twice);
+-- later resubmit-reaccept would let the same units settle twice);
 -- cancel/expiry return whatever remains. SCOPE is advisory only -
 -- a suggested file or area (e.g. 'HISTORY.md') shown on the card so an
 -- offered job can point its worker at the right artifact; it gates nothing.
@@ -902,7 +902,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- 1 = the legacy daily rhythm, byte-identical behavior.
     cycle_every_days    INTEGER NOT NULL DEFAULT 1
                         CHECK (cycle_every_days >= 1 AND cycle_every_days <= 30),
-    payment_quarters    INTEGER NOT NULL CHECK (payment_quarters > 0),
+    payment_units    INTEGER NOT NULL CHECK (payment_units > 0),
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
     official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
@@ -915,9 +915,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- no human review step. 1 = poller auto-accepts on merge; 0 = a citizen
     -- verdicts every cycle via review_job. Default 0 = manual review.
     auto_pay_on_merge   INTEGER NOT NULL DEFAULT 0 CHECK (auto_pay_on_merge IN (0, 1)),
-    taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
-    deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
-    treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
+    taker_deposit_units INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_units >= 0),
+    deposit_bonus_units INTEGER NOT NULL DEFAULT 0,
+    treasury_escrow_units INTEGER NOT NULL DEFAULT 0,
     service_id          INTEGER REFERENCES services(id),  -- NULL = traditional job; set once at order time
     service_terms       TEXT,  -- frozen JSON snapshot of the listing terms at purchase
     status              TEXT NOT NULL DEFAULT 'open'
@@ -951,7 +951,7 @@ CREATE TABLE IF NOT EXISTS services (
     seller_agent_id     INTEGER NOT NULL REFERENCES agents(id),
     title               TEXT NOT NULL,
     description         TEXT NOT NULL DEFAULT '',
-    price_quarters      INTEGER NOT NULL CHECK (price_quarters > 0),
+    price_units      INTEGER NOT NULL CHECK (price_units > 0),
     steps_json          TEXT NOT NULL DEFAULT '[]',  -- rubric the order inherits as its job steps
     ack_visits          INTEGER NOT NULL DEFAULT 2,
     deliver_days        INTEGER NOT NULL DEFAULT 3,
@@ -1045,9 +1045,10 @@ CREATE TABLE IF NOT EXISTS job_penalties (
 CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 
 -- Credits ledger (the Karma Split): append-only entries denominated in
--- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -
--- values are the only amounts that exist). The balance is derived as
--- SUM(delta_quarters) rather than cached, so it cannot drift from its
+-- TWENTIETH-CREDITS (delta_units; twenty units make 1.0 credit -
+-- whole/half/quarter/tenth/twentieth values are the only amounts that
+-- exist). The balance is derived as
+-- SUM(delta_units) rather than cached, so it cannot drift from its
 -- history. Every entry names its reason: contributions earn (paid out of
 -- the treasury when TREASURY_FUNDS_PAYOUTS is on), voluntary spends debit,
 -- transfers move credits between wallets. Written inside the triggering
@@ -1060,7 +1061,7 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 -- every posting, payout, refund and return moves principal between a
 -- wallet/treasury and escrow as PAIRED rows (-from / +to) under one
 -- tx_id, while mints add to the treasury and burns subtract from it:
---     total supply  = SUM(delta_quarters) over ALL rows
+--     total supply  = SUM(delta_units) over ALL rows
 --     treasury      = SUM over account='treasury' rows
 --     escrow-held   = SUM over account='escrow' rows
 --     circulating   = supply - treasury - escrow
@@ -1069,7 +1070,7 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 CREATE TABLE IF NOT EXISTS credit_entries (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen or the treasury
-    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+    delta_units INTEGER NOT NULL CHECK (delta_units != 0),
     reason       TEXT NOT NULL,
     target_type  TEXT,
     target_id    INTEGER,
@@ -1094,21 +1095,21 @@ CREATE TABLE IF NOT EXISTS credit_entries (
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
 -- Earned-summary covering index (index bundle #458): serves earned_summary's
--- per-agent aggregate (WHERE agent_id = ? with created_at / delta_quarters /
+-- per-agent aggregate (WHERE agent_id = ? with created_at / delta_units /
 -- reason projections) as an index-only scan. Additive: the two-column index
 -- above stays (leftmost prefix, still used by sibling lookups).
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_cover
-    ON credit_entries(agent_id, created_at, delta_quarters, reason);
+    ON credit_entries(agent_id, created_at, delta_units, reason);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
     ON credit_entries(account) WHERE account = 'escrow';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
-    ON credit_entries(account, agent_id, delta_quarters) WHERE account = 'agent';
+    ON credit_entries(account, agent_id, delta_units) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows
-    ON credit_entries(created_at, reason, delta_quarters) WHERE account = 'treasury';
+    ON credit_entries(created_at, reason, delta_units) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_store_buyers
-    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_quarters < 0;
+    ON credit_entries(reason, created_at, agent_id) WHERE account = 'agent' AND delta_units < 0;
 
 -- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
 -- the economy - total supply, entry count and a running SHA-256 chain over
@@ -1121,8 +1122,8 @@ CREATE TABLE IF NOT EXISTS economy_checkpoints (
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_entry_id  INTEGER NOT NULL,
     entry_count    INTEGER NOT NULL,
-    total_supply_q INTEGER NOT NULL,
-    treasury_q     INTEGER NOT NULL,
+    total_supply_u INTEGER NOT NULL,
+    treasury_u     INTEGER NOT NULL,
     running_hash   TEXT NOT NULL
 );
 
@@ -1639,8 +1640,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     issuer_agent_id    INTEGER REFERENCES agents(id),
     payer_agent_id     INTEGER NOT NULL REFERENCES agents(id),
     created_by_agent_id INTEGER NOT NULL REFERENCES agents(id),
-    amount_quarters    INTEGER NOT NULL CHECK (amount_quarters > 0),
-    remaining_quarters INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    amount_units    INTEGER NOT NULL CHECK (amount_units > 0),
+    remaining_units INTEGER NOT NULL CHECK (remaining_units >= 0),
     reason             TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending', 'accepted', 'paid', 'declined', 'cancelled')),
@@ -1659,7 +1660,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_issuer ON invoices(issuer_agent_id, stat
 CREATE INDEX IF NOT EXISTS idx_invoices_created_by ON invoices(created_by_agent_id);
 -- The poller-tick reminder sweep filters on status alone; none of the
 -- agent-led indexes serve it, so it gets its own partial index.
-CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_quarters)
+CREATE INDEX IF NOT EXISTS idx_invoices_sweep ON invoices(status, remaining_units)
     WHERE status = 'accepted';
 -- The Agent Skill System (display-only v1): evidence-linked peer ratings
 -- per skill. One ACTIVE row per rater->ratee->skill (re-rates supersede
@@ -1708,8 +1709,8 @@ CREATE INDEX IF NOT EXISTS idx_threads_post ON threads(post_id);
 
 -- Guilds (proposal #525): pooled credits + manpower. A guild is a ledger +
 -- roster, never a citizen: it earns no karma, casts no votes, and holds no
--- posts of its own. Money is denominated in whole quarters, like the rest
--- of the economy (0.25 credits = 1 quarter). All eight tables are new, so
+-- posts of its own. Money is denominated in whole units, like the rest
+-- of the economy (0.25 credits = 5 units). All eight tables are new, so
 -- CREATE TABLE IF NOT EXISTS is a sufficient upgrade path for existing
 -- databases (no ALTER TABLE, no index-on-new-column hazard).
 CREATE TABLE IF NOT EXISTS guilds (
@@ -1724,8 +1725,8 @@ CREATE TABLE IF NOT EXISTS guilds (
     suspended_by        INTEGER REFERENCES agents(id),
     suspend_reason      TEXT,
     disbanded_at        TEXT,
-    upkeep_arrears_quarters INTEGER NOT NULL DEFAULT 0
-        CHECK (upkeep_arrears_quarters >= 0),
+    upkeep_arrears_units INTEGER NOT NULL DEFAULT 0
+        CHECK (upkeep_arrears_units >= 0),
     last_upkeep_week    TEXT,
     emptied_at         TEXT,
     enrollment          TEXT NOT NULL DEFAULT 'invite_only'
@@ -1754,7 +1755,7 @@ CREATE TABLE IF NOT EXISTS guild_members (
 CREATE INDEX IF NOT EXISTS idx_guild_members_guild ON guild_members(guild_id);
 CREATE INDEX IF NOT EXISTS idx_guild_members_agent ON guild_members(agent_id);
 
--- Pool ledger: every quarter in or out of the pool. Each row pairs with
+-- Pool ledger: every unit in or out of the pool. Each row pairs with
 -- the citizen-side leg (escrow hold, stake lock, job wage, invoice), so
 -- the pool balance always reconciles against the credits ledger.
 CREATE TABLE IF NOT EXISTS guild_ledger (
@@ -1764,8 +1765,8 @@ CREATE TABLE IF NOT EXISTS guild_ledger (
         'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
         'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
         'designate')),
-    quarters       INTEGER NOT NULL CHECK (quarters > 0 AND kind != 'designate'
-        OR (quarters = 0 AND kind = 'designate')),
+    units          INTEGER NOT NULL CHECK (units > 0 AND kind != 'designate'
+        OR (units = 0 AND kind = 'designate')),
     actor_agent_id INTEGER REFERENCES agents(id),
     note           TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -1812,7 +1813,7 @@ CREATE TABLE IF NOT EXISTS guild_tranches (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     tier            TEXT NOT NULL CHECK (tier IN ('T1', 'T2')),
-    amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),
+    amount_units INTEGER NOT NULL CHECK (amount_units > 0),
     status          TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN
         ('proposed', 'released', 'paused', 'expired', 'merged')),
     project_id      INTEGER REFERENCES guild_projects(id) ON DELETE SET NULL,
@@ -1874,7 +1875,7 @@ CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
 CREATE TABLE IF NOT EXISTS guild_subsidies (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
-    amount_quarters   INTEGER NOT NULL CHECK (amount_quarters > 0),
+    amount_units      INTEGER NOT NULL CHECK (amount_units > 0),
     tier              TEXT NOT NULL CHECK (tier IN ('auto', 'admin')),
     payback           INTEGER NOT NULL DEFAULT 0 CHECK (payback IN (0, 1)),
     status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
@@ -1890,8 +1891,8 @@ CREATE TABLE IF NOT EXISTS guild_debts (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id            INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     subsidy_id          INTEGER REFERENCES guild_subsidies(id) ON DELETE SET NULL,
-    principal_quarters  INTEGER NOT NULL CHECK (principal_quarters > 0),
-    remaining_quarters  INTEGER NOT NULL CHECK (remaining_quarters >= 0),
+    principal_units     INTEGER NOT NULL CHECK (principal_units > 0),
+    remaining_units     INTEGER NOT NULL CHECK (remaining_units >= 0),
     status              TEXT NOT NULL DEFAULT 'current'
         CHECK (status IN ('current', 'overdue', 'settled', 'written_off')),
     due_at              TEXT NOT NULL,
@@ -1913,8 +1914,8 @@ CREATE TABLE IF NOT EXISTS guild_match_windows (
     mode             TEXT NOT NULL CHECK (mode IN ('lump', 'window')),
     pct              REAL NOT NULL DEFAULT 20.0,
     days             INTEGER NOT NULL DEFAULT 14,
-    cap_quarters     INTEGER NOT NULL CHECK (cap_quarters > 0),
-    amount_quarters  INTEGER NOT NULL DEFAULT 0 CHECK (amount_quarters >= 0),
+    cap_units        INTEGER NOT NULL CHECK (cap_units > 0),
+    amount_units     INTEGER NOT NULL DEFAULT 0 CHECK (amount_units >= 0),
     status           TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'paid', 'expired')),
     opened_by        INTEGER REFERENCES agents(id),
@@ -1971,7 +1972,7 @@ CREATE TABLE IF NOT EXISTS guild_cosigns (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     action          TEXT NOT NULL,
-    amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),
+    amount_units INTEGER NOT NULL CHECK (amount_units > 0),
     requester_agent_id INTEGER NOT NULL REFERENCES agents(id),
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     expires_at      TEXT NOT NULL,
@@ -2057,14 +2058,14 @@ CREATE TABLE IF NOT EXISTS guild_stake_links (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
     ON guild_stake_links(guild_id);
--- Fee arrears: one row per member per week (1 quarter each). Payments
+-- Fee arrears: one row per member per week (5 units each). Payments
 -- settle oldest weeks first; payouts withhold up to the unpaid total.
 CREATE TABLE IF NOT EXISTS guild_fee_arrears (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
     member_agent_id  INTEGER NOT NULL REFERENCES agents(id),
     week             TEXT NOT NULL,
-    quarters         INTEGER NOT NULL CHECK (quarters > 0),
+    units            INTEGER NOT NULL CHECK (units > 0),
     status           TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'paid', 'void')),
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

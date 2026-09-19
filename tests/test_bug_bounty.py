@@ -47,8 +47,8 @@ def _bug_row(bid):
 def _job_row(jid):
     with db._conn() as conn:
         return conn.execute(
-            "SELECT status, creator_agent_id, official, payment_quarters,"
-            " taker_deposit_quarters, treasury_escrow_quarters,"
+            "SELECT status, creator_agent_id, official, payment_units,"
+            " taker_deposit_units, treasury_escrow_units,"
             " auto_pay_on_merge, worker_agent_id FROM jobs WHERE id = ?",
             (jid,),
         ).fetchone()
@@ -112,11 +112,11 @@ def test_spawn_once_per_confirmed_original():
     assert job["official"] == 1
     assert job["creator_agent_id"] is None, "bounties are system-owned"
     assert job["auto_pay_on_merge"] == 1, "bounties pay out on merge"
-    assert job["payment_quarters"] == 1, "0.25cr wage is 1 quarter"
-    assert job["taker_deposit_quarters"] == 0, "bounty deposit is deliberately 0"
+    assert job["payment_units"] == 5, "0.25cr wage is 5 units"
+    assert job["taker_deposit_units"] == 0, "bounty deposit is deliberately 0"
     assert job["status"] == "open"
     assert _bug_row(bid)["bounty_job_id"] == jid
-    assert t0 - _treasury() == len(result["posted"]), (
+    assert t0 - _treasury() == 5 * len(result["posted"]), (
         "each bounty escrows exactly its wage"
     )
     again = db.sweep_bug_bounties()
@@ -173,7 +173,7 @@ def test_system_pays_worker_reporter_flat():
         out = db.auto_accept_jobs_for_merged_pr(pr)
     assert out["accepted"] == [jid], out
     assert db.get_job(jid)["status"] == "completed"
-    assert _bal(AGENTS["delta"]["agent_id"]) == before + 2, "wage 1q + reward 1q"
+    assert _bal(AGENTS["delta"]["agent_id"]) == before + 10, "wage 5u + reward 5u"
     assert _bal(AGENTS["beta"]["agent_id"]) == rep_before, (
         "reporter earns no bounty pay"
     )
@@ -217,7 +217,7 @@ def test_autofix_via_fix_pr():
     jid = _bug_row(bid)["bounty_job_id"]
     assert jid is not None and jid in result0["posted"], result0
     posted_n = len(result0["posted"])
-    assert t0 - _treasury() == posted_n
+    assert t0 - _treasury() == 5 * posted_n
     rep_before = _bal(AGENTS["beta"]["agent_id"])
     _, pr = _fix_chain(bid)
     with db._conn() as conn:
@@ -230,8 +230,10 @@ def test_autofix_via_fix_pr():
     assert result["cancelled"] == [jid], result
     assert _bug_row(bid)["status"] == "fixed"
     assert _job_row(jid)["status"] == "cancelled"
-    assert _treasury() == t0 - posted_n, "wage refunded (+1) but fix reward paid (-1)"
-    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
+    assert _treasury() == t0 - 5 * posted_n, (
+        "wage refunded (+5) but fix reward paid (-5)"
+    )
+    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 5, (
         "autofix pays the reporter fix credit"
     )
     print("  autofix_via_fix_pr: ok")

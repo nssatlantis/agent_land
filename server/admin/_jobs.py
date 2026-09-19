@@ -76,8 +76,8 @@ def _official_create_form(request, values=None, error=None, dashed=False):
     style = ' style="border:2px dashed var(--border)"' if dashed else ""
     try:
         with db._conn() as _c:
-            _tq = db.treasury_balance(_c)
-        _tb = db.format_credits(_tq)
+            _tu = db.treasury_balance(_c)
+        _tb = db.format_credits(_tu)
     except Exception:
         # domain:degrade-silently - balance line is advisory; the form
         # works without it.
@@ -130,13 +130,13 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
         + "<label>Wage <span "
         'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
-        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.25" step="0.25" required value="{esc(v["payment_credits"])}" '
+        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.05" step="0.05" required value="{esc(v["payment_credits"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0">'
         + "<label>Taker deposit <span "
         'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
         "half returns as a completion bonus. Not refunded on cancel. Server minimums still apply "
         f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
-        + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.25" value="{esc(v["taker_deposit"])}" '
+        + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.05" value="{esc(v["taker_deposit"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
         + "<label>Kind</label> "
         + '<select name="kind" style="margin:4px 6px 8px 0">'
@@ -655,7 +655,7 @@ async def create_official_job(request):
 
         return _official_create_error(request, str(exc), form)
 
-    _total_q = int(result["payment_quarters"]) * int(result["total_cycles"])
+    _total_q = int(result["payment_units"]) * int(result["total_cycles"])
     return _flash(
         request,
         f"OFFICIAL position #{result['job_id']} '{result['title']}' "

@@ -36,13 +36,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         ok = _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_poller_seed",
             target_type="test",
             target_id=1,
@@ -53,7 +53,7 @@ def _fund(agent_id: int, quarters: int):
 
 def _found(name: str | None = None) -> tuple[dict, dict]:
     ag = _new_agent("gp-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], name or f"Poller-{_SEQ[0]}")
 
 
@@ -125,7 +125,7 @@ def test_upkeep_idle_is_quiet():
 def test_upkeep_work_logs_exactly_once():
     founder, guild = _found()
     mate = _new_agent("gp-mate")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     before = len(_upkeep_events())
@@ -166,7 +166,7 @@ def test_upkeep_runs_when_membership_throws():
     # membership sweep succeeding on the same tick.
     founder, guild = _found()
     mate = _new_agent("gp-mate2")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     real = db.sweep_guild_memberships
@@ -192,13 +192,13 @@ def test_poisoned_guild_does_not_roll_back_neighbours():
 
     founder, guild = _found()
     mate = _new_agent("gp-mate3")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     founder2, guild2 = _found()
     # Fund the healthy guild so its sweep succeeds outright (pool must
     # cover dues) while the poisoned one skips.
-    _fund(founder["agent_id"], 60)
+    _fund(founder["agent_id"], 300)
     db.guild_deposit(founder["token"], guild["id"], 10.0)
     # Age invoices past the 48h sweep gate so the pool reads actually
     # execute (fresh guilds skip before them). Guild 1 sweeps clean
@@ -276,7 +276,7 @@ def test_persistent_skip_stays_quiet():
 def test_second_work_sweep_issues_nothing_new():
     founder, guild = _found()
     mate = _new_agent("gp-mate4")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     before = len(_upkeep_events())

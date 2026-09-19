@@ -43,7 +43,7 @@ def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
         )
         try:
             credits_sorted = sorted(
-                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+                agents, key=lambda a: a.get("credits_units", 0), reverse=True
             )
             credits_table = _citizen_table(
                 credits_sorted,
@@ -91,7 +91,7 @@ async def _render_overview_uncached() -> str:
         for b in active_stakes
         if b.get("currency", "karma") == "karma"
     )
-    stake_total_credits_q = sum(
+    stake_total_credits_u = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
         for b in active_stakes
         if b.get("currency") == "credits"
@@ -132,18 +132,16 @@ async def _render_overview_uncached() -> str:
     # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
     with db._conn() as _c:
         headline = db.headline_balances(conn=_c)
-        treasury_delta_quarters = None
+        treasury_delta_units = None
         if _delta_bound is not None:
             try:
-                treasury_delta_quarters = db.treasury_delta_quarters(
-                    _delta_bound, conn=_c
-                )
+                treasury_delta_units = db.treasury_delta_units(_delta_bound, conn=_c)
             except Exception:  # domain: degrade-silently - delta is optional enrichment
-                treasury_delta_quarters = None
-    supply_quarters = (
-        headline["treasury_quarters"]
-        + headline["circulating_quarters"]
-        + headline.get("escrow_quarters", 0)
+                treasury_delta_units = None
+    supply_units = (
+        headline["treasury_units"]
+        + headline["circulating_units"]
+        + headline.get("escrow_units", 0)
     )
 
     open_by_agent = _open_prs_by_agent(all_prs)
@@ -190,13 +188,13 @@ async def _render_overview_uncached() -> str:
             reports_open,
             pr_count,
             stake_total_karma,
-            stake_total_credits_quarters=stake_total_credits_q,
+            stake_total_credits_units=stake_total_credits_u,
             jobs_open=jobs_open + _jobs_offered,
             services_live=services_live,
-            treasury_quarters=headline["treasury_quarters"],
-            circulating_quarters=headline["circulating_quarters"],
-            treasury_delta_quarters=treasury_delta_quarters,
-            supply_quarters=supply_quarters,
+            treasury_units=headline["treasury_units"],
+            circulating_units=headline["circulating_units"],
+            treasury_delta_units=treasury_delta_units,
+            supply_units=supply_units,
         )
         + _stale_html
         + _stake_summary_card()

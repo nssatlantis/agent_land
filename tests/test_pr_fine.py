@@ -86,7 +86,7 @@ def test_fine_off_when_zero():
 
 def test_fine_skips_amount():
     opener, creator = AGENTS["gamma"], AGENTS["beta"]
-    _set_knob("0.3")  # not whole/half/quarter -> exact_from_credits refuses
+    _set_knob("0.31")  # not twentieth-exact -> exact_from_credits refuses
     _set_admin(creator["name"])
     try:
         assert _fine(900002, opener["agent_id"])["skip"] == "amount"
@@ -140,15 +140,15 @@ def test_fine_skips_payer_unavailable():
     try:
         with db._conn() as conn:
             conn.execute(
-                "UPDATE agents SET status = 'suspended' WHERE id = ?",
-                (opener["agent_id"],),
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", opener["agent_id"]),
             )
         try:
             assert _fine(900005, opener["agent_id"])["skip"] == "payer_unavailable"
         finally:
             with db._conn() as conn:
                 conn.execute(
-                    "UPDATE agents SET status = 'active' WHERE id = ?",
+                    "UPDATE agents SET suspended_until = NULL WHERE id = ?",
                     (opener["agent_id"],),
                 )
     finally:
@@ -193,9 +193,9 @@ def test_fine_issues_treasury_bill():
         assert inv["issuer_agent_id"] is None and inv["issuer_name"] == "Treasury", inv
         assert inv["created_by_name"] == creator["name"], inv
         assert inv["payer_agent_id"] == opener["agent_id"], inv
-        assert inv["amount_quarters"] == 2 and inv["remaining_quarters"] == 2, inv
+        assert inv["amount_units"] == 10 and inv["remaining_units"] == 10, inv
         assert inv["status"] == "pending", inv
-        assert inv["fee_quarters"] == 0, inv
+        assert inv["fee_units"] == 0, inv
         assert f"#{900007}" in inv["reason"] and "Treasury" in inv["reason"], inv
         # Issuance moves nothing (no fee, no auto-debit).
         with db._conn() as conn:
@@ -225,7 +225,7 @@ def test_fine_issues_treasury_bill():
         assert det["pr_number"] == 900007 and det["from_treasury"] is True, det
         assert det["created_by"] == creator["name"], det
         assert det["to_agent_id"] == opener["agent_id"], det
-        assert det["credits"] == "0.5" and det["delta_quarters"] == 2, det
+        assert det["credits"] == "0.5" and det["delta_units"] == 10, det
         # The payer can decline it (bills nothing) and the creator is pinged.
         db.decline_invoice(opener["token"], inv["invoice_id"])
         creator_mail = [
@@ -273,7 +273,8 @@ def test_poller_fires_fine_once_on_first_decline():
 
     with db._conn() as conn:
         rows = conn.execute(
-            "SELECT id FROM invoices WHERE payer_agent_id = ?", (opener["agent_id"],)
+            "SELECT id FROM invoices WHERE payer_agent_id = ? ORDER BY id DESC",
+            (opener["agent_id"],),
         ).fetchall()
         assert len(rows) == before + 1, rows
         rec = conn.execute(
@@ -299,3 +300,20 @@ def test_poller_fires_fine_once_on_first_decline():
     # The decline event carried the reason; the fine's reason names the PR.
     evs = events.query_events(kind="pr_declined", target_type="pr", target_id=pr_num)
     assert evs and evs[0]["detail"].get("decline_reason") == "lacks the proposal stamp"
+
+
+def main():
+    test_fine_off_when_zero()
+    test_fine_skips_amount()
+    test_fine_skips_garbage_knob()
+    test_fine_skips_without_creator()
+    test_fine_skips_creator_is_payer()
+    test_fine_skips_payer_unavailable()
+    test_fine_skips_pair_cap()
+    test_fine_issues_treasury_bill()
+    test_poller_fires_fine_once_on_first_decline()
+    print("pr-decline fine tests passed")
+
+
+if __name__ == "__main__":
+    main()

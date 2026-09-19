@@ -36,13 +36,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_test_seed",
             target_type="test",
             target_id=1,
@@ -67,25 +67,25 @@ def _unarm(old, env_key: str):
 
 def _found(name: str | None = None) -> tuple[dict, dict]:
     ag = _new_agent("ge-founder")
-    _fund(ag["agent_id"], 40)
+    _fund(ag["agent_id"], 200)
     return ag, db.found_guild(ag["token"], name or f"Guild-{_SEQ[0]}")
 
 
-def _deposit(guild_id: int, agent_id: int, quarters: int):
+def _deposit(guild_id: int, agent_id: int, units: int):
     # PR-3 ships the deposit endpoint; the engine suite seeds the pool
     # ledger directly (treasury parking is a PR-3 concern - payouts here
     # draw on the genesis treasury, which is ample).
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters,"
+            "INSERT INTO guild_ledger (guild_id, kind, units,"
             " actor_agent_id, note) VALUES (?, 'deposit', ?, ?, 'seed')",
-            (guild_id, quarters, agent_id),
+            (guild_id, units, agent_id),
         )
 
 
 def test_found_fee_floor_and_name():
     ag = _new_agent("ge-floor")
-    _fund(ag["agent_id"], 40)
+    _fund(ag["agent_id"], 200)
     old = _arm("FORUM_GUILD_FOUND_KARMA", "12")
     try:
         try:
@@ -104,7 +104,7 @@ def test_found_fee_floor_and_name():
         import db._credits as _cr
 
         bal_after = _cr.balance_for(conn, ag["agent_id"])
-    assert bal_before - bal_after == 4, "1cr found cost not debited"
+    assert bal_before - bal_after == 20, "1cr found cost not debited"
     assert guild["founder_name"] == ag["name"]
     assert guild["member_count"] == 1
     assert guild["spend_locked"] is True
@@ -116,7 +116,7 @@ def test_found_fee_floor_and_name():
     # Name-clash probes need a second founder: the steward cap fires first
     # on the same agent.
     ag2 = _new_agent("ge-floor2")
-    _fund(ag2["agent_id"], 40)
+    _fund(ag2["agent_id"], 200)
     try:
         db.found_guild(ag2["token"], "fee guild")
         raise AssertionError("case-dup name accepted")
@@ -135,7 +135,7 @@ def test_found_caps_and_cooldown():
     old = _arm("FORUM_MAX_GUILDS", "1")
     try:
         ag = _new_agent("ge-cap")
-        _fund(ag["agent_id"], 40)
+        _fund(ag["agent_id"], 200)
         try:
             db.found_guild(ag["token"], "Over Cap")
             raise AssertionError("live-guild cap not enforced")
@@ -250,27 +250,27 @@ def test_leave_payout_math():
     mate = _new_agent("ge-mate")
     inv = db.invite_guild_member(founder["token"], gid, mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
-    _deposit(gid, founder["agent_id"], 20)
-    _deposit(gid, mate["agent_id"], 10)
+    _deposit(gid, founder["agent_id"], 100)
+    _deposit(gid, mate["agent_id"], 50)
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-            " VALUES (?, 'withdrawal', 12, 'pool expense')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'withdrawal', 60, 'pool expense')",
             (gid,),
         )
-    # Pool 18, shares 30: founder min(20, 18*20//30=12) = 12.
+    # Pool 90, shares 150: founder min(100, 90*100//150=60) = 60.
     out = db.leave_guild(founder["token"], gid)
-    assert out["paid_quarters"] == 12, out
+    assert out["paid_units"] == 60, out
     # Founder left: mate (only tenure) inherits.
     assert out["succession"]["heir"] == mate["agent_id"]
     with db._conn() as conn:
         import db._credits as _cr
 
-        assert _cr.balance_for(conn, founder["agent_id"]) == 40 - 4 + 12
-    # Mate leaves last: lifetime nets are now A=8, B=10 (A already took
-    # 12), pool 6 -> min(10, 6*10//18=3) = 3; the 3 dust disbands onward.
+        assert _cr.balance_for(conn, founder["agent_id"]) == 200 - 20 + 60
+    # Mate leaves last: lifetime nets are now A=40, B=50 (A already took
+    # 60), pool 30 -> min(50, 30*50//90=16) = 16; the 16 dust disbands onward.
     out2 = db.leave_guild(mate["token"], gid)
-    assert out2["paid_quarters"] == 3, out2
+    assert out2["paid_units"] == 16, out2
 
 
 def test_rejoin_cooldown():
@@ -368,27 +368,27 @@ def test_velocity_cosign_spend_lock():
     mate = _new_agent("ge-vmate")
     inv = db.invite_guild_member(founder["token"], gid, mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
-    _deposit(gid, founder["agent_id"], 100)
+    _deposit(gid, founder["agent_id"], 500)
     with db._conn() as conn:
-        assert db.guild_velocity_ok(conn, gid, 30) is True
-        assert db.guild_velocity_ok(conn, gid, 31) is False
+        assert db.guild_velocity_ok(conn, gid, 150) is True
+        assert db.guild_velocity_ok(conn, gid, 151) is False
         assert db.guild_spend_locked(conn, gid) is False
     try:
-        db.request_guild_cosign(founder["token"], gid, "small buy", 10)
+        db.request_guild_cosign(founder["token"], gid, "small buy", 50)
         raise AssertionError("in-band co-sign recorded")
     except Exception as exc:
         assert "solo band" in str(exc), exc
-    cos = db.request_guild_cosign(founder["token"], gid, "big buy", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "big buy", 100)
     assert (
         db.confirm_guild_cosign(founder["token"], cos["cosign_id"])["confirmed"] is True
     )
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-            " VALUES (?, 'withdrawal', 90, 'drain')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'withdrawal', 450, 'drain')",
             (gid,),
         )
-        assert db.guild_velocity_ok(conn, gid, 20) is False
+        assert db.guild_velocity_ok(conn, gid, 100) is False
     try:
         db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
         raise AssertionError("double confirm accepted")
@@ -542,8 +542,8 @@ def test_list_and_get_shape():
     assert [r["id"] for r in rows] == [g1["id"], g2["id"]], rows
     assert db.list_guilds(min_members=2)[0]["id"] == g1["id"]
     full = db.get_guild(g1["id"])
-    assert full["balance_quarters"] == 12
-    nets = {m["agent_id"]: m["net_quarters"] for m in full["members"]}
+    assert full["balance_units"] == 12
+    nets = {m["agent_id"]: m["net_units"] for m in full["members"]}
     assert nets == {f1["agent_id"]: 12, mate["agent_id"]: 0}, nets
     assert 0 <= full["reputation"] <= 100
     assert set(full["reputation_parts"]) == {
@@ -697,22 +697,22 @@ def test_cosign_confirm_revalidation():
     db.respond_guild_invite(comp["token"], inv["invite_id"], True)
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
-            " note) VALUES (?, 'deposit', 100, ?, 'seed')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 500, ?, 'seed')",
             (gid, founder["agent_id"]),
         )
-    c1 = db.request_guild_cosign(founder["token"], gid, "first", 20)
+    c1 = db.request_guild_cosign(founder["token"], gid, "first", 100)
     assert (
         db.confirm_guild_cosign(founder["token"], c1["cosign_id"])["confirmed"] is True
     )
     # Balance moved below a fresh confirm: refused.
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-            " VALUES (?, 'withdrawal', 95, 'drain')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'withdrawal', 475, 'drain')",
             (gid,),
         )
-    c2 = db.request_guild_cosign(founder["token"], gid, "second", 20)
+    c2 = db.request_guild_cosign(founder["token"], gid, "second", 100)
     try:
         db.confirm_guild_cosign(founder["token"], c2["cosign_id"])
         raise AssertionError("moved-below confirm accepted")
@@ -721,16 +721,16 @@ def test_cosign_confirm_revalidation():
     # Velocity breached at confirm with a fresh confirm: refused.
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
-            " note) VALUES (?, 'deposit', 200, ?, 'refill')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
+            " note) VALUES (?, 'deposit', 1000, ?, 'refill')",
             (gid, founder["agent_id"]),
         )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
-            " VALUES (?, 'withdrawal', 60, 'fill window')",
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'withdrawal', 300, 'fill window')",
             (gid,),
         )
-    c3 = db.request_guild_cosign(founder["token"], gid, "third", 40)
+    c3 = db.request_guild_cosign(founder["token"], gid, "third", 200)
     try:
         db.confirm_guild_cosign(founder["token"], c3["cosign_id"])
         raise AssertionError("velocity-breach confirm accepted")
@@ -748,7 +748,7 @@ def test_unfunded_treasury_isolation():
     db.respond_guild_invite(ghost["token"], inv["invite_id"], True)
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'deposit', 20, ?, 'seed')",
             (gid, ghost["agent_id"]),
         )
@@ -783,7 +783,7 @@ def test_unfunded_treasury_isolation():
     with db._conn() as conn:
         conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (ghost2["agent_id"],))
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'deposit', 20, ?, 'seed')",
             (sgid, ghost2["agent_id"]),
         )
@@ -812,7 +812,7 @@ def test_unfunded_treasury_isolation():
     sgid2 = solo_g2["id"]
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'deposit', 20, ?, 'seed')",
             (sgid2, solo_f2["agent_id"]),
         )
@@ -952,7 +952,7 @@ def test_demote_rolls_back_on_succession_failure():
     gid = guild["id"]
     with db._conn() as conn:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'deposit', 20, ?, 'seed')",
             (gid, founder["agent_id"]),
         )

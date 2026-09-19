@@ -3,7 +3,7 @@
 When a job with a taker deposit completes, the deposit's escrow half used
 to be paid back TWICE: _check_deposit_return returned it via
 return_principal, then _maybe_pay_bonus read a stale in-memory copy of the
-job row (whose deposit_bonus_quarters the first function had already zeroed
+job row (whose deposit_bonus_units the first function had already zeroed
 in the DB but not in the Row) and granted it again. This suite arms a
 nonzero deposit - the one thing every other jobs suite deliberately sets
 to 0 - and asserts the worker is paid exactly the deposit back (plus the
@@ -61,9 +61,9 @@ def test_one_time_deposit_returns_exactly_once():
     p = db.create_post(creator["token"], "dep t", "b")
     db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
 
-    # Deposit of 1.0 credit = 4 quarters (D=4). Worker pays 2 to treasury,
-    # 2 into the escrow pool. On completion the worker should get the whole
-    # 4 back - the 2 treasury half via grant and the 2 escrow half via
+    # Deposit of 1.0 credit = 20 units (D=20). Worker pays 10 to treasury,
+    # 10 into the escrow pool. On completion the worker should get the whole
+    # 20 back - the 10 treasury half via grant and the 10 escrow half via
     # return_principal - and NOT a duplicate job_deposit_bonus for the 2.
     job = db.create_job(
         creator["token"],
@@ -76,31 +76,31 @@ def test_one_time_deposit_returns_exactly_once():
     with db._conn() as _c:
         assert (
             _c.execute(
-                "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
+                "SELECT taker_deposit_units FROM jobs WHERE id = ?",
                 (job["job_id"],),
-            ).fetchone()["taker_deposit_quarters"]
-            == 4
+            ).fetchone()["taker_deposit_units"]
+            == 20
         )
 
     before = _balance(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
     after_claim = _balance(worker["agent_id"])
-    # Deposit debits 4 quarters from the worker at claim.
-    assert before - after_claim == 4
+    # Deposit debits 20 units from the worker at claim.
+    assert before - after_claim == 20
 
     db.submit_job(worker["token"], job["job_id"], "#P")
     db.review_job(creator["token"], job["job_id"], "accept")
 
     with db._conn() as _c:
         row = _c.execute(
-            "SELECT taker_deposit_quarters, deposit_bonus_quarters,"
+            "SELECT taker_deposit_units, deposit_bonus_units,"
             " status FROM jobs WHERE id = ?",
             (job["job_id"],),
         ).fetchone()
 
     # Deposit fully returned; pool zeroed; job completed.
-    assert row["taker_deposit_quarters"] == 0
-    assert row["deposit_bonus_quarters"] == 0
+    assert row["taker_deposit_units"] == 0
+    assert row["deposit_bonus_units"] == 0
     assert row["status"] == "completed"
 
     reasons = _ledger_reasons(worker["agent_id"])
@@ -113,10 +113,10 @@ def test_one_time_deposit_returns_exactly_once():
     assert tre_cnt == 1, f"treasury return count {tre_cnt} != 1"
     assert bonus_cnt == 0, f"unexpected bonus payment count {bonus_cnt}"
 
-    # Total change = deposit 4 back + wage 4 (1.0) + reward (credits ~1).
+    # Total change = deposit 20 back + wage 20 (1.0) + reward (credits ~1).
     total_gain = _balance(worker["agent_id"]) - after_claim
-    # Wage is 4 quarters; reward is roughly the participation credits.
-    assert total_gain >= 8, f"worker gained only {total_gain} after deposit+all"
+    # Wage is 20 units; reward is roughly the participation credits.
+    assert total_gain >= 40, f"worker gained only {total_gain} after deposit+all"
     assert bonus_cnt == 0, (
         "double-payment regression: worker received a duplicate deposit bonus"
     )
@@ -146,16 +146,16 @@ def test_recurring_does_not_pay_bonus_before_completion():
     with db._conn() as _c:
         assert (
             _c.execute(
-                "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
+                "SELECT taker_deposit_units FROM jobs WHERE id = ?",
                 (job["job_id"],),
-            ).fetchone()["taker_deposit_quarters"]
-            == 4
+            ).fetchone()["taker_deposit_units"]
+            == 20
         )
 
     before = _balance(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
     after_claim = _balance(worker["agent_id"])
-    assert before - after_claim == 4
+    assert before - after_claim == 20
 
     # First cycle accept (NOT the final) must not pay any bonus yet.
     db.submit_job(worker["token"], job["job_id"], "#P")
@@ -166,13 +166,13 @@ def test_recurring_does_not_pay_bonus_before_completion():
     )
     with db._conn() as _c:
         row = _c.execute(
-            "SELECT deposit_bonus_quarters, taker_deposit_quarters,"
+            "SELECT deposit_bonus_units, taker_deposit_units,"
             " cycles_done FROM jobs WHERE id = ?",
             (job["job_id"],),
         ).fetchone()
     # Pool intact (deposit not returned mid-way), deposit still held.
-    assert row["deposit_bonus_quarters"] == 2
-    assert row["taker_deposit_quarters"] == 4
+    assert row["deposit_bonus_units"] == 10
+    assert row["taker_deposit_units"] == 20
 
     # Final cycle: deposit returns exactly once.
     db.submit_job(worker["token"], job["job_id"], "#P")

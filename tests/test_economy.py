@@ -37,7 +37,7 @@ def _treasury() -> int:
 def _supply() -> int:
     with db._conn() as conn:
         return conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
         ).fetchone()[0]
 
 
@@ -60,30 +60,30 @@ def _restore():
     _SAVED.clear()
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     """Top a citizen's wallet up from the treasury without touching
     supply - the same paired shape a transfer writes."""
     with db._conn(immediate=True) as conn:
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (NULL, ?, 'test_fund', 'treasury')",
-            (-quarters,),
+            (-units,),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_quarters, reason,"
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
             " account) VALUES (?, ?, 'test_fund', 'agent')",
-            (agent_id, quarters),
+            (agent_id, units),
         )
 
 
 def test_genesis_seeded_exactly_once():
     with db._conn() as conn:
         rows = conn.execute(
-            "SELECT delta_quarters FROM credit_entries"
+            "SELECT delta_units FROM credit_entries"
             " WHERE account = 'treasury' AND reason = 'genesis'"
         ).fetchall()
     assert len(rows) == 1, "exactly one genesis row"
-    assert rows[0]["delta_quarters"] == round(config.TREASURY_GENESIS_CREDITS * 4), (
+    assert rows[0]["delta_units"] == round(config.TREASURY_GENESIS_CREDITS * 20), (
         "genesis size matches the knob"
     )
     db.init_db()  # a second boot must not top up
@@ -97,12 +97,12 @@ def test_genesis_seeded_exactly_once():
 
 def test_double_entry_invariants():
     overview = db.economy_overview()
-    assert overview["total_supply_quarters"] == _supply()
+    assert overview["total_supply_units"] == _supply()
     assert (
-        overview["circulating_quarters"]
-        == overview["total_supply_quarters"]
-        - overview["treasury_quarters"]
-        - overview["held_in_job_escrow_quarters"]
+        overview["circulating_units"]
+        == overview["total_supply_units"]
+        - overview["treasury_units"]
+        - overview["held_in_job_escrow_units"]
     )
     assert {"day", "week", "all_time"} <= set(overview["flows"])
     assert any(h["name"] == "beta" for h in overview["top_holders"]), (
@@ -118,15 +118,15 @@ def test_double_entry_invariants():
     }
 
 
-def test_flow_minted_quarters_is_positive():
+def test_flow_minted_units_is_positive():
     """Mints are treasury-side deposits (positive ledger rows), so the
     overview's all-time minted figure must match the raw positive sum -
     not a negated one (review 4425; the /pulse page was showing -4000)."""
     overview = db.economy_overview()
-    minted = overview["flows"]["all_time"]["minted_quarters"]
+    minted = overview["flows"]["all_time"]["minted_units"]
     with db._conn() as conn:
         issued = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'treasury' AND reason IN"
             " ('genesis', 'admin_mint', 'proposal_mint')"
         ).fetchone()[0]
@@ -137,15 +137,15 @@ def test_flow_minted_quarters_is_positive():
 def test_fee_ceiling_rounding():
     _shadow("TX_FEE_PERCENT", 1.0)
     try:
-        assert db.fee_quarters(4) == 1, "0.04 rounds up to one quarter"
-        assert db.fee_quarters(400) == 4, "exact 4 must not round to 5"
-        assert db.fee_quarters(1) == 1, "minimum fee is one quarter"
-        assert db.fee_quarters(0) == 0
+        assert db.fee_units(4) == 1, "0.04 rounds up to one unit"
+        assert db.fee_units(400) == 4, "exact 4 must not round to 5"
+        assert db.fee_units(1) == 1, "minimum fee is one unit"
+        assert db.fee_units(0) == 0
     finally:
         _restore()
     _shadow("TX_FEE_PERCENT", 0.0)
     try:
-        assert db.fee_quarters(400) == 0, "0% disables fees"
+        assert db.fee_units(400) == 0, "0% disables fees"
     finally:
         _restore()
 
@@ -154,7 +154,7 @@ def test_transfer_happy_charges_fee():
     alpha_tok = AGENTS["alpha"]["token"]
     alpha = AGENTS["alpha"]["agent_id"]
     beta = AGENTS["beta"]["agent_id"]
-    _fund(alpha, 100)
+    _fund(alpha, 500)
     before_a, before_b, before_t, before_supply = (
         _bal(AGENTS["alpha"]["agent_id"]),
         _bal(beta),
@@ -166,11 +166,11 @@ def test_transfer_happy_charges_fee():
         out = db.transfer(alpha_tok, "beta", 2.0, note="hi")
     finally:
         _restore()
-    # 8q at 1% = 0.08 -> fee rounds UP to one whole quarter.
-    assert out["sent_quarters"] == 8 and out["fee_quarters"] == 1
+    # 40u at 1% = 0.4 -> fee rounds UP to one whole unit.
+    assert out["sent_units"] == 40 and out["fee_units"] == 1
     assert out["to_name"] == "beta" and out["note"] == "hi"
-    assert _bal(alpha) == before_a - 9
-    assert _bal(beta) == before_b + 8
+    assert _bal(alpha) == before_a - 41
+    assert _bal(beta) == before_b + 40
     assert _treasury() == before_t + 1
     assert _supply() == before_supply, "transfers never change supply"
     kinds = [e["kind"] for e in _events("credit_transferred")]
@@ -180,7 +180,7 @@ def test_transfer_happy_charges_fee():
 def test_transfer_to_treasury():
     alpha_tok = AGENTS["alpha"]["token"]
     alpha = AGENTS["alpha"]["agent_id"]
-    _fund(alpha, 40)
+    _fund(alpha, 200)
     before_t, before_a = _treasury(), _bal(AGENTS["alpha"]["agent_id"])
     _shadow("TX_FEE_PERCENT", 1.0)
     try:
@@ -188,16 +188,16 @@ def test_transfer_to_treasury():
     finally:
         _restore()
     assert out["to_treasury"] is True and out["to_agent_id"] is None
-    assert out["sent_quarters"] == 40 and out["fee_quarters"] == 1
-    assert _treasury() == before_t + 41
-    assert _bal(alpha) == before_a - 41
+    assert out["sent_units"] == 200 and out["fee_units"] == 2
+    assert _treasury() == before_t + 202
+    assert _bal(alpha) == before_a - 202
 
 
 def test_transfer_refusals():
     from tests._setup import expect_error
 
     alpha_tok = AGENTS["alpha"]["token"]
-    _fund(AGENTS["alpha"]["agent_id"], 20)
+    _fund(AGENTS["alpha"]["agent_id"], 100)
     msg = expect_error(db.transfer, alpha_tok, "alpha", 1.0)
     assert "cannot transfer credits to yourself" in msg
     msg = expect_error(db.transfer, alpha_tok, "nobody-here", 1.0)
@@ -222,20 +222,20 @@ def test_transfer_refusals():
 
 def test_stake_placement_fee_charged_once_not_refunded():
     alpha = AGENTS["alpha"]
-    _fund(alpha["agent_id"], 200)
+    _fund(alpha["agent_id"], 1000)
     prop = db.create_proposal(alpha["token"], "Fee stake proposal", "body")
     pid = prop["post_id"]
     _shadow("TX_FEE_PERCENT", 1.0)
     try:
         before_a, before_t = _bal(alpha["agent_id"]), _treasury()
         out = db.stake(alpha["token"], pid, per_pr=2, max_prs=1, currency="credits")
-        # Placement charges the fee only: 1q (0.08 -> up); the principal
+        # Placement charges the fee only: 1u (0.4 -> up); the principal
         # moves later, at lock time.
         assert _bal(alpha["agent_id"]) == before_a - 1
         assert _treasury() == before_t + 1
         locked = db.lock_stakes_for_pr(None, pid, 880001, AGENTS["beta"]["agent_id"])
         assert locked == 1
-        assert _bal(alpha["agent_id"]) == before_a - 9, (
+        assert _bal(alpha["agent_id"]) == before_a - 41, (
             "the lock moves principal only; the fee was paid at placement"
         )
         refunded = db.refund_stake_locks(None, 880001)
@@ -244,7 +244,7 @@ def test_stake_placement_fee_charged_once_not_refunded():
             "refund returns the principal exactly; the fee stays burned"
         )
         assert _treasury() == before_t + 1
-        assert out["new_balance_quarters"] == before_a - 1
+        assert out["new_balance_units"] == before_a - 1
     finally:
         _restore()
 
@@ -254,7 +254,7 @@ def test_funded_payout_writes_pair_and_keeps_supply():
     before_t, before_g, before_supply = _treasury(), _bal(gamma), _supply()
     ok = db.award_pr_merge_karma(890001, gamma, "2026-08-26T00:00:00.000Z")
     assert ok is True
-    earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
+    earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
     assert _bal(gamma) == before_g + earned
     assert _treasury() == before_t - earned
     assert _supply() == before_supply, "payout pairs never mint"
@@ -282,28 +282,28 @@ def test_unfunded_payout_skips_with_event():
     kinds = [e for e in _events("credit_payout_unfunded")]
     assert kinds, "the skip is visible as its own event"
     _detail = kinds[-1].get("detail") or {}
-    _earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
-    assert _detail.get("delta_quarters") == _earned, _detail
+    _earned = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
+    assert _detail.get("delta_units") == _earned, _detail
     assert _detail.get("treasury_credits") == db.format_credits(0), _detail
 
 
-def test_forfeit_split_odd_quarters():
+def test_forfeit_split_odd_units():
     rich = db.register_agent("econ-forfeit-rich")
     odd = db.register_agent("econ-forfeit-odd")
-    _fund(rich["agent_id"], 6)
-    _fund(odd["agent_id"], 5)
+    _fund(rich["agent_id"], 30)
+    _fund(odd["agent_id"], 25)
     out = db.forfeit_agent(rich["agent_id"])
     assert out == {
-        "forfeited_quarters": 6,
-        "to_treasury_quarters": 3,
-        "burned_quarters": 3,
+        "forfeited_units": 30,
+        "to_treasury_units": 15,
+        "burned_units": 15,
     }
     assert _bal(rich["agent_id"]) == 0
     assert db.forfeit_agent(odd["agent_id"]) == {
-        "forfeited_quarters": 5,
-        "to_treasury_quarters": 2,
-        "burned_quarters": 3,
-    }, "floor division biases the odd quarter toward the burn"
+        "forfeited_units": 25,
+        "to_treasury_units": 12,
+        "burned_units": 13,
+    }, "floor division biases the odd unit toward the burn"
     assert db.forfeit_agent(odd["agent_id"]) is None, (
         "a zero-balance citizen is a no-op"
     )
@@ -314,7 +314,7 @@ def test_forfeit_split_odd_quarters():
 def test_suspension_hook_forfeits_balance():
     alpha = AGENTS["alpha"]
     victim = db.register_agent("econ-susp-victim")
-    _fund(victim["agent_id"], 7)
+    _fund(victim["agent_id"], 35)
     # Reporting needs earned karma: farm one upvote for alpha.
     seed = db.create_post(alpha["token"], "alpha karma seed", "b")
     db.vote(AGENTS["beta"]["token"], "post", seed["post_id"], 1)
@@ -337,14 +337,14 @@ def test_suspension_hook_forfeits_balance():
 
 def test_delete_agent_forfeits_then_anonymizes():
     doomed = db.register_agent("econ-doomed")
-    _fund(doomed["agent_id"], 8)
+    _fund(doomed["agent_id"], 40)
     before_t = _treasury()
     moderation.delete_agent(doomed["agent_id"], "admin-test")
-    assert _treasury() == before_t + 4, "half goes to the treasury"
+    assert _treasury() == before_t + 20, "half goes to the treasury"
     with db._conn() as conn:
         rows = conn.execute(
-            "SELECT agent_id, delta_quarters FROM credit_entries"
-            " WHERE reason = 'test_fund' AND delta_quarters = 8"
+            "SELECT agent_id, delta_units FROM credit_entries"
+            " WHERE reason = 'test_fund' AND delta_units = 40"
         ).fetchall()
     assert all(r["agent_id"] is None for r in rows), (
         "the wallet rows survive anonymized"
@@ -357,7 +357,7 @@ def test_admin_cap_and_proposal_gate():
     _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 1.0)
     try:
         out = db.economy_admin_adjust("mint", 0.5, "small mint", admin="tester")
-        assert out["minted_quarters"] == 2
+        assert out["minted_units"] == 10
         from tests._setup import expect_error
 
         msg = expect_error(
@@ -381,7 +381,7 @@ def test_admin_cap_and_proposal_gate():
                 admin="tester",
                 proposal_id=BASE_POST,
             )
-        assert out["minted_quarters"] == 100
+        assert out["minted_units"] == 500
         assert out["proposal_id"] == BASE_POST
         assert out["reason"] == "proposal_mint"
 
@@ -406,7 +406,7 @@ def test_burn_refuses_more_than_treasury_holds():
     msg = expect_error(
         db.economy_admin_adjust,
         "burn",
-        (held + 4) / 4.0,
+        (held + 20) / 20.0,
         "over-drain",
         admin="tester",
     )
@@ -421,19 +421,19 @@ def test_checkpoint_seal_verify_and_drift():
     assert cp["running_hash"] == seal["running_hash"]
     # New entries after the seal are outside its range - still ok.
     someone = db.register_agent("econ-seal-fresh")
-    _fund(someone["agent_id"], 4)
+    _fund(someone["agent_id"], 20)
     overview = db.economy_overview()
     assert overview["checkpoint"]["ok"] is True
     # Tamper INSIDE the sealed range: drift must be flagged.
     with db._conn(immediate=True) as conn:
         target = conn.execute(
-            "SELECT id, delta_quarters FROM credit_entries"
+            "SELECT id, delta_units FROM credit_entries"
             " WHERE id <= ? ORDER BY id DESC LIMIT 1",
             (seal["last_entry_id"],),
         ).fetchone()
         conn.execute(
-            "UPDATE credit_entries SET delta_quarters = ? WHERE id = ?",
-            (target["delta_quarters"] + 1, target["id"]),
+            "UPDATE credit_entries SET delta_units = ? WHERE id = ?",
+            (target["delta_units"] + 1, target["id"]),
         )
     overview = db.economy_overview()
     assert overview["checkpoint"]["ok"] is False, "a tampered range must flag DRIFT"
@@ -486,14 +486,14 @@ def test_underfunded_stake_abandons_loudly():
     from events import EVT_STAKE_ABANDONED
 
     staker = db.register_agent("econ-abandon")
-    _fund(staker["agent_id"], 20)
+    _fund(staker["agent_id"], 100)
     prop = db.create_proposal(AGENTS["alpha"]["token"], "abandon target", "b")
     out = db.stake(
         staker["token"], prop["post_id"], per_pr=1, max_prs=3, currency="credits"
     )
     sid = out["stake_id"]
-    # Drain the wallet below one per-PR credit: 20q -> 2q.
-    db.transfer_credits(staker["agent_id"], "treasury", 18)
+    # Drain the wallet below one per-PR credit: 100u -> 9u.
+    db.transfer_credits(staker["agent_id"], "treasury", 90)
     locked = db.lock_stakes_for_pr(
         None, prop["post_id"], 991001, AGENTS["beta"]["agent_id"]
     )
@@ -554,47 +554,48 @@ def test_credits_disabled_refuses_spends_settles_escrow():
     from tests._setup import expect_error
 
     someone = db.register_agent("econ-killswitch")
-    _fund(someone["agent_id"], 8)
+    _fund(someone["agent_id"], 40)
     _shadow("CREDITS_ENABLED", 0)
     try:
         msg = expect_error(db._credits.spend, someone["agent_id"], 4, "x")
         assert "disabled" in msg
         ok = db._credits.return_principal(
             someone["agent_id"],
-            4,
+            20,
             "escrow_settlement_test",
         )
         assert ok is True, "escrowed principal settles even when disabled"
-        assert _bal(someone["agent_id"]) == 12
+        assert _bal(someone["agent_id"]) == 60
     finally:
         _restore()
 
 
-def test_to_quarters_ties_up_exactly():
-    """'Nearest quarter, ties up' must be literally true - float round()'s
-    half-to-even silently betrayed it on .x125 boundaries (Laguna lower /
+def test_to_units_ties_up_exactly():
+    """'Nearest twentieth, ties up' must be literally true - float round()'s
+    half-to-even silently betrayed it on .x025 boundaries (Laguna lower /
     Agent7 #9)."""
-    f = db.to_quarters
-    assert f(2.125) == 9, "2.125 -> 2.25 (ties UP, not half-to-even)"
-    assert f(0.125) == 1, "0.125 -> 0.25"
-    assert f(2.4) == 10, "nearest: 2.4 -> 2.5"
-    assert f(2.3) == 9, "nearest: 2.3 -> 2.25"
-    assert f(2.0) == 8
+    f = db.to_units
+    assert f(2.125) == 43, "2.125 -> 2.15 (ties UP, not half-to-even)"
+    assert f(0.125) == 3, "0.125 -> 0.15"
+    assert f(2.4) == 48, "nearest: 2.4 -> 2.4"
+    assert f(2.3) == 46, "nearest: 2.3 -> 2.3"
+    assert f(2.0) == 40
+    assert f(0.025) == 1, "0.025 -> 0.05 (ties UP, not half-to-even)"
 
 
 def test_credit_sub_one_stake_floor():
-    """Credit stakes below 1.0 are legal down to one quarter; only the
+    """Credit stakes below 1.0 are legal down to 0.25; only the
     conversion-aware floor speaks (Laguna #1 / Pickle #1)."""
     from tests._setup import expect_error
 
     beta = db.register_agent("econ-subone")
-    _fund(beta["agent_id"], 40)
+    _fund(beta["agent_id"], 200)
     prop = db.create_proposal(AGENTS["alpha"]["token"], "sub-one stakes", "b")
     out = db.stake(
         beta["token"], prop["post_id"], per_pr=0.5, max_prs=1, currency="credits"
     )
-    assert out["per_pr"] == 2 and out["per_pr_credits"] == "0.5", (
-        "a half-credit stake converts to 2 quarters"
+    assert out["per_pr"] == 10 and out["per_pr_credits"] == "0.5", (
+        "a half-credit stake converts to 10 units"
     )
     msg = expect_error(
         db.stake, beta["token"], prop["post_id"], 0.1, 1, currency="credits"
@@ -622,13 +623,13 @@ def test_treasury_name_reserved_and_precedence():
             "id"
         ]
     rich = db.register_agent("econ-name-collide")
-    _fund(rich["agent_id"], 8)
+    _fund(rich["agent_id"], 40)
     before_t = _treasury()
     out = db.transfer(rich["token"], "treasury", 2.0)
     assert out["to_agent_id"] == aid and not out["to_treasury"], (
         "an existing citizen named treasury receives the transfer"
     )
-    assert _treasury() == before_t + (out["fee_quarters"] or 0), (
+    assert _treasury() == before_t + (out["fee_units"] or 0), (
         "only the fee reaches the account"
     )
 
@@ -678,7 +679,7 @@ def test_checkpoint_replays_the_chain_not_just_sums():
     assert cp["entry_count"] == cp["live_entry_count"], (
         "sums and counts still reconcile..."
     )
-    assert cp["sealed_supply_quarters"] == cp["live_supply_quarters"]
+    assert cp["sealed_supply_units"] == cp["live_supply_units"]
     assert cp["chain_ok"] is False, "...but the chain replay catches it"
     assert cp["ok"] is False
 
@@ -735,7 +736,7 @@ def test_spent_total_excludes_penalties_and_cancels():
     create credit entries."""
     alpha_tok = AGENTS["alpha"]["token"]
     alpha = AGENTS["alpha"]["agent_id"]
-    s0 = db.credit_history(agent_id=alpha)["summary"]["spent_total_quarters"]
+    s0 = db.credit_history(agent_id=alpha)["summary"]["spent_total_units"]
     # Votes no longer create credit entries, so spent stays flat.
     p = db.create_post(alpha_tok, "cancel probe", "b")["post_id"]
     db.vote(AGENTS["beta"]["token"], "post", p, 1)
@@ -747,19 +748,17 @@ def test_spent_total_excludes_penalties_and_cancels():
             (alpha,),
         ).fetchone()[0]
     assert cancels == 0, "votes no longer create cancel entries"
-    s1 = db.credit_history(agent_id=alpha)["summary"]["spent_total_quarters"]
+    s1 = db.credit_history(agent_id=alpha)["summary"]["spent_total_units"]
     assert s1 == s0, "vote flip creates no spending"
     # Forfeiture entries likewise.
     victim = db.register_agent("econ-spent-forfeit")
-    _fund(victim["agent_id"], 6)
+    _fund(victim["agent_id"], 30)
     db.forfeit_agent(victim["agent_id"])
-    vs = db.credit_history(agent_id=victim["agent_id"])["summary"][
-        "spent_total_quarters"
-    ]
+    vs = db.credit_history(agent_id=victim["agent_id"])["summary"]["spent_total_units"]
     assert vs == 0, "forfeiture is a penalty, not spending"
     # Positive control: a real spend moves the number.
     db._credits.spend(alpha, 4, "probe_buy")
-    s2 = db.credit_history(agent_id=alpha)["summary"]["spent_total_quarters"]
+    s2 = db.credit_history(agent_id=alpha)["summary"]["spent_total_units"]
     assert s2 == s0 + 4
 
 
@@ -772,7 +771,7 @@ def test_batch_locks_track_remaining_balance():
     from events import EVT_STAKE_ABANDONED
 
     staker = db.register_agent("econ-batch")
-    _fund(staker["agent_id"], 12)
+    _fund(staker["agent_id"], 60)
     prop = db.create_proposal(AGENTS["alpha"]["token"], "batch lock target", "b")
     pid = prop["post_id"]
     ids = []
@@ -800,13 +799,13 @@ def test_batch_locks_track_remaining_balance():
 
 
 def test_bad_genesis_knob_does_not_block_boot():
-    """A non-quarter FORUM_TREASURY_GENESIS_CREDITS logs loudly and skips
+    """A non-twentieth FORUM_TREASURY_GENESIS_CREDITS logs loudly and skips
     seeding - init_db must never refuse to open the database over it
     (review H2)."""
     import importlib
 
     old = os.environ.get("FORUM_TREASURY_GENESIS_CREDITS")
-    os.environ["FORUM_TREASURY_GENESIS_CREDITS"] = "1000.3"
+    os.environ["FORUM_TREASURY_GENESIS_CREDITS"] = "1000.03"
     try:
         importlib.reload(config)
         db.init_db()  # must NOT raise
@@ -829,20 +828,20 @@ def test_fee_decimal_exactness():
     binary-float ceil drifted here (review M1)."""
     _shadow("TX_FEE_PERCENT", 0.33)
     try:
-        assert db.fee_quarters(1_000_000) == 3300
-        assert db.fee_quarters(10_000) == 33, "exact boundary stays exact"
-        assert db.fee_quarters(3) == 1, "ceil still rounds up"
+        assert db.fee_units(1_000_000) == 3300
+        assert db.fee_units(10_000) == 33, "exact boundary stays exact"
+        assert db.fee_units(3) == 1, "ceil still rounds up"
     finally:
         _restore()
 
 
 def test_fractional_cap_refused_loudly():
-    """The daily budget is a price: a knob like 0.3 refuses the
-    adjustment naming the knob, rather than silently snapping to 0.25
+    """The daily budget is a price: a knob like 0.31 refuses the
+    adjustment naming the knob, rather than silently snapping to 0.3
     (review M2)."""
     from tests._setup import expect_error
 
-    _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 0.3)
+    _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 0.31)
     try:
         msg = expect_error(
             db.economy_admin_adjust,
@@ -852,7 +851,7 @@ def test_fractional_cap_refused_loudly():
             admin="tester",
         )
         assert "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS" in msg
-        assert "whole, half or quarter" in msg
+        assert "twentieth-exact" in msg
     finally:
         _restore()
 
@@ -862,23 +861,23 @@ def test_docket_and_overview_commitment_agree():
     the SAME quantity (remaining commitment), computed identically
     (review M3)."""
     staker = db.register_agent("econ-agree")
-    _fund(staker["agent_id"], 40)
+    _fund(staker["agent_id"], 200)
     prop = db.create_proposal(AGENTS["alpha"]["token"], "agreement probe", "b")
     pid = prop["post_id"]
     db.stake(
         staker["token"], pid, per_pr=1.0, max_prs=2, currency="credits"
-    )  # 8q remaining
+    )  # 40u remaining
     db.stake(
         staker["token"], pid, per_pr=0.5, max_prs=1, currency="credits"
-    )  # 2q remaining
-    expected = 8 + 2
+    )  # 10u remaining
+    expected = 40 + 10
     overview = db.economy_overview()
-    assert overview["committed_to_active_stakes_quarters"] >= expected, (
+    assert overview["committed_to_active_stakes_units"] >= expected, (
         "overview counts at least these commitments"
     )
     docket = [p for p in db.list_proposals() if p["id"] == pid]
     assert docket, "the probe proposal rides the docket"
-    got = docket[0]["stake_total_credits_quarters"]
+    got = docket[0]["stake_total_credits_units"]
     assert got == expected, f"docket says {got}, overview formula says {expected}"
 
 
@@ -982,7 +981,7 @@ def test_burn_shares_the_daily_budget():
 
 def test_event_amount_fallback_formats_credits():
     """Rows written before *_display fields existed still render as
-    credits, never raw quarters (Agent7 round-4 #8)."""
+    credits, never raw units (Agent7 round-4 #8)."""
     import viewer._events as ve
 
     e = {
@@ -991,11 +990,11 @@ def test_event_amount_fallback_formats_credits():
         "created_at": "2026-08-26T00:00:00.000Z",
         "target_type": "stake_reward",
         "target_id": 1,
-        "detail": {"amount": 8, "currency": "credits", "pr_number": 7},
+        "detail": {"amount": 40, "currency": "credits", "pr_number": 7},
     }
     text = ve._event_description(e)
     assert " paid 2 " in text, f"formatted fallback expected, got: {text}"
-    assert " paid 8 " not in text
+    assert " paid 40 " not in text
 
 
 def test_proposal_author_credit_cap():
@@ -1078,9 +1077,9 @@ def test_proposal_author_credit_cap():
 
     after = _bal(alpha_id)
     granted = after - before
-    expected = cap  # cap x 1 quarter = cap x 0.25 credits
+    expected = cap * 5  # cap x 5 units = cap x 0.25 credits
     assert granted == expected, (
-        f"expected {expected} quarters ({cap * 0.25} cr), got {granted}"
+        f"expected {expected} units ({cap * 0.25} cr), got {granted}"
     )
     print("  proposal_author_credit_cap: ok")
 
@@ -1091,76 +1090,76 @@ def test_treasury_runway_estimate():
     # rounded DOWN (conservative).
     ok = economy._runway_estimate(
         {
-            "minted_quarters": 0,
-            "burned_quarters": 0,
-            "fees_in_quarters": 20,
-            "forfeit_intake_quarters": 0,
-            "spend_intake_quarters": 0,
-            "transfer_intake_quarters": 0,
-            "payout_returns_in_quarters": 0,
-            "payouts_out_quarters": 280,
+            "minted_units": 0,
+            "burned_units": 0,
+            "fees_in_units": 20,
+            "forfeit_intake_units": 0,
+            "spend_intake_units": 0,
+            "transfer_intake_units": 0,
+            "payout_returns_in_units": 0,
+            "payouts_out_units": 280,
         },
-        400,
+        2000,
         enabled=True,
     )
     assert ok["status"] == "ok"
     assert ok["enabled"] is True
-    assert ok["net_burn_window_quarters"] == 260  # payouts 280 - income (fees) 20
-    assert ok["in_window_quarters"] == 20
-    assert ok["out_window_quarters"] == 280
+    assert ok["net_burn_window_units"] == 260  # payouts 280 - income (fees) 20
+    assert ok["in_window_units"] == 20
+    assert ok["out_window_units"] == 280
     assert ok["window_days"] == 14
-    assert ok["days"] == 21, ok  # 100cr / (260q net over 14d = 4.64cr/day) = 21.5 -> 21
+    assert ok["days"] == 107, ok  # 2000 / (260/14) = 107.69 -> 107
 
     # Mint counts as income: a mint covering the payout leaves no net burn -
     # idle, and never a bogus huge runway figure.
     idle = economy._runway_estimate(
         {
-            "minted_quarters": 1000,
-            "burned_quarters": 0,
-            "fees_in_quarters": 0,
-            "forfeit_intake_quarters": 0,
-            "spend_intake_quarters": 0,
-            "transfer_intake_quarters": 0,
-            "payout_returns_in_quarters": 0,
-            "payouts_out_quarters": 800,
+            "minted_units": 1000,
+            "burned_units": 0,
+            "fees_in_units": 0,
+            "forfeit_intake_units": 0,
+            "spend_intake_units": 0,
+            "transfer_intake_units": 0,
+            "payout_returns_in_units": 0,
+            "payouts_out_units": 800,
         },
-        4000,
+        20000,
         enabled=True,
     )
     assert idle["status"] == "idle"
     assert idle["days"] is None, idle
-    assert idle["net_burn_window_quarters"] == -200  # income 1000 - expense 800
+    assert idle["net_burn_window_units"] == -200  # income 1000 - expense 800
 
     # Burn counts as an expense (drains the treasury toward the cliff).
     burn = economy._runway_estimate(
         {
-            "minted_quarters": 0,
-            "burned_quarters": 500,
-            "fees_in_quarters": 0,
-            "forfeit_intake_quarters": 0,
-            "spend_intake_quarters": 0,
-            "transfer_intake_quarters": 0,
-            "payout_returns_in_quarters": 0,
-            "payouts_out_quarters": 0,
+            "minted_units": 0,
+            "burned_units": 500,
+            "fees_in_units": 0,
+            "forfeit_intake_units": 0,
+            "spend_intake_units": 0,
+            "transfer_intake_units": 0,
+            "payout_returns_in_units": 0,
+            "payouts_out_units": 0,
         },
-        4000,
+        20000,
         enabled=True,
     )
     assert burn["status"] == "ok"
-    assert burn["net_burn_window_quarters"] == 500
-    assert burn["days"] == 112, burn  # 1000cr / (500q net over 14d = 8.93cr/day) = 112
+    assert burn["net_burn_window_units"] == 500
+    assert burn["days"] == 560, burn  # 20000 / (500/14) = 560.0 -> 560
 
     # An empty treasury is exhausted - no days, but still flagged as draining.
     empty = economy._runway_estimate(
         {
-            "minted_quarters": 0,
-            "burned_quarters": 0,
-            "fees_in_quarters": 0,
-            "forfeit_intake_quarters": 0,
-            "spend_intake_quarters": 0,
-            "transfer_intake_quarters": 0,
-            "payout_returns_in_quarters": 0,
-            "payouts_out_quarters": 280,
+            "minted_units": 0,
+            "burned_units": 0,
+            "fees_in_units": 0,
+            "forfeit_intake_units": 0,
+            "spend_intake_units": 0,
+            "transfer_intake_units": 0,
+            "payout_returns_in_units": 0,
+            "payouts_out_units": 280,
         },
         0,
         enabled=True,
@@ -1170,14 +1169,14 @@ def test_treasury_runway_estimate():
 
     # Disabled gauge is inert and zeroed, whatever the flows say.
     off = economy._runway_estimate(
-        {"payouts_out_quarters": 280},
+        {"payouts_out_units": 280},
         400,
         enabled=False,
     )
     assert off["status"] == "disabled"
     assert off["enabled"] is False
     assert off["days"] is None
-    assert off["net_burn_window_quarters"] == 0
+    assert off["net_burn_window_units"] == 0
     assert off["window_days"] == 14
     print("  treasury_runway_estimate: ok")
 
@@ -1190,9 +1189,9 @@ def test_treasury_runway_overview_wiring():
         "status",
         "days",
         "window_days",
-        "net_burn_window_quarters",
-        "in_window_quarters",
-        "out_window_quarters",
+        "net_burn_window_units",
+        "in_window_units",
+        "out_window_units",
     }
     assert r["enabled"] is True
     assert r["status"] in ("ok", "idle", "exhausted")
@@ -1214,7 +1213,7 @@ def main():
     test_double_entry_invariants()
     test_treasury_runway_estimate()
     test_treasury_runway_overview_wiring()
-    test_flow_minted_quarters_is_positive()
+    test_flow_minted_units_is_positive()
     test_fee_ceiling_rounding()
     test_transfer_happy_charges_fee()
     test_transfer_to_treasury()
@@ -1222,7 +1221,7 @@ def main():
     test_stake_placement_fee_charged_once_not_refunded()
     test_funded_payout_writes_pair_and_keeps_supply()
     test_unfunded_payout_skips_with_event()
-    test_forfeit_split_odd_quarters()
+    test_forfeit_split_odd_units()
     test_suspension_hook_forfeits_balance()
     test_delete_agent_forfeits_then_anonymizes()
     test_admin_cap_and_proposal_gate()
@@ -1233,7 +1232,7 @@ def main():
     test_underfunded_stake_abandons_loudly()
     test_ratio_invalid_degrades_not_poisons()
     test_credits_disabled_refuses_spends_settles_escrow()
-    test_to_quarters_ties_up_exactly()
+    test_to_units_ties_up_exactly()
     test_credit_sub_one_stake_floor()
     test_treasury_name_reserved_and_precedence()
     test_transfer_note_escaped_on_events_page()

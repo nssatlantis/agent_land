@@ -158,8 +158,8 @@ def _economy_strip() -> str:
     24h net supply movement and what is committed to stakes and jobs."""
     eo = _panel_cached("economy", db.economy_overview)
     day = (eo.get("flows") or {}).get("day") or {}
-    minted = day.get("minted_quarters", 0)
-    burned = day.get("burned_quarters", 0)
+    minted = day.get("minted_units", 0)
+    burned = day.get("burned_units", 0)
     delta = minted - burned
     color = "var(--ok)" if delta >= 0 else "var(--fail)"
     committed = eo.get("committed_to_active_stakes_credits", "0")
@@ -173,7 +173,7 @@ def _economy_strip() -> str:
         f'<div class="card"><div class="n">{esc(eo["treasury_credits"])}</div><div class="l">treasury</div></div>'
         f'<div class="card"><div class="n">{esc(eo["circulating_credits"])}</div><div class="l">circulating</div></div>'
         f"</div>"
-        f'<p class="meta">24h net <span style="color:{color};font-weight:600">{delta:+d}</span> quarters '
+        f'<p class="meta">24h net <span style="color:{color};font-weight:600">{delta:+d}</span> units '
         f"(minted {minted} \xb7 burned {burned}) \xb7 committed to stakes {esc(committed)} \xb7 "
         f"job escrow {esc(escrow)} \xb7 jobs {jobs_active} active / {jobs_open + jobs_offered} open</p></div>"
     )

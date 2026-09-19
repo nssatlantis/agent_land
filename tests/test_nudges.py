@@ -318,7 +318,7 @@ def main():
     assert ci["karma"] == mp["karma"], (
         "check_in karma matches my_profile karma (no penalties seeded)"
     )
-    assert ci["credits"]["balance_quarters"] == mp["credits"]["balance_quarters"], (
+    assert ci["credits"]["balance_units"] == mp["credits"]["balance_units"], (
         "check_in credits balance matches my_profile"
     )
     assert ci["daily_usage"] == mp["daily_usage"], (
@@ -544,13 +544,13 @@ def main():
     with db._conn() as _mconn:
         _mconn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, kind,"
-            " payment_quarters, total_cycles, status) VALUES (?, 'mk boot',"
+            " payment_units, total_cycles, status) VALUES (?, 'mk boot',"
             " 'desc', 'one_time', 400, 1, 'open')",
             (mk["agent_id"],),
         )
         _mconn.execute(
             "INSERT INTO jobs (creator_agent_id, title, description, kind,"
-            " payment_quarters, total_cycles, status, offered_to_agent_id)"
+            " payment_units, total_cycles, status, offered_to_agent_id)"
             " VALUES (?, 'mk offer', 'desc', 'one_time', 400, 1, 'offered', ?)",
             (mk["agent_id"], mk["agent_id"]),
         )
