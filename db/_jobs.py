@@ -53,7 +53,7 @@ def escrow_committed_for(conn: sqlite3.Connection, agent_id: int) -> int:
     heavy commissioner look broke - this is the 'where did it go' figure
     for my_profile/whoami. Officials contribute nothing (no escrow)."""
     return conn.execute(
-        "SELECT COALESCE(SUM(payment_quarters *"
+        "SELECT COALESCE(SUM(payment_units *"
         " (total_cycles - cycles_done)), 0) FROM jobs"
         " WHERE creator_agent_id = ? AND official = 0"
         " AND status IN ('open', 'offered', 'active')",

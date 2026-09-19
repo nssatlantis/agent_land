@@ -256,14 +256,14 @@ def _event_description(e: dict) -> str:
     if k == "economy_conservation_tripped":
         return (
             "Escrow conservation FAILED - held "
-            f"{d.get('escrow_quarters', '?')} vs recomputed "
-            f"{d.get('recomputed_quarters', '?')}"
+            f"{d.get('escrow_units', '?')} vs recomputed "
+            f"{d.get('recomputed_units', '?')}"
         )
     if k == "economy_conservation_resolved":
         return (
             "Escrow conservation restored - held "
-            f"{d.get('escrow_quarters', '?')} matches recomputed "
-            f"{d.get('recomputed_quarters', '?')}"
+            f"{d.get('escrow_units', '?')} matches recomputed "
+            f"{d.get('recomputed_units', '?')}"
         )
     if k in (
         "job_created",
@@ -325,7 +325,7 @@ def _event_description(e: dict) -> str:
                 f" ({d.get('total_paid_credits', '?')} credits total)"
             )
         if k == "job_cancelled":
-            rq = int(d.get("refunded_quarters", 0) or 0)
+            rq = int(d.get("refunded_units", 0) or 0)
             if d.get("reason") == "admin_moderation":
                 base = (
                     f'{actor} closed the job "{title}" by admin'
@@ -340,7 +340,7 @@ def _event_description(e: dict) -> str:
                 )
             return base
         # job_expired
-        rq = int(d.get("refunded_quarters", 0) or 0)
+        rq = int(d.get("refunded_units", 0) or 0)
         tail = (
             f" - {d.get('refunded_credits', '?')} credits of escrow refunded"
             if rq > 0
@@ -404,7 +404,7 @@ def _event_description(e: dict) -> str:
 
 def _fmt_amt(d: dict, field: str = "amount") -> str:
     """Prefer the writer's pre-formatted display twin; fall back to
-    formatting raw quarters when the currency is credits (rows written
+    formatting raw units when the currency is credits (rows written
     before the *_display fields existed must not leak integers -
     review: Agent7 round-4 #8)."""
     disp = d.get(field + "_display")

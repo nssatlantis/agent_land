@@ -31,10 +31,10 @@ with db._conn(immediate=True) as _c:  # noqa: E402
     _mint(60000, "test_suite_topup", admin="test-suite", conn=_c)
 
 
-def _fund(name: str, quarters: int = 400):
+def _fund(name: str, units: int = 2000):
     ag = db.register_agent(name)
     with db._conn() as conn:
-        _grant(ag["agent_id"], quarters, "test_seed", conn=conn)
+        _grant(ag["agent_id"], units, "test_seed", conn=conn)
     return ag
 
 
@@ -66,13 +66,13 @@ def main():
         seller_before = db.balance_for(conn, seller["agent_id"])
         treasury_before = _credits.treasury_balance(conn)
     svc = _listing(seller)
-    assert svc["price_quarters"] == 8, svc
+    assert svc["price_units"] == 40, svc
     assert svc["fee_credits"] == "0.25", svc
     with db._conn() as conn:
-        assert db.balance_for(conn, seller["agent_id"]) == seller_before - 1, (
+        assert db.balance_for(conn, seller["agent_id"]) == seller_before - 5, (
             "0.25cr shelf fee debits the seller"
         )
-        assert _credits.treasury_balance(conn) == treasury_before + 1, (
+        assert _credits.treasury_balance(conn) == treasury_before + 5, (
             "shelf fee lands in the treasury"
         )
     shelf = db.list_services()
@@ -84,12 +84,22 @@ def main():
     print("  create/list/get + shelf fee: ok")
 
     # --- 2. validation bounds -------------------------------------------
-    for bad_price in (0.25, 0.0, 20.0):
+    for bad_price in (0.05, 0.0, 20.0):
         try:
             _listing(seller, price=bad_price)
             raise AssertionError(f"price {bad_price} must be refused")
         except db.ForumError:
             pass
+    # The dime minimum (proposal #551): 0.1cr lists on a fresh seller so the
+    # active-cap sequence below still counts exactly three for `seller`.
+    dime_seller = _fund("svc-dime-seller")
+    dime = _listing(dime_seller, price=0.1)
+    assert dime["price_units"] == 2, dime
+    # The lowered job floor (proposal #551) keeps dime listings orderable:
+    # ordering routes the 2-unit price straight through job intake.
+    dime_order = db.order_service(buyer["token"], dime["id"])
+    assert dime_order["job"]["service_terms"]["price_units"] == 2, dime_order
+    assert dime_order["job"]["payment_units"] == 2, dime_order
     for kw in (
         {"ack_visits": 1},
         {"ack_visits": 6},
@@ -124,7 +134,7 @@ def main():
 
     # --- 3. update: reprice, pause toll, ownership -----------------------
     upd = db.update_service(seller["token"], svc["id"], price_credits=3.0)
-    assert upd["price_quarters"] == 12, upd
+    assert upd["price_units"] == 60, upd
     paused = db.update_service(
         seller["token"], svc["id"], paused=True, pause_note="away"
     )
@@ -201,7 +211,7 @@ def main():
         pass
     db.update_service(seller["token"], svc["id"], paused=False)
     # The suite harness arms TX_FEE 0, so pin the riding placement fee
-    # under an explicit 10% arm: 10% of 12q = 1.2q -> ceiling 2q = 0.5cr.
+    # under an explicit 10% arm: 10% of 60u = 6u exactly.
     import importlib
 
     old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
@@ -220,15 +230,15 @@ def main():
     assert job["status"] == "offered", job
     assert job["offered_to"]["agent_id"] == seller["agent_id"], job
     assert job["service_id"] == svc["id"], job
-    assert job["service_terms"]["price_quarters"] == 12, job
+    assert job["service_terms"]["price_units"] == 60, job
     assert job["service_terms"]["title"] == upd["title"], job
-    assert job["fee_credits"] == "0.5", (
+    assert job["fee_credits"] == "0.3", (
         "placement fee rides the order into the treasury"
     )
     # Linkage must survive a re-read (not just the order response).
     reread = db.get_job(job["job_id"])
     assert reread["service_id"] == svc["id"], reread
-    assert reread["service_terms"]["price_quarters"] == 12, reread
+    assert reread["service_terms"]["price_units"] == 60, reread
     assert reread["service_terms"]["seller_agent_id"] == seller["agent_id"]
     # Cadence fields ride the same reads (detail / batch / board share one
     # payload builder): a service order is a one_time job, so
@@ -303,7 +313,7 @@ def main():
     with db._conn() as conn:
         hold_id = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles, cycles_done, status, service_id)"
+            " payment_units, total_cycles, cycles_done, status, service_id)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 buyer["agent_id"],
@@ -323,7 +333,7 @@ def main():
         )
         plain_id = conn.execute(
             "INSERT INTO jobs (creator_agent_id, worker_agent_id, title,"
-            " payment_quarters, total_cycles, cycles_done, status)"
+            " payment_units, total_cycles, cycles_done, status)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 buyer["agent_id"],
@@ -411,13 +421,13 @@ def main():
                 " description TEXT NOT NULL DEFAULT '',"
                 " scope TEXT,"
                 " kind TEXT NOT NULL DEFAULT 'one_time',"
-                " payment_quarters INTEGER NOT NULL,"
+                " payment_units INTEGER NOT NULL,"
                 " total_cycles INTEGER NOT NULL,"
                 " cycles_done INTEGER NOT NULL DEFAULT 0,"
                 " official INTEGER NOT NULL DEFAULT 0,"
-                " taker_deposit_quarters INTEGER NOT NULL DEFAULT 0,"
-                " deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,"
-                " treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,"
+                " taker_deposit_units INTEGER NOT NULL DEFAULT 0,"
+                " deposit_bonus_units INTEGER NOT NULL DEFAULT 0,"
+                " treasury_escrow_units INTEGER NOT NULL DEFAULT 0,"
                 " status TEXT NOT NULL DEFAULT 'open',"
                 " created_at TEXT NOT NULL DEFAULT"
                 " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
@@ -431,7 +441,7 @@ def main():
             _grant(keeper["agent_id"], 400, "test_seed", conn=conn)
             conn.execute(
                 "INSERT INTO jobs (creator_agent_id, title, description,"
-                " kind, payment_quarters, total_cycles, status)"
+                " kind, payment_units, total_cycles, status)"
                 " VALUES (?, 'keeper job', 'd', 'one_time', 4, 1, 'open')",
                 (keeper["agent_id"],),
             )

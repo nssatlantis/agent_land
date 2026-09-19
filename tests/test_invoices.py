@@ -18,11 +18,11 @@ from tests._setup import db, expect_error, setup  # noqa: E402, I001
 AGENTS, _ = setup()
 
 
-def _fund(agent_id: int, quarters: int = 40) -> None:
+def _fund(agent_id: int, units: int = 200) -> None:
     import db._credits as _cr
 
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "invoice_test_seed", conn=conn)
+        assert _cr.grant(agent_id, units, "invoice_test_seed", conn=conn)
 
 
 def _mail(token, **kw):
@@ -47,13 +47,13 @@ def _backdate(invoice_id: int, accepted_days_ago: float, window_days: float) -> 
 
 def test_create_get_list():
     issuer, payer = AGENTS["beta"], AGENTS["gamma"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     inv = db.create_invoice(
         issuer["token"], payer["name"], 2.0, "fronted tag fees", due_in_days=7
     )
     assert inv["status"] == "pending", inv
-    assert inv["fee_quarters"] == 1, inv  # 0.25cr creation fee receipt
-    assert inv["remaining_quarters"] == 8, inv
+    assert inv["fee_units"] == 5, inv  # 0.25cr creation fee receipt
+    assert inv["remaining_units"] == 40, inv
     assert inv["overdue"] is False, inv
     got = db.get_invoice(issuer["token"], inv["invoice_id"])
     assert got["reason"] == "fronted tag fees", got
@@ -117,7 +117,7 @@ def test_create_validation():
 
 def test_caps():
     issuer = AGENTS["beta"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     for name in ("inv-cap-a", "inv-cap-b", "inv-cap-c", "inv-cap-d"):
         try:
             db.register_agent(name)
@@ -146,7 +146,7 @@ def test_caps():
 
 def test_accept_decline():
     issuer, payer = AGENTS["delta"], AGENTS["epsilon"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.5, "review work")
     # Nobody may pay or conclude before acceptance.
     pre = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 1.0)
@@ -190,7 +190,7 @@ def test_late_accept_restarts_window():
     # Accepting days after creation still yields a full window (the due
     # date anchors at acceptance, never at creation).
     issuer, payer = AGENTS["zeta"], AGENTS["theta"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "slow accept")
     with db._conn() as conn:
         conn.execute(
@@ -206,8 +206,8 @@ def test_reminder_jump_collapses():
     # A 60%-to-5% jump between ticks notifies once (lowest threshold)
     # while setting every crossed flag.
     issuer, payer = AGENTS["eta"], AGENTS["delta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "jump bill")
     db.accept_invoice(payer["token"], inv["invoice_id"])
     _backdate(inv["invoice_id"], 9.5, 10.0)
@@ -229,8 +229,8 @@ def test_reminder_jump_collapses():
 
 def test_pay_amount_validation():
     issuer, payer = AGENTS["theta"], AGENTS["zeta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "validation")
     db.accept_invoice(payer["token"], inv["invoice_id"])
     zero = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 0.0)
@@ -263,8 +263,8 @@ def test_treasury_per_agent_lift():
 
 def test_pay_full_and_partial():
     issuer, payer = AGENTS["zeta"], AGENTS["eta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 2.0, "editing pass")
     db.accept_invoice(payer["token"], inv["invoice_id"])
     import db._credits as _cr
@@ -274,26 +274,26 @@ def test_pay_full_and_partial():
         before_issuer = _cr.balance_for(conn, issuer["agent_id"])
     part = db.pay_invoice(payer["token"], inv["invoice_id"], 0.5)
     assert part["status"] == "accepted", part
-    assert part["remaining_quarters"] == 6, part
+    assert part["remaining_units"] == 30, part
     over = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 5.0)
     assert "overpays" in over, over
     full = db.pay_invoice(payer["token"], inv["invoice_id"])
     assert full["status"] == "paid", full
-    assert full["remaining_quarters"] == 0, full
+    assert full["remaining_units"] == 0, full
     with db._conn() as conn:
         after_payer = _cr.balance_for(conn, payer["agent_id"])
         after_issuer = _cr.balance_for(conn, issuer["agent_id"])
-    # Fee-free test env: payer loses exactly 8q, issuer gains exactly 8q.
-    assert before_payer - after_payer == 8, (before_payer, after_payer)
-    assert after_issuer - before_issuer == 8, (before_issuer, after_issuer)
+    # Fee-free test env: payer loses exactly 40u, issuer gains exactly 40u.
+    assert before_payer - after_payer == 40, (before_payer, after_payer)
+    assert after_issuer - before_issuer == 40, (before_issuer, after_issuer)
     dead = expect_error(db.pay_invoice, payer["token"], inv["invoice_id"], 0.5)
     assert "paid" in dead, dead
 
 
 def test_payer_pays_fee():
     issuer, payer = AGENTS["theta"], AGENTS["beta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
     os.environ["FORUM_TX_FEE_PERCENT"] = "10"
     try:
@@ -306,14 +306,14 @@ def test_payer_pays_fee():
             before_issuer = _cr.balance_for(conn, issuer["agent_id"])
         out = db.pay_invoice(payer["token"], inv["invoice_id"], 2.0)
         assert out["status"] == "paid", out
-        # 10% of 8q, rounded up: 1q fee. Payer covers 9q; the invoice
-        # tracks only the 8q amount — the issuer receives exactly 8q.
-        assert out["payment"]["fee_quarters"] == 1, out["payment"]
+        # 10% of 40u, rounded up: 4u fee. Payer covers 44u; the invoice
+        # tracks only the 40u amount — the issuer receives exactly 40u.
+        assert out["payment"]["fee_units"] == 4, out["payment"]
         with db._conn() as conn:
             after_payer = _cr.balance_for(conn, payer["agent_id"])
             after_issuer = _cr.balance_for(conn, issuer["agent_id"])
-        assert before_payer - after_payer == 9, (before_payer, after_payer)
-        assert after_issuer - before_issuer == 8, (before_issuer, after_issuer)
+        assert before_payer - after_payer == 44, (before_payer, after_payer)
+        assert after_issuer - before_issuer == 40, (before_issuer, after_issuer)
     finally:
         if old_fee is None:
             os.environ.pop("FORUM_TX_FEE_PERCENT", None)
@@ -323,7 +323,7 @@ def test_payer_pays_fee():
 
 def test_cancel_and_privacy():
     issuer, payer, third = AGENTS["gamma"], AGENTS["delta"], AGENTS["epsilon"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "stale ask")
     snoopy = expect_error(db.get_invoice, third["token"], inv["invoice_id"])
     assert "not yours" in snoopy, snoopy
@@ -338,30 +338,30 @@ def test_cancel_and_privacy():
 
 def test_no_auto_debit():
     issuer, payer = AGENTS["eta"], AGENTS["zeta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     import db._credits as _cr
 
     with db._conn() as conn:
         b0 = _cr.balance_for(conn, payer["agent_id"])
         i0 = _cr.balance_for(conn, issuer["agent_id"])
     inv = db.create_invoice(issuer["token"], payer["name"], 3.0, "big ask")
-    assert inv["fee_quarters"] == 1, inv  # the creation fee is the only move
+    assert inv["fee_units"] == 5, inv  # the creation fee is the only move
     with db._conn() as conn:
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 1
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 5
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
     db.accept_invoice(payer["token"], inv["invoice_id"])
     with db._conn() as conn:
         # Accepting moves nothing — only creation (fee) and paying move money.
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 1
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 5
     db.cancel_invoice(issuer["token"], inv["invoice_id"])
 
 
 def test_reminders_and_overdue():
     issuer, payer = AGENTS["alpha"], AGENTS["beta"]
-    _fund(issuer["agent_id"], 40)
-    _fund(payer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
     # alpha has no karma from setup; earn it with one upvote on its post.
     seed = db.create_post(issuer["token"], "karma seed", "body")
     db.vote(payer["token"], "post", seed["post_id"], 1)
@@ -409,7 +409,7 @@ def test_treasury_issue_and_pay():
     # The creator needs no karma and no balance: the citizen locks are
     # lifted for Treasury bills (fresh has neither).
     creator, payer = AGENTS["fresh"], AGENTS["gamma"]
-    _fund(payer["agent_id"], 40)
+    _fund(payer["agent_id"], 200)
     import db._credits as _cr
 
     with db._conn() as conn:
@@ -423,7 +423,7 @@ def test_treasury_issue_and_pay():
     assert inv["issuer_agent_id"] is None, inv
     assert inv["issuer_name"] == "Treasury", inv
     assert inv["created_by_name"] == creator["name"], inv
-    assert inv["fee_quarters"] == 0, inv  # no creation fee on Treasury bills
+    assert inv["fee_units"] == 0, inv  # no creation fee on Treasury bills
     with db._conn() as conn:
         assert _cr.balance_for(conn, creator["agent_id"]) == c0  # nothing spent
     # The creator (neither issuer nor payer) may still read it.
@@ -439,16 +439,16 @@ def test_treasury_issue_and_pay():
     out = db.pay_invoice(payer["token"], inv["invoice_id"])
     assert out["status"] == "paid", out
     with db._conn() as conn:
-        # Fee-free test env: the Treasury gains exactly 8q from the payer.
-        assert _cr.treasury_balance(conn) == t0 + 8
-        assert _cr.balance_for(conn, payer["agent_id"]) == b0 - 8
+        # Fee-free test env: the Treasury gains exactly 40u from the payer.
+        assert _cr.treasury_balance(conn) == t0 + 40
+        assert _cr.balance_for(conn, payer["agent_id"]) == b0 - 40
     # Nudges name the Treasury on both sides.
     assert "invoice_note" not in db.my_profile(payer["token"])
 
 
 def test_treasury_guards():
     creator, payer = AGENTS["delta"], AGENTS["epsilon"]
-    _fund(creator["agent_id"], 40)
+    _fund(creator["agent_id"], 200)
     inward = expect_error(
         db.create_invoice,
         creator["token"],
@@ -529,7 +529,7 @@ def test_nudges_and_events():
     import events
 
     issuer, payer = AGENTS["gamma"], AGENTS["theta"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     inv = db.create_invoice(issuer["token"], payer["name"], 1.0, "nudge probe")
     prof = db.my_profile(payer["token"])
     assert "invoice_note" in prof and "accept" in prof["invoice_note"], prof.get(
@@ -542,7 +542,7 @@ def test_nudges_and_events():
     kinds = {e["kind"] for e in events.query_events(kind="invoice_created", limit=5)}
     assert "invoice_created" in kinds
     db.accept_invoice(payer["token"], inv["invoice_id"])
-    _fund(payer["agent_id"], 40)
+    _fund(payer["agent_id"], 200)
     db.pay_invoice(payer["token"], inv["invoice_id"])
     assert "invoice_note" not in db.my_profile(payer["token"])
     paid = {e["kind"] for e in events.query_events(kind="invoice_paid", limit=5)}
@@ -553,7 +553,7 @@ def test_open_invoice_stats():
     """The economy panel's open-invoices readout: awaiting vs committed
     split, overdue flag, outstanding totals (#394)."""
     issuer, payer = AGENTS["beta"], AGENTS["gamma"]
-    _fund(issuer["agent_id"], 40)
+    _fund(issuer["agent_id"], 200)
     pending = db.create_invoice(
         issuer["token"], payer["name"], 2.0, "stats-panel-pending", due_in_days=7
     )
@@ -568,20 +568,64 @@ def test_open_invoice_stats():
     )
     hit = [i for i in stats["committed"] if i["invoice_id"] == comm["invoice_id"]]
     assert hit and hit[0]["overdue"] is True, "backdated accepted bill reads overdue"
-    assert hit[0]["remaining_quarters"] == 4, "1 credit outstanding"
+    assert hit[0]["remaining_units"] == 20, "1 credit outstanding"
     assert hit[0]["payer_name"] == payer["name"], "payer named"
     assert stats["totals"]["overdue_count"] >= 1
-    assert stats["totals"]["outstanding_quarters"] >= 4
-    assert stats["totals"]["overdue_quarters"] >= 4
+    assert stats["totals"]["outstanding_units"] >= 20
+    assert stats["totals"]["overdue_units"] >= 20
     # Totals accumulate over the full open set, not the capped page: with
     # limit=1 the page holds one row while totals still cover both bills.
     capped = db.open_invoice_stats(limit=1)
     assert capped["total"] >= 2, "total counts past the page"
     assert len(capped["awaiting"]) + len(capped["committed"]) == 1
-    assert capped["totals"]["outstanding_quarters"] >= 12, "8 pending + 4 committed"
+    assert capped["totals"]["outstanding_units"] >= 60, "40 pending + 20 committed"
     db.cancel_invoice(issuer["token"], pending["invoice_id"])
     db.cancel_invoice(issuer["token"], comm["invoice_id"])
     print("  open invoice stats ok")
+
+
+def test_invoice_minimum():
+    """The dime minimum (proposal #551): 0.1cr bills route with 2 units
+    outstanding and pay end-to-end; anything below refuses loudly."""
+    issuer, payer = AGENTS["beta"], AGENTS["gamma"]
+    _fund(issuer["agent_id"], 200)
+    _fund(payer["agent_id"], 200)
+    import db._credits as _cr
+
+    dime = db.create_invoice(
+        issuer["token"], payer["name"], 0.1, "dime bill", due_in_days=7
+    )
+    assert dime["status"] == "pending", dime
+    assert dime["remaining_units"] == 2, dime
+    db.accept_invoice(payer["token"], dime["invoice_id"])
+    old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
+    os.environ["FORUM_TX_FEE_PERCENT"] = "10"
+    try:
+        with db._conn() as conn:
+            before_payer = _cr.balance_for(conn, payer["agent_id"])
+            before_issuer = _cr.balance_for(conn, issuer["agent_id"])
+        out = db.pay_invoice(payer["token"], dime["invoice_id"])
+        assert out["status"] == "paid", out
+        # 10% of 2u, rounded up: 1u fee. Payer covers 3u; the issuer nets 2u.
+        assert out["payment"]["fee_units"] == 1, out["payment"]
+        with db._conn() as conn:
+            assert before_payer - _cr.balance_for(conn, payer["agent_id"]) == 3
+            assert _cr.balance_for(conn, issuer["agent_id"]) - before_issuer == 2
+    finally:
+        if old_fee is None:
+            os.environ.pop("FORUM_TX_FEE_PERCENT", None)
+        else:
+            os.environ["FORUM_TX_FEE_PERCENT"] = old_fee
+    small = expect_error(
+        db.create_invoice,
+        issuer["token"],
+        payer["name"],
+        0.05,
+        "nickel bill",
+        due_in_days=7,
+    )
+    assert "at least 0.1" in small, small
+    print("  invoice dime minimum: ok")
 
 
 if __name__ == "__main__":
@@ -604,6 +648,7 @@ if __name__ == "__main__":
         test_treasury_decline_notifies_creator,
         test_nudges_and_events,
         test_open_invoice_stats,
+        test_invoice_minimum,
     ]:
         fn()
     print("test_invoices: all assertions passed")

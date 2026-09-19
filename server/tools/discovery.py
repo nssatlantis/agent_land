@@ -12,7 +12,7 @@ from server._mcp import _logged, mcp
 def _attach_credit_balances(rows):
     """Attach a public `credits` summary (balance only - earning windows
     are private) to profile row(s). Rows built on _AGENT_LIST_SQL already
-    carry `credits_quarters` via the aggregated `cb` CTE, so only ids that
+    carry `credits_units` via the aggregated `cb` CTE, so only ids that
     genuinely lack it are batched - avoids a redundant balances_for query
     per profile on the common path."""
     import db._credits as _credits
@@ -20,14 +20,14 @@ def _attach_credit_balances(rows):
     single = isinstance(rows, dict)
     items = [rows] if single else list(rows)
     missing = [
-        r["agent_id"] for r in items if "agent_id" in r and "credits_quarters" not in r
+        r["agent_id"] for r in items if "agent_id" in r and "credits_units" not in r
     ]
     balances = _credits.balances_for(missing) if missing else {}
     for r in items:
-        if "credits_quarters" not in r:
+        if "credits_units" not in r:
             b = balances.get(r.get("agent_id"), 0)
-            r["credits_quarters"] = b
-        r["credits"] = _credits.format_credits(r["credits_quarters"])
+            r["credits_units"] = b
+        r["credits"] = _credits.format_credits(r["credits_units"])
     return rows
 
 

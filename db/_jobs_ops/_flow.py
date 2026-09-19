@@ -10,6 +10,7 @@ import config
 import github
 import logutil
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._credits import UNITS_PER_CREDIT
 
 from ._create import _handle_taker_deposit
 from ._detail import _JOB_COLS, _detail_or_raise
@@ -22,8 +23,12 @@ from ._helpers import (
 )
 
 
-def claim_job(token: str, job_id: int) -> dict:
-    """Claim an OPEN job (first come, first served)."""
+def claim_job(token: str, job_id: int, guild_id: int | None = None) -> dict:
+    """Claim an OPEN job (first come, first served). guild_id (proposal
+    #525) takes the job as a guild executor: the claimer must be a
+    member, the wage routes poolward on accept while worker karma +
+    reward stay personal, and leaving detaches the job back to personal.
+    Taker deposits (when set) still come from the claimer's own wallet."""
     from events import EVT_JOB_CLAIMED, log_event
     from notifications import _notify
 
@@ -50,12 +55,19 @@ def claim_job(token: str, job_id: int) -> dict:
             "UPDATE jobs SET worker_agent_id = ?, status = 'active' WHERE id = ?",
             (agent["id"], job["id"]),
         )
+        if guild_id is not None:
+            from db._guilds import _require_guild, _require_member
+            from db._guilds_money import link_taken_job
+
+            _require_guild(conn, int(guild_id))
+            _require_member(conn, int(guild_id), agent["id"])
+            link_taken_job(conn, job["id"], int(guild_id), agent["id"])
         conn.execute(
             "INSERT OR IGNORE INTO job_cycles (job_id, cycle_no, status)"
             " VALUES (?, 1, 'awaiting')",
             (job["id"],),
         )
-        deposit_q = int(job["taker_deposit_quarters"] or 0)
+        deposit_q = int(job["taker_deposit_units"] or 0)
         if deposit_q > 0:
             _handle_taker_deposit(
                 conn,
@@ -73,7 +85,7 @@ def claim_job(token: str, job_id: int) -> dict:
                 "how": "claimed",
                 "title": job["title"],
                 "creator_agent_id": job["creator_agent_id"],
-                "deposit_quarters": deposit_q,
+                "deposit_units": deposit_q,
             },
             conn=conn,
         )
@@ -137,7 +149,7 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 " VALUES (?, 1, 'awaiting')",
                 (job_id,),
             )
-            deposit_q = int(job["taker_deposit_quarters"] or 0)
+            deposit_q = int(job["taker_deposit_units"] or 0)
             if deposit_q > 0:
                 _handle_taker_deposit(
                     conn,
@@ -155,7 +167,7 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                     "how": "offer_accepted",
                     "title": job["title"],
                     "creator_agent_id": job["creator_agent_id"],
-                    "deposit_quarters": int(job["taker_deposit_quarters"] or 0),
+                    "deposit_units": int(job["taker_deposit_units"] or 0),
                 },
                 conn=conn,
             )
@@ -165,10 +177,10 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                     f"(#{job_id}). You will be pinged at each cycle "
                     "submission; review with review_job()."
                 )
-                if int(job["taker_deposit_quarters"] or 0) > 0:
+                if int(job["taker_deposit_units"] or 0) > 0:
                     body += (
                         f" {agent['name']} staked a"
-                        f" {_fmt_q(int(job['taker_deposit_quarters'] or 0))}"
+                        f" {_fmt_q(int(job['taker_deposit_units'] or 0))}"
                         " taker deposit (half to the treasury, half held as"
                         " a returnable bonus - distinct from the wage escrow)."
                     )
@@ -387,10 +399,13 @@ def _award_cycle_karma(
     worker_id: int,
 ) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma + JOB_CREDIT_CREDITS credits to
-    worker AND creator for an accepted cycle.  Returns credit quarters
-    granted (0 when nothing landed)."""
+    worker AND creator for an accepted cycle.  Returns credit units
+    granted (0 when nothing landed). The suppressed creator leg on
+    guild-commissioned jobs creates no funds and writes no pool memo:
+    the pool's single spend is the commission lock memo, and accepted
+    wages draw that locked escrow down with no further memos."""
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
-    credit_q = max(0, round(config.JOB_CREDIT_CREDITS * 4))
+    credit_q = max(0, round(config.JOB_CREDIT_CREDITS * UNITS_PER_CREDIT))
     if amount == 0 and credit_q == 0:
         return 0
     granted_q = 0
@@ -418,11 +433,9 @@ def _award_cycle_karma(
         from db._credits import grant
 
         if credit_q > 0:
-            # grant() returns False when the treasury cannot fund the
-            # payout (TREASURY_FUNDS_PAYOUTS) - only count granted_q
-            # when the credits actually landed, or the accept event
-            # would report a credit_amount that was never paid
-            # (review 4427).
+            # Only count granted_q when the credits actually landed, or
+            # the accept event would report a credit_amount that was
+            # never paid (review 4427).
             if grant(
                 aid,
                 credit_q,
@@ -438,16 +451,16 @@ def _award_cycle_karma(
 def _check_deposit_return(conn, job, cycle, worker_id) -> None:
     """Handle deposit return on final cycle when all PRs are merged, and
     official treasury escrow deduction."""
-    # Treasury escrow for official: deduct from treasury_escrow_quarters
+    # Treasury escrow for official: deduct from treasury_escrow_units
     if job["official"]:
         if (
-            job["treasury_escrow_quarters"] is not None
-            and job["treasury_escrow_quarters"] > 0
+            job["treasury_escrow_units"] is not None
+            and job["treasury_escrow_units"] > 0
         ):
             conn.execute(
-                "UPDATE jobs SET treasury_escrow_quarters ="
-                " treasury_escrow_quarters - ? WHERE id = ?",
-                (job["payment_quarters"], job["id"]),
+                "UPDATE jobs SET treasury_escrow_units ="
+                " treasury_escrow_units - ? WHERE id = ?",
+                (job["payment_units"], job["id"]),
             )
     # Deposit return gate: all PRs merged
     try:
@@ -463,7 +476,7 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
         _should_return_deposit = False
     _is_final_cycle = (job["cycles_done"] + 1) >= job["total_cycles"]
     if _should_return_deposit and _is_final_cycle:
-        _deposit_q = int(job["taker_deposit_quarters"] or 0)
+        _deposit_q = int(job["taker_deposit_units"] or 0)
         if _deposit_q > 0:
             _half_treasury = (_deposit_q + 1) // 2
             _half_escrow = _deposit_q // 2
@@ -479,7 +492,7 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
                     conn=conn,
                 )
                 conn.execute(
-                    "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
+                    "UPDATE jobs SET deposit_bonus_units = 0 WHERE id = ?",
                     (job["id"],),
                 )
             if _half_treasury > 0:
@@ -494,7 +507,7 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
                     conn=conn,
                 )
             conn.execute(
-                "UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?",
+                "UPDATE jobs SET taker_deposit_units = 0 WHERE id = ?",
                 (job["id"],),
             )
 
@@ -510,7 +523,7 @@ def _pay_worker(conn, job, worker_id) -> None:
 
         release_escrow(
             worker_id,
-            job["payment_quarters"],
+            job["payment_units"],
             "official_job_wage",
             target_type="job",
             target_id=job["id"],
@@ -521,7 +534,7 @@ def _pay_worker(conn, job, worker_id) -> None:
 
         release_escrow(
             worker_id,
-            job["payment_quarters"],
+            job["payment_units"],
             "job_payout",
             target_type="job",
             target_id=job["id"],
@@ -532,17 +545,17 @@ def _pay_worker(conn, job, worker_id) -> None:
 def _maybe_pay_bonus(conn, job, worker_id) -> None:
     """Pay forfeited deposit bonus on final completion.
 
-    Reads the current deposit_bonus_quarters from the database (not from
+    Reads the current deposit_bonus_units from the database (not from
     the possibly-stale ``job`` Row) so that callers that zeroed the pool
     earlier in the same transaction don't trigger a double payment.
     """
     row = conn.execute(
-        "SELECT deposit_bonus_quarters FROM jobs WHERE id = ?",
+        "SELECT deposit_bonus_units FROM jobs WHERE id = ?",
         (job["id"],),
     ).fetchone()
     if not row:
         return
-    _bonus = int(row["deposit_bonus_quarters"] or 0)
+    _bonus = int(row["deposit_bonus_units"] or 0)
     if _bonus > 0:
         try:
             from db._credits import grant
@@ -565,7 +578,7 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
                 "job_bonus_grant_failed",
                 job_id=job["id"],
                 worker_id=worker_id,
-                quarters=_bonus,
+                units=_bonus,
                 error=str(exc),
             )
             return
@@ -577,7 +590,7 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
                 "job_bonus_unfunded",
                 job_id=job["id"],
                 worker_id=worker_id,
-                quarters=_bonus,
+                units=_bonus,
             )
             return
         # The pool's principal sits in the escrow account (it arrived via
@@ -596,7 +609,7 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
             conn=conn,
         )
         conn.execute(
-            "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
+            "UPDATE jobs SET deposit_bonus_units = 0 WHERE id = ?",
             (job["id"],),
         )
 
@@ -655,8 +668,21 @@ def _apply_review(
         )
         _unhold_cycle_prs(cycle)
         _check_deposit_return(conn, job, cycle, worker_id)
-        _pay_worker(conn, job, worker_id)
-        rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
+        from db._guilds_money import guild_job_link
+
+        link = guild_job_link(conn, job["id"])
+        if link is not None and link["role"] == "taken":
+            # Executor-taken: the cycle wage routes poolward (the
+            # executor keeps worker karma + reward via the shared award
+            # path below); a departed executor has no link left, so the
+            # wage falls through to the personal path automatically.
+            from db._guilds_money import settle_taken_wage
+
+            settle_taken_wage(conn, job, link)
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
+        else:
+            _pay_worker(conn, job, worker_id)
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
         new_done = job["cycles_done"] + 1
         completed = new_done >= job["total_cycles"]
         conn.execute(
@@ -674,7 +700,7 @@ def _apply_review(
         _seed_next_cycle(conn, job, new_done)
         accept_detail: dict = {
             "cycle_no": cycle_no,
-            "payout_credits": _fmt_q(job["payment_quarters"]),
+            "payout_credits": _fmt_q(job["payment_units"]),
             "karma_awarded": rewarded > 0,
             "credit_amount": _fmt_q(rewarded),
             "title": job["title"],
@@ -692,8 +718,12 @@ def _apply_review(
             detail=accept_detail,
             conn=conn,
         )
-        credits_line = _fmt_q(job["payment_quarters"])
+        credits_line = _fmt_q(job["payment_units"])
         reward_line = f", +{_fmt_q(rewarded)} credits" if rewarded else ""
+        if link is not None and link["role"] == "taken":
+            paid_text = f"{credits_line} credits to your guild pool{reward_line}"
+        else:
+            paid_text = f"{credits_line} credits paid{reward_line}"
         cycle_label = (
             " The job is COMPLETE - thank you."
             if completed
@@ -708,7 +738,7 @@ def _apply_review(
             job["id"],
             f"{accept_msg_prefix} accepted cycle {cycle_no} of "
             f"'{job['title']}' (#{job['id']}) - "
-            f"{credits_line} credits paid{reward_line}.{cycle_label}",
+            f"{paid_text}.{cycle_label}",
             actor_agent_id=actor_id,
         )
         if completed:
@@ -717,7 +747,7 @@ def _apply_review(
                 "title": job["title"],
                 "worker_agent_id": worker_id,
                 "total_paid_credits": _fmt_q(
-                    job["payment_quarters"] * job["total_cycles"]
+                    job["payment_units"] * job["total_cycles"]
                 ),
             }
             if admin_name is not None:
@@ -755,13 +785,10 @@ def _apply_review(
         forfeited = 0
         if forfeit_deposit:
             try:
-                if (
-                    job["taker_deposit_quarters"]
-                    and int(job["taker_deposit_quarters"]) > 0
-                ):
-                    forfeited = int(job["taker_deposit_quarters"])
+                if job["taker_deposit_units"] and int(job["taker_deposit_units"]) > 0:
+                    forfeited = int(job["taker_deposit_units"])
                     conn.execute(
-                        "UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?",
+                        "UPDATE jobs SET taker_deposit_units = 0 WHERE id = ?",
                         (job["id"],),
                     )
             except Exception:
@@ -769,7 +796,7 @@ def _apply_review(
                 pass
         declined_detail: dict = {
             "cycle_no": cycle_no,
-            "held_escrow_credits": _fmt_q(job["payment_quarters"]),
+            "held_escrow_credits": _fmt_q(job["payment_units"]),
             "title": job["title"],
         }
         if admin_name is not None:
@@ -777,7 +804,7 @@ def _apply_review(
         if on_behalf_of is not None:
             declined_detail["on_behalf_of"] = on_behalf_of
         if forfeited:
-            declined_detail["deposit_forfeited_quarters"] = forfeited
+            declined_detail["deposit_forfeited_units"] = forfeited
         log_event(
             EVT_JOB_CYCLE_DECLINED,
             actor_agent_id=actor_id,

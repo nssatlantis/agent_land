@@ -177,7 +177,7 @@ def main():
         0,
         1,
         currency="credits",
-    ), "the credit floor speaks in quarter units after conversion"
+    ), "the credit floor speaks in twentieth units after conversion"
     assert "max_prs must be at least 1" in expect_error(
         db.stake, agents["beta"]["token"], pid, 1, 0
     )
@@ -411,8 +411,8 @@ def main():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO credit_entries"
-            " (agent_id, account, delta_quarters, reason)"
-            " VALUES (NULL, 'treasury', 8, 'test_fund')"
+            " (agent_id, account, delta_units, reason)"
+            " VALUES (NULL, 'treasury', 40, 'test_fund')"
         )
     db.lock_stakes_for_pr(None, pid, 9051, agents["gamma"]["agent_id"])
     with db._conn() as conn:
@@ -424,7 +424,7 @@ def main():
     assert ac_lock is not None and ac_lock["status"] == "locked", (
         "a refilled treasury must let the next lock land"
     )
-    assert ac_lock["amount"] == 8, "credits per_pr=2 must lock as 8 quarters"
+    assert ac_lock["amount"] == 40, "credits per_pr=2 must lock as 40 units"
     print("  admin credit stake transient-treasury continue: ok")
 
     # --- refund_proposal_stakes: supersede refunds active bounties ------

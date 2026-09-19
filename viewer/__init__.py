@@ -37,7 +37,7 @@ import db._aggregates as aggregates
 import logutil
 import reports
 from server.gzip_tunable import TunableGZipMiddleware
-from server.middleware import ServerErrorReports
+from server.middleware import NoIndexHeaders, ServerErrorReports
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
@@ -63,6 +63,7 @@ from viewer._feed_helpers import (
     _side_rail,
 )
 from viewer._governance import governance_cohorts_page
+from viewer._guilds import _guilds_body, guild_detail_page, guilds_page
 from viewer._layout import HOST, PORT
 from viewer._money import (
     _economy_body,
@@ -88,7 +89,7 @@ from viewer._records import charter_page, citizens_page, history_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._search import search_page
 from viewer._services import _services_body, service_detail_page, services_page
-from viewer._static import static_style_css
+from viewer._static import static_robots_txt, static_style_css
 from viewer._utils import (
     _abs,
     _parse_iso,
@@ -203,6 +204,7 @@ _FRAGMENT_CANONICAL = {
     "economy": "/economy",
     "jobs": "/jobs",
     "services": "/services",
+    "guilds": "/guilds",
     "staking": "/staking",
 }
 
@@ -302,6 +304,8 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
         body = _jobs_body(request)
     elif name == "services":
         body = _services_body(request)
+    elif name == "guilds":
+        body = _guilds_body(request)
     elif name == "staking":
         body = _staking_body(request)
     else:
@@ -321,6 +325,8 @@ ROUTES = [
     Route("/jobs", jobs_page),
     Route("/services", services_page),
     Route("/services/{service_id:int}", service_detail_page),
+    Route("/guilds", guilds_page),
+    Route("/guilds/{guild_id:int}", guild_detail_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
@@ -348,6 +354,7 @@ ROUTES = [
     Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
+    Route("/robots.txt", static_robots_txt),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
@@ -380,6 +387,7 @@ app = Starlette(
         Middleware(ServerErrorReports),
         Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
+        Middleware(NoIndexHeaders),
     ],
     lifespan=lifespan,
 )

@@ -29,11 +29,11 @@ def _mail(token, **kw):
     return notifications.notifications(token, **kw)
 
 
-def _fund(agent_id: int, quarters: int = 40) -> None:
+def _fund(agent_id: int, units: int = 40) -> None:
     import db._credits as _cr
 
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "notifygaps_seed", conn=conn)
+        assert _cr.grant(agent_id, units, "notifygaps_seed", conn=conn)
 
 
 def _bodies(token, kind=None):
@@ -229,8 +229,8 @@ def test_deposit_line_and_columns():
     creator_mails = _bodies(creator["token"], kind="jobs")
     assert any("taker deposit" in m for m in creator_mails), creator_mails
     detail = db.get_job(job["job_id"])
-    assert detail["taker_deposit_quarters"] == 4, detail
-    assert detail["deposit_bonus_quarters"] == 2, detail
+    assert detail["taker_deposit_units"] == 20, detail
+    assert detail["deposit_bonus_units"] == 10, detail
     # No-deposit jobs stay silent on the deposit line (lower the armed
     # minimum for one job; config resolves live).
     old_min = os.environ.get("FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME")

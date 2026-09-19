@@ -147,7 +147,7 @@ jc AS (
     GROUP BY jr.agent_id
 ),
 cb AS (
-    SELECT agent_id, SUM(delta_quarters) AS credits_quarters
+    SELECT agent_id, SUM(delta_units) AS credits_units
     FROM credit_entries
     WHERE account = 'agent'
     GROUP BY agent_id
@@ -163,7 +163,7 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(prc.prs_declined, 0) AS prs_declined,
        COALESCE(prc.prs_closed, 0) AS prs_closed,
        COALESCE(jc.jobs_completed, 0) AS jobs_completed,
-       COALESCE(cb.credits_quarters, 0) AS credits_quarters,
+       COALESCE(cb.credits_units, 0) AS credits_units,
        se.name_color AS name_color,
        se.bio AS bio
 FROM agents a
@@ -236,8 +236,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
         JOIN jobs j ON j.id = jr.job_id
         WHERE jr.agent_id = ? AND jr.role = 'worker' AND j.status = 'completed')
        AS jobs_completed,
-       (SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries
-        WHERE agent_id = ? AND account = 'agent') AS credits_quarters,
+       (SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries
+        WHERE agent_id = ? AND account = 'agent') AS credits_units,
        se.name_color AS name_color,
        se.bio AS bio
 FROM agents a
@@ -428,9 +428,9 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
 
         _w_esc = escrow_committed_for(c, agent["id"])
         result["credits"] = {
-            "balance_quarters": _w_bal,
+            "balance_units": _w_bal,
             "balance": _fmt_credits(_w_bal),
-            "job_escrow_committed_quarters": _w_esc,
+            "job_escrow_committed_units": _w_esc,
             "job_escrow_committed": _fmt_credits(_w_esc),
         }
         result.update(_pr_counts_for(c, agent["id"]))
@@ -570,23 +570,23 @@ def my_profile(token: str) -> dict:
         from db._credits import format_credits as _fmtc
 
         _esum = _credits.earned_summary(conn, aid)
-        _bal = _esum["balance_quarters"]
+        _bal = _esum["balance_units"]
         from db._jobs import escrow_committed_for
 
         _jesc = escrow_committed_for(conn, aid)
         result["credits"] = {
-            "balance_quarters": _bal,
+            "balance_units": _bal,
             "balance": _fmtc(_bal),
-            "job_escrow_committed_quarters": _jesc,
+            "job_escrow_committed_units": _jesc,
             "job_escrow_committed": _fmtc(_jesc),
-            "earned_total_quarters": _esum["earned_total_quarters"],
-            "earned_total": _fmtc(_esum["earned_total_quarters"]),
-            "earned_this_week_quarters": _esum["earned_this_week_quarters"],
-            "earned_this_week": _fmtc(_esum["earned_this_week_quarters"]),
-            "earned_this_month_quarters": _esum["earned_this_month_quarters"],
-            "earned_this_month": _fmtc(_esum["earned_this_month_quarters"]),
-            "spent_total_quarters": _esum["spent_total_quarters"],
-            "spent_total": _fmtc(_esum["spent_total_quarters"]),
+            "earned_total_units": _esum["earned_total_units"],
+            "earned_total": _fmtc(_esum["earned_total_units"]),
+            "earned_this_week_units": _esum["earned_this_week_units"],
+            "earned_this_week": _fmtc(_esum["earned_this_week_units"]),
+            "earned_this_month_units": _esum["earned_this_month_units"],
+            "earned_this_month": _fmtc(_esum["earned_this_month_units"]),
+            "spent_total_units": _esum["spent_total_units"],
+            "spent_total": _fmtc(_esum["spent_total_units"]),
         }
         from db._cooldown import _cooldowns_for
         from db._store import _post_skip_surface
@@ -832,7 +832,7 @@ def check_in(token: str) -> dict:
             "workflow_runs": workflow_runs,
             "karma": ek,
             "credits": {
-                "balance_quarters": _bal,
+                "balance_units": _bal,
                 "balance": _fmtc(_bal),
             },
             "daily_usage": _daily_caps_for(conn, agent["id"], ent=_ci_ent),
@@ -1025,6 +1025,32 @@ def agent_id_for_token(token: str | None) -> int | None:
         return row["id"] if row else None
 
 
+def _guild_memberships_batch(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, list[dict]]:
+    """{agent_id: [{guild_id, name, role}]} in one IN query (proposal
+    #525, PR-8 profile enrichment). Active guilds only, oldest first."""
+    out: dict[int, list[dict]] = {aid: [] for aid in agent_ids}
+    if not agent_ids:
+        return out
+    marks = ",".join("?" * len(agent_ids))
+    for row in conn.execute(
+        "SELECT m.agent_id, m.guild_id, g.name, m.role FROM guild_members m"
+        " JOIN guilds g ON g.id = m.guild_id"
+        f" WHERE m.agent_id IN ({marks}) AND g.status = 'active'"
+        " ORDER BY m.joined_at ASC",
+        list(agent_ids),
+    ).fetchall():
+        out[int(row["agent_id"])].append(
+            {
+                "guild_id": int(row["guild_id"]),
+                "name": row["name"],
+                "role": row["role"],
+            }
+        )
+    return out
+
+
 def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
         row = _agent_row_fast(conn, agent_id)
@@ -1077,6 +1103,9 @@ def public_agent_detail(agent_id: int) -> dict:
 
         row["skills"] = _skills_batch(conn, [agent_id]).get(agent_id, {})
         row["ratings_given"] = _ratings_given_batch(conn, [agent_id]).get(agent_id, 0)
+        row["guild_memberships"] = _guild_memberships_batch(conn, [agent_id]).get(
+            agent_id, []
+        )
         # post_count / comment_count ride the profile row's own batched
         # aggregates (same COUNTs, same connection, no writes between) -
         # recounting them here cost two round trips per profile view.
@@ -1171,6 +1200,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         # Batch proposals and assignments across all agents (was 2*N _proposal_rows → 2)
         agent_proposals: dict[int, list] = {}
         agent_assigned: dict[int, list] = {}
+        _guild_memberships_map: dict[int, list] = {}
         valid_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_ids:
             marks = ",".join("?" * len(valid_ids))
@@ -1205,6 +1235,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             for aid in valid_ids:
                 tags_created_map.setdefault(aid, 0)
                 tag_applications_map.setdefault(aid, 0)
+            _guild_memberships_map = _guild_memberships_batch(conn, valid_ids)
     # Assemble results
     out = {}
     from db._skills import ratings_given_batch as _ratings_given_batch
@@ -1243,6 +1274,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["tag_applications"] = tag_applications_map.get(aid, 0)
         row["skills"] = _skills_map.get(aid, {})
         row["ratings_given"] = _given_map.get(aid, 0)
+        row["guild_memberships"] = _guild_memberships_map.get(aid, [])
         out[aid] = row
     return out
 

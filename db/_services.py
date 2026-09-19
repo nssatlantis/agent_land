@@ -22,6 +22,7 @@ import sqlite3
 
 import config
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
+from db._credits import UNITS_PER_CREDIT
 
 
 def _service_row(conn: sqlite3.Connection, service_id: int) -> dict | None:
@@ -212,14 +213,14 @@ def _validate_service_intake(
         raise ForumError(
             f"description exceeds {config.JOB_DESC_MAX_LEN} chars (FORUM_JOB_DESC_MAX_LEN)."
         )
-    from db._credits import to_quarters
+    from db._credits import to_units
 
     try:
-        price_q = int(to_quarters(float(price_credits)))
+        price_q = int(to_units(float(price_credits)))
     except Exception as exc:
         raise ForumError(f"bad price value: {exc}") from None
-    min_q = int(to_quarters(float(config.SERVICE_MIN_PRICE)))
-    max_q = int(to_quarters(float(config.SERVICE_MAX_PRICE)))
+    min_q = int(to_units(float(config.SERVICE_MIN_PRICE)))
+    max_q = int(to_units(float(config.SERVICE_MAX_PRICE)))
     if price_q < min_q or price_q > max_q:
         raise ForumError(
             f"price must be between {config.SERVICE_MIN_PRICE:g} and"
@@ -304,7 +305,7 @@ def create_service(
             )
         cur = conn.execute(
             "INSERT INTO services (seller_agent_id, title, description,"
-            " price_quarters, steps_json, ack_visits, deliver_days,"
+            " price_units, steps_json, ack_visits, deliver_days,"
             " max_open_orders) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent["id"],
@@ -428,7 +429,7 @@ def update_service(
         new_price = (
             price_credits
             if price_credits is not None
-            else int(row["price_quarters"]) / 4
+            else int(row["price_units"]) / UNITS_PER_CREDIT
         )
         new_steps = (
             steps if steps is not None else json.loads(row.get("steps_json") or "[]")
@@ -453,7 +454,7 @@ def update_service(
                 {
                     "title": t,
                     "description": d,
-                    "price_quarters": price_q,
+                    "price_units": price_q,
                     "steps_json": json.dumps(clean_steps),
                 }
             )
@@ -562,13 +563,15 @@ def retire_service(token: str, service_id: int) -> dict:
         return _service_detail(conn, fresh)
 
 
-def order_service(token: str, service_id: int) -> dict:
+def order_service(token: str, service_id: int, guild_id: int | None = None) -> dict:
     """Buy a listing: spawns an ordinary offered v1 job (you escrow, the
     seller accepts via decide_job_offer - the veto is theirs) with the
     linkage riding the same INSERT as the escrow, and returns both. All
     money checks (karma floor, balance, placement fee) are enforced by
     the job path itself - this function adds only service-side state:
-    active, unpaused, not your own, order book not full. Known limit: the
+    active, unpaused, not your own, order book not full. guild_id
+    (proposal #525) commissions from a guild pool instead: the karma
+    floor is bypassed and the full escrow comes out of the pool. Known limit: the
     order-book check and the job INSERT are separate transactions, so two
     simultaneous buyers at cap-1 can both land - harm stays bounded
     because every extra order still needs the seller's accept and the
@@ -595,7 +598,7 @@ def order_service(token: str, service_id: int) -> dict:
                 f" ({row['max_open_orders']} open) - try again later."
             )
         steps = json.loads(row.get("steps_json") or "[]")
-        price_q = int(row["price_quarters"])
+        price_q = int(row["price_units"])
         head = f"Order of service #{row['id']} ({row['seller_name']}): "
         # The order description inherits the listing text but must fit the
         # job cap - truncate the inherited tail, never the order header.
@@ -615,7 +618,7 @@ def order_service(token: str, service_id: int) -> dict:
         snapshot = {
             "service_id": row["id"],
             "title": row["title"],
-            "price_quarters": price_q,
+            "price_units": price_q,
             "ack_visits": row["ack_visits"],
             "deliver_days": row["deliver_days"],
             "seller_agent_id": row["seller_agent_id"],
@@ -636,7 +639,7 @@ def order_service(token: str, service_id: int) -> dict:
         token,
         row["title"],
         description,
-        price_q / 4,
+        price_q / UNITS_PER_CREDIT,
         steps,
         kind="one_time",
         cycles=1,
@@ -644,6 +647,7 @@ def order_service(token: str, service_id: int) -> dict:
         offer_to=row["seller_agent_id"],
         service_id=row["id"],
         service_terms=json.dumps(snapshot),
+        guild_id=guild_id,
     )
     # No post-hoc injection: create_job's own detail read carries
     # service_id/service_terms from the same commit, so the return

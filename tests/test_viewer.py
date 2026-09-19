@@ -26,6 +26,10 @@ from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._citizens_helpers import _profile_cards, _skill_cell  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
 from viewer._feed_helpers import _collaborators_panel  # noqa: E402
+from viewer._guilds import (  # noqa: E402
+    _guilds_body,
+    guilds_page,
+)
 from viewer._layout import _frag_path  # noqa: E402
 from viewer._money import (  # noqa: E402
     _economy_body,
@@ -1535,6 +1539,7 @@ def test_fragments_match_full_page_bodies():
         ("staking", staking_page, _staking_body),
         ("economy", economy_page, _economy_body),
         ("services", services_page, _services_body),
+        ("guilds", guilds_page, _guilds_body),
     ):
         req = _Req()
         page_html = page_fn(req).body.decode("utf-8")
@@ -1598,7 +1603,7 @@ def test_services_shelf_renders_live_paused_and_degraded():
         "title": "<script>alert(1)</script>",
         "seller_name": "<b>mallory</b>",
         "seller_agent_id": None,
-        "price_quarters": "oops",
+        "price_units": "oops",
         "ack_visits": "soon",
         "deliver_days": None,
         "deliveries": "many",
@@ -1672,7 +1677,7 @@ def test_service_buyer_notes_render_escd():
         "title": "Quiet work",
         "seller_name": "sage",
         "seller_agent_id": 7,
-        "price_quarters": 8,
+        "price_units": 8,
         "ack_visits": 2,
         "deliver_days": 3,
         "deliveries": 2,
@@ -1722,7 +1727,7 @@ def test_services_chrome_and_short_rubric():
         {
             "seller_name": "<b>mallory</b>",
             "seller_agent_id": "soon",
-            "price_quarters": "oops",
+            "price_units": "oops",
             "ack_visits": None,
             "deliver_days": "later",
             "paused_at": None,
@@ -1736,7 +1741,7 @@ def test_services_chrome_and_short_rubric():
         "title": "Quick note",
         "seller_name": "sage",
         "seller_agent_id": 7,
-        "price_quarters": 4,
+        "price_units": 4,
         "ack_visits": 2,
         "deliver_days": 3,
         "deliveries": 0,
@@ -2037,12 +2042,12 @@ def test_economy_comment_targets():
     )
 
 
-def test_outflow_quarters_membership():
+def test_outflow_units_membership():
     """Polarity map covers exactly the outflow rows."""
-    from viewer._money import _OUTFLOW_QUARTERS
+    from viewer._money import _OUTFLOW_UNITS
 
-    assert set(_OUTFLOW_QUARTERS) == {"burned_quarters", "payouts_out_quarters"}
-    assert "minted_quarters" not in _OUTFLOW_QUARTERS
+    assert set(_OUTFLOW_UNITS) == {"burned_units", "payouts_out_units"}
+    assert "minted_units" not in _OUTFLOW_UNITS
 
 
 def test_economy_seal_labels_forced():
@@ -2057,8 +2062,8 @@ def test_economy_seal_labels_forced():
         "seals_checked": 1,
         "sealed_entry_count": 10,
         "live_entry_count": 10,
-        "sealed_supply_quarters": 4000,
-        "live_supply_quarters": 4000,
+        "sealed_supply_units": 4000,
+        "live_supply_units": 4000,
         "sealed_supply_credits": "1000",
         "live_supply_credits": "1000",
     }
@@ -2393,6 +2398,7 @@ def test_fragments_redirect_without_x_fragment():
     assert_redirect("economy", "/economy")
     assert_redirect("jobs", "/jobs")
     assert_redirect("services", "/services")
+    assert_redirect("guilds", "/guilds")
     assert_redirect("staking", "/staking")
     # profile-cards resolves to the agent profile page.
     r = call("profile-cards", params={"agent_id": "11"})
@@ -2759,7 +2765,7 @@ if __name__ == "__main__":
     test_economy_store_empty_and_unavailable()
     test_jobs_tab_for_status_unit()
     test_economy_comment_targets()
-    test_outflow_quarters_membership()
+    test_outflow_units_membership()
     test_economy_seal_labels_forced()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()

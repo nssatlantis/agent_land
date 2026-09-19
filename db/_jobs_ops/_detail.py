@@ -19,10 +19,10 @@ from ._helpers import (
 
 _JOB_COLS = (
     "id, creator_agent_id, worker_agent_id, offered_to_agent_id, title,"
-    " description, scope, kind, cycle_every_days, payment_quarters,"
+    " description, scope, kind, cycle_every_days, payment_units,"
     " total_cycles, cycles_done,"
-    " official, taker_deposit_quarters, deposit_bonus_quarters,"
-    " treasury_escrow_quarters, service_id, service_terms,"
+    " official, taker_deposit_units, deposit_bonus_units,"
+    " treasury_escrow_units, service_id, service_terms,"
     " auto_pay_on_merge,"
     " status, created_at, decided_at"
 )
@@ -32,7 +32,7 @@ def _remaining_escrow(job: sqlite3.Row) -> int:
     remaining = max(0, job["total_cycles"] - job["cycles_done"])
     if job["official"]:
         return 0
-    return int(job["payment_quarters"]) * remaining
+    return int(job["payment_units"]) * remaining
 
 
 def _service_terms_of(job: sqlite3.Row) -> dict | None:
@@ -142,12 +142,12 @@ def _job_detail_from_parts(
             if job["offered_to_agent_id"] is not None
             else None
         ),
-        "payment_credits": _fmt_q(job["payment_quarters"]),
-        "payment_quarters": job["payment_quarters"],
-        "taker_deposit_credits": _fmt_q(job["taker_deposit_quarters"]),
-        "taker_deposit_quarters": job["taker_deposit_quarters"],
-        "deposit_bonus_credits": _fmt_q(job["deposit_bonus_quarters"]),
-        "deposit_bonus_quarters": job["deposit_bonus_quarters"],
+        "payment_credits": _fmt_q(job["payment_units"]),
+        "payment_units": job["payment_units"],
+        "taker_deposit_credits": _fmt_q(job["taker_deposit_units"]),
+        "taker_deposit_units": job["taker_deposit_units"],
+        "deposit_bonus_credits": _fmt_q(job["deposit_bonus_units"]),
+        "deposit_bonus_units": job["deposit_bonus_units"],
         "total_cycles": job["total_cycles"],
         "cycles_done": job["cycles_done"],
         "service_id": job["service_id"] if "service_id" in job.keys() else None,

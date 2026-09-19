@@ -355,7 +355,7 @@ async def _apaginate(path: str, first: list) -> list:
     out = list(first)
     last = first
     page = 2
-    while len(last) == _GITHUB_MAX_PER_PAGE:
+    while len(last) == _GITHUB_MAX_PER_PAGE and page <= _reads._PR_PAGE_CAP:
         last = await _core._arequest(
             "GET", f"{path}?per_page={_GITHUB_MAX_PER_PAGE}&page={page}"
         )

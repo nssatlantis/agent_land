@@ -158,16 +158,16 @@ from db._credits import (  # noqa: F401
     balances_for,
     earned_summary,
     exact_from_credits,
-    fee_quarters,
+    fee_units,
     forfeit_agent,
     format_credits,
     group_transactions,
-    quarters_per_karma,
-    to_quarters,
+    to_units,
     top_movers,
     transfer,
     transfer_credits,
     treasury_balance,
+    units_per_karma,
 )
 from db._credits import (
     history as credit_history,  # noqa: F401
@@ -193,9 +193,106 @@ from db._economy import (  # noqa: F401
     economy_overview,
     headline_balances,
     maybe_checkpoint,
-    treasury_delta_quarters,
+    treasury_delta_units,
     verify_ledger_public,
     write_checkpoint,
+)
+
+# ── guilds (pooled credits + manpower, proposal #525) ──────────────────
+from db._guilds import (  # noqa: F401
+    admin_delete_guild_chat,
+    admin_freeze_guild,
+    admin_release_empty_guild,
+    admin_release_guild_member,
+    admin_unfreeze_guild,
+    confirm_guild_cosign,
+    create_guild_poll,
+    delete_guild_chat,
+    edit_guild_mission,
+    found_guild,
+    get_guild,
+    guild_balance,
+    guild_memberships,
+    guild_spend_locked,
+    guild_velocity_ok,
+    heartbeat_guild,
+    invite_guild_member,
+    leave_guild,
+    list_guild_chat,
+    list_guilds,
+    member_net,
+    post_guild_chat,
+    rejoin_guild,
+    rename_guild,
+    request_guild_cosign,
+    request_guild_join,
+    respond_guild_invite,
+    respond_guild_join,
+    set_guild_enrollment,
+    sweep_guild_memberships,
+    vote_guild_poll,
+)
+
+# ── guild project grants (proposal #525, PR-6) ──────────────────────────
+from db._guilds_grants import (  # noqa: F401
+    designate_guild_project,
+    grant_on_first_todo,
+    grant_on_merge,
+    grant_on_promotion,
+    sweep_guild_grants,
+)
+
+# ── guild soft-lending + delinquency (proposal #525, PR-7) ──────────────
+from db._guilds_lending import (  # noqa: F401
+    decide_guild_subsidy,
+    open_guild_match_window,
+    release_guild_stakes_for_disband,
+    request_guild_subsidy,
+    settle_guild_debt_payment,
+    sweep_guild_lending,
+)
+
+# ── guild pool money (proposal #525, PR-3) ─────────────────────────────
+from db._guilds_money import (  # noqa: F401
+    admin_disband_guild,
+    appoint_guild_successor,
+    detach_executor_jobs,
+    disband_guild,
+    guild_deposit,
+    guild_job_link,
+    guild_pay_invoice,
+    guild_withdraw,
+    link_taken_job,
+    prepare_guild_commission,
+    resolve_guild_jobs_for_disband,
+    settle_guild_commission,
+    settle_job_refund,
+    settle_taken_wage,
+)
+
+# ── guild reputation v1 (proposal #525, PR-14) ───────────────────────
+from db._guilds_reputation import guild_reputation  # noqa: F401
+
+# ── guild↔treasury flows (proposal #525, PR-4) ─────────────────────────
+from db._guilds_treasury import (  # noqa: F401
+    guild_stake,
+    sweep_guild_upkeep,
+)
+
+# ── guild viewer reads (proposal #525, PR-9 + PR-14 page v2) ──────────
+from db._guilds_views import (  # noqa: F401
+    guild_balance_series,
+    guild_chat_count,
+    guild_contribs,
+    guild_fee_arrears_open,
+    guild_grant_links_for_guild,
+    guild_grant_state_for_posts,
+    guild_ledger_recent,
+    guild_locks,
+    guild_open_cosigns,
+    guild_open_debts,
+    guild_open_polls,
+    guild_subsidies_recent,
 )
 
 # ── health / migrations ────────────────────────────────────────────────

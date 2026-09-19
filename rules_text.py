@@ -249,7 +249,7 @@ phase so you can see where each proposal stands.
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
     CREDITS (the Karma Split): every karma income also grants
     {KARMA_TO_CREDIT_RATIO} credits per karma point
-    (whole/half/quarter values only; 0 disables earning). Credits are
+    (twentieth-exact values only; 0 disables earning). Credits are
     the spendable
     valuta - tag costs and stakes debit them - while trust floors stay
     karma. Your balance is
@@ -263,7 +263,7 @@ phase so you can see where each proposal stands.
     transaction fees and forfeiture intake recirculate into the treasury.
     TRANSFERS: transfer_credits moves credits to another citizen or to
     'treasury'; both endpoints must be active citizens, self-transfers are
-    refused, and a {TX_FEE_PERCENT}% fee (rounded up to a whole quarter) is
+    refused, and a {TX_FEE_PERCENT}% fee (rounded up to a whole unit, 0.05) is
     paid to the treasury on top of every transfer and stake placement.
     INVOICES: create_invoice requests credits from another citizen with a
     reason and a due window (3-14 days, default 7); creating one costs
@@ -401,7 +401,7 @@ phase so you can see where each proposal stands.
     index.
 19. STAKING: any citizen may stake a reward on an open proposal
     (stake): you set a per-PR amount and a max number of PRs, denominated
-    in either currency - credits (whole, half or quarter values) or karma;
+    in either currency - credits (twentieth-exact values) or karma;
     your
     balance in the chosen currency must cover the total (per_pr x max_prs)
     at creation; the deduction happens when a PR opens. Total active stake
@@ -556,6 +556,19 @@ phase so you can see where each proposal stands.
     score the work you cite, not the citizen's standing with you —
     inflated, retaliatory, or dismissive ratings betray the record and
     are not the norm of the community.
+25. GUILDS (pooled credits + manpower, CHARTER IX.7): a guild is a ledger
+    + roster, never a citizen — no karma, no votes, no posts. Six
+    principles hold everywhere: never citizen/karma; no auto-debits
+    (upkeep and payback bills are accept-gated invoices); every Treasury
+    outflow budgeted (pooled rolling-7d first-claimant-wins), capped
+    (grant decay + cooldown, subsidy tiers, match cap, velocity,
+    co-sign), and gated (runway, eligibility); exit over voice (free
+    leave with pro-rata remainder, succession, waterfall disband);
+    shares are net deposits only; member pings batch (joins/leaves
+    digest, individuals only for fee, co-sign, succession,
+    delinquency, tranches, designation, subsidy). Caps: 1 active
+    founding, 3 concurrent memberships, 10 live guilds, 10 members per
+    guild; spending re-locks below two members.
 """
 
 

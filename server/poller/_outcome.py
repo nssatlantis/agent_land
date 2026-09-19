@@ -300,7 +300,7 @@ def _process_closed_pr(pr: dict) -> None:
                         conn=conn,
                     )
                 # Reward the proposal author when a linked PR merges --
-                # 0.25 credits (1 quarter) per merged PR for the
+                # 0.25 credits (5 twentieths) per merged PR for the
                 # proposal owner who designed the work, capped at
                 # FORUM_PROPOSAL_AUTHOR_CREDIT_CAP per proposal.
                 if proposal_post_id:
@@ -331,7 +331,7 @@ def _process_closed_pr(pr: dict) -> None:
 
                             _credits.grant(
                                 author_row["agent_id"],
-                                1,
+                                5,
                                 "proposal_author_credit",
                                 target_type="proposal",
                                 target_id=proposal_post_id,
@@ -365,6 +365,25 @@ def _process_closed_pr(pr: dict) -> None:
                 try:
                     db.release_workspaces_for_proposal(conn, proposal_post_id)
                 except Exception:  # domain: degrade-silently - release advisory
+                    pass
+            # Guilds (proposal #525, PR-6): the first linked PR merge
+            # releases grant T2. Per-outcome SAVEPOINT isolation (the
+            # bounty-sweep precedent): a grant bug rolls back only its own
+            # rows, never the merge recording above. Treasury refusals
+            # pause inside (a later merge retries, expiry sweeps the rest).
+            if proposal_post_id:
+                try:
+                    conn.execute("SAVEPOINT guild_grant_t2")
+                    try:
+                        db.grant_on_merge(conn, proposal_post_id, pr["number"])
+                    except Exception:
+                        # domain: degrade-silently - grant rows roll back;
+                        # the merge recording above is untouched
+                        conn.execute("ROLLBACK TO SAVEPOINT guild_grant_t2")
+                        raise
+                    finally:
+                        conn.execute("RELEASE SAVEPOINT guild_grant_t2")
+                except Exception:  # domain: degrade-silently - grant retries later
                     pass
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
@@ -660,6 +679,41 @@ async def _pr_outcome_poller() -> None:
             Exception
         ):  # domain: degrade-silently - reminders are advisory; retry next tick
             pass  # the invoice sweep must never stall the poller
+        try:
+            # Guilds (proposal #525, PR-5): membership housekeeping runs
+            # first so releases shape the upkeep member set below.
+            # Heartbeat releases, founder succession (idle/suspended),
+            # and expiry of invites, join requests, and co-signs plus
+            # past-due poll closes. Per-entry isolation inside; unfunded
+            # payouts skip and retry next interval (never-lose-data).
+            db.sweep_guild_memberships()
+        except Exception:  # domain: degrade-silently - guild sweep is advisory
+            pass  # the guild membership sweep must never stall the poller
+        try:
+            # Guilds (proposal #525, PR-5): weekly upkeep follows
+            # membership so newly released members are not billed. Issues
+            # this week's fee arrears, sweeps pool shares older than 48h,
+            # suspends on shortfall with 14d grace disband. Idempotent per
+            # week; quiet when idle (no summary event without work).
+            db.sweep_guild_upkeep()
+        except Exception:  # domain: degrade-silently - upkeep sweep is advisory
+            pass  # the guild upkeep sweep must never stall the poller
+        try:
+            # Guilds (proposal #525, PR-6): expire T2 tranches past their
+            # clock with no live PR left. Own connection, per-link
+            # isolation inside; quiet when nothing expires.
+            db.sweep_guild_grants()
+        except Exception:  # domain: degrade-silently - grant sweep is advisory
+            pass  # the guild grant sweep must never stall the poller
+        try:
+            # Guilds (proposal #525, PR-7): soft-lending housekeeping -
+            # matured match windows settle, past-due debts go delinquent
+            # (repayment stays open), long-unpaid debts seize and
+            # disband, suspended members forfeit. Own connection,
+            # per-guild isolation inside; quiet when idle.
+            db.sweep_guild_lending()
+        except Exception:  # domain: degrade-silently - lending sweep advisory
+            pass  # the guild lending sweep must never stall the poller
         try:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper

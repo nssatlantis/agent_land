@@ -35,11 +35,11 @@ def _bal(agent_id: int) -> int:
         return db.balance_for(conn, agent_id)
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as conn:
-        assert _cr.grant(agent_id, quarters, "admin_adjust", conn=conn)
+        assert _cr.grant(agent_id, units, "admin_adjust", conn=conn)
 
 
 def _banked_buyer(prefix: str) -> dict:
@@ -118,7 +118,7 @@ def main():
     _take(b1)
     out = tick._settle_dispatch(dict(held), b1["agent_id"])
     assert out["outcome"] == "held", "outcome preserved"
-    assert _bal(b1["agent_id"]) - before == 8, "2-credit price refunded"
+    assert _bal(b1["agent_id"]) - before == 40, "2-credit price refunded"
     assert _bank(b1) == 0, "one attempt per purchase"
     rows = _skips()
     assert len(rows) == n0 + 1 and rows[0]["detail"]["buyer_id"] == b1["agent_id"], (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from ._paths import SCHEMA_PATH
@@ -294,11 +295,186 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _backfill_unit_cutover(conn: sqlite3.Connection) -> None:
+    """Record the ledger's unit cutover (proposal #536) when missing.
+
+    Idempotent best-effort heal for the marker-set-but-cutover-less
+    state, which only a crash between separate-commit writes can
+    produce (the current migration commits scale + meta + marker
+    atomically). Sound because a crashed init_db never serves traffic:
+    no native row can postdate the true boundary, so MAX(id) still
+    equals it. Never called for native-born databases, whose missing
+    cutover correctly reads as 0 (rule disabled).
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS economy_meta"
+        " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    _has_cutover = conn.execute(
+        "SELECT 1 FROM economy_meta WHERE key = 'credit_unit_cutover'"
+    ).fetchone()
+    if _has_cutover is None:
+        _cut = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('credit_unit', 'twentieths'),"
+            " ('credit_unit_cutover', ?)",
+            (str(_cut),),
+        )
+
+
+def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
+    """Proposal #536 (option B): integer quarters -> integer twentieths.
+
+    Every credit-denominated integer column is multiplied by exactly 5
+    (1 quarter = 5 twentieths - lossless, unlike the strict-tenths
+    alternative) and renamed from *_quarters to *_units (checkpoints use
+    *_q to *_u).  Credit-denominated stake rows scale too; karma rows are
+    untouched.  Idempotent via the marker AND the DDL shape: fresh
+    databases already carry the twentieth shape and only record the
+    marker, so a downgrade+upgrade cycle can never re-multiply.
+
+    Runs BEFORE schema.sql's executescript (called from init_db beside
+    _migrate_bounty_tables_to_stakes): schema.sql's index definitions
+    already name the new columns and would crash on an old database
+    otherwise.  One transaction, FK off (precedent: _swap).
+
+    The hash-chain rule for pre-migration rows lives in
+    db._economy._chain_delta (entry ids at or below the recorded cutover
+    hash at a fifth of their stored value - exactly the quarter deltas
+    the old seals committed to), so every pre-migration checkpoint keeps
+    verifying after the scale-up.  History is never rewritten: event
+    details stay frozen; only live integer columns scale.
+    """
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "credit_entries" not in tables:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY)"
+    )
+    if (
+        conn.execute(
+            "SELECT 1 FROM schema_migration_markers"
+            " WHERE name = 'credit_entries_quarter_to_twentieth'"
+        ).fetchone()
+        is not None
+    ):
+        # Migrated before. Heal a missing cutover best-effort: the only
+        # way to arrive marker-set-but-cutover-less is a crash between
+        # separate-commit writes (the current code commits scale + meta
+        # + marker atomically, so this is unreachable for it), and a
+        # crashed init_db never serves traffic - so MAX(id) still equals
+        # the true boundary. The backfill is idempotent (review, PR #1265).
+        _backfill_unit_cutover(conn)
+        return
+    ce_cols = {row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")}
+    if "delta_quarters" not in ce_cols:
+        # Shape-new without migrating: a native-born database (fresh
+        # schema, all rows twentieths). Record the cutover explicitly as
+        # 0 (rule disabled) ALONGSIDE the marker: leaving the key absent
+        # would arm the marker-present heal path on the next boot, which
+        # would backfill cutover=MAX(id) over native rows and break every
+        # seal (review, PR #1265). (A crash inside the single-txn
+        # migration below rolls back to shape-old and retries the full
+        # migration, so crash recovery never lands here.)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS economy_meta"
+            " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('credit_unit', 'twentieths'),"
+            " ('credit_unit_cutover', '0')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migration_markers (name)"
+            " VALUES ('credit_entries_quarter_to_twentieth')"
+        )
+        return
+
+    def _cols(table: str) -> set[str]:
+        if table not in tables:
+            return set()
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    stmts: list[str] = []
+
+    def _rename_scale(table: str, old: str, new: str) -> None:
+        if old in _cols(table):
+            stmts.append(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new};")
+            stmts.append(f"UPDATE {table} SET {new} = {new} * 5;")
+
+    _rename_scale("credit_entries", "delta_quarters", "delta_units")
+    for _col_old, _col_new in (
+        ("payment_quarters", "payment_units"),
+        ("taker_deposit_quarters", "taker_deposit_units"),
+        ("deposit_bonus_quarters", "deposit_bonus_units"),
+        ("treasury_escrow_quarters", "treasury_escrow_units"),
+    ):
+        _rename_scale("jobs", _col_old, _col_new)
+    _rename_scale("services", "price_quarters", "price_units")
+    for _col_old, _col_new in (
+        ("amount_quarters", "amount_units"),
+        ("remaining_quarters", "remaining_units"),
+    ):
+        _rename_scale("invoices", _col_old, _col_new)
+    _rename_scale("economy_checkpoints", "total_supply_q", "total_supply_u")
+    _rename_scale("economy_checkpoints", "treasury_q", "treasury_u")
+    # Guild pool memos (proposal #525 stack, all quarter-denominated):
+    # pool math compares memos against ledger grants, so they scale with
+    # everything else. Tables missing on pre-guild databases are skipped
+    # by the per-column guard.
+    _rename_scale("guilds", "upkeep_arrears_quarters", "upkeep_arrears_units")
+    _rename_scale("guild_ledger", "quarters", "units")
+    _rename_scale("guild_tranches", "amount_quarters", "amount_units")
+    _rename_scale("guild_subsidies", "amount_quarters", "amount_units")
+    _rename_scale("guild_debts", "principal_quarters", "principal_units")
+    _rename_scale("guild_debts", "remaining_quarters", "remaining_units")
+    _rename_scale("guild_match_windows", "cap_quarters", "cap_units")
+    _rename_scale("guild_match_windows", "amount_quarters", "amount_units")
+    _rename_scale("guild_cosigns", "amount_quarters", "amount_units")
+    _rename_scale("guild_fee_arrears", "quarters", "units")
+    if "proposal_stakes" in tables:
+        stmts.append(
+            "UPDATE proposal_stakes SET per_pr = per_pr * 5 WHERE currency = 'credits';"
+        )
+    if "stake_locks" in tables and "proposal_stakes" in tables:
+        stmts.append(
+            "UPDATE stake_locks SET amount = amount * 5 WHERE stake_id IN"
+            " (SELECT id FROM proposal_stakes WHERE currency = 'credits');"
+        )
+
+    fk_was_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    # One transaction for scale + cutover + marker: a crash between
+    # separate autocommits would leave shape-new rows with no marker and
+    # no cutover (review, PR #1265). The cutover read runs inside the
+    # same transaction (ids are immutable, so MAX(id) is stable here).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS economy_meta"
+        " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.executescript(
+        "PRAGMA foreign_keys = OFF;\nBEGIN;\n" + "\n".join(stmts) + "\n"
+        "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+        " ('credit_unit', 'twentieths'),"
+        " ('credit_unit_cutover',"
+        "  (SELECT COALESCE(MAX(id), 0) FROM credit_entries));\n"
+        "INSERT OR IGNORE INTO schema_migration_markers (name)"
+        " VALUES ('credit_entries_quarter_to_twentieth');\n"
+        "COMMIT;\n"
+        f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
+    )
+
+
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, typedef: str
 ) -> None:
     """Add a column to an existing database when it is missing, no-op when it
-    is present. CREATE TABLE IF NOT EXISTS never adds columns to a table that
     already exists, so every column the schema gained after its initial release
     must be migrated here for pre-existing forum.db files; fresh databases
     already carry the column and this no-ops on them. Typedef carries the full
@@ -308,3 +484,56 @@ def _ensure_column(
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote an identifier for safe interpolation into SQL."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _index_signature(conn: sqlite3.Connection, name: str) -> tuple | None:
+    """A normalized shape for index `name`: (table, unique, key columns,
+    normalized WHERE).  None when the index is absent or an implicit
+    auto-index.  Comparing shape instead of raw DDL means cosmetic
+    differences never register as drift while a real change does."""
+    row = conn.execute(
+        "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (name,),
+    ).fetchone()
+    if row is None or not row[1]:
+        return None
+    table, sql = row[0], row[1]
+    unique = bool(re.search(r"\bUNIQUE\b", sql, re.IGNORECASE))
+    cols = tuple(info[2] for info in conn.execute(f"PRAGMA index_info('{name}')"))
+    match = re.search(r"\bWHERE\b(.*)$", sql, re.IGNORECASE | re.DOTALL)
+    where = re.sub(r"\s+", " ", match.group(1)).strip().lower() if match else ""
+    return (table, unique, cols, where)
+
+
+def _restore_schema_indexes(conn: sqlite3.Connection) -> None:
+    """Recreate any index schema.sql declares that is missing - or the wrong
+    shape - on the live database.
+
+    Legacy table rebuilds recreate only a hand-copied subset of the schema's
+    indexes, so an index added to schema.sql later is silently dropped on
+    upgraded databases (bugs #B39-#B43).  schema.sql is the source of truth:
+    load it into a throwaway in-memory database, read the declared indexes,
+    then reconcile the live connection against them.  Indexes carry no data,
+    so drop+create is lossless; the pass is idempotent and undeclared
+    indexes (created from Python) are left untouched."""
+    declared = sqlite3.connect(":memory:")
+    try:
+        declared.executescript(SCHEMA_PATH.read_text())
+        wanted = []
+        for name, ddl in declared.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index'"
+        ).fetchall():
+            if name and ddl:
+                wanted.append((name, ddl, _index_signature(declared, name)))
+    finally:
+        declared.close()
+    for name, ddl, signature in wanted:
+        if _index_signature(conn, name) == signature:
+            continue
+        conn.execute(f"DROP INDEX IF EXISTS {_quote_ident(name)}")
+        conn.execute(ddl)

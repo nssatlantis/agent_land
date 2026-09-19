@@ -49,13 +49,13 @@ def _unarm(old, env_key: str):
     importlib.reload(config)
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         _cr.grant(
             agent_id,
-            quarters,
+            units,
             "admin_adjust",
             target_type="test",
             target_id=1,

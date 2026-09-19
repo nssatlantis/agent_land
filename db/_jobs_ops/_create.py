@@ -69,12 +69,12 @@ def _validate_steps(steps: list[str]) -> list[str]:
 def _validate_taker_deposit(taker_deposit_credits: float | None, kind: str) -> int:
     """Validate the taker-deposit amount for create_job and
     create_job_official (which carried identical 25-line blocks) and
-    return it in quarters. Raises ForumError on bad values or below-minimum
+    return it in units. Raises ForumError on bad values or below-minimum
     amounts. The credits import stays function-local, like every other
     db._credits use in this file, so the mock.patch("db._credits.*") seams
     keep working."""
     from db._credits import format_credits as _fc
-    from db._credits import to_quarters as _tq
+    from db._credits import to_units as _tu
 
     if taker_deposit_credits is None:
         taker_deposit_credits = float(
@@ -83,11 +83,11 @@ def _validate_taker_deposit(taker_deposit_credits: float | None, kind: str) -> i
             else config.JOB_TAKER_DEPOSIT_MIN_RECURRING
         )
     try:
-        taker_deposit_q = int(_tq(float(taker_deposit_credits)))
+        taker_deposit_q = int(_tu(float(taker_deposit_credits)))
     except Exception as exc:
         raise ForumError(f"bad taker_deposit value: {exc}") from None
-    min_one = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
-    min_rec = int(_tq(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
+    min_one = int(_tu(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(_tu(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
     min_needed = min_one if kind == "one_time" else min_rec
     if taker_deposit_q < min_needed:
         raise ForumError(
@@ -157,11 +157,11 @@ def _validated_job_intake(
             f"recurring jobs run every 1 to {max_every} days "
             "(FORUM_JOB_MAX_CYCLE_EVERY_DAYS)."
         )
-    from db._credits import to_quarters
+    from db._credits import to_units
 
-    payment_q = int(to_quarters(float(payment_credits)))
-    if payment_q < 1:
-        raise ForumError("payment must be at least 0.25 credits.")
+    payment_q = int(to_units(float(payment_credits)))
+    if payment_q < 2:
+        raise ForumError("payment must be at least 0.1 credits.")
     return (
         title,
         description,
@@ -188,8 +188,8 @@ def _insert_job_with_steps(
     cycle_every_days,
     official,
     steps,
-    taker_deposit_quarters: int = 0,
-    treasury_escrow_quarters: int = 0,
+    taker_deposit_units: int = 0,
+    treasury_escrow_units: int = 0,
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: int = 0,
@@ -201,8 +201,8 @@ def _insert_job_with_steps(
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
         " title, description, scope, kind, cycle_every_days,"
-        " payment_quarters, total_cycles, official, taker_deposit_quarters,"
-        " treasury_escrow_quarters, service_id, service_terms,"
+        " payment_units, total_cycles, official, taker_deposit_units,"
+        " treasury_escrow_units, service_id, service_terms,"
         " long_running, auto_pay_on_merge, status)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -216,8 +216,8 @@ def _insert_job_with_steps(
             payment_q,
             cycles,
             official,
-            taker_deposit_quarters,
-            treasury_escrow_quarters,
+            taker_deposit_units,
+            treasury_escrow_units,
             service_id,
             service_terms,
             long_running,
@@ -275,8 +275,8 @@ def _handle_taker_deposit(
             conn=conn,
         )
         conn.execute(
-            "UPDATE jobs SET deposit_bonus_quarters ="
-            " deposit_bonus_quarters + ? WHERE id = ?",
+            "UPDATE jobs SET deposit_bonus_units ="
+            " deposit_bonus_units + ? WHERE id = ?",
             (half_escrow, job_id),
         )
 
@@ -297,6 +297,7 @@ def create_job(
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: bool = False,
+    guild_id: int | None = None,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post. service_id/service_terms
@@ -304,7 +305,11 @@ def create_job(
     commit together, never apart. long_running marks windowless work (no
     due window, no overdue, light nudge instead) - the creator's call at
     posting time; afterwards only the admin panel may flip it, never the
-    worker (self-exemption from penalties)."""
+    worker (self-exemption from penalties). guild_id (proposal #525)
+    commissions from a guild pool instead: the karma floor is bypassed
+    (founder authority substitutes), the full escrow + fees come out of
+    the pool (velocity-exempt, co-sign band still recorded), and the
+    creator-leg rebate routes poolward on accept."""
     if long_running in (True, 1, "1"):
         long_running_q = 1
     elif long_running in (False, 0, "0", None):
@@ -336,7 +341,7 @@ def create_job(
         cycle_every_days=cycle_every_days,
     )
     escrow_q = payment_q * cycles
-    from db._credits import exact_from_credits, fee_quarters
+    from db._credits import exact_from_credits, fee_units
 
     listing_fee_q = 0
     if float(config.JOB_LISTING_FEE_CREDITS) > 0:
@@ -344,7 +349,7 @@ def create_job(
             float(config.JOB_LISTING_FEE_CREDITS),
             what="the listing fee",
         )
-    placement_fee_q = fee_quarters(escrow_q)
+    placement_fee_q = fee_units(escrow_q)
     fees_q = listing_fee_q + placement_fee_q
 
     from events import EVT_JOB_CREATED, log_event
@@ -354,25 +359,33 @@ def create_job(
         from db._karma import effective_karma
 
         agent = _require_active_agent(conn, token)
-        if effective_karma(conn, agent["id"]) < max(
-            0, int(config.JOB_CREATOR_MIN_KARMA)
-        ):
-            raise ForumError(
-                f"posting a job requires at least "
-                f"{config.JOB_CREATOR_MIN_KARMA} effective karma "
-                f"(FORUM_JOB_CREATOR_MIN_KARMA); {agent['name']} has "
-                f"{effective_karma(conn, agent['id'])}."
-            )
-        from db._credits import balance_for
+        guild = None
+        if guild_id is not None:
+            from db._guilds_money import prepare_guild_commission
 
-        balance = balance_for(conn, agent["id"])
-        if balance < escrow_q + fees_q:
-            raise ForumError(
-                f"posting this job escrows {_fmt_q(escrow_q)} credits"
-                + (f" plus {_fmt_q(fees_q)} in fees" if fees_q else "")
-                + f" and requires {_fmt_q(escrow_q + fees_q)}; "
-                f"{agent['name']} has {_fmt_q(balance)}."
+            guild = prepare_guild_commission(
+                conn, agent, int(guild_id), escrow_q, fees_q
             )
+        else:
+            if effective_karma(conn, agent["id"]) < max(
+                0, int(config.JOB_CREATOR_MIN_KARMA)
+            ):
+                raise ForumError(
+                    f"posting a job requires at least "
+                    f"{config.JOB_CREATOR_MIN_KARMA} effective karma "
+                    f"(FORUM_JOB_CREATOR_MIN_KARMA); {agent['name']} has "
+                    f"{effective_karma(conn, agent['id'])}."
+                )
+            from db._credits import balance_for
+
+            balance = balance_for(conn, agent["id"])
+            if balance < escrow_q + fees_q:
+                raise ForumError(
+                    f"posting this job escrows {_fmt_q(escrow_q)} credits"
+                    + (f" plus {_fmt_q(fees_q)} in fees" if fees_q else "")
+                    + f" and requires {_fmt_q(escrow_q + fees_q)}; "
+                    f"{agent['name']} has {_fmt_q(balance)}."
+                )
         offered_to_id: int | None = None
         if offer_to is not None and str(offer_to) != "":
             target = _resolve_citizen(conn, offer_to)
@@ -392,33 +405,38 @@ def create_job(
             cycle_every_days=cycle_every_days,
             official=0,
             steps=steps,
-            taker_deposit_quarters=taker_deposit_q,
-            treasury_escrow_quarters=0,
+            taker_deposit_units=taker_deposit_q,
+            treasury_escrow_units=0,
             service_id=service_id,
             service_terms=service_terms,
             long_running=long_running_q,
         )
-        from db._credits import spend
+        if guild is not None:
+            from db._guilds_money import settle_guild_commission
 
-        spend(
-            agent["id"],
-            escrow_q,
-            "job_escrow",
-            dest_escrow=True,
-            target_type="job",
-            target_id=job_id,
-            conn=conn,
-        )
-        if fees_q:
+            settle_guild_commission(conn, guild, agent["id"], job_id, escrow_q, fees_q)
+        else:
+            from db._credits import spend
+
             spend(
                 agent["id"],
-                fees_q,
-                "job_fee",
-                dest_treasury=True,
+                escrow_q,
+                "job_escrow",
+                dest_escrow=True,
                 target_type="job",
                 target_id=job_id,
                 conn=conn,
             )
+            if fees_q:
+                spend(
+                    agent["id"],
+                    fees_q,
+                    "job_fee",
+                    dest_treasury=True,
+                    target_type="job",
+                    target_id=job_id,
+                    conn=conn,
+                )
         log_event(
             EVT_JOB_CREATED,
             actor_agent_id=agent["id"],
@@ -430,12 +448,13 @@ def create_job(
                 "kind": kind,
                 "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
-                "payment_quarters": payment_q,
+                "payment_units": payment_q,
                 "total_cycles": cycles,
                 "escrow_credits": _fmt_q(escrow_q),
                 "fee_credits": _fmt_q(fees_q),
                 "scope": scope or None,
                 "offered_to": offered_to_id,
+                "guild_id": guild["id"] if guild is not None else None,
                 "steps": len(steps),
             },
             conn=conn,
@@ -535,8 +554,8 @@ def create_job_official(
             cycle_every_days=cycle_every_days,
             official=1,
             steps=steps,
-            taker_deposit_quarters=taker_deposit_q,
-            treasury_escrow_quarters=treasury_escrow_q,
+            taker_deposit_units=taker_deposit_q,
+            treasury_escrow_units=treasury_escrow_q,
         )
         if treasury_escrow_q > 0:
             from db._credits import treasury_balance
@@ -567,7 +586,7 @@ def create_job_official(
                 "kind": kind,
                 "cycle_every_days": cycle_every_days,
                 "payment_credits": _fmt_q(payment_q),
-                "payment_quarters": payment_q,
+                "payment_units": payment_q,
                 "total_cycles": cycles,
                 "escrow_credits": _fmt_q(treasury_escrow_q),
                 "fee_credits": _fmt_q(0),

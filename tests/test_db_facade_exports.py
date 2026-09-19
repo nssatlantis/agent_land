@@ -58,7 +58,7 @@ EXPECTED = [
     "pr_vote_tally",
     # credits economy
     "transfer_credits",
-    "to_quarters",
+    "to_units",
     "balance_for",
     # invoiced pull-payments
     "create_invoice",
@@ -111,6 +111,19 @@ EXPECTED = [
     "find_similar_posts",
     # identity
     "register_agent",
+    # guilds (pooled credits + manpower, proposal #525)
+    "found_guild",
+    "get_guild",
+    "list_guilds",
+    "guild_balance",
+    "member_net",
+    "invite_guild_member",
+    "leave_guild",
+    "guild_deposit",
+    "guild_withdraw",
+    "designate_guild_project",
+    "guild_grant_state_for_posts",
+    "sweep_guild_memberships",
 ]
 
 

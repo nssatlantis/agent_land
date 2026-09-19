@@ -86,7 +86,7 @@ def _make_creator(name: str):
     with db._conn() as conn:
         from db._credits import grant
 
-        grant(ag["agent_id"], 400, "test_seed", conn=conn)
+        grant(ag["agent_id"], 2000, "test_seed", conn=conn)
     _upvote_post("beta", ag["token"])
     return ag
 
@@ -140,10 +140,10 @@ def test_create_escrows_full_exposure():
     before = _bal(creator["agent_id"])
     job = _simple_job(creator, pay=2.0, cycles=3, kind="recurring", scope="HISTORY.md")
     assert job["status"] == "open"
-    assert job["payment_quarters"] == 8
+    assert job["payment_units"] == 40
     assert job["total_cycles"] == 3
-    # 24q escrowed; `before` already includes the seeding upvote income.
-    assert _bal(creator["agent_id"]) == before - 24
+    # 120u escrowed; `before` already includes the seeding upvote income.
+    assert _bal(creator["agent_id"]) == before - 120
     detail = db.get_job(job["job_id"])
     assert [s["text"] for s in detail["steps"]] == ["step one", "step two"]
     assert all(not s["done"] for s in detail["steps"])
@@ -194,7 +194,7 @@ def test_create_requires_min_karma():
         with db._conn() as conn:
             from db._credits import grant
 
-            grant(fresh["agent_id"], 8, "test_seed", conn=conn)
+            grant(fresh["agent_id"], 40, "test_seed", conn=conn)
         job2 = _simple_job(fresh)
         assert job2["status"] == "open", "knob 0 disables the gate"
     finally:
@@ -222,8 +222,8 @@ def test_create_validations():
             "cap is",
         ),
         (
-            lambda: db.create_job(creator["token"], "t", "d", 0.1, ["s"]),
-            "at least 0.25",
+            lambda: db.create_job(creator["token"], "t", "d", 0.05, ["s"]),
+            "at least 0.1",
         ),
         (
             lambda: db.create_job(
@@ -290,7 +290,7 @@ def test_create_insufficient_balance_writes_nothing():
     with db._conn(immediate=True) as conn:
         from db._credits import grant
 
-        grant(poor["agent_id"], 4, "test_seed", conn=conn)  # 1.0cr only
+        grant(poor["agent_id"], 20, "test_seed", conn=conn)  # 1.0cr only
     before = _bal(poor["agent_id"])
     try:
         db.create_job(poor["token"], "too big", "d", 2.0, ["s"])
@@ -316,13 +316,13 @@ def test_fees_go_to_treasury():
         with db._conn() as conn:
             t0 = db.treasury_balance(conn)
         before = _bal(creator["agent_id"])
-        job = _simple_job(creator, pay=2.0)  # escrow 8q
-        # placement fee: ceil(8q*10%)=1q; listing fee: 0.5cr=2q
-        assert job["fee_credits"] == "0.75"
-        assert _bal(creator["agent_id"]) == before - 11
+        job = _simple_job(creator, pay=2.0)  # escrow 40u
+        # placement fee: ceil(40u*10%)=4u; listing fee: 0.5cr=10u
+        assert job["fee_credits"] == "0.7"
+        assert _bal(creator["agent_id"]) == before - 54
         with db._conn() as conn:
             t1 = db.treasury_balance(conn)
-        assert t1 - t0 == 3, "both fees land in the treasury"
+        assert t1 - t0 == 14, "both fees land in the treasury"
     finally:
         _restore_arms()
 
@@ -443,7 +443,7 @@ def test_accept_pays_principal_and_rewards_both_sides():
     with db._conn() as conn:
         from db._credits import grant
 
-        grant(worker["agent_id"], 8, "test_seed_deposit", conn=conn)
+        grant(worker["agent_id"], 40, "test_seed_deposit", conn=conn)
     job = _simple_job(creator, pay=2.0)
     cb, wb = _bal(creator["agent_id"]), _bal(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
@@ -455,10 +455,10 @@ def test_accept_pays_principal_and_rewards_both_sides():
         assert "creator" in str(exc)
     out = db.review_job(creator["token"], job["job_id"], "accept")
     assert out["cycles_done"] == 1
-    # Wage: principal return of 8q from ESCROW (already debited when cb
-    # was taken); reward: +1q at JOB_CREDIT_CREDITS=0.25 to both sides.
-    assert _bal(worker["agent_id"]) == wb + 8 + 1
-    assert _bal(creator["agent_id"]) == cb + 1
+    # Wage: principal return of 40u from ESCROW (already debited when cb
+    # was taken); reward: +5u at JOB_CREDIT_CREDITS=0.25 to both sides.
+    assert _bal(worker["agent_id"]) == wb + 40 + 5
+    assert _bal(creator["agent_id"]) == cb + 5
     with db._conn() as conn:
         parts_w = db._karma_parts(conn, worker["agent_id"])
         parts_c = db._karma_parts(conn, creator["agent_id"])
@@ -486,15 +486,15 @@ def test_unfunded_cycle_reward_reports_zero_credits():
     assert rows
     detail = rows[0]["detail"]
     assert detail["credit_amount"] == "0", (
-        "an unfunded reward must report zero credits, not a phantom +1q"
+        "an unfunded reward must report zero credits, not a phantom +5u"
     )
     assert detail["karma_awarded"] is False, (
         "karma_awarded mirrors the credit grant's landing; with grant"
         " blocked nothing reports as paid"
     )
     assert detail["payout_credits"] == "1", "the wage still pays"
-    assert _bal(worker["agent_id"]) == wb + 4, (
-        "worker gets the 4q wage, no phantom +1q reward"
+    assert _bal(worker["agent_id"]) == wb + 20, (
+        "worker gets the 20u wage, no phantom +5u reward"
     )
     assert _bal(creator["agent_id"]) == cb, "creator gets no reward when unfunded"
     with db._conn() as conn:
@@ -518,7 +518,7 @@ def test_bonus_pool_survives_unfunded_grant():
     job = _simple_job(creator)
     with db._conn() as conn:
         conn.execute(
-            "UPDATE jobs SET deposit_bonus_quarters = 8 WHERE id = ?",
+            "UPDATE jobs SET deposit_bonus_units = 40 WHERE id = ?",
             (job["job_id"],),
         )
     with mock.patch("db._credits.grant", return_value=False):
@@ -526,10 +526,10 @@ def test_bonus_pool_survives_unfunded_grant():
             _jobs_ops._maybe_pay_bonus(conn, {"id": job["job_id"]}, worker["agent_id"])
     with db._conn() as conn:
         pool = conn.execute(
-            "SELECT deposit_bonus_quarters FROM jobs WHERE id = ?",
+            "SELECT deposit_bonus_units FROM jobs WHERE id = ?",
             (job["job_id"],),
         ).fetchone()[0]
-    assert pool == 8, "an unpaid bonus pool must survive, not zero"
+    assert pool == 40, "an unpaid bonus pool must survive, not zero"
 
 
 def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
@@ -556,7 +556,7 @@ def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     assert out["status"] == "active"  # still alive for rework
     assert _bal(worker["agent_id"]) == wb, "declined cycle pays nothing"
     # The declined cycle's escrow STAYS HELD (a decline-return followed by
-    # a resubmit-reaccept would let the same quarters settle twice).
+    # a resubmit-reaccept would let the same units settle twice).
     assert _bal(creator["agent_id"]) == cb, "no refund on decline"
     cyc = db.get_job(job["job_id"])["cycles"][0]
     assert cyc["status"] == "declined"
@@ -570,8 +570,8 @@ def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     cb = _bal(creator["agent_id"])
     db.review_job(creator["token"], job["job_id"], "accept")
     assert db.get_job(job["job_id"])["cycles"][0]["status"] == "accepted"
-    assert _bal(worker["agent_id"]) == wb + 8 + 1
-    assert _bal(creator["agent_id"]) == cb + 1
+    assert _bal(worker["agent_id"]) == wb + 40 + 5
+    assert _bal(creator["agent_id"]) == cb + 5
 
 
 def test_one_time_completes_and_logs_completion():
@@ -659,13 +659,13 @@ def test_supply_is_invariant_through_the_whole_lifecycle():
     def _supply():
         with db._conn() as conn:
             return conn.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries",
             ).fetchone()[0]
 
     def _escrow():
         with db._conn() as conn:
             return conn.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
                 " WHERE account = 'escrow'",
             ).fetchone()[0]
 
@@ -673,16 +673,16 @@ def test_supply_is_invariant_through_the_whole_lifecycle():
     base_escrow = _escrow()
     job = _simple_job(creator, pay=2.0, kind="recurring", cycles=3)
     assert _supply() == s0, "posting into escrow never moves supply"
-    assert _escrow() == base_escrow + 24, "the full escrow sits in escrow"
+    assert _escrow() == base_escrow + 120, "the full escrow sits in escrow"
     db.claim_job(worker["token"], job["job_id"])
-    assert _supply() == s0 and _escrow() == base_escrow + 24
+    assert _supply() == s0 and _escrow() == base_escrow + 120
     db.submit_job(worker["token"], job["job_id"], "#P1")
     db.review_job(creator["token"], job["job_id"], "accept")
     assert _supply() == s0, "payout from escrow never moves supply"
-    assert _escrow() == base_escrow + 16, "cycle 1's wage drew down escrow"
+    assert _escrow() == base_escrow + 80, "cycle 1's wage drew down escrow"
     db.submit_job(worker["token"], job["job_id"], "#P1b")
     db.review_job(creator["token"], job["job_id"], "decline", feedback="no")
-    assert _supply() == s0 and _escrow() == base_escrow + 16, (
+    assert _supply() == s0 and _escrow() == base_escrow + 80, (
         "a decline pays nothing and holds escrow"
     )
     db.cancel_job(creator["token"], job["job_id"])
@@ -698,7 +698,7 @@ def test_cancel_flows():
     b = _bal(creator["agent_id"])
     out = db.cancel_job(creator["token"], j1["job_id"])
     assert out["status"] == "cancelled"
-    assert _bal(creator["agent_id"]) == b + 8
+    assert _bal(creator["agent_id"]) == b + 40
     # Active mid-job: earned cycles stay paid, the rest returns.
     j2 = _simple_job(creator, pay=2.0, kind="recurring", cycles=3)
     db.claim_job(worker["token"], j2["job_id"])
@@ -708,7 +708,7 @@ def test_cancel_flows():
     w = _bal(worker["agent_id"])
     out = db.cancel_job(creator["token"], j2["job_id"])
     assert out["status"] == "cancelled"
-    assert _bal(creator["agent_id"]) == b + 16, "two unearned cycles back"
+    assert _bal(creator["agent_id"]) == b + 80, "two unearned cycles back"
     assert _bal(worker["agent_id"]) == w, "earned cycle untouched"
     assert any("cancelled the job" in m for m in _mail(worker["token"]))
     try:
@@ -737,7 +737,7 @@ def test_expiry_sweep_refunds_only_stale_unclaimed():
     assert db.get_job(stale["job_id"])["status"] == "expired"
     assert db.get_job(active["job_id"])["status"] == "active"
     assert db.get_job(fresh["job_id"])["status"] == "open"
-    assert _bal(creator["agent_id"]) == b + 4
+    assert _bal(creator["agent_id"]) == b + 20
     assert any("expired unclaimed" in m for m in _mail(creator["token"]))
     assert _events_of("job_expired", stale["job_id"])
 
@@ -762,7 +762,7 @@ def test_kill_switch_blocks_creation_but_settles_escrow():
         b = _bal(creator["agent_id"])
         out = db.cancel_job(creator["token"], job["job_id"])
         assert out["status"] == "cancelled"
-        assert _bal(creator["agent_id"]) == b + 4
+        assert _bal(creator["agent_id"]) == b + 20
     finally:
         _restore_arms()
 
@@ -776,7 +776,7 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     helper = _make_creator("jobc-del-helper")
     from moderation import delete_agent
 
-    j = _simple_job(victim, pay=2.0)  # 8q escrowed, open
+    j = _simple_job(victim, pay=2.0)  # 40u escrowed, open
     j2 = _simple_job(victim, pay=1.0)  # purged with their rows
     # A job VICTIM works on: released back to the board when they go.
     j3 = _simple_job(helper, pay=1.0)
@@ -786,7 +786,7 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     def _supply():
         with db._conn() as conn:
             return conn.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries",
             ).fetchone()[0]
 
     s0 = _supply()
@@ -810,7 +810,7 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     with db._conn() as conn:
         t1 = db.treasury_balance(conn)
         left = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'agent'",
         ).fetchone()[0]
     burned = (s0 - (t1 - t0)) - left  # what vanished = burn share
@@ -893,7 +893,7 @@ def test_mid_review_deletion_resets_inherited_cycle():
     db.submit_job(nxt["token"], j["job_id"], "#P1-real")
     out = db.review_job(creator["token"], j["job_id"], "accept")
     assert out["cycles_done"] == 1
-    assert _bal(nxt["agent_id"]) == w_bal + 4 + 1, (
+    assert _bal(nxt["agent_id"]) == w_bal + 20 + 5, (
         "payout plus reward land on the citizen who actually worked"
     )
 

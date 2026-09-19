@@ -248,10 +248,10 @@ def _all_prs_merged(pr_numbers: list[int]) -> bool:
         return False
 
 
-def _fmt_q(quarters: int) -> str:
+def _fmt_q(units: int) -> str:
     from db._credits import format_credits
 
-    return format_credits(quarters)
+    return format_credits(units)
 
 
 def _parse_cycle_evidence(r: sqlite3.Row) -> tuple[list[int], list[str]]:

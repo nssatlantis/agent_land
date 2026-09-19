@@ -2,8 +2,8 @@
 server/admin/_jobs.py — job-market governance (render + actions).
 
 Single file per user preference (cap 1000-1250). Covers the dashboard panel,
-the full /admin/jobs manager, job detail, and all POST actions (create
-official, close, review, stake).
+the full /admin/jobs manager and all POST actions (create official,
+close, review, stake).
 """
 
 from __future__ import annotations
@@ -76,8 +76,8 @@ def _official_create_form(request, values=None, error=None, dashed=False):
     style = ' style="border:2px dashed var(--border)"' if dashed else ""
     try:
         with db._conn() as _c:
-            _tq = db.treasury_balance(_c)
-        _tb = db.format_credits(_tq)
+            _tu = db.treasury_balance(_c)
+        _tb = db.format_credits(_tu)
     except Exception:
         # domain:degrade-silently - balance line is advisory; the form
         # works without it.
@@ -130,13 +130,13 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
         + "<label>Wage <span "
         'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
-        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.25" step="0.25" required value="{esc(v["payment_credits"])}" '
+        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.05" step="0.05" required value="{esc(v["payment_credits"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0">'
         + "<label>Taker deposit <span "
         'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
         "half returns as a completion bonus. Not refunded on cancel. Server minimums still apply "
         f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
-        + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.25" value="{esc(v["taker_deposit"])}" '
+        + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.05" value="{esc(v["taker_deposit"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
         + "<label>Kind</label> "
         + '<select name="kind" style="margin:4px 6px 8px 0">'
@@ -587,134 +587,6 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     )
 
 
-async def jobs_detail_page(request):
-
-    if not _authorized(request):
-        return _denied()
-
-    job_id = int(request.path_params["id"])
-
-    try:
-        detail = db.get_job(job_id)
-
-    except db.ForumError as exc:
-        # domain: fail-loudly - get_job failure surfaces as flash, never silent
-
-        return _flash(request, str(exc))
-
-    # Reuse manager card styling but full page
-
-    col = {
-        "open": "#2563eb",
-        "offered": "#b45309",
-        "active": "#0ea5e9",
-        "completed": "#15803d",
-        "cancelled": "var(--muted)",
-        "expired": "var(--muted)",
-    }.get(detail["status"], "var(--muted)")
-
-    steps_html = "".join(
-        f"<li style='margin:2px 0;{'color:var(--muted);text-decoration:line-through' if s['done'] else ''}'>{esc(s['text'])}</li>"
-        for s in detail["steps"]
-    )
-
-    cycles_html = ""
-
-    for c in detail["cycles"]:
-        bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
-
-        if c["evidence"]:
-            bits.append(f"evidence {esc(c['evidence'])}")
-
-        pr_nums = c.get("evidence_pr_numbers") or []
-
-        if pr_nums:
-            chips = " ".join(
-                f'<a href="/prs/{int(n)}">#PR{int(n)}</a>'
-                for n in pr_nums
-                if str(n).isdigit()
-            )
-
-            if chips:
-                bits.append(f"PRs {chips}")
-
-        if c["feedback"]:
-            bits.append(f"feedback: {esc(c['feedback'])}")
-
-        cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>{' &middot; '.join(bits)}</div>"
-
-    # Review form if official + submitted
-
-    review_html = ""
-
-    if detail["status"] == "active" and detail["official"]:
-        sub = next((c for c in detail["cycles"] if c["status"] == "submitted"), None)
-
-        if sub:
-            sponsor = _party_name(detail["creator"])
-
-            audit_note = (
-                f"on behalf of sponsor <b>{sponsor}</b>"
-                if detail["creator"]
-                else "as pure admin"
-            )
-
-            review_html = (
-                f'<div class="panel" style="background:var(--accent-tint);border:1px solid var(--accent-border)"><h3>Review cycle {sub["cycle_no"]}</h3>'
-                f'<p style="font-size:13px">{audit_note} | evidence: {esc(sub["evidence"] or "-")}</p>'
-                f'<form method="post" action="/admin/jobs/{job_id}/review" style="display:flex;gap:6px">'
-                f"{_csrf_field(request)}"
-                f'<select name="action"><option value="accept">accept</option><option value="decline">decline</option></select>'
-                f'<input name="feedback" placeholder="feedback (required on decline; on accept shown on shelf)" style="width:260px">'
-                f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
-                f'<button type="submit" style="background:var(--ok);color:white">review</button></form></div>'
-            )
-
-    close_html = ""
-
-    if detail["status"] in ("open", "offered", "active"):
-        close_html = (
-            f'<div class="panel"><h3>Moderate</h3><form method="post" action="/admin/jobs/{job_id}/close">'
-            f"{_csrf_field(request)}"
-            f'<label><input type="checkbox" name="confirm" required> confirm close (refund escrow if any)</label> '
-            f'<button type="submit" style="color:#c53030">close job</button></form></div>'
-        )
-
-    reactivate_html = ""
-
-    if detail["status"] in ("expired", "cancelled") and detail["official"]:
-        reactivate_html = (
-            f'<div class="panel"><h3>Re-activate official position</h3><form method="post" action="/admin/jobs/{job_id}/reactivate">'
-            f"{_csrf_field(request)}"
-            f'<label><input type="checkbox" name="confirm" required> confirm re-activate (re-escrow remaining payout from treasury)</label> '
-            f'<button type="submit" style="background:var(--ok);color:white">re-activate</button></form></div>'
-        )
-
-    body = (
-        _admin_nav()
-        + f'<div class="panel" style="border-left:4px solid {col}"><h2>{esc(detail["title"])} <span style="color:var(--muted)">#{detail["job_id"]}</span> '
-        + (
-            '<span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:999px;font-size:11px">OFFICIAL</span> '
-            if detail["official"]
-            else ""
-        )
-        + f'<span style="background:{col};color:white;padding:1px 6px;border-radius:999px;font-size:11px">{esc(detail["status"])}</span></h2>'
-        + f'<p style="color:var(--muted)">{esc(detail["payment_credits"])} cr x {detail["cycles_done"]}/{detail["total_cycles"]} | scope: {esc(detail["scope"] or "-")} | kind: {esc(detail["kind"])}</p>'
-        + f"<p>by {_party_name(detail['creator'])} &middot; "
-        + (f"worked by {_party_name(detail['worker'])}" if detail["worker"] else "open")
-        + "</p>"
-        + f"<p>{esc(detail['description'] or '')}</p>"
-        + f'<ol style="margin:6px 0 0 18px">{steps_html}</ol>'
-        + cycles_html
-        + "</div>"
-        + review_html
-        + close_html
-        + reactivate_html
-    )
-
-    return _admin_page(request, f"admin - job #{job_id}", body)
-
-
 def _official_create_error(request, message, form):
     """Re-render the jobs manager with a refused create-official submit's
     input preserved and the refusal inline (a bare flash would wipe
@@ -783,7 +655,7 @@ async def create_official_job(request):
 
         return _official_create_error(request, str(exc), form)
 
-    _total_q = int(result["payment_quarters"]) * int(result["total_cycles"])
+    _total_q = int(result["payment_units"]) * int(result["total_cycles"])
     return _flash(
         request,
         f"OFFICIAL position #{result['job_id']} '{result['title']}' "

@@ -457,14 +457,14 @@ def _seed():
                 "bug_rewards",
             ][i % 5]
             conn.execute(
-                "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (?, ?, ?, 'agent')",
-                (aid, 4 if i % 3 else -2, reason),
+                "INSERT INTO credit_entries (agent_id, delta_units, reason, account) VALUES (?, ?, ?, 'agent')",
+                (aid, 20 if i % 3 else -10, reason),
             )
             # treasury account
             conn.execute(
-                "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (NULL, ?, ?, 'treasury')",
+                "INSERT INTO credit_entries (agent_id, delta_units, reason, account) VALUES (NULL, ?, ?, 'treasury')",
                 (
-                    4 if i % 2 == 0 else -2,
+                    20 if i % 2 == 0 else -10,
                     ["mint", "burn", "transfer_fee_intake", "payout_return"][i % 4],
                 ),
             )
@@ -489,12 +489,12 @@ def _seed():
             reason = _STORE_REASONS[i % len(_STORE_REASONS)]
             try:
                 conn.execute(
-                    "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (?, ?, ?, 'agent')",
-                    (aid, -4, reason),
+                    "INSERT INTO credit_entries (agent_id, delta_units, reason, account) VALUES (?, ?, ?, 'agent')",
+                    (aid, -20, reason),
                 )
                 conn.execute(
-                    "INSERT INTO credit_entries (agent_id, delta_quarters, reason, account) VALUES (NULL, ?, ?, 'treasury')",
-                    (4, reason + "_intake"),
+                    "INSERT INTO credit_entries (agent_id, delta_units, reason, account) VALUES (NULL, ?, ?, 'treasury')",
+                    (20, reason + "_intake"),
                 )
                 n_store_legs += 2
             except Exception:
@@ -614,7 +614,7 @@ def _seed():
             # cycles below: NULL = immediately, past = open now, future =
             # scheduled — so the cadence branches execute for real).
             conn.execute(
-                "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_quarters, total_cycles, cycles_done, official, status, cycle_every_days) VALUES (?, ?, ?, ?, ?, 'recurring', 4, 3, ?, ?, ?, ?)",
+                "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_units, total_cycles, cycles_done, official, status, cycle_every_days) VALUES (?, ?, ?, ?, ?, 'recurring', 4, 3, ?, ?, ?, ?)",
                 (
                     creator,
                     worker,
@@ -665,7 +665,7 @@ def _seed():
             seller = agents[all_names[i % len(all_names)]]["agent_id"]
             try:
                 conn.execute(
-                    "INSERT INTO services (seller_agent_id, title, description, price_quarters, steps_json, ack_visits, deliver_days, max_open_orders, active, paused_at) VALUES (?, ?, ?, ?, ?, 2, 3, 3, ?, ?)",
+                    "INSERT INTO services (seller_agent_id, title, description, price_units, steps_json, ack_visits, deliver_days, max_open_orders, active, paused_at) VALUES (?, ?, ?, ?, ?, 2, 3, 3, ?, ?)",
                     (
                         seller,
                         f"Benchmark service {i}",
@@ -693,7 +693,7 @@ def _seed():
             status = ["offered", "active", "active", "completed"][i % 4]
             try:
                 conn.execute(
-                    "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_quarters, total_cycles, cycles_done, official, status, service_id, service_terms) VALUES (?, ?, ?, ?, ?, 'one_time', 4, 1, ?, 0, ?, ?, ?)",
+                    "INSERT INTO jobs (creator_agent_id, worker_agent_id, title, description, scope, kind, payment_units, total_cycles, cycles_done, official, status, service_id, service_terms) VALUES (?, ?, ?, ?, ?, 'one_time', 4, 1, ?, 0, ?, ?, ?)",
                     (
                         buyer,
                         seller,
@@ -781,7 +781,7 @@ def _seed():
             status = ["pending", "accepted", "accepted", "paid"][i % 4]
             try:
                 conn.execute(
-                    "INSERT INTO invoices (issuer_agent_id, payer_agent_id, created_by_agent_id, amount_quarters, remaining_quarters, reason, status, created_at, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO invoices (issuer_agent_id, payer_agent_id, created_by_agent_id, amount_units, remaining_units, reason, status, created_at, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         issuer,
                         payer,
@@ -1610,7 +1610,7 @@ def _check_explain_jobs() -> bool:
 
 
 def _check_explain_credits_treasury() -> bool:
-    sql = "SELECT COALESCE(SUM(delta_quarters),0) FROM credit_entries WHERE account = 'treasury'"
+    sql = "SELECT COALESCE(SUM(delta_units),0) FROM credit_entries WHERE account = 'treasury'"
     plan = _explain(sql)
     # Probe-proven shape (3.50.4): SCAN credit_entries USING COVERING INDEX
     # idx_credit_entries_treasury_flows - covering-index scan, not a table scan.
@@ -1629,7 +1629,7 @@ def _check_explain_events() -> bool:
 
 def _check_explain_economy() -> bool:
     # economy_overview's heaviest: treasury flow GROUP BY reason — must use partial index
-    sql = "SELECT reason, SUM(delta_quarters) FROM credit_entries WHERE account = 'treasury' GROUP BY reason"
+    sql = "SELECT reason, SUM(delta_units) FROM credit_entries WHERE account = 'treasury' GROUP BY reason"
     plan = _explain(sql)
     # Same covering-scan shape as the treasury probe above.
     return "idx_credit_entries_treasury" in plan and _no_full_scan(
@@ -1793,7 +1793,7 @@ def _check_explain_services() -> bool:
 
 def _check_explain_invoices_sweep() -> bool:
     # Real: the accepted-and-owed sweep shape behind reminders.
-    sql = "SELECT id FROM invoices WHERE status = 'accepted' AND remaining_quarters > 0"
+    sql = "SELECT id FROM invoices WHERE status = 'accepted' AND remaining_units > 0"
     plan = _explain(sql)
     return "idx_invoices_sweep" in plan and _no_full_scan(plan, "invoices")
 
@@ -2191,7 +2191,7 @@ def main():
         ),
         (
             "treasury_delta",
-            lambda: db.treasury_delta_quarters("2026-01-01T00:00:00.000Z"),
+            lambda: db.treasury_delta_units("2026-01-01T00:00:00.000Z"),
         ),
         ("tool_inventory_changes", lambda: db.tool_inventory_changes()),
         ("get_store_catalog", lambda: db.get_store_catalog(alpha_tok)),

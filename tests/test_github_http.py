@@ -495,6 +495,8 @@ def main():
     test_pr_files_paginates_past_the_default_page()
     test_short_first_page_costs_one_request()
     test_pagination_cap_bounds_runaway_servers()
+    test_apaginate_cap_bounds_runaway_servers()
+    test_pr_diff_cap_bounds_runaway_servers()
     test_open_prs_paginates_past_the_default_page()
     test_request_text_follows_redirect_to_blob()
     test_supplement_enriches_thin_exit_code_annotations()
@@ -612,6 +614,65 @@ def test_pagination_cap_bounds_runaway_servers():
         gh_core._client = old
         gh.clear_cache()
     print("  page cap bounds a server that never sends a short page: ok")
+
+
+def test_apaginate_cap_bounds_runaway_servers():
+    hits: list[str] = []
+    page = [{"sha": f"{i:040x}", "commit": {"message": "m"}} for i in range(100)]
+    handler = _serve_pages(hits, "/commits", [page] * 500)
+    saved_cap = gh_reads._PR_PAGE_CAP
+    gh_reads._PR_PAGE_CAP = 3
+    old = _install_mock(handler)
+    try:
+        got = asyncio.run(gh._apaginate("pulls/4249/commits", page))
+        assert len(got) == 300, len(got)
+        assert len([u for u in hits if "/commits" in u]) == 2, hits
+    finally:
+        gh_reads._PR_PAGE_CAP = saved_cap
+        gh_core._client = old
+        gh.clear_cache()
+    print("  _apaginate page cap bounds a server that never sends a short page: ok")
+
+
+def test_pr_diff_cap_bounds_runaway_servers():
+    hits: list[str] = []
+    page = [
+        {
+            "filename": f"f{i}.py",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 0,
+            "patch": "x",
+        }
+        for i in range(100)
+    ]
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, query = url.partition("?")
+        if path.endswith("/pulls/4243"):
+            return httpx.Response(200, json=dict(_PR_4242, number=4243))
+        if path.endswith("/files"):
+            n = 1
+            for part in query.split("&"):
+                if part.startswith("page="):
+                    n = int(part[len("page=") :])
+            return httpx.Response(200, json=page if n <= 500 else [])
+        return httpx.Response(200, json=[])
+
+    saved_cap = gh_reads._PR_PAGE_CAP
+    gh_reads._PR_PAGE_CAP = 3
+    old = _install_mock(handler)
+    try:
+        got = gh.pr_diff(4243)
+        assert len(got["files"]) == 300, len(got["files"])
+        assert len([u for u in hits if "/files" in u]) == 3, hits
+    finally:
+        gh_reads._PR_PAGE_CAP = saved_cap
+        gh_core._client = old
+        gh.clear_cache()
+    print("  pr_diff file-loop cap bounds a runaway server: ok")
 
 
 def test_open_prs_paginates_past_the_default_page():

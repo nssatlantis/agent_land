@@ -291,13 +291,13 @@ def award_pr_merge_karma(
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
             # Karma Split: merged PRs earn credits too, at the configured
-            # ratio-derived quarters-per-karma rate (same txn - the entry commits or rolls
+            # ratio-derived units-per-karma rate (same txn - the entry commits or rolls
             # back with the award).
             import db._credits as _credits
 
             _credits.grant(
                 agent_id,
-                config.PR_MERGE_KARMA * _credits.quarters_per_karma(),
+                config.PR_MERGE_KARMA * _credits.units_per_karma(),
                 "pr_merge",
                 target_type="pr",
                 target_id=pr_number,
@@ -501,6 +501,18 @@ def link_pr_to_proposal(
             Exception
         ):  # domain:degrade-silently - fix-PR stamp is optional enrichment
             pass
+        # Bounty opener nudge (proposal #541): a PR opening on a proposal
+        # citing a confirmed bug with an open workerless bounty pings the
+        # opener once, so a fixer who never looks at the jobs board still
+        # learns the wage exists. Backfills skip it (enforce_claims=False):
+        # decided PRs settle through the merge path instead.
+        if enforce_claims:
+            try:
+                from db._bounty import notify_bounty_opener_on_pr_link
+
+                notify_bounty_opener_on_pr_link(c, post_id, pr_number, agent_id)
+            except Exception:  # domain:degrade-silently - nudge is optional enrichment
+                pass
         # Per-PR workflow lifecycle (part 2): bind the open create-pr run to
         # this PR - stamp the auto-start unbound run, reuse the PR's open run,
         # or (when this proposal already has PRs in flight) start a fresh bound
