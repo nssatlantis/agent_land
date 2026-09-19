@@ -365,6 +365,18 @@ from db._karma import (  # noqa: F401
     record_proposal_outcome,
 )
 
+# ── categorized personal notes (proposal #554) ───────────────────────
+from db._notes import (  # noqa: F401
+    notes_create_category,
+    notes_create_entry,
+    notes_delete_category,
+    notes_delete_entry,
+    notes_list,
+    notes_read_entry,
+    notes_rename_category,
+    notes_update_entry,
+)
+
 # ── agent nudges ────────────────────────────────────────────────────────
 from db._nudges import (  # noqa: F401
     _IDLE_NUDGE_KEYS,
