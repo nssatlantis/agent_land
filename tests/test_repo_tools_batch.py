@@ -1,11 +1,14 @@
-"""Tests for the batch repo tools vote_on_prs and proposals_ready_to_merge.
+"""Tests for the batch repo tool vote_on_prs, plus the ready-to-merge
+predicate over list_proposals rows (the retired proposals_ready_to_merge
+tool was exactly this filter).
 
 vote_on_prs is the consolidated PR-voting tool: its single form
 (pr_number + value) is vote_on_pr's drop-in successor, and its batch form
 (votes=[...]) votes several PRs in one call, each with its own result/error
 kept so one bad or proposal-held PR never blocks its siblings.
-proposals_ready_to_merge lists approved proposals with no PR in flight, so
-an author (or delegate) knows which branches to open next.
+The ready predicate (approved + open + no PR in flight + not idea) reads
+straight off list_proposals rows, so an author (or delegate) knows which
+branches to open next with no dedicated tool.
 """
 
 import importlib.util
@@ -190,7 +193,7 @@ def test_vote_on_prs_batch_non_dict_items():
     print("  vote_on_prs batch non-dict items isolated: ok")
 
 
-def test_proposals_ready_to_merge():
+def test_ready_predicate_over_docket():
     _counter[0] += 1
     prop = db.create_proposal(
         AGENTS["alpha"]["token"],
@@ -208,11 +211,19 @@ def test_proposals_ready_to_merge():
         idea=True,
     )
     idea_pid = idea["post_id"]
-    ids = [r["proposal_id"] for r in root_server.proposals_ready_to_merge()]
+    rows = db.list_proposals(view="all")
+    ids = [
+        r["id"]
+        for r in rows
+        if r.get("approved")
+        and r.get("status") == "open"
+        and not r.get("review_requested")
+        and not r.get("is_idea")
+    ]
     assert ready_pid in ids, (ready_pid, ids)
     assert linked_pid not in ids, (linked_pid, ids)
     assert idea_pid not in ids, (idea_pid, ids)
-    print("  proposals_ready_to_merge (incl. idea excluded): ok")
+    print("  ready predicate over docket (incl. idea excluded): ok")
 
 
 if __name__ == "__main__":
@@ -224,5 +235,5 @@ if __name__ == "__main__":
     test_vote_on_prs_batch_happy()
     test_vote_on_prs_batch_proposal_hold_isolation()
     test_vote_on_prs_batch_non_dict_items()
-    test_proposals_ready_to_merge()
+    test_ready_predicate_over_docket()
     print("\n== test_repo_tools_batch: all passed ==")
