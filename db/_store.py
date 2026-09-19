@@ -772,18 +772,28 @@ def buy_store_item(
                 conn=conn,
             )
             conn.execute(
-                "UPDATE store_entitlements SET notes_unlocked = 1 WHERE agent_id = ?",
-                (aid,),
+                "UPDATE store_entitlements SET notes_unlocked = 1,"
+                " note_cat_slots = ?, note_entry_slots = ? WHERE agent_id = ?",
+                (
+                    config.STORE_NOTES_BASE_CATEGORIES,
+                    config.STORE_NOTES_BASE_ENTRIES,
+                    aid,
+                ),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO personal_notes (agent_id, body) VALUES (?, '')",
                 (aid,),
             )
+            from db._notes import _legacy_import_if_needed
+
+            _legacy_import_if_needed(conn, aid)
             return {
                 "status": "purchased",
                 "item": item,
                 "price": format_credits(spent_q),
                 "balance": format_credits(balance_for(conn, aid)),
+                "categories": config.STORE_NOTES_BASE_CATEGORIES,
+                "entries": config.STORE_NOTES_BASE_ENTRIES,
             }
         # drafts_unlock: one-time, opens the first staging slot.
         if item == "drafts_unlock":
