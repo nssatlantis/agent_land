@@ -6,6 +6,7 @@ the capped page, and a TREASURY chip on Treasury-issued bills. Renders
 straight from db._public_invoice - zero new formatting code."""
 
 import math
+from urllib.parse import quote as _urlquote
 
 import db
 from server.admin._auth import (
@@ -13,6 +14,7 @@ from server.admin._auth import (
     _admin_page,
     _authorized,
     _denied,
+    _flash,
 )
 from viewer._utils import esc
 
@@ -41,7 +43,7 @@ def _invoice_status_badge(inv: dict) -> str:
         extra = ' <span class="kind-badge" style="background:#c53030">OVERDUE</span>'
     if inv["from_treasury"]:
         extra += ' <span class="kind-badge" style="background:#6d28d9">TREASURY</span>'
-    return f'<span class="kind-badge" style="background:{color}">{inv["status"]}</span>{extra}'
+    return f'<span class="kind-badge" style="background:{color}">{esc(inv["status"])}</span>{extra}'
 
 
 async def invoices_admin_page(request):
@@ -71,8 +73,6 @@ async def invoices_admin_page(request):
         )
     except db.ForumError as exc:
         # domain: fail-loudly - unknown status is a visible flash, not a 500
-        from server.admin._auth import _flash
-
         return _flash(request, f"bad status: {exc}")
 
     invoices = result["invoices"]
@@ -83,7 +83,7 @@ async def invoices_admin_page(request):
         cls = "active" if status_filter == key else ""
         href = f"/admin/invoices?status={key}" if key != "all" else "/admin/invoices"
         if query:
-            href += ("&" if "?" in href else "?") + f"q={esc(query)}"
+            href += ("&" if "?" in href else "?") + f"q={_urlquote(query)}"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
 
     rows = ""
@@ -108,9 +108,9 @@ async def invoices_admin_page(request):
         for p in range(1, pages + 1):
             q = f"?page={p}"
             if status_filter != "all":
-                q += f"&status={status_filter}"
+                q += f"&status={_urlquote(status_filter)}"
             if query:
-                q += f"&q={esc(query)}"
+                q += f"&q={_urlquote(query)}"
             cls = "active" if p == page else ""
             parts.append(f'<a href="/admin/invoices{q}" class="{cls}">{p}</a>')
         pages_html = f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
@@ -119,7 +119,7 @@ async def invoices_admin_page(request):
     if query and result["agent_id"] is None:
         notice = (
             '<p style="color:var(--muted);font-size:14px">'
-            f"No citizen matches {esc(query)!r} - showing nothing.</p>"
+            f"No citizen matches {esc(repr(query))} - showing nothing.</p>"
         )
     elif query:
         notice = (
