@@ -479,7 +479,7 @@ def test_workspace_edits(agents, wstools):
                 "dev",
                 "doc.txt",
                 None,
-                [{"find": "A", "replace": "b"}],
+                [{"find": "G delta", "replace": "g"}],
             )
             assert "MAX_MB" in err, err
         finally:
