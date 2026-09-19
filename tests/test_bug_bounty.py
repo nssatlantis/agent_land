@@ -231,10 +231,10 @@ def test_autofix_via_fix_pr():
     assert result["cancelled"] == [], result
     assert _bug_row(bid)["status"] == "fixed"
     assert _job_row(jid)["status"] == "completed"
-    assert _treasury() == t0 - posted_n - 2, (
+    assert _treasury() == t0 - 5 * posted_n - 10, (
         "proposal #541: escrowed wage consumed, participation + fix rewards paid"
     )
-    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
+    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 5, (
         "autofix pays the reporter fix credit"
     )
     print("  autofix_via_fix_pr: ok")
@@ -463,13 +463,13 @@ def test_autoclaim_pays_forgetful_fixer():
         ).fetchone()
     assert job["status"] == "completed", job["status"]
     assert job["worker_agent_id"] == AGENTS["epsilon"]["agent_id"]
-    assert _bal(AGENTS["epsilon"]["agent_id"]) == fixer_before + 2, (
-        "wage 1q + reward 1q, same as the manual path"
+    assert _bal(AGENTS["epsilon"]["agent_id"]) == fixer_before + 10, (
+        "wage 5u + reward 5u, same as the manual path"
     )
-    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 1, (
+    assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 5, (
         "reporter still earns the fix credit"
     )
-    assert _treasury() == t0 - posted_n - 2, (
+    assert _treasury() == t0 - 5 * posted_n - 10, (
         "escrowed wage consumed, participation + fix rewards paid"
     )
     print("  autoclaim_pays_forgetful_fixer: ok")
