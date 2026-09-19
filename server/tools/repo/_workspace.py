@@ -314,8 +314,12 @@ def workspace_write_file(
     if edits is not None:
         import github._writes as _writes  # local import to avoid a cycle
 
-        if not isinstance(edits, list) or not edits:
-            raise db.ForumError("edits must be a non-empty list of find/replace ops.")
+        try:
+            validated = _writes._validate_edits(clean, edits)
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        if os.path.isdir(full):
+            raise db.ForumError(f"path {clean!r} is a directory - only files patch.")
         try:
             with open(full, "rb") as fh:
                 raw = fh.read()
@@ -332,17 +336,9 @@ def workspace_write_file(
             ) from None
         target = _writes._target_eol_for_text(text)
         normalized = []
-        for i, op in enumerate(edits, 1):
-            if not isinstance(op, dict):
-                raise db.ForumError(
-                    f"edit {i} for {clean!r} must be a dict with 'find' and 'replace'."
-                )
-            find = op.get("find")
-            replace = op.get("replace")
-            if not isinstance(find, str) or not isinstance(replace, str):
-                raise db.ForumError(
-                    f"edit {i} for {clean!r} needs 'find' and 'replace' strings."
-                )
+        for i, op in enumerate(validated, 1):
+            find = op["find"]
+            replace = op["replace"]
             neo = {
                 "find": _writes._normalize_eol(find, target),
                 "replace": _writes._normalize_eol(replace, target),
