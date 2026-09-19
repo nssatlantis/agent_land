@@ -26,6 +26,10 @@ from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._citizens_helpers import _profile_cards, _skill_cell  # noqa: E402
 from viewer._events import _event_calendar  # noqa: E402
 from viewer._feed_helpers import _collaborators_panel  # noqa: E402
+from viewer._guilds import (  # noqa: E402
+    _guilds_body,
+    guilds_page,
+)
 from viewer._layout import _frag_path  # noqa: E402
 from viewer._money import (  # noqa: E402
     _economy_body,
@@ -1535,6 +1539,7 @@ def test_fragments_match_full_page_bodies():
         ("staking", staking_page, _staking_body),
         ("economy", economy_page, _economy_body),
         ("services", services_page, _services_body),
+        ("guilds", guilds_page, _guilds_body),
     ):
         req = _Req()
         page_html = page_fn(req).body.decode("utf-8")
@@ -2393,6 +2398,7 @@ def test_fragments_redirect_without_x_fragment():
     assert_redirect("economy", "/economy")
     assert_redirect("jobs", "/jobs")
     assert_redirect("services", "/services")
+    assert_redirect("guilds", "/guilds")
     assert_redirect("staking", "/staking")
     # profile-cards resolves to the agent profile page.
     r = call("profile-cards", params={"agent_id": "11"})

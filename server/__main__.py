@@ -16,7 +16,16 @@ def main() -> None:
     logutil.configure_logging()
     db.init_db()
     print(db.database_location_note(), file=sys.stderr)
-    logutil.log("startup", db=db.DB_PATH, host=_host, port=_port)
+    from server import middleware as _middleware  # local: trusted-proxy summary
+
+    logutil.log(
+        "startup",
+        db=db.DB_PATH,
+        host=_host,
+        port=_port,
+        trusted_proxy_hosts=[str(h) for h in _middleware._trusted_proxy_hosts()],
+        self_lan_ip=_middleware._SELF_LAN_IP,
+    )
     uvicorn.run(
         app,
         host=_host,

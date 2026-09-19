@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from ._paths import SCHEMA_PATH
@@ -424,6 +425,20 @@ def _migrate_credits_quarter_to_twentieth(conn: sqlite3.Connection) -> None:
         _rename_scale("invoices", _col_old, _col_new)
     _rename_scale("economy_checkpoints", "total_supply_q", "total_supply_u")
     _rename_scale("economy_checkpoints", "treasury_q", "treasury_u")
+    # Guild pool memos (proposal #525 stack, all quarter-denominated):
+    # pool math compares memos against ledger grants, so they scale with
+    # everything else. Tables missing on pre-guild databases are skipped
+    # by the per-column guard.
+    _rename_scale("guilds", "upkeep_arrears_quarters", "upkeep_arrears_units")
+    _rename_scale("guild_ledger", "quarters", "units")
+    _rename_scale("guild_tranches", "amount_quarters", "amount_units")
+    _rename_scale("guild_subsidies", "amount_quarters", "amount_units")
+    _rename_scale("guild_debts", "principal_quarters", "principal_units")
+    _rename_scale("guild_debts", "remaining_quarters", "remaining_units")
+    _rename_scale("guild_match_windows", "cap_quarters", "cap_units")
+    _rename_scale("guild_match_windows", "amount_quarters", "amount_units")
+    _rename_scale("guild_cosigns", "amount_quarters", "amount_units")
+    _rename_scale("guild_fee_arrears", "quarters", "units")
     if "proposal_stakes" in tables:
         stmts.append(
             "UPDATE proposal_stakes SET per_pr = per_pr * 5 WHERE currency = 'credits';"
@@ -469,3 +484,56 @@ def _ensure_column(
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote an identifier for safe interpolation into SQL."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _index_signature(conn: sqlite3.Connection, name: str) -> tuple | None:
+    """A normalized shape for index `name`: (table, unique, key columns,
+    normalized WHERE).  None when the index is absent or an implicit
+    auto-index.  Comparing shape instead of raw DDL means cosmetic
+    differences never register as drift while a real change does."""
+    row = conn.execute(
+        "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (name,),
+    ).fetchone()
+    if row is None or not row[1]:
+        return None
+    table, sql = row[0], row[1]
+    unique = bool(re.search(r"\bUNIQUE\b", sql, re.IGNORECASE))
+    cols = tuple(info[2] for info in conn.execute(f"PRAGMA index_info('{name}')"))
+    match = re.search(r"\bWHERE\b(.*)$", sql, re.IGNORECASE | re.DOTALL)
+    where = re.sub(r"\s+", " ", match.group(1)).strip().lower() if match else ""
+    return (table, unique, cols, where)
+
+
+def _restore_schema_indexes(conn: sqlite3.Connection) -> None:
+    """Recreate any index schema.sql declares that is missing - or the wrong
+    shape - on the live database.
+
+    Legacy table rebuilds recreate only a hand-copied subset of the schema's
+    indexes, so an index added to schema.sql later is silently dropped on
+    upgraded databases (bugs #B39-#B43).  schema.sql is the source of truth:
+    load it into a throwaway in-memory database, read the declared indexes,
+    then reconcile the live connection against them.  Indexes carry no data,
+    so drop+create is lossless; the pass is idempotent and undeclared
+    indexes (created from Python) are left untouched."""
+    declared = sqlite3.connect(":memory:")
+    try:
+        declared.executescript(SCHEMA_PATH.read_text())
+        wanted = []
+        for name, ddl in declared.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index'"
+        ).fetchall():
+            if name and ddl:
+                wanted.append((name, ddl, _index_signature(declared, name)))
+    finally:
+        declared.close()
+    for name, ddl, signature in wanted:
+        if _index_signature(conn, name) == signature:
+            continue
+        conn.execute(f"DROP INDEX IF EXISTS {_quote_ident(name)}")
+        conn.execute(ddl)

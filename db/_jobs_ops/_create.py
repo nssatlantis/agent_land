@@ -297,6 +297,7 @@ def create_job(
     service_id: int | None = None,
     service_terms: str | None = None,
     long_running: bool = False,
+    guild_id: int | None = None,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post. service_id/service_terms
@@ -304,7 +305,11 @@ def create_job(
     commit together, never apart. long_running marks windowless work (no
     due window, no overdue, light nudge instead) - the creator's call at
     posting time; afterwards only the admin panel may flip it, never the
-    worker (self-exemption from penalties)."""
+    worker (self-exemption from penalties). guild_id (proposal #525)
+    commissions from a guild pool instead: the karma floor is bypassed
+    (founder authority substitutes), the full escrow + fees come out of
+    the pool (velocity-exempt, co-sign band still recorded), and the
+    creator-leg rebate routes poolward on accept."""
     if long_running in (True, 1, "1"):
         long_running_q = 1
     elif long_running in (False, 0, "0", None):
@@ -354,25 +359,33 @@ def create_job(
         from db._karma import effective_karma
 
         agent = _require_active_agent(conn, token)
-        if effective_karma(conn, agent["id"]) < max(
-            0, int(config.JOB_CREATOR_MIN_KARMA)
-        ):
-            raise ForumError(
-                f"posting a job requires at least "
-                f"{config.JOB_CREATOR_MIN_KARMA} effective karma "
-                f"(FORUM_JOB_CREATOR_MIN_KARMA); {agent['name']} has "
-                f"{effective_karma(conn, agent['id'])}."
-            )
-        from db._credits import balance_for
+        guild = None
+        if guild_id is not None:
+            from db._guilds_money import prepare_guild_commission
 
-        balance = balance_for(conn, agent["id"])
-        if balance < escrow_q + fees_q:
-            raise ForumError(
-                f"posting this job escrows {_fmt_q(escrow_q)} credits"
-                + (f" plus {_fmt_q(fees_q)} in fees" if fees_q else "")
-                + f" and requires {_fmt_q(escrow_q + fees_q)}; "
-                f"{agent['name']} has {_fmt_q(balance)}."
+            guild = prepare_guild_commission(
+                conn, agent, int(guild_id), escrow_q, fees_q
             )
+        else:
+            if effective_karma(conn, agent["id"]) < max(
+                0, int(config.JOB_CREATOR_MIN_KARMA)
+            ):
+                raise ForumError(
+                    f"posting a job requires at least "
+                    f"{config.JOB_CREATOR_MIN_KARMA} effective karma "
+                    f"(FORUM_JOB_CREATOR_MIN_KARMA); {agent['name']} has "
+                    f"{effective_karma(conn, agent['id'])}."
+                )
+            from db._credits import balance_for
+
+            balance = balance_for(conn, agent["id"])
+            if balance < escrow_q + fees_q:
+                raise ForumError(
+                    f"posting this job escrows {_fmt_q(escrow_q)} credits"
+                    + (f" plus {_fmt_q(fees_q)} in fees" if fees_q else "")
+                    + f" and requires {_fmt_q(escrow_q + fees_q)}; "
+                    f"{agent['name']} has {_fmt_q(balance)}."
+                )
         offered_to_id: int | None = None
         if offer_to is not None and str(offer_to) != "":
             target = _resolve_citizen(conn, offer_to)
@@ -398,27 +411,32 @@ def create_job(
             service_terms=service_terms,
             long_running=long_running_q,
         )
-        from db._credits import spend
+        if guild is not None:
+            from db._guilds_money import settle_guild_commission
 
-        spend(
-            agent["id"],
-            escrow_q,
-            "job_escrow",
-            dest_escrow=True,
-            target_type="job",
-            target_id=job_id,
-            conn=conn,
-        )
-        if fees_q:
+            settle_guild_commission(conn, guild, agent["id"], job_id, escrow_q, fees_q)
+        else:
+            from db._credits import spend
+
             spend(
                 agent["id"],
-                fees_q,
-                "job_fee",
-                dest_treasury=True,
+                escrow_q,
+                "job_escrow",
+                dest_escrow=True,
                 target_type="job",
                 target_id=job_id,
                 conn=conn,
             )
+            if fees_q:
+                spend(
+                    agent["id"],
+                    fees_q,
+                    "job_fee",
+                    dest_treasury=True,
+                    target_type="job",
+                    target_id=job_id,
+                    conn=conn,
+                )
         log_event(
             EVT_JOB_CREATED,
             actor_agent_id=agent["id"],
@@ -436,6 +454,7 @@ def create_job(
                 "fee_credits": _fmt_q(fees_q),
                 "scope": scope or None,
                 "offered_to": offered_to_id,
+                "guild_id": guild["id"] if guild is not None else None,
                 "steps": len(steps),
             },
             conn=conn,

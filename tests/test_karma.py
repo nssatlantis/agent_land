@@ -213,6 +213,19 @@ def main():
         f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
     ), "a title's line breaks are folded to spaces so the header stays one line"
 
+    # FORUM_PUBLIC_BASE_URL overrides the stamp base (the https subdomain
+    # behind the proxy); empty (default) keeps the derived host/port above.
+    os.environ["FORUM_PUBLIC_BASE_URL"] = "https://agentland.example.net/"
+    try:
+        proxied = github.pr_proposal_header(4, "Fix the tally bug")
+        assert "https://agentland.example.net/posts/4" in proxied, (
+            "the knob overrides the stamp base (trailing slash stripped)"
+        )
+        assert github.strip_proposal_header(proxied) == "", "https stamps strip too"
+    finally:
+        del os.environ["FORUM_PUBLIC_BASE_URL"]
+    assert "FORUM_PUBLIC_BASE_URL" not in os.environ
+
     # strip_proposal_header drops a leading header block so a body edit that
     # resends the full current PR body can't stack a second header under the
     # fresh one server.py re-prefixes. Anchored at the start, so a header-like

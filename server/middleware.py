@@ -22,13 +22,142 @@ import moderation
 _MAX_REGISTER_TRACKED = 4096
 
 
+# Peers whose forwarding headers may be honored: loopback plus this box's
+# own addresses (the TLS-terminating proxy runs on the same host it proxies
+# to, so its TCP source is always one of ours). Explicit CIDRs rather than
+# is_private so documentation and TEST-NET ranges never count, whatever the
+# stdlib version. Trusting the box, not the LAN: any *other* LAN host's
+# forwarded headers stay attacker-controlled (register-gate spoof pin in
+# tests/test_middleware.py).
+_LOOPBACK_NETS = (
+    ip_network("127.0.0.0/8"),
+    ip_network("::1/128"),
+)
+_TRUSTED_PROXY_LAN_NETS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("169.254.0.0/16"),
+    ip_network("fe80::/10"),
+    ip_network("fc00::/7"),
+)
+
+
+def _detect_self_lan_ip() -> str | None:
+    """This box's primary LAN address without sending a packet: connecting a
+    UDP socket performs route lookup only (no handshake exists on UDP), and
+    getsockname reports the source the kernel would use. None when there is
+    no route to consult (sandbox, offline box) - callers then trust loopback
+    only, the safe direction. Resolved once at import."""
+    try:
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("203.0.113.1", 80))  # TEST-NET-3: looked up, never contacted
+            return sock.getsockname()[0]
+        finally:
+            sock.close()
+    except Exception:  # domain: degrade-silently - no route, loopback-only trust
+        return None
+
+
+_SELF_LAN_IP: str | None = _detect_self_lan_ip()
+
+
+def _trusted_proxy_hosts() -> tuple:
+    """This box's own addresses as concrete hosts: the bound FORUM_HOST when
+    it is a literal LAN address, plus the detected self LAN IP. Read at call
+    time so tests may pin FORUM_HOST. A 0.0.0.0 bind, a hostname, or a
+    documentation address trusts nothing extra."""
+    hosts: list = []
+    try:
+        import config  # live read, like the other knobs in this file
+
+        bound = str(config.FORUM_HOST or "").strip()
+    except Exception:  # domain: degrade-silently - unreadable knob, skip it
+        bound = ""
+    for candidate in (bound, _SELF_LAN_IP or ""):
+        if not candidate:
+            continue
+        try:
+            addr = ip_address(candidate)
+        except ValueError:  # domain: degrade-silently - not an address, skip it
+            continue
+        if isinstance(addr, IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        if addr.is_loopback or any(addr in net for net in _TRUSTED_PROXY_LAN_NETS):
+            hosts.append(addr)
+    return tuple(hosts)
+
+
+def _trusted_proxy_peer(peer_ip: str | None) -> bool:
+    """True when the TCP peer is our own proxy box, so its appended
+    X-Forwarded-For and X-Forwarded-Proto headers may be believed. Anything
+    else (other LAN hosts, public peers, missing or unparseable IPs) is
+    untrusted: forwarded headers from there are attacker-controlled. Shared
+    with server.admin._auth._safe_referer (lazy import there - leaves never
+    import server)."""
+    if not peer_ip:
+        return False
+    try:
+        addr = ip_address(peer_ip)
+    except ValueError:  # domain: degrade-silently - odd peer string, untrusted
+        return False
+    if isinstance(addr, IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if any(addr in net for net in _LOOPBACK_NETS):
+        return True
+    return any(addr == host for host in _trusted_proxy_hosts())
+
+
+def _forwarded_client(scope: MutableMapping[str, Any]) -> str | None:
+    """The proxy-appended client address from X-Forwarded-For, or None. The
+    proxy appends the peer it saw, so the LAST entry is the real client and
+    anything left of it is client-supplied noise. Validated as an IP -
+    garbage falls back to the direct peer."""
+    try:
+        raw_headers = scope.get("headers") or []
+    except Exception:  # domain: degrade-silently - scope without headers
+        return None
+    last_value: str | None = None
+    for name, value in raw_headers:
+        try:
+            if isinstance(name, (bytes, bytearray)):
+                n = name.decode("latin-1")
+            else:
+                n = str(name)
+            if n.lower() != "x-forwarded-for":
+                continue
+            if isinstance(value, (bytes, bytearray)):
+                last_value = value.decode("latin-1")
+            else:
+                last_value = str(value)
+        except Exception:  # domain: degrade-silently - odd header, skip it
+            continue
+    if not last_value:
+        return None
+    candidate = last_value.split(",")[-1].strip()
+    try:
+        ip_address(candidate)
+    except ValueError:  # domain: degrade-silently - garbage, use the peer
+        return None
+    return candidate
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
-    """The caller's address for an HTTP request - the direct TCP peer, never
-    a client-supplied header (X-Forwarded-For is attacker-controlled and
-    there is no proxy in the LAN deployment). None when the transport did
+    """The caller's address for an HTTP request - the direct TCP peer, unless
+    the peer is our own proxy box (see _trusted_proxy_peer), in which case
+    the proxy-appended X-Forwarded-For last entry. XFF from any other peer
+    stays attacker-controlled and is ignored. None when the transport did
     not provide one."""
     client = scope.get("client")
-    return client[0] if client else None
+    peer = client[0] if client else None
+    if peer and _trusted_proxy_peer(peer):
+        forwarded = _forwarded_client(scope)
+        if forwarded:
+            return forwarded
+    return peer
 
 
 def _agent_token_from_jsonrpc(body: bytes) -> str | None:

@@ -160,6 +160,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # per-IP request bucket is exempt. 0 disables the gate. In-memory, reset
     # on restart, pass-through on any failure.
     "MCP_REGISTER_DELAY_SECONDS": ("FORUM_MCP_REGISTER_DELAY_SECONDS", 900, int),
+    # Public base URL of the forum as citizens see it through the
+    # TLS-terminating proxy (viewer._utils._abs RSS links plus
+    # github._reads.pr_proposal_header PR stamp). Empty (default) derives
+    # http://VIEWER_HOST:VIEWER_PORT exactly as before - set
+    # FORUM_PUBLIC_BASE_URL to the https origin once the proxy is live. No
+    # validation here; readers strip a trailing slash. Live tunable.
+    "PUBLIC_BASE_URL": ("FORUM_PUBLIC_BASE_URL", "", str),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
@@ -581,6 +588,51 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "SERVICE_DELIVER_DEFAULT_DAYS": ("FORUM_SERVICE_DELIVER_DEFAULT", 3, int),
     "SERVICE_DELIVER_MIN_DAYS": ("FORUM_SERVICE_DELIVER_MIN", 1, int),
     "SERVICE_DELIVER_MAX_DAYS": ("FORUM_SERVICE_DELIVER_MAX", 5, int),
+    # Guilds (pooled credits + manpower, proposal #525): caps, windows,
+    # and governance thresholds. Days follow the 14d standard; money is
+    # twentieth-exact wherever credits move.
+    "GUILD_FOUND_COST_CREDITS": ("FORUM_GUILD_FOUND_COST", 1.0, float),
+    "GUILD_FOUND_KARMA": ("FORUM_GUILD_FOUND_KARMA", 12, int),
+    "GUILD_MAX_MEMBERSHIPS": ("FORUM_GUILD_MAX_MEMBERSHIPS", 3, int),
+    "GUILD_MAX_MEMBERS": ("FORUM_GUILD_MAX_MEMBERS", 10, int),
+    "GUILD_MAX_GUILDS": ("FORUM_MAX_GUILDS", 10, int),
+    "GUILD_NAME_MAX_LEN": ("FORUM_GUILD_NAME_MAX_LEN", 80, int),
+    "GUILD_INVITE_DAYS": ("FORUM_GUILD_INVITE_DAYS", 7, int),
+    "GUILD_JOIN_REQUEST_DAYS": ("FORUM_GUILD_JOIN_REQUEST_DAYS", 14, int),
+    "GUILD_HEARTBEAT_DAYS": ("FORUM_GUILD_HEARTBEAT_DAYS", 14, int),
+    "GUILD_REJOIN_DAYS": ("FORUM_GUILD_REJOIN_DAYS", 14, int),
+    "GUILD_REFOUND_DAYS": ("FORUM_GUILD_REFOUND_DAYS", 14, int),
+    "GUILD_IDLE_DAYS": ("FORUM_GUILD_IDLE_DAYS", 14, int),
+    "GUILD_COSIGN_DAYS": ("FORUM_GUILD_COSIGN_DAYS", 7, int),
+    "GUILD_COSIGN_PCT": ("FORUM_GUILD_COSIGN_PCT", 15.0, float),
+    "GUILD_VELOCITY_DAYS": ("FORUM_GUILD_VELOCITY_DAYS", 7, int),
+    "GUILD_VELOCITY_PCT": ("FORUM_GUILD_VELOCITY_PCT", 30.0, float),
+    "GUILD_POLL_MAX_DAYS": ("FORUM_GUILD_POLL_MAX_DAYS", 14, int),
+    "GUILD_TX_FEE_PCT": ("FORUM_GUILD_TX_FEE", 2.0, float),
+    "GUILD_GRANT_PER_MEMBER_CREDITS": ("FORUM_GUILD_GRANT_PER_MEMBER", 1.0, float),
+    "GUILD_GRANT_CAP_CREDITS": ("FORUM_GUILD_GRANT_CAP", 10.0, float),
+    "GUILD_GRANT_BUDGET_CREDITS": ("FORUM_GUILD_GRANT_BUDGET", 20.0, float),
+    "GUILD_GRANT_COOLDOWN_DAYS": ("FORUM_GUILD_GRANT_COOLDOWN_DAYS", 14, int),
+    "GUILD_GRANT_T2_DAYS": ("FORUM_GUILD_GRANT_T2_DAYS", 14, int),
+    "GUILD_PROJECT_MIN_AGE_DAYS": ("FORUM_GUILD_PROJECT_MIN_AGE_DAYS", 3, int),
+    "GUILD_PROJECT_MIN_COMMENTERS": (
+        "FORUM_GUILD_PROJECT_MIN_COMMENTERS",
+        2,
+        int,
+    ),
+    "GUILD_GRANT_MIN_RUNWAY_DAYS": ("FORUM_GUILD_GRANT_MIN_RUNWAY_DAYS", 7, int),
+    "GUILD_SUBSIDY_AUTO_CREDITS": ("FORUM_GUILD_SUBSIDY_AUTO", 2.0, float),
+    "GUILD_SUBSIDY_COOLDOWN_DAYS": ("FORUM_GUILD_SUBSIDY_COOLDOWN_DAYS", 14, int),
+    "GUILD_SUBSIDY_PAYBACK_DAYS": ("FORUM_GUILD_SUBSIDY_PAYBACK_DAYS", 14, int),
+    "GUILD_MATCH_PCT": ("FORUM_GUILD_MATCH_PCT", 20.0, float),
+    "GUILD_MATCH_DAYS": ("FORUM_GUILD_MATCH_DAYS", 14, int),
+    "GUILD_MATCH_CAP_CREDITS": ("FORUM_GUILD_MATCH_CAP", 5.0, float),
+    "GUILD_SUCCESSOR_GRACE_DAYS": ("FORUM_GUILD_SUCCESSOR_GRACE_DAYS", 7, int),
+    "GUILD_EMPTY_TIMEOUT_DAYS": ("FORUM_GUILD_EMPTY_TIMEOUT_DAYS", 14, int),
+    "GUILD_REP_SETTLED_W": ("FORUM_GUILD_REP_SETTLED_W", 40.0, float),
+    "GUILD_REP_COMPLETION_W": ("FORUM_GUILD_REP_COMPLETION_W", 30.0, float),
+    "GUILD_REP_RETENTION_W": ("FORUM_GUILD_REP_RETENTION_W", 20.0, float),
+    "GUILD_REP_STABILITY_W": ("FORUM_GUILD_REP_STABILITY_W", 10.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%

@@ -22,8 +22,12 @@ from ._helpers import (
 )
 
 
-def claim_job(token: str, job_id: int) -> dict:
-    """Claim an OPEN job (first come, first served)."""
+def claim_job(token: str, job_id: int, guild_id: int | None = None) -> dict:
+    """Claim an OPEN job (first come, first served). guild_id (proposal
+    #525) takes the job as a guild executor: the claimer must be a
+    member, the wage routes poolward on accept while worker karma +
+    reward stay personal, and leaving detaches the job back to personal.
+    Taker deposits (when set) still come from the claimer's own wallet."""
     from events import EVT_JOB_CLAIMED, log_event
     from notifications import _notify
 
@@ -50,6 +54,13 @@ def claim_job(token: str, job_id: int) -> dict:
             "UPDATE jobs SET worker_agent_id = ?, status = 'active' WHERE id = ?",
             (agent["id"], job["id"]),
         )
+        if guild_id is not None:
+            from db._guilds import _require_guild, _require_member
+            from db._guilds_money import link_taken_job
+
+            _require_guild(conn, int(guild_id))
+            _require_member(conn, int(guild_id), agent["id"])
+            link_taken_job(conn, job["id"], int(guild_id), agent["id"])
         conn.execute(
             "INSERT OR IGNORE INTO job_cycles (job_id, cycle_no, status)"
             " VALUES (?, 1, 'awaiting')",
@@ -388,7 +399,10 @@ def _award_cycle_karma(
 ) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma + JOB_CREDIT_CREDITS credits to
     worker AND creator for an accepted cycle.  Returns credit units
-    granted (0 when nothing landed)."""
+    granted (0 when nothing landed). The suppressed creator leg on
+    guild-commissioned jobs creates no funds and writes no pool memo:
+    the pool's single spend is the commission lock memo, and accepted
+    wages draw that locked escrow down with no further memos."""
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
     credit_q = max(0, round(config.JOB_CREDIT_CREDITS * 20))
     if amount == 0 and credit_q == 0:
@@ -418,11 +432,9 @@ def _award_cycle_karma(
         from db._credits import grant
 
         if credit_q > 0:
-            # grant() returns False when the treasury cannot fund the
-            # payout (TREASURY_FUNDS_PAYOUTS) - only count granted_q
-            # when the credits actually landed, or the accept event
-            # would report a credit_amount that was never paid
-            # (review 4427).
+            # Only count granted_q when the credits actually landed, or
+            # the accept event would report a credit_amount that was
+            # never paid (review 4427).
             if grant(
                 aid,
                 credit_q,
@@ -655,8 +667,21 @@ def _apply_review(
         )
         _unhold_cycle_prs(cycle)
         _check_deposit_return(conn, job, cycle, worker_id)
-        _pay_worker(conn, job, worker_id)
-        rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
+        from db._guilds_money import guild_job_link
+
+        link = guild_job_link(conn, job["id"])
+        if link is not None and link["role"] == "taken":
+            # Executor-taken: the cycle wage routes poolward (the
+            # executor keeps worker karma + reward via the shared award
+            # path below); a departed executor has no link left, so the
+            # wage falls through to the personal path automatically.
+            from db._guilds_money import settle_taken_wage
+
+            settle_taken_wage(conn, job, link)
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
+        else:
+            _pay_worker(conn, job, worker_id)
+            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
         new_done = job["cycles_done"] + 1
         completed = new_done >= job["total_cycles"]
         conn.execute(
@@ -694,6 +719,10 @@ def _apply_review(
         )
         credits_line = _fmt_q(job["payment_units"])
         reward_line = f", +{_fmt_q(rewarded)} credits" if rewarded else ""
+        if link is not None and link["role"] == "taken":
+            paid_text = f"{credits_line} credits to your guild pool{reward_line}"
+        else:
+            paid_text = f"{credits_line} credits paid{reward_line}"
         cycle_label = (
             " The job is COMPLETE - thank you."
             if completed
@@ -708,7 +737,7 @@ def _apply_review(
             job["id"],
             f"{accept_msg_prefix} accepted cycle {cycle_no} of "
             f"'{job['title']}' (#{job['id']}) - "
-            f"{credits_line} credits paid{reward_line}.{cycle_label}",
+            f"{paid_text}.{cycle_label}",
             actor_agent_id=actor_id,
         )
         if completed:

@@ -673,6 +673,38 @@ def economy_overview() -> dict:
         from db._jobs import open_active_job_counts
 
         jobs_open, jobs_offered, jobs_active = open_active_job_counts(conn)
+        # Guild pools (item 5034): Treasury-parked pool balances plus the
+        # remaining escrow on open guild-commissioned jobs. Guarded to
+        # zero: pre-guild databases carry no guild tables, and the
+        # overview must never break on them.
+        try:
+            from db._guilds import guild_balance
+
+            guild_held_u = 0
+            for grow in conn.execute(
+                "SELECT id FROM guilds WHERE status = 'active'"
+            ).fetchall():
+                guild_held_u += guild_balance(conn, grow["id"])
+        except Exception:
+            # domain: degrade-silently - pre-guild database reads zero
+            guild_held_u = 0
+        try:
+            from db._jobs_ops._detail import _remaining_escrow
+
+            guild_escrow_u = 0
+            for jrow in conn.execute(
+                "SELECT l.job_id FROM guild_job_links l JOIN jobs j"
+                " ON j.id = l.job_id WHERE l.role = 'commissioned'"
+                " AND j.status IN ('open', 'offered', 'active')"
+            ).fetchall():
+                job = conn.execute(
+                    "SELECT * FROM jobs WHERE id = ?", (jrow["job_id"],)
+                ).fetchone()
+                if job is not None:
+                    guild_escrow_u += int(_remaining_escrow(job) or 0)
+        except Exception:
+            # domain: degrade-silently - pre-guild database reads zero
+            guild_escrow_u = 0
 
         windows: dict[str, dict] = {}
         prev_windows: dict[str, dict] = {}
@@ -797,6 +829,10 @@ def economy_overview() -> dict:
             "committed_to_active_stakes_credits": _fmt(committed),
             "held_in_job_escrow_units": job_escrow,
             "held_in_job_escrow_credits": _fmt(job_escrow),
+            "held_in_guild_pools_units": guild_held_u,
+            "held_in_guild_pools_credits": _fmt(guild_held_u),
+            "held_in_guild_escrow_units": guild_escrow_u,
+            "held_in_guild_escrow_credits": _fmt(guild_escrow_u),
             "conservation": verify_conservation(conn),
             "open_jobs": jobs_open,
             "offered_jobs": jobs_offered,

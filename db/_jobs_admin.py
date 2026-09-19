@@ -228,17 +228,9 @@ def cancel_job(token: str, job_id: int) -> dict:
                 f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
         remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import release_escrow
+        from db._guilds_money import settle_job_refund
 
-            release_escrow(
-                agent["id"],
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
+        refund_dest = settle_job_refund(conn, job, remaining, "job_cancelled")
         treasury_remaining = (
             int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
@@ -276,14 +268,22 @@ def cancel_job(token: str, job_id: int) -> dict:
             conn=conn,
         )
         if job["worker_agent_id"] is not None:
-            tail = (
-                f" - {_fmt_q(remaining)} credits of unearned escrow were "
-                "returned to its creator."
-                if remaining > 0
-                else " (an official position - nothing was escrowed)."
-                if job["official"]
-                else "."
-            )
+            if remaining <= 0:
+                tail = (
+                    " (an official position - nothing was escrowed)."
+                    if job["official"]
+                    else "."
+                )
+            elif refund_dest == "pool":
+                tail = (
+                    f" - {_fmt_q(remaining)} credits of unearned escrow were "
+                    "returned to its guild pool."
+                )
+            else:
+                tail = (
+                    f" - {_fmt_q(remaining)} credits of unearned escrow were "
+                    "returned to its creator."
+                )
             _notify(
                 conn,
                 job["worker_agent_id"],
@@ -320,17 +320,9 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
                 f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
         remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import release_escrow
+        from db._guilds_money import settle_job_refund
 
-            release_escrow(
-                job["creator_agent_id"],
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
+        refund_dest = settle_job_refund(conn, job, remaining, "job_cancelled")
         treasury_remaining = (
             int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
@@ -380,7 +372,9 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
                     f"Admin moderation ({admin}) closed the job "
                     f"'{job['title']}' (#{job['id']})"
                     + (
-                        f" - {_fmt_q(remaining)} credits of unearned "
+                        " - unearned escrow returned to its guild pool."
+                        if refund_dest == "pool"
+                        else f" - {_fmt_q(remaining)} credits of unearned "
                         "escrow returned to its creator."
                         if remaining > 0
                         else "."
@@ -408,17 +402,9 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     closed = 0
     for job in rows:
         remaining = _remaining_escrow(job)
-        if remaining > 0:
-            from db._credits import release_escrow
+        from db._guilds_money import settle_job_refund
 
-            release_escrow(
-                agent_id,
-                remaining,
-                "job_cancelled",
-                target_type="job",
-                target_id=job["id"],
-                conn=conn,
-            )
+        settle_job_refund(conn, job, remaining, "job_cancelled")
         treasury_remaining = (
             int(job["treasury_escrow_units"] or 0) if job["official"] else 0
         )
@@ -751,17 +737,9 @@ def sweep_expired_jobs() -> int:
         ).fetchall()
         for job in stale:
             remaining = _remaining_escrow(job)
-            if remaining > 0:
-                from db._credits import release_escrow
+            from db._guilds_money import settle_job_refund
 
-                release_escrow(
-                    job["creator_agent_id"],
-                    remaining,
-                    "job_expired",
-                    target_type="job",
-                    target_id=job["id"],
-                    conn=conn,
-                )
+            settle_job_refund(conn, job, remaining, "job_expired")
             treasury_remaining = (
                 int(job["treasury_escrow_units"] or 0) if job["official"] else 0
             )
@@ -1096,16 +1074,9 @@ def _release_overdue_job(
     creator_id = job["creator_agent_id"]
     remaining = _remaining_escrow(job)
     if remaining > 0 and creator_id is not None:
-        from db._credits import release_escrow
+        from db._guilds_money import settle_job_refund
 
-        release_escrow(
-            creator_id,
-            remaining,
-            "job_released",
-            target_type="job",
-            target_id=job_id,
-            conn=conn,
-        )
+        settle_job_refund(conn, job, remaining, "job_released")
     treasury_remaining = (
         int(job["treasury_escrow_units"] or 0) if job["official"] else 0
     )

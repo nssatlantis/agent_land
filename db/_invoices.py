@@ -676,13 +676,23 @@ def accept_invoice(token: str, invoice_id: int) -> dict:
             raise ForumError(f"invoice #{row['id']} is already {row['status']}.")
         now = _now_iso()
         # The due window starts at acceptance, not at creation: preserve
-        # the full window length from the new accept stamp.
-        window_s = (
-            _parse_iso(row["due_at"]) - _parse_iso(row["created_at"])
-        ).total_seconds()
-        new_due = (_parse_iso(now) + timedelta(seconds=window_s)).strftime(
-            "%Y-%m-%dT%H:%M:%S.%f"
-        )[:-3] + "Z"
+        # the full window length from the new accept stamp - except on
+        # guild payback bills, whose debt clock is fixed at pay time
+        # (the debt, not the bill, owns the deadline; extending here
+        # would split the two clocks).
+        debt_linked = conn.execute(
+            "SELECT 1 FROM guild_debt_invoices WHERE invoice_id = ?",
+            (row["id"],),
+        ).fetchone()
+        if debt_linked is not None:
+            new_due = row["due_at"]
+        else:
+            window_s = (
+                _parse_iso(row["due_at"]) - _parse_iso(row["created_at"])
+            ).total_seconds()
+            new_due = (_parse_iso(now) + timedelta(seconds=window_s)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
         conn.execute(
             "UPDATE invoices SET status = 'accepted', accepted_at = ?,"
             " due_at = ? WHERE id = ?",
@@ -730,6 +740,16 @@ def decline_invoice(token: str, invoice_id: int) -> dict:
             raise ForumError(
                 f"invoice #{row['id']} is already {row['status']} — only"
                 " pending invoices can be declined."
+            )
+        debt_link = conn.execute(
+            "SELECT debt_id FROM guild_debt_invoices WHERE invoice_id = ?",
+            (row["id"],),
+        ).fetchone()
+        if debt_link is not None:
+            raise ForumError(
+                f"invoice #{row['id']} is a guild payback bill - declining"
+                " would brick its debt with no recovery path. Pay it"
+                " (part-pay allowed) or let the delinquency path run."
             )
         now = _now_iso()
         conn.execute(
@@ -814,14 +834,53 @@ def pay_invoice(
                     f" — {format_credits(pay_q)} overpays it. Omit the"
                     " amount to pay the remainder exactly."
                 )
-        receipt = transfer_credits(
-            payer["id"],
-            dest,
-            pay_q,
-            note=f"invoice #{row['id']} payment",
-            conn=conn,
-            notify_recipient=False,
+        fee_link = conn.execute(
+            "SELECT * FROM guild_fee_invoices WHERE invoice_id = ?",
+            (row["id"],),
+        ).fetchone()
+        debt_link = (
+            None
+            if fee_link is not None
+            else conn.execute(
+                "SELECT * FROM guild_debt_invoices WHERE invoice_id = ?",
+                (row["id"],),
+            ).fetchone()
         )
+        if fee_link is not None:
+            # Guild upkeep bill: settle poolward (member wallet parks in
+            # the treasury, the pool takes a deposit memo, arrears settle
+            # oldest-first) instead of paying any issuer. No pool fee on
+            # dues - the pool receives the full units.
+            from db._guilds_treasury import settle_guild_fee_payment
+
+            settle_guild_fee_payment(conn, dict(fee_link), payer["id"], pay_q)
+            receipt = {
+                "fee_credits": format_credits(0),
+                "fee_units": 0,
+                "guild_pool": True,
+            }
+        elif debt_link is not None:
+            # Guild payback bill: the founder's wallet parks in the
+            # treasury and the debt tracks the remainder (part-pay
+            # allowed) instead of paying any issuer. A cleared debt
+            # refreshes the spending freeze inside the settler.
+            from db._guilds_lending import settle_guild_debt_payment
+
+            settle_guild_debt_payment(conn, dict(debt_link), payer["id"], pay_q)
+            receipt = {
+                "fee_credits": format_credits(0),
+                "fee_units": 0,
+                "guild_debt": True,
+            }
+        else:
+            receipt = transfer_credits(
+                payer["id"],
+                dest,
+                pay_q,
+                note=f"invoice #{row['id']} payment",
+                conn=conn,
+                notify_recipient=False,
+            )
         new_remaining = row["remaining_units"] - pay_q
         if new_remaining <= 0:
             now = _now_iso()
@@ -904,6 +963,16 @@ def cancel_invoice(token: str, invoice_id: int) -> dict:
             raise ForumError(f"invoice #{row['id']} is not yours to cancel.")
         if row["status"] not in _OPEN_STATUSES:
             raise ForumError(f"invoice #{row['id']} is already {row['status']}.")
+        debt_link = conn.execute(
+            "SELECT debt_id FROM guild_debt_invoices WHERE invoice_id = ?",
+            (row["id"],),
+        ).fetchone()
+        if debt_link is not None:
+            raise ForumError(
+                f"invoice #{row['id']} is a guild payback bill - cancelling"
+                " would brick its debt with no recovery path. The debt"
+                " settles by payment or by the seize path, never by forgive."
+            )
         now = _now_iso()
         conn.execute(
             "UPDATE invoices SET status = 'cancelled', decided_at = ? WHERE id = ?",

@@ -436,8 +436,8 @@ def main():
         pass
 
     # --- delete_post: _safe_referer trusts only same-origin or bare paths --
-    def _delete_with_referer(ref):
-        headers = [(b"authorization", _AUTH.encode())]
+    def _delete_with_referer(ref, extra=()):
+        headers = [(b"authorization", _AUTH.encode())] + list(extra)
         if ref is not None:
             headers.append((b"referer", ref.encode()))
         p = db.create_post(b_token, "ref post", "body")["post_id"]
@@ -465,6 +465,17 @@ def main():
     )
     # A missing referer falls back too.
     assert _delete_with_referer(None) == "/admin", "missing referer falls back"
+    # Behind the TLS-terminating proxy uvicorn sees http while the browser
+    # speaks https: the https form of the same origin is kept iff the proxy
+    # says so via X-Forwarded-Proto (the peer here is loopback, trusted).
+    proxied = [(b"x-forwarded-proto", b"https")]
+    assert _delete_with_referer("https://127.0.0.1:8000/admin/posts/9", proxied) == (
+        "https://127.0.0.1:8000/admin/posts/9"
+    ), "https referer via trusted proxy is kept"
+    # The same https referer WITHOUT the proxy header falls back.
+    assert _delete_with_referer("https://127.0.0.1:8000/admin/posts/9") == "/admin", (
+        "https referer without the proxy header falls back"
+    )
 
     # --- resolve_report: clear / suspend -----------------------------------
     resp = _call(
