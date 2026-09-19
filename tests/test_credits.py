@@ -17,6 +17,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import config, db, setup  # noqa: E402, I001
+from db._credits import UNITS_PER_CREDIT  # noqa: E402
 import events  # noqa: E402, I001
 
 db.init_db()
@@ -128,7 +129,7 @@ def test_pr_merge_earns():
     before = _bal(aid)
     ok = db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
     assert ok is True
-    units = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 20
+    units = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * UNITS_PER_CREDIT
     assert _bal(aid) == before + units
     # Idempotent: a second detection must not double-grant.
     db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
@@ -645,7 +646,7 @@ def test_history_limit_clamped_to_max_page_size():
 
 
 def test_top_movers_shape():
-    """The 7-day aggregate returns per-citizen earned/spent quarter sums,
+    """The 7-day aggregate returns per-citizen earned/spent unit sums,
     most active first, with names resolved (deleted-citizen marker when
     the agents row is gone)."""
     import db._credits as cr
