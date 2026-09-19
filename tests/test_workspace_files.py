@@ -459,6 +459,7 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "A", "replace": "y"}] * 201,
         )
+        w(tok, pid, "dev", "sub/f.txt", "x\n")
         assert "directory" in _expect_tool_error(
             w,
             tok,
