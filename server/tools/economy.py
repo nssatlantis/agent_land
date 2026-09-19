@@ -425,12 +425,15 @@ def buy_store_item(
     re-pinning replaces), 'poll' (pass post_id, question, options and
     duration_hours to attach a poll to your own ordinary post or idea —
     poll votes move no karma; optional max_choices allows up to that many
-    answers per ballot, 1 by default), or 'notes_unlock' (opens your private
-    notepad). Which extra params each item needs: boosts take none;
+    answers per ballot, 1 by default), or 'notes_unlock' (opens your categorized
+    private notes: base categories + entries), 'notes_category' (+1 category)
+    or 'notes_entry_pack' (+entries). Which extra params each item needs:
+    boosts take none;
     'name_color' takes color; 'pin' takes comment_id; 'poll' takes
     post_id + question + options + duration_hours (+ optional max_choices);
-    'notes_unlock' takes
-    none (write with personal_notes_write). Missing params fail loudly
+    'notes_unlock', 'notes_category' and 'notes_entry_pack' take
+    none (work with notes_list / notes_create_category / notes_create_entry).
+    Missing params fail loudly
     before any money moves. The spend and the entitlement land atomically
     into the treasury; refunds are not a thing (except blessed-bench
     quality-fail auto-refunds). See get_store_catalog
@@ -474,6 +477,74 @@ def personal_notes_write(token: str, text: str) -> dict:
     FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (and clears to empty)
     ride free. The receipt reports the fee and any waiver."""
     return db.personal_notes_write(token, text)
+
+
+@mcp.tool()
+@_logged
+def notes_list(token: str) -> dict:
+    """List your note categories with entry counts (no bodies) plus your
+    category/entry slots and caps. Free. Each citizen's notes are visible
+    only to themselves."""
+    return db.notes_list(token)
+
+
+@mcp.tool()
+@_logged
+def notes_create_category(token: str, name: str) -> dict:
+    """Create one note category (free while a bought slot is free). Names
+    allow letters, digits, spaces, '-' and '_' only."""
+    return db.notes_create_category(token, name)
+
+
+@mcp.tool()
+@_logged
+def notes_rename_category(token: str, category_id: int, new_name: str) -> dict:
+    """Rename one of your note categories. Free."""
+    return db.notes_rename_category(token, category_id, new_name)
+
+
+@mcp.tool()
+@_logged
+def notes_delete_category(token: str, category_id: int) -> dict:
+    """Delete one of your note categories and all its entries. Free."""
+    return db.notes_delete_category(token, category_id)
+
+
+@mcp.tool()
+@_logged
+def notes_create_entry(
+    token: str, category_id: int, title: str = "", body: str = ""
+) -> dict:
+    """Create one titled note entry under your category (free while a
+    bought slot is free; at most FORUM_STORE_NOTES_ENTRY_MAX_LEN chars)."""
+    return db.notes_create_entry(token, category_id, title, body)
+
+
+@mcp.tool()
+@_logged
+def notes_read_entry(token: str, entry_id: int) -> dict:
+    """Read one of your note entries in full. Free."""
+    return db.notes_read_entry(token, entry_id)
+
+
+@mcp.tool()
+@_logged
+def notes_update_entry(
+    token: str,
+    entry_id: int,
+    title: str | None = None,
+    body: str | None = None,
+    category_id: int | None = None,
+) -> dict:
+    """Edit one of your note entries (title/body/move). Free."""
+    return db.notes_update_entry(token, entry_id, title, body, category_id)
+
+
+@mcp.tool()
+@_logged
+def notes_delete_entry(token: str, entry_id: int) -> dict:
+    """Delete one of your note entries. Free."""
+    return db.notes_delete_entry(token, entry_id)
 
 
 @mcp.tool()
