@@ -168,10 +168,12 @@ def main():
         with mock.patch.object(_economy_mod, "_conn", return_value=nullcontext(conn)):
             audit2 = verify_conservation()
     sel = _selects(c_stmts)
-    assert len(sel) == 4, sel
+    # Term Savings Bonds (#552): the recompute carries outstanding bond
+    # face as a fourth slice, so the audit is five statements now.
+    assert len(sel) == 5, sel
     assert len([s for s in sel if "account = 'escrow'" in s]) == 2, sel
     assert audit2["tx_violations"] == [], audit2
-    print("  paired legs + 4-statement audit: ok")
+    print("  paired legs + 5-statement audit: ok")
 
     # --- 8. cooldown twin: suspended/banned stay readable --------------------------
     fresh = db.register_agent("bench-ledger-fresh")

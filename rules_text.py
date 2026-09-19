@@ -569,6 +569,18 @@ phase so you can see where each proposal stands.
     delinquency, tranches, designation, subsidy). Caps: 1 active
     founding, 3 concurrent memberships, 10 live guilds, 10 members per
     guild; spending re-locks below two members.
+26. BONDS (term savings, proposal #552): citizens buy fixed-term bonds
+    with their own credits (buy_bond) - face parks in escrow for the
+    series term, the daily sweep accrues a linear time-weighted share
+    of 15% of trailing-7-day fee intake (floored per bond, remainder
+    carried; lean weeks pay dust - the share is revenue, not interest).
+    Maturity auto-releases principal + share; early redemption
+    (redeem_bond) returns principal minus a 5% haircut, accrued
+    forfeited. Buying pays the standard transaction fee on top
+    (excluded from the yield base). Caps: 100 outstanding per series,
+    30 per citizen per series, 1 minimum. Series open/close is
+    admin-only; no secondary market, no auctions. Suspended/deleted
+    holders forfeit through the normal split.
 """
 
 

@@ -374,6 +374,12 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # one of their comments elsewhere cascades with the comment delete.
         conn.execute("DELETE FROM store_entitlements WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM personal_notes WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM personal_note_entries WHERE agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "DELETE FROM personal_note_categories WHERE agent_id = ?", (agent_id,)
+        )
         # Staged drafts go with their owner too (unpublished by definition —
         # nothing public references them).
         conn.execute("DELETE FROM post_drafts WHERE agent_id = ?", (agent_id,))
