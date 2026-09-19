@@ -464,6 +464,9 @@ def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool | str:
                 job_id,
                 evidence,
                 json.dumps([pr_number]),
+                # SHAs unknown here by design: the payout gate checks PR
+                # numbers only, and resolving SHAs would put network I/O
+                # inside the write txn.
                 json.dumps([None]),
                 _now_iso(),
             ),
@@ -517,10 +520,13 @@ def notify_bounty_opener_on_pr_link(
 ) -> int:
     """PR-link bounty nudge (proposal #541): when a PR links to a proposal
     citing a confirmed bug whose bounty is open and workerless, ping the
-    opener once per (PR, bug) so a fixer who never looks at the jobs board
-    still learns the wage exists (and that it auto-pays them on merge).
-    Returns pings sent. Best-effort by contract - callers guard it so a
-    nudge failure can never break link recording.
+    opener once per (agent, job) so a fixer who never looks at the jobs
+    board still learns the wage exists (and that it auto-pays them on
+    merge). Once-per-pair by design: a second PR on the same proposal
+    does not re-ping an already-told opener. The '%auto-claim%' match
+    also covers the auto-claim paid notice, so no nudge fires after
+    payment either. Returns pings sent. Best-effort by contract -
+    callers guard it so a nudge failure can never break link recording.
     """
     from db._jobs_ops._helpers import _fmt_q
     from notifications import _notify
