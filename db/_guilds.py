@@ -123,14 +123,14 @@ def _agent_name(conn: sqlite3.Connection, agent_id: int) -> str:
 
 
 def guild_balance(conn: sqlite3.Connection, guild_id: int) -> int:
-    """Pool quarters: signed ledger sum. Inflow kinds add, everything else
+    """Pool units: signed ledger sum. Inflow kinds add, everything else
     subtracts - writers only ever emit known kinds (CHECK-gated), so the
     ELSE arm is unreachable, not a policy choice."""
     marks = ",".join("?" for _ in _INFLOW_KINDS)
     row = conn.execute(
         "SELECT COALESCE(SUM(CASE WHEN kind IN ("
         + marks
-        + ") THEN quarters ELSE -quarters END), 0) FROM guild_ledger"
+        + ") THEN units ELSE -units END), 0) FROM guild_ledger"
         " WHERE guild_id = ?",
         (*_INFLOW_KINDS, guild_id),
     ).fetchone()
@@ -144,8 +144,8 @@ def member_net(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:
     construction (item 5002) - so only the deposit/withdrawal kinds enter
     the sum, and every other actor-bearing memo weights exactly nothing."""
     row = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN kind = 'deposit' THEN quarters"
-        " WHEN kind = 'withdrawal' THEN -quarters ELSE 0 END), 0)"
+        "SELECT COALESCE(SUM(CASE WHEN kind = 'deposit' THEN units"
+        " WHEN kind = 'withdrawal' THEN -units ELSE 0 END), 0)"
         " FROM guild_ledger WHERE guild_id = ? AND actor_agent_id = ?",
         (guild_id, agent_id),
     ).fetchone()
@@ -187,7 +187,7 @@ def guild_spend_locked(conn: sqlite3.Connection, guild_id: int) -> bool:
 
 
 def guild_velocity_ok(
-    conn: sqlite3.Connection, guild_id: int, extra_quarters: int = 0
+    conn: sqlite3.Connection, guild_id: int, extra_units: int = 0
 ) -> bool:
     """30% of the balance-at-execution per rolling 7d to non-escrow
     destinations. Counted kinds: withdrawals, invoice payments, transfers
@@ -195,18 +195,18 @@ def guild_velocity_ok(
     with those kinds)."""
     marks = ",".join("?" for _ in _VELOCITY_KINDS)
     spent = conn.execute(
-        "SELECT COALESCE(SUM(quarters), 0) FROM guild_ledger"
+        "SELECT COALESCE(SUM(units), 0) FROM guild_ledger"
         " WHERE guild_id = ? AND kind IN (" + marks + ")"
         " AND created_at >= ?",
         (guild_id, *_VELOCITY_KINDS, _days_ago_iso(float(config.GUILD_VELOCITY_DAYS))),
     ).fetchone()[0]
     balance = guild_balance(conn, guild_id)
     cap = balance * float(config.GUILD_VELOCITY_PCT) / 100
-    return (int(spent or 0) + extra_quarters) <= cap
+    return (int(spent or 0) + extra_units) <= cap
 
 
-def _needs_cosign(balance: int, amount_quarters: int) -> bool:
-    return amount_quarters * 100 > float(config.GUILD_COSIGN_PCT) * balance
+def _needs_cosign(balance: int, amount_units: int) -> bool:
+    return amount_units * 100 > float(config.GUILD_COSIGN_PCT) * balance
 
 
 # ── pool settlement (the only money writer in PR-2) ────────────────────
@@ -216,22 +216,22 @@ def _settle_out(
     conn: sqlite3.Connection,
     guild_id: int,
     agent_id: int,
-    quarters: int,
+    units: int,
     kind: str,
     note: str,
 ) -> int:
-    """Pay pool quarters to a citizen. Every deposit parks in the treasury
+    """Pay pool units to a citizen. Every deposit parks in the treasury
     (spend with dest_treasury), so the treasury already holds the pool's
     funds and grant() draws them back down - conservation holds without a
     second mover. The grant runs FIRST: a False (unfunded treasury) raises
     before the ledger row exists, so money can never strand half-moved."""
-    if quarters <= 0:
+    if units <= 0:
         return 0
     from db._credits import grant
 
     ok = grant(
         agent_id,
-        quarters,
+        units,
         f"guild_{kind}",
         target_type="guild",
         target_id=guild_id,
@@ -242,11 +242,11 @@ def _settle_out(
             "the treasury cannot fund that payout right now - nothing moved."
         )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, ?, ?, ?, ?)",
-        (guild_id, kind, quarters, agent_id, note),
+        (guild_id, kind, units, agent_id, note),
     )
-    return quarters
+    return units
 
 
 def _pay_member_out(
@@ -278,7 +278,7 @@ def _pay_member_out(
                 "the treasury cannot fund that payout right now - nothing moved."
             )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+        "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'withdrawal', ?, ?, ?)",
         (guild_id, gross, agent_id, note),
     )
@@ -558,7 +558,7 @@ def admin_release_guild_member(
             actor_agent_id=agent["id"],
             target_type="guild",
             target_id=int(guild_id),
-            detail={"paid_quarters": paid, "via": "admin-release"},
+            detail={"paid_units": paid, "via": "admin-release"},
             conn=conn,
         )
         return {"guild_id": int(guild_id), "agent_id": int(target["id"]), "paid": paid}
@@ -650,7 +650,7 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
             "guild",
             "guild",
             guild_id,
-            f"guild disbanded ({reason}) - you received {paid[aid]}q.",
+            f"guild disbanded ({reason}) - you received {paid[aid]}u.",
             actor_agent_id=None,
         )
     for row in members:
@@ -668,7 +668,7 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
     remainder = guild_balance(conn, guild_id)
     if remainder > 0:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'withdrawal', ?, ?)",
             (guild_id, remainder, f"disband remainder to Treasury ({reason})"),
         )
@@ -1290,10 +1290,10 @@ def leave_guild(token: str, guild_id: int) -> dict:
             actor_agent_id=agent["id"],
             target_type="guild",
             target_id=guild_id,
-            detail={"paid_quarters": paid, "role": member["role"]},
+            detail={"paid_units": paid, "role": member["role"]},
             conn=conn,
         )
-        out: dict = {"guild_id": guild_id, "paid_quarters": paid}
+        out: dict = {"guild_id": guild_id, "paid_units": paid}
         if member["role"] == "founder":
             # Deliberately uncaught: if the succession's disband cannot
             # fund every share, the whole transaction (including this
@@ -1453,14 +1453,14 @@ def sweep_guild_memberships() -> dict:
                         actor_agent_id=mem["agent_id"],
                         target_type="guild",
                         target_id=gid,
-                        detail={"paid_quarters": paid, "via": "heartbeat-sweep"},
+                        detail={"paid_units": paid, "via": "heartbeat-sweep"},
                         conn=conn,
                     )
                     report["released"].append(
                         {
                             "guild_id": gid,
                             "agent_id": mem["agent_id"],
-                            "paid_quarters": paid,
+                            "paid_units": paid,
                         }
                     )
                     if mem["role"] == "founder":
@@ -1898,7 +1898,7 @@ def delete_guild_chat(token: str, message_id: int) -> dict:
 
 
 def request_guild_cosign(
-    token: str, guild_id: int, action: str, amount_quarters: int
+    token: str, guild_id: int, action: str, amount_units: int
 ) -> dict:
     """Record a >15%-of-balance spend proposal before it executes. Solo
     by construction (no co-founder): the record plus the 7d expiry is the
@@ -1906,25 +1906,25 @@ def request_guild_cosign(
     clean = (action or "").strip()
     if not clean:
         raise ForumError("co-sign action cannot be empty.")
-    if int(amount_quarters) <= 0:
-        raise ForumError("co-sign amount must be positive quarters.")
+    if int(amount_units) <= 0:
+        raise ForumError("co-sign amount must be positive units.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_guild(conn, guild_id)
         _require_founder(conn, guild, agent["id"])
         balance = guild_balance(conn, guild_id)
-        if not _needs_cosign(balance, int(amount_quarters)):
+        if not _needs_cosign(balance, int(amount_units)):
             raise ForumError(
                 "that amount is within the founder's solo band - no co-sign"
                 " needed (and none recorded)."
             )
         cur = conn.execute(
-            "INSERT INTO guild_cosigns (guild_id, action, amount_quarters,"
+            "INSERT INTO guild_cosigns (guild_id, action, amount_units,"
             " requester_agent_id, expires_at) VALUES (?, ?, ?, ?, ?)",
             (
                 guild_id,
                 clean,
-                int(amount_quarters),
+                int(amount_units),
                 agent["id"],
                 _days_ago_iso(-float(config.GUILD_COSIGN_DAYS)),
             ),
@@ -1937,7 +1937,7 @@ def request_guild_cosign(
             actor_agent_id=agent["id"],
             target_type="guild_cosign",
             target_id=cid,
-            detail={"guild_id": guild_id, "amount_quarters": amount_quarters},
+            detail={"guild_id": guild_id, "amount_units": amount_units},
             conn=conn,
         )
         return {"cosign_id": cid, "guild_id": guild_id}
@@ -1966,12 +1966,12 @@ def confirm_guild_cosign(token: str, cosign_id: int) -> dict:
             )
             raise ForumError("that co-sign expired - request it again.")
         balance = guild_balance(conn, cos["guild_id"])
-        if balance < cos["amount_quarters"]:
+        if balance < cos["amount_units"]:
             raise ForumError(
                 "pool balance moved below the co-signed amount - request"
                 " it again after funding."
             )
-        if not guild_velocity_ok(conn, cos["guild_id"], cos["amount_quarters"]):
+        if not guild_velocity_ok(conn, cos["guild_id"], cos["amount_units"]):
             raise ForumError(
                 "that confirm would breach the 7d velocity window - wait for"
                 " the window to slide."
@@ -2010,11 +2010,11 @@ def _guild_detail(conn: sqlite3.Connection, guild_id: int) -> dict:
     roster = []
     for row in members:
         mem = dict(row)
-        mem["net_quarters"] = member_net(conn, guild_id, mem["agent_id"])
+        mem["net_units"] = member_net(conn, guild_id, mem["agent_id"])
         roster.append(mem)
     guild["members"] = roster
     guild["member_count"] = len(roster)
-    guild["balance_quarters"] = guild_balance(conn, guild_id)
+    guild["balance_units"] = guild_balance(conn, guild_id)
     guild["spend_locked"] = guild_spend_locked(conn, guild_id)
     try:
         from db._guilds_reputation import guild_reputation

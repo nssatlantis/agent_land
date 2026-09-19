@@ -39,13 +39,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         ok = _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_tools_seed",
             target_type="test",
             target_id=1,
@@ -61,10 +61,10 @@ def _pool(guild_id: int) -> int:
 
 def _guild() -> tuple[dict, dict, dict]:
     founder = _new_agent("gt-founder")
-    _fund(founder["agent_id"], 200)
+    _fund(founder["agent_id"], 1000)
     guild = gtools.create_guild(founder["token"], f"Tools-{_SEQ[0]}")
     mate = _new_agent("gt-mate")
-    _fund(mate["agent_id"], 120)
+    _fund(mate["agent_id"], 600)
     inv = gtools.invite_guild_member(founder["token"], guild["id"], mate["name"])
     gtools.respond_guild_invite(mate["token"], inv["invite_id"], True)
     return founder, guild, mate
@@ -72,7 +72,7 @@ def _guild() -> tuple[dict, dict, dict]:
 
 def test_create_rename_mission_disband():
     founder = _new_agent("gt-rnm")
-    _fund(founder["agent_id"], 200)
+    _fund(founder["agent_id"], 1000)
     guild = gtools.create_guild(founder["token"], "Rename-Me")
     gid = guild["id"]
     assert gtools.get_guild(gid)["name"] == "Rename-Me"
@@ -116,7 +116,7 @@ def test_membership_round_trip():
     gtools.respond_guild_join(founder["token"], req["request_id"], True)
     assert gtools.heartbeat_guild(stranger["token"], gid)["guild_id"] == gid
     left = gtools.leave_guild(stranger["token"], gid)
-    assert "paid_quarters" in left, left
+    assert "paid_units" in left, left
     try:
         gtools.rejoin_guild(stranger["token"], gid)
         raise AssertionError("cooldown-busted rejoin passed")
@@ -141,10 +141,10 @@ def test_money_wrappers_move_pool():
     gid = guild["id"]
     gtools.guild_deposit(founder["token"], gid, 25.0)
     gtools.guild_deposit(mate["token"], gid, 10.0)
-    assert _pool(gid) == 140, _pool(gid)
+    assert _pool(gid) == 700, _pool(gid)
     out = gtools.guild_withdraw(founder["token"], gid, 5.0)
-    assert out["fee_quarters"] == 1, out
-    assert _pool(gid) == 140 - 20, _pool(gid)
+    assert out["fee_units"] == 2, out
+    assert _pool(gid) == 700 - 100, _pool(gid)
 
 
 def test_invoice_wrapper_full_and_part():
@@ -154,11 +154,11 @@ def test_invoice_wrapper_full_and_part():
     inv = db.create_invoice(mate["token"], founder["name"], 2.0, "tools bill")
     db.accept_invoice(founder["token"], inv["invoice_id"])
     paid = gtools.guild_pay_invoice(founder["token"], inv["invoice_id"], 1.0)
-    assert paid["remaining_quarters"] == 4, paid
-    assert _pool(gid) == 100 - 4, _pool(gid)
+    assert paid["remaining_units"] == 20, paid
+    assert _pool(gid) == 500 - 20, _pool(gid)
     paid = gtools.guild_pay_invoice(founder["token"], inv["invoice_id"])
-    assert paid["remaining_quarters"] == 0, paid
-    assert _pool(gid) == 100 - 8, _pool(gid)
+    assert paid["remaining_units"] == 0, paid
+    assert _pool(gid) == 500 - 40, _pool(gid)
 
 
 def test_stake_and_subsidy_wrappers():
@@ -178,7 +178,7 @@ def test_stake_and_subsidy_wrappers():
     staked = gtools.guild_stake(founder["token"], pid, 2.5, 2)
     assert staked["guild_id"] == gid, staked
     sub = gtools.request_guild_subsidy(founder["token"], gid, 1.0, False, "tools grant")
-    assert sub["status"] == "paid" and sub["amount_quarters"] == 4, sub
+    assert sub["status"] == "paid" and sub["amount_units"] == 20, sub
 
 
 def test_decide_subsidy_admin_gate():
@@ -223,7 +223,7 @@ def test_designate_and_match_wrappers():
     window = gtools.open_guild_match_window(
         founder["token"], gid, "lump", amount_credits=2.0
     )
-    assert window["status"] == "paid" and window["amount_quarters"] == 8, window
+    assert window["status"] == "paid" and window["amount_units"] == 40, window
 
 
 def test_chat_and_polls_wrappers():
@@ -317,7 +317,7 @@ def test_propose_guild_id_extension():
     assert _json.loads(row["proposal_config"])["guild_id"] == gid
     # Cross-guild designation theft refuses via the linkage.
     founder2 = _new_agent("gt-other-f")
-    _fund(founder2["agent_id"], 200)
+    _fund(founder2["agent_id"], 1000)
     other = gtools.create_guild(founder2["token"], f"Other-{_SEQ[0]}")
     c1, c2 = _new_agent("gt-x1"), _new_agent("gt-x2")
     with db._conn() as conn:
@@ -357,9 +357,9 @@ def test_job_wrappers_guild_id():
         guild_id=gid,
     )
     assert job["job_id"] is not None, job
-    assert _pool(gid) == 100 - 12, _pool(gid)
+    assert _pool(gid) == 500 - 60, _pool(gid)
     worker = _new_agent("gt-w")
-    _fund(worker["agent_id"], 40)
+    _fund(worker["agent_id"], 200)
     claimed = etools.claim_job(worker["token"], job["job_id"])
     assert claimed["status"] == "active", claimed
     live = db.get_job(job["job_id"])
@@ -375,7 +375,7 @@ def test_job_wrappers_guild_id():
             (job["job_id"],),
         ).fetchone()
     assert link is not None and link["role"] == "commissioned", dict(link or {})
-    assert _pool(gid) == 100 - 12, _pool(gid)
+    assert _pool(gid) == 500 - 60, _pool(gid)
 
 
 # -- run all --

@@ -32,11 +32,11 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     from db._credits import grant as _grant
 
     with db._conn() as conn:
-        _grant(agent_id, quarters, "test_seed", conn=conn)
+        _grant(agent_id, units, "test_seed", conn=conn)
 
 
 class _Req:
@@ -49,7 +49,7 @@ class _Req:
 
 def _found(name: str, mission: str = "") -> tuple[dict, dict]:
     founder = _new_agent("gv-f")
-    _fund(founder["agent_id"], 400)
+    _fund(founder["agent_id"], 2000)
     g = db.found_guild(founder["token"], name)
     if mission:
         db.edit_guild_mission(founder["token"], g["id"], mission)
@@ -82,7 +82,7 @@ def test_guild_detail_sections_and_404s():
 
     founder, g = _found(f"Ledger-{_SEQ[0]}", "Keep honest books.")
     mate = _new_agent("gv-m")
-    _fund(mate["agent_id"], 400)
+    _fund(mate["agent_id"], 2000)
     inv = db.invite_guild_member(founder["token"], g["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     db.guild_deposit(mate["token"], g["id"], 2.0)
@@ -141,7 +141,7 @@ def test_guild_docket_badge_designated_and_released():
     # A released T1 shows its state on the badge.
     with db._conn() as conn:
         t1 = conn.execute(
-            "INSERT INTO guild_tranches (guild_id, tier, amount_quarters,"
+            "INSERT INTO guild_tranches (guild_id, tier, amount_units,"
             " status) VALUES (?, 'T1', 100, 'released')",
             (g["id"],),
         ).lastrowid
@@ -159,7 +159,7 @@ def test_guild_docket_badge_designated_and_released():
     from viewer._guilds import guild_detail_page
 
     founder2 = _new_agent("gv-bf2")
-    _fund(founder2["agent_id"], 400)
+    _fund(founder2["agent_id"], 2000)
     g2 = db.found_guild(founder2["token"], f"Badge2-{_SEQ[0]}")
     inv2 = db.invite_guild_member(founder2["token"], g2["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv2["invite_id"], True)
@@ -195,7 +195,7 @@ def test_guild_pages_degrade_on_corrupt_rows():
     assert "? cr" in _roster_html(
         {
             "members": [
-                {"name": "x", "agent_id": 1, "role": "member", "net_quarters": "oops"}
+                {"name": "x", "agent_id": 1, "role": "member", "net_units": "oops"}
             ]
         }
     ), "corrupt net degrades to ? display"

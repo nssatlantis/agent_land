@@ -42,7 +42,7 @@ def main():
         ent = _entitlements(conn, _aid("fresh"))
         assert all(v == 0 or v is None for v in ent.values()), ent
     cat = db.get_store_catalog(_tok("alpha"))
-    assert cat["balance_quarters"] == bal, "catalog balance must equal ledger"
+    assert cat["balance_units"] == bal, "catalog balance must equal ledger"
     assert any(i["key"] == "sub_boost" for i in cat["items"])
     try:
         db.get_store_catalog("bad-token")

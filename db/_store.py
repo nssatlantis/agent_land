@@ -605,7 +605,7 @@ def get_store_catalog(token: str) -> dict:
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
-            "balance_quarters": bal,
+            "balance_units": bal,
             "items": items,
         }
 
@@ -1022,7 +1022,7 @@ def store_stats() -> dict:
             "price_credits": getattr(config, _price_attr),
             "units": 0,
             "units_7d": 0,
-            "revenue_quarters": 0,
+            "revenue_units": 0,
             "buyers": 0,
             "buyers_7d": 0,
             "held": 0,
@@ -1035,7 +1035,7 @@ def store_stats() -> dict:
             "price_credits": getattr(config, _price_attr),
             "units": 0,
             "units_7d": 0,
-            "revenue_quarters": 0,
+            "revenue_units": 0,
             "buyers": 0,
             "buyers_7d": 0,
             "held": 0,
@@ -1043,9 +1043,9 @@ def store_stats() -> dict:
     with _conn() as conn:
         for r in conn.execute(
             "SELECT reason, COUNT(*) AS units,"
-            " COALESCE(SUM(delta_quarters), 0) AS revenue_q,"
+            " COALESCE(SUM(delta_units), 0) AS revenue_u,"
             " SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS units_7d,"
-            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_quarters"
+            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_units"
             " ELSE 0 END), 0) AS revenue_7d"
             " FROM credit_entries WHERE account = 'treasury'"
             " AND reason >= 'store_' AND reason < 'store`'"
@@ -1063,7 +1063,7 @@ def store_stats() -> dict:
                     "price_credits": 0,
                     "units": 0,
                     "units_7d": 0,
-                    "revenue_quarters": 0,
+                    "revenue_units": 0,
                     "buyers": 0,
                     "buyers_7d": 0,
                     "held": 0,
@@ -1071,32 +1071,30 @@ def store_stats() -> dict:
             )
             row["units"] = int(r["units"])
             row["units_7d"] = int(r["units_7d"] or 0)
-            row["revenue_quarters"] = int(r["revenue_q"])
+            row["revenue_units"] = int(r["revenue_u"])
             row["_revenue_7d"] = int(r["revenue_7d"])
         # Refunds ride grants, whose treasury leg reads "payout_source" -
-        # net from the buyer-side legs (positive quarters) instead.
+        # net from the buyer-side legs (positive units) instead.
         refunds = conn.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) AS q,"
-            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_quarters"
-            " ELSE 0 END), 0) AS q_7d"
+            "SELECT COALESCE(SUM(delta_units), 0) AS u,"
+            " COALESCE(SUM(CASE WHEN created_at >= ? THEN delta_units"
+            " ELSE 0 END), 0) AS u_7d"
             " FROM credit_entries WHERE account = 'agent'"
             " AND reason = ?",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchone()
-        if refunds and (refunds["q"] or refunds["q_7d"]):
+        if refunds and (refunds["u"] or refunds["u_7d"]):
             row = items["store_blessed_bench"]
-            row["revenue_quarters"] = int(row["revenue_quarters"]) - int(
-                refunds["q"] or 0
-            )
+            row["revenue_units"] = int(row["revenue_units"]) - int(refunds["u"] or 0)
             row["_revenue_7d"] = int(row.get("_revenue_7d", 0)) - int(
-                refunds["q_7d"] or 0
+                refunds["u_7d"] or 0
             )
         for r in conn.execute(
             "SELECT reason, COUNT(DISTINCT agent_id) AS buyers,"
             " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END)"
             " AS buyers_7d"
             " FROM credit_entries WHERE account = 'agent'"
-            " AND delta_quarters < 0 AND reason >= 'store_' AND reason < 'store`'"
+            " AND delta_units < 0 AND reason >= 'store_' AND reason < 'store`'"
             " AND substr(reason, -7) != '_intake'"
             " AND reason != ? GROUP BY reason",
             (week_ago, _BLESSED_REFUND_REASON),
@@ -1110,7 +1108,7 @@ def store_stats() -> dict:
                     "price_credits": 0,
                     "units": 0,
                     "units_7d": 0,
-                    "revenue_quarters": 0,
+                    "revenue_units": 0,
                     "buyers": 0,
                     "buyers_7d": 0,
                     "held": 0,
@@ -1139,7 +1137,7 @@ def store_stats() -> dict:
             "SELECT COUNT(DISTINCT agent_id) AS n,"
             " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END) AS n_7d"
             " FROM credit_entries WHERE account = 'agent'"
-            " AND delta_quarters < 0 AND reason >= 'store_' AND reason < 'store`'"
+            " AND delta_units < 0 AND reason >= 'store_' AND reason < 'store`'"
             " AND substr(reason, -7) != '_intake'"
             " AND reason != ?",
             (week_ago, _BLESSED_REFUND_REASON),
@@ -1167,13 +1165,13 @@ def store_stats() -> dict:
     total_revenue = 0
     total_revenue_7d = 0
     for _reason in sorted(
-        items, key=lambda _k: int(items[_k]["revenue_quarters"]), reverse=True
+        items, key=lambda _k: int(items[_k]["revenue_units"]), reverse=True
     ):
         _row = items[_reason]
         _rev_7d = int(_row.pop("_revenue_7d", 0))
         total_units += int(_row["units"])
         total_units_7d += int(_row["units_7d"])
-        total_revenue += int(_row["revenue_quarters"])
+        total_revenue += int(_row["revenue_units"])
         total_revenue_7d += _rev_7d
         rows.append(
             {
@@ -1182,9 +1180,9 @@ def store_stats() -> dict:
                 "reason": _row["reason"],
                 "units": int(_row["units"]),
                 "units_7d": int(_row["units_7d"]),
-                "revenue_quarters": int(_row["revenue_quarters"]),
-                "revenue_credits": format_credits(int(_row["revenue_quarters"])),
-                "revenue_7d_quarters": _rev_7d,
+                "revenue_units": int(_row["revenue_units"]),
+                "revenue_credits": format_credits(int(_row["revenue_units"])),
+                "revenue_7d_units": _rev_7d,
                 "revenue_7d_credits": format_credits(_rev_7d),
                 "buyers": int(_row["buyers"]),
                 "buyers_7d": int(_row["buyers_7d"]),
@@ -1197,9 +1195,9 @@ def store_stats() -> dict:
         "totals": {
             "units": total_units,
             "units_7d": total_units_7d,
-            "revenue_quarters": total_revenue,
+            "revenue_units": total_revenue,
             "revenue_credits": format_credits(total_revenue),
-            "revenue_7d_quarters": total_revenue_7d,
+            "revenue_7d_units": total_revenue_7d,
             "revenue_7d_credits": format_credits(total_revenue_7d),
             "buyers": int(buyers_total["n"] or 0),
             "buyers_7d": int(buyers_total["n_7d"] or 0),

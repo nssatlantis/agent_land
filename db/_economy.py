@@ -96,7 +96,7 @@ def economy_admin_adjust(
     """Mint or burn treasury credits behind the governance gate: within
     FORUM_ADMIN_MINT_DAILY_CAP_CREDITS per UTC day the admin may adjust
     freely; a larger adjustment requires `proposal_id` of a currently-
-    approved proposal.  Amounts must be exact quarter values."""
+    approved proposal.  Amounts must be twentieth-exact."""
     from db._credits import burn, exact_from_credits, format_credits, mint
 
     if action not in ("mint", "burn"):
@@ -105,7 +105,7 @@ def economy_admin_adjust(
     if not reason:
         raise ForumError("a reason is required for every mint/burn.")
     reason = reason[:200]
-    quarters = exact_from_credits(
+    units = exact_from_credits(
         amount_credits,
         what="the mint/burn amount",
     )
@@ -117,34 +117,34 @@ def economy_admin_adjust(
         cap = max(0.0, float(config.ADMIN_MINT_DAILY_CAP_CREDITS))
         if proposal_id is None:
             # The budget itself is a price, not an intake amount: it must
-            # land exactly on quarters or the adjustment refuses loudly -
-            # round() would silently snap 0.3 to 0.25 and drift from
+            # land exactly on twentieths or the adjustment refuses loudly -
+            # round() would silently snap 0.31 to 0.3 and drift from
             # whatever the admin configured (review M2).
             try:
-                cap_q = exact_from_credits(
+                cap_u = exact_from_credits(
                     cap,
                     what="FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
                 )
             except ForumError as exc:
                 raise ForumError(
-                    f"FORUM_ADMIN_MINT_DAILY_CAP_CREDITS must be a whole, "
-                    f"half or quarter credit value (got {cap}); fix the "
+                    f"FORUM_ADMIN_MINT_DAILY_CAP_CREDITS must be twentieth-exact"
+                    f" (got {cap}); fix the "
                     "knob before minting or burning."
                 ) from exc
             used = conn.execute(
-                "SELECT COALESCE(SUM(ABS(delta_quarters)), 0)"
+                "SELECT COALESCE(SUM(ABS(delta_units)), 0)"
                 " FROM credit_entries"
                 " WHERE account = 'treasury' AND reason IN (?, ?)"
                 " AND target_type = 'economy' AND target_id IS NULL"
                 " AND created_at >= ?",
                 (*_ADMIN_ADJUST_REASONS, _utc_day_start_iso()),
             ).fetchone()[0]
-            if (used + quarters) > cap_q:
+            if (used + units) > cap_u:
                 raise ForumError(
-                    f"that {action} ({format_credits(quarters)}) exceeds "
+                    f"that {action} ({format_credits(units)}) exceeds "
                     f"the daily discretionary budget: "
                     f"{format_credits(used)} of "
-                    f"{format_credits(cap_q)} used today. Pass a "
+                    f"{format_credits(cap_u)} used today. Pass a "
                     "passed proposal id to go beyond the cap - the "
                     "community decides."
                 )
@@ -154,7 +154,7 @@ def economy_admin_adjust(
             fn_reason = f"proposal_{action}"
         fn = mint if action == "mint" else burn
         result = fn(
-            quarters,
+            units,
             fn_reason,
             admin=admin,
             proposal_id=proposal_id,
@@ -168,7 +168,35 @@ def economy_admin_adjust(
 # -- checkpoints -----------------------------------------------------------
 
 
-def _chain_hash(prev_hash: str, row: sqlite3.Row | dict) -> str:
+def _unit_cutover_id(conn: sqlite3.Connection) -> int:
+    """Entry id at/below which stored ledger deltas are pre-migration
+    quarters (proposal #536): 0 (or a missing economy_meta row) means the
+    database never migrated and every row hashes at its stored value.
+    Callers live inside degrade-silently verification paths, so a missing
+    table/row degrades to 0 through their own guards - this helper itself
+    stays total (no raises) by construction."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM economy_meta WHERE key = 'credit_unit_cutover'"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:  # domain: degrade-silently - unknown unit era reads as unmigrated (cutover 0); callers verify seals under their own guards
+        return 0
+
+
+def _chain_delta(row: sqlite3.Row | dict, cutover_id: int) -> int:
+    """Chain-hash delta for one ledger row.  Pre-migration rows hash at a
+    fifth of their stored value - exactly the quarter deltas the old seals
+    committed to (the #536 migration multiplied stored twentieths by 5
+    without rewriting history, and every pre-cutover stored value is a
+    multiple of 5 by construction).  Post-migration rows hash native."""
+    d = int(row["delta_units"])
+    if cutover_id and int(row["id"]) <= cutover_id:
+        return d // 5
+    return d
+
+
+def _chain_hash(prev_hash: str, row: sqlite3.Row | dict, cutover_id: int = 0) -> str:
     """One link of the running hash chain over a ledger row's IMMUTABLE
     fields.  agent_id is deliberately excluded: delete_agent anonymizes it
     in place, and rewriting history must never break a seal."""
@@ -177,7 +205,7 @@ def _chain_hash(prev_hash: str, row: sqlite3.Row | dict) -> str:
             prev_hash,
             str(row["id"]),
             row["account"],
-            str(row["delta_quarters"]),
+            str(_chain_delta(row, cutover_id)),
             row["reason"],
             row["target_type"] or "",
             str(row["target_id"] if row["target_id"] is not None else ""),
@@ -199,35 +227,40 @@ def write_checkpoint(conn: sqlite3.Connection | None = None) -> dict:
         since_id = prev["last_entry_id"] if prev else 0
         prev_hash = prev["running_hash"] if prev else "genesis"
         running = prev_hash
+        # Seal under the same //5 rule verification replays: rows sealed
+        # here may predate the unit cutover (never-sealed pre-migration
+        # rows on the first post-upgrade seal), and hashing them native
+        # would poison this seal and every descendant (review, PR #1265).
+        cutover_id = _unit_cutover_id(c)
         rows = c.execute(
-            "SELECT id, account, delta_quarters, reason, target_type,"
+            "SELECT id, account, delta_units, reason, target_type,"
             " target_id, created_at"
             " FROM credit_entries WHERE id > ? ORDER BY id ASC",
             (since_id,),
         ).fetchall()
         for row in rows:
-            running = _chain_hash(running, row)
+            running = _chain_hash(running, row, cutover_id)
         stats = c.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
+            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_units), 0) AS s"
             " FROM credit_entries"
         ).fetchone()
-        treasury_q = c.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+        treasury_u = c.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account = 'treasury'"
         ).fetchone()[0]
         last_id = rows[-1]["id"] if rows else since_id
         c.execute(
             "INSERT INTO economy_checkpoints"
-            " (created_at, last_entry_id, entry_count, total_supply_q,"
-            "  treasury_q, running_hash)"
+            " (created_at, last_entry_id, entry_count, total_supply_u,"
+            "  treasury_u, running_hash)"
             " VALUES (?, ?, ?, ?, ?, ?)",
-            (_now_iso(), last_id, stats["n"], stats["s"], treasury_q, running),
+            (_now_iso(), last_id, stats["n"], stats["s"], treasury_u, running),
         )
         return {
             "last_entry_id": last_id,
             "entry_count": stats["n"],
-            "total_supply_quarters": stats["s"],
-            "treasury_quarters": treasury_q,
+            "total_supply_units": stats["s"],
+            "treasury_units": treasury_u,
             "running_hash": running,
         }
 
@@ -274,15 +307,21 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
     verify-from-any-seal path can come later if the ledger ever grows
     enough for the page load to notice.
 
-    Note on the return shape: the ledger stores deltas in *quarters* (the
-    integer unit - 1 credit = 4 quarters), while display surfaces present
-    *credits* via `_fmt` (which converts quarters -> credits with
-    `divmod` for exact .25 steps). `sealed_supply_quarters` vs
+    Unit rule (proposal #536): rows at/below the recorded unit cutover
+    hash at delta//5 (their pre-migration quarter values); newer rows
+    hash native.  Sums compare native throughout - the migration scaled
+    the checkpoints table too - so only the chain needs the rule.
+
+    Note on the return shape: the ledger stores deltas in *twentieths*
+    (the integer unit - 1 credit = 20 units), while display surfaces
+    present *credits* via `_fmt` (which converts units -> credits with
+    `divmod` for exact twentieth steps). `sealed_supply_units` vs
     `sealed_supply_credits` is the same number in two units, not a float
     gap; callers that want a "true credits" total read
-    `sealed_supply_quarters` and divide by 4.
+    `sealed_supply_units` and divide by 20.
     """
     try:
+        cutover_id = _unit_cutover_id(conn)
         boundaries = {
             row["last_entry_id"]: row["running_hash"]
             for row in conn.execute(
@@ -296,40 +335,40 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
         supply = 0
         chain_ok = True
         for row in conn.execute(
-            "SELECT id, account, delta_quarters, reason, target_type,"
+            "SELECT id, account, delta_units, reason, target_type,"
             " target_id, created_at FROM credit_entries"
             " WHERE id <= ? ORDER BY id ASC",
             (seal["last_entry_id"],),
         ):
-            running = _chain_hash(running, row)
+            running = _chain_hash(running, row, cutover_id)
             n += 1
-            supply += row["delta_quarters"]
+            supply += row["delta_units"]
             if row["id"] in boundaries and boundaries[row["id"]] != running:
                 chain_ok = False
                 break
-        sums_ok = n == seal["entry_count"] and supply == seal["total_supply_q"]
+        sums_ok = n == seal["entry_count"] and supply == seal["total_supply_u"]
         return {
             "ok": chain_ok and sums_ok,
             "chain_ok": chain_ok,
             "seals_checked": len(boundaries),
             "sealed_entry_count": seal["entry_count"],
             "live_entry_count": n,
-            "sealed_supply_quarters": seal["total_supply_q"],
-            "sealed_supply_credits": _fmt(seal["total_supply_q"]),
-            "live_supply_quarters": supply,
+            "sealed_supply_units": seal["total_supply_u"],
+            "sealed_supply_credits": _fmt(seal["total_supply_u"]),
+            "live_supply_units": supply,
             "live_supply_credits": _fmt(supply),
         }
     except Exception:  # domain: degrade-silently - verification never breaks /economy
         # Return a minimal seal verification that still satisfies viewer expectations;
         # viewer will show MISMATCH rather than 500.
         try:
-            sealed_q = seal["total_supply_q"]
+            sealed_u = seal["total_supply_u"]
         except Exception:  # domain: degrade-silently - seal extraction fallback
-            sealed_q = 0
+            sealed_u = 0
         try:
-            sealed_cred = _fmt(sealed_q)
+            sealed_cred = _fmt(sealed_u)
         except Exception:  # domain: degrade-silently - seal extraction fallback
-            sealed_cred = str(sealed_q)
+            sealed_cred = str(sealed_u)
         return {
             "ok": False,
             "chain_ok": False,
@@ -338,9 +377,9 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
             if "entry_count" in seal.keys()
             else 0,
             "live_entry_count": 0,
-            "sealed_supply_quarters": sealed_q,
+            "sealed_supply_units": sealed_u,
             "sealed_supply_credits": sealed_cred,
-            "live_supply_quarters": 0,
+            "live_supply_units": 0,
             "live_supply_credits": _fmt(0),
         }
 
@@ -360,6 +399,10 @@ def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
             "SELECT last_entry_id, running_hash, entry_count"
             " FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        # Read beside the seal, inside the same open connection: the
+        # helper degrades to 0 on its own, but a closed handle must never
+        # switch the //5-chain rule silently off on a migrated database.
+        cutover_id = _unit_cutover_id(c)
     if seal is None:
         return {
             "present": False,
@@ -393,7 +436,7 @@ def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
     for e in entries:
         if e["id"] > seal["last_entry_id"]:
             continue
-        running = _chain_hash(running, e)
+        running = _chain_hash(running, e, cutover_id)
         replayed += 1
     chain_ok = replayed == seal["entry_count"] and running == seal["running_hash"]
     return {
@@ -419,7 +462,7 @@ def _flow_rows(conn: sqlite3.Connection, since_iso: str | None) -> dict[str, int
         where += " AND created_at >= ?"
         params = (since_iso,)
     rows = conn.execute(
-        f"SELECT reason, SUM(delta_quarters) AS total FROM credit_entries"
+        f"SELECT reason, SUM(delta_units) AS total FROM credit_entries"
         f" {where} GROUP BY reason",
         params,
     ).fetchall()
@@ -431,7 +474,7 @@ def _flow_rows_between(
 ) -> dict[str, int]:
     """Treasury-side movements between two timestamps [start, end)."""
     rows = conn.execute(
-        "SELECT reason, SUM(delta_quarters) AS total FROM credit_entries"
+        "SELECT reason, SUM(delta_units) AS total FROM credit_entries"
         " WHERE account = 'treasury' AND created_at >= ? AND created_at < ?"
         " GROUP BY reason",
         (start_iso, end_iso),
@@ -450,11 +493,11 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
         # Mints are treasury-side deposits (positive ledger rows), so
         # their magnitude is the plain sum - _take would invert it into
         # a negative 'minted' figure (review 4425).
-        "minted_quarters": _give("genesis", "admin_mint", "proposal_mint"),
-        "burned_quarters": _take("admin_burn", "proposal_burn", "forfeit_burned"),
-        "fees_in_quarters": flows.get("transfer_fee_intake", 0),
-        "forfeit_intake_quarters": flows.get("forfeit_intake", 0),
-        "spend_intake_quarters": sum(
+        "minted_units": _give("genesis", "admin_mint", "proposal_mint"),
+        "burned_units": _take("admin_burn", "proposal_burn", "forfeit_burned"),
+        "fees_in_units": flows.get("transfer_fee_intake", 0),
+        "forfeit_intake_units": flows.get("forfeit_intake", 0),
+        "spend_intake_units": sum(
             v
             for k, v in flows.items()
             if k.endswith("_intake")
@@ -463,22 +506,22 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
         # Citizen-store sink: the store_*_intake slice of the spend intake
         # above (boosts, colors, pins, notes) — what the store recycled
         # into the treasury per window.
-        "store_sink_quarters": sum(
+        "store_sink_units": sum(
             v
             for k, v in flows.items()
             if k.startswith("store_") and k.endswith("_intake")
         ),
-        "transfer_intake_quarters": flows.get("transfer_intake", 0),
+        "transfer_intake_units": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
         # paid), but the flow row names the direction already.
-        "payouts_out_quarters": -flows.get("payout_source", 0),
-        "payout_returns_in_quarters": flows.get("payout_return", 0),
+        "payouts_out_units": -flows.get("payout_source", 0),
+        "payout_returns_in_units": flows.get("payout_return", 0),
     }
 
 
 def _runway_estimate(
     flows_window: dict,
-    treasury_quarters: int,
+    treasury_units: int,
     *,
     window_days: int = 14,
     enabled: bool,
@@ -487,8 +530,8 @@ def _runway_estimate(
     trailing window's net burn (window_days, default 14). Mints count as
     income and burns as expense (the user-authored decision), joined by the
     organic payouts/returns so the number reflects the true net drain over
-    the window. Days are treasury-quarters over per-day burn, both in
-    quarters. Purely advisory - observability over /economy, it never
+    the window. Days are treasury-units over per-day burn, both in units.
+    Purely advisory - observability over /economy, it never
     touches payout behavior.
 
     Status semantics (degrade-silently - a weird overview is never allowed
@@ -507,46 +550,46 @@ def _runway_estimate(
             "status": "disabled",
             "days": None,
             "window_days": window_days,
-            "net_burn_window_quarters": 0,
-            "in_window_quarters": 0,
-            "out_window_quarters": 0,
+            "net_burn_window_units": 0,
+            "in_window_units": 0,
+            "out_window_units": 0,
         }
     income = (
-        flows_window.get("minted_quarters", 0)
-        + flows_window.get("fees_in_quarters", 0)
-        + flows_window.get("forfeit_intake_quarters", 0)
-        + flows_window.get("spend_intake_quarters", 0)
-        + flows_window.get("transfer_intake_quarters", 0)
-        + flows_window.get("payout_returns_in_quarters", 0)
+        flows_window.get("minted_units", 0)
+        + flows_window.get("fees_in_units", 0)
+        + flows_window.get("forfeit_intake_units", 0)
+        + flows_window.get("spend_intake_units", 0)
+        + flows_window.get("transfer_intake_units", 0)
+        + flows_window.get("payout_returns_in_units", 0)
     )
-    expense = flows_window.get("burned_quarters", 0) + flows_window.get(
-        "payouts_out_quarters", 0
+    expense = flows_window.get("burned_units", 0) + flows_window.get(
+        "payouts_out_units", 0
     )
     net_burn = expense - income
     base = {
         "enabled": True,
         "window_days": window_days,
-        "net_burn_window_quarters": net_burn,
-        "in_window_quarters": income,
-        "out_window_quarters": expense,
+        "net_burn_window_units": net_burn,
+        "in_window_units": income,
+        "out_window_units": expense,
     }
     if net_burn <= 0:
         return {**base, "status": "idle", "days": None}
-    if treasury_quarters <= 0:
+    if treasury_units <= 0:
         return {**base, "status": "exhausted", "days": None}
     # Net burn over the window annualised to a per-day rate, both sides in
-    # quarters - crediting the treasury would divide by the quarter scale
-    # twice and understate the runway by exactly 4x (#B60). Round down so
-    # the estimate is conservative.
+    # units - crediting the treasury would divide by the unit scale twice
+    # and understate the runway (#B60 carried over to twentieths). Round
+    # down so the estimate is conservative.
     per_day = net_burn / window_days
-    days = int(treasury_quarters / per_day) if per_day > 0 else None
+    days = int(treasury_units / per_day) if per_day > 0 else None
     return {**base, "status": "ok", "days": days}
 
 
-def _fmt(quarters: int) -> str:
+def _fmt(units: int) -> str:
     from db._credits import format_credits
 
-    return format_credits(quarters)
+    return format_credits(units)
 
 
 def headline_balances(conn: sqlite3.Connection | None = None) -> dict:
@@ -558,25 +601,23 @@ def headline_balances(conn: sqlite3.Connection | None = None) -> dict:
     caller's connection (the /overview treasury pair does)."""
     with _conn() if conn is None else nullcontext(conn) as c:
         row = c.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0),"
+            "SELECT COALESCE(SUM(delta_units), 0),"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
-            " THEN delta_quarters ELSE 0 END), 0),"
+            " THEN delta_units ELSE 0 END), 0),"
             " COALESCE(SUM(CASE WHEN account = 'escrow'"
-            " THEN delta_quarters ELSE 0 END), 0)"
+            " THEN delta_units ELSE 0 END), 0)"
             " FROM credit_entries",
         ).fetchone()
-        supply_q, treasury_q, escrow_q = row[0], row[1], row[2]
+        supply_u, treasury_u, escrow_u = row[0], row[1], row[2]
     return {
-        "treasury_quarters": treasury_q,
-        "escrow_quarters": escrow_q,
-        "circulating_quarters": supply_q - treasury_q - escrow_q,
+        "treasury_units": treasury_u,
+        "escrow_units": escrow_u,
+        "circulating_units": supply_u - treasury_u - escrow_u,
     }
 
 
-def treasury_delta_quarters(
-    since_iso: str, conn: sqlite3.Connection | None = None
-) -> int:
-    """Sum of treasury-account delta_quarters since `since_iso` (inclusive).
+def treasury_delta_units(since_iso: str, conn: sqlite3.Connection | None = None) -> int:
+    """Sum of treasury-account delta_units since `since_iso` (inclusive).
 
     Protocol-agnostic helper for viewer enrichment (overview Δ24h).
     Keeps the SQL in the db layer so the viewer stays read-only and
@@ -585,7 +626,7 @@ def treasury_delta_quarters(
     """
     with _conn() if conn is None else nullcontext(conn) as c:
         return c.execute(
-            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
             " WHERE account='treasury' AND created_at >= ?",
             (since_iso,),
         ).fetchone()[0]
@@ -602,15 +643,15 @@ def economy_overview() -> dict:
     with _conn() as conn:
         now_dt = datetime.now(timezone.utc)
         totals = conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s,"
+            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_units), 0) AS s,"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
-            " THEN delta_quarters ELSE 0 END), 0) AS t,"
+            " THEN delta_units ELSE 0 END), 0) AS t,"
             " COALESCE(SUM(CASE WHEN account = 'escrow'"
-            " THEN delta_quarters ELSE 0 END), 0) AS e"
+            " THEN delta_units ELSE 0 END), 0) AS e"
             " FROM credit_entries"
         ).fetchone()
-        treasury_q = totals["t"]
-        escrow_q = totals["e"]
+        treasury_u = totals["t"]
+        escrow_u = totals["e"]
         # Remaining commitment per active credit stake: everything not
         # yet paid out, escrowed locks INCLUDED (they can still pay a
         # future merge) and already-paid capacity excluded. Same formula
@@ -628,7 +669,7 @@ def economy_overview() -> dict:
         # taker-deposit bonus pools alike.
         # Identical to totals["e"] above (same account slice, same
         # aggregate) - reuse it instead of scanning escrow twice.
-        job_escrow = escrow_q
+        job_escrow = escrow_u
         from db._jobs import open_active_job_counts
 
         jobs_open, jobs_offered, jobs_active = open_active_job_counts(conn)
@@ -639,18 +680,18 @@ def economy_overview() -> dict:
         try:
             from db._guilds import guild_balance
 
-            guild_held_q = 0
+            guild_held_u = 0
             for grow in conn.execute(
                 "SELECT id FROM guilds WHERE status = 'active'"
             ).fetchall():
-                guild_held_q += guild_balance(conn, grow["id"])
+                guild_held_u += guild_balance(conn, grow["id"])
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
-            guild_held_q = 0
+            guild_held_u = 0
         try:
             from db._jobs_ops._detail import _remaining_escrow
 
-            guild_escrow_q = 0
+            guild_escrow_u = 0
             for jrow in conn.execute(
                 "SELECT l.job_id FROM guild_job_links l JOIN jobs j"
                 " ON j.id = l.job_id WHERE l.role = 'commissioned'"
@@ -660,10 +701,10 @@ def economy_overview() -> dict:
                     "SELECT * FROM jobs WHERE id = ?", (jrow["job_id"],)
                 ).fetchone()
                 if job is not None:
-                    guild_escrow_q += int(_remaining_escrow(job) or 0)
+                    guild_escrow_u += int(_remaining_escrow(job) or 0)
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
-            guild_escrow_q = 0
+            guild_escrow_u = 0
 
         windows: dict[str, dict] = {}
         prev_windows: dict[str, dict] = {}
@@ -691,13 +732,13 @@ def economy_overview() -> dict:
                 "agent_id": r["agent_id"],
                 "name": r["name"],
                 "name_color": r["name_color"],
-                "balance_quarters": r["bal"],
+                "balance_units": r["bal"],
                 "balance_credits": _fmt(r["bal"]),
             }
             for r in conn.execute(
                 "SELECT e.agent_id AS agent_id, a.name AS name,"
                 " se.name_color AS name_color,"
-                " SUM(e.delta_quarters) AS bal"
+                " SUM(e.delta_units) AS bal"
                 " FROM credit_entries e JOIN agents a ON a.id = e.agent_id"
                 " LEFT JOIN store_entitlements se ON se.agent_id = a.id"
                 # Treasury/escrow rows carry agent_id NULL (schema.sql
@@ -724,9 +765,9 @@ def economy_overview() -> dict:
                     "seals_checked": 0,
                     "sealed_entry_count": 0,
                     "live_entry_count": 0,
-                    "sealed_supply_quarters": 0,
+                    "sealed_supply_units": 0,
                     "sealed_supply_credits": _fmt(0),
-                    "live_supply_quarters": 0,
+                    "live_supply_units": 0,
                     "live_supply_credits": _fmt(0),
                 }
             try:
@@ -734,10 +775,10 @@ def economy_overview() -> dict:
                     "created_at": seal_row["created_at"],
                     "last_entry_id": seal_row["last_entry_id"],
                     "entry_count": seal_row["entry_count"],
-                    "total_supply_quarters": seal_row["total_supply_q"],
-                    "total_supply_credits": _fmt(seal_row["total_supply_q"]),
-                    "treasury_quarters": seal_row["treasury_q"],
-                    "treasury_credits": _fmt(seal_row["treasury_q"]),
+                    "total_supply_units": seal_row["total_supply_u"],
+                    "total_supply_credits": _fmt(seal_row["total_supply_u"]),
+                    "treasury_units": seal_row["treasury_u"],
+                    "treasury_credits": _fmt(seal_row["treasury_u"]),
                     "running_hash": seal_row["running_hash"],
                     **check,
                 }
@@ -752,22 +793,22 @@ def economy_overview() -> dict:
                     "entry_count": seal_row["entry_count"]
                     if "entry_count" in seal_row.keys()
                     else 0,
-                    "total_supply_quarters": 0,
+                    "total_supply_units": 0,
                     "total_supply_credits": _fmt(0),
-                    "treasury_quarters": 0,
+                    "treasury_units": 0,
                     "treasury_credits": _fmt(0),
                     "running_hash": "",
                     **check,
                 }
 
-        supply_q = totals["s"]
+        supply_u = totals["s"]
         try:
             _runway_window = max(1, int(config.ECONOMY_RUNWAY_WINDOW_DAYS))
             _runway_bound = day_dt_to_iso(now_dt - timedelta(days=_runway_window))
             _runway_flows = _summarize_flows(_flow_rows(conn, _runway_bound))
             runway = _runway_estimate(
                 _runway_flows,
-                treasury_q,
+                treasury_u,
                 window_days=_runway_window,
                 enabled=bool(config.ECONOMY_RUNWAY and config.TREASURY_FUNDS_PAYOUTS),
             )
@@ -778,20 +819,20 @@ def economy_overview() -> dict:
         return {
             "prev_flows": prev_windows,
             "entry_count": totals["n"],
-            "total_supply_quarters": supply_q,
-            "total_supply_credits": _fmt(supply_q),
-            "treasury_quarters": treasury_q,
-            "treasury_credits": _fmt(treasury_q),
-            "circulating_quarters": supply_q - treasury_q - escrow_q,
-            "circulating_credits": _fmt(supply_q - treasury_q - escrow_q),
-            "committed_to_active_stakes_quarters": committed,
+            "total_supply_units": supply_u,
+            "total_supply_credits": _fmt(supply_u),
+            "treasury_units": treasury_u,
+            "treasury_credits": _fmt(treasury_u),
+            "circulating_units": supply_u - treasury_u - escrow_u,
+            "circulating_credits": _fmt(supply_u - treasury_u - escrow_u),
+            "committed_to_active_stakes_units": committed,
             "committed_to_active_stakes_credits": _fmt(committed),
-            "held_in_job_escrow_quarters": job_escrow,
+            "held_in_job_escrow_units": job_escrow,
             "held_in_job_escrow_credits": _fmt(job_escrow),
-            "held_in_guild_pools_quarters": guild_held_q,
-            "held_in_guild_pools_credits": _fmt(guild_held_q),
-            "held_in_guild_escrow_quarters": guild_escrow_q,
-            "held_in_guild_escrow_credits": _fmt(guild_escrow_q),
+            "held_in_guild_pools_units": guild_held_u,
+            "held_in_guild_pools_credits": _fmt(guild_held_u),
+            "held_in_guild_escrow_units": guild_escrow_u,
+            "held_in_guild_escrow_credits": _fmt(guild_escrow_u),
             "conservation": verify_conservation(conn),
             "open_jobs": jobs_open,
             "offered_jobs": jobs_offered,
@@ -850,10 +891,10 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
     # them would change Rule-B verdicts).
     citizen, official, pools = conn.execute(
         "SELECT COALESCE(SUM(CASE WHEN official = 0"
-        " THEN payment_quarters * (total_cycles - cycles_done) ELSE 0 END), 0),"
+        " THEN payment_units * (total_cycles - cycles_done) ELSE 0 END), 0),"
         " COALESCE(SUM(CASE WHEN official = 1"
-        " THEN treasury_escrow_quarters ELSE 0 END), 0),"
-        " COALESCE(SUM(deposit_bonus_quarters), 0)"
+        " THEN treasury_escrow_units ELSE 0 END), 0),"
+        " COALESCE(SUM(deposit_bonus_units), 0)"
         f" FROM jobs WHERE {live}",
     ).fetchone()
     return int(citizen) + int(official) + int(pools)
@@ -866,8 +907,8 @@ def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
     # a WHERE clause, so pre-cutover rows still count toward the sum.
     # Double COALESCE: an empty escrow table must read (0, 0), not a false
     # trip on None == 0.
-    escrow_q, null_tx_rows = c.execute(
-        "SELECT COALESCE(SUM(delta_quarters), 0),"
+    escrow_u, null_tx_rows = c.execute(
+        "SELECT COALESCE(SUM(delta_units), 0),"
         " COALESCE(SUM(CASE WHEN id > ? AND tx_id IS NULL THEN 1 ELSE 0 END), 0)"
         " FROM credit_entries WHERE account = 'escrow'",
         (cutover,),
@@ -881,7 +922,7 @@ def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
     # re-creates principal a pre-cutover debit destroyed) and is exempt
     # when every leg of its tx is a backfill leg.
     tx_sums = c.execute(
-        "SELECT tx_id, COALESCE(SUM(delta_quarters), 0) AS s"
+        "SELECT tx_id, COALESCE(SUM(delta_units), 0) AS s"
         " FROM credit_entries WHERE tx_id IN (SELECT tx_id FROM credit_entries"
         " WHERE account = 'escrow' AND id > ? AND tx_id IS NOT NULL)"
         " GROUP BY tx_id",
@@ -908,11 +949,11 @@ def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
     # escrow leg belongs to a tx; legacy single-sided rows sit at or
     # below the cutover by construction. Counted in the fused query above.
     # Rule B: the ledger sum equals the jobs-table recompute.
-    ok = not tx_violations and null_tx_rows == 0 and escrow_q == recomputed
+    ok = not tx_violations and null_tx_rows == 0 and escrow_u == recomputed
     return {
         "ok": ok,
-        "escrow_quarters": escrow_q,
-        "recomputed_quarters": recomputed,
+        "escrow_units": escrow_u,
+        "recomputed_units": recomputed,
         "tx_violations": tx_violations,
         "null_tx_rows": null_tx_rows,
         "cutover_entry_id": cutover,
@@ -932,8 +973,8 @@ def verify_conservation(conn: sqlite3.Connection | None = None) -> dict:
         return {
             "ok": False,
             "error": str(exc),
-            "escrow_quarters": 0,
-            "recomputed_quarters": 0,
+            "escrow_units": 0,
+            "recomputed_units": 0,
             "tx_violations": [],
             "null_tx_rows": 0,
             "cutover_entry_id": 0,
@@ -960,7 +1001,7 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
         except Exception:  # domain: economy-migration - no meta table yet
             live = None
         if live is not None and live[0] == "1":
-            return {"backfilled_quarters": 0, "jobs": 0, "already_live": True}
+            return {"backfilled_units": 0, "jobs": 0, "already_live": True}
         max_id = c.execute(
             "SELECT COALESCE(MAX(id), 0) FROM credit_entries"
         ).fetchone()[0]
@@ -973,9 +1014,9 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
         c.row_factory = sqlite3.Row
         try:
             rows = c.execute(
-                "SELECT id, official, payment_quarters, total_cycles, cycles_done,"
-                " COALESCE(treasury_escrow_quarters, 0) AS teq,"
-                " COALESCE(deposit_bonus_quarters, 0) AS pool"
+                "SELECT id, official, payment_units, total_cycles, cycles_done,"
+                " COALESCE(treasury_escrow_units, 0) AS teq,"
+                " COALESCE(deposit_bonus_units, 0) AS pool"
                 " FROM jobs WHERE status IN ('open', 'offered', 'active')"
             ).fetchall()
         finally:
@@ -986,7 +1027,7 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             if r["official"]:
                 holding = int(r["teq"])
             else:
-                holding = int(r["payment_quarters"]) * max(
+                holding = int(r["payment_units"]) * max(
                     0, int(r["total_cycles"]) - int(r["cycles_done"])
                 )
             holding += int(r["pool"])
@@ -995,7 +1036,7 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             # releases, all stamped with this job as target) cover part
             # or all of it. Legacy holdings have no escrow legs at all.
             paired = c.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
                 " WHERE account = 'escrow' AND target_type = 'job'"
                 " AND target_id = ?",
                 (r["id"],),
@@ -1024,7 +1065,7 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
             f" ('escrow_cutover_entry_id', '{int(max_id)}')"
         )
-        return {"backfilled_quarters": total, "jobs": jobs, "already_live": False}
+        return {"backfilled_units": total, "jobs": jobs, "already_live": False}
 
 
 def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
@@ -1065,8 +1106,8 @@ def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
                 target_type="economy",
                 target_id=None,
                 detail={
-                    "escrow_quarters": result["escrow_quarters"],
-                    "recomputed_quarters": result["recomputed_quarters"],
+                    "escrow_units": result["escrow_units"],
+                    "recomputed_units": result["recomputed_units"],
                     "tx_violations": result["tx_violations"],
                     "null_tx_rows": result["null_tx_rows"],
                 },

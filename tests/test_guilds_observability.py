@@ -35,22 +35,22 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int) -> None:
+def _fund(agent_id: int, units: int) -> None:
     from db._credits import grant as _grant
 
     with db._conn() as conn:
-        _grant(agent_id, quarters, "test_seed", conn=conn)
+        _grant(agent_id, units, "test_seed", conn=conn)
 
 
 def _found() -> tuple[dict, dict]:
     ag = _new_agent("go-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], f"Obs-{_SEQ[0]}")
 
 
 def _mate(founder: dict, guild: dict, deposit: float = 10.0) -> dict:
     mate = _new_agent("go-mate")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     if deposit:
@@ -87,20 +87,20 @@ def test_economy_guild_lines():
     # two members: the spend lock re-locks solo guilds.)
     founder, guild = _found()
     mate = _mate(founder, guild, 0)
-    before_pools = db.economy_overview()["held_in_guild_pools_quarters"]
-    before_escrow = db.economy_overview()["held_in_guild_escrow_quarters"]
+    before_pools = db.economy_overview()["held_in_guild_pools_units"]
+    before_escrow = db.economy_overview()["held_in_guild_escrow_units"]
     db.guild_deposit(founder["token"], guild["id"], 10.0)
     ov = db.economy_overview()
-    assert ov["held_in_guild_pools_quarters"] - before_pools == 40
-    assert ov["held_in_guild_escrow_quarters"] == before_escrow
-    cos = db.request_guild_cosign(founder["token"], guild["id"], "pool task", 8)
+    assert ov["held_in_guild_pools_units"] - before_pools == 200
+    assert ov["held_in_guild_escrow_units"] == before_escrow
+    cos = db.request_guild_cosign(founder["token"], guild["id"], "pool task", 40)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     job = db.create_job(
         founder["token"], "Pool task", "do it", 2.0, ["go"], guild_id=guild["id"]
     )
     ov = db.economy_overview()
-    assert ov["held_in_guild_escrow_quarters"] - before_escrow == 8, ov[
-        "held_in_guild_escrow_quarters"
+    assert ov["held_in_guild_escrow_units"] - before_escrow == 40, ov[
+        "held_in_guild_escrow_units"
     ]
     assert "Pool task" in job["title"]
     assert mate["agent_id"]
@@ -146,7 +146,7 @@ def test_admin_release_and_chat_and_disband():
     out = db.admin_release_guild_member(ADMIN, guild["id"], mate2["name"], "refund")
     assert out["paid"] > 0, out
     out = db.admin_release_guild_member(ADMIN, guild["id"], mate["name"], "forfeit")
-    assert out["forfeited_quarters"] > 0, out
+    assert out["forfeited_units"] > 0, out
     out = db.admin_disband_guild(ADMIN, guild["id"])
     assert out["disbanded"] is True, out
 
@@ -166,7 +166,7 @@ def test_delete_agent_sweeps_guild_family():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO guild_fee_arrears (guild_id, member_agent_id, week,"
-            " quarters, status) VALUES (?, ?, '2026-W01', 1, 'open')",
+            " units, status) VALUES (?, ?, '2026-W01', 5, 'open')",
             (guild["id"], mate["agent_id"]),
         )
     import moderation
@@ -256,7 +256,7 @@ def test_guild_page_v2_sections():
     ).body.decode()
     assert "<svg" in html and "Balance chart" in html
     assert "Contributors" in html and mate["name"] in html
-    db.request_guild_cosign(founder["token"], guild["id"], "printer", 20)
+    db.request_guild_cosign(founder["token"], guild["id"], "printer", 100)
     html = guild_detail_page(
         _Req(path_params={"guild_id": str(guild["id"])})
     ).body.decode()
@@ -361,7 +361,7 @@ def test_contribs_keep_deleted_citizen():
     moderation.delete_agent(mate["agent_id"], ADMIN)
     rows = db.guild_contribs(guild["id"])
     ghost = [r for r in rows if r["agent_id"] is None]
-    assert len(ghost) == 1 and ghost[0]["deposited"] == 40, rows
+    assert len(ghost) == 1 and ghost[0]["deposited"] == 200, rows
 
 
 def test_delete_covers_cosign_debtlink_freezer():
@@ -370,7 +370,7 @@ def test_delete_covers_cosign_debtlink_freezer():
     founder, guild = _found()
     _mate(founder, guild, 10.0)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
-    cos = db.request_guild_cosign(founder["token"], guild["id"], "press", 24)
+    cos = db.request_guild_cosign(founder["token"], guild["id"], "press", 120)
     assert cos["cosign_id"]
     db.request_guild_subsidy(founder["token"], guild["id"], 1.0, True, "owed")
     freezer = _new_agent("go-freezer")
@@ -403,7 +403,7 @@ def test_reputation_sort_stable_over_history():
     founder, guild = _found()
     for tag in ("s1", "s2"):
         ag = _new_agent(f"go-hist-{tag}")
-        _fund(ag["agent_id"], 120)
+        _fund(ag["agent_id"], 600)
         gg = db.found_guild(ag["token"], f"Hist-{tag}-{_SEQ[0]}")
         db.disband_guild(ag["token"], gg["id"], "zero")
     first = [(r["id"], r["reputation"]) for r in db.list_guilds(sort="reputation")]
@@ -420,11 +420,11 @@ def test_admin_release_nets_fee_arrears():
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO guild_fee_arrears (guild_id, member_agent_id, week,"
-            " quarters, status) VALUES (?, ?, '2026-W01', 1, 'open')",
+            " units, status) VALUES (?, ?, '2026-W01', 5, 'open')",
             (guild["id"], mate["agent_id"]),
         )
     out = db.admin_release_guild_member(ADMIN, guild["id"], mate["name"], "refund")
-    assert out["paid"] == 39, out
+    assert out["paid"] == 195, out
     with db._conn() as conn:
         status = conn.execute(
             "SELECT status FROM guild_fee_arrears WHERE guild_id = ?"
@@ -496,8 +496,8 @@ def test_boot_relaxes_guild_attribution():
                 " CHECK (spending_suspended IN (0, 1)),"
                 " suspended_at TEXT, suspended_by INTEGER REFERENCES agents(id),"
                 " suspend_reason TEXT, disbanded_at TEXT,"
-                " upkeep_arrears_quarters INTEGER NOT NULL DEFAULT 0"
-                " CHECK (upkeep_arrears_quarters >= 0),"
+                " upkeep_arrears_units INTEGER NOT NULL DEFAULT 0"
+                " CHECK (upkeep_arrears_units >= 0),"
                 " last_upkeep_week TEXT, emptied_at TEXT,"
                 " enrollment TEXT NOT NULL DEFAULT 'invite_only'"
                 " CHECK (enrollment IN ('open', 'invite_only')),"
@@ -510,7 +510,7 @@ def test_boot_relaxes_guild_attribution():
                 "CREATE TABLE guild_subsidies ("
                 " id INTEGER PRIMARY KEY AUTOINCREMENT,"
                 " guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,"
-                " amount_quarters INTEGER NOT NULL CHECK (amount_quarters > 0),"
+                " amount_units INTEGER NOT NULL CHECK (amount_units > 0),"
                 " tier TEXT NOT NULL CHECK (tier IN ('auto', 'admin')),"
                 " payback INTEGER NOT NULL DEFAULT 0 CHECK (payback IN (0, 1)),"
                 " status TEXT NOT NULL DEFAULT 'requested',"
@@ -553,9 +553,9 @@ def test_boot_relaxes_guild_attribution():
                 " mode TEXT NOT NULL CHECK (mode IN ('lump', 'window')),"
                 " pct REAL NOT NULL DEFAULT 20.0,"
                 " days INTEGER NOT NULL DEFAULT 14,"
-                " cap_quarters INTEGER NOT NULL CHECK (cap_quarters > 0),"
-                " amount_quarters INTEGER NOT NULL DEFAULT 0"
-                " CHECK (amount_quarters >= 0),"
+                " cap_units INTEGER NOT NULL CHECK (cap_units > 0),"
+                " amount_units INTEGER NOT NULL DEFAULT 0"
+                " CHECK (amount_units >= 0),"
                 " status TEXT NOT NULL DEFAULT 'open'"
                 " CHECK (status IN ('open', 'paid', 'expired')),"
                 " opened_by INTEGER NOT NULL REFERENCES agents(id),"

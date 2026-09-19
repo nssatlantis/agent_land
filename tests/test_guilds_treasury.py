@@ -38,13 +38,13 @@ def _new_agent(prefix: str) -> dict:
     return db.register_agent(f"{prefix}-{_SEQ[0]}")
 
 
-def _fund(agent_id: int, quarters: int):
+def _fund(agent_id: int, units: int):
     import db._credits as _cr
 
     with db._conn() as _c:
         ok = _cr.grant(
             agent_id,
-            quarters,
+            units,
             "guild_treasury_seed",
             target_type="test",
             target_id=1,
@@ -77,7 +77,7 @@ def _unarm(old, env_key: str):
 
 def _found(name: str | None = None) -> tuple[dict, dict]:
     ag = _new_agent("gt-founder")
-    _fund(ag["agent_id"], 120)
+    _fund(ag["agent_id"], 600)
     return ag, db.found_guild(ag["token"], name or f"Treasury-{_SEQ[0]}")
 
 
@@ -101,7 +101,7 @@ def _open_proposal(tag: str) -> int:
 def _rich_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
     founder, guild = _found()
     mate = _new_agent("gt-mate")
-    _fund(mate["agent_id"], 60)
+    _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
     db.guild_deposit(founder["token"], guild["id"], pool_cr)
@@ -165,12 +165,12 @@ def test_guild_stake_caps_and_link():
         raise AssertionError("single-cap breach accepted")
     except Exception as exc:
         assert "33%" in str(exc), exc
-    # Founder cannot cover 20q personally (18 left) - the pool can.
-    assert _bal(founder["agent_id"]) < 20
-    cos = db.request_guild_cosign(founder["token"], gid, "stake", 20)
+    # Founder cannot cover 100u personally (70 left) - the pool can.
+    assert _bal(founder["agent_id"]) < 100
+    cos = db.request_guild_cosign(founder["token"], gid, "stake", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     out = db.guild_stake(founder["token"], pid, 2.5, 2, bonus_pct=50)
-    assert out["per_pr"] == 10 and out["bonus_pct"] == 50
+    assert out["per_pr"] == 50 and out["bonus_pct"] == 50
     with db._conn() as conn:
         link = conn.execute(
             "SELECT * FROM guild_stake_links WHERE stake_id = ?",
@@ -182,11 +182,11 @@ def test_guild_stake_caps_and_link():
     # fourth 20 (80 >= 75) refuses. Each needs its own proposal + cosign.
     for tag in ("t2", "t3"):
         pid_n = _open_proposal(tag)
-        cos_n = db.request_guild_cosign(founder["token"], gid, tag, 20)
+        cos_n = db.request_guild_cosign(founder["token"], gid, tag, 100)
         db.confirm_guild_cosign(founder["token"], cos_n["cosign_id"])
         db.guild_stake(founder["token"], pid_n, 2.5, 2)
     pid_4 = _open_proposal("t4")
-    cos_4 = db.request_guild_cosign(founder["token"], gid, "t4", 20)
+    cos_4 = db.request_guild_cosign(founder["token"], gid, "t4", 100)
     db.confirm_guild_cosign(founder["token"], cos_4["cosign_id"])
     try:
         db.guild_stake(founder["token"], pid_4, 2.5, 2)
@@ -204,7 +204,7 @@ def test_stake_lock_funds_conduit():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("lock")
-    cos = db.request_guild_cosign(founder["token"], gid, "lock", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "lock", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     db.guild_stake(founder["token"], pid, 2.5, 2)
     f_before = _bal(founder["agent_id"])
@@ -212,7 +212,7 @@ def test_stake_lock_funds_conduit():
     locked = db.lock_stakes_for_pr(None, pid, 9101, opener["agent_id"])
     assert locked == 1
     # Pool funded the lock; the conduit nets zero.
-    assert _pool(gid) == 100 - 10, _pool(gid)
+    assert _pool(gid) == 500 - 50, _pool(gid)
     assert _bal(founder["agent_id"]) == f_before, (
         _bal(founder["agent_id"]),
         f_before,
@@ -221,7 +221,7 @@ def test_stake_lock_funds_conduit():
     # and founder both unchanged.
     locked2 = db.lock_stakes_for_pr(None, pid, 9101, opener["agent_id"])
     assert locked2 == 0
-    assert _pool(gid) == 90, _pool(gid)
+    assert _pool(gid) == 450, _pool(gid)
     assert _bal(founder["agent_id"]) == f_before
 
 
@@ -229,7 +229,7 @@ def test_stake_payout_split_and_self():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("pay")
-    cos = db.request_guild_cosign(founder["token"], gid, "pay", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "pay", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     db.guild_stake(founder["token"], pid, 2.5, 2, bonus_pct=50)
     opener = _new_agent("gt-winopener")
@@ -237,13 +237,13 @@ def test_stake_payout_split_and_self():
     o_before = _bal(opener["agent_id"])
     paid = db.pay_stake_rewards(None, 9102)
     assert paid == 1
-    # 10q lock: 5q bonus to opener, 5q pool memo.
-    assert _bal(opener["agent_id"]) == o_before + 5
-    assert _pool(gid) == 100 - 10 + 5, _pool(gid)
+    # 50u lock: 25u bonus to opener, 25u pool memo.
+    assert _bal(opener["agent_id"]) == o_before + 25
+    assert _pool(gid) == 500 - 50 + 25, _pool(gid)
     # Self-stake: founder opens the PR on their own backing - the whole
     # lock returns poolward, never to the conduit wallet.
     pid2 = _open_proposal("selfpay")
-    cos2 = db.request_guild_cosign(founder["token"], gid, "selfpay", 20)
+    cos2 = db.request_guild_cosign(founder["token"], gid, "selfpay", 100)
     db.confirm_guild_cosign(founder["token"], cos2["cosign_id"])
     db.guild_stake(founder["token"], pid2, 2.5, 1)
     f_before = _bal(founder["agent_id"])
@@ -259,16 +259,16 @@ def test_stake_refund_to_pool():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("refund")
-    cos = db.request_guild_cosign(founder["token"], gid, "refund", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "refund", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     db.guild_stake(founder["token"], pid, 2.5, 2)
     opener = _new_agent("gt-refopener")
     db.lock_stakes_for_pr(None, pid, 9104, opener["agent_id"])
-    assert _pool(gid) == 90
+    assert _pool(gid) == 450
     f_before = _bal(founder["agent_id"])
     refunded = db.refund_stake_locks(None, 9104)
     assert refunded == 1
-    assert _pool(gid) == 100, _pool(gid)
+    assert _pool(gid) == 500, _pool(gid)
     assert _bal(founder["agent_id"]) == f_before
 
 
@@ -281,7 +281,7 @@ def test_upkeep_issue_pay_sweep():
     assert report["issued"] >= 2, report
     with db._conn() as conn:
         rows = conn.execute(
-            "SELECT member_agent_id, quarters, status FROM guild_fee_arrears"
+            "SELECT member_agent_id, units, status FROM guild_fee_arrears"
             " WHERE guild_id = ?",
             (gid,),
         ).fetchall()
@@ -296,7 +296,7 @@ def test_upkeep_issue_pay_sweep():
             (founder["agent_id"], mate["agent_id"]),
         ).fetchall()
     assert sorted(r[0] for r in rows) == sorted([founder["agent_id"], mate["agent_id"]])
-    assert all(r[1] == 1 and r[2] == "open" for r in rows)
+    assert all(r[1] == 5 and r[2] == "open" for r in rows)
     assert len(invs) == 2
     assert {r[0] for r in pings} == {founder["agent_id"], mate["agent_id"]}
     # Idempotent within the week: no second arrears, no second invoice.
@@ -308,8 +308,8 @@ def test_upkeep_issue_pay_sweep():
     m_before = _bal(mate["agent_id"])
     out = db.pay_invoice(mate["token"], mate_inv)
     assert out["status"] == "paid"
-    assert _bal(mate["agent_id"]) == m_before - 1
-    assert _pool(gid) == 100 + 1, _pool(gid)
+    assert _bal(mate["agent_id"]) == m_before - 5
+    assert _pool(gid) == 500 + 5, _pool(gid)
     with db._conn() as conn:
         left = conn.execute(
             "SELECT COUNT(*) FROM guild_fee_arrears WHERE guild_id = ?"
@@ -317,7 +317,7 @@ def test_upkeep_issue_pay_sweep():
             (gid, mate["agent_id"]),
         ).fetchone()[0]
     assert left == 0
-    # 48h later the sweep takes min(5q, members) and stamps the week.
+    # 48h later the sweep takes min(25u, members) and stamps the week.
     with db._conn() as conn:
         conn.execute(
             "UPDATE invoices SET created_at = ? WHERE id IN (SELECT invoice_id"
@@ -325,8 +325,8 @@ def test_upkeep_issue_pay_sweep():
             ("2020-01-01T00:00:00.000Z", gid),
         )
     report3 = db.sweep_guild_upkeep()
-    assert report3["swept"].get(gid) == 2, report3
-    assert _pool(gid) == 99, _pool(gid)
+    assert report3["swept"].get(gid) == 10, report3
+    assert _pool(gid) == 495, _pool(gid)
     with db._conn() as conn:
         week = conn.execute(
             "SELECT last_upkeep_week FROM guilds WHERE id = ?", (gid,)
@@ -337,7 +337,7 @@ def test_upkeep_issue_pay_sweep():
 
 
 def test_upkeep_suspend_recover_grace():
-    founder, guild, mate = _rich_guild(pool_cr=0.25)  # 1q pool
+    founder, guild, mate = _rich_guild(pool_cr=0.05)  # 1u pool
     gid = guild["id"]
     db.sweep_guild_upkeep()
     with db._conn() as conn:
@@ -346,7 +346,7 @@ def test_upkeep_suspend_recover_grace():
             " FROM guild_fee_invoices WHERE guild_id = ?)",
             ("2020-01-01T00:00:00.000Z", gid),
         )
-    # Pool 1q < due 2q: suspend, no sweep.
+    # Pool 1u < due 10u: suspend, no sweep.
     report = db.sweep_guild_upkeep()
     assert report["suspended"] == [gid], report
     assert report["swept"] == {}
@@ -357,14 +357,14 @@ def test_upkeep_suspend_recover_grace():
     assert flag == 1
     # Locked guild refuses spends but still takes deposits.
     try:
-        db.guild_withdraw(founder["token"], gid, 0.25)
+        db.guild_withdraw(founder["token"], gid, 0.05)
         raise AssertionError("suspended withdrawal accepted")
     except Exception as exc:
         assert "suspended" in str(exc), exc
-    db.guild_deposit(mate["token"], gid, 2.5)  # +10q: pool 11
+    db.guild_deposit(mate["token"], gid, 2.5)  # +50u: pool 51
     report2 = db.sweep_guild_upkeep()
     assert report2["recovered"] == [gid], report2
-    assert report2["swept"].get(gid) == 2, report2
+    assert report2["swept"].get(gid) == 10, report2
     with db._conn() as conn:
         flag2 = conn.execute(
             "SELECT spending_suspended FROM guilds WHERE id = ?", (gid,)
@@ -397,12 +397,12 @@ def test_arrears_withhold_on_payouts():
     gid = guild["id"]
     db.sweep_guild_upkeep()  # 1q arrears each, no payment
     # Withdrawal reduced by the founder's arrears, arrears settled.
-    cos = db.request_guild_cosign(founder["token"], gid, "wd", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "wd", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     out = db.guild_withdraw(founder["token"], gid, 5.0)
-    # 20q share - 1q arrears = 19q, fee ceil(2%*19)=1 -> 18q.
-    assert out["paid_quarters"] == 18, out
-    assert out["arrears_withheld"] == 1, out
+    # 100u share - 5u arrears = 95u, fee ceil(2%*95)=2 -> 93u.
+    assert out["paid_units"] == 93, out
+    assert out["arrears_withheld"] == 5, out
     with db._conn() as conn:
         left = conn.execute(
             "SELECT COUNT(*) FROM guild_fee_arrears WHERE guild_id = ?"
@@ -414,7 +414,7 @@ def test_arrears_withhold_on_payouts():
     m_before = _bal(mate["agent_id"])
     left_out = db.leave_guild(mate["token"], gid)
     # Mate net 0 (never deposited): nothing to withhold from, nothing paid.
-    assert left_out["paid_quarters"] == 0
+    assert left_out["paid_units"] == 0
     assert _bal(mate["agent_id"]) == m_before
 
 
@@ -439,7 +439,7 @@ def test_suspended_blocks_spends_not_deposits():
         assert "suspended" in str(exc), exc
     # Inflows still legal.
     db.guild_deposit(mate["token"], gid, 1.0)
-    assert _pool(gid) == 104, _pool(gid)
+    assert _pool(gid) == 520, _pool(gid)
 
 
 def test_conservation_per_lifecycle():
@@ -452,7 +452,7 @@ def test_conservation_per_lifecycle():
             return (
                 _cr.treasury_balance(conn),
                 conn.execute(
-                    "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+                    "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
                 ).fetchone()[0],
             )
 
@@ -462,21 +462,21 @@ def test_conservation_per_lifecycle():
     t0, s0 = snapshot()
     f0 = _bal(founder["agent_id"])
     pid = _open_proposal("consdecline")
-    cos = db.request_guild_cosign(founder["token"], gid, "c", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "c", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     db.guild_stake(founder["token"], pid, 2.5, 2)
     opener = _new_agent("gt-consopener")
     db.lock_stakes_for_pr(None, pid, 9201, opener["agent_id"])
-    assert _pool(gid) == 90, _pool(gid)
+    assert _pool(gid) == 450, _pool(gid)
     db.refund_stake_locks(None, 9201)
-    assert _pool(gid) == 100, _pool(gid)
+    assert _pool(gid) == 500, _pool(gid)
     assert _bal(founder["agent_id"]) == f0
     t1, s1 = snapshot()
     assert (t1, s1) == (t0, s0), ((t0, s0), (t1, s1))
     # Win path with 50% bonus: treasury funds exactly the bonus, the
     # pool keeps the rest, founder nets zero.
     pid2 = _open_proposal("conswin")
-    cos2 = db.request_guild_cosign(founder["token"], gid, "c2", 20)
+    cos2 = db.request_guild_cosign(founder["token"], gid, "c2", 100)
     db.confirm_guild_cosign(founder["token"], cos2["cosign_id"])
     db.guild_stake(founder["token"], pid2, 2.5, 2, bonus_pct=50)
     opener2 = _new_agent("gt-consopener2")
@@ -484,33 +484,33 @@ def test_conservation_per_lifecycle():
     o_before = _bal(opener2["agent_id"])
     t2, s2 = snapshot()
     db.pay_stake_rewards(None, 9202)
-    assert _bal(opener2["agent_id"]) == o_before + 5
-    assert _pool(gid) == 100 - 10 + 5, _pool(gid)
+    assert _bal(opener2["agent_id"]) == o_before + 25
+    assert _pool(gid) == 500 - 50 + 25, _pool(gid)
     assert _bal(founder["agent_id"]) == f0
-    # Bonus minted to opener (+5 supply), pool share minted back to the
-    # treasury (+5): the lock's burn is exactly unwound.
+    # Bonus minted to opener (+25 supply), pool share minted back to the
+    # treasury (+25): the lock's burn is exactly unwound.
     t3, s3 = snapshot()
-    assert t3 == t2 + 5 and s3 == s2 + 10, ((t2, s2), (t3, s3))
+    assert t3 == t2 + 25 and s3 == s2 + 50, ((t2, s2), (t3, s3))
 
 
 def test_broke_founder_dupe_undo():
     """A conduit founder staking beyond personal means survives a
     double-lock: the dupe undo claws back only after the lock debit is
-    reverted, so the batch never aborts on an empty wallet. per_pr 20q
-    with 14q personal balance exercises exactly that."""
+    reverted, so the batch never aborts on an empty wallet. per_pr 100u
+    with 70u personal balance exercises exactly that."""
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
-    assert _bal(founder["agent_id"]) == 14
+    assert _bal(founder["agent_id"]) == 70
     pid = _open_proposal("dupebroke")
-    cos = db.request_guild_cosign(founder["token"], gid, "d", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "d", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     db.guild_stake(founder["token"], pid, 5.0, 1)
     opener = _new_agent("gt-dupeopener")
     assert db.lock_stakes_for_pr(None, pid, 9203, opener["agent_id"]) == 1
-    assert _pool(gid) == 80, _pool(gid)
+    assert _pool(gid) == 400, _pool(gid)
     assert db.lock_stakes_for_pr(None, pid, 9203, opener["agent_id"]) == 0
-    assert _pool(gid) == 80, _pool(gid)
-    assert _bal(founder["agent_id"]) == 14
+    assert _pool(gid) == 400, _pool(gid)
+    assert _bal(founder["agent_id"]) == 70
     with db._conn() as conn:
         locks = conn.execute(
             "SELECT COUNT(*) FROM stake_locks WHERE pr_number = 9203"
@@ -532,7 +532,7 @@ def test_guard_path_undo():
     f_before = _bal(founder["agent_id"])
     # max_prs=1 is now fully paid; a second lock hits the guard path.
     db.lock_stakes_for_pr(None, pid, 9205, opener["agent_id"])
-    assert _pool(gid) == 100 - 10 + 10, _pool(gid)
+    assert _pool(gid) == 500 - 50 + 50, _pool(gid)
     assert _bal(founder["agent_id"]) == f_before
     with db._conn() as conn:
         locks = conn.execute(
@@ -545,7 +545,7 @@ def test_admin_delete_linked_guarded():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("admindel")
-    cos = db.request_guild_cosign(founder["token"], gid, "a", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "a", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     out = db.guild_stake(founder["token"], pid, 2.5, 2)
     opener = _new_agent("gt-adminopener")
@@ -591,7 +591,7 @@ def test_dead_proposal_release_and_supersede():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("deadprop")
-    cos = db.request_guild_cosign(founder["token"], gid, "d", 20)
+    cos = db.request_guild_cosign(founder["token"], gid, "d", 100)
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     out = db.guild_stake(founder["token"], pid, 2.5, 2)
     # Supersede auto-releases the linked stake with no money moving.
@@ -606,7 +606,7 @@ def test_dead_proposal_release_and_supersede():
     # force the status read dead (merge/decline machinery is poller-side)
     # while the row stays active with zero locks.
     pid2 = _open_proposal("deadprop2")
-    cos2 = db.request_guild_cosign(founder["token"], gid, "d2", 20)
+    cos2 = db.request_guild_cosign(founder["token"], gid, "d2", 100)
     db.confirm_guild_cosign(founder["token"], cos2["cosign_id"])
     out2 = db.guild_stake(founder["token"], pid2, 2.5, 1)
     import db._proposal_status as _status_mod
@@ -618,7 +618,7 @@ def test_dead_proposal_release_and_supersede():
     finally:
         _status_mod._proposal_status_for = real_status
     assert rel["stake_id"] == out2["stake_id"]
-    assert rel["uncommitted_total"] == 10, rel
+    assert rel["uncommitted_total"] == 50, rel
     with db._conn() as conn:
         status2 = conn.execute(
             "SELECT status FROM proposal_stakes WHERE id = ?",
@@ -645,9 +645,10 @@ def test_sweep_isolation_poisoned_guild():
     db.sweep_guild_upkeep()
     # Poisoned guild: grace lapsed with a payable share behind it, so
     # its disband grant cannot land under CREDITS_ENABLED=0. Three
-    # members (due 3), pool 2, holder net 2 with 1q arrears: payout 2,
-    # withhold 1, net grant 1 -> refused -> skip. (Smaller pools withhold
-    # to exactly zero and disband cleanly - also correct, just unpinned.)
+    # members (due 4), pool 2, holder net 2 with 5u arrears: payout 2,
+    # withhold 0 (whole 5u rows only), net grant 2 -> refused -> skip.
+    # (Smaller pools withhold to exactly zero and disband cleanly -
+    # also correct, just unpinned.)
     poison_f, poison_g = _found("Poison Guild")
     pgid = poison_g["id"]
     for tag in ("pm1", "pm2"):
@@ -655,10 +656,10 @@ def test_sweep_isolation_poisoned_guild():
         inv = db.invite_guild_member(poison_f["token"], pgid, pm["name"])
         db.respond_guild_invite(pm["token"], inv["invite_id"], True)
     holder = _new_agent("gt-pholder")
-    _fund(holder["agent_id"], 10)
+    _fund(holder["agent_id"], 50)
     inv_h = db.invite_guild_member(poison_f["token"], pgid, holder["name"])
     db.respond_guild_invite(holder["token"], inv_h["invite_id"], True)
-    db.guild_deposit(holder["token"], pgid, 0.5)
+    db.guild_deposit(holder["token"], pgid, 0.1)
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         conn.execute(
@@ -677,7 +678,7 @@ def test_sweep_isolation_poisoned_guild():
         report = db.sweep_guild_upkeep()
         # Healthy guild sweeps through (memos only, no grants needed);
         # the poisoned one skips without aborting the tick.
-        assert report["swept"].get(gid) == 2, report
+        assert report["swept"].get(gid) == 10, report
         assert pgid in report["skipped"], report
         with db._conn() as conn:
             status = conn.execute(
@@ -698,19 +699,19 @@ def test_bonus_zero_and_tracker():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
     pid = _open_proposal("bonusz")
-    # Two 10q stakes on one proposal (20 total - inside the 33% single
+    # Two 50u stakes on one proposal (100 total - inside the 33% single
     # cap, inside the solo band so no co-sign): both must lock on one PR
     # with the running tracker funding each exactly once.
     db.guild_stake(founder["token"], pid, 2.5, 1, bonus_pct=0)
     db.guild_stake(founder["token"], pid, 2.5, 1, bonus_pct=0)
     opener = _new_agent("gt-bonusopener")
     assert db.lock_stakes_for_pr(None, pid, 9207, opener["agent_id"]) == 2
-    assert _pool(gid) == 100 - 20, _pool(gid)
-    assert _bal(founder["agent_id"]) == 14
+    assert _pool(gid) == 500 - 100, _pool(gid)
+    assert _bal(founder["agent_id"]) == 70
     o_before = _bal(opener["agent_id"])
     db.pay_stake_rewards(None, 9207)
     assert _bal(opener["agent_id"]) == o_before
-    assert _pool(gid) == 100, _pool(gid)
+    assert _pool(gid) == 500, _pool(gid)
 
 
 def test_disband_voids_stranded_arrears():

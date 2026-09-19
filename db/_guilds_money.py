@@ -6,8 +6,8 @@ mover-pays pool fee, pool-funded invoice payments, guild-commissioned jobs
 executor-taken jobs (wage to pool, detach on leave), and voluntary disband
 (zero-balance vs fee'd dissolve distribution).
 
-Conservation model (shared with the PR-2 settlement): pool quarters are a
-memo - every deposit parks citizen quarters in the treasury
+Conservation model (shared with the PR-2 settlement): pool units are a
+memo - every deposit parks citizen units in the treasury
 (spend/dest_treasury) and every payout grants them back down. The pool
 ledger only ever records; it never creates. Grant-first ordering holds
 everywhere: an unfunded treasury raises before any memo row exists.
@@ -33,16 +33,16 @@ from db._guilds import (
 from notifications import _notify
 
 
-def _guild_fee_q(quarters: int) -> int:
-    """The 2% pool fee (GUILD_TX_FEE_PCT), rounded UP to whole quarters -
-    the same Decimal-ceil discipline as the citizen fee_quarters, under a
+def _guild_fee_u(units: int) -> int:
+    """The 2% pool fee (GUILD_TX_FEE_PCT), rounded UP to whole units -
+    the same Decimal-ceil discipline as the citizen fee_units, under a
     separate knob so the two fees never couple."""
     from decimal import ROUND_CEILING, Decimal
 
     pct = max(0.0, float(config.GUILD_TX_FEE_PCT))
-    if pct == 0 or quarters <= 0:
+    if pct == 0 or units <= 0:
         return 0
-    fee = Decimal(quarters) * Decimal(str(pct)) / Decimal(100)
+    fee = Decimal(units) * Decimal(str(pct)) / Decimal(100)
     return int(fee.to_integral_value(rounding=ROUND_CEILING))
 
 
@@ -55,7 +55,7 @@ def _require_founder_of(conn: sqlite3.Connection, guild_id: int, agent_id: int) 
 
 
 def _cosign_covering(
-    conn: sqlite3.Connection, guild_id: int, amount_quarters: int
+    conn: sqlite3.Connection, guild_id: int, amount_units: int
 ) -> bool:
     """A confirmed, unexpired co-sign covering at least this amount.
     Confirms are reusable within expiry; the 7d velocity window backstops
@@ -63,8 +63,8 @@ def _cosign_covering(
     row = conn.execute(
         "SELECT id FROM guild_cosigns WHERE guild_id = ? AND status = 'confirmed'"
         " AND confirmed_at IS NOT NULL AND expires_at > ?"
-        " AND amount_quarters >= ? ORDER BY id DESC LIMIT 1",
-        (guild_id, _now_iso(), amount_quarters),
+        " AND amount_units >= ? ORDER BY id DESC LIMIT 1",
+        (guild_id, _now_iso(), amount_units),
     ).fetchone()
     return row is not None
 
@@ -72,7 +72,7 @@ def _cosign_covering(
 def _require_spend_allowed(
     conn: sqlite3.Connection,
     guild: dict,
-    amount_quarters: int,
+    amount_units: int,
     what: str,
     velocity_exempt: bool = False,
 ) -> None:
@@ -95,15 +95,13 @@ def _require_spend_allowed(
             f"guild {guild['name']!r} is suspended for upkeep shortfall -"
             " spending waits for recovery (receive/deposit only)."
         )
-    if not velocity_exempt and not guild_velocity_ok(
-        conn, guild["id"], amount_quarters
-    ):
+    if not velocity_exempt and not guild_velocity_ok(conn, guild["id"], amount_units):
         raise ForumError(
             "that spend would breach the 7d velocity window - wait for the"
             " window to slide."
         )
-    if _needs_cosign(guild_balance(conn, guild["id"]), amount_quarters):
-        if not _cosign_covering(conn, guild["id"], amount_quarters):
+    if _needs_cosign(guild_balance(conn, guild["id"]), amount_units):
+        if not _cosign_covering(conn, guild["id"], amount_units):
             raise ForumError(
                 "that amount exceeds the founder's solo band - record a"
                 " co-sign first (request_guild_cosign + confirm)."
@@ -123,15 +121,15 @@ def guild_job_link(conn: sqlite3.Connection, job_id: int) -> dict | None:
 
 
 def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
-    """Move citizen quarters into the pool: debit amount + 2% fee (mover
+    """Move citizen units into the pool: debit amount + 2% fee (mover
     pays), pool credited full. Any member may deposit into an active
     guild - inflows never gate, not even when spending is re-locked."""
     from db._credits import exact_from_credits, spend
 
-    quarters = int(exact_from_credits(float(amount_credits), what="deposit"))
-    if quarters <= 0:
+    units = int(exact_from_credits(float(amount_credits), what="deposit"))
+    if units <= 0:
         raise ForumError("deposit amount must be positive.")
-    fee_q = _guild_fee_q(quarters)
+    fee_q = _guild_fee_u(units)
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         from db._guilds import _require_guild, _require_member
@@ -140,7 +138,7 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
         _require_member(conn, guild_id, agent["id"])
         spend(
             agent["id"],
-            quarters,
+            units,
             "guild_deposit",
             dest_treasury=True,
             target_type="guild",
@@ -158,9 +156,9 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
                 conn=conn,
             )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'deposit', ?, ?, 'member deposit')",
-            (guild_id, quarters, agent["id"]),
+            (guild_id, units, agent["id"]),
         )
         import events
 
@@ -169,19 +167,19 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
             actor_agent_id=agent["id"],
             target_type="guild",
             target_id=guild_id,
-            detail={"quarters": quarters, "fee_quarters": fee_q},
+            detail={"units": units, "fee_units": fee_q},
             conn=conn,
         )
         return {
             "guild_id": guild_id,
-            "deposited_quarters": quarters,
-            "fee_quarters": fee_q,
+            "deposited_units": units,
+            "fee_units": fee_q,
             "pool_balance": guild_balance(conn, guild_id),
         }
 
 
 def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
-    """Pay pool quarters to the founder's wallet: pool deducts the full
+    """Pay pool units to the founder's wallet: pool deducts the full
     amount, the founder receives amount minus arrears-withhold minus the
     2% fee. Gated on the spend lock, upkeep suspension, the velocity
     window, and the co-sign band; grant-first, so an unfunded treasury
@@ -189,17 +187,17 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
     from db._credits import exact_from_credits, grant
     from db._guilds_treasury import _apply_arrears_withhold
 
-    quarters = int(exact_from_credits(float(amount_credits), what="withdrawal"))
-    if quarters <= 0:
+    units = int(exact_from_credits(float(amount_credits), what="withdrawal"))
+    if units <= 0:
         raise ForumError("withdrawal amount must be positive.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_founder_of(conn, guild_id, agent["id"])
-        if guild_balance(conn, guild_id) < quarters:
+        if guild_balance(conn, guild_id) < units:
             raise ForumError("the pool does not cover that withdrawal.")
-        _require_spend_allowed(conn, guild, quarters, "withdrawal")
-        net, withheld = _apply_arrears_withhold(conn, guild_id, agent["id"], quarters)
-        fee_q = _guild_fee_q(net) if net > 0 else 0
+        _require_spend_allowed(conn, guild, units, "withdrawal")
+        net, withheld = _apply_arrears_withhold(conn, guild_id, agent["id"], units)
+        fee_q = _guild_fee_u(net) if net > 0 else 0
         # Grant-first: the treasury leg lands before the pool memo exists.
         if net > 0:
             ok = grant(
@@ -216,9 +214,9 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
                     " nothing moved."
                 )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'founder withdrawal')",
-            (guild_id, quarters, agent["id"]),
+            (guild_id, units, agent["id"]),
         )
         import events
 
@@ -228,16 +226,16 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
             target_type="guild",
             target_id=guild_id,
             detail={
-                "quarters": quarters,
+                "units": units,
                 "arrears_withheld": withheld,
-                "fee_quarters": fee_q,
+                "fee_units": fee_q,
             },
             conn=conn,
         )
         return {
             "guild_id": guild_id,
-            "paid_quarters": net - fee_q,
-            "fee_quarters": fee_q,
+            "paid_units": net - fee_q,
+            "fee_units": fee_q,
             "arrears_withheld": withheld,
             "pool_balance": guild_balance(conn, guild_id),
         }
@@ -254,7 +252,7 @@ def guild_pay_invoice(
     settlement mirrors pay_invoice's full/part logic, but the source is
     the parked pool: treasury grants the issuer (memo-only when the bill
     is Treasury-issued), and the pool takes the velocity-counted outflow."""
-    from db._credits import grant, to_quarters
+    from db._credits import grant, to_units
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
@@ -271,7 +269,7 @@ def guild_pay_invoice(
                 f"invoice #{inv['id']} is {inv['status']} - only accepted"
                 " invoices can be paid."
             )
-        if inv["remaining_quarters"] <= 0:
+        if inv["remaining_units"] <= 0:
             raise ForumError(f"invoice #{inv['id']} is already settled.")
         fee_link = conn.execute(
             "SELECT 1 FROM guild_fee_invoices WHERE invoice_id = ?",
@@ -288,15 +286,15 @@ def guild_pay_invoice(
 
         guild = _require_guild(conn, guild_id)
         if amount_credits is None:
-            pay_q = int(inv["remaining_quarters"])
+            pay_q = int(inv["remaining_units"])
         else:
-            pay_q = to_quarters(amount_credits)
+            pay_q = to_units(amount_credits)
             if pay_q <= 0:
                 raise ForumError("payment amount must be positive.")
-            if pay_q > int(inv["remaining_quarters"]):
+            if pay_q > int(inv["remaining_units"]):
                 raise ForumError(
-                    f"invoice #{inv['id']} has {inv['remaining_quarters']}q"
-                    f" remaining - {pay_q}q overpays it."
+                    f"invoice #{inv['id']} has {inv['remaining_units']}u"
+                    f" remaining - {pay_q}u overpays it."
                 )
         if guild_balance(conn, guild_id) < pay_q:
             raise ForumError("the pool does not cover that payment.")
@@ -316,20 +314,20 @@ def guild_pay_invoice(
                     "the treasury cannot fund that payment right now - nothing moved."
                 )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'invoice', ?, ?, ?)",
             (guild_id, pay_q, agent["id"], f"invoice #{inv['id']} payment"),
         )
-        new_remaining = int(inv["remaining_quarters"]) - pay_q
+        new_remaining = int(inv["remaining_units"]) - pay_q
         if new_remaining <= 0:
             conn.execute(
-                "UPDATE invoices SET remaining_quarters = 0, status = 'paid',"
+                "UPDATE invoices SET remaining_units = 0, status = 'paid',"
                 " paid_at = ?, decided_at = ? WHERE id = ?",
                 (_now_iso(), _now_iso(), inv["id"]),
             )
         else:
             conn.execute(
-                "UPDATE invoices SET remaining_quarters = ? WHERE id = ?",
+                "UPDATE invoices SET remaining_units = ? WHERE id = ?",
                 (new_remaining, inv["id"]),
             )
         import events
@@ -339,7 +337,7 @@ def guild_pay_invoice(
             actor_agent_id=agent["id"],
             target_type="invoice",
             target_id=inv["id"],
-            detail={"guild_id": guild_id, "quarters": pay_q},
+            detail={"guild_id": guild_id, "units": pay_q},
             conn=conn,
         )
         _notify(
@@ -349,14 +347,14 @@ def guild_pay_invoice(
             "invoice",
             inv["id"],
             f"{agent['name']} paid invoice #{inv['id']} from guild"
-            f" {guild['name']!r} ({pay_q}q).",
+            f" {guild['name']!r} ({pay_q}u).",
             actor_agent_id=agent["id"],
         )
         return {
             "invoice_id": inv["id"],
             "guild_id": guild_id,
-            "paid_quarters": pay_q,
-            "remaining_quarters": new_remaining,
+            "paid_units": pay_q,
+            "remaining_units": new_remaining,
         }
 
 
@@ -449,7 +447,7 @@ def settle_guild_commission(
         # write no memo (the lock is the spend); the suppressed
         # creator-leg reward creates no funds and writes no memo either.
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'job_escrow', ?, ?, ?)",
             (guild["id"], escrow_q, founder_id, f"job #{job_id} escrow"),
         )
@@ -463,7 +461,7 @@ def settle_guild_commission(
         actor_agent_id=founder_id,
         target_type="job",
         target_id=job_id,
-        detail={"guild_id": guild["id"], "escrow_quarters": escrow_q},
+        detail={"guild_id": guild["id"], "escrow_units": escrow_q},
         conn=conn,
     )
 
@@ -490,7 +488,7 @@ def settle_job_refund(
             conn=conn,
         )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'job', ?, ?)",
             (link["guild_id"], remaining, f"job #{job['id']} {reason} return"),
         )
@@ -541,7 +539,7 @@ def settle_taken_wage(conn: sqlite3.Connection, job: sqlite3.Row, link: dict) ->
     shared award path - only the wage moves."""
     from db._credits import escrow_to_treasury
 
-    wage = int(job["payment_quarters"])
+    wage = int(job["payment_units"])
     if wage > 0:
         escrow_to_treasury(
             wage,
@@ -551,7 +549,7 @@ def settle_taken_wage(conn: sqlite3.Connection, job: sqlite3.Row, link: dict) ->
             conn=conn,
         )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'job', ?, ?, ?)",
             (
                 link["guild_id"],
@@ -708,7 +706,7 @@ def resolve_guild_jobs_for_disband(
     detached = 0
     rows = conn.execute(
         "SELECT l.job_id, l.role, j.title, j.worker_agent_id,"
-        " j.payment_quarters, j.total_cycles, j.cycles_done, j.official"
+        " j.payment_units, j.total_cycles, j.cycles_done, j.official"
         " FROM guild_job_links l"
         " JOIN jobs j ON j.id = l.job_id WHERE l.guild_id = ?"
         " AND j.status IN ('open', 'offered', 'active')",
@@ -735,7 +733,7 @@ def resolve_guild_jobs_for_disband(
                 conn=conn,
             )
             conn.execute(
-                "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+                "INSERT INTO guild_ledger (guild_id, kind, units, note)"
                 " VALUES (?, 'job', ?, ?)",
                 (
                     guild_id,
@@ -817,7 +815,7 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
         if mode == "zero":
             if balance != 0:
                 raise ForumError(
-                    "that guild still holds pool quarters - dissolve with"
+                    "that guild still holds pool units - dissolve with"
                     " distribution instead ('dissolve')."
                 )
         else:
@@ -923,7 +921,7 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
             paid[aid] = 0
             continue
         net, _withheld = _apply_arrears_withhold(conn, gid, aid, share)
-        fee_q = _guild_fee_q(net) if net > 0 else 0
+        fee_q = _guild_fee_u(net) if net > 0 else 0
         if net > 0:
             ok = grant(
                 aid,
@@ -939,7 +937,7 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
                     " nothing moved."
                 )
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, actor_agent_id,"
+            "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'dissolve distribution')",
             (gid, share, aid),
         )
@@ -950,7 +948,7 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
     remainder = guild_balance(conn, gid)
     if remainder > 0:
         conn.execute(
-            "INSERT INTO guild_ledger (guild_id, kind, quarters, note)"
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'withdrawal', ?, 'dissolve remainder to Treasury')",
             (gid, remainder),
         )

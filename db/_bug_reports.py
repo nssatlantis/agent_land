@@ -1499,9 +1499,9 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             )
             from db._credits import format_credits as _fmt_c
             from db._credits import grant as _grant
-            from db._credits import to_quarters as _tq
+            from db._credits import to_units as _tu
 
-            reward_q = max(0, int(_tq(float(config.BUG_FIX_REWARD_CREDITS))))
+            reward_q = max(0, int(_tu(float(config.BUG_FIX_REWARD_CREDITS))))
             reward_landed = reward_q > 0 and bool(
                 _grant(
                     reporter_id,
@@ -1520,7 +1520,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
                 target_id=report_id,
                 detail={
                     "karma": karma,
-                    "credit_quarters": reward_q if reward_landed else 0,
+                    "credit_units": reward_q if reward_landed else 0,
                 },
                 conn=conn,
             )

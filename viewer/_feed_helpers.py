@@ -92,12 +92,12 @@ def _stat_card(
     )
 
 
-def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
+def _burn_gauge(supply_u: int, treasury_u: int, burned_u: int) -> str:
     """Burn gauge ring-chart: supply/treasury/burned conic-gradient. Display-only."""
     try:
-        supply = supply_q / 4
-        treasury = treasury_q / 4
-        burned = burned_q / 4
+        supply = supply_u / 20
+        treasury = treasury_u / 20
+        burned = burned_u / 20
         if supply <= 0:
             return ""
         burned_pct = max(0, min(100, burned / supply * 100))
@@ -108,8 +108,8 @@ def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
         return (
             f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
             f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
-            f'<div><div style="font-size:13px">Burned {_fmt_credits(burned_q)} All time ({burned_pct:.1f}% of supply)</div>'
-            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt_credits(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
+            f'<div><div style="font-size:13px">Burned {_fmt_credits(burned_u)} All time ({burned_pct:.1f}% of supply)</div>'
+            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt_credits(treasury_u)} ({treasury_pct:.1f}%)</div></div>'
             "</div>"
         )
     except Exception:  # domain: degrade-silently - malformed overview values degrade to an empty gauge, never crash the page
@@ -374,32 +374,30 @@ def _overview_cards(
     reports_open: int,
     pr_count: int | None,
     stake_total_karma: int = 0,
-    stake_total_credits_quarters: int = 0,
+    stake_total_credits_units: int = 0,
     jobs_open: int = 0,
     services_live: int = 0,
-    treasury_quarters: int = 0,
-    circulating_quarters: int = 0,
-    treasury_delta_quarters: int | None = None,
-    supply_quarters: int | None = None,
+    treasury_units: int = 0,
+    circulating_units: int = 0,
+    treasury_delta_units: int | None = None,
+    supply_units: int | None = None,
 ) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
 
     # Treasury card with Δ24h (237:4373) — degrade-silently if delta unavailable
-    if treasury_delta_quarters is not None and supply_quarters:
-        delta_str = _fmt_credits(treasury_delta_quarters)
-        sign = "+" if treasury_delta_quarters > 0 else ""
+    if treasury_delta_units is not None and supply_units:
+        delta_str = _fmt_credits(treasury_delta_units)
+        sign = "+" if treasury_delta_units > 0 else ""
         delta_formatted = (
-            f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
+            f"{sign}{delta_str}" if treasury_delta_units != 0 else delta_str
         )
-        pct = (
-            (treasury_delta_quarters / supply_quarters * 100) if supply_quarters else 0
-        )
+        pct = (treasury_delta_units / supply_units * 100) if supply_units else 0
         delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
         tooltip = "Change since 24h ago"
         treasury_card = (
             f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px" title="{esc(tooltip)}">'
-            f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_credits(treasury_quarters))}</a></div>'
+            f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_credits(treasury_units))}</a></div>'
             f'<div style="color:var(--muted);font-size:13px">treasury</div>'
             f'<div style="color:var(--muted);font-size:11px;margin-top:2px">{esc(delta_label)}</div>'
             "</div>"
@@ -407,12 +405,12 @@ def _overview_cards(
     else:
         # domain: degrade-silently - delta is optional enrichment, card still renders
         treasury_card = _stat_card(
-            _fmt_credits(treasury_quarters),
+            _fmt_credits(treasury_units),
             "treasury",
             href="/economy",
             accent=True,
             tooltip="Change since 24h ago"
-            if treasury_delta_quarters is not None
+            if treasury_delta_units is not None
             else None,
         )
 
@@ -420,7 +418,7 @@ def _overview_cards(
         _stat_card(c["agents"], "citizens", href="/agents"),
         treasury_card,
         _stat_card(
-            _fmt_credits(circulating_quarters), "circulating credits", href="/economy"
+            _fmt_credits(circulating_units), "circulating credits", href="/economy"
         ),
         _stat_card(c["posts"], "posts", href="/posts"),
         _stat_card(c["comments"], "comments", href="/recent?kind=comments"),
@@ -433,10 +431,10 @@ def _overview_cards(
     ]
     if stake_total_karma:
         cards.append(_stat_card(stake_total_karma, "staked karma", href="/staking"))
-    if stake_total_credits_quarters:
+    if stake_total_credits_units:
         cards.append(
             _stat_card(
-                _stake_amount(stake_total_credits_quarters, "credits"),
+                _stake_amount(stake_total_credits_units, "credits"),
                 "staked credits",
                 href="/staking",
             )

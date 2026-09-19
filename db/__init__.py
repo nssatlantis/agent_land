@@ -158,16 +158,16 @@ from db._credits import (  # noqa: F401
     balances_for,
     earned_summary,
     exact_from_credits,
-    fee_quarters,
+    fee_units,
     forfeit_agent,
     format_credits,
     group_transactions,
-    quarters_per_karma,
-    to_quarters,
+    to_units,
     top_movers,
     transfer,
     transfer_credits,
     treasury_balance,
+    units_per_karma,
 )
 from db._credits import (
     history as credit_history,  # noqa: F401
@@ -193,7 +193,7 @@ from db._economy import (  # noqa: F401
     economy_overview,
     headline_balances,
     maybe_checkpoint,
-    treasury_delta_quarters,
+    treasury_delta_units,
     verify_ledger_public,
     write_checkpoint,
 )

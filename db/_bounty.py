@@ -34,9 +34,9 @@ _AUTOFIX_ADMIN = "bounty-autofix"
 
 
 def _wage_q() -> int:
-    from db._credits import to_quarters as _tq
+    from db._credits import to_units as _tu
 
-    return int(_tq(float(config.BOUNTY_WAGE_CREDITS)))
+    return int(_tu(float(config.BOUNTY_WAGE_CREDITS)))
 
 
 def _active_reporter(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row | None:
@@ -54,7 +54,7 @@ def _active_reporter(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row | N
 
 def _weekly_spawned_q(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     row = conn.execute(
-        "SELECT COALESCE(SUM(j.payment_quarters), 0) AS q FROM jobs j"
+        "SELECT COALESCE(SUM(j.payment_units), 0) AS q FROM jobs j"
         " JOIN bug_reports b ON b.bounty_job_id = j.id"
         " WHERE j.created_at >= ?",
         (cutoff_iso,),
@@ -97,12 +97,12 @@ def sweep_bug_bounties() -> dict:
     if int(config.BOUNTY_ENABLED) <= 0:
         logutil.log("bounty_sweep", posted=0, skipped="disabled")
         return {"posted": posted, "skipped": {"disabled": 1}}
-    from db._credits import to_quarters as _tq
+    from db._credits import to_units as _tu
 
     wage_q = _wage_q()
-    weekly_cap_q = int(_tq(float(config.BOUNTY_WEEKLY_CAP_CREDITS)))
+    weekly_cap_q = int(_tu(float(config.BOUNTY_WEEKLY_CAP_CREDITS)))
     max_live = int(config.BOUNTY_MAX_LIVE)
-    min_treasury_q = int(_tq(float(config.BOUNTY_MIN_TREASURY_CREDITS)))
+    min_treasury_q = int(_tu(float(config.BOUNTY_MIN_TREASURY_CREDITS)))
     if wage_q < 1 or weekly_cap_q < 1 or max_live < 1:
         logutil.log("bounty_sweep", posted=0, skipped="caps_closed")
         return {"posted": posted, "skipped": {"caps_closed": 1}}
@@ -183,7 +183,7 @@ def sweep_bug_bounties() -> dict:
                 _skip("dry_treasury")
                 continue
             # Deposit bypass is deliberate (design): direct internal
-            # insert at 0 quarters - the public official path enforces
+            # insert at 0 units - the public official path enforces
             # worker minimums that would price a 0.25 bounty at 2x wage.
             # System-owned (proposal #520): creator NULL voids the
             # creator award leg, so the reporter earns nothing for the
@@ -202,8 +202,8 @@ def sweep_bug_bounties() -> dict:
                 cycle_every_days=every_v,
                 official=1,
                 steps=steps_v,
-                taker_deposit_quarters=0,
-                treasury_escrow_quarters=payment_q * cycles_v,
+                taker_deposit_units=0,
+                treasury_escrow_units=payment_q * cycles_v,
                 auto_pay_on_merge=1,
             )
             treasury_to_escrow(

@@ -199,14 +199,14 @@ def guild_balance_series(guild_id: int, limit: int = 500) -> list[dict]:
     """Cumulative pool balance over time (item 5070, the page-v2 chart):
     the signed ledger replayed oldest-first (inflows add, everything
     else subtracts - the guild_balance rule), capped at 500 points.
-    Each row carries created_at, quarters moved, and the running
+    Each row carries created_at, units moved, and the running
     balance, so the viewer draws without further queries."""
     from db._guilds import _INFLOW_KINDS
 
     limit = max(1, min(int(limit), 500))
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT kind, quarters, created_at FROM guild_ledger"
+            "SELECT kind, units, created_at FROM guild_ledger"
             " WHERE guild_id = ? ORDER BY id ASC LIMIT ?",
             (guild_id, limit),
         ).fetchall()
@@ -214,7 +214,7 @@ def guild_balance_series(guild_id: int, limit: int = 500) -> list[dict]:
         running = 0
         for r in rows:
             try:
-                q = int(r["quarters"])
+                q = int(r["units"])
             except (TypeError, ValueError):
                 # domain: degrade-silently - corrupt ledger rows are
                 # skipped point-wise, never kill the chart
@@ -224,8 +224,8 @@ def guild_balance_series(guild_id: int, limit: int = 500) -> list[dict]:
                 {
                     "created_at": r["created_at"],
                     "kind": r["kind"],
-                    "quarters": q,
-                    "balance_quarters": running,
+                    "units": q,
+                    "balance_units": running,
                 }
             )
         return out
@@ -241,9 +241,9 @@ def guild_contribs(guild_id: int) -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             "SELECT l.actor_agent_id AS agent_id, a.name,"
-            " COALESCE(SUM(CASE WHEN l.kind = 'deposit' THEN l.quarters"
+            " COALESCE(SUM(CASE WHEN l.kind = 'deposit' THEN l.units"
             " ELSE 0 END), 0) AS deposited,"
-            " COALESCE(SUM(CASE WHEN l.kind = 'withdrawal' THEN l.quarters"
+            " COALESCE(SUM(CASE WHEN l.kind = 'withdrawal' THEN l.units"
             " ELSE 0 END), 0) AS withdrawn"
             " FROM guild_ledger l LEFT JOIN agents a ON a.id = l.actor_agent_id"
             " WHERE l.guild_id = ? AND l.kind IN ('deposit', 'withdrawal')"
