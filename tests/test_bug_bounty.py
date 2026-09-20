@@ -602,17 +602,26 @@ def _receipt_rows_since(last_id):
         ]
 
 
-def _reset_receipt_throttle():
-    from db import _bounty as _bounty_mod
+def _max_receipt_id():
+    with db._conn() as conn:
+        return conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM events WHERE kind = 'bounty_sweep'"
+        ).fetchone()["m"]
 
-    _bounty_mod._last_receipt = None
-    _bounty_mod._last_receipt_at = 0.0
+
+def _backdate_receipt(row_id, days_ago=1):
+    from datetime import datetime, timedelta, timezone
+
+    stamp = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    with db._conn() as conn:
+        conn.execute("UPDATE events SET created_at = ? WHERE id = ?", (stamp, row_id))
 
 
 def test_receipt_posted_carries_breakdown():
     """A posting tick leaves one bounty_sweep receipt naming the posted
     jobs, the live cap numbers and the per-status breakdown."""
-    _reset_receipt_throttle()
     mark = _max_event_id()
     bid = _confirm_bug()
     result = _roomy_sweep()
@@ -631,10 +640,8 @@ def test_receipt_posted_carries_breakdown():
 def test_receipt_skipped_live_capped():
     """A capped tick leaves a receipt whose breakdown names the states
     holding the slots (small_fix #579: the prod incident read)."""
-    _reset_receipt_throttle()
     _confirm_bug()
     _roomy_sweep()  # guarantee live >= 1 and burn the posted receipt
-    _reset_receipt_throttle()
     with db._conn() as conn:
         live_now = conn.execute(
             "SELECT COUNT(*) FROM bug_reports b JOIN jobs j ON j.id = b.bounty_job_id"
@@ -662,7 +669,6 @@ def test_receipt_skipped_live_capped():
 
 def test_receipt_throttles_identical_starved_ticks():
     """Identical starved ticks emit once; the 6h heartbeat re-emits."""
-    _reset_receipt_throttle()
     saved = {"FORUM_BOUNTY_MAX_LIVE": os.environ.get("FORUM_BOUNTY_MAX_LIVE")}
     os.environ["FORUM_BOUNTY_MAX_LIVE"] = (
         "0"  # caps_closed: deterministic starved state
@@ -674,22 +680,18 @@ def test_receipt_throttles_identical_starved_ticks():
         second = db.sweep_bug_bounties()
         assert second == first, second
         assert len(_receipt_rows_since(mark)) == 1, "deduped to one row"
-        from db import _bounty as _bounty_mod
-
-        _bounty_mod._last_receipt_at = 0.0  # force the heartbeat window to lapse
+        _backdate_receipt(_max_receipt_id())  # force the heartbeat window to lapse
         third = db.sweep_bug_bounties()
         assert third == first, third
         assert len(_receipt_rows_since(mark)) == 2, "heartbeat re-emits"
     finally:
         _restore_env(saved)
-        _reset_receipt_throttle()
     print("  receipt_throttles_identical_starved_ticks: ok")
 
 
 def test_receipt_breakdown_marks_cancelled_nonlive():
     """A cancelled bounty shows in live_by_status but outside live_open
     (small_fix #579: terminal rows must never read as live slots)."""
-    _reset_receipt_throttle()
     bid = _confirm_bug()
     result = _roomy_sweep()
     jid = _bug_row(bid)["bounty_job_id"]
@@ -697,7 +699,6 @@ def test_receipt_breakdown_marks_cancelled_nonlive():
     db.admin_cancel_job("bounty-sweep", jid)
     assert _job_row(jid)["status"] == "cancelled"
     bid2 = _confirm_bug()
-    _reset_receipt_throttle()
     mark = _max_event_id()
     result2 = _roomy_sweep()
     jid2 = _bug_row(bid2)["bounty_job_id"]
@@ -775,6 +776,20 @@ def test_weekly_completed_still_consumes():
     print("  weekly_completed_still_consumes: ok")
 
 
+def test_receipt_summary_mixed():
+    """A tick that posts and skips names both halves - a posted bounty
+    must never hide its starved siblings from the one-line summary."""
+    from db._bounty import _receipt_summary
+
+    assert _receipt_summary([7], {}) == "posted 1 (#7)"
+    assert _receipt_summary([], {"live_capped": 2}) == "skipped: live_capped x2"
+    assert _receipt_summary([], {}) == "nothing to do"
+    assert _receipt_summary([7], {"weekly_cap": 3}) == (
+        "posted 1 (#7); skipped: weekly_cap x3"
+    )
+    print("  receipt_summary_mixed: ok")
+
+
 if __name__ == "__main__":
     test_rebuild_preserves_bounty_column()
     test_live_cap_binds_per_tick()
@@ -803,4 +818,5 @@ if __name__ == "__main__":
     test_receipt_breakdown_marks_cancelled_nonlive()
     test_weekly_cancelled_returns_room()
     test_weekly_completed_still_consumes()
+    test_receipt_summary_mixed()
     print("\n== test_bug_bounty: all passed ==")
