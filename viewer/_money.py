@@ -1033,7 +1033,12 @@ def _economy_body(request: Request) -> str:
     def _bonds_panel(ov: dict) -> str:
         count = ov.get("bonds_outstanding") or 0
         if not count and not _bond_series:
-            return ""
+            return (
+                "<h3>Term savings bonds</h3>"
+                "<p style='color:var(--muted);font-size:13px;margin:4px 0'>"
+                "No bond series yet — admins open the first from /admin/economy;"
+                " buys ride buy_bond once one exists.</p>"
+            )
         rows = "".join(
             f"<tr><td>{esc(s['name'])}</td><td>{s['term_days']}d</td>"
             f"<td>{s['revenue_share_pct']:g}%</td>"
@@ -1043,6 +1048,7 @@ def _economy_body(request: Request) -> str:
         )
         return (
             "<h3>Term savings bonds</h3>"
+            "<div style='margin:2px 0 6px'><a href='/bonds'>Details →</a></div>"
             f"<p style='color:var(--muted);font-size:13px;margin:4px 0'>"
             f"{count} outstanding &middot; accrued share waiting: "
             f"{esc(ov.get('bonds_accrued_credits', '0'))} (linear, no"

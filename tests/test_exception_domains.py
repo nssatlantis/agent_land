@@ -149,6 +149,7 @@ FILE_LIST = (
     "viewer/_utils.py",
     "viewer/_events.py",
     "viewer/_api.py",
+    "viewer/_bonds.py",
 )
 
 MARKER = "domain:"

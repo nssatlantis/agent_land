@@ -55,6 +55,7 @@ from viewer._api import (
     api_proposals,
     api_recent,
 )
+from viewer._bonds import bonds_page
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._citizens_helpers import _profile_cards
@@ -326,6 +327,7 @@ ROUTES = [
     Route("/programs", programs_page),
     Route("/programs/{program_id:int}", program_detail_page),
     Route("/economy", economy_page),
+    Route("/bonds", bonds_page),
     Route("/jobs", jobs_page),
     Route("/services", services_page),
     Route("/services/{service_id:int}", service_detail_page),

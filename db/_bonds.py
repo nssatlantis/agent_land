@@ -731,3 +731,36 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
         )
         total += face
     return {"bonds": len(rows), "face_units": total}
+
+
+def bond_series_detail(series_id: int) -> dict:
+    """One series in full: terms, status, live outstanding face and live
+    holder/bond counts. Public read. Additive beside list_bond_series,
+    whose shape stays frozen for existing consumers."""
+    with _conn() as conn:
+        row = _series_row(conn, int(series_id))
+        d = dict(row)
+        d["series_id"] = int(d.pop("id"))
+        d["outstanding_units"] = _outstanding(conn, int(series_id))
+        live = conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT owner_id) FROM treasury_bonds"
+            " WHERE series_id = ? AND status IN ('active', 'matured')",
+            (int(series_id),),
+        ).fetchone()
+        d["live_bonds"] = int(live[0])
+        d["holder_count"] = int(live[1])
+        return d
+
+
+def bonds_for_series(series_id: int) -> list[dict]:
+    """Every bond in one series with owner names joined, newest first.
+    Admin-eyes-only consumer (per-bond holdings are never public)."""
+    with _conn() as conn:
+        _series_row(conn, int(series_id))
+        rows = conn.execute(
+            "SELECT b.*, a.name AS owner_name FROM treasury_bonds b"
+            " LEFT JOIN agents a ON a.id = b.owner_id"
+            " WHERE b.series_id = ? ORDER BY b.id DESC",
+            (int(series_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]

@@ -13,6 +13,47 @@ from server.admin._auth import (
     _denied,
     _flash,
 )
+from viewer._utils import _human_ts, esc
+
+
+def _bond_series_table() -> str:
+    """Live series with ids (what the close form needs) plus every holding."""
+    try:
+        series = db.list_bond_series()
+    except Exception:  # domain: degrade-silently - pre-bond admin reads empty
+        return ""
+    if not series:
+        return ""
+    rows = "".join(
+        f"<tr><td>{int(s['series_id'])}</td><td>{esc(s['name'])}</td>"
+        f"<td>{int(s['term_days'])}d</td><td>{esc(s['status'])}</td>"
+        f"<td>{esc(db.format_credits(s['outstanding_units']))}</td></tr>"
+        for s in series
+    )
+    holds = []
+    for s in series:
+        for b in db.bonds_for_series(int(s["series_id"])):
+            holds.append(
+                f"<tr><td>{int(b['id'])}</td><td>{int(b['series_id'])}</td>"
+                f"<td>{esc(b.get('owner_name') or '?')}</td>"
+                f"<td>{esc(db.format_credits(b['face_units']))}</td>"
+                f"<td>{esc(db.format_credits(b['accrued_units']))}</td>"
+                f"<td>{_human_ts(b['matures_at'])}</td>"
+                f"<td>{esc(b['status'])}</td></tr>"
+            )
+    table = (
+        "<h3>Bond series (ids for the close form)</h3>"
+        "<table><tr><th>id</th><th>series</th><th>term</th>"
+        "<th>status</th><th>outstanding</th></tr>" + rows + "</table>"
+    )
+    if holds:
+        table += (
+            "<h3>Bond holdings (maintainer eyes only)</h3>"
+            "<table><tr><th>bond</th><th>series</th><th>owner</th>"
+            "<th>face</th><th>accrued</th><th>matures</th>"
+            "<th>status</th></tr>" + "".join(holds) + "</table>"
+        )
+    return table
 
 
 def _render_economy(request) -> str:
@@ -55,8 +96,11 @@ def _render_economy(request) -> str:
         'style="width:110px;margin-right:6px"> '
         '<input name="citizen_cap" placeholder="citizen cap (30)" '
         'style="width:120px;margin-right:6px"> '
+        '<input name="min_face" placeholder="min face (1.0)" '
+        'style="width:110px;margin-right:6px"> '
         '<button type="submit">open series</button></form>'
-        '<form method="post" action="/admin/economy/bonds/close">'
+        + _bond_series_table()
+        + '<form method="post" action="/admin/economy/bonds/close">'
         + _csrf_field(request)
         + '<input name="series_id" placeholder="series # to close" required '
         'style="width:150px;margin-right:6px"> '
@@ -137,6 +181,7 @@ async def bond_series_open(request):
             revenue_share_pct=_opt("revenue_share_pct"),
             series_cap_credits=_opt("series_cap"),
             citizen_cap_credits=_opt("citizen_cap"),
+            min_face_credits=_opt("min_face"),
         )
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim

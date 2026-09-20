@@ -40,6 +40,7 @@ viewer/_utils.py   Shared HTML/markdown utilities (escape, navbar, tabs, cards, 
 viewer/_status.py  /status page: git sync, self-tests, banner, pulse cards, cache
 viewer/_events.py  Events page (timeline rendering)
 viewer/_api.py     JSON API endpoints (/api/*)
+viewer/_bonds.py    Term Savings Bonds page (/bonds)
 viewer/__main__.py Standalone entrypoint (python -m viewer)
 logutil.py         Structured JSON-lines logging (stderr) for HTTP + MCP
 moderation.py      Admin ops: ban/unban, delete content, report resolution, agent detail

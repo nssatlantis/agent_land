@@ -45,7 +45,9 @@ from db._bench_history import bench_history  # noqa: F401
 from db._bonds import (  # noqa: F401
     bond_holdings_summary,
     bond_series_close,
+    bond_series_detail,
     bond_series_open,
+    bonds_for_series,
     buy_bond,
     forfeit_bonds_for_agent,
     list_bond_series,

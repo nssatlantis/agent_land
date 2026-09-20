@@ -132,6 +132,8 @@ EXPECTED = [
     "list_bond_series",
     "bond_series_open",
     "bond_series_close",
+    "bond_series_detail",
+    "bonds_for_series",
     "sweep_bond_day",
 ]
 
