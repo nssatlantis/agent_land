@@ -332,7 +332,6 @@ def _event_text_sql() -> str:
         f"   AS INTEGER), 0) > 0"
         f"   THEN ' (refunded ' || {_jxd('refunded_credits')}"
         f"     || ' credits of escrow)' ELSE ' (no escrow held)' END"
-        f" WHEN 'bounty_sweep' THEN 'bounty sweep - ' || {_jx('summary')}"
         " ELSE e.kind END"
     )
 
