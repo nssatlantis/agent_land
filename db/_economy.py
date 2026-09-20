@@ -511,15 +511,14 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             for k, v in flows.items()
             if k.startswith("store_") and k.endswith("_intake")
         ),
-        # Guild intake: deposit principal + deposit fee (both hit treasury
-        # via spend(dest_treasury=True) with reasons that don't end in
-        # _intake, so they fall through the spend_intake bucket above).
-        "guild_intake_units": flows.get("guild_deposit", 0)
-        + flows.get("guild_deposit_fee", 0),
-        # Bond intake: purchase fee (the principal goes to escrow, not
-        # treasury; early-haircut intake already lands in spend_intake
-        # via the _intake suffix).
-        "bond_intake_units": flows.get("bond_buy_fee", 0),
+        # Guild intake: deposit principal + deposit fee — spend() appends
+        # _intake to the treasury leg reason, so the flow keys are
+        # guild_deposit_intake / guild_deposit_fee_intake.
+        "guild_intake_units": flows.get("guild_deposit_intake", 0)
+        + flows.get("guild_deposit_fee_intake", 0),
+        # Bond intake: purchase fee — spend() appends _intake to the
+        # treasury leg, so the flow key is bond_buy_fee_intake.
+        "bond_intake_units": flows.get("bond_buy_fee_intake", 0),
         "transfer_intake_units": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
         # paid), but the flow row names the direction already.

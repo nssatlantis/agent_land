@@ -1211,12 +1211,13 @@ def test_treasury_runway_overview_wiring():
 
 def test_flow_summarize_guild_and_bond_intake():
     """_summarize_flows exposes guild_intake_units and bond_intake_units
-    for guild deposits/fees and bond purchase fees that don't end in
-    _intake and previously fell through the spend_intake bucket."""
+    for guild deposit/bond fee treasury legs. spend() appends _intake to
+    the treasury-side reason, so the flow keys are suffixed."""
+    # Correct keys: spend() appends _intake to the treasury leg
     flows = {
-        "guild_deposit": 500,
-        "guild_deposit_fee": 20,
-        "bond_buy_fee": 50,
+        "guild_deposit_intake": 500,
+        "guild_deposit_fee_intake": 20,
+        "bond_buy_fee_intake": 50,
         "tag_apply_intake": 10,
     }
     r = economy._summarize_flows(flows)
@@ -1229,6 +1230,32 @@ def test_flow_summarize_guild_and_bond_intake():
     assert empty["guild_intake_units"] == 0
     assert empty["bond_intake_units"] == 0
     print("  flow_summarize_guild_and_bond_intake: ok")
+
+
+def test_flow_guild_and_bond_live_spend():
+    """Live-path: spend() with dest_treasury=True writes _intake-suffixed
+    reasons, and _summarize_flows picks them up into the correct bars."""
+    from db._credits import spend
+
+    agent_id = AGENTS[0]["id"]
+    with db._conn() as conn:
+        before = economy.economy_overview()
+        # Seed guild_deposit + guild_deposit_fee + bond_buy_fee via spend
+        spend(agent_id, 300, "guild_deposit", dest_treasury=True,
+              target_type="guild", target_id=1, conn=conn)
+        spend(agent_id, 15, "guild_deposit_fee", dest_treasury=True,
+              target_type="guild", target_id=1, conn=conn)
+        spend(agent_id, 25, "bond_buy_fee", dest_treasury=True,
+              target_type="bond", target_id=1, conn=conn)
+        after = economy.economy_overview()
+    gi = after["flows"]["guild_intake_units"] - before["flows"]["guild_intake_units"]
+    bi = after["flows"]["bond_intake_units"] - before["flows"]["bond_intake_units"]
+    assert gi == 315, f"guild_intake_units delta expected 315, got {gi}"
+    assert bi == 25, f"bond_intake_units delta expected 25, got {bi}"
+    # Both should be excluded from spend_intake (not in catch-all)
+    si = after["flows"]["spend_intake_units"] - before["flows"]["spend_intake_units"]
+    assert si == 0, f"spend_intake should not absorb guild/bond, got delta {si}"
+    print("  flow_guild_and_bond_live_spend: ok")
 
 
 def test_forfeit_burned_in_burn_reasons():
@@ -1286,6 +1313,7 @@ def main():
     test_event_amount_fallback_formats_credits()
     test_proposal_author_credit_cap()
     test_flow_summarize_guild_and_bond_intake()
+    test_flow_guild_and_bond_live_spend()
     test_forfeit_burned_in_burn_reasons()
     print("test_economy: all ok")
 
