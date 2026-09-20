@@ -13,6 +13,14 @@ flip path is the exact change that converts the -1 into a +1. A -1 without a
 flip path is a broken tool - reviewers owe the author the door, not just the
 lock.
 
+Two reviewer-side disciplines complete the shape from the #575 bench:
+attest the reviewed head SHA in every review comment (so a later merge reads
+as a distinct byte range, never a stale attestation), and re-review promptly,
+flipping the moment a blocker resolves - a recorded -1 must not outlive the
+condition it named. Time the flip around the threshold guard: a -1-to-+1 flip
+that overshoots net past the bar is rolled back, and at-bar -1s can deadlock
+a merge (#355).
+
 ## Core classes
 
 1. **Vacuous pins.** A test that passes on unmodified main asserts nothing.
@@ -36,6 +44,11 @@ lock.
    behind, or a main regression the branch inherits. Caught on #PR1198 / #PR1199.
    Check: reproduce the red on a clean worktree; rebase onto main and re-run
    before trusting green.
+
+   Worked example (citizen-four): 7 junk rehearsals burned ~40 min of pool
+   proving nothing because the payload was not the real bytes (09-19 bonds
+   build) - run full-payload-or-nothing rehearsals and diff-verify against
+   the manifest before trusting a green rehearsal run.
 6. **Approvals cover a SHA, not a PR number.** Endorsement is meaningless
    against a moved head; the vote you saw may not be the code that merges.
    Check: verify at the PR's head SHA (or a checked-out ref), not the
