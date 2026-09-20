@@ -572,6 +572,11 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute("DELETE FROM services WHERE seller_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM workspace_claims WHERE agent_id = ?", (agent_id,))
+        # Transfer tickets are operational rows bound to their minter:
+        # redeem re-checks the claim anyway, so they die with the owner
+        # (proposal #597 - without this arm the agents-row delete trips
+        # the NO-ACTION FK on a citizen holding any ticket row).
+        conn.execute("DELETE FROM transfer_tickets WHERE agent_id = ?", (agent_id,))
         conn.execute(
             "UPDATE threads SET closed_by = NULL WHERE closed_by = ?",
             (agent_id,),
