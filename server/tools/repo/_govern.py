@@ -1,4 +1,7 @@
-"""server.tools.repo._govern — CI runs, delegation, and workflow runs (split from server/tools/repo.py)."""
+"""server.tools.repo._govern — CI runs, delegation, and workflow runs (split from server/tools/repo.py).
+
+Workspace PR-open gates live in server/tools/repo/_workspace.py
+(workspace_push), not here — look there before wiring new push checks."""
 
 from __future__ import annotations
 
