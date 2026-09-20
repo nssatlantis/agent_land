@@ -24,6 +24,7 @@ from db._proposal_status import (
     _proposal_pr_history_map,
     _proposal_stale,
     _proposal_status_note,
+    _proposal_status_sql,
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_vote_threshold,
@@ -103,21 +104,17 @@ def _proposal_kind_clause(kind: str) -> dict:
 def _hide_decided_small_fix_sql(alias: str = "p") -> str:
     """SQL fragment hiding decided small_fix from default newest views.
 
-    A small_fix reads as decided when its newest linked PR carries an
-    outcome row (proposal_outcomes.status is CHECKed to merged/declined/
-    closed - never 'open' - so any outcome row decides; a linked-but-
-    undecided PR, or no PR at all, reads as open via COALESCE). Newest-
-    link decides because merged is terminal (nothing links after a merge)
-    and a declined/closed small_fix re-surfaces the moment a retry PR
-    links. `alias` names the posts table in the calling query ('p' in
-    list_posts and the docket, bare 'posts' in the docket's all+limit
-    fast path). The correlated lookup rides idx_proposal_links_post_pr
-    plus the outcomes PK, so it stays a point probe per candidate row."""
+    Decidedness reuses _proposal_status_sql verbatim, so the SQL lens and
+    the Python status (UNION of links+outcomes, merged-first, newest
+    otherwise, NULL/coalesced-open with no PR) agree by construction -
+    including the outcome-without-link and merged-beside-open shapes.
+    `alias` names the posts table in the calling query ('p' in list_posts
+    and the docket, bare 'posts' in the docket's all+limit fast path).
+    The correlated lookup rides idx_proposal_links_post_pr plus the
+    outcomes PK, so it stays a point probe per candidate row."""
     return (
-        f"NOT ({alias}.proposal_kind = 'small_fix' AND COALESCE((SELECT po.status"
-        f" FROM proposal_links pl LEFT JOIN proposal_outcomes po"
-        f" ON po.pr_number = pl.pr_number WHERE pl.post_id = {alias}.id"
-        f" ORDER BY pl.pr_number DESC LIMIT 1), 'open') != 'open')"
+        f"NOT ({alias}.proposal_kind = 'small_fix' AND COALESCE("
+        f"{_proposal_status_sql(alias)}, 'open') != 'open')"
     )
 
 
@@ -594,6 +591,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             p["review_requested"]
             and p["status"] == "open"
             and not p["locked"]
+            and not p.get("collaborative")
             and p.get("proposal_kind") == "proposal"
         )
     if view == "review_small_fix":
@@ -601,6 +599,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             p["review_requested"]
             and p["status"] == "open"
             and not p["locked"]
+            and not p.get("collaborative")
             and bool(p.get("small_fix"))
         )
     if view == "collaborative":
@@ -634,8 +633,10 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
 
 
 def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
-    """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'staking'}, computed
+    """Per-tab proposal counts for the docket's tabs: 'all',
+    'needs_votes', 'approved', 'review', 'review_proposal',
+    'review_small_fix', 'stale', 'merged', 'small_fix', 'collaborative',
+    'unclaimed', 'staking', 'ideas' and 'lineage', computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree. Pass
     pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows.
@@ -980,6 +981,11 @@ def list_proposals(
                 return []
             where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
             rows = _proposal_rows(conn, where_sql, tuple(ids))
+            # Backstop: re-apply the default lens on the page itself, so a
+            # future SQL/Python drift in the exclusion can only ever
+            # under-fill a page, never leak a decided small_fix. Page-sized
+            # and cheap; the fast/slow agreement test stays the loud guard.
+            rows = [p for p in rows if _proposal_matches_view(p, "all")]
             if sort == "top":
                 rows.sort(
                     key=lambda p: (p["net"], p["created_at"], p["id"]),
