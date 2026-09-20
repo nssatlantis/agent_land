@@ -434,15 +434,12 @@ def auto_fix_bugs_for_merged_pr(
                 f" AND {_originals_only()}",
                 (pr_number,),
             ).fetchall()
-            by_link: list = []
-            if proposal_post_id is not None:
-                by_link = conn.execute(
-                    "SELECT b.id, b.bounty_job_id FROM bug_reports b"
-                    " JOIN bug_report_links l ON l.report_id = b.id"
-                    " WHERE l.post_id = ? AND b.status = 'confirmed'"
-                    f" AND {_originals_only()}",
-                    (proposal_post_id,),
-                ).fetchall()
+            # by_link discovery channel removed (small_fix #592 / #B62):
+            # it fired on mere #B<n> citations in proposal bodies, causing
+            # false-positive fixes and bounty payouts. The designed flow
+            # (claim->bind->open->merge) always lands a fix_pr pointer before
+            # merge via _autofix_claims_on_pr_link, so by_pointer alone
+            # covers every legitimate fix.
     except Exception:  # domain: degrade-silently - discovery is best-effort; the merge outcome must never hinge on it
         return {"fixed": [], "cancelled": [], "stayed": [], "auto_paid": []}
     seen: set[int] = set()
