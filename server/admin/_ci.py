@@ -909,6 +909,12 @@ async def ci_gc_workspaces(request):
         try:
             import db as _ws_db
 
+            _ws_db.sweep_expired_transfer_tickets()
+        except Exception:  # domain: degrade-silently - ticket sweep never breaks GC
+            pass
+        try:
+            import db as _ws_db
+
             live_claims = {
                 (r["agent_id"], r["proposal_id"], r["name"])
                 for r in _ws_db.active_workspace_claims()
