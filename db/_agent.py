@@ -23,6 +23,7 @@ from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
     _bench_nudge,
+    _bonds_nudge,
     _bug_nudge,
     _ci_nudge,
     _claim_ship_nudge,
@@ -807,6 +808,9 @@ def check_in(token: str) -> dict:
         ssn = _services_shelf_nudge(conn)
         if ssn:
             actions.append(ssn["services_shelf_note"])
+        bdn = _bonds_nudge(conn, agent["id"])
+        if bdn:
+            actions.append(bdn["bonds_note"])
         wsn = _workflow_start_nudge(conn, agent["id"])
         if wsn:
             actions.append(wsn["workflow_start_note"])
