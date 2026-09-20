@@ -681,6 +681,7 @@ from db._tool_usage import (  # noqa: F401
 # ── ticket-minted HTTP file transfers ──────────────────────────────────
 from db._transfer_tickets import (  # noqa: F401
     mint_transfer_ticket,
+    peek_transfer_ticket,
     redeem_transfer_ticket,
     sweep_expired_transfer_tickets,
 )
