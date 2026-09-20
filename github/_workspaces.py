@@ -25,6 +25,7 @@ import config
 
 from . import _core
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._eol import _normalize_eol, _target_eol_for_text
 from ._gitops import (
     _git,
     _push_auth,
@@ -503,6 +504,148 @@ def _open_or_reuse_claim_pr(
     )
     _core._open_prs_cache._store.pop("open_prs", None)
     return pr, True
+
+
+def _transfer_file_cap_bytes() -> int:
+    """Per-file transfer cap (mirrors the 1MB MCP read cap): the data
+    plane carries no token cost, so this is purely a safety rail."""
+    try:
+        mb = float(config.TRANSFER_MAX_FILE_MB)
+    except Exception:  # domain: degrade-silently - a bad knob falls back to default
+        return 1 << 20
+    return max(65536, int(mb * (1 << 20)))
+
+
+def _guard_transfer_path(dest: str, path: str) -> tuple[str, str]:
+    """Engine-level path guard for transfer reads/writes (mirrors the
+    MCP layer's _guard_tree_path: writes refuse protected paths, the
+    managed manifest and .git are never addressable, nothing escapes).
+
+    .git is refused explicitly (not via _MANAGED, which would also hide
+    a top-level .git gitlink from status/diff bookkeeping): the engine
+    is the data plane's last line of defense for direct minters.
+    """
+    clean = _validate_path(path, allow_protected=False)
+    if clean == ".git" or clean.startswith(".git/"):
+        raise RepoError(f"path {path!r} is managed by the workspace itself.")
+    if clean.split("/", 1)[0] in _MANAGED:
+        raise RepoError(f"path {path!r} is managed by the workspace itself.")
+    real = os.path.realpath(dest)
+    full = os.path.realpath(os.path.join(dest, clean))
+    if full != real and not full.startswith(real + os.sep):
+        raise RepoError(f"path {path!r} escapes the workspace.")
+    return clean, full
+
+
+def read_transfer_bytes(
+    agent_id: int, proposal_id: int, name: str, path: str
+) -> tuple[str, bytes]:
+    """Raw bytes of one tree file for ticket download (binary-safe: the
+    data plane never decodes). Over-cap files refuse before reading."""
+    clean_name = _validate_claim_name(name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    clean, full = _guard_transfer_path(dest, path)
+    if os.path.isdir(full):
+        raise RepoError(f"path {clean!r} is a directory - only files transfer.")
+    try:
+        size = os.path.getsize(full)
+    except OSError as exc:  # domain: fail-loudly - a missing tree file surfaces
+        raise RepoError(f"no file at {clean!r} in the workspace.") from exc
+    cap = _transfer_file_cap_bytes()
+    if size > cap:
+        raise RepoError(f"{clean!r} is {size} bytes, over the {cap} byte transfer cap.")
+    try:
+        with open(full, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:  # domain: fail-loudly - an unreadable tree file surfaces
+        raise RepoError(f"could not read {clean!r} in the workspace.") from exc
+    return clean, data
+
+
+def apply_transfer_bytes(
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    path: str,
+    data: bytes,
+    *,
+    expect_sha256: str | None = None,
+) -> dict:
+    """Write one whole file from transfer bytes (the POST data-plane
+    apply). Same write contract as the MCP content path: EOL-normalized
+    to the existing file's target (LF for new files), budget-checked,
+    empty refused, non-UTF-8 refused, identical bytes a quiet no-op.
+
+    expect_sha256 pins the read the upload was built from (the ticket's
+    pin when the agent passed one): a mismatch refuses before any byte
+    moves, so a stale download can never silently revert newer work.
+    """
+    clean_name = _validate_claim_name(name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    clean, full = _guard_transfer_path(dest, path)
+    if os.path.isdir(full):
+        raise RepoError(f"path {clean!r} is a directory - only files transfer.")
+    existing: bytes | None = None
+    if os.path.isfile(full):
+        try:
+            with open(full, "rb") as fh:
+                existing = fh.read()
+        except OSError as exc:  # domain: fail-loudly - an unreadable tree file surfaces
+            raise RepoError(f"could not read {clean!r} in the workspace.") from exc
+    if expect_sha256 is not None:
+        have = hashlib.sha256(existing).hexdigest() if existing is not None else None
+        if have != expect_sha256:
+            raise RepoError(
+                f"stale base for {clean!r}: expected"
+                f" {str(expect_sha256)[:12]}..., tree holds"
+                f" {have[:12] + '...' if have else 'nothing'} - fetch again"
+                " and rebase the upload."
+            )
+    try:
+        text = bytes(data).decode("utf-8")
+    except (UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise RepoError(
+            f"cannot write {clean!r} - upload is not UTF-8 text (binary files"
+            " don't ride transfers in v1)."
+        ) from exc
+    if not text:
+        raise RepoError(
+            f"upload for {clean!r} is empty - deletion goes through"
+            " workspace_delete_file."
+        )
+    try:
+        target = _target_eol_for_text(
+            existing.decode("utf-8") if existing is not None else ""
+        )
+    except UnicodeDecodeError:  # domain: degrade-silently - binary base takes LF target
+        target = "\n"
+    new_text = _normalize_eol(text, target)
+    new_bytes = new_text.encode("utf-8")
+    new_sha = hashlib.sha256(new_bytes).hexdigest()
+    if existing is not None and new_bytes == existing:
+        return {
+            "path": clean,
+            "bytes": len(new_bytes),
+            "content_sha256": new_sha,
+            "changed": False,
+        }
+    check_claim_budget(int(agent_id), incoming_mb=len(new_bytes) / (1024 * 1024))
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8", newline="") as fh:
+            fh.write(new_text)
+    except OSError as exc:  # domain: fail-loudly - workspace file not writable
+        raise RepoError(f"could not write {clean!r} in the workspace.") from exc
+    return {
+        "path": clean,
+        "bytes": len(new_bytes),
+        "content_sha256": new_sha,
+        "changed": True,
+    }
 
 
 def _check_expect_shas(manifest: list, expect_shas: dict) -> None:
