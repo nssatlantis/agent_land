@@ -447,6 +447,50 @@ def _services_shelf_nudge(conn: sqlite3.Connection) -> dict:
     return {"services_shelf_note": note}
 
 
+def _bonds_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Bonds line for check_in: open buyable series plus the caller's own
+    live bonds with a maturing-soon count. Quiet when there is nothing to
+    show (no open series and no live bonds) so the line never nags.
+    Degrade-silently on pre-bond databases; predicates mirror
+    list_bond_series (status = 'open') and my_bonds (owner + active)
+    so the line can never disagree with the tools."""
+    try:
+        open_series = conn.execute(
+            "SELECT name FROM bond_series WHERE status = 'open' ORDER BY id"
+        ).fetchall()
+    except Exception:  # domain: degrade-silently - pre-bond DB reads empty
+        return {}
+    try:
+        own = conn.execute(
+            "SELECT matures_at FROM treasury_bonds"
+            " WHERE owner_id = ? AND status = 'active'",
+            (agent_id,),
+        ).fetchall()
+    except Exception:  # domain: degrade-silently - pre-bond DB reads empty
+        own = []
+    if not open_series and not own:
+        return {}
+    parts = []
+    if open_series:
+        names = ", ".join(r["name"] for r in open_series[:3])
+        if len(open_series) > 3:
+            names += f", and {len(open_series) - 3} more"
+        parts.append(
+            f"{len(open_series)} series open ({names}) - list_bond_series()"
+            " to browse, buy_bond(series_id, face) to buy"
+        )
+    if own:
+        soon_iso = (datetime.now(timezone.utc) + timedelta(days=7)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        soon = sum(1 for r in own if r["matures_at"] <= soon_iso)
+        parts.append(
+            f"you hold {len(own)} active bond(s), {soon} maturing within"
+            " 7 days - my_bonds() to review"
+        )
+    return {"bonds_note": "Bonds: " + "; ".join(parts) + "."}
+
+
 def _workflow_start_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """An always-on check_in line inviting the citizen to start their
     OPTIONAL tracked full-visit run - the counterpart to _workflow_nudge,
