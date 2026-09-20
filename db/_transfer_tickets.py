@@ -210,58 +210,67 @@ def mint_transfer_ticket(
         }
 
 
+def _validate_ticket_use(
+    conn: sqlite3.Connection, digest: str, scope: str, path: str
+) -> dict:
+    """All redeem checks with zero mutation: existence, expiry, scope,
+    path coverage, and live-claim ownership. Shared by redeem (which then
+    consumes) and peek (which only answers), so the upload route can
+    validate cheaply before buffering a client-controlled body."""
+    row = conn.execute(
+        "SELECT * FROM transfer_tickets WHERE ticket_hash = ?",
+        (digest,),
+    ).fetchone()
+    if row is None:
+        raise _fail(404, "unknown transfer ticket.")
+    if row["status"] == "expired" or row["expires_at"] <= _now_iso():
+        raise _fail(410, "transfer ticket expired - mint a fresh one.")
+    if row["status"] == "used":
+        raise _fail(409, "transfer ticket already used - mint a fresh one to retry.")
+    if row["scope"] != scope:
+        raise _fail(
+            400,
+            f"ticket is {row['scope']}-only - mint a {scope} ticket"
+            " for this direction.",
+        )
+    t = _ticket_row_to_dict(row)
+    if path not in t["paths"]:
+        raise _fail(400, f"path {path!r} is not covered by this ticket.")
+    claim = conn.execute(
+        "SELECT id FROM workspace_claims"
+        " WHERE agent_id = ? AND proposal_id = ? AND name = ?"
+        " AND status = 'active'",
+        (row["agent_id"], row["proposal_id"], row["claim_name"]),
+    ).fetchone()
+    if claim is None:
+        raise _fail(
+            404,
+            "workspace for this ticket is gone - release it and"
+            " claim again, then mint a fresh ticket.",
+        )
+    return t
+
+
+def _digest_of(ticket: str) -> str:
+    raw = str(ticket or "")
+    if not raw.startswith("xfer_"):
+        raise _fail(404, "unknown transfer ticket.")
+    return hashlib.sha256(raw.encode("ascii")).hexdigest()
+
+
 def redeem_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
     """Validate one ticket use and consume it. Read scope never consumes
     (downloads are idempotent); write scope burns the path, and the last
     path burns the ticket. Every refusal carries an http_status detail
     for the route layer; unknown tickets read as 404 so existence never
-    leaks."""
-    raw = str(ticket or "")
-    if not raw.startswith("xfer_"):
-        raise _fail(404, "unknown transfer ticket.")
-    digest = hashlib.sha256(raw.encode("ascii")).hexdigest()
+    leaks. A refusal before the consume block burns nothing - only a
+    validated use consumes, and only its own path."""
+    digest = _digest_of(ticket)
     # BEGIN IMMEDIATE: check-then-burn must be atomic, or two concurrent
     # POSTs of the same write path both see it unused and both apply.
     with _conn(immediate=True) as conn:
         _sweep_expired_tickets(conn)
-        row = conn.execute(
-            "SELECT * FROM transfer_tickets WHERE ticket_hash = ?",
-            (digest,),
-        ).fetchone()
-        if row is None:
-            raise _fail(404, "unknown transfer ticket.")
-        if row["status"] == "expired" or row["expires_at"] <= _now_iso():
-            if row["status"] != "expired":
-                conn.execute(
-                    "UPDATE transfer_tickets SET status = 'expired' WHERE id = ?",
-                    (row["id"],),
-                )
-            raise _fail(410, "transfer ticket expired - mint a fresh one.")
-        if row["status"] == "used":
-            raise _fail(
-                409, "transfer ticket already used - mint a fresh one to retry."
-            )
-        if row["scope"] != scope:
-            raise _fail(
-                400,
-                f"ticket is {row['scope']}-only - mint a {scope} ticket"
-                " for this direction.",
-            )
-        t = _ticket_row_to_dict(row)
-        if path not in t["paths"]:
-            raise _fail(400, f"path {path!r} is not covered by this ticket.")
-        claim = conn.execute(
-            "SELECT id FROM workspace_claims"
-            " WHERE agent_id = ? AND proposal_id = ? AND name = ?"
-            " AND status = 'active'",
-            (row["agent_id"], row["proposal_id"], row["claim_name"]),
-        ).fetchone()
-        if claim is None:
-            raise _fail(
-                404,
-                "workspace for this ticket is gone - release it and"
-                " claim again, then mint a fresh ticket.",
-            )
+        t = _validate_ticket_use(conn, digest, scope, path)
         if scope == "write":
             if path in t["used_paths"]:
                 raise _fail(
@@ -271,20 +280,33 @@ def redeem_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
                 )
             used = list(t["used_paths"]) + [path]
             now = _now_iso()
+            row_id = t["id"]
             if set(used) >= set(t["paths"]):
                 conn.execute(
                     "UPDATE transfer_tickets"
                     " SET used_paths_json = ?, status = 'used', used_at = ?"
                     " WHERE id = ?",
-                    (json.dumps(used), now, row["id"]),
+                    (json.dumps(used), now, row_id),
                 )
             else:
                 conn.execute(
                     "UPDATE transfer_tickets SET used_paths_json = ? WHERE id = ?",
-                    (json.dumps(used), row["id"]),
+                    (json.dumps(used), row_id),
                 )
             t["used_paths"] = used
         return t
+
+
+def peek_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
+    """Validate one ticket use WITHOUT consuming it: existence, expiry,
+    scope, path coverage, live-claim ownership. The upload route peeks
+    before buffering a client-controlled body, so bogus tickets cost one
+    cheap lookup instead of a megabyte of buffering. Read-only: never
+    touches used_paths or status."""
+    digest = _digest_of(ticket)
+    with _conn() as conn:
+        _sweep_expired_tickets(conn)
+        return _validate_ticket_use(conn, digest, scope, path)
 
 
 def sweep_expired_transfer_tickets() -> int:
