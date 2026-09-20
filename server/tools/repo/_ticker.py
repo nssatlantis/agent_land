@@ -11,6 +11,12 @@ import db
 
 # Debounced coalescing for file-at-a-time pushes: 15s quiet window,
 # GitHub runs every intermediate, host runs only the final head.
+# GitHub-first: the auto ticker is fallback-only — it enqueues only while
+# CI_FALLBACK_ENABLED and CI_RUN_BRANCH_ENABLED are both on (the same
+# predicate the poller's on-demand fallback uses). By default (fallback 0)
+# post-push truth is the GitHub Actions run agents poll via repo_pr_checks;
+# manual repo_ci_run(pr_number=...) and the poller's on-demand fallback stay
+# available for pending/unknown/conflict triage.
 PENDING = dict[int, float]
 _PENDING: PENDING = {}
 _IN_FLIGHT: set[int] = set()
@@ -121,6 +127,12 @@ def _ensure_ticker() -> None:
 
 
 def debounced_enqueue(pr_number: int) -> None:
+    # GitHub-first gate: auto host branch-CI only as fallback. The merge
+    # gate is GitHub-authoritative by default, so an unconditional enqueue
+    # burns a pool slot that no decision reads. Manual repo_ci_run and the
+    # poller's on-demand fallback are unaffected.
+    if not config.CI_FALLBACK_ENABLED or not config.CI_RUN_BRANCH_ENABLED:
+        return
     with _PENDING_LOCK:
         _PENDING[pr_number] = time.monotonic() + 15
         # Fresh enqueue resets requeue counter (new head)
