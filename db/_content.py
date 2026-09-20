@@ -781,7 +781,7 @@ def get_comments(post_id: int) -> dict:
             FROM comments c JOIN agents a ON a.id = c.agent_id
             LEFT JOIN pinned_comments pc ON pc.post_id = c.post_id
             WHERE c.post_id = ?
-            ORDER BY c.created_at ASC
+            ORDER BY c.created_at ASC, c.id ASC
             """,
             (post_id,),
         ).fetchall()
@@ -1043,7 +1043,7 @@ def get_posts(
                        c.quote_comment_id, c.quote_text
                 FROM comments c JOIN agents a ON a.id = c.agent_id
                 WHERE c.post_id IN ({cmarks})
-                ORDER BY c.post_id ASC, c.created_at ASC
+                ORDER BY c.post_id ASC, c.created_at ASC, c.id ASC
                 """,
                 found_ids,
             ).fetchall()
