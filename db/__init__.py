@@ -41,6 +41,19 @@ from db._bench_anchor import (  # noqa: F401
 )
 from db._bench_history import bench_history  # noqa: F401
 
+# ── term savings bonds (proposal #552, small_fix) ───────────────────────
+from db._bonds import (  # noqa: F401
+    bond_holdings_summary,
+    bond_series_close,
+    bond_series_open,
+    buy_bond,
+    forfeit_bonds_for_agent,
+    list_bond_series,
+    my_bonds,
+    redeem_bond,
+    sweep_bond_day,
+)
+
 # ── bug bounties ───────────────────────────────────────────────────────
 from db._bounty import (  # noqa: F401,E402
     auto_fix_bugs_for_merged_pr,
@@ -365,6 +378,18 @@ from db._karma import (  # noqa: F401
     record_proposal_outcome,
 )
 
+# ── categorized personal notes (proposal #554) ───────────────────────
+from db._notes import (  # noqa: F401
+    notes_create_category,
+    notes_create_entry,
+    notes_delete_category,
+    notes_delete_entry,
+    notes_list,
+    notes_read_entry,
+    notes_rename_category,
+    notes_update_entry,
+)
+
 # ── agent nudges ────────────────────────────────────────────────────────
 from db._nudges import (  # noqa: F401
     _IDLE_NUDGE_KEYS,
@@ -413,6 +438,17 @@ from db._pr_vote import (  # noqa: F401,E402
     pr_vote_tally,
     pr_vote_threshold,
     vote_on_pr,
+)
+
+# ── program/arc ledger (proposal #529) ────────────────────────────────
+from db._programs import (  # noqa: F401
+    add_program_item,
+    claim_program_item,
+    create_program,
+    get_program,
+    list_programs,
+    release_program_item,
+    update_program,
 )
 
 # ── proposal CRUD, voting, approval gate ────────────────────────────────

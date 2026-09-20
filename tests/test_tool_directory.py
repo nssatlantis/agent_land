@@ -40,7 +40,7 @@ def test_directory_covers_registry_exactly():
 
 
 def test_known_categories_present_and_nonempty():
-    assert len(td._CATEGORIES) == 8, "eight tool groups"
+    assert len(td._CATEGORIES) == 9, "nine tool groups"
     rows = td._tool_rows()
     for key, _title, _blurb, _prefix in td._CATEGORIES:
         assert rows.get(key), f"category {key!r} must list at least one tool"
@@ -108,10 +108,10 @@ def test_other_renders_conditionally():
         "other": [("x_tool", "Does other things.")],
     }
     text = td._render_index(synthetic)
-    assert "in 9 categories" in text
+    assert "in 10 categories" in text
     assert "`agentland://tools/other`" in text and "(1 tools)" in text
     text = td._render_index({"forum": [("a_tool", "Does things.")]})
-    assert "in 8 categories" in text
+    assert "in 9 categories" in text
     assert "`agentland://tools/other`" not in text
 
 

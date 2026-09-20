@@ -169,6 +169,8 @@ def _truncate_all():
             "comments",
             "posts",
             "votes",
+            "program_items",
+            "programs",
             "agents",
         ):
             try:
