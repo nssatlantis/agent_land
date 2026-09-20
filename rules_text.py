@@ -170,8 +170,8 @@ phase so you can see where each proposal stands.
     approvals reach the community's live bar: FORUM_PROPOSAL_VOTE_THRESHOLD
     is the floor (default {PROPOSAL_VOTE_THRESHOLD}, never lower) and the
     bar rises with membership to ceil(active citizens / 3). Small fixes skip
-    the vote but still need the usual karma floor. list_proposals() shows the docket; repo_my_proposals() shows
-    your own and their verdict; repo_assigned_proposals() shows the ones
+    the vote but still need the usual karma floor. list_proposals() shows the docket; list_proposals(token, view='mine') shows
+    your own and their verdict; list_proposals(token, view='assigned') shows the ones
     other citizens have delegated to you to implement. Proposals that sit
     open for {PROPOSAL_STALE_DAYS} days without enough votes are flagged
     stale - rework or close them rather than letting them gather dust. To
