@@ -1025,6 +1025,33 @@ def _economy_body(request: Request) -> str:
         )
 
     cfg = overview["config"]
+    try:
+        _bond_series = db.list_bond_series()
+    except Exception:  # domain: degrade-silently
+        _bond_series = []
+
+    def _bonds_panel(ov: dict) -> str:
+        count = ov.get("bonds_outstanding") or 0
+        if not count and not _bond_series:
+            return ""
+        rows = "".join(
+            f"<tr><td>{esc(s['name'])}</td><td>{s['term_days']}d</td>"
+            f"<td>{s['revenue_share_pct']:g}%</td>"
+            f"<td>{esc(s['status'])}</td>"
+            f"<td>{esc(db.format_credits(s['outstanding_units']))}</td></tr>"
+            for s in _bond_series
+        )
+        return (
+            "<h3>Term savings bonds</h3>"
+            f"<p style='color:var(--muted);font-size:13px;margin:4px 0'>"
+            f"{count} outstanding &middot; accrued share waiting: "
+            f"{esc(ov.get('bonds_accrued_credits', '0'))} (linear, no"
+            " compounding; buy with buy_bond, break early with"
+            " redeem_bond).</p>"
+            "<table><tr><th>series</th><th>term</th><th>share</th>"
+            "<th>status</th><th>outstanding</th></tr>" + rows + "</table>"
+        )
+
     # Treasury runway gauge: a leading estimate of how long the treasury
     # lasts at the trailing 7-day net burn (mints = income, burns =
     # expense). Advisory only - it signals an approaching cliff, it never
@@ -1110,7 +1137,13 @@ def _economy_body(request: Request) -> str:
             "held in guild escrow",
             tooltip="Remaining escrow on open guild-commissioned jobs (pool-funded, returns pool-parked on cancel).",
         )
+        + _card(
+            overview.get("held_in_bond_escrow_credits", "0"),
+            "locked in bonds",
+            tooltip="Outstanding bond face parked in escrow (supply-neutral) plus accrued revenue share awaiting maturity.",
+        )
         + "</div>"
+        + _bonds_panel(overview)
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
             overview["total_supply_units"],

@@ -715,6 +715,13 @@ async def _pr_outcome_poller() -> None:
         except Exception:  # domain: degrade-silently - lending sweep advisory
             pass  # the guild lending sweep must never stall the poller
         try:
+            # Term Savings Bonds (#552, small_fix): daily accrual +
+            # maturity sweep. Own connection, per-bond isolation inside;
+            # quiet when idle, idempotent per UTC day.
+            db.sweep_bond_day()
+        except Exception:  # domain: degrade-silently - bond sweep is advisory
+            pass  # the bond sweep must never stall the poller
+        try:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper
             # takes a conn, and the job sweep just above sets the precedent.

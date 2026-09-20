@@ -44,6 +44,21 @@ def _week_key() -> str:
     return datetime.now(timezone.utc).strftime("%G-W%V")
 
 
+def _week_key_of(stamp: object) -> str | None:
+    """The ISO week key (%G-W%V) of a ledger timestamp, or None when the
+    stamp is missing or unparseable. Fail-open: None reads as outside
+    grace, preserving today's billing rather than granting amnesty."""
+    try:
+        text = str(stamp or "")
+        if not text:
+            return None
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%G-W%V")
+    except (ValueError, TypeError):  # domain: degrade-silently - bad stamp bills
+        return None
+
+
 def _guild_stake_link(conn: sqlite3.Connection, stake_id: int) -> dict | None:
     row = conn.execute(
         "SELECT * FROM guild_stake_links WHERE stake_id = ?", (int(stake_id),)
@@ -411,12 +426,17 @@ def sweep_guild_upkeep() -> dict:
             gid = guild["id"]
             try:
                 members = conn.execute(
-                    "SELECT agent_id FROM guild_members WHERE guild_id = ? ORDER BY id",
+                    "SELECT agent_id, joined_at FROM guild_members"
+                    " WHERE guild_id = ? ORDER BY id",
                     (gid,),
                 ).fetchall()
                 issued_here = 0
                 for mrow in members:
                     aid = mrow[0]
+                    if _week_key_of(mrow["joined_at"]) == week:
+                        # Upkeep grace: a member's first ISO week is free -
+                        # no arrears row, no invoice, no shortfall pressure.
+                        continue
                     has_week = conn.execute(
                         "SELECT 1 FROM guild_fee_arrears WHERE guild_id = ?"
                         " AND member_agent_id = ? AND week = ? LIMIT 1",

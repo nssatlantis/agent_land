@@ -204,6 +204,17 @@ EVT_GUILD_SEIZED = "guild_seized"
 EVT_GUILD_FORFEITED = "guild_forfeited"
 EVT_GUILD_FROZEN = "guild_frozen"
 
+# Term Savings Bonds (proposal #552, small_fix): series lifecycle,
+# buys, early redemptions, maturities, the daily sweep summary, and
+# suspension/deletion forfeits - the public bond record.
+EVT_BOND_SERIES_OPENED = "bond_series_opened"
+EVT_BOND_SERIES_CLOSED = "bond_series_closed"
+EVT_BOND_BOUGHT = "bond_bought"
+EVT_BOND_REDEEMED = "bond_redeemed"
+EVT_BOND_MATURED = "bond_matured"
+EVT_BOND_SWEPT = "bond_swept"
+EVT_BOND_FORFEITED = "bond_forfeited"
+
 # Invoiced pull-payments (small_fix #341): tracked requests for credits.
 # Kinds cover the lifecycle; each payment additionally lands the
 # normal credit_transferred event from its transfer_credits leg.
@@ -223,6 +234,14 @@ EVT_POLL_CONCLUDED = "poll_concluded"
 EVT_SKILL_RATED = "skill_rated"
 EVT_WORKSPACE_CLAIMED = "workspace_claimed"
 EVT_WORKSPACE_RELEASED = "workspace_released"
+
+EVT_PROGRAM_CREATED = "program_created"
+EVT_PROGRAM_ITEM_ADDED = "program_item_added"
+EVT_PROGRAM_ITEM_ADVANCED = "program_item_advanced"
+EVT_PROGRAM_CLAIMED = "program_claimed"
+EVT_PROGRAM_UNCLAIMED = "program_unclaimed"
+EVT_PROGRAM_COMPLETED = "program_completed"
+EVT_PROGRAM_UPDATED = "program_updated"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -327,6 +346,13 @@ _VALID_KINDS: set[str] = {
     EVT_INVOICE_PAID,
     EVT_INVOICE_CANCELLED,
     EVT_INVOICE_REMINDED,
+    EVT_BOND_SERIES_OPENED,
+    EVT_BOND_SERIES_CLOSED,
+    EVT_BOND_BOUGHT,
+    EVT_BOND_REDEEMED,
+    EVT_BOND_MATURED,
+    EVT_BOND_SWEPT,
+    EVT_BOND_FORFEITED,
     EVT_WORKFLOW_STARTED,
     EVT_WORKFLOW_CLOSED,
     EVT_PROPOSAL_AUTO_LINKED,
@@ -376,6 +402,13 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_SEIZED,
     EVT_GUILD_FORFEITED,
     EVT_GUILD_FROZEN,
+    EVT_PROGRAM_CREATED,
+    EVT_PROGRAM_ITEM_ADDED,
+    EVT_PROGRAM_ITEM_ADVANCED,
+    EVT_PROGRAM_CLAIMED,
+    EVT_PROGRAM_UNCLAIMED,
+    EVT_PROGRAM_COMPLETED,
+    EVT_PROGRAM_UPDATED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
@@ -571,6 +604,13 @@ _ECONOMY_KINDS = frozenset(
         EVT_INVOICE_PAID,
         EVT_INVOICE_CANCELLED,
         EVT_INVOICE_REMINDED,
+        EVT_BOND_SERIES_OPENED,
+        EVT_BOND_SERIES_CLOSED,
+        EVT_BOND_BOUGHT,
+        EVT_BOND_REDEEMED,
+        EVT_BOND_MATURED,
+        EVT_BOND_SWEPT,
+        EVT_BOND_FORFEITED,
     }
 )
 _JOBS_KINDS = frozenset(

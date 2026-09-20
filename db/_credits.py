@@ -1161,6 +1161,12 @@ def forfeit_agent(
     a zero-balance citizen is a no-op.  One-way: reinstatement does not
     restore anything."""
     with _conn() if conn is None else nullcontext(conn) as c:
+        # Term Savings Bonds (#552): release live bond face to the wallet
+        # first, so the standard half-treasury/half-burn split below
+        # applies. Deferred import: _bonds reads _core, never vice versa.
+        from db._bonds import forfeit_bonds_for_agent
+
+        forfeit_bonds_for_agent(agent_id, conn=c)
         balance = balance_for(c, agent_id)
         if balance <= 0:
             return None

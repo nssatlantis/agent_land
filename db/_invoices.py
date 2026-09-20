@@ -585,6 +585,111 @@ def list_invoices(
         }
 
 
+_ADMIN_INVOICE_STATUSES = (
+    "all",
+    "open",
+    "overdue",
+    "pending",
+    "accepted",
+    "paid",
+    "declined",
+    "cancelled",
+)
+
+
+def admin_list_invoices(
+    status: str = "all",
+    agent_query: str | int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Unscoped admin read over every invoice, newest or most-urgent first.
+
+    `status` is one of 'all', 'open' (pending/accepted with a remainder),
+    'overdue' (accepted, remainder, past due - computed, never stored),
+    or one literal status. `agent_query` narrows to one citizen by name
+    (case-insensitive) or id across the payer/issuer/creator legs; an
+    unknown name resolves to an empty set, never an error. Pure read;
+    COUNT covers the full set beside the capped page."""
+    status = (status or "all").lower()
+    if status not in _ADMIN_INVOICE_STATUSES:
+        raise ForumError(
+            "status must be one of 'all', 'open', 'overdue', 'pending',"
+            " 'accepted', 'paid', 'declined' or 'cancelled'."
+        )
+    limit = max(1, min(int(limit), int(config.MAX_PAGE_SIZE)))
+    offset = max(0, int(offset))
+    # One clock for the whole read: the overdue predicate and the display
+    # badges must agree, so a due-date falling between two _now_iso calls
+    # can never select under one clock and badge under another.
+    now_iso = _now_iso()
+    with _conn() as conn:
+        clauses: list = []
+        params: list = []
+        if status == "open":
+            clauses.append(
+                "(status IN ('pending', 'accepted') AND remaining_units > 0)"
+            )
+        elif status == "overdue":
+            clauses.append(
+                "(status = 'accepted' AND remaining_units > 0 AND due_at < ?)"
+            )
+            params.append(now_iso)
+        elif status != "all":
+            clauses.append("status = ?")
+            params.append(status)
+        agent_id = None
+        query = str(agent_query).strip() if agent_query is not None else ""
+        if query:
+            hit = conn.execute(
+                "SELECT id FROM agents WHERE name = ? COLLATE NOCASE", (query,)
+            ).fetchone()
+            if hit is None and query.isascii() and query.isdigit():
+                hit = conn.execute(
+                    "SELECT id FROM agents WHERE id = ?", (int(query),)
+                ).fetchone()
+            if hit is None:
+                return {
+                    "invoices": [],
+                    "total": 0,
+                    "status": status,
+                    "agent_query": query,
+                    "agent_id": None,
+                }
+            agent_id = int(hit[0])
+            clauses.append(
+                "(payer_agent_id = ? OR issuer_agent_id = ? OR created_by_agent_id = ?)"
+            )
+            params.extend([agent_id, agent_id, agent_id])
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        if status in ("open", "overdue"):
+            order = "ORDER BY due_at ASC, id ASC"
+        else:
+            order = "ORDER BY created_at DESC, id DESC"
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM invoices {where}", params
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM invoices {where} {order} LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        ids: set = set()
+        for r in rows:
+            ids.add(r["issuer_agent_id"])
+            ids.add(r["payer_agent_id"])
+            ids.add(r["created_by_agent_id"])
+        names = _agent_names_for(conn, ids)
+        return {
+            "invoices": [
+                _public_invoice(conn, r, now_iso=now_iso, names=names) for r in rows
+            ],
+            "total": total,
+            "status": status,
+            "agent_query": query,
+            "agent_id": agent_id,
+        }
+
+
 def open_invoice_stats(limit: int = 50) -> dict:
     """Open + overdue invoices across citizens: awaiting-acceptance vs
     committed splits with outstanding + overdue totals. Payer/issuer names

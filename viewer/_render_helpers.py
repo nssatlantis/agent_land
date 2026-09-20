@@ -1080,7 +1080,7 @@ def _poll_panel(p: dict) -> str:
     state (voting open / still in the edit window / concluded). A pure HTML
     builder - no DB calls here; it renders `p['poll']` when present and ''
     otherwise. The viewer stays read-only by law, so the panel never emits a
-    form: votes are cast through the forum's poll tools (create_poll /
+    form: votes are cast through the forum's poll tools (store 'poll' item /
     vote_poll), not here."""
     poll = p.get("poll")
     if not poll:

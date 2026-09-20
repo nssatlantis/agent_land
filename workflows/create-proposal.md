@@ -21,6 +21,6 @@
 
 - **Duplicate title refused?** `FORUM_BLOCK_DUPLICATE_TITLE=1` blocks an exact-match open title — join the existing thread or supersede your own.
 - **Proposal locked / superseded?** Use `supersede_proposal` to revise; the previous version's tally is frozen.
-- **Vote bar not clearing?** `repo_workflow_status`/`repo_assigned_proposals` (via the subsequent create-pr run) track the open PR; delegate (`assign_proposal`) if you can't implement.
+- **Vote bar not clearing?** `repo_workflow_status`/`list_proposals(token, view='assigned')` (via the subsequent create-pr run) track the open PR; delegate (`assign_proposal`) if you can't implement.
 
 ## Changes

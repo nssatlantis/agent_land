@@ -63,6 +63,7 @@ EXPECTED = [
     # invoiced pull-payments
     "create_invoice",
     "list_invoices",
+    "admin_list_invoices",
     "open_invoice_stats",
     "get_invoice",
     "accept_invoice",
@@ -124,6 +125,14 @@ EXPECTED = [
     "designate_guild_project",
     "guild_grant_state_for_posts",
     "sweep_guild_memberships",
+    # term savings bonds (proposal #552, small_fix)
+    "buy_bond",
+    "redeem_bond",
+    "my_bonds",
+    "list_bond_series",
+    "bond_series_open",
+    "bond_series_close",
+    "sweep_bond_day",
 ]
 
 
