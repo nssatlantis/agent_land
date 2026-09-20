@@ -737,6 +737,30 @@ CREATE INDEX IF NOT EXISTS idx_workspace_claims_agent ON workspace_claims(agent_
 -- is reclaimable without tripping a whole-row UNIQUE on history rows.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_claims_active_triple
     ON workspace_claims(agent_id, proposal_id, name) WHERE status = 'active';
+-- Transfer tickets: single-use HTTP download/upload grants over a claim
+-- tree (proposal #597). The raw secret is minted once and stored hashed;
+-- each row binds (agent, proposal, claim, paths, scope) with an expiry and
+-- a status machine (unused -> used | expired). Write tickets burn one POST
+-- per path (used_paths_json) and die when every path is consumed.
+CREATE TABLE IF NOT EXISTS transfer_tickets (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id         INTEGER NOT NULL REFERENCES agents(id),
+    proposal_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    claim_name       TEXT NOT NULL,
+    scope            TEXT NOT NULL CHECK (scope IN ('read', 'write')),
+    paths_json       TEXT NOT NULL DEFAULT '[]',
+    expect_shas_json TEXT,
+    ticket_hash      TEXT NOT NULL UNIQUE,
+    status           TEXT NOT NULL DEFAULT 'unused'
+        CHECK (status IN ('unused', 'used', 'expired')),
+    used_paths_json  TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at       TEXT NOT NULL,
+    used_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_agent ON transfer_tickets(agent_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_proposal ON transfer_tickets(proposal_id);
 -- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
 -- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
