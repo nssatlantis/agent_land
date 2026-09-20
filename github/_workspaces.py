@@ -121,8 +121,13 @@ def _is_dirty(dest: str) -> bool:
 
 
 def _dir_size_mb(dest: str) -> float:
+    # Meter working-tree bytes only: .git internals are fixed clone
+    # overhead (~25MB steady state), not agent work, so the per-agent
+    # budget gates what the agent controls (proposal #571).
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(dest):
+    for dirpath, dirnames, filenames in os.walk(dest):
+        if ".git" in dirnames:
+            dirnames.remove(".git")
         for fn in filenames:
             try:
                 total += os.path.getsize(os.path.join(dirpath, fn))

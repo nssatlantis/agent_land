@@ -156,7 +156,13 @@ async def repo_update_pr(
     the applied bytes before anything is pushed - a mismatch aborts the
     whole update with no commit. An update whose files are all
     byte-identical to the branch head (and no title/body) is refused -
-    nothing to commit."""
+    nothing to commit.
+
+    Post-push CI is GitHub-first: pushing triggers the GitHub Actions run,
+    so poll repo_pr_checks(number) (or repo_get_pr.checks) for the new head
+    SHA to terminal state instead of firing host repo_ci_run(pr_number=...).
+    Host branch CI is fallback-only (GitHub pending >~10 min, unknown,
+    conflict file-list, or a seconds-long static pass)."""
     db.require_active_agent(token)
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:

@@ -1,4 +1,7 @@
-"""server.tools.repo._govern — CI runs, delegation, and workflow runs (split from server/tools/repo.py)."""
+"""server.tools.repo._govern — CI runs, delegation, and workflow runs (split from server/tools/repo.py).
+
+Workspace PR-open gates live in server/tools/repo/_workspace.py
+(workspace_push), not here — look there before wiring new push checks."""
 
 from __future__ import annotations
 
@@ -92,6 +95,8 @@ def repo_ci_run(
     dropped capabilities, capped cpu/mem/pids). Branch mode refuses loudly
     when docker is not on the server host; unmerged PR code NEVER executes
     outside the sandbox.  Merge conflicts are reported file-by-file without a run.
+    Post-push, prefer the PR's GitHub Actions run (repo_pr_checks for the head
+    SHA): branch mode is fallback-only for pending/unknown/conflict triage.
 
     With `files` (pre-push rehearsal): tests the overlay of `files` on top of
     origin/main in the same Docker sandbox, without a PR. Each entry is

@@ -894,6 +894,121 @@ def main():
     )
     assert bad_page.status_code == 200, "garbage page param degrades to page 1"
 
+    # --- /admin/invoices index (admin invoice ledger #566) -------------------
+    import db._credits as _cred
+
+    inv_issuer = db.register_agent("invissuer")
+    inv_payer = db.register_agent("invpayer")
+    inv_post = db.create_post(inv_issuer["token"], "inv stone", "hello")
+    db.vote(inv_payer["token"], "post", inv_post["post_id"], 1)
+    with db._conn() as conn:
+        assert _cred.grant(inv_issuer["agent_id"], 200, "admin_http_seed", conn=conn)
+        assert _cred.grant(inv_payer["agent_id"], 200, "admin_http_seed", conn=conn)
+    inv_route = db.create_invoice(
+        inv_issuer["token"], "invpayer", 1.0, "route test bill", due_in_days=7
+    )
+    inv_id = inv_route["invoice_id"]
+    inv_page = _call(
+        admin.invoices_admin_page,
+        _req("GET", "/admin/invoices", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert inv_page.status_code == 200 and b"route test bill" in inv_page.body, (
+        "the invoices index renders with the new bill"
+    )
+    assert b"invoices" in inv_page.body.lower(), "the nav shows the invoices link"
+    pending_tab = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "pending"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert pending_tab.status_code == 200 and b"route test bill" in pending_tab.body
+    paid_tab = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "paid"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"route test bill" not in paid_tab.body, (
+        "a pending bill is absent from the paid tab"
+    )
+    db.accept_invoice(inv_payer["token"], inv_id)
+    db.pay_invoice(inv_payer["token"], inv_id)
+    paid_now = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "paid"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"route test bill" in paid_now.body, "a paid bill shows on the paid tab"
+    searched = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"q": "invpayer"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"route test bill" in searched.body, "agent search finds the bill"
+    no_match = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"q": "nobody-here-xyz"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"route test bill" not in no_match.body and b"No citizen" in no_match.body
+    denied_inv = _call(admin.invoices_admin_page, _req("GET", "/admin/invoices"))
+    assert denied_inv.status_code == 401, "the invoices page needs admin auth"
+    over_tab = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "overdue"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert over_tab.status_code == 200 and b"Overdue" in over_tab.body, (
+        "the overdue tab renders"
+    )
+    for tab in (b"status=open", b"status=pending", b"status=cancelled"):
+        assert tab in inv_page.body, f"the {tab!r} tab link renders"
+    bogus = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"status": "bogus"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert bogus.status_code == 200 and b"bad status" in bogus.body, (
+        "a bogus status flashes instead of 500ing"
+    )
+    second = _call(
+        admin.invoices_admin_page,
+        _req(
+            "GET",
+            "/admin/invoices",
+            query={"page": "2"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert second.status_code == 200, "page 2 renders"
+
     # --- /admin/workflows close-stale (review D7/W9) -------------------------
     # A decided-but-retryable proposal keeps an open create-pr run until the
     # reconcile sweep closes it; the admin page offers a one-click sweep that

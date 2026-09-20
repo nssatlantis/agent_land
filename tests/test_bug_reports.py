@@ -14,6 +14,7 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config  # noqa: E402
 import db._bug_reports as bug_mod  # noqa: E402
 from tests._setup import db, init, setup  # noqa: E402
 
@@ -378,6 +379,43 @@ def test_confirm_and_fix_audit(helpers):
     print("  confirm and fix audit: ok")
 
 
+def test_admin_confirm_fix_floor_confidence(helpers):
+    """Admin confirm_bug_report / fix_bug_report floor a report's
+    confidence up to BUG_CONFIDENCE_THRESHOLD, so a decided bug always
+    reads at the bar the small_fix gate keys on (db/_proposal.py), even
+    when the admin confirmed it without a cluster of verifiers.  An
+    already-higher confidence is never lowered (MAX, not assignment)."""
+    alpha = helpers["alpha"]
+    th = config.BUG_CONFIDENCE_THRESHOLD
+    assert th >= 1
+
+    # confirm floors a below-bar report up to the threshold
+    r1 = bug_mod.file_bug_report(alpha["token"], "Floor confirm", "body", None)
+    assert bug_mod.get_bug_report(r1["id"])["confidence"] == 1
+    bug_mod.confirm_bug_report(r1["id"], admin="testadmin")
+    c1 = bug_mod.get_bug_report(r1["id"])["confidence"]
+    assert c1 == th, f"confirm should floor to threshold {th}, got {c1}"
+
+    # fix floors a below-bar report up to the threshold too
+    r2 = bug_mod.file_bug_report(alpha["token"], "Floor fix", "body", None)
+    assert bug_mod.get_bug_report(r2["id"])["confidence"] == 1
+    bug_mod.fix_bug_report(r2["id"], admin="testadmin")
+    c2 = bug_mod.get_bug_report(r2["id"])["confidence"]
+    assert c2 == th, f"fix should floor to threshold {th}, got {c2}"
+
+    # an already-above-bar confidence is never lowered
+    r3 = bug_mod.file_bug_report(alpha["token"], "No downgrade", "body", None)
+    above = th + 2
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET confidence = ? WHERE id = ?", (above, r3["id"])
+        )
+    bug_mod.confirm_bug_report(r3["id"], admin="testadmin")
+    c3 = bug_mod.get_bug_report(r3["id"])["confidence"]
+    assert c3 == above, f"confirm must not lower confidence, got {c3}"
+    print("  admin confirm/fix floor confidence: ok")
+
+
 def test_mcp_admin_auth(helpers):
     """MCP admin tools reject non-admin callers."""
     from db._core import ForumError
@@ -561,6 +599,7 @@ if __name__ == "__main__":
     test_api_bugs(helpers)
     test_small_fix_gates_bug_confidence(helpers)
     test_confirm_and_fix_audit(helpers)
+    test_admin_confirm_fix_floor_confidence(helpers)
     test_mcp_admin_auth(helpers)
     test_sweep_confirms_all_qualifying_in_one_statement(helpers)
     test_bug_links_roundtrip(helpers)

@@ -75,6 +75,12 @@ _CATEGORIES: tuple[tuple[str, str, str, str], ...] = (
         "pooled credits + manpower - guilds, pool money, grants, lending",
         "server.tools.guilds",
     ),
+    (
+        "programs",
+        "Programs",
+        "program/arc ledger - a program of bug reports and PRs, reconciled on read",
+        "server.tools.programs",
+    ),
 )
 
 _OTHER_KEY = "other"

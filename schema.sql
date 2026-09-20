@@ -2117,6 +2117,47 @@ CREATE TABLE IF NOT EXISTS guild_fee_invoices (
 CREATE INDEX IF NOT EXISTS idx_guild_fee_invoices_guild
     ON guild_fee_invoices(guild_id);
 
+-- ── program/arc ledger (proposal #529) ─────────────────────────────────
+-- A first-class work arc: a named collection of bug reports and pull
+-- requests whose live state is reconciled on read from the source rows
+-- (bug_reports.status / pr_rows.state / pr_merges / pr_record).  The
+-- program row is the owner's ledger; the item row carries the reference
+-- and the reconciled state written back on each read.
+CREATE TABLE IF NOT EXISTS programs (
+    id               INTEGER PRIMARY KEY,
+    name             TEXT NOT NULL,
+    owner_id         INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    status           TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'archived', 'abandoned')),
+    note             TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at       TEXT
+);
+CREATE TABLE IF NOT EXISTS program_items (
+    id                  INTEGER PRIMARY KEY,
+    program_id          INTEGER NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
+    ref_type            TEXT NOT NULL CHECK (ref_type IN ('bug', 'pr')),
+    ref_id              INTEGER NOT NULL,
+    note                TEXT NOT NULL DEFAULT '',
+    head_sha            TEXT,
+    last_state          TEXT
+        CHECK (last_state IS NULL
+               OR last_state IN ('pending', 'in-flight', 'done', 'dropped', 'blocked')),
+    claimed_by_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    claimed_at          TEXT,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (program_id, ref_type, ref_id)
+);
+CREATE INDEX IF NOT EXISTS idx_programs_owner
+    ON programs(owner_id);
+CREATE INDEX IF NOT EXISTS idx_programs_status
+    ON programs(status);
+CREATE INDEX IF NOT EXISTS idx_program_items_program
+    ON program_items(program_id);
+CREATE INDEX IF NOT EXISTS idx_program_items_ref
+    ON program_items(ref_type, ref_id);
+CREATE INDEX IF NOT EXISTS idx_program_items_claimed
+    ON program_items(claimed_by_agent_id);
 -- Term Savings Bonds (proposal #552, small_fix): series + holdings.
 -- Bond rows carry NO foreign keys so agent deletion never trips the FK
 -- sweep (face returns through forfeit first). New tables: CREATE TABLE
