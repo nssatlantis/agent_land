@@ -1897,7 +1897,8 @@ def _economy_body(request: Request) -> str:
         "spendable valuta: earnings are paid out of the community treasury, "
         "while transaction fees, tag prices, guild deposits, bond fees "
         "and forfeitures recirculate into it (stake principal stays "
-        "locked until payout). Every number "
+        "locked until payout). Pool-bond rows may appear in both the "
+        "Bonds and Guilds tabs by design. Every number "
         "below derives from the public ledger; the runway is a "
         f"trailing-{runway.get('window_days', 14)}d estimate.</p>"
         + cards
