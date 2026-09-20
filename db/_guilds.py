@@ -2085,8 +2085,11 @@ def get_guild(guild_id: int, token: str | None = None) -> dict:
     pending_invites when you are the founder."""
     with _conn() as conn:
         viewer_id = None
-        if token is not None:
-            viewer_id = _require_active_agent(conn, token)["id"]
+        if token:
+            try:
+                viewer_id = _require_active_agent(conn, token)["id"]
+            except ForumError:
+                viewer_id = None
         return _guild_detail(conn, guild_id, viewer_id)
 
 
