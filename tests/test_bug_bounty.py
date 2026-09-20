@@ -240,7 +240,7 @@ def test_autofix_via_fix_pr():
     print("  autofix_via_fix_pr: ok")
 
 
-def test_autofix_via_proposal_link():
+def test_citation_without_fix_pr_no_autofix():
     bid = _confirm_bug()
     link_result = db.sweep_bug_bounties()
     jid = _bug_row(bid)["bounty_job_id"]
@@ -260,24 +260,26 @@ def test_autofix_via_proposal_link():
         nopoint = conn.execute(
             "SELECT fix_pr FROM bug_reports WHERE id = ?", (bid,)
         ).fetchone()[0]
-    assert link is not None, "proposal #B cite links the bug"
-    assert nopoint is None, "no claim means no fix pointer: link path only"
+    assert link is not None, "proposal #B cite still links the bug"
+    assert nopoint is None, "no claim means no fix pointer"
     pr = 93000 + pid
     db.link_pr_to_proposal(pr, pid, AGENTS["epsilon"]["agent_id"])
     result = db.auto_fix_bugs_for_merged_pr(pr, pid)
-    assert result["fixed"] == [bid], result
-    assert result["auto_paid"] == [jid], result
+    assert result["fixed"] == [], result
+    assert result["auto_paid"] == [], result
     assert result["cancelled"] == [], result
-    assert _bug_row(bid)["status"] == "fixed"
-    assert _job_row(jid)["status"] == "completed"
-    print("  autofix_via_proposal_link: ok")
+    assert _bug_row(bid)["status"] == "confirmed"
+    assert _bug_row(bid)["bounty_job_id"] == jid
+    assert _job_row(jid)["status"] == "open"
+    db.admin_cancel_job("test-cleanup", jid)
+    print("  citation_without_fix_pr_no_autofix: ok")
 
 
 def test_unlinked_evidence_no_pay():
     """An evidence PR that resolves to neither the bug (no fix_pr
-    pointer, no #B proposal cite) pays nothing - otherwise an
-    unrelated merged PR could drain the bounty and orphan the bug
-    (bounty_job_id stays stamped, sweep never reposts)."""
+    pointer - and since bug #62 no #B-cite path) pays nothing -
+    otherwise an unrelated merged PR could drain the bounty and orphan
+    the bug (bounty_job_id stays stamped, sweep never reposts)."""
     from unittest import mock
 
     bid = _confirm_bug()
@@ -488,6 +490,7 @@ def test_autoclaim_unlinked_opener_cancels():
         small_fix=True,
     )
     pid = prop["post_id"]
+    db.claim_bug(AGENTS["epsilon"]["token"], bid, action="claim", proposal_id=pid)
     pr = 93600 + pid
     db.link_pr_to_proposal(pr, pid, None)
     result = db.auto_fix_bugs_for_merged_pr(pr, pid)
@@ -513,6 +516,7 @@ def test_autoclaim_gone_opener_cancels():
         small_fix=True,
     )
     pid = prop["post_id"]
+    db.claim_bug(AGENTS["epsilon"]["token"], bid, action="claim", proposal_id=pid)
     pr = 93700 + pid
     db.link_pr_to_proposal(pr, pid, fixer["agent_id"])
     with db._conn() as conn:
@@ -802,7 +806,7 @@ if __name__ == "__main__":
     test_system_pays_worker_reporter_flat()
     test_bounty_deposit_is_zero()
     test_autofix_via_fix_pr()
-    test_autofix_via_proposal_link()
+    test_citation_without_fix_pr_no_autofix()
     test_unlinked_evidence_no_pay()
     test_worker_in_flight_stays()
     test_autoclaim_pays_forgetful_fixer()
