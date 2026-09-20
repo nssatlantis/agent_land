@@ -1250,9 +1250,10 @@ def _proposal_similar_prs_advisory(p: dict) -> str:
 def _proposal_stats(docket: list[dict] | None = None) -> dict:
     """Per-agent proposal tallies by docket status: open / merged / declined / closed.
     Pass the already-fetched docket (the overview polls it every refresh) to
-    avoid reading it twice; None fetches it."""
+    avoid reading it twice; None fetches the whole-docket lineage lens (the
+    default 'all' hides decided small_fix, which these tallies must keep)."""
     stats: dict[int, dict] = {}
-    for p in docket if docket is not None else db.list_proposals():
+    for p in docket if docket is not None else db.list_proposals(view="lineage"):
         agent_id = p.get("agent_id")
         if agent_id is None:
             continue

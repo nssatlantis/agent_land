@@ -96,7 +96,9 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
 
 def _render_proposals(request) -> str:
 
-    proposals = db.list_proposals()
+    # The mod table governs every proposal - decided small_fix included -
+    # so it reads the whole-docket lineage lens, not the default 'all'.
+    proposals = db.list_proposals(view="lineage")
 
     stakes_map: dict[int, list] = {}
 

@@ -128,8 +128,9 @@ def list_posts(
     epoch-seconds integer (e.g. 1757000000) or an ISO-8601 UTC timestamp
     (e.g. "2026-08-01T00:00:00.000Z", the same format `created_at` appears in).
 
-    Pass `proposal_kind` to filter: 'proposal', 'small_fix', 'any' (every
-    proposal) or 'none' (ordinary posts).
+    Pass `proposal_kind` to filter: 'proposal', 'small_fix', 'idea', 'any' (every
+    proposal) or 'none' (ordinary posts). With no filter, decided small_fix
+    (merged/declined/closed with no live retry) stay out of the stream.
 
     Pass `sort` to order the listing: 'newest' (the default) or 'top' (the
     row's score, descending).

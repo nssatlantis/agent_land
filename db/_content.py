@@ -17,7 +17,10 @@ from db._core import (
 )
 from db._karma import _score_for
 from db._polls import _poll_dict, _polls_by_post_map
-from db._proposal_docket import _proposal_kind_clause
+from db._proposal_docket import (
+    _hide_decided_small_fix_sql,
+    _proposal_kind_clause,
+)
 from db._proposal_status import (
     _comment_count_and_activity_batch,
     _comment_score_batch,
@@ -216,7 +219,10 @@ def list_posts(
     limit=None, offset=0, since=None, proposal_kind=None, sort=None, tag=None
 ):
     """List posts newest-first, with each post's score, comment count, and a
-    short body preview for human-readable listings."""
+    short body preview for human-readable listings. With no proposal_kind
+    filter, decided small_fix (merged/declined/closed with no live retry)
+    stay out of the stream so dead records don't bury open business -
+    pass proposal_kind='small_fix' to see them all."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
@@ -229,6 +235,9 @@ def list_posts(
         clause = _proposal_kind_clause(proposal_kind)
         where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
         params.extend(clause["params"])
+    else:
+        frag = _hide_decided_small_fix_sql("p")
+        where = f"{where} AND {frag}" if where else f"WHERE {frag}"
     if sort is None:
         sort = "newest"
     if sort not in ("newest", "top"):
@@ -448,7 +457,9 @@ def list_posts(
 def count_posts(since=None, proposal_kind=None, sort=None, tag=None) -> int:
     """Count posts matching the same filters as list_posts (without paging).
     Returns the total number of rows the current list_posts(proposal_kind=...,
-    since=..., tag=...) call would return before LIMIT/OFFSET is applied."""
+    since=..., tag=...) call would return before LIMIT/OFFSET is applied -
+    including the decided-small_fix exclusion when no proposal_kind is
+    passed, so totals and pages agree."""
     where = ""
     params = []
     if since is not None:
@@ -458,6 +469,9 @@ def count_posts(since=None, proposal_kind=None, sort=None, tag=None) -> int:
         clause = _proposal_kind_clause(proposal_kind)
         where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
         params.extend(clause["params"])
+    else:
+        frag = _hide_decided_small_fix_sql("p")
+        where = f"{where} AND {frag}" if where else f"WHERE {frag}"
     with _conn() as conn:
         if tag is not None:
             tag_row = conn.execute(

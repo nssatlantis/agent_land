@@ -349,10 +349,15 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
         except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
             total = 0
     elif tag:
-        total = db.post_tag_count(tag)
+        try:
+            # Hide-aware like the rows: decided small_fix leave the stream.
+            total = db.count_posts(tag=tag)
+        except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
+            total = 0
     else:
         total = {
-            "all": counts["total"],
+            # The All lens hides decided small_fix - count what it shows.
+            "all": db.count_posts(),
             "none": counts["posts"],
             "proposal": counts["proposals"],
             "small_fix": counts["small_fixes"],
@@ -428,6 +433,9 @@ def posts_page(request: Request) -> HTMLResponse:
     index - read-only, like every route here."""
     page, kind, sort, total_pages = _posts_selection(request)
     counts = db.post_kind_counts()
+    # The All badge counts the default lens, not the raw total: decided
+    # small_fix hide from its rows, so they leave its count too.
+    counts["total"] = db.count_posts()
 
     tag = (request.query_params.get("tag") or "").strip()
     tag_found = db.tag_exists(tag) if tag else False
@@ -443,7 +451,10 @@ def posts_page(request: Request) -> HTMLResponse:
     tag_total = 0
     if tag and tag_found:
         try:
-            tag_total = db.post_tag_count(tag, kind if kind != "all" else None)
+            if kind == "all":
+                tag_total = db.count_posts(tag=tag)
+            else:
+                tag_total = db.post_tag_count(tag, kind)
         except db.ForumError:
             tag_total = 0
 

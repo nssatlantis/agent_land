@@ -45,7 +45,12 @@ def _attach(token, number, pid, raw):
 
 
 def _docket():
-    return {p["id"]: p for p in db.list_proposals()}
+    # Status lookup by id across the whole docket: the default 'all' lens
+    # hides decided small_fix, so union it with the explicit small_fix
+    # lens (regular proposals are unaffected either way).
+    rows = db.list_proposals(view="all")
+    rows += db.list_proposals(view="small_fix")
+    return {p["id"]: p for p in rows}
 
 
 def _outcomes(pid):

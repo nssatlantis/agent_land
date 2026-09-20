@@ -93,7 +93,12 @@ def main():
     full = db.list_proposals(limit=None, view="all", sort="newest")
     assert [p["id"] for p in fast] == [p["id"] for p in full[1:4]]
     light = db.proposal_docket_counts()
-    heavy = db.proposal_docket_counts(rows=full)
+    # Heavy counts run over the enriched whole-docket lineage lens - the
+    # only public view that still returns every row (view='all' hides
+    # decided small_fix) - for the parity check.
+    heavy = db.proposal_docket_counts(
+        rows=db.list_proposals(view="lineage", sort="newest")
+    )
     for lview in (
         "all",
         "needs_votes",
@@ -108,8 +113,11 @@ def main():
         )
     ids_of = lambda view: {p["id"] for p in db.list_proposals(view=view)}
     all_ids = ids_of("all")
-    for fid in (t1, t2, t3, t4, t5, t6, t7, t8):
-        assert fid in all_ids, "every fixture is on the docket"
+    for fid in (t1, t2, t3, t4, t5, t7, t8):
+        assert fid in all_ids, "every open fixture is on the docket"
+    assert t6 not in all_ids, (
+        "a decided small_fix hides from the default lens (lives in merged/small_fix)"
+    )
     assert t1 in ids_of("needs_votes") and t1 not in ids_of("stale"), (
         "a fresh unvoted proposal only needs votes"
     )
@@ -167,11 +175,19 @@ def main():
     # total, including locked and decided rows other tabs exclude.
     from db._proposal_docket import _proposal_matches_view, proposal_docket_counts
 
-    assert {p["id"] for p in db.list_proposals(view="lineage")} == {
+    assert {p["id"] for p in db.list_proposals(view="lineage")} >= {
         p["id"] for p in all_rows
-    }, "lineage lens covers the whole docket"
+    }, "lineage lens covers at least the default docket"
+    assert t6 in {p["id"] for p in db.list_proposals(view="lineage")}, (
+        "lineage still covers decided small_fix"
+    )
     counts = proposal_docket_counts()
-    assert counts["lineage"] == counts["all"], "lineage count equals the total"
+    decided_small = [
+        p for p in db.list_proposals(view="small_fix") if p["status"] != "open"
+    ]
+    assert counts["lineage"] == counts["all"] + len(decided_small), (
+        "lineage counts the whole docket, all counts the default lens"
+    )
     for p in all_rows:
         assert _proposal_matches_view(p, "lineage"), "every row matches lineage"
 

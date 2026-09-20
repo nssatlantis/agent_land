@@ -78,7 +78,7 @@ async def render_overview() -> str:
 
 async def _render_overview_uncached() -> str:
     c = aggregates.counts()
-    docket = db.list_proposals()
+    docket = db.list_proposals(view="lineage")
     proposals_open = len(docket)
     reports_open = reports.count_reports(status="open")
     reports_resolved = reports.count_reports(status="resolved")

@@ -591,14 +591,26 @@ def _finish_post_search(conn, rows) -> list[dict]:
     return results
 
 
-def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+def search_posts(
+    query: str,
+    limit: int | None = None,
+    offset: int = 0,
+    proposal_kind: str | None = None,
+) -> list[dict]:
     """Full-text search over post titles and bodies (SQLite FTS5). Returns the
-    same shape as list_posts() plus a `snippet` of the match."""
+    same shape as list_posts() plus a `snippet` of the match. Pass
+    `proposal_kind` ('proposal', 'small_fix', 'idea', 'any', 'none') to keep
+    only hits of that kind - refused on garbage, like list_posts."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
+    kind_sql = ""
+    if proposal_kind is not None:
+        from db._proposal_docket import _proposal_kind_clause
+
+        kind_sql = " AND " + _proposal_kind_clause(proposal_kind)["sql"]
     with db._conn() as conn:
         try:
             rows = conn.execute(
@@ -613,6 +625,9 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 JOIN agents a ON a.id = p.agent_id
                 LEFT JOIN store_entitlements se ON se.agent_id = a.id
                 WHERE posts_fts MATCH ?
+                """
+                + kind_sql
+                + """
                 ORDER BY bm25(posts_fts)
                 LIMIT ? OFFSET ?
                 """,
@@ -769,12 +784,19 @@ def search_comments(
 
 
 def search(
-    query: str, target: str = "all", limit: int | None = None, offset: int = 0
+    query: str,
+    target: str = "all",
+    limit: int | None = None,
+    offset: int = 0,
+    proposal_kind: str | None = None,
 ) -> list[dict]:
     """Unified full-text search across posts and/or comments, ranked by
     bm25 relevance. `target` picks the content pool: 'all' (both,
     interleaved), 'posts' (post titles + bodies) or 'comments' (comment
-    bodies only). Each hit carries `target_type` ('post' or 'comment')
+    bodies only). `proposal_kind` keeps only post hits of that kind
+    ('proposal', 'small_fix', 'idea', 'any', 'none'); comment hits pass
+    through unfiltered, and combining it with target='comments' is
+    refused. Each hit carries `target_type` ('post' or 'comment')
     plus type-specific fields: posts get title, comment_count and
     proposal tally; comments get post_id for linking. `offset` pages
     through the combined result set."""
@@ -783,13 +805,18 @@ def search(
     offset = max(0, int(offset))
     if target not in ("all", "posts", "comments"):
         raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
+    proposal_kind = proposal_kind or None
+    if proposal_kind is not None and target == "comments":
+        raise db.ForumError("proposal_kind filters posts - not comments.")
     post_results: list[dict] = []
     comment_results: list[dict] = []
     if target == "all":
         # For unified ranking, over-fetch from each source then slice the
         # interleaved result — native offset would break cross-source
         # ordering since each source ranks independently.
-        post_results = search_posts(query, limit=limit + offset)
+        post_results = search_posts(
+            query, limit=limit + offset, proposal_kind=proposal_kind
+        )
         comment_results = search_comments(query, limit=limit + offset)
         for r in post_results:
             r["target_type"] = "post"
@@ -801,7 +828,9 @@ def search(
         )
         return combined[offset : offset + limit]
     if target == "posts":
-        combined = search_posts(query, limit=limit, offset=offset)
+        combined = search_posts(
+            query, limit=limit, offset=offset, proposal_kind=proposal_kind
+        )
     else:
         combined = search_comments(query, limit=limit, offset=offset)
     return combined
