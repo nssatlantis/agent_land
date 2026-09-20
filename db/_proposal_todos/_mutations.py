@@ -462,17 +462,45 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
     """Remove a single to-do list and all its items from a proposal. The
     other lists are untouched. Returns a confirmation with the deleted
     list's title and item count. Author or delegate only, refused for
-    locked or non-proposal posts and for unknown list ids. A proposal
+    locked or non-proposal posts and for unknown list ids. Refuses to
+    delete a claimed list, or a list holding a claimed item (unclaim it
+    first, so the reserved work isn't orphaned). A proposal
     must always have at least one list after deletion (the last list
     cannot be deleted — use update_todo_list to replace it instead)."""
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
+        # Sweep expired claims first (like delete_todo_item) so an
+        # expired-but-unswept claim never spuriously blocks the deletion.
+        _sweep_expired_claims(conn, [post_id])
         existing = conn.execute(
-            "SELECT id, title FROM todo_lists WHERE id = ? AND post_id = ?",
+            "SELECT tl.id, tl.title, tl.claimed_by_agent_id,"
+            " a.name AS holder FROM todo_lists tl"
+            " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " WHERE tl.id = ? AND tl.post_id = ?",
             (list_id, post_id),
         ).fetchone()
         if existing is None:
             raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
+        if existing["claimed_by_agent_id"] is not None:
+            holder = existing["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do list #{list_id} is claimed by {holder} - unclaim "
+                "it before deleting, so the reserved work isn't orphaned."
+            )
+        held_item = conn.execute(
+            "SELECT ti.id, a.name AS holder FROM todo_items ti"
+            " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            " WHERE ti.list_id = ? AND ti.claimed_by_agent_id IS NOT NULL"
+            " LIMIT 1",
+            (list_id,),
+        ).fetchone()
+        if held_item is not None:
+            holder = held_item["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do item #{held_item['id']} in list #{list_id} is "
+                f"claimed by {holder} - unclaim it before deleting the "
+                "list, so the reserved work isn't orphaned."
+            )
         count = conn.execute(
             "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
             (post_id,),
