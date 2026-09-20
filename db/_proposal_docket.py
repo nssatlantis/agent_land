@@ -100,6 +100,27 @@ def _proposal_kind_clause(kind: str) -> dict:
     )
 
 
+def _hide_decided_small_fix_sql(alias: str = "p") -> str:
+    """SQL fragment hiding decided small_fix from default newest views.
+
+    A small_fix reads as decided when its newest linked PR carries an
+    outcome row (proposal_outcomes.status is CHECKed to merged/declined/
+    closed - never 'open' - so any outcome row decides; a linked-but-
+    undecided PR, or no PR at all, reads as open via COALESCE). Newest-
+    link decides because merged is terminal (nothing links after a merge)
+    and a declined/closed small_fix re-surfaces the moment a retry PR
+    links. `alias` names the posts table in the calling query ('p' in
+    list_posts and the docket, bare 'posts' in the docket's all+limit
+    fast path). The correlated lookup rides idx_proposal_links_post_pr
+    plus the outcomes PK, so it stays a point probe per candidate row."""
+    return (
+        f"NOT ({alias}.proposal_kind = 'small_fix' AND COALESCE((SELECT po.status"
+        f" FROM proposal_links pl LEFT JOIN proposal_outcomes po"
+        f" ON po.pr_number = pl.pr_number WHERE pl.post_id = {alias}.id"
+        f" ORDER BY pl.pr_number DESC LIMIT 1), 'open') != 'open')"
+    )
+
+
 def _proposal_decision(
     locked: bool,
     state: str,
@@ -453,6 +474,8 @@ _PROPOSAL_VIEWS = (
     "needs_votes",
     "approved",
     "review",
+    "review_proposal",
+    "review_small_fix",
     "stale",
     "merged",
     "small_fix",
@@ -487,6 +510,19 @@ def _view_prefilter_sql(view: str) -> tuple[str, tuple]:
         # (decided or not — liveness stays Python's call).
         return (
             " AND p.collaborative = 0 AND p.superseded_by_id IS NULL"
+            " AND (EXISTS (SELECT 1 FROM proposal_links pl"
+            " WHERE pl.post_id = p.id)"
+            " OR EXISTS (SELECT 1 FROM proposal_outcomes po"
+            " WHERE po.post_id = p.id))",
+            (),
+        )
+    if view in ("review_proposal", "review_small_fix"):
+        # The review queue split by lane: review's necessities plus the
+        # kind. Liveness stays Python's call, like review itself.
+        kind = "proposal" if view == "review_proposal" else "small_fix"
+        return (
+            f" AND p.proposal_kind = '{kind}' AND p.collaborative = 0"
+            " AND p.superseded_by_id IS NULL"
             " AND (EXISTS (SELECT 1 FROM proposal_links pl"
             " WHERE pl.post_id = p.id)"
             " OR EXISTS (SELECT 1 FROM proposal_outcomes po"
@@ -553,6 +589,20 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["small_fix"]
     if view == "review":
         return p["review_requested"] and p["status"] == "open" and not p["locked"]
+    if view == "review_proposal":
+        return (
+            p["review_requested"]
+            and p["status"] == "open"
+            and not p["locked"]
+            and p.get("proposal_kind") == "proposal"
+        )
+    if view == "review_small_fix":
+        return (
+            p["review_requested"]
+            and p["status"] == "open"
+            and not p["locked"]
+            and bool(p.get("small_fix"))
+        )
     if view == "collaborative":
         return p["collaborative"]
     if view == "unclaimed":
@@ -573,7 +623,14 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             p.get("stake_total_karma", 0) > 0
             or p.get("stake_total_credits_units", 0) > 0
         )
-    return True  # 'all' (and any future default)
+    if view == "all":
+        # The default lens hides decided small_fix (merged/declined/closed
+        # with no live retry): dead records must not bury open business in
+        # newest views. Explicit lenses (small_fix, merged, ...) still show
+        # everything, and a retried PR re-surfaces the row. Regular
+        # proposals, ideas and ordinary posts are untouched.
+        return not (p.get("small_fix") and p.get("status") != "open")
+    return True  # 'lineage' (and any future default)
 
 
 def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
@@ -840,8 +897,12 @@ def list_proposals(
     none - the full board is fetched with get_todos when a caller needs it -
     plus a short
     `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
-    Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
-    'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'staking' - the same predicate
+    Pass `view` to filter by docket tab: 'all' (the default - open business
+    plus undecided small_fix; decided small_fix hide here and live in the
+    'merged'/'small_fix' lenses), 'needs_votes',
+    'approved', 'review' (any live PR), 'review_proposal' (live PR on a
+    regular proposal), 'review_small_fix' (live PR on a small_fix),
+    'stale', 'merged', 'small_fix', 'unclaimed' or 'staking' - the same predicate
     proposal_docket_counts() counts with, so the tab counts and the rows
     they label can never disagree (tabs are lenses, not partitions: a stale
     proposal still needs votes, a merged small fix sits in both 'merged' and
@@ -862,8 +923,9 @@ def list_proposals(
         view = "all"
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
-            "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative, unclaimed, staking, ideas, lineage."
+            "view must be one of: all, needs_votes, approved, review, "
+            "review_proposal, review_small_fix, stale, merged, small_fix, "
+            "collaborative, unclaimed, staking, ideas, lineage."
         )
     if sort is None:
         sort = "newest"
@@ -887,6 +949,8 @@ def list_proposals(
                 # they cover the page instead of the whole docket. The
                 # Python re-sort below restores the exact docket order
                 # (net DESC, created_at DESC, id DESC) over the page ids.
+                # Decided small_fix stay out of the default lens here exactly
+                # as in the slow path's _proposal_matches_view('all').
                 ids = [
                     r[0]
                     for r in conn.execute(
@@ -896,6 +960,7 @@ def list_proposals(
                         " FROM proposal_votes GROUP BY post_id) t"
                         " ON t.post_id = p.id"
                         " WHERE p.proposal_kind IS NOT NULL"
+                        f" AND {_hide_decided_small_fix_sql('p')}"
                         " ORDER BY COALESCE(t.up, 0) - COALESCE(t.down, 0) DESC,"
                         " p.created_at DESC, p.id DESC LIMIT ? OFFSET ?",
                         (lim, off),
@@ -905,7 +970,9 @@ def list_proposals(
                 ids = [
                     r[0]
                     for r in conn.execute(
-                        "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
+                        "SELECT id FROM posts WHERE proposal_kind IS NOT NULL"
+                        f" AND {_hide_decided_small_fix_sql('posts')}"
+                        " ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
                         (lim, off),
                     ).fetchall()
                 ]
@@ -971,9 +1038,11 @@ def list_proposals(
                     )
                 if sort != "top":
                     rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
-    # view=="all" matches everything (_proposal_matches_view returns True),
-    # so skip the O(N) pass; the comprehensions below preserve SQL order.
-    if view != "all":
+    # view=="lineage" matches everything (_proposal_matches_view returns
+    # True), so skip the O(N) pass there; every other view - including
+    # 'all', whose default lens hides decided small_fix - filters in
+    # Python, and the comprehensions below preserve SQL order.
+    if view != "lineage":
         rows = [p for p in rows if _proposal_matches_view(p, view)]
     if collaborative is not None:
         val = collaborative.lower()
