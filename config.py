@@ -428,13 +428,27 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The polls feature's own gates (author-only, one per post, open-poll
     # cap, create cooldown) apply unchanged — the store only prices entry.
     "STORE_POLL_PRICE": ("FORUM_STORE_POLL_PRICE", 1.0, float),
-    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 16.0, float),
+    "STORE_NOTES_UNLOCK": ("FORUM_STORE_NOTES_UNLOCK", 13.0, float),
     "STORE_NOTES_EDIT_FEE": ("FORUM_STORE_NOTES_EDIT_FEE", 0.15, float),
     "STORE_NOTES_MAX_LEN": ("FORUM_STORE_NOTES_MAX_LEN", 512, int),
     # Typo-scale note fixes ride free: a rewrite whose edit distance from
     # the stored note is at most this many characters (or a clear to
     # empty) pays no fee; larger rewrites pay STORE_NOTES_EDIT_FEE.
     "STORE_NOTES_FREE_EDIT_CHARS": ("FORUM_STORE_NOTES_FREE_EDIT_CHARS", 32, int),
+    # Categorized personal notes (proposal #554): user-defined categories
+    # with per-entry notes. Unlock opens BASE_CATEGORIES categories and
+    # BASE_ENTRIES entries; extra capacity is bought via notes_category
+    # (+1) and notes_entry_pack (+PACK_SIZE) up to the MAX ceilings.
+    "STORE_NOTES_BASE_CATEGORIES": ("FORUM_STORE_NOTES_BASE_CATEGORIES", 2, int),
+    "STORE_NOTES_BASE_ENTRIES": ("FORUM_STORE_NOTES_BASE_ENTRIES", 4, int),
+    "STORE_NOTES_CATEGORY_PRICE": ("FORUM_STORE_NOTES_CATEGORY_PRICE", 4.0, float),
+    "STORE_NOTES_ENTRY_PACK_PRICE": ("FORUM_STORE_NOTES_ENTRY_PACK_PRICE", 3.0, float),
+    "STORE_NOTES_ENTRY_PACK_SIZE": ("FORUM_STORE_NOTES_ENTRY_PACK_SIZE", 2, int),
+    "STORE_NOTES_CATEGORY_MAX": ("FORUM_STORE_NOTES_CATEGORY_MAX", 5, int),
+    "STORE_NOTES_ENTRY_MAX": ("FORUM_STORE_NOTES_ENTRY_MAX", 10, int),
+    "STORE_NOTES_ENTRY_MAX_LEN": ("FORUM_STORE_NOTES_ENTRY_MAX_LEN", 512, int),
+    "STORE_NOTES_TITLE_MAX_LEN": ("FORUM_STORE_NOTES_TITLE_MAX_LEN", 80, int),
+    "STORE_NOTES_CATEGORY_NAME_LEN": ("FORUM_STORE_NOTES_CATEGORY_NAME_LEN", 32, int),
     "STORE_MAILBOX_PRICE": ("FORUM_STORE_MAILBOX_PRICE", 12.5, float),
     "STORE_MAILBOX_STEP": ("FORUM_STORE_MAILBOX_STEP", 100, int),
     "STORE_MAILBOX_MAX": ("FORUM_STORE_MAILBOX_MAX", 5, int),
@@ -532,6 +546,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         250.0,
         float,
     ),
+    # Term Savings Bonds (proposal #552): citizens lock credits into
+    # fixed-term escrowed bonds; the daily sweep accrues REVENUE_SHARE_PCT
+    # of trailing FEE_WINDOW_DAYS-day fee intake, floored per bond with
+    # the remainder carried. Caps bound one series and one citizen;
+    # the haircut prices early exits.
+    "BOND_REVENUE_SHARE_PCT": ("FORUM_BOND_REVENUE_SHARE_PCT", 15.0, float),
+    "BOND_FEE_WINDOW_DAYS": ("FORUM_BOND_FEE_WINDOW_DAYS", 7, int),
+    "BOND_MIN_FACE_CREDITS": ("FORUM_BOND_MIN_FACE_CREDITS", 1.0, float),
+    "BOND_SERIES_CAP_CREDITS": (
+        "FORUM_BOND_SERIES_CAP_CREDITS",
+        100.0,
+        float,
+    ),
+    "BOND_CITIZEN_CAP_CREDITS": (
+        "FORUM_BOND_CITIZEN_CAP_CREDITS",
+        30.0,
+        float,
+    ),
+    "BOND_EARLY_HAIRCUT_PCT": ("FORUM_BOND_EARLY_HAIRCUT_PCT", 5.0, float),
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
     "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 7200, int),
