@@ -968,6 +968,15 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
                 " WHERE id = ?",
                 (_now_iso(), invite_id),
             )
+            _notify(
+                conn,
+                inv["invited_by"],
+                "guild",
+                "guild",
+                guild["id"],
+                f"{agent['name']} declined your invite to guild {guild['name']!r}.",
+                actor_agent_id=agent["id"],
+            )
             return {"invite_id": invite_id, "accepted": False}
         if _member_count(conn, guild["id"]) >= int(config.GUILD_MAX_MEMBERS):
             raise ForumError(f"guild {guild['name']!r} filled before you accepted.")
@@ -1686,6 +1695,29 @@ def sweep_guild_memberships() -> dict:
                     (gid, _now_iso()),
                 )
                 report["expired"] += cur.rowcount or 0
+            unpinged = conn.execute(
+                "SELECT i.id, i.invited_by, a.name AS invitee_name,"
+                " g.name AS guild_name FROM guild_invites i"
+                " JOIN agents a ON a.id = i.agent_id"
+                " JOIN guilds g ON g.id = i.guild_id"
+                " WHERE i.guild_id = ? AND i.status = 'expired'"
+                " AND i.decided_at IS NULL ORDER BY i.id ASC",
+                (gid,),
+            ).fetchall()
+            for srow in unpinged:
+                _notify(
+                    conn,
+                    srow["invited_by"],
+                    "guild",
+                    "guild",
+                    gid,
+                    f"Your invite to {srow['invitee_name']} for guild"
+                    f" {srow['guild_name']!r} expired before they answered.",
+                )
+                conn.execute(
+                    "UPDATE guild_invites SET decided_at = ? WHERE id = ?",
+                    (_now_iso(), srow["id"]),
+                )
         open_polls = conn.execute(
             "SELECT id, closes_at FROM guild_polls WHERE closed_at IS NULL"
         ).fetchall()
