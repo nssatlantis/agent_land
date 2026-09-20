@@ -185,6 +185,9 @@ def workspace_read_file(
 
     line_start/line_end are 1-based inclusive: pass both or neither; at
     most 1000 lines per read; ranges past EOF clamp to total_lines.
+    `content_sha256` is the sha256 of the stored bytes (the whole file,
+    not just the page) - pass it as `expect_sha256` on writes or uploads
+    to refuse a stale base.
     """
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
     clean, full = _guard_tree_path(dest, path, write=False)
@@ -197,10 +200,14 @@ def workspace_read_file(
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
     try:
-        with open(full, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
+        with open(full, "rb") as fh:
+            raw = fh.read()
     except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
         raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    import hashlib as _hashlib
+
+    stored_sha = _hashlib.sha256(raw).hexdigest()
+    text = raw.decode("utf-8", errors="replace")
     lines = text.splitlines()
     total = len(lines)
     start, end = 1, total
@@ -226,6 +233,7 @@ def workspace_read_file(
         "total_lines": total,
         "line_start": start,
         "line_end": min(end, total),
+        "content_sha256": stored_sha,
     }
 
 
@@ -288,6 +296,8 @@ def workspace_write_file(
     path: str,
     content: str | None = None,
     edits: list[dict] | None = None,
+    expect_sha256: str | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """Create or overwrite one file in a workspace tree (text).
 
@@ -299,9 +309,21 @@ def workspace_write_file(
     repo_propose_change: each find must match exactly once, or
     occurrence N when the block repeats; a miss, an ambiguity, or a
     patch on a missing/binary file fails loudly). Per-write budget
-    enforced. Returns {path, bytes} plus `patch_log` (per-op match
+    enforced. Content is EOL-normalized to the file's existing target
+    (LF for new files), like the patch path. Returns {path, bytes,
+    content_sha256, changed} plus `patch_log` (per-op match
     counts) in edits mode.
+
+    Pass `expect_sha256` (the sha256 from workspace_read_file or a
+    transfer receipt) to refuse a stale base before any byte moves, and
+    `dry_run=True` to validate and preview without writing. Identical
+    bytes are a quiet no-op ({changed: False}, tree untouched) rather
+    than a dirtying rewrite.
     """
+    import hashlib as _hashlib
+
+    import github._writes as _writes  # local import to avoid a cycle
+
     record, dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
@@ -311,9 +333,15 @@ def workspace_write_file(
             "pass either content or edits, not both "
             "(whole-file write and patch mode are mutually exclusive)."
         )
-    if edits is not None:
-        import github._writes as _writes  # local import to avoid a cycle
 
+    def _stale(clean: str, have: str | None) -> db.ForumError:
+        return db.ForumError(
+            f"stale base for {clean!r}: the tree holds "
+            f"{have[:12] + '...' if have else 'nothing'} - read again "
+            "and rebase the write."
+        )
+
+    if edits is not None:
         try:
             validated = _writes._validate_edits(clean, edits)
         except github.RepoError as exc:
@@ -321,8 +349,8 @@ def workspace_write_file(
         if os.path.isdir(full):
             raise db.ForumError(f"path {clean!r} is a directory - only files patch.")
         try:
-            with open(full, "rb") as fh:
-                raw = fh.read()
+            with open(full, "rb") as fh_rb:
+                raw = fh_rb.read()
         except OSError:
             raise db.ForumError(
                 f"no file at {clean!r} to patch - patch mode edits an "
@@ -334,6 +362,9 @@ def workspace_write_file(
             raise db.ForumError(
                 f"cannot patch {clean!r} - it is not UTF-8 text (binary file)."
             ) from None
+        have_sha = _hashlib.sha256(raw).hexdigest()
+        if expect_sha256 is not None and have_sha != expect_sha256:
+            raise _stale(clean, have_sha)
         target = _writes._target_eol_for_text(text)
         normalized = []
         for op in validated:
@@ -355,31 +386,91 @@ def workspace_write_file(
                 f"patch for {clean!r} would leave the file empty - "
                 "deletion goes through workspace_delete_file."
             )
-        incoming = len(new_text.encode("utf-8")) / (1024 * 1024)
+        new_bytes = new_text.encode("utf-8")
+        new_sha = _hashlib.sha256(new_bytes).hexdigest()
+        if new_bytes == raw:
+            return {
+                "path": clean,
+                "bytes": len(new_bytes),
+                "content_sha256": new_sha,
+                "patch_log": log,
+                "changed": False,
+            }
+        if dry_run:
+            return {
+                "path": clean,
+                "bytes": len(new_bytes),
+                "content_sha256": new_sha,
+                "patch_log": log,
+                "changed": True,
+                "dry_run": True,
+            }
+        incoming = len(new_bytes) / (1024 * 1024)
         github.check_claim_budget(agent_id, incoming_mb=incoming)
         try:
-            with open(full, "w", encoding="utf-8", newline="") as fh:
-                fh.write(new_text)
+            with open(full, "w", encoding="utf-8", newline="") as fh_w:
+                fh_w.write(new_text)
         except OSError as exc:
             raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
         _touch_clocks(agent_id, proposal_id, cname)
         return {
             "path": clean,
-            "bytes": len(new_text.encode("utf-8")),
+            "bytes": len(new_bytes),
+            "content_sha256": new_sha,
             "patch_log": log,
+            "changed": True,
         }
     if not isinstance(content, str) or not content:
         raise db.ForumError("content must be a non-empty string.")
-    incoming = len(content.encode("utf-8")) / (1024 * 1024)
+    existing: bytes | None = None
+    if os.path.isfile(full):
+        try:
+            with open(full, "rb") as fh_rb:
+                existing = fh_rb.read()
+        except OSError as exc:
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+    stored_sha = _hashlib.sha256(existing).hexdigest() if existing is not None else None
+    if expect_sha256 is not None and stored_sha != expect_sha256:
+        raise _stale(clean, stored_sha)
+    try:
+        base_text = existing.decode("utf-8") if existing is not None else ""
+    except (
+        UnicodeDecodeError
+    ):  # domain: degrade-silently - a binary base takes the LF target
+        base_text = ""
+    new_text = _writes._normalize_eol(content, _writes._target_eol_for_text(base_text))
+    new_bytes = new_text.encode("utf-8")
+    new_sha = _hashlib.sha256(new_bytes).hexdigest()
+    if existing is not None and new_bytes == existing:
+        return {
+            "path": clean,
+            "bytes": len(new_bytes),
+            "content_sha256": new_sha,
+            "changed": False,
+        }
+    if dry_run:
+        return {
+            "path": clean,
+            "bytes": len(new_bytes),
+            "content_sha256": new_sha,
+            "changed": True,
+            "dry_run": True,
+        }
+    incoming = len(new_bytes) / (1024 * 1024)
     github.check_claim_budget(agent_id, incoming_mb=incoming)
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w", encoding="utf-8", newline="") as fh:
-            fh.write(content)
+        with open(full, "w", encoding="utf-8", newline="") as fh_w:
+            fh_w.write(new_text)
     except OSError as exc:  # domain: fail-loudly - workspace file not writable
         raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
     _touch_clocks(agent_id, proposal_id, cname)
-    return {"path": clean, "bytes": len(content.encode("utf-8"))}
+    return {
+        "path": clean,
+        "bytes": len(new_bytes),
+        "content_sha256": new_sha,
+        "changed": True,
+    }
 
 
 @mcp.tool()
