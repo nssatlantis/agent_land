@@ -98,6 +98,15 @@ def _render_economy(request) -> str:
         'style="width:120px;margin-right:6px"> '
         '<input name="min_face" placeholder="min face (1.0)" '
         'style="width:110px;margin-right:6px"> '
+        '<span style="margin-right:6px">sources:'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="transfer_fee" checked> tx fees</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="stake_fee" checked> stake fees</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="store" checked> store</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="spend_all"> all spend</label></span> '
         '<button type="submit">open series</button></form>'
         + _bond_series_table()
         + '<form method="post" action="/admin/economy/bonds/close">'
@@ -182,6 +191,7 @@ async def bond_series_open(request):
             series_cap_credits=_opt("series_cap"),
             citizen_cap_credits=_opt("citizen_cap"),
             min_face_credits=_opt("min_face"),
+            yield_sources=list(form.getlist("yield_sources")),
         )
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim

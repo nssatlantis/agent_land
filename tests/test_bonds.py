@@ -454,6 +454,161 @@ def test_quiet_bonds_line_when_no_open_series():
         assert _bonds_nudge(conn, holder["agent_id"]) == {}
 
 
+def _since_7d() -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    ) + ".000Z"
+
+
+def _seed_store_intake(units: int):
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
+            " account) VALUES (NULL, ?, 'store_src_gadget_intake', 'treasury')",
+            (units,),
+        )
+
+
+def test_sources_transfer_only_ignores_store():
+    from db._bonds import _trailing_intake_units
+
+    holder = _make_holder("bd-src-t")
+    peer = _make_holder("bd-src-t-peer")
+    saved = _arm_fee(10.0)
+    try:
+        with db._conn() as conn:
+            since = _since_7d()
+            t0 = _trailing_intake_units(conn, since, ("transfer_fee",))
+            s0 = _trailing_intake_units(conn, since, ("store",))
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1000)
+        _seed_store_intake(500)
+        with db._conn() as conn:
+            since = _since_7d()
+            t1 = _trailing_intake_units(conn, since, ("transfer_fee",))
+            s1 = _trailing_intake_units(conn, since, ("store",))
+        assert t1 - t0 == 100, (t0, t1)
+        assert s1 - s0 == 500, (s0, s1)
+    finally:
+        _unarm_fee(saved)
+
+
+def test_sources_overlap_counts_once():
+    from db._bonds import _trailing_intake_units
+
+    with db._conn() as conn:
+        since = _since_7d()
+        store0 = _trailing_intake_units(conn, since, ("store",))
+        both0 = _trailing_intake_units(conn, since, ("store", "spend_all"))
+        all0 = _trailing_intake_units(conn, since, ("spend_all",))
+    _seed_store_intake(400)
+    with db._conn() as conn:
+        since = _since_7d()
+        store1 = _trailing_intake_units(conn, since, ("store",))
+        both1 = _trailing_intake_units(conn, since, ("store", "spend_all"))
+        all1 = _trailing_intake_units(conn, since, ("spend_all",))
+    assert store1 - store0 == 400, (store0, store1)
+    assert both1 - both0 == 400, (both0, both1)
+    assert all1 - all0 == 400, (all0, all1)
+
+
+def test_sources_default_trio_matches_wrapper():
+    from db._bonds import _trailing_fee_intake_units, _trailing_intake_units
+
+    with db._conn() as conn:
+        since = _since_7d()
+        old = _trailing_fee_intake_units(conn, since)
+        new = _trailing_intake_units(
+            conn, since, ("transfer_fee", "stake_fee", "store")
+        )
+    assert old == new, (old, new)
+
+
+def test_sources_invalid_refused():
+    assert "at least one" in expect_error(
+        db.bond_series_open, "src-bad-1", 7, yield_sources=[]
+    )
+    assert "unknown yield source" in expect_error(
+        db.bond_series_open, "src-bad-2", 7, yield_sources=["forfeit"]
+    )
+    assert "unknown yield source" in expect_error(
+        db.bond_series_open, "src-bad-3", 7, yield_sources=["store", "nope"]
+    )
+
+
+def test_sources_open_returns_canonical_order():
+    from db._bonds import bond_series_detail
+
+    out = db.bond_series_open("src-ord-7", 7, yield_sources=["store", "transfer_fee"])
+    assert out["yield_sources"] == ["transfer_fee", "store"], out
+    assert bond_series_detail(out["series_id"])["yield_sources"] == [
+        "transfer_fee",
+        "store",
+    ]
+
+
+def test_sources_sweep_respects_selection():
+    from db._bonds import _trailing_intake_units
+
+    holder = _make_holder("bd-src-sw")
+    with db._conn() as conn:
+        assert _trailing_intake_units(conn, _since_7d(), ("stake_fee",)) == 0
+    sid_stake = db.bond_series_open("src-sw-st-7", 7, yield_sources=["stake_fee"])[
+        "series_id"
+    ]
+    sid_store = db.bond_series_open("src-sw-so-7", 7, yield_sources=["store"])[
+        "series_id"
+    ]
+    _seed_store_intake(1000)
+    b_stake = buy_bond(holder["token"], sid_stake, 2.0)
+    b_store = buy_bond(holder["token"], sid_store, 2.0)
+    _backdate(b_stake["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _backdate(b_store["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["swept"] is True
+    got = {b["id"]: b for b in my_bonds(holder["token"])["bonds"]}
+    assert got[b_stake["bond_id"]]["accrued_units"] == 0
+    assert got[b_store["bond_id"]]["accrued_units"] > 0
+
+
+def test_sources_close_preserves_and_legacy_defaults():
+    from db._bonds import bond_series_close, bond_series_detail
+
+    out = db.bond_series_open("src-close-7", 7, yield_sources=["store", "spend_all"])
+    sid = out["series_id"]
+    assert out["yield_sources"] == ["store", "spend_all"], out
+    bond_series_close(sid)
+    assert bond_series_detail(sid)["yield_sources"] == ["store", "spend_all"]
+    with db._conn() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bond_series)")}
+        assert "yield_sources" in cols
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO bond_series (name, term_days, revenue_share_pct,"
+            " min_face_units, series_cap_units, citizen_cap_units)"
+            " VALUES ('src-legacy-7', 7, 10.0, 20, 2000, 600)"
+        )
+    got = [s for s in list_bond_series() if s["name"] == "src-legacy-7"][0]
+    assert got["yield_sources"] == ["transfer_fee", "stake_fee", "store"], got
+
+
+def test_admin_sources_checkboxes_match():
+    from pathlib import Path
+
+    from db._bonds import YIELD_SOURCES
+
+    src = (
+        Path(__file__)
+        .resolve()
+        .parent.parent.joinpath("server", "admin", "_economy.py")
+        .read_text(encoding="utf-8")
+    )
+    for s in YIELD_SOURCES:
+        assert f'value="{s}"' in src, s
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)

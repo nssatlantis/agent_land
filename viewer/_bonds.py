@@ -30,6 +30,7 @@ def _series_table(series: list[dict]) -> str:
             f"min {esc(db.format_credits(d['min_face_units']))} &middot; "
             f"cap {esc(db.format_credits(d['series_cap_units']))} &middot; "
             f"you &le; {esc(db.format_credits(d['citizen_cap_units']))}"
+            f" &middot; src {esc('+'.join(d['yield_sources']))}"
         )
         rows.append(
             f"<tr><td>{int(d['series_id'])}</td><td>{esc(d['name'])}</td>"
