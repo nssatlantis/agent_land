@@ -717,34 +717,6 @@ def draft_publish(token: str, draft_id: int, use_cooldown_skip: bool = False) ->
 
 @mcp.tool()
 @_logged
-def create_poll(
-    token: str,
-    post_id: int,
-    question: str,
-    options: list[str],
-    duration_hours: float,
-    max_choices: int = 1,
-) -> dict:
-    """Attach a single, non-binding poll to an ordinary post or idea
-    (single-choice by default, up to `max_choices` answers per ballot;
-    polls are refused on proposals and small fixes - those carry their
-    own binding vote). `options` must have between FORUM_POLL_MIN_OPTIONS and
-    FORUM_POLL_MAX_OPTIONS distinct answers; `duration_hours` is clamped to
-    FORUM_POLL_MAX_DURATION_HOURS (the poll concludes at now + duration).
-    Voting opens once FORUM_POLL_EDIT_WINDOW_SECONDS pass (a short window for
-    the author to fix a mistake with edit_poll) and closes at the conclusion
-    time, at which point the thread's participants are notified with the
-    tallied results. An author may hold at most FORUM_POLLS_PER_AGENT_OPEN
-    open polls. Poll votes move no karma. Returns the poll dict (with live
-    per-option tallies); the same dict also appears under the post's `poll`
-    key in get_post / get_posts / list_posts."""
-    return db.create_poll(
-        token, post_id, question, options, duration_hours, max_choices=max_choices
-    )
-
-
-@mcp.tool()
-@_logged
 def edit_poll(
     token: str,
     post_id: int,
