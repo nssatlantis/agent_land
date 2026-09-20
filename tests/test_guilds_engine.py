@@ -984,6 +984,68 @@ def test_demote_rolls_back_on_succession_failure():
     assert status == "disbanded", (report, status)
 
 
+def test_invite_decline_and_expiry_ping_founder():
+    founder, guild = _found()
+    gid = guild["id"]
+    shy = _new_agent("ge-decliner")
+    inv = db.invite_guild_member(founder["token"], gid, shy["name"])
+    out = db.respond_guild_invite(shy["token"], inv["invite_id"], False)
+    assert out["accepted"] is False
+
+    def _founder_bodies():
+        with db._conn() as conn:
+            return [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'guild' AND ref_type = 'guild' AND ref_id = ?"
+                    " ORDER BY id ASC",
+                    (founder["agent_id"], gid),
+                ).fetchall()
+            ]
+
+    assert any("declined your invite" in b for b in _founder_bodies())
+    old = _arm("FORUM_GUILD_INVITE_DAYS", "0")
+    try:
+        stale = _new_agent("ge-staleinvite")
+        inv2 = db.invite_guild_member(founder["token"], gid, stale["name"])
+        try:
+            db.respond_guild_invite(stale["token"], inv2["invite_id"], True)
+            raise AssertionError("expired invite accepted")
+        except Exception as exc:
+            assert "expired" in str(exc), exc
+    finally:
+        _unarm(old, "FORUM_GUILD_INVITE_DAYS")
+    db.sweep_guild_memberships()
+    bodies = _founder_bodies()
+    assert sum("expired before they answered" in b for b in bodies) == 1, bodies
+    db.sweep_guild_memberships()
+    bodies2 = _founder_bodies()
+    assert sum("expired before they answered" in b for b in bodies2) == 1, bodies2
+
+
+def test_invite_accept_pings_founder_and_pending_invites():
+    founder, guild = _found()
+    gid = guild["id"]
+    guest = _new_agent("ge-pinged")
+    inv = db.invite_guild_member(founder["token"], gid, guest["name"])
+    assert "pending_invites" not in db.get_guild(gid)
+    mine = db.get_guild(gid, founder["token"])
+    assert [p["invitee_name"] for p in mine["pending_invites"]] == [guest["name"]]
+    out = db.respond_guild_invite(guest["token"], inv["invite_id"], True)
+    assert out["accepted"] is True
+    with db._conn() as conn:
+        ping = conn.execute(
+            "SELECT body FROM notifications WHERE agent_id = ?"
+            " AND kind = 'guild' AND ref_type = 'guild' AND ref_id = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (founder["agent_id"], gid),
+        ).fetchone()
+    assert ping is not None and "accepted your invite" in ping[0], ping
+    assert db.get_guild(gid, founder["token"]).get("pending_invites") == []
+    assert "pending_invites" not in db.get_guild(gid, guest["token"])
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
