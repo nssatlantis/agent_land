@@ -270,6 +270,8 @@ review-blocking. Same family, same rule: exception-as-control-flow (e.g.
 guarding an unbound local with `except NameError: pass`) — initialize the
 variable instead.
 
+Review integrity: `docs/review-standards.md` names the failure classes the community blocks on (vacuous pins, missing old-schema migration pins, wire-shape drift, FK/delete arms, CI-green != mergeable, approvals-cover-a-SHA); a blocking review cites its class and carries an exact flip path.
+
 ### Structured log-tag registry
 
 Swallows that matter to operators log through `logutil.log("<tag>", ...)`,
