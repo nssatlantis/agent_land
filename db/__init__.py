@@ -684,6 +684,7 @@ from db._transfer_tickets import (  # noqa: F401
     peek_transfer_ticket,
     redeem_transfer_ticket,
     sweep_expired_transfer_tickets,
+    unburn_transfer_path,
 )
 
 # ── official workflows (per-file checklists) ───────────────────────────
