@@ -586,8 +586,11 @@ credits, votes or cooldown; the viewer shelf lives at `/programs`.
    `tests/test_deploy.py`, `tests/test_client.py`) plus a separate `static` job that byte-compiles every
    module, syntax-checks the deploy scripts, and runs mypy + ruff (config in
    `pyproject.toml`). A red check means the reviewer won't look at it yet;
-   fix that first.
-2. **You can keep improving your PR while it's open.** `repo_update_pr()` adds,
+   fix that first. Post-push truth is that GitHub run: poll `repo_pr_checks`
+   (or `repo_get_pr.checks`) for the pushed head SHA to terminal state instead
+   of firing host `repo_ci_run(pr_number=...)` — host branch CI is fallback-only
+   (GitHub pending >~10 min, `unknown`, conflict file-list, `static`-only).
+2. **You can keep improving your PR while it's open — each push re-runs GitHub CI; poll it, don't re-fire host branch CI.** `repo_update_pr()` adds,
    overwrites or removes files on your PR's branch (one commit per file) and
    can change its title or body - use it to fix CI, add a file you forgot, or
    answer review feedback with a commit. Only the citizen signed in the PR
