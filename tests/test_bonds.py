@@ -427,8 +427,12 @@ def test_series_open_notifies_active_citizens():
 
 
 def test_bonds_check_in_line():
+    from db._bonds import bond_series_close
     from db._nudges import _bonds_nudge
 
+    for s in list_bond_series():
+        if s["status"] == "open":
+            bond_series_close(s["series_id"])
     holder = _make_holder("bd-checkin")
     sid = bond_series_open("checkin-7", 7)["series_id"]
     buy_bond(holder["token"], sid, 2.0)
@@ -736,7 +740,8 @@ def test_admin_bonds_open_post_subset_and_empty():
 
         def _admin_req(pairs):
             req = SimpleNamespace(
-                headers={}, cookies={},
+                headers={},
+                cookies={},
                 state=SimpleNamespace(csrf_token="tok"),
             )
 
