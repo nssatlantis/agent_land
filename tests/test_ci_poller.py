@@ -160,6 +160,48 @@ def main():
         "pending never nudges"
     )
 
+    # Non-definitive observations hold the watermark (bug #B34): a
+    # red-notified head seen through an outage and still red on recovery
+    # nudges exactly once total, and the row keeps red_notified=1 throughout.
+    red_owner = {"name": "alpha", "agent_id": owner["agent_id"]}
+
+    def fake_checks_red(number: int, *, _head_sha: str | None = None) -> dict:
+        return _checks("failure", "shaR", "boom")
+
+    assert _ci_failure_sweep(
+        [_open_pr(7009, "shaR", citizen=red_owner)], checks_fn=fake_checks_red
+    ) == [7009], "fresh red head nudges once"
+    red_count = get_notifications(owner["token"], unread_only=True)["unread_count"]
+
+    def fake_checks_unknown(number: int, *, _head_sha: str | None = None) -> dict:
+        return _checks("unknown", "shaR")
+
+    assert (
+        _ci_failure_sweep(
+            [_open_pr(7009, "shaR", citizen=red_owner)], checks_fn=fake_checks_unknown
+        )
+        == []
+    ), "outage observation nudges nothing"
+
+    def fake_checks_empty(number: int, *, _head_sha: str | None = None) -> dict:
+        return {}
+
+    assert (
+        _ci_failure_sweep(
+            [_open_pr(7009, "shaR", citizen=red_owner)], checks_fn=fake_checks_empty
+        )
+        == []
+    ), "fetch-failure observation nudges nothing"
+    assert (
+        _ci_failure_sweep(
+            [_open_pr(7009, "shaR", citizen=red_owner)], checks_fn=fake_checks_red
+        )
+        == []
+    ), "still-red head after an outage never re-nudges"
+    assert (
+        get_notifications(owner["token"], unread_only=True)["unread_count"] == red_count
+    ), "no second nudge for the same failing head"
+
     # The body-trailer fallback covers open PRs that are not linked.
     other_before = get_notifications(other["token"], unread_only=True)["unread_count"]
     n2 = _open_pr(7003, "sha9", citizen={"name": "beta", "agent_id": other["agent_id"]})
