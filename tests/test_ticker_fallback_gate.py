@@ -74,7 +74,7 @@ def test_branch_disabled_is_silent():
         ticker_mod.debounced_enqueue(991003)
         assert 991003 not in ticker_mod.pending_prs_snapshot()
     finally:
-        _drop([991002])
+        _drop([991003])
         _restore()
 
 
