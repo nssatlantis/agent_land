@@ -33,12 +33,12 @@ _BOUNTY_ADMIN = "bounty-sweep"
 _AUTOFIX_ADMIN = "bounty-autofix"
 
 # Sweep-receipt throttle (small_fix #579): the poller ticks every ~300s,
-# so a ledger row per tick would spam the events table. Emit when the tick
-# posts, when the outcome differs from the previous tick, or every 6h as a
-# heartbeat - whichever comes first.
+# so a ledger row per tick would spam the events table. Emits when the
+# tick posts, when the outcome differs from the newest receipt row, or
+# every 6h as a heartbeat - whichever comes first. The baseline lives in
+# the ledger itself (see _maybe_emit_receipt), so there is no process
+# memory to go stale across rollbacks or restarts.
 _BOUNTY_RECEIPT_HEARTBEAT_SECONDS = 6 * 3600
-_last_receipt: dict | None = None
-_last_receipt_at: float = 0.0
 
 
 def _wage_q() -> int:
@@ -102,15 +102,16 @@ def _originals_only() -> str:
 
 
 def _receipt_summary(posted: list[int], skipped: dict[str, int]) -> str:
-    """One-line human summary for the receipt row (aggregates + viewer
-    render this verbatim, so the sweep never needs a second query)."""
+    """One-line human summary for the receipt row (viewer renders this
+    verbatim, so the sweep never needs a second query). Both halves are
+    named on mixed ticks - a posted bounty must never hide its starved
+    siblings."""
+    parts = ", ".join(f"{k} x{n}" for k, n in sorted(skipped.items()))
     if posted:
         ids = ", ".join(f"#{j}" for j in posted)
-        return f"posted {len(posted)} ({ids})"
-    if not skipped:
-        return "nothing to do"
-    parts = ", ".join(f"{k} x{n}" for k, n in sorted(skipped.items()))
-    return f"skipped: {parts}"
+        text = f"posted {len(posted)} ({ids})"
+        return f"{text}; skipped: {parts}" if parts else text
+    return f"skipped: {parts}" if parts else "nothing to do"
 
 
 def _base_receipt(posted: list[int], skipped: dict[str, int]) -> dict:
@@ -125,32 +126,60 @@ def _base_receipt(posted: list[int], skipped: dict[str, int]) -> dict:
 def _maybe_emit_receipt(receipt: dict, conn: sqlite3.Connection | None = None) -> bool:
     """Best-effort ledger receipt for one sweep tick (EVT_BOUNTY_SWEEP).
 
-    Change-throttled: emits when the tick posted, when the outcome differs
-    from the previous tick, or on the 6h heartbeat. Silent by design - the
-    receipt is pulled on demand via list_events(kind="bounty_sweep"), never
-    pushed to any mailbox. Pass the sweep's connection when emitting from
-    inside its write txn (the row commits atomically with the tick);
-    otherwise the write opens its own connection. Returns True when a row
-    was written.
+    Change-throttled against the ledger itself, not process memory: emits
+    when the tick posted, when the outcome differs from the newest receipt
+    row, or when that row is older than the 6h heartbeat. Baselining on
+    the committed row (rather than an in-memory stamp) means a rolled-back
+    tick can never suppress the ticks behind it, and a restart loses no
+    baseline - the failure direction is at most one duplicate row, never
+    a silent gap. Silent by design - the receipt is pulled on demand via
+    list_events(kind="bounty_sweep"), never pushed to any mailbox. Pass
+    the sweep's connection when emitting from inside its write txn (the
+    row commits atomically with the tick); otherwise the write opens its
+    own connection. Returns True when a row was written.
     """
-    import time
+    import json
+    from datetime import datetime, timezone
 
     from events import EVT_BOUNTY_SWEEP, log_event
 
-    global _last_receipt, _last_receipt_at
-    now = time.monotonic()
-    try:
-        if (
-            not receipt.get("posted")
-            and receipt == _last_receipt
-            and now - _last_receipt_at < _BOUNTY_RECEIPT_HEARTBEAT_SECONDS
-        ):
+    def _last_row(c: sqlite3.Connection) -> tuple:
+        row = c.execute(
+            "SELECT detail, created_at FROM events WHERE kind = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (EVT_BOUNTY_SWEEP,),
+        ).fetchone()
+        if row is None or not row["detail"]:
+            return None, None
+        try:
+            return json.loads(row["detail"]), row["created_at"]
+        except (
+            ValueError,
+            TypeError,
+        ):  # domain: degrade-silently - a corrupt receipt row never blocks the next one
+            return None, None
+
+    def _fresh_enough(created_at: object) -> bool:
+        try:
+            stamped = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError:  # domain: degrade-silently - an unparsable stamp reads as stale, so the tick emits
             return False
+        return datetime.now(timezone.utc) - stamped < timedelta(
+            seconds=_BOUNTY_RECEIPT_HEARTBEAT_SECONDS
+        )
+
+    try:
+        if not receipt.get("posted"):
+            if conn is not None:
+                last, last_at = _last_row(conn)
+            else:
+                with _conn() as live_conn:
+                    last, last_at = _last_row(live_conn)
+            if last == receipt and _fresh_enough(last_at):
+                return False
         log_event(EVT_BOUNTY_SWEEP, detail=receipt, conn=conn)
     except Exception:  # domain: degrade-silently - the receipt is observability; a failed write must never break the sweep
         return False
-    _last_receipt = receipt
-    _last_receipt_at = now
     return True
 
 
