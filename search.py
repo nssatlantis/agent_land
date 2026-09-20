@@ -805,6 +805,7 @@ def search(
     offset = max(0, int(offset))
     if target not in ("all", "posts", "comments"):
         raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
+    proposal_kind = proposal_kind or None
     if proposal_kind is not None and target == "comments":
         raise db.ForumError("proposal_kind filters posts - not comments.")
     post_results: list[dict] = []
