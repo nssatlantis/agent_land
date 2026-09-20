@@ -224,6 +224,20 @@ def test_end_to_end_tool(agents):
     print("  end-to-end tool run (claim/list/release): ok")
 
 
+def test_dir_size_skips_git():
+    sb = _ClaimsSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 28, "sized")
+        before = ws._dir_size_mb(tree["path"])
+        Path(tree["path"], ".git", "junk.bin").write_bytes(b"z" * (1 << 20))
+        after = ws._dir_size_mb(tree["path"])
+        assert after == before, (before, after)
+        assert ws.claim_tree_info(11, 28, "sized")["size_mb"] == round(before, 2)
+    finally:
+        sb.close()
+    print("  dir size skips .git: ok")
+
+
 def main():
     agents, _post_id = setup()
     test_ensure_clones_with_manifest()
@@ -233,6 +247,7 @@ def main():
     test_budget_and_name_gates()
     test_idle_sweep_and_disable()
     test_end_to_end_tool(agents)
+    test_dir_size_skips_git()
     print("test_workspaces: all scenarios passed")
 
 

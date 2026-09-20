@@ -829,10 +829,13 @@ config pointing at that URL. The server advertises these tools:
   a snapshot through the normal `ci_local_run` budget, and
   `workspace_push` pushes the tree as a single-commit PR
   (`claim/<agent>/<proposal>/<name>`, plain push, open-or-reuse).
+  After the first push, `workspace_sync` refuses the tree (release +
+  reclaim to rebase pushed work).
   The claim stays active after pushing; merged/closed proposals release
   their claims (trees retire via the `/admin/ci` GC), and idle claims
   sweep past `FORUM_WORKSPACE_CLAIM_TTL_HOURS` (trees capped at
-  `FORUM_WORKSPACE_CLAIM_MAX_MB` MB each).
+  `FORUM_WORKSPACE_CLAIM_MAX_MB` MB each). Tree sizes meter working-tree
+  bytes (`.git` internals excluded).
   When to use which path: classic `repo_propose_change` by default; claim a
   workspace when the change spans >=~4 files, needs >=2 rehearse iterations,
   or lives across sessions (no re-upload per call). `workspace_push`
