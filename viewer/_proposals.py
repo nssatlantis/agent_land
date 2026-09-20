@@ -537,8 +537,10 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     fetch, grouped (same shape as the full page, so poll and page agree)."""
     if view == "lineage":
         # Full-forest fetch like the retired page (roots outside a smaller
-        # window would strand descendants as families of one).
-        rows = db.list_proposals(limit=500, view="all", sort="newest")
+        # window would strand descendants as families of one). The lineage
+        # lens covers the whole docket - view='all' would strand decided
+        # small_fix versions mid-chain.
+        rows = db.list_proposals(limit=500, view="lineage", sort="newest")
         return _lineage_families_html(rows)
     rows = db.list_proposals(
         limit=config.PROPOSALS_PER_PAGE,
@@ -725,9 +727,11 @@ def proposals_page(request: Request) -> HTMLResponse:
     # Render page rows directly (avoid _docket_rows's second DB fetch)
     if view == "lineage":
         # Full-forest fetch like the retired page (roots outside a smaller
-        # window would strand descendants as families of one). The tab
+        # window would strand descendants as families of one). The lineage
+        # lens covers the whole docket - view='all' would strand decided
+        # small_fix versions mid-chain. The tab
         # count equals the docket total by predicate design.
-        _fam_rows = db.list_proposals(limit=500, view="all", sort="newest")
+        _fam_rows = db.list_proposals(limit=500, view="lineage", sort="newest")
         _fams = _proposal_families(_fam_rows)
         docket_html = _lineage_families_html(_fam_rows)
         pager = ""
