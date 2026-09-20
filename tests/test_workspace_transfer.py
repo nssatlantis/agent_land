@@ -175,6 +175,7 @@ def test_table_exists():
     assert "idx_transfer_tickets_agent" in idx or any(
         "transfer_tickets" in i for i in idx
     ), idx
+    assert "idx_transfer_tickets_sweep" in idx, idx
     print("  transfer_tickets table + indexes exist: ok")
 
 
@@ -306,7 +307,7 @@ def test_http_download(agents):
     assert resp.status_code == 200, resp.status_code
     assert resp.body == b"hello xfer\n", resp.body
     assert resp.headers["x-content-sha256"] == t["files"][1]["sha256"]
-    assert resp.headers["etag"] == f'"{t["files"][1]["sha256"][:16]}"'
+    assert resp.headers["etag"] == f'"{t["files"][1]["sha256"]}"'
     assert "attachment" in resp.headers["content-disposition"]
     assert resp.headers["cache-control"] == "private, no-store"
     # Revalidation hits 304.
@@ -316,9 +317,7 @@ def test_http_download(agents):
                 "GET",
                 t["ticket"],
                 "note.txt",
-                headers=[
-                    (b"if-none-match", f'"{t["files"][1]["sha256"][:16]}"'.encode())
-                ],
+                headers=[(b"if-none-match", f'"{t["files"][1]["sha256"]}"'.encode())],
             )
         )
     )
@@ -716,7 +715,7 @@ def test_validation_touches_clocks(agents):
                 "GET",
                 t["ticket"],
                 "s.txt",
-                headers=[(b"if-none-match", f'"{sha[:16]}"'.encode())],
+                headers=[(b"if-none-match", f'"{sha}"'.encode())],
             )
         )
     )
@@ -765,6 +764,161 @@ def test_engine_guard_battery():
     clean, _full = _eng._guard_transfer_path(dest, "ok/sub.txt")
     assert clean == "ok/sub.txt", clean
     print("  engine guard battery (traversal/abs/managed/git/protected): ok")
+
+
+def test_failed_apply_unburns_path(agents):
+    pid = _prop(agents, "gamma", title="Unburn Xfer")
+    tok = agents["gamma"]["token"]
+    _claim(agents, pid, "unburn", who="gamma")
+    WT.workspace_write_file(tok, pid, "unburn", "u.txt", content="base\n")
+    w = TT.workspace_upload_ticket(tok, pid, "unburn", ["u.txt"])
+    # Non-UTF8 fails post-redeem (the path burns, then the apply fails).
+    bad = _run(
+        TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"\xff\xfe\n"))
+    )
+    assert bad.status_code == 400, (bad.status_code, bad.body)
+    # The path is unburned: fixed bytes retry on the SAME ticket.
+    good = _run(TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"fixed\n")))
+    assert good.status_code == 200, (good.status_code, good.body)
+    assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "fixed"
+    print("  failed apply unburns its path (same-ticket retry): ok")
+
+
+def test_crlf_roundtrip_keeps_target(agents):
+    pid = _prop(agents, "beta", title="CRLF Xfer")
+    tok = agents["beta"]["token"]
+    info = _claim(agents, pid, "crlf", who="beta")
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "crlf")
+    with open(os.path.join(dest, "dos.txt"), "wb") as fh:
+        fh.write(b"one\r\ntwo\r\n")
+    assert info["exists"]
+    t = TT.workspace_fetch_ticket(tok, pid, "crlf", ["dos.txt"])
+    pin = t["files"][0]["sha256"]
+    # An LF-edited upload against the CRLF pin succeeds: the pin checks
+    # the pre-apply tree bytes, normalization targets the stored CRLF.
+    w = TT.workspace_upload_ticket(tok, pid, "crlf", ["dos.txt"], {"dos.txt": pin})
+    resp = _run(
+        TR.transfer_upload(_req("POST", w["ticket"], "dos.txt", body=b"one\nTWO\n"))
+    )
+    assert resp.status_code == 200, (resp.status_code, resp.body)
+    with open(os.path.join(dest, "dos.txt"), "rb") as fh:
+        assert fh.read() == b"one\r\nTWO\r\n"
+    print("  CRLF fetch pin + LF upload roundtrips to CRLF: ok")
+
+
+def test_symlink_paths_refused(agents):
+    pid = _prop(agents, "delta", title="Link Xfer")
+    tok = agents["delta"]["token"]
+    _claim(agents, pid, "link", who="delta")
+    dest = ws._claim_dir(agents["delta"]["agent_id"], pid, "link")
+    link = os.path.join(dest, "evil")
+    try:
+        os.symlink(os.path.join(dest, ".git", "HEAD"), link)
+    except OSError:
+        print("  symlink refusal skipped (no-symlink platform)")
+        return
+    # Engine (transfer data plane) refuses through-link reads and writes.
+    for fn in (
+        lambda: ws.read_transfer_bytes(
+            agents["delta"]["agent_id"], pid, "link", "evil"
+        ),
+        lambda: ws.apply_transfer_bytes(
+            agents["delta"]["agent_id"], pid, "link", "evil", b"x\n"
+        ),
+    ):
+        try:
+            fn()
+        except Exception as exc:
+            assert "symlink" in str(exc), exc
+        else:
+            raise AssertionError("expected symlink refusal from the engine guard")
+    # MCP surface refuses the same shape on read and write.
+    try:
+        WT.workspace_read_file(tok, pid, "link", "evil")
+    except Exception as exc:
+        assert "symlink" in str(exc), exc
+    else:
+        raise AssertionError("expected symlink refusal from the MCP read guard")
+    try:
+        WT.workspace_write_file(tok, pid, "link", "evil", content="x\n")
+    except Exception as exc:
+        assert "symlink" in str(exc), exc
+    else:
+        raise AssertionError("expected symlink refusal from the MCP write guard")
+    os.remove(link)
+    print("  symlink-into-.git refused on engine + MCP read/write: ok")
+
+
+def test_pin_values_validated_at_mint(agents):
+    pid = _prop(agents, "zeta", title="Pinval Xfer")
+    tok = agents["zeta"]["token"]
+    db.claim_workspace(tok, pid, "pinval")
+    assert "64-hex sha256" in expect_error(
+        db.mint_transfer_ticket,
+        tok,
+        pid,
+        "pinval",
+        ["a.txt"],
+        "write",
+        {"a.txt": "not-a-hash"},
+    )
+    # Uppercase pins normalize: the upload against them succeeds.
+    m = db.mint_transfer_ticket(
+        tok, pid, "pinval", ["a.txt"], "write", {"a.txt": "A" * 64}
+    )
+    import json as _json
+
+    with db._conn() as conn:
+        stored = conn.execute(
+            "SELECT expect_shas_json FROM transfer_tickets WHERE ticket_hash = ?",
+            (hashlib.sha256(m["ticket"].encode()).hexdigest(),),
+        ).fetchone()["expect_shas_json"]
+    assert _json.loads(stored) == {"a.txt": "a" * 64}, stored
+    print("  pin values validated + normalized at mint: ok")
+
+
+def test_corrupt_row_fails_loud(agents):
+    pid = _prop(agents, "beta", title="Corrupt Xfer")
+    tok = agents["beta"]["token"]
+    db.claim_workspace(tok, pid, "corrupt")
+    m = db.mint_transfer_ticket(tok, pid, "corrupt", ["c.txt"], "read")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE transfer_tickets SET paths_json = 'not-json' WHERE ticket_hash = ?",
+            (__import__("hashlib").sha256(m["ticket"].encode()).hexdigest(),),
+        )
+    try:
+        db.redeem_transfer_ticket(m["ticket"], "read", "c.txt")
+    except Exception as exc:
+        assert "corrupt" in str(exc), exc
+        assert getattr(exc, "detail", {}).get("http_status") == 500, exc
+    else:
+        raise AssertionError("expected loud failure on a corrupt ticket row")
+    print("  corrupt ticket row fails loud (500, never silent-empty): ok")
+
+
+def test_cap_floor_defaults(agents):
+    import config as _cfg
+
+    old = _cfg.TRANSFER_MAX_FILE_MB
+    try:
+        _cfg.TRANSFER_MAX_FILE_MB = 0
+        assert ws._transfer_file_cap_bytes() == 1 << 20
+        _cfg.TRANSFER_MAX_FILE_MB = -3
+        assert ws._transfer_file_cap_bytes() == 1 << 20
+    finally:
+        _cfg.TRANSFER_MAX_FILE_MB = old
+    print("  non-positive file cap falls back to 1MB: ok")
+
+
+def test_download_filename_sanitized():
+    assert TR._safe_download_filename("note.txt") == "note.txt"
+    assert TR._safe_download_filename("a/b/c.txt") == "c.txt"
+    assert "\r" not in TR._safe_download_filename("evil\r\nfile.txt")
+    assert "\n" not in TR._safe_download_filename("evil\r\nfile.txt")
+    assert '"' not in TR._safe_download_filename('qu"ote.txt')
+    assert TR._safe_download_filename('"""') == "___"
+    print("  download filename sanitized (CRLF/quotes/controls): ok")
 
 
 def test_public_base_url_parity():
@@ -817,6 +971,13 @@ def main():
     test_validation_touches_clocks(agents)
     test_engine_guard_battery()
     test_public_base_url_parity()
+    test_failed_apply_unburns_path(agents)
+    test_crlf_roundtrip_keeps_target(agents)
+    test_symlink_paths_refused(agents)
+    test_pin_values_validated_at_mint(agents)
+    test_corrupt_row_fails_loud(agents)
+    test_cap_floor_defaults(agents)
+    test_download_filename_sanitized()
     test_legacy_db_migrates()
     _SB.close()
     print("test_workspace_transfer: all scenarios passed")
