@@ -108,6 +108,18 @@ def _rich_guild(pool_cr: float = 25.0) -> tuple[dict, dict, dict]:
     return founder, guild, mate
 
 
+def _age_guild(gid: int):
+    """Backdate every member's join past the upkeep grace so the sweep
+    bills normally (fixtures found-and-swept in the same week would
+    otherwise read as grace-skipped)."""
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_members SET joined_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE guild_id = ?",
+            (gid,),
+        )
+
+
 def test_tables_upgrade():
     with db._conn() as conn:
         for table in (
@@ -275,6 +287,7 @@ def test_stake_refund_to_pool():
 def test_upkeep_issue_pay_sweep():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
+    _age_guild(gid)
     report = db.sweep_guild_upkeep()
     # Global sweep touches every active guild in the shared test DB -
     # assert this guild's share, not the file-wide total.
@@ -339,6 +352,7 @@ def test_upkeep_issue_pay_sweep():
 def test_upkeep_suspend_recover_grace():
     founder, guild, mate = _rich_guild(pool_cr=0.05)  # 1u pool
     gid = guild["id"]
+    _age_guild(gid)
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         conn.execute(
@@ -395,6 +409,7 @@ def test_upkeep_suspend_recover_grace():
 def test_arrears_withhold_on_payouts():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
+    _age_guild(gid)
     db.sweep_guild_upkeep()  # 1q arrears each, no payment
     # Withdrawal reduced by the founder's arrears, arrears settled.
     cos = db.request_guild_cosign(founder["token"], gid, "wd", 100)
@@ -563,6 +578,7 @@ def test_admin_delete_linked_guarded():
 def test_fee_bill_pool_refusal():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
+    _age_guild(gid)
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         inv = conn.execute(
@@ -660,6 +676,8 @@ def test_sweep_isolation_poisoned_guild():
     inv_h = db.invite_guild_member(poison_f["token"], pgid, holder["name"])
     db.respond_guild_invite(holder["token"], inv_h["invite_id"], True)
     db.guild_deposit(holder["token"], pgid, 0.1)
+    _age_guild(gid)
+    _age_guild(pgid)
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         conn.execute(
@@ -717,6 +735,7 @@ def test_bonus_zero_and_tracker():
 def test_disband_voids_stranded_arrears():
     founder, guild, mate = _rich_guild()
     gid = guild["id"]
+    _age_guild(gid)
     db.sweep_guild_upkeep()  # both members owe 1q
     out = db.disband_guild(founder["token"], gid, mode="dissolve")
     assert out["mode"] == "dissolve"
