@@ -60,6 +60,10 @@ from ._ticker import (  # noqa: F401
     pending_snapshot_with_deadlines,
     requeue_attempts_snapshot,
 )
+from ._transfer import (  # noqa: F401
+    workspace_fetch_ticket,
+    workspace_upload_ticket,
+)
 from ._workspace import (  # noqa: F401
     claim_workspace,
     list_workspaces,
