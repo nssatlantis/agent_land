@@ -644,8 +644,8 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
     """Buy a Term Savings Bond: face parks in escrow for the series term
     (paired legs, supply-neutral) plus the standard transaction fee on
     top (non-refundable, excluded from the yield base). The daily sweep
-    accrues your time-weighted share of trailing fee intake; maturity
-    auto-releases principal + share."""
+    accrues your time-weighted share of trailing intake from the series'
+    selected sources; maturity auto-releases principal + share."""
     return db.buy_bond(token, series_id, face_credits)
 
 
@@ -681,9 +681,12 @@ def bond_series_open(
     min_face_credits: float | None = None,
     series_cap_credits: float | None = None,
     citizen_cap_credits: float | None = None,
+    yield_sources: list[str] | None = None,
 ) -> dict:
-    """Open a bond series (admin-only): fixed term, revenue share and
-    caps are immutable after creation; close it with bond_series_close."""
+    """Open a bond series (admin-only): fixed term, revenue share,
+    yield sources (transfer_fee/stake_fee/store/spend_all, default the
+    first three) and caps are immutable after creation; close it with
+    bond_series_close."""
     from server.tools.moderation import _require_admin
 
     _require_admin(token)
@@ -694,6 +697,7 @@ def bond_series_open(
         min_face_credits=min_face_credits,
         series_cap_credits=series_cap_credits,
         citizen_cap_credits=citizen_cap_credits,
+        yield_sources=yield_sources,
     )
 
 

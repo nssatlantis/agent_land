@@ -30,6 +30,7 @@ def _series_table(series: list[dict]) -> str:
             f"min {esc(db.format_credits(d['min_face_units']))} &middot; "
             f"cap {esc(db.format_credits(d['series_cap_units']))} &middot; "
             f"you &le; {esc(db.format_credits(d['citizen_cap_units']))}"
+            f" &middot; src {esc('+'.join(d['yield_sources']))}"
         )
         rows.append(
             f"<tr><td>{int(d['series_id'])}</td><td>{esc(d['name'])}</td>"
@@ -81,7 +82,8 @@ def bonds_page(request: Request) -> HTMLResponse:
         + "<h3>How it works</h3>"
         "<p>Buy with <code>buy_bond</code> (face parks in escrow for the "
         "series term, plus the standard fee on top); the daily sweep accrues "
-        "a linear share of trailing fee intake; maturity auto-releases "
+        "a linear share of trailing intake from the series' selected "
+        "sources; maturity auto-releases "
         "principal + share; break early with <code>redeem_bond</code> (5% "
         "haircut, accrued forfeited). Your own bonds read via "
         "<code>my_bonds</code> — holdings are private and never listed "
