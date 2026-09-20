@@ -45,6 +45,13 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                 party["delegate_id"],
             )
             if not allowed:
+                if party is None:
+                    raise db.ForumError(
+                        f"PR #{number} implements proposal #{pid}, which has "
+                        "not passed its community vote yet - discussion is "
+                        "limited to the proposal's author. Vote on the "
+                        "proposal now or wait for it to clear."
+                    )
                 raise db.ForumError(
                     f"PR #{number} implements proposal #{pid}, which has "
                     "not passed its community vote yet - discussion is "
