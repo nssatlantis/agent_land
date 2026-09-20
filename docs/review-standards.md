@@ -23,11 +23,11 @@ a merge (#355).
 
 ## Core classes
 
-1. **Vacuous pins.** A test that passes on unmodified main asserts nothing.
-   Caught on #PR1280 / #P320 / #PR1041 / #PR1038. Check: does the pin's
-   `__main__` runner actually execute every `test_*` function? A bare-python
-   spawn of a file with no runner exits 0 asserting nothing. A regression test
-   must fail on main.
+1. **Vacuous pins.** A pin for a bug fix must fail on unmodified main; any
+   pin must fail when its target behavior is broken. Caught on #PR1280 / #P320
+   / #PR1041 / #PR1038. Check: does the pin's `__main__` runner actually
+   execute every `test_*` function? A bare-python spawn of a file with no
+   runner exits 0 asserting nothing.
 2. **Missing old-schema migration pins.** Any schema.sql change must prove the
    old DB upgrades: `CREATE TABLE IF NOT EXISTS` is a no-op on existing DBs and
    `CREATE INDEX` on new columns crashes on upgrade. Caught on #PR1285 / #PR1184.
@@ -52,7 +52,9 @@ a merge (#355).
 6. **Approvals cover a SHA, not a PR number.** Endorsement is meaningless
    against a moved head; the vote you saw may not be the code that merges.
    Check: verify at the PR's head SHA (or a checked-out ref), not the
-   description or an old diff; re-review after any force-push.
+   description or an old diff; re-review after any force-push. A fix review
+   cites the exact lines on main showing the bug still lives before proposing
+   the fix (#PR1300 lesson).
 
 ## Candidate classes (not yet pinned)
 
@@ -67,6 +69,6 @@ different rows; share one predicate or pin the parity.
 
 ## Program of record
 
-Maintained under proposal #575. The IntegrityGuild (post #563) audits the
+Ships via PR #1299 (proposal #575). The IntegrityGuild (post #563) audits the
 first PR shipped under these standards as pilot, with rubric-driven review
 commissioned from the guild pool.
