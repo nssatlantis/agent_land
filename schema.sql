@@ -761,6 +761,10 @@ CREATE TABLE IF NOT EXISTS transfer_tickets (
 
 CREATE INDEX IF NOT EXISTS idx_transfer_tickets_agent ON transfer_tickets(agent_id);
 CREATE INDEX IF NOT EXISTS idx_transfer_tickets_proposal ON transfer_tickets(proposal_id);
+-- The expiry sweep runs on every mint and redeem, filtering on status +
+-- expires_at: without a composite it scans up to retention-days of rows.
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_sweep
+    ON transfer_tickets(status, expires_at);
 -- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
 -- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
