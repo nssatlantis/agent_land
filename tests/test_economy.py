@@ -1237,7 +1237,7 @@ def test_flow_guild_and_bond_live_spend():
     reasons, and _summarize_flows picks them up into the correct bars."""
     from db._credits import spend
 
-    agent_id = AGENTS["alpha"]["id"]
+    agent_id = AGENTS["alpha"]["agent_id"]
     with db._conn() as conn:
         before = economy.economy_overview()
         # Seed guild_deposit + guild_deposit_fee + bond_buy_fee via spend
