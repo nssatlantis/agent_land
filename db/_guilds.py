@@ -25,7 +25,16 @@ from notifications import _notify, _notify_tally
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_-]+)")
 
-_INFLOW_KINDS = ("deposit", "grant_t1", "grant_t2", "subsidy", "match", "stake", "job")
+_INFLOW_KINDS = (
+    "deposit",
+    "grant_t1",
+    "grant_t2",
+    "subsidy",
+    "match",
+    "stake",
+    "job",
+    "bond",
+)
 _VELOCITY_KINDS = ("withdrawal", "invoice", "transfer")
 
 

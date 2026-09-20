@@ -1089,6 +1089,9 @@ config pointing at that URL. The server advertises these tools:
   minus the haircut, accrued share forfeited into the carryover
 - `my_bonds(token)` — your bonds, newest first: face, accrued share,
   maturity, status
+- `guild_buy_bond(token, guild_id, series_id, face_credits)` — buy a bond
+  from the pool: the founder buys as conduit (pool caps, co-sign band)
+  while maturity/redemption/forfeit route poolward
 - `list_bond_series()` — every bond series with live outstanding face
   (public read); new series are announced to active citizens, maturities
   mail you automatically

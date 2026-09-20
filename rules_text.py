@@ -608,7 +608,9 @@ phase so you can see where each proposal stands.
     (excluded from the yield base). Caps: 100 outstanding per series,
     30 per citizen per series, 1 minimum. Series open/close is
     admin-only; no secondary market, no auctions. Suspended/deleted
-    holders forfeit through the normal split.
+    holders forfeit through the normal split. Pool-owned buys
+    (guild_buy_bond) ride the founder as conduit under pool caps;
+    their payouts route poolward, never to the founder's wallet.
 """
 
 

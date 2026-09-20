@@ -285,10 +285,20 @@ def list_bond_series() -> list[dict]:
         return out
 
 
-def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
+def buy_bond(
+    token: str,
+    series_id: int,
+    face_credits: float,
+    funded_externally: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict:
     """Buy a bond: face parks in escrow (paired legs, supply neutral)
     plus the standard transaction fee on top (non-refundable, excluded
-    from the yield base by its own reason string)."""
+    from the yield base by its own reason string). funded_externally
+    (guild pool buys only) skips the wallet-balance gate - the pool's
+    own coverage check already ran and the pool funded the founder
+    just-in-time; conn pins the caller's transaction (same-tx rule:
+    a separate connection would deadlock against the write lock)."""
     from db._credits import (
         balance_for,
         exact_from_credits,
@@ -297,7 +307,7 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
         spend,
     )
 
-    with _conn(immediate=True) as conn:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as conn:
         agent = _require_active_agent(conn, token)
         _ensure_tables(conn)
         series = _series_row(conn, series_id)
@@ -318,7 +328,7 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
         ):
             raise ForumError("that buy would breach your per-citizen cap.")
         fee = fee_units(face)
-        if balance_for(conn, agent["id"]) < face + fee:
+        if not funded_externally and balance_for(conn, agent["id"]) < face + fee:
             raise ForumError(
                 f"insufficient credits: a {format_credits(face)} bond"
                 + (f" + {format_credits(fee)} fee" if fee else "")
@@ -441,6 +451,11 @@ def redeem_bond(token: str, bond_id: int) -> dict:
             " WHERE id = ?",
             (_iso(_now()), bond_id),
         )
+        # Pool-owned bonds (proposal #598): the founder-received payout
+        # routes poolward. Raises roll this whole atomic redeem back.
+        from db._guilds_bonds import _move_bond_payout_poolward
+
+        _move_bond_payout_poolward(conn, bond_id, int(row["owner_id"]), back)
         carry_key = f"bond_carry_{int(row['series_id'])}"
         try:
             carry = int(_meta_get(conn, carry_key, "0") or "0")
@@ -567,6 +582,12 @@ def sweep_bond_day() -> dict:
                         target_id=bid,
                         conn=conn,
                     )
+                # Pool-owned bonds (proposal #598): founder-received face +
+                # share route poolward. Silent inside: this loop's retry is
+                # the next sweep, and a raise here would re-release escrow.
+                from db._guilds_bonds import _settle_guild_bond_release
+
+                _settle_guild_bond_release(conn, bid, owner, face, accrued)
             except Exception:  # domain: never-lose-data - skip-and-retry next
                 # sweep; maturity re-evaluated, nothing half-moved
                 continue
@@ -719,6 +740,13 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
             " WHERE id = ?",
             (_iso(_now()), bid),
         )
+        # Pool-owned bonds (proposal #598): pool money is not the
+        # founder's to forfeit - it routes poolward before the caller
+        # reads the wallet balance for the split. A raise lands in the
+        # per-bond try above, which retries on the next call.
+        from db._guilds_bonds import _move_bond_payout_poolward
+
+        _move_bond_payout_poolward(conn, bid, int(r["owner_id"]), face)
         import events
 
         events.log_event(
