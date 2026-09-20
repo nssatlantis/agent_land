@@ -604,7 +604,7 @@ def return_principal(
     bypass the CREDITS_ENABLED kill switch: the matching debit happened
     while credits were on, so refusing the settlement would strand the
     citizen's own money (review finding, PR #402)."""
-    if amount_units == 0:
+    if amount_units <= 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -674,7 +674,7 @@ def release_escrow(
     legs share one tx_id, so supply never moves - the holding simply
     changes accounts. Like return_principal, exempt from CREDITS_ENABLED:
     escrowed principal must always be able to settle."""
-    if amount_units == 0:
+    if amount_units <= 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -728,7 +728,7 @@ def treasury_to_escrow(
     official-position postings and re-activations. The treasury leg keeps
     the EXACT legacy reason ('job_escrow_treasury'); the escrow leg takes
     reason + "_held". Paired under one tx_id - supply never moves."""
-    if amount_units == 0:
+    if amount_units <= 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -782,7 +782,7 @@ def escrow_to_treasury(
     official-position cancellations/expiries and stranded deposit-bonus
     pool drains. The treasury leg keeps the EXACT legacy reason; the
     escrow leg takes reason + "_release". Paired under one tx_id."""
-    if amount_units == 0:
+    if amount_units <= 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         tx_id = _new_tx_id(c)
@@ -1161,6 +1161,12 @@ def forfeit_agent(
     a zero-balance citizen is a no-op.  One-way: reinstatement does not
     restore anything."""
     with _conn() if conn is None else nullcontext(conn) as c:
+        # Term Savings Bonds (#552): release live bond face to the wallet
+        # first, so the standard half-treasury/half-burn split below
+        # applies. Deferred import: _bonds reads _core, never vice versa.
+        from db._bonds import forfeit_bonds_for_agent
+
+        forfeit_bonds_for_agent(agent_id, conn=c)
         balance = balance_for(c, agent_id)
         if balance <= 0:
             return None

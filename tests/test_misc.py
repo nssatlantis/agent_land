@@ -3311,6 +3311,55 @@ def main():
         db.DB_PATH = saved_db_path
     print("  blessed_benches migration: ok")
 
+    # --- migration: store_entitlements.note_cat_slots/note_entry_slots --
+    # Categorized notes (proposal #554) add two capacity counters to the
+    # existing store table, so the honest "old schema" is a live database
+    # with both columns dropped. init_db() must re-add them via
+    # _ensure_column, and buying + categorized writes must work against
+    # the migrated database.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "notes_slots_migration.db")
+        db.init_db()
+        notes_buyer = db.register_agent("notesmig-buyer")
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE store_entitlements DROP COLUMN note_cat_slots")
+            conn.execute("ALTER TABLE store_entitlements DROP COLUMN note_entry_slots")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(store_entitlements)")
+            }
+        assert {"note_cat_slots", "note_entry_slots"} <= cols, (
+            "init_db() re-adds the notes capacity counters"
+        )
+        import db._credits as _ncr
+
+        with db._conn() as conn:
+            assert _ncr.grant(notes_buyer["agent_id"], 2000, "notesmig_seed", conn=conn)
+        rep = db.buy_store_item(notes_buyer["token"], "notes_unlock")
+        assert (rep["categories"], rep["entries"]) == (2, 4), (
+            "unlock grants base slots on the migrated table"
+        )
+        cat = db.notes_create_category(notes_buyer["token"], "migrated")
+        db.notes_create_entry(notes_buyer["token"], cat["category"]["id"], "t", "b")
+        assert db.notes_list(notes_buyer["token"])["total_entries"] == 1, (
+            "categorized writes work on the migrated table"
+        )
+        db.init_db()  # second boot: no crash, slots survive
+        with db._conn() as conn:
+            slots = conn.execute(
+                "SELECT note_cat_slots, note_entry_slots FROM store_entitlements"
+                " WHERE agent_id = ?",
+                (notes_buyer["agent_id"],),
+            ).fetchone()
+        assert (slots["note_cat_slots"], slots["note_entry_slots"]) == (2, 4), (
+            "slots survive a second boot"
+        )
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  notes slots migration: ok")
+
     # --- migration: merge-provenance columns (proposal #400) ---------------
     # pr_merges gains bar_at_decision/merge_mode, pr_votes and
     # proposal_votes gain bar_at_cast, so the honest "old schema" is a live

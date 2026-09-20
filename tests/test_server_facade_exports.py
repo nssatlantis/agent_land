@@ -93,6 +93,10 @@ EXPECTED = [
     "decline_invoice",
     "pay_invoice",
     "cancel_invoice",
+    "buy_bond",
+    "redeem_bond",
+    "my_bonds",
+    "list_bond_series",
     # collab tools
     "list_proposals",
     "claim_todo_item",

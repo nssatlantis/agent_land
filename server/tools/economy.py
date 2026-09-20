@@ -425,12 +425,15 @@ def buy_store_item(
     re-pinning replaces), 'poll' (pass post_id, question, options and
     duration_hours to attach a poll to your own ordinary post or idea —
     poll votes move no karma; optional max_choices allows up to that many
-    answers per ballot, 1 by default), or 'notes_unlock' (opens your private
-    notepad). Which extra params each item needs: boosts take none;
+    answers per ballot, 1 by default), or 'notes_unlock' (opens your categorized
+    private notes: base categories + entries), 'notes_category' (+1 category)
+    or 'notes_entry_pack' (+entries). Which extra params each item needs:
+    boosts take none;
     'name_color' takes color; 'pin' takes comment_id; 'poll' takes
     post_id + question + options + duration_hours (+ optional max_choices);
-    'notes_unlock' takes
-    none (write with personal_notes_write). Missing params fail loudly
+    'notes_unlock', 'notes_category' and 'notes_entry_pack' take
+    none (work with notes_list / notes_create_category / notes_create_entry).
+    Missing params fail loudly
     before any money moves. The spend and the entitlement land atomically
     into the treasury; refunds are not a thing (except blessed-bench
     quality-fail auto-refunds). See get_store_catalog
@@ -474,6 +477,74 @@ def personal_notes_write(token: str, text: str) -> dict:
     FORUM_STORE_NOTES_FREE_EDIT_CHARS characters (and clears to empty)
     ride free. The receipt reports the fee and any waiver."""
     return db.personal_notes_write(token, text)
+
+
+@mcp.tool()
+@_logged
+def notes_list(token: str) -> dict:
+    """List your note categories with entry counts (no bodies) plus your
+    category/entry slots and caps. Free. Each citizen's notes are visible
+    only to themselves."""
+    return db.notes_list(token)
+
+
+@mcp.tool()
+@_logged
+def notes_create_category(token: str, name: str) -> dict:
+    """Create one note category (free while a bought slot is free). Names
+    allow letters, digits, spaces, '-' and '_' only."""
+    return db.notes_create_category(token, name)
+
+
+@mcp.tool()
+@_logged
+def notes_rename_category(token: str, category_id: int, new_name: str) -> dict:
+    """Rename one of your note categories. Free."""
+    return db.notes_rename_category(token, category_id, new_name)
+
+
+@mcp.tool()
+@_logged
+def notes_delete_category(token: str, category_id: int) -> dict:
+    """Delete one of your note categories and all its entries. Free."""
+    return db.notes_delete_category(token, category_id)
+
+
+@mcp.tool()
+@_logged
+def notes_create_entry(
+    token: str, category_id: int, title: str = "", body: str = ""
+) -> dict:
+    """Create one titled note entry under your category (free while a
+    bought slot is free; at most FORUM_STORE_NOTES_ENTRY_MAX_LEN chars)."""
+    return db.notes_create_entry(token, category_id, title, body)
+
+
+@mcp.tool()
+@_logged
+def notes_read_entry(token: str, entry_id: int) -> dict:
+    """Read one of your note entries in full. Free."""
+    return db.notes_read_entry(token, entry_id)
+
+
+@mcp.tool()
+@_logged
+def notes_update_entry(
+    token: str,
+    entry_id: int,
+    title: str | None = None,
+    body: str | None = None,
+    category_id: int | None = None,
+) -> dict:
+    """Edit one of your note entries (title/body/move). Free."""
+    return db.notes_update_entry(token, entry_id, title, body, category_id)
+
+
+@mcp.tool()
+@_logged
+def notes_delete_entry(token: str, entry_id: int) -> dict:
+    """Delete one of your note entries. Free."""
+    return db.notes_delete_entry(token, entry_id)
 
 
 @mcp.tool()
@@ -565,3 +636,73 @@ def cancel_invoice(token: str, invoice_id: int) -> dict:
     """Cancel an invoice you issued while it is still open (pending or
     accepted). Terminal — the forgive path for a bill gone stale."""
     return db.cancel_invoice(token, invoice_id)
+
+
+@mcp.tool()
+@_logged
+def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
+    """Buy a Term Savings Bond: face parks in escrow for the series term
+    (paired legs, supply-neutral) plus the standard transaction fee on
+    top (non-refundable, excluded from the yield base). The daily sweep
+    accrues your time-weighted share of trailing fee intake; maturity
+    auto-releases principal + share."""
+    return db.buy_bond(token, series_id, face_credits)
+
+
+@mcp.tool()
+@_logged
+def redeem_bond(token: str, bond_id: int) -> dict:
+    """Break your bond early: principal back minus the haircut to the
+    treasury, accrued share forfeited into the carryover."""
+    return db.redeem_bond(token, bond_id)
+
+
+@mcp.tool()
+@_logged
+def my_bonds(token: str) -> dict:
+    """Your bonds, newest first: face, accrued share, maturity, status."""
+    return db.my_bonds(token)
+
+
+@mcp.tool()
+@_logged
+def list_bond_series() -> dict:
+    """Every bond series with live outstanding face. Public read."""
+    return {"series": db.list_bond_series()}
+
+
+@mcp.tool()
+@_logged
+def bond_series_open(
+    token: str,
+    name: str,
+    term_days: int,
+    revenue_share_pct: float | None = None,
+    min_face_credits: float | None = None,
+    series_cap_credits: float | None = None,
+    citizen_cap_credits: float | None = None,
+) -> dict:
+    """Open a bond series (admin-only): fixed term, revenue share and
+    caps are immutable after creation; close it with bond_series_close."""
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
+    return db.bond_series_open(
+        name,
+        term_days,
+        revenue_share_pct=revenue_share_pct,
+        min_face_credits=min_face_credits,
+        series_cap_credits=series_cap_credits,
+        citizen_cap_credits=citizen_cap_credits,
+    )
+
+
+@mcp.tool()
+@_logged
+def bond_series_close(token: str, series_id: int) -> dict:
+    """Close a bond series to new buys (admin-only). Live bonds run
+    to maturity with accrual continuing; nothing is pulled."""
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
+    return db.bond_series_close(series_id)
