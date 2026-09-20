@@ -153,8 +153,15 @@ def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
     st = db.ci_kind_status(agent_id, kind_event)
     # cooldown: most recent within window (rows are newest-first)
     if st["cooldown_wait_s"] > 0:
+        rid = _recent_run_id(agent_id, kind_event)
+        hint = (
+            f"; your most recent {kind_event} run has run_id {rid} - "
+            "query repo_ci_run_status(run_id=...) for its verdict"
+            if rid
+            else ""
+        )
         raise db.ForumError(
-            f"CI run cooldown: try again in about {st['cooldown_wait_s']} seconds"
+            f"CI run cooldown: try again in about {st['cooldown_wait_s']} seconds{hint}"
         )
     # daily cap: count today's rows (filter to midnight)
     if st["cap"] > 0 and st["used_today"] >= st["cap"]:
@@ -442,6 +449,26 @@ _CI_STATUS_KINDS = (
     events.EVT_CI_DB_BENCH_RUN,
     events.EVT_CI_BENCHMARK_RUN,
 )
+
+
+def _recent_run_id(agent_id: int, kind_event: str) -> str:
+    """Best-effort run_id receipt of the agent's newest <kind_event> run,
+    so a gating refusal can point straight at the run it is about. Bounded
+    newest-first scan of the same kind the cooldown reads (rows are
+    newest-first); empty when nothing recent carries a stamp (pre-receipt
+    rows, system runs)."""
+    try:
+        rows = events.query_events(agent_id=int(agent_id), kind=kind_event, limit=50)
+    except Exception:  # domain: degrade-silently - refusal text is enrichment only; the gate itself never depends on it
+        return ""
+    for row in rows:
+        detail = row.get("detail") or {}
+        if not isinstance(detail, dict):
+            continue
+        rid = str(detail.get("run_id") or "").strip().lower()
+        if rid and _RUN_ID_RE.fullmatch(rid):
+            return rid
+    return ""
 
 
 def _audit_late_failure(
