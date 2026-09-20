@@ -61,7 +61,6 @@ def _ensure_guild_bond_tables(conn: sqlite3.Connection) -> None:
         "id, guild_id, kind, units, actor_agent_id, note, created_at",
         "'bond_lock'",
         "CREATE INDEX IF NOT EXISTS idx_guild_ledger_guild ON guild_ledger(guild_id);",
-
     )
 
 
