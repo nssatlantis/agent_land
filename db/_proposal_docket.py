@@ -24,7 +24,6 @@ from db._proposal_status import (
     _proposal_pr_history_map,
     _proposal_stale,
     _proposal_status_note,
-    _proposal_status_sql,
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_vote_threshold,
@@ -112,10 +111,7 @@ def _hide_decided_small_fix_sql(alias: str = "p") -> str:
     and the docket, bare 'posts' in the docket's all+limit fast path).
     The correlated lookup rides idx_proposal_links_post_pr plus the
     outcomes PK, so it stays a point probe per candidate row."""
-    return (
-        f"NOT ({alias}.proposal_kind = 'small_fix' AND COALESCE("
-        f"{_proposal_status_sql(alias)}, 'open') != 'open')"
-    )
+    return f"NOT ({alias}.proposal_kind = 'small_fix' AND (EXISTS (SELECT 1 FROM proposal_outcomes sf_m WHERE sf_m.post_id = {alias}.id AND sf_m.status = 'merged') OR EXISTS (SELECT 1 FROM proposal_outcomes sf_d WHERE sf_d.post_id = {alias}.id AND sf_d.status = 'declined' AND NOT EXISTS (SELECT 1 FROM proposal_links sf_l WHERE sf_l.post_id = {alias}.id AND sf_l.pr_number > sf_d.pr_number)) OR EXISTS (SELECT 1 FROM proposal_outcomes sf_c WHERE sf_c.post_id = {alias}.id AND sf_c.status = 'closed' AND NOT EXISTS (SELECT 1 FROM proposal_links sf_l WHERE sf_l.post_id = {alias}.id AND sf_l.pr_number > sf_c.pr_number))))"
 
 
 def _proposal_decision(
