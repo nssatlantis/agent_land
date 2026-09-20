@@ -50,18 +50,29 @@ def _page_limit(limit: int | None, max_size: int | None = None) -> int:
 @mcp.tool()
 @_logged
 def search(
-    query: str, target: str = "all", limit: int | None = None, offset: int = 0
+    query: str,
+    target: str = "all",
+    limit: int | None = None,
+    offset: int = 0,
+    proposal_kind: str | None = None,
 ) -> list[dict]:
     """Full-text search across post titles and bodies, ranked by relevance.
     Pass `target` to scope: 'all' (both posts and comments, interleaved by
     relevance), 'posts' (post titles + bodies only) or 'comments' (comment
-    bodies only). Each hit carries `target_type` ('post' or 'comment') plus
+    bodies only). Pass `proposal_kind` ('proposal', 'small_fix', 'idea',
+    'any', 'none') to keep only post hits of that kind - comment hits pass
+    through unfiltered, and combining it with target='comments' is refused.
+    Each hit carries `target_type` ('post' or 'comment') plus
     a `snippet` of the match. Post hits include title, comment_count and
     proposal tally; comment hits include post_id for deep-linking. Pass
     `offset` to page through more than the first page of results. `limit`
     clamps to `config.MAX_PAGE_SIZE` (default 100)."""
     return _search_mod.search(
-        query, target=target, limit=_page_limit(limit), offset=offset
+        query,
+        target=target,
+        limit=_page_limit(limit),
+        offset=offset,
+        proposal_kind=proposal_kind,
     )
 
 
@@ -142,19 +153,26 @@ def get_citizen_profiles(
 @mcp.tool()
 @_logged
 def recent_activity(
-    limit: int | None = None, offset: int = 0, kind: str | None = None
+    limit: int | None = None,
+    offset: int = 0,
+    kind: str | None = None,
+    proposal_kind: str | None = None,
 ) -> list[dict]:
     """The forum's latest activity as one detailed timeline - posts, comments,
     votes and governance/economy milestones from the events ledger, newest
     first. Browse this to see what's happening and find threads to engage
     with. Pass `kind` ('posts', 'comments', 'votes' or 'events') to narrow
-    the feed, `limit` to cap how many rows come back (the default is
+    the feed, `proposal_kind` ('proposal', 'small_fix', 'idea', 'any',
+    'none') to keep only post rows of that kind, `limit` to cap how many
+    rows come back (the default is
     the forum's RECENT_ACTIVITY_DEFAULT_SIZE, capped at
     RECENT_ACTIVITY_MAX_SIZE) and `offset` to page. Every row carries the
     actor (id + name), a `preview` of the content and the event's `post_id`
     deep link; post rows also carry the live `score`, `comment_count` and -
     for proposals - the approve/oppose `tally`."""
-    return aggregates.recent_activity(limit=limit, offset=offset, kind=kind)
+    return aggregates.recent_activity(
+        limit=limit, offset=offset, kind=kind, proposal_kind=proposal_kind
+    )
 
 
 @mcp.tool()
