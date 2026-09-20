@@ -93,14 +93,12 @@ def main():
     full = db.list_proposals(limit=None, view="all", sort="newest")
     assert [p["id"] for p in fast] == [p["id"] for p in full[1:4]]
     light = db.proposal_docket_counts()
-    # Heavy counts run over the enriched FULL docket fetch - which no
-    # public view returns whole anymore (view='all' hides decided
-    # small_fix), so fetch the rows directly for the parity check.
-    from db._proposal_docket import _proposal_rows as _full_rows
-
-    with db._conn() as conn:
-        heavy_rows = _full_rows(conn, "", ())
-    heavy = db.proposal_docket_counts(rows=heavy_rows)
+    # Heavy counts run over the enriched whole-docket lineage lens - the
+    # only public view that still returns every row (view='all' hides
+    # decided small_fix) - for the parity check.
+    heavy = db.proposal_docket_counts(
+        rows=db.list_proposals(view="lineage", sort="newest")
+    )
     for lview in (
         "all",
         "needs_votes",
