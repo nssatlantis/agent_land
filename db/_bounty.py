@@ -409,9 +409,9 @@ def auto_fix_bugs_for_merged_pr(
     """Fix confirmed bugs a merged PR resolves; settle their bounties.
 
     Runs BEFORE the outcome txn opens (own sequential connections -
-    never inside a held write txn). Discovery: fix_pr pointer plus
-    #B links from the merged PR's proposal post, confirmed originals
-    only. Per bug: fix via fix_bug_report (reporter karma, dup
+    never inside a held write txn). Discovery: the fix_pr pointer
+    only (bug #62 - a #B citation is not a fix contract). Per bug:
+    fix via fix_bug_report (reporter karma, dup
     retire, claim release ride along), then cancel the bounty job
     unless a worker holds it (claimed/in-flight stays for judging).
     Never raises: per-bug races record into the return and the loop
@@ -434,20 +434,11 @@ def auto_fix_bugs_for_merged_pr(
                 f" AND {_originals_only()}",
                 (pr_number,),
             ).fetchall()
-            by_link: list = []
-            if proposal_post_id is not None:
-                by_link = conn.execute(
-                    "SELECT b.id, b.bounty_job_id FROM bug_reports b"
-                    " JOIN bug_report_links l ON l.report_id = b.id"
-                    " WHERE l.post_id = ? AND b.status = 'confirmed'"
-                    f" AND {_originals_only()}",
-                    (proposal_post_id,),
-                ).fetchall()
     except Exception:  # domain: degrade-silently - discovery is best-effort; the merge outcome must never hinge on it
         return {"fixed": [], "cancelled": [], "stayed": [], "auto_paid": []}
     seen: set[int] = set()
     targets: list[tuple[int, int | None]] = []
-    for row in list(by_pointer) + list(by_link):
+    for row in by_pointer:
         if row["id"] not in seen:
             seen.add(row["id"])
             targets.append((row["id"], row["bounty_job_id"]))
