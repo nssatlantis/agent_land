@@ -621,7 +621,8 @@ def bind_todo_item_to_pr(
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            "SELECT id, agent_id, delegate_id, proposal_kind,"
+            " collaborative, superseded_by_id FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
         if post is None:
@@ -655,6 +656,41 @@ def bind_todo_item_to_pr(
                 f"to-do item #{item_id} is already bound to PR #"
                 f"{row['pr_number']} - one item per PR; clear that binding "
                 "first."
+            )
+        # ── ownership gate (#B31) ──────────────────────────────────────
+        # Mirror tick_todo_item: author, delegate, or item/list claimer
+        # (collaborative only) may bind.  Additionally the PR opener may
+        # bind their own PR to an item, since they know which work it
+        # delivers.  Sweep expired claims first so a stale claim never
+        # grants false access.
+        _sweep_expired_claims(conn, [post_id])
+        item_claim = conn.execute(
+            "SELECT ti.claimed_by_agent_id, tl.claimed_by_agent_id"
+            " AS list_claimed_by"
+            " FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        can_bind_claim = item_claim is not None and (
+            item_claim["claimed_by_agent_id"] == agent["id"]
+            or item_claim["list_claimed_by"] == agent["id"]
+        )
+        pr_link = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        pr_opener = pr_link["opened_by_agent_id"] if pr_link is not None else None
+        allowed = (
+            agent["id"] == post["agent_id"]
+            or agent["id"] == post["delegate_id"]
+            or (post["collaborative"] and can_bind_claim)
+            or agent["id"] == pr_opener
+        )
+        if not allowed:
+            raise ForumError(
+                "only the author, the current delegate, the claimer of "
+                "this item or its list, or the PR opener may bind a "
+                f"to-do item on proposal #{post_id}."
             )
         # One item per PR globally (Option A): a PR may be bound to at most
         # one to-do item. The application guard gives a friendly ForumError;
