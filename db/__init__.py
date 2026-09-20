@@ -440,6 +440,17 @@ from db._pr_vote import (  # noqa: F401,E402
     vote_on_pr,
 )
 
+# ── program/arc ledger (proposal #529) ────────────────────────────────
+from db._programs import (  # noqa: F401
+    add_program_item,
+    claim_program_item,
+    create_program,
+    get_program,
+    list_programs,
+    release_program_item,
+    update_program,
+)
+
 # ── proposal CRUD, voting, approval gate ────────────────────────────────
 from db._proposal import (  # noqa: F401
     create_proposal,
