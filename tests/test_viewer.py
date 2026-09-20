@@ -1859,6 +1859,8 @@ def test_economy_ledger_union_tabs():
     html = _economy_body(_Req())
     for cat in ("spent", "minted", "burned", "earned", "treasury"):
         assert f"?cat={cat}#sec-ledger" in html, f"{cat} tab kept"
+    for cat in ("bonds", "guilds"):
+        assert f"?cat={cat}#sec-ledger" in html, f"{cat} tab added"
     assert "Biggest movers" in html, "movers panel folded in"
 
 
@@ -1929,6 +1931,8 @@ def test_economy_store_panel():
     html = _economy_body(_Req())
     assert "Citizen store" in html, "store panel renders"
     assert "of which store in" in html, "sink row renders in flows"
+    assert "of which guilds in" in html, "guild sub-bar renders"
+    assert "of which bonds in" in html, "bond sub-bar renders"
     assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
 

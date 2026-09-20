@@ -1319,7 +1319,7 @@ _CREDIT_TRANSFER_REASONS = frozenset(
     }
 )
 _CREDIT_MINT_REASONS = frozenset({"genesis", "admin_mint", "proposal_mint"})
-_CREDIT_BURN_REASONS = frozenset({"admin_burn", "proposal_burn"})
+_CREDIT_BURN_REASONS = frozenset({"admin_burn", "proposal_burn", "forfeit_burned"})
 _CREDIT_FORFEIT_REASONS = frozenset(
     {
         "forfeit_to_treasury",
@@ -1345,6 +1345,8 @@ CREDIT_CATEGORIES = (
     "tags",
     "stakes",
     "store",
+    "bonds",
+    "guilds",
     "treasury",
 )
 
@@ -1387,6 +1389,10 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
         )
     if category == "store":
         return "LOWER(e.reason) LIKE '%store%'", []
+    if category == "bonds":
+        return "LOWER(e.reason) LIKE '%bond%'", []
+    if category == "guilds":
+        return "LOWER(e.reason) LIKE '%guild%'", []
     if category == "treasury":
         fams = _CREDIT_MINT_REASONS | _CREDIT_BURN_REASONS
         return (

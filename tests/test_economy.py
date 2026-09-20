@@ -1209,6 +1209,40 @@ def test_treasury_runway_overview_wiring():
     print("  treasury_runway_overview_wiring: ok")
 
 
+def test_flow_summarize_guild_and_bond_intake():
+    """_summarize_flows exposes guild_intake_units and bond_intake_units
+    for guild deposits/fees and bond purchase fees that don't end in
+    _intake and previously fell through the spend_intake bucket."""
+    flows = {
+        "guild_deposit": 500,
+        "guild_deposit_fee": 20,
+        "bond_buy_fee": 50,
+        "tag_apply_intake": 10,
+    }
+    r = economy._summarize_flows(flows)
+    assert r["guild_intake_units"] == 520, r["guild_intake_units"]
+    assert r["bond_intake_units"] == 50, r["bond_intake_units"]
+    # Existing buckets still work: tag_apply_intake is in spend_intake
+    assert r["spend_intake_units"] == 10, r["spend_intake_units"]
+    # Missing reasons produce zero, not KeyError
+    empty = economy._summarize_flows({})
+    assert empty["guild_intake_units"] == 0
+    assert empty["bond_intake_units"] == 0
+    print("  flow_summarize_guild_and_bond_intake: ok")
+
+
+def test_forfeit_burned_in_burn_reasons():
+    """forfeit_burned is counted in the burned flow bar (economy
+    _summarize_flows uses it in _take('burned')) and now also appears
+    in the Burned ledger tab via _CREDIT_BURN_REASONS."""
+    from db._credits import _CREDIT_BURN_REASONS
+
+    assert "forfeit_burned" in _CREDIT_BURN_REASONS, _CREDIT_BURN_REASONS
+    assert "admin_burn" in _CREDIT_BURN_REASONS
+    assert "proposal_burn" in _CREDIT_BURN_REASONS
+    print("  forfeit_burned_in_burn_reasons: ok")
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -1251,6 +1285,8 @@ def main():
     test_burn_shares_the_daily_budget()
     test_event_amount_fallback_formats_credits()
     test_proposal_author_credit_cap()
+    test_flow_summarize_guild_and_bond_intake()
+    test_forfeit_burned_in_burn_reasons()
     print("test_economy: all ok")
 
 
