@@ -443,7 +443,8 @@ def list_proposals(
     get_todos when a caller needs it), `collaborative` (True if the proposal
     accepts multiple citizen PRs), and a short `body_preview` (the first
     config.BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
-    tab - 'all', 'needs_votes', 'approved', 'review', 'stale', 'merged',
+    tab - 'all', 'needs_votes', 'approved', 'review', 'review_proposal',
+    'review_small_fix', 'stale', 'merged',
     'small_fix', 'collaborative', 'unclaimed' or 'staking'
     - and `sort` for 'newest' (default) or 'top' (highest net first, then
     newest). Pass `collaborative` = 'collaborative' to see only collaborative
