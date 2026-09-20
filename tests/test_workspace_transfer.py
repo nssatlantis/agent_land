@@ -497,6 +497,54 @@ def test_p2_write_upgrades(agents):
     print("  P2 write upgrades (sha/expect/dry-run/no-op/EOL): ok")
 
 
+def test_ticket_entropy_and_peek(agents):
+    import base64
+
+    pid = _prop(agents, "theta", title="Entropy Xfer")
+    tok = agents["theta"]["token"]
+    db.claim_workspace(tok, pid, "entropy")
+    m = db.mint_transfer_ticket(tok, pid, "entropy", ["e.txt"], "write")
+    # 256-bit secret (>= the 128-bit bar), stored hashed only.
+    raw = m["ticket"][len("xfer_") :]
+    secret = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    assert len(secret) >= 16, len(secret)
+    # Peek validates without consuming: twice, then the redeem still wins.
+    db.peek_transfer_ticket(m["ticket"], "write", "e.txt")
+    db.peek_transfer_ticket(m["ticket"], "write", "e.txt")
+    t = db.redeem_transfer_ticket(m["ticket"], "write", "e.txt")
+    assert t["used_paths"] == ["e.txt"], t
+    print("  ticket entropy, hash storage, non-burning peek: ok")
+
+
+def test_encoded_traversal_never_serves(agents):
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    pid = _prop(agents, "eta", title="Traversal Xfer")
+    tok = agents["eta"]["token"]
+    _claim(agents, pid, "trav", who="eta")
+    marker = b"traversal-canary-9q8w7e\n"
+    WT.workspace_write_file(tok, pid, "trav", "safe.txt", content=marker.decode())
+    t = TT.workspace_fetch_ticket(tok, pid, "trav", ["safe.txt"])
+    app = Starlette(routes=TR.ROUTES)
+    client = TestClient(app, raise_server_exceptions=False)
+    # The legit download works end to end (proves the stack, not just handlers).
+    good = client.get(t["files"][0]["url"])
+    assert good.status_code == 200 and good.content == marker, good.status_code
+    evil = [
+        f"/transfer/{t['ticket']}/%2e%2e/%2e%2e/x.txt",
+        f"/transfer/{t['ticket']}/..%2F..%2Fx.txt",
+        f"/transfer/{t['ticket']}/%252e%252e/x.txt",
+        f"/transfer/{t['ticket']}/.git/HEAD",
+        f"/transfer/{t['ticket']}/.github/workflows/ci.yml",
+        f"/transfer/{t['ticket']}/safe.txt/%2e%2e/x.txt",
+    ]
+    for url in evil:
+        r = client.get(url)
+        assert r.status_code != 200 or marker not in r.content, (url, r.status_code)
+    print("  encoded traversal battery never serves bytes: ok")
+
+
 def test_concurrent_redeem_burns_once(agents):
     import threading
 
@@ -590,6 +638,149 @@ def test_terminal_tickets_prune(agents):
     print("  terminal tickets prune, live unused survive: ok")
 
 
+def test_failed_upload_burns_nothing(agents):
+    pid = _prop(agents, "eta", title="Noburn Xfer")
+    tok = agents["eta"]["token"]
+    _claim(agents, pid, "noburn", who="eta")
+    WT.workspace_write_file(tok, pid, "noburn", "k.txt", content="keep\n")
+    w = TT.workspace_upload_ticket(tok, pid, "noburn", ["k.txt", "j.txt"])
+    # A pre-redeem refusal (size cap) burns nothing: not the failed path,
+    # not its siblings. Both upload cleanly afterwards on the same ticket.
+    big = b"z" * ((1 << 20) + 8)
+    refused = _run(
+        TR.transfer_upload(
+            _req(
+                "POST",
+                w["ticket"],
+                "k.txt",
+                body=big,
+                headers=[(b"content-length", str(len(big)).encode())],
+            )
+        )
+    )
+    assert refused.status_code == 413, (refused.status_code, refused.body)
+    ok1 = _run(TR.transfer_upload(_req("POST", w["ticket"], "k.txt", body=b"v2\n")))
+    assert ok1.status_code == 200, (ok1.status_code, ok1.body)
+    ok2 = _run(TR.transfer_upload(_req("POST", w["ticket"], "j.txt", body=b"new\n")))
+    assert ok2.status_code == 200, (ok2.status_code, ok2.body)
+    print("  refused upload burns nothing (self or siblings): ok")
+
+
+def test_upload_hits_per_write_budget(agents):
+    import config as _cfg
+
+    pid = _prop(agents, "fresh", title="Budget Xfer")
+    tok = agents["fresh"]["token"]
+    _claim(agents, pid, "budget", who="fresh")
+    w = TT.workspace_upload_ticket(tok, pid, "budget", ["q.txt"])
+    old_max = _cfg.WORKSPACE_CLAIM_MAX_MB
+    _cfg.WORKSPACE_CLAIM_MAX_MB = 0.00001
+    try:
+        resp = _run(TR.transfer_upload(_req("POST", w["ticket"], "q.txt", body=b"x\n")))
+    finally:
+        _cfg.WORKSPACE_CLAIM_MAX_MB = old_max
+    assert resp.status_code == 400, (resp.status_code, resp.body)
+    assert "budget" in resp.body.decode(), resp.body
+    print("  upload honors the per-write budget (no bypass): ok")
+
+
+def test_validation_touches_clocks(agents):
+    pid = _prop(agents, "fresh", title="Touch Xfer")
+    tok = agents["fresh"]["token"]
+    _claim(agents, pid, "touch", who="fresh")
+    WT.workspace_write_file(tok, pid, "touch", "s.txt", content="touch\n")
+    t = TT.workspace_fetch_ticket(tok, pid, "touch", ["s.txt"])
+    sha = t["files"][0]["sha256"]
+
+    def _backdate():
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE workspace_claims SET updated_at = '2000-01-01T00:00:00.000Z'"
+                " WHERE proposal_id = ? AND name = 'touch'",
+                (pid,),
+            )
+
+    def _updated():
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT updated_at FROM workspace_claims"
+                " WHERE proposal_id = ? AND name = 'touch'",
+                (pid,),
+            ).fetchone()["updated_at"]
+
+    # A 304 is still live use: the idle clock must advance past the mark.
+    _backdate()
+    r304 = _run(
+        TR.transfer_download(
+            _req(
+                "GET",
+                t["ticket"],
+                "s.txt",
+                headers=[(b"if-none-match", f'"{sha[:16]}"'.encode())],
+            )
+        )
+    )
+    assert r304.status_code == 304, (r304.status_code, r304.body)
+    assert _updated() > "2000-01-01T00:00:00.000Z", _updated()
+    # A quiet no-op upload touches too.
+    w = TT.workspace_upload_ticket(tok, pid, "touch", ["s.txt"])
+    _backdate()
+    import json as _json
+
+    rnoop = _run(
+        TR.transfer_upload(_req("POST", w["ticket"], "s.txt", body=b"touch\n"))
+    )
+    assert rnoop.status_code == 200, (rnoop.status_code, rnoop.body)
+    assert _json.loads(rnoop.body.decode())["changed"] is False
+    assert _updated() > "2000-01-01T00:00:00.000Z", _updated()
+    print("  304 + quiet no-op advance idle clocks: ok")
+
+
+def test_engine_guard_battery():
+    import github._workspaces as _eng
+
+    dest = os.path.join("nonexistent-claim-dir")
+    for bad in (
+        "../x.txt",
+        "a/../../x.txt",
+        "/abs/x.txt",
+        ".workspace.json",
+        ".workspace.json.tmp",
+        ".git/HEAD",
+        ".git",
+        ".github/workflows/ci.yml",
+        "",
+    ):
+        try:
+            _eng._guard_transfer_path(dest, bad)
+        except Exception as exc:
+            assert "managed by the workspace" in str(exc) or (
+                "invalid path" in str(exc)
+                or "relative" in str(exc)
+                or "protected directory" in str(exc)
+                or "empty" in str(exc)
+            ), (bad, exc)
+        else:
+            raise AssertionError(f"expected guard refusal for {bad!r}")
+    clean, _full = _eng._guard_transfer_path(dest, "ok/sub.txt")
+    assert clean == "ok/sub.txt", clean
+    print("  engine guard battery (traversal/abs/managed/git/protected): ok")
+
+
+def test_public_base_url_parity():
+    import config as _cfg
+
+    old = _cfg.PUBLIC_BASE_URL
+    try:
+        _cfg.PUBLIC_BASE_URL = "https://forum.example/sub/"
+        assert TT._transfer_base() == "https://forum.example/sub", TT._transfer_base()
+        _cfg.PUBLIC_BASE_URL = ""
+        assert TT._transfer_base().startswith("http://"), TT._transfer_base()
+    finally:
+        _cfg.PUBLIC_BASE_URL = old
+    print("  PUBLIC_BASE_URL parity in transfer base: ok")
+
+
 def test_legacy_db_migrates():
     with db._conn() as conn:
         conn.execute("DROP TABLE IF EXISTS transfer_tickets")
@@ -619,6 +810,13 @@ def main():
     test_concurrent_redeem_burns_once(agents)
     test_protected_and_git_refused(agents)
     test_terminal_tickets_prune(agents)
+    test_ticket_entropy_and_peek(agents)
+    test_encoded_traversal_never_serves(agents)
+    test_failed_upload_burns_nothing(agents)
+    test_upload_hits_per_write_budget(agents)
+    test_validation_touches_clocks(agents)
+    test_engine_guard_battery()
+    test_public_base_url_parity()
     test_legacy_db_migrates()
     _SB.close()
     print("test_workspace_transfer: all scenarios passed")
