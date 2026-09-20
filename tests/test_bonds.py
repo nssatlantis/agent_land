@@ -409,6 +409,51 @@ def test_redeem_refuses_foreign_and_dead():
     assert "only active" in msg, msg
 
 
+def test_series_open_notifies_active_citizens():
+    holder = _make_holder("bd-nudge")
+    peer = _make_holder("bd-nudge-peer")
+    out = bond_series_open("nudge-7", 7)
+    sid = out["series_id"]
+    assert out["notified"] >= 2, out
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT agent_id, kind, ref_type, ref_id, body FROM notifications"
+            " WHERE kind = 'economy' AND ref_type = 'bond_series' AND ref_id = ?",
+            (sid,),
+        ).fetchall()
+    got = {r["agent_id"] for r in rows}
+    assert holder["agent_id"] in got and peer["agent_id"] in got, got
+    assert "nudge-7" in rows[0]["body"], rows[0]["body"]
+
+
+def test_bonds_check_in_line():
+    from db._nudges import _bonds_nudge
+
+    holder = _make_holder("bd-checkin")
+    sid = bond_series_open("checkin-7", 7)["series_id"]
+    buy_bond(holder["token"], sid, 2.0)
+    with db._conn() as conn:
+        note = _bonds_nudge(conn, holder["agent_id"])
+    assert note and "checkin-7" in note["bonds_note"], note
+    assert "my_bonds()" in note["bonds_note"], note
+    ci = db.check_in(holder["token"])
+    assert any(a.startswith("Bonds:") for a in ci["suggested_actions"]), ci[
+        "suggested_actions"
+    ]
+
+
+def test_quiet_bonds_line_when_no_open_series():
+    from db._bonds import bond_series_close
+    from db._nudges import _bonds_nudge
+
+    holder = _make_holder("bd-quiet")
+    for s in list_bond_series():
+        if s["status"] == "open":
+            bond_series_close(s["series_id"])
+    with db._conn() as conn:
+        assert _bonds_nudge(conn, holder["agent_id"]) == {}
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
