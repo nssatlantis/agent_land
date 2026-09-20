@@ -7,8 +7,11 @@ the control plane; the data plane lives in server/_transfer.py.
 
 Scopes: 'read' tickets allow repeated GETs until expiry (downloads are
 idempotent); 'write' tickets burn one POST per path and die when every
-path is consumed or the TTL lapses. The long-lived agent token never
-appears in a URL - a leaked ticket is single-use and short-lived.
+path is consumed or the TTL lapses. A path burned by a FAILED apply is
+unburned (unburn_transfer_path), so fixable failures (bad bytes, moved
+budget) retry on the same ticket; only the pin itself going stale needs a
+fresh mint. The long-lived agent token never appears in a URL - a leaked
+ticket is single-use and short-lived.
 
 Shape mirrors guild_invites (expires_at + status machine + lazy sweep):
 unused -> used | expired. Protocol-agnostic like the rest of db/ - HTTP
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -28,6 +32,7 @@ import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
 
 _VALID_SCOPES = ("read", "write")
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
 def _ticket_ttl_seconds() -> int:
@@ -112,21 +117,20 @@ def _sweep_expired_tickets(conn: sqlite3.Connection) -> int:
 
 
 def _ticket_row_to_dict(row: sqlite3.Row) -> dict:
+    """Decode a ticket row's JSON columns. Corruption fails LOUDLY (these
+    columns are written by our code only): a silently-emptied used_paths
+    would re-arm burned paths, which is worse than a loud 500."""
     out = dict(row)
     try:
         out["paths"] = json.loads(row["paths_json"] or "[]")
-    except Exception:  # domain: degrade-silently - corrupt JSON reads as no paths
-        out["paths"] = []
-    try:
         out["expect_shas"] = (
             json.loads(row["expect_shas_json"]) if row["expect_shas_json"] else None
         )
-    except Exception:  # domain: degrade-silently - corrupt JSON reads as no pins
-        out["expect_shas"] = None
-    try:
         out["used_paths"] = json.loads(row["used_paths_json"] or "[]")
-    except Exception:  # domain: degrade-silently - corrupt JSON reads as unused
-        out["used_paths"] = []
+    except Exception as exc:
+        raise _fail(
+            500, "transfer ticket row is corrupt - mint a fresh ticket."
+        ) from exc
     return out
 
 
@@ -155,7 +159,14 @@ def mint_transfer_ticket(
             raise ForumError(
                 f"expect_shas names paths outside this ticket: {sorted(unknown)!r}."
             )
-        pins = {str(k): str(v) for k, v in expect_shas.items()}
+        pins = {}
+        for k, v in expect_shas.items():
+            if not isinstance(v, str) or not _SHA256_RE.fullmatch(v):
+                raise ForumError(
+                    f"expect_shas for {k!r} is not a 64-hex sha256 -"
+                    " pass the sha256 from the fetch ticket or download header."
+                )
+            pins[str(k)] = v.lower()
     from db._workspace_claims import _validate_claim_name
 
     name = _validate_claim_name(name)
@@ -281,7 +292,9 @@ def redeem_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
             used = list(t["used_paths"]) + [path]
             now = _now_iso()
             row_id = t["id"]
-            if set(used) >= set(t["paths"]):
+            # Exact completion (not a superset test): used only ever gains
+            # paths from this ticket, so equality is the precise burn bar.
+            if set(used) == set(t["paths"]):
                 conn.execute(
                     "UPDATE transfer_tickets"
                     " SET used_paths_json = ?, status = 'used', used_at = ?"
@@ -307,6 +320,43 @@ def peek_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
     with _conn() as conn:
         _sweep_expired_tickets(conn)
         return _validate_ticket_use(conn, digest, scope, path)
+
+
+def unburn_transfer_path(ticket: str, path: str) -> dict:
+    """Release one burned write path after a FAILED apply (stale pin, bad
+    bytes, moved budget), so fixable failures retry on the same ticket
+    instead of forcing a fresh mint. Safe: the atomic redeem serialized
+    concurrents, so at most one holder ever reaches apply - refunding a
+    failure cannot re-arm a second writer. Reverts a premature 'used'
+    flip the same way. Idempotent: refunding an unburned path is a no-op
+    success."""
+    digest = _digest_of(ticket)
+    # BEGIN IMMEDIATE for symmetry with redeem: burn and unburn serialize.
+    with _conn(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT * FROM transfer_tickets WHERE ticket_hash = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise _fail(404, "unknown transfer ticket.")
+        t = _ticket_row_to_dict(row)
+        if row["scope"] != "write" or path not in t["used_paths"]:
+            return t
+        used = [p for p in t["used_paths"] if p != path]
+        if row["status"] == "used" and set(used) != set(t["paths"]):
+            conn.execute(
+                "UPDATE transfer_tickets"
+                " SET used_paths_json = ?, status = 'unused', used_at = NULL"
+                " WHERE id = ?",
+                (json.dumps(used), row["id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE transfer_tickets SET used_paths_json = ? WHERE id = ?",
+                (json.dumps(used), row["id"]),
+            )
+        t["used_paths"] = used
+        return t
 
 
 def sweep_expired_transfer_tickets() -> int:
