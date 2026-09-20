@@ -61,7 +61,8 @@ def _ci_failure_sweep(
     pr_ci_state is read once for all owned PRs in a single batched query,
     and a state row is written only when the observation actually changes -
     an unchanged sweep performs no write, and no connection is ever held
-    open across the checks call. `checks_fn` is injectable so tests need
+    open across the checks call. Non-definitive observations (unknown,
+    pending, or a fetch failure) hold the watermark: no write, no nudge. `checks_fn` is injectable so tests need
     no GitHub. `checks_cache` is an optional shared per-tick dict: numbers
     already present are reused and fresh results are stored back, so the
     poller's three checks consumers fan out one pool per tick instead of
@@ -116,6 +117,10 @@ def _ci_failure_sweep(
         try:
             checks = checks_results.get(pr["number"], {})
             head_sha = checks.get("head_sha") or pr.get("head_sha") or ""
+            if checks.get("state") not in ("failure", "success"):
+                # Non-definitive observation (unknown, pending, fetch
+                # failure): hold the watermark - never re-arm as green.
+                continue
             red = checks.get("state") == "failure"
             row = state.get(pr["number"])
             need_notify = red and (row is None or row[0] != head_sha or not row[1])
