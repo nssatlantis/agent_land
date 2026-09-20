@@ -284,10 +284,14 @@ async def main():
         print("== list_posts bogus sort (expect error) ==")
         print(unwrap(await session.call_tool("list_posts", {"sort": "bogus"})), "\n")
 
-        print("== repo_my_proposals for the author ==")
-        mine = unwrap(await session.call_tool("repo_my_proposals", {"token": token2}))
+        print("== list_proposals view=mine for the author ==")
+        mine = unwrap(
+            await session.call_tool("list_proposals", {"token": token2, "view": "mine"})
+        )
         print(json.dumps(mine, indent=2), "\n")
-        assert mine["proposals"][0]["decision"] == "needs_votes", (
+        assert isinstance(mine, dict) and "result" in mine, mine
+        mine_rows = mine["result"]
+        assert mine_rows[0]["decision"] == "needs_votes", (
             "a proposal under the threshold should say needs_votes"
         )
 
@@ -363,12 +367,16 @@ async def main():
             "delegation should record the delegate's name"
         )
 
-        print("== repo_assigned_proposals for the delegate ==")
+        print("== list_proposals view=assigned for the delegate ==")
         assigned = unwrap(
-            await session.call_tool("repo_assigned_proposals", {"token": token1})
+            await session.call_tool(
+                "list_proposals", {"token": token1, "view": "assigned"}
+            )
         )
         print(json.dumps(assigned, indent=2), "\n")
-        assert any(p["id"] == proposal_id for p in assigned["proposals"]), (
+        assert isinstance(assigned, dict) and "result" in assigned, assigned
+        assigned_rows = assigned["result"]
+        assert any(p["id"] == proposal_id for p in assigned_rows), (
             "the delegate's assigned list should include the proposal"
         )
 

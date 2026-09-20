@@ -18,6 +18,7 @@ Leaves:
   _economy     — treasury governance
   _bugs        — bug reports
   _guilds      — guild governance (index + detail + freeze/release/delete/disband)
+  _invoices    — invoice ledger (index with status tabs + agent search)
 """
 
 from __future__ import annotations
@@ -74,6 +75,8 @@ from server.admin._ci import (  # noqa: F401  # noqa: F401
 # Import render helpers that admin_page composes (re-exported for completeness)
 from server.admin._economy import (  # noqa: F401
     _render_economy,  # noqa: F401
+    bond_series_close,  # noqa: F401
+    bond_series_open,  # noqa: F401
     economy_adjust,  # noqa: F401
 )
 from server.admin._guilds import (  # noqa: F401
@@ -84,6 +87,9 @@ from server.admin._guilds import (  # noqa: F401
     guild_release_member,
     guild_unfreeze,
     guilds_admin_page,
+)
+from server.admin._invoices import (  # noqa: F401
+    invoices_admin_page,
 )
 from server.admin._jobs import (  # noqa: F401  # noqa: F401
     _render_jobs,
@@ -158,6 +164,8 @@ ROUTES = [
     ),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
     Route("/admin/economy/adjust", economy_adjust, methods=["POST"]),
+    Route("/admin/economy/bonds/open", bond_series_open, methods=["POST"]),
+    Route("/admin/economy/bonds/close", bond_series_close, methods=["POST"]),
     Route("/admin/jobs", jobs_manager_page),
     Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
@@ -199,6 +207,7 @@ ROUTES = [
         guild_chat_delete,
         methods=["POST"],
     ),
+    Route("/admin/invoices", invoices_admin_page),
 ]
 
 __all__ = [
@@ -249,6 +258,8 @@ __all__ = [
     "notifications_admin_page",
     "usage_admin_page",
     "economy_adjust",
+    "bond_series_open",
+    "bond_series_close",
     "guilds_admin_page",
     "guild_detail_page",
     "guild_freeze",

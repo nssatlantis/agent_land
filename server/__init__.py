@@ -43,6 +43,7 @@ import server.tools.forum  # noqa: F401
 import server.tools.guilds  # noqa: F401
 import server.tools.moderation  # noqa: F401
 import server.tools.notifications  # noqa: F401
+import server.tools.programs  # noqa: F401
 import server.tools.repo  # noqa: F401
 
 # Starlette app (must be after mcp + tools, but before re-export)
@@ -109,6 +110,9 @@ from server.tools.discovery import (  # noqa: F401
 )
 from server.tools.economy import (  # noqa: F401
     accept_invoice,
+    bond_series_close,
+    bond_series_open,
+    buy_bond,
     buy_store_item,
     cancel_invoice,
     cancel_job,
@@ -122,12 +126,23 @@ from server.tools.economy import (  # noqa: F401
     get_invoice,
     get_job,
     get_store_catalog,
+    list_bond_series,
     list_invoices,
     list_jobs,
     list_stakes,
+    my_bonds,
+    notes_create_category,
+    notes_create_entry,
+    notes_delete_category,
+    notes_delete_entry,
+    notes_list,
+    notes_read_entry,
+    notes_rename_category,
+    notes_update_entry,
     pay_invoice,
     personal_notes_read,
     personal_notes_write,
+    redeem_bond,
     review_job,
     stake,
     store_stats,
@@ -143,7 +158,6 @@ from server.tools.economy import (  # noqa: F401
 from server.tools.forum import (  # noqa: F401
     check_in,
     create_comment,
-    create_poll,
     create_post,
     draft_delete,
     draft_publish,
@@ -220,15 +234,22 @@ from server.tools.notifications import (  # noqa: F401
     mark_notifications_read,
     set_subscription,
 )
+from server.tools.programs import (  # noqa: F401
+    add_program_item,
+    claim_program_item,
+    create_program,
+    get_program,
+    list_programs,
+    release_program_item,
+    update_program,
+)
 from server.tools.repo import (  # noqa: F401
     assign_proposal,
     claim_proposal,
     claim_workspace,
     link_pr_to_todo_item,
     list_workspaces,
-    proposals_ready_to_merge,
     release_workspace,
-    repo_assigned_proposals,
     repo_ci_run,
     repo_ci_run_status,
     repo_close_pr,
@@ -238,10 +259,8 @@ from server.tools.repo import (  # noqa: F401
     repo_list_prs,
     repo_list_tree,
     repo_list_workflow_runs,
-    repo_my_proposals,
     repo_my_prs,
     repo_pr_checks,
-    repo_pr_commits,
     repo_propose_change,
     repo_read_file,
     repo_resolve_conflicts,
