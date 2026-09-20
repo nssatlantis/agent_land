@@ -250,9 +250,12 @@ def test_guild_forfeit_failure_keeps_bond_live():
     founder, guild, _mate = _rich_guild()
     sid = _series("forfeitlive")
     out = db.guild_buy_bond(founder["token"], guild["id"], sid, 2.0)
+    # Dry-held matured state: past maturity with the face still escrowed
+    # (the sweep marked it matured when the treasury could not pay).
     with db._conn(immediate=True) as c:
         c.execute(
-            "UPDATE treasury_bonds SET bought_at = '2020-01-01T00:00:00.000Z',"
+            "UPDATE treasury_bonds SET status = 'matured',"
+            " bought_at = '2020-01-01T00:00:00.000Z',"
             " matures_at = '2020-01-02T00:00:00.000Z' WHERE id = ?",
             (out["bond_id"],),
         )
