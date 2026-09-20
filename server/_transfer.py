@@ -34,7 +34,9 @@ def _fail(status: int, message: str) -> JSONResponse:
 
 def _ticket_fail(exc: db.ForumError) -> JSONResponse:
     """Map a ticket refusal to its HTTP status (db pins http_status in
-    ForumError.detail; unknown shapes fail closed as 400)."""
+    ForumError.detail; unknown shapes fail closed as 400). 5xx passes
+    through: a genuine server-side failure (e.g. a corrupt ticket row)
+    must never masquerade as a client error."""
     status = 400
     try:
         status = int((exc.detail or {}).get("http_status", 400))
@@ -42,7 +44,7 @@ def _ticket_fail(exc: db.ForumError) -> JSONResponse:
         Exception
     ):  # domain: degrade-silently - a malformed detail never upgrades status
         status = 400
-    if status not in (400, 404, 409, 410, 413):
+    if status not in (400, 404, 409, 410, 413, 500):
         status = 400
     return _fail(status, str(exc) or type(exc).__name__)
 
@@ -76,6 +78,18 @@ def _touch_best_effort(agent_id: int, proposal_id: int, name: str) -> None:
         pass
 
 
+def _safe_download_filename(clean: str) -> str:
+    """A Content-Disposition filename that cannot break the header:
+    tree names have no charset rules, so CRLF or control bytes would
+    500 the download (and feed the error-report vector). Collapse
+    everything outside a dull-safe set; never empty."""
+    import re as _re
+
+    base = clean.rsplit("/", 1)[-1].replace('"', "_")
+    safe = _re.sub(r"[^A-Za-z0-9_.\- ]+", "_", base).strip() or "download"
+    return _re.sub(r"[\x00-\x1f\x7f]", "_", safe)
+
+
 async def transfer_download(request: Request) -> Response:
     """Download one tree file's raw bytes (binary-safe, no decoding).
 
@@ -97,13 +111,15 @@ async def transfer_download(request: Request) -> Response:
     except RepoError as exc:
         return _repo_fail(exc)
     sha = hashlib.sha256(bytes(data)).hexdigest()
-    etag = sha[:16]
+    # Full-sha256 strong ETag (a 16-char truncation is collision-prone
+    # for entity-tag semantics, and the sha is already computed).
+    etag = sha
     # Touch on validation, not on bytes moved: a 304 is still live use
     # of the claim, and a claim revalidated forever must never sweep.
     _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     if request.headers.get("if-none-match", "").strip(' "') == etag:
         return Response(status_code=304)
-    filename = clean.rsplit("/", 1)[-1].replace('"', "_")
+    filename = _safe_download_filename(clean)
     return Response(
         bytes(data),
         media_type="application/octet-stream",
@@ -181,6 +197,24 @@ async def transfer_upload(request: Request) -> JSONResponse:
             expect_sha256=pin,
         )
     except RepoError as exc:
+        # A failed apply unburns its path: the redeem serialized
+        # concurrents, so at most this holder ever proceeds - refunding
+        # cannot re-arm a second writer. Fixable failures (bad bytes,
+        # moved budget) retry on the same ticket; only a stale pin needs
+        # a fresh mint, since the ticket's pin is immutable.
+        try:
+            db.unburn_transfer_path(ticket, fpath)
+        except (
+            Exception
+        ) as _ue:  # domain: degrade-silently - the burn stands; original error answers
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "transfer unburn failed for %s (proposal %s)",
+                fpath,
+                t.get("proposal_id"),
+                exc_info=True,
+            )
         return _repo_fail(exc)
     # Touch on validation, not on bytes moved: a quiet no-op upload is
     # still live use of the claim.
