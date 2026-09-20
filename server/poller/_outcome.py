@@ -659,27 +659,27 @@ async def _pr_outcome_poller() -> None:
             # Expire unclaimed jobs past FORUM_JOB_EXPIRY_DAYS with
             # automatic escrow refunds.
             db._jobs.sweep_expired_jobs()
-        except Exception:  # domain: degrade-silently - expiry is advisory housekeeping; a failed pass retries on the next poll tick
-            logutil.log("jobs_sweep_failed", phase="expiry")
+        except Exception as exc:  # domain: degrade-silently - expiry is advisory housekeeping; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="expiry", error=str(exc))
         try:
             # Send the once-daily "the market waits on you" digest
             # (time-gated on ref_type 'job_digest' so transition mail
             # never resets the clock).
             db._jobs.send_job_digests()
-        except Exception:  # domain: degrade-silently - digests are advisory; a failed pass retries on the next poll tick
-            logutil.log("jobs_sweep_failed", phase="digests")
+        except Exception as exc:  # domain: degrade-silently - digests are advisory; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="digests", error=str(exc))
         try:
             # Nudge worker + creator once per cycle whose submission
             # idles past FORUM_JOB_CYCLE_DUE_HOURS.
             db._jobs.sweep_overdue_job_cycles()
-        except Exception:  # domain: degrade-silently - overdue nudges are advisory; a failed pass retries on the next poll tick
-            logutil.log("jobs_sweep_failed", phase="overdue")
+        except Exception as exc:  # domain: degrade-silently - overdue nudges are advisory; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="overdue", error=str(exc))
         try:
             # Bug bounties (proposal #509): post treasury jobs for
             # confirmed bugs. Own connection, degrade-silently inside.
             db._bounty.sweep_bug_bounties()
-        except Exception:  # domain: degrade-silently - the bounty sweep is advisory housekeeping; a failed pass retries on the next poll tick
-            logutil.log("jobs_sweep_failed", phase="bounty")
+        except Exception as exc:  # domain: degrade-silently - the bounty sweep is advisory housekeeping; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="bounty", error=str(exc))
         try:
             # Invoices (small_fix #341): fire the 50/25/10% due-window
             # reminders plus the one-time overdue ping for accepted,
