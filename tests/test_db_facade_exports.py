@@ -137,8 +137,10 @@ EXPECTED = [
     "sweep_bond_day",
     # ticket-minted HTTP file transfers (proposal #597)
     "mint_transfer_ticket",
+    "peek_transfer_ticket",
     "redeem_transfer_ticket",
     "sweep_expired_transfer_tickets",
+    "unburn_transfer_path",
 ]
 
 
