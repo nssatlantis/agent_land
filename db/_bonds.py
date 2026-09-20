@@ -204,12 +204,37 @@ def bond_series_open(
             },
             conn=conn,
         )
+        try:
+            from notifications import _notify_many
+
+            now_iso = _iso(_now())
+            audience = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM agents WHERE banned = 0"
+                    " AND (suspended_until IS NULL OR suspended_until = ''"
+                    " OR suspended_until <= ?)",
+                    (now_iso,),
+                ).fetchall()
+            ]
+            notified = _notify_many(
+                conn,
+                audience,
+                "economy",
+                "bond_series",
+                sid,
+                f"New bond series '{clean}' open: {term}d, {pct:g}% share,"
+                f" cap {format_credits(cap_u)} - buy_bond({sid}, face) to buy.",
+            )
+        except Exception:  # domain: degrade-silently - series-open mail best-effort
+            notified = 0
         return {
             "series_id": sid,
             "name": clean,
             "term_days": term,
             "revenue_share_pct": pct,
             "series_cap_credits": format_credits(cap_u),
+            "notified": notified,
         }
 
 
