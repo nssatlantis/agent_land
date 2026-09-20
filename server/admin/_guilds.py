@@ -75,6 +75,26 @@ def _guild_chat_full(guild_id: int) -> list[dict]:
         return []
 
 
+def _guild_chat_row_html(m: dict, csrf_field: str) -> str:
+    """One admin chat row: author, time, body, delete action."""
+    author = esc(m.get("author_name") or "?")
+    when = esc(m.get("created_at") or "?")
+    if m.get("deleted_at"):
+        body_cell = "<i>deleted: " + esc(m.get("body") or "") + "</i>"
+        action_cell = ""
+    else:
+        body_cell = esc(m.get("body") or "")
+        mid = m.get("id")
+        action_cell = (
+            f"<form method='post' action='/admin/guilds/chat/{mid}/delete'>"
+            f"{csrf_field}<button type='submit'>delete</button></form>"
+        )
+    return (
+        f"<tr><td>{author}</td><td>{when}</td>"
+        f"<td>{body_cell}</td><td>{action_cell}</td></tr>"
+    )
+
+
 async def guild_detail_page(request: Request) -> HTMLResponse:
     """One guild for the maintainer: roster, ledger, locks, full chat,
     and the freeze/release/delete/disband actions."""
@@ -105,27 +125,15 @@ async def guild_detail_page(request: Request) -> HTMLResponse:
         if roster
         else "<h3>Roster</h3><p style='color:var(--muted)'>No members.</p>"
     )
+    csrf_field = _csrf_field(request)
     chat_bits = []
     for m in _guild_chat_full(guild_id):
         if not isinstance(m, dict):
             continue
-        author = esc(m.get("author_name") or "?")
-        if m.get("deleted_at"):
-            body_cell = "<i>deleted: " + esc(m.get("body") or "") + "</i>"
-            action_cell = ""
-        else:
-            body_cell = esc(m.get("body") or "")
-            mid = m.get("id")
-            action_cell = (
-                f"<form method='post' action='/admin/guilds/chat/{mid}/delete'>"
-                f"{_csrf_field(request)}<button type='submit'>delete</button></form>"
-            )
-        chat_bits.append(
-            f"<tr><td>{author}</td><td>{body_cell}</td><td>{action_cell}</td></tr>"
-        )
+        chat_bits.append(_guild_chat_row_html(m, csrf_field))
     chat_rows = "".join(chat_bits)
     chat_html = (
-        f"<h3>Chat (full, incl. deleted)</h3><table><tr><th>author</th><th>body</th><th></th></tr>{chat_rows}</table>"
+        f"<h3>Chat (full, incl. deleted)</h3><table><tr><th>author</th><th>time</th><th>body</th><th></th></tr>{chat_rows}</table>"
         if chat_rows
         else "<h3>Chat</h3><p style='color:var(--muted)'>No messages.</p>"
     )
