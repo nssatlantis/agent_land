@@ -295,6 +295,201 @@ def test_owner_isolation(agents, wstools):
     print("  owner isolation: ok")
 
 
+def test_workspace_edits(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Edits Shop")
+        w = wstools.workspace_write_file
+        w(tok, pid, "dev", "doc.txt", "alpha beta\ngamma delta\n")
+        got = w(
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "beta", "replace": "BETA"}],
+        )
+        assert got["path"] == "doc.txt", got
+        assert got["bytes"] > 0 and len(got["patch_log"]) == 1, got
+        assert got["patch_log"][0]["matched"] == 1, got
+        read_back = wstools.workspace_read_file(tok, pid, "dev", "doc.txt")
+        assert "BETA" in read_back["content"], read_back
+        got2 = w(
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [
+                {"find": "alpha", "replace": "A"},
+                {"find": "gamma", "replace": "G"},
+            ],
+        )
+        assert len(got2["patch_log"]) == 2, got2
+        read_back2 = wstools.workspace_read_file(tok, pid, "dev", "doc.txt")
+        assert read_back2["content"] == "A BETA\nG delta", read_back2
+        w(tok, pid, "dev", "rep.txt", "x\nx\nx\n")
+        assert "matched 3 times" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "rep.txt",
+            None,
+            [{"find": "x", "replace": "y"}],
+        )
+        got3 = w(
+            tok,
+            pid,
+            "dev",
+            "rep.txt",
+            None,
+            [{"find": "x", "replace": "y", "occurrence": 2}],
+        )
+        assert got3["patch_log"] == [
+            {"find": "x", "replace": "y", "occurrence": 2, "matched": 3}
+        ], got3
+        rep = wstools.workspace_read_file(tok, pid, "dev", "rep.txt")
+        assert rep["content"] == "x\ny\nx", rep
+        assert "did not match" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "zzz-nope", "replace": "y"}],
+        )
+        assert "no file" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "ghost.txt",
+            None,
+            [{"find": "a", "replace": "b"}],
+        )
+        assert "not both" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            "full",
+            [{"find": "a", "replace": "b"}],
+        )
+        assert "non-empty list" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [],
+        )
+        assert "leave the file empty" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A BETA\nG delta\n", "replace": ""}],
+        )
+        assert "managed" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            ".workspace.json",
+            None,
+            [{"find": "a", "replace": "b"}],
+        )
+        assert "protected" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            ".github/workflows/x.yml",
+            None,
+            [{"find": "a", "replace": "b"}],
+        )
+        assert "must be a dict" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            ["not-a-dict"],
+        )
+        assert "needs a non-empty 'find'" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "", "replace": "y"}],
+        )
+        assert "positive integer" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y", "occurrence": 0}],
+        )
+        assert "out of range" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y", "occurrence": 9}],
+        )
+        assert "too many edits" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "doc.txt",
+            None,
+            [{"find": "A", "replace": "y"}] * 201,
+        )
+        w(tok, pid, "dev", "sub/f.txt", "x\n")
+        assert "directory" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "sub",
+            None,
+            [{"find": "a", "replace": "b"}],
+        )
+        old_cap = config.WORKSPACE_CLAIM_MAX_MB
+        config.WORKSPACE_CLAIM_MAX_MB = 0
+        try:
+            err = _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "doc.txt",
+                None,
+                [{"find": "G delta", "replace": "g"}],
+            )
+            assert "MAX_MB" in err, err
+        finally:
+            config.WORKSPACE_CLAIM_MAX_MB = old_cap
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace edits mode: ok")
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
@@ -304,6 +499,7 @@ def main():
     test_path_guards(agents, wstools)
     test_delete_semantics(agents, wstools)
     test_sync_and_clocks_and_budget(agents, wstools)
+    test_workspace_edits(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
