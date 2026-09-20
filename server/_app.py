@@ -20,6 +20,7 @@ import logutil
 import viewer
 from server import admin
 from server._mcp import mcp
+from server._transfer import ROUTES as TRANSFER_ROUTES
 from server.gzip_tunable import TunableGZipMiddleware
 from server.middleware import (
     ClientSeenRecording,
@@ -238,6 +239,7 @@ app = Starlette(
         Route("/healthz", healthz),
         Route("/ci-status", ci_status),
         *admin.ROUTES,
+        *TRANSFER_ROUTES,
         *viewer.ROUTES,
         Mount("/", app=mcp_app),
     ],
