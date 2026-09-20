@@ -185,6 +185,43 @@ def test_reopen_restores_lifecycle():
     assert "not closed" in msg
 
 
+def test_reopen_admits_fixed_and_clears_fix_pr():
+    """Bug #62 revert arm: a wrongly auto-fixed bug ('fixed' from the
+    by_link era, fix_pr set, bounty job stuck) reopens to open with
+    fix_pr and bounty_job_id cleared so the sweep can repost a bounty
+    for a real fixer."""
+    rep = db.register_agent("rsrfx-reporter")
+    bug = _confirmed_bug(rep["token"], "rsrfx")
+    swept = db.sweep_bug_bounties()
+    with db._conn() as conn:
+        jid = conn.execute(
+            "SELECT bounty_job_id FROM bug_reports WHERE id = ?", (bug,)
+        ).fetchone()[0]
+    assert jid is not None and jid in swept["posted"], swept
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE bug_reports SET status = 'fixed', fix_pr = 99001 WHERE id = ?",
+            (bug,),
+        )
+    out = db.reopen_bug_report(bug, admin="testadmin")
+    assert out["status"] == "open"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status, fix_pr, bounty_job_id, decided_at, resolution"
+            " FROM bug_reports WHERE id = ?",
+            (bug,),
+        ).fetchone()
+    assert row["status"] == "open"
+    assert row["fix_pr"] is None, "stale fix_pr cleared"
+    assert row["bounty_job_id"] is None, "stale bounty freed for repost"
+    assert row["decided_at"] is None
+    assert row["resolution"] is None
+    msg2 = expect_error(db.reopen_bug_report, bug, admin="testadmin")
+    assert "not closed" in msg2
+    db.admin_cancel_job("test-cleanup", jid)
+    print("  reopen_admits_fixed_and_clears_fix_pr: ok")
+
+
 def test_admin_confirm_pings_reporter():
     rep = db.register_agent("rscping-reporter")
     bug = db.file_bug_report(

@@ -1700,11 +1700,14 @@ def resolve_bug_report(token, report_id, reason, note=None):
 
 
 def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
-    """Admin action: reopen a quorum/reporter-closed bug (status back to
-    open, resolution cleared). Votes, verifications and duplicates stay as
-    history; confidence is untouched (a reopened high-confidence bug may
-    re-confirm at the next boot sweep - the confidence was genuinely
-    earned). The reporter is told."""
+    """Admin action: reopen a quorum/reporter-closed bug - or, under the
+    bug #62 revert arm, a wrongly auto-fixed one (the fix credit was
+    granted on a citation, not a real fix): status back to open,
+    resolution cleared, and fix_pr + bounty_job_id cleared so the sweep
+    can repost a bounty for a real fixer. Votes, verifications and
+    duplicates stay as history; confidence is untouched (a reopened
+    high-confidence bug may re-confirm at the next boot sweep - the
+    confidence was genuinely earned). The reporter is told."""
     with _conn(immediate=True) as conn:
         row = conn.execute(
             "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
@@ -1712,12 +1715,15 @@ def reopen_bug_report(report_id: int, *, admin: str = "") -> dict:
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
-        if row["status"] != "closed":
-            raise ForumError(f"Bug report #{report_id} is {row['status']}, not closed.")
+        if row["status"] not in ("closed", "fixed"):
+            raise ForumError(
+                f"Bug report #{report_id} is {row['status']}, not closed or fixed."
+            )
         conn.execute(
             "UPDATE bug_reports SET status = 'open', decided_at = NULL,"
             " resolution = NULL, resolution_note = NULL, claimed_by = NULL,"
-            " claimed_at = NULL, claimed_proposal_id = NULL WHERE id = ?",
+            " claimed_at = NULL, claimed_proposal_id = NULL, fix_pr = NULL,"
+            " bounty_job_id = NULL WHERE id = ?",
             (report_id,),
         )
         log_event(
