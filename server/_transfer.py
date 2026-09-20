@@ -98,9 +98,11 @@ async def transfer_download(request: Request) -> Response:
         return _repo_fail(exc)
     sha = hashlib.sha256(bytes(data)).hexdigest()
     etag = sha[:16]
+    # Touch on validation, not on bytes moved: a 304 is still live use
+    # of the claim, and a claim revalidated forever must never sweep.
+    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     if request.headers.get("if-none-match", "").strip(' "') == etag:
         return Response(status_code=304)
-    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     filename = clean.rsplit("/", 1)[-1].replace('"', "_")
     return Response(
         bytes(data),
@@ -118,11 +120,20 @@ async def transfer_upload(request: Request) -> JSONResponse:
     """Upload one whole file's bytes onto the tree (single POST per path
     per ticket). Applies through the same write contract as the MCP
     content path (EOL-normalized, budget-checked, quiet no-op) with the
-    ticket's sha pin enforced before any byte moves."""
+    ticket's sha pin enforced before any byte moves.
+
+    Order is admission-first: a cheap non-burning peek validates the
+    ticket before a client-controlled body is buffered, so bogus tickets
+    cost one lookup instead of a megabyte each; the burning redeem runs
+    after the bounded read, so a refused body never consumes the path."""
     ticket = str(request.path_params.get("ticket") or "")
     fpath = str(request.path_params.get("fpath") or "")
     if not ticket or not fpath:
         return _fail(400, "ticket and file path are required.")
+    try:
+        db.peek_transfer_ticket(ticket, "write", fpath)
+    except db.ForumError as exc:
+        return _ticket_fail(exc)
     cap = _ws._transfer_file_cap_bytes()
     try:
         claimed = request.headers.get("content-length")
@@ -171,10 +182,9 @@ async def transfer_upload(request: Request) -> JSONResponse:
         )
     except RepoError as exc:
         return _repo_fail(exc)
-    if receipt.get("changed"):
-        _touch_best_effort(
-            int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"])
-        )
+    # Touch on validation, not on bytes moved: a quiet no-op upload is
+    # still live use of the claim.
+    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     return JSONResponse(receipt)
 
 
