@@ -150,6 +150,7 @@ from ._reads import (  # noqa: F401
 
 # ── workspaces: server-held per-claim trees ─────────────────────────────
 from ._workspaces import (  # noqa: F401
+    _refuse_symlink_components,
     apply_transfer_bytes,
     check_claim_budget,
     claim_tree_diff,
