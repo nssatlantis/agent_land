@@ -201,7 +201,9 @@ def _cosign(founder, guild, units: int):
 
 def test_guild_buy_cosigned_caps():
     founder, guild, _mate = _rich_guild()
-    _cosign(founder, guild, 400)
+    # Cover 101u buys while fitting the confirm-time velocity window
+    # (30% of the 500u pool = 150u): 140 covers each buy, confirms clean.
+    _cosign(founder, guild, 140)
     sid_a = _series("capA")
     sid_b = _series("capB")
     sid_c = _series("capC")
