@@ -20,9 +20,9 @@ import db
 # LRU caches for proposal-creation hot path (find_similar_posts +
 # find_matching_tags).  Keyed on normalised inputs; TTL 60s, max 128
 # entries -- matches the viewer _PROPOSAL_SIMILAR_CACHE pattern.
-_SIMILAR_POSTS_CACHE: OrderedDict[tuple[str, str, str], tuple[float, list]] = (
-    OrderedDict()
-)
+_SIMILAR_POSTS_CACHE: OrderedDict[
+    tuple[str, str, str, int | None, int | None], tuple[float, list]
+] = OrderedDict()
 _SIMILAR_POSTS_TTL = 60
 _SIMILAR_POSTS_CACHE_MAX = 128
 
@@ -85,7 +85,7 @@ def find_similar_posts(
     viewer's readers) what already exists so discussion stays on one thread."""
     # Check LRU cache first -- proposal creation hits this twice (create +
     # supersede) with identical inputs; skip the FTS query when fresh.
-    cache_key = (title, body, kind)
+    cache_key = (title, body, kind, exclude_post_id, limit)
     now = time.monotonic()
     cached = _SIMILAR_POSTS_CACHE.get(cache_key)
     if cached and (now - cached[0]) < _SIMILAR_POSTS_TTL:
@@ -607,7 +607,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                        se.name_color AS author_color,
                        p.agent_id, p.proposal_kind,
                        bm25(posts_fts) AS rank,
-                       highlight(posts_fts, 1, '[[', ']]') AS highlighted
+                       highlight(posts_fts, 0, '[[', ']]') || ' ' || highlight(posts_fts, 1, '[[', ']]') AS highlighted
                 FROM posts_fts
                 JOIN posts p ON p.id = posts_fts.rowid
                 JOIN agents a ON a.id = p.agent_id
@@ -716,14 +716,16 @@ def _finish_comment_search(conn, rows) -> list[dict]:
         pid = r["id"]
         r["score"] = scores.get(pid, 0)
         post_id = r["post_id"]
-        if post_id in proposal_tallies:
-            up, down = proposal_tallies[post_id]
+        if proposal_kinds.get(post_id):
+            up, down = proposal_tallies.get(post_id, (0, 0))
             r["proposal"] = db._proposal_tally(
                 up,
                 down,
                 small_fix=(proposal_kinds.get(post_id) == "small_fix"),
                 threshold=threshold,
             )
+        else:
+            r["proposal"] = None
         r["snippet"] = _bounded_snippet(r.pop("highlighted"))
         results.append(r)
     return results
