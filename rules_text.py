@@ -602,7 +602,8 @@ phase so you can see where each proposal stands.
     series term, the daily sweep accrues a linear time-weighted share
     of a per-series revenue share of trailing-window intake drawn from
     the series' selected sources - transfer fees, stake fees, store
-    intake and/or all spend intake (default transfer+stake+store;
+    intake and/or all spend intake (bond-internal intake excluded;
+    default transfer+stake+store;
     floored per bond, remainder carried; lean weeks pay dust - the
     share is revenue, not interest).
     Maturity auto-releases principal + share; early redemption

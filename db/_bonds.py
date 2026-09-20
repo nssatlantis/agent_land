@@ -125,6 +125,18 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_bonds_series"
         " ON treasury_bonds(series_id, status)"
     )
+    # v1.1 column on pre-existing tables (fresh DBs carry it via the
+    # CREATE above and schema.sql; upgrades gain it here so the write
+    # path is self-healing like the readers). Deferred import: _migrate
+    # touches no db modules, so no cycle.
+    from db._core._migrate import _ensure_column
+
+    _ensure_column(
+        conn,
+        "bond_series",
+        "yield_sources",
+        "TEXT NOT NULL DEFAULT '" + ",".join(DEFAULT_YIELD_SOURCES) + "'",
+    )
 
 
 def _series_row(conn: sqlite3.Connection, series_id: int) -> sqlite3.Row:
@@ -500,15 +512,29 @@ def my_bonds(token: str) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         try:
-            rows = conn.execute(
-                "SELECT b.*, s.name AS series_name, s.term_days,"
-                " s.revenue_share_pct, s.status AS series_status,"
-                " s.yield_sources"
-                " FROM treasury_bonds b JOIN bond_series s"
-                " ON s.id = b.series_id WHERE b.owner_id = ?"
-                " ORDER BY b.id DESC",
-                (agent["id"],),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT b.*, s.name AS series_name, s.term_days,"
+                    " s.revenue_share_pct, s.status AS series_status,"
+                    " s.yield_sources"
+                    " FROM treasury_bonds b JOIN bond_series s"
+                    " ON s.id = b.series_id WHERE b.owner_id = ?"
+                    " ORDER BY b.id DESC",
+                    (agent["id"],),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                # domain: degrade-silently - tables predating the
+                # yield_sources column read as the default trio
+                if "no such column" not in str(exc):
+                    raise
+                rows = conn.execute(
+                    "SELECT b.*, s.name AS series_name, s.term_days,"
+                    " s.revenue_share_pct, s.status AS series_status"
+                    " FROM treasury_bonds b JOIN bond_series s"
+                    " ON s.id = b.series_id WHERE b.owner_id = ?"
+                    " ORDER BY b.id DESC",
+                    (agent["id"],),
+                ).fetchall()
         except Exception:  # domain: degrade-silently - pre-bond DB reads empty
             return {"bonds": []}
         out = []
@@ -576,11 +602,12 @@ def _normalize_yield_sources(raw) -> tuple[str, ...]:
 
 
 def _parse_sources_str(raw) -> tuple[str, ...]:
-    """Lenient stored-set parse: unknown or empty falls back to the
-    default trio so the sweep (degrade-silently domain) never crashes."""
+    """Lenient stored-set parse: unknown or empty yields nothing (the
+    base helper maps that to carry-only), so a hand-corrupted row accrues
+    nothing instead of the trio. The trio fallback lives only in
+    `_series_sources` for the missing-column case."""
     parts = [p.strip().lower() for p in str(raw or "").split(",")]
-    known = tuple(s for s in YIELD_SOURCES if s in parts)
-    return known or DEFAULT_YIELD_SOURCES
+    return tuple(s for s in YIELD_SOURCES if s in parts)
 
 
 def _series_sources(row) -> tuple[str, ...]:
@@ -597,7 +624,10 @@ def _trailing_intake_units(
     """Treasury intake in [since_iso, now) over the selected source
     families (single WHERE with OR'd clauses: union semantics, so
     overlapping families such as store + spend_all never double-count
-    a row). Bond-internal reasons are unselectable by construction."""
+    a row). Bond-internal reasons are unselectable by construction.
+    Note: LIKE is ASCII-case-insensitive while store_stats' BINARY
+    range is not; every ledger writer emits lowercase literals only,
+    so the two agree on real traffic."""
     if not sources:
         return 0
     clause = " OR ".join(_SOURCE_CLAUSES[s] for s in sources)
@@ -822,8 +852,9 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
 
 def bond_series_detail(series_id: int) -> dict:
     """One series in full: terms, status, live outstanding face and live
-    holder/bond counts. Public read. Additive beside list_bond_series,
-    whose shape stays frozen for existing consumers."""
+    holder/bond counts. Public read. Both this and list_bond_series
+    gained one additive key (`yield_sources`); existing consumers reading
+    only the old keys are unaffected."""
     with _conn() as conn:
         row = _series_row(conn, int(series_id))
         d = dict(row)

@@ -552,8 +552,17 @@ def test_sources_sweep_respects_selection():
     from db._bonds import _trailing_intake_units
 
     holder = _make_holder("bd-src-sw")
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "DELETE FROM credit_entries WHERE account = 'treasury'"
+            " AND substr(reason, -7) = '_intake'"
+        )
     with db._conn() as conn:
-        assert _trailing_intake_units(conn, _since_7d(), ("stake_fee",)) == 0
+        base_stake = _trailing_intake_units(conn, _since_7d(), ("stake_fee",))
+    assert base_stake == 0, (
+        "hermetic slate: intake legs wiped above, nothing reseeds stake"
+        f" fees before this assert (got {base_stake})"
+    )
     sid_stake = db.bond_series_open("src-sw-st-7", 7, yield_sources=["stake_fee"])[
         "series_id"
     ]
@@ -595,9 +604,10 @@ def test_sources_close_preserves_and_legacy_defaults():
 
 
 def test_admin_sources_checkboxes_match():
+    import re
     from pathlib import Path
 
-    from db._bonds import YIELD_SOURCES
+    from db._bonds import DEFAULT_YIELD_SOURCES, YIELD_SOURCES
 
     src = (
         Path(__file__)
@@ -605,8 +615,165 @@ def test_admin_sources_checkboxes_match():
         .parent.parent.joinpath("server", "admin", "_economy.py")
         .read_text(encoding="utf-8")
     )
-    for s in YIELD_SOURCES:
-        assert f'value="{s}"' in src, s
+    boxes = re.findall(
+        r'name="yield_sources"\'\s*\n\s*\' value="([^"]+)"( checked)?>', src
+    )
+    assert [v for v, _ in boxes] == list(YIELD_SOURCES), boxes
+    assert [v for v, c in boxes if c] == list(DEFAULT_YIELD_SOURCES), boxes
+
+
+def test_sources_like_escape_rejects_near_miss():
+    from db._bonds import _trailing_intake_units
+
+    with db._conn() as conn:
+        since = _since_7d()
+        store0 = _trailing_intake_units(conn, since, ("store",))
+        all0 = _trailing_intake_units(conn, since, ("spend_all",))
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
+            " account) VALUES (NULL, 777, 'storeX_intake', 'treasury')"
+        )
+    with db._conn() as conn:
+        since = _since_7d()
+        store1 = _trailing_intake_units(conn, since, ("store",))
+        all1 = _trailing_intake_units(conn, since, ("spend_all",))
+    assert store1 - store0 == 0, (store0, store1)
+    assert all1 - all0 == 777, (all0, all1)
+
+
+def test_admin_series_table_shows_sources():
+    from server.admin._economy import _bond_series_table
+
+    sid = db.bond_series_open("src-tbl-7", 7, yield_sources=["spend_all"])["series_id"]
+    html = _bond_series_table()
+    assert f"<td>{sid}</td>" in html, html
+    assert "<th>sources</th>" in html, html
+    assert "spend_all" in html, html
+
+
+def test_sources_migration_readds_column_and_readers_degrade():
+    trio = ["transfer_fee", "stake_fee", "store"]
+    saved = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "bond_sources_migration.db")
+        db.init_db()
+        mig = db.register_agent("srcmig-holder")
+        with db._conn() as conn:
+            from db._credits import grant
+
+            grant(mig["agent_id"], 4000, "srcmig_seed", conn=conn)
+        sid = db.bond_series_open("srcmig-7", 7)["series_id"]
+        buy_bond(mig["token"], sid, 2.0)
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE bond_series DROP COLUMN yield_sources")
+        from db._bonds import bond_series_detail
+
+        assert my_bonds(mig["token"])["bonds"], "bonds visible w/o column"
+        assert list_bond_series()[0]["yield_sources"] == trio
+        assert bond_series_detail(sid)["yield_sources"] == trio
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(bond_series)")}
+        assert "yield_sources" in cols, "init_db() re-adds the column"
+        out = db.bond_series_open("srcmig-2-7", 7, yield_sources=["store"])
+        assert out["yield_sources"] == ["store"], "open works post-migration"
+    finally:
+        db.DB_PATH = saved
+
+
+def test_sources_bond_reasons_never_feed_base():
+    from db._bonds import _trailing_fee_intake_units, _trailing_intake_units
+
+    with db._conn() as conn:
+        since = _since_7d()
+        trio0 = _trailing_fee_intake_units(conn, since)
+        all0 = _trailing_intake_units(conn, since, ("spend_all",))
+    with db._conn(immediate=True) as conn:
+        for reason, units in (
+            ("bond_buy_fee_intake", 300),
+            ("bond_early_haircut_intake", 200),
+        ):
+            conn.execute(
+                "INSERT INTO credit_entries (agent_id, delta_units, reason,"
+                " account) VALUES (NULL, ?, ?, 'treasury')",
+                (units, reason),
+            )
+    with db._conn() as conn:
+        since = _since_7d()
+        assert _trailing_intake_units(conn, since, ("spend_all",)) - all0 == 0
+        assert _trailing_fee_intake_units(conn, since) - trio0 == 0
+
+
+def test_sources_parse_fallback():
+    from db._bonds import _parse_sources_str
+
+    assert list(_parse_sources_str("nope")) == []
+    assert list(_parse_sources_str("")) == []
+    assert list(_parse_sources_str(None)) == []
+    assert list(_parse_sources_str("store,UNKNOWN")) == ["store"]
+
+
+def test_admin_sources_form_multivalue():
+    from starlette.datastructures import FormData
+
+    multi = FormData([("yield_sources", "store"), ("yield_sources", "stake_fee")])
+    assert multi.getlist("yield_sources") == ["store", "stake_fee"]
+    assert FormData([]).getlist("yield_sources") == []
+
+
+def test_admin_bonds_open_post_subset_and_empty():
+    import asyncio
+    import os
+    from types import SimpleNamespace
+
+    from starlette.datastructures import FormData
+
+    from server.admin._economy import bond_series_open as admin_open
+
+    saved_pw = os.environ.pop("ADMIN_PASSWORD", None)
+    try:
+
+        def _admin_req(pairs):
+            req = SimpleNamespace(
+                headers={}, cookies={},
+                state=SimpleNamespace(csrf_token="tok"),
+            )
+
+            async def _form():
+                return FormData(pairs)
+
+            req.form = _form
+            return req
+
+        resp = asyncio.run(
+            admin_open(
+                _admin_req(
+                    [
+                        ("csrf", "tok"),
+                        ("name", "srcadm-post-7"),
+                        ("term_days", "7"),
+                        ("yield_sources", "store"),
+                        ("yield_sources", "stake_fee"),
+                    ]
+                )
+            )
+        )
+        assert resp.status_code == 200, resp.status_code
+        got = [s for s in list_bond_series() if s["name"] == "srcadm-post-7"][0]
+        assert got["yield_sources"] == ["stake_fee", "store"], got
+        bad = asyncio.run(
+            admin_open(
+                _admin_req(
+                    [("csrf", "tok"), ("name", "srcadm-nope-7"), ("term_days", "7")]
+                )
+            )
+        )
+        assert bad.status_code == 200
+        assert "at least one" in bad.body.decode("utf-8")
+    finally:
+        if saved_pw is not None:
+            os.environ["ADMIN_PASSWORD"] = saved_pw
 
 
 if __name__ == "__main__":

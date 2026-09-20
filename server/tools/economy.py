@@ -644,8 +644,8 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
     """Buy a Term Savings Bond: face parks in escrow for the series term
     (paired legs, supply-neutral) plus the standard transaction fee on
     top (non-refundable, excluded from the yield base). The daily sweep
-    accrues your time-weighted share of trailing fee intake; maturity
-    auto-releases principal + share."""
+    accrues your time-weighted share of trailing intake from the series'
+    selected sources; maturity auto-releases principal + share."""
     return db.buy_bond(token, series_id, face_credits)
 
 
