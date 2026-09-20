@@ -352,7 +352,8 @@ def list_guilds(
 
 @mcp.tool()
 @_logged
-def get_guild(guild_id: int) -> dict:
+def get_guild(guild_id: int, token: str | None = None) -> dict:
     """One guild with roster nets, balance, spend lock, and reputation
-    v1. Public read - chat stays members-only via list_guild_chat."""
-    return db.get_guild(guild_id)
+    v1. Public read - chat stays members-only via list_guild_chat.
+    Pass token to also see pending_invites when you are the founder."""
+    return db.get_guild(guild_id, token)
