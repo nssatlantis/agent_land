@@ -706,8 +706,9 @@ def sweep_bond_day() -> dict:
 def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
     """Suspension/deletion hook (called at the top of forfeit_agent):
     release every live bond's face back to the wallet first, so the
-    standard half-treasury/half-burn split applies. Accrued memo dies
-    with the bond. Pre-bond databases degrade to zero."""
+    standard half-treasury/half-burn split applies. Pool-linked face
+    routes poolward instead (never the founder's to forfeit). Accrued
+    memo dies with the bond. Pre-bond databases degrade to zero."""
     from db._credits import release_escrow
 
     try:
@@ -732,6 +733,14 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
                     target_id=bid,
                     conn=conn,
                 )
+            # Pool-owned bonds (proposal #598): pool money is not the
+            # founder's to forfeit - it routes poolward before the caller
+            # reads the wallet balance for the split. Inside the try so a
+            # failure retries with the bond still live (a post-flip raise
+            # would strand escrow-released face outside every retry set).
+            from db._guilds_bonds import _move_bond_payout_poolward
+
+            _move_bond_payout_poolward(conn, bid, int(r["owner_id"]), face)
         except Exception:  # domain: never-lose-data - per-bond isolation;
             # a failure rolls the whole forfeit back or retries next call
             continue
@@ -740,13 +749,6 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
             " WHERE id = ?",
             (_iso(_now()), bid),
         )
-        # Pool-owned bonds (proposal #598): pool money is not the
-        # founder's to forfeit - it routes poolward before the caller
-        # reads the wallet balance for the split. A raise lands in the
-        # per-bond try above, which retries on the next call.
-        from db._guilds_bonds import _move_bond_payout_poolward
-
-        _move_bond_payout_poolward(conn, bid, int(r["owner_id"]), face)
         import events
 
         events.log_event(

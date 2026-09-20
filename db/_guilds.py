@@ -426,6 +426,9 @@ def _force_release_empty_guild(
         )
     resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id)
     release_guild_stakes_for_disband(conn, guild_id)
+    from db._guilds_bonds import release_guild_bonds_for_disband
+
+    release_guild_bonds_for_disband(conn, guild_id)
     return _disband_distribute(conn, guild_id, "empty force-release")
 
 

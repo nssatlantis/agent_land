@@ -194,6 +194,98 @@ def test_guild_forfeit_redirects_poolward():
     assert _link(out["bond_id"]) is not None
 
 
+def _cosign(founder, guild, units: int):
+    req = db.request_guild_cosign(founder["token"], guild["id"], "bond buy", units)
+    return db.confirm_guild_cosign(founder["token"], req["cosign_id"])
+
+
+def test_guild_buy_cosigned_caps():
+    founder, guild, _mate = _rich_guild()
+    _cosign(founder, guild, 400)
+    sid_a = _series("capA")
+    sid_b = _series("capB")
+    sid_c = _series("capC")
+    # Pool ~500u: two 5cr buys (100u each, co-signed) fit every band;
+    # a third 4cr buy trips the 75% total cap (380u vs 375u).
+    db.guild_buy_bond(founder["token"], guild["id"], sid_a, 5.0)
+    db.guild_buy_bond(founder["token"], guild["id"], sid_b, 5.0)
+    msg = expect_error(db.guild_buy_bond, founder["token"], guild["id"], sid_c, 4.0)
+    assert "75%" in msg, msg
+
+
+def test_guild_redeem_routes_poolward():
+    founder, guild, _mate = _rich_guild()
+    sid = _series("redeem")
+    out = db.guild_buy_bond(founder["token"], guild["id"], sid, 2.0)
+    pool_before = _pool(guild["id"])
+    ret = db.redeem_bond(founder["token"], out["bond_id"])
+    assert _pool(guild["id"]) == pool_before + ret["returned_units"], (
+        _pool(guild["id"]),
+        pool_before,
+        ret,
+    )
+    assert _link(out["bond_id"]) is not None  # kept as audit trail
+
+
+def test_guild_disband_detaches_links():
+    founder, guild, _mate = _rich_guild()
+    sid = _series("disband")
+    out = db.guild_buy_bond(founder["token"], guild["id"], sid, 2.0)
+    db.disband_guild(founder["token"], guild["id"], "dissolve")
+    assert _link(out["bond_id"]) is None
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status, owner_id FROM treasury_bonds WHERE id = ?",
+            (out["bond_id"],),
+        ).fetchone()
+    assert row["status"] == "active", dict(row)
+    assert int(row["owner_id"]) == founder["agent_id"]
+
+
+def test_guild_forfeit_failure_keeps_bond_live():
+    from db._credits import forfeit_agent
+
+    founder, guild, _mate = _rich_guild()
+    sid = _series("forfeitlive")
+    out = db.guild_buy_bond(founder["token"], guild["id"], sid, 2.0)
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "UPDATE treasury_bonds SET bought_at = '2020-01-01T00:00:00.000Z',"
+            " matures_at = '2020-01-02T00:00:00.000Z' WHERE id = ?",
+            (out["bond_id"],),
+        )
+    # Drain the founder below one face so the pool redirect cannot fund;
+    # the bond must stay live (retryable) with the pool untouched.
+    db.transfer_credits(founder["agent_id"], _mate["agent_id"], 60)
+    pool_before = _pool(guild["id"])
+    with db._conn() as c:
+        forfeit_agent(founder["agent_id"], conn=c)
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM treasury_bonds WHERE id = ?", (out["bond_id"],)
+        ).fetchone()
+    assert row["status"] == "matured", dict(row)
+    assert _pool(guild["id"]) == pool_before
+
+
+def test_guild_buy_citizen_cap_strict():
+    founder = _new_agent("gb-capf")
+    _fund(founder["agent_id"], 3000)
+    guild = db.found_guild(founder["token"], f"Cappool-{_SEQ[0]}")
+    mate = _new_agent("gb-capm")
+    _fund(mate["agent_id"], 300)
+    inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    db.guild_deposit(founder["token"], guild["id"], 100.0)
+    sid = _series("citcap")
+    # Founder holds 28cr personally; the pool's 4cr buy would take the
+    # founder-owned total past the 30cr citizen cap - refused even though
+    # every pool-side gate (cover, 33%, 75%, co-sign) fits.
+    db.buy_bond(founder["token"], sid, 28.0)
+    msg = expect_error(db.guild_buy_bond, founder["token"], guild["id"], sid, 4.0)
+    assert "per-citizen cap" in msg, msg
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)

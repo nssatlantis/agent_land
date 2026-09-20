@@ -13,9 +13,10 @@ the buy fee rides its excluded reason; pool memos use two kinds -
 and 'bond' (maturity/redemption/forfeit inflow, an _INFLOW_KINDS member
 so pool math counts it). Caps mirror the stake conduit (33% single
 series, 75% total face vs pool balance); co-sign band and spend gates
-apply. Disband cascades the link away and the bond goes personal
-(taken-job detach precedent); succession keeps links (pool economics
-unchanged, owner rows persist).
+apply. Disband detaches the links (release_guild_bonds_for_disband on
+every disband path) and the bond goes personal (taken-job detach
+precedent); succession keeps links (pool economics unchanged, owner
+rows persist).
 """
 
 from __future__ import annotations
@@ -59,22 +60,37 @@ def _ensure_guild_bond_tables(conn: sqlite3.Connection) -> None:
         "guild_ledger",
         "id, guild_id, kind, units, actor_agent_id, note, created_at",
         "'bond_lock'",
+        "CREATE INDEX IF NOT EXISTS idx_guild_ledger_guild"
+        " ON guild_ledger(guild_id);",
     )
 
 
 def _guild_bond_link(conn: sqlite3.Connection, bond_id: int) -> dict | None:
-    row = conn.execute(
-        "SELECT * FROM guild_bond_links WHERE bond_id = ?", (int(bond_id),)
-    ).fetchone()
+    try:
+        row = conn.execute(
+            "SELECT * FROM guild_bond_links WHERE bond_id = ?", (int(bond_id),)
+        ).fetchone()
+    except Exception:  # domain: degrade-silently - pre-table reads empty
+        return None
     return dict(row) if row is not None else None
+
+
+def release_guild_bonds_for_disband(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Detach pool bonds on disband: drop the links so the bonds go
+    personal (taken-job detach precedent). Called beside
+    release_guild_stakes_for_disband on every disband path."""
+    cur = conn.execute(
+        "DELETE FROM guild_bond_links WHERE guild_id = ?", (int(guild_id),)
+    )
+    return int(cur.rowcount or 0)
 
 
 def _guild_bond_exposure(
     conn: sqlite3.Connection, guild_id: int, series_id: int | None = None
 ) -> int:
     """Live pool-bond face in units: active + matured linked bonds
-    (dry-held matured bonds already paid out, like Rule B's escrow
-    recompute), optionally for one series."""
+    (conservative: dry-held matured still counts until released, so the
+    caps stay tight), optionally for one series."""
     params: list = [guild_id]
     extra = ""
     if series_id is not None:
@@ -99,7 +115,8 @@ def guild_bonds(guild_id: int) -> list[dict]:
                 "SELECT b.*, s.name AS series_name FROM treasury_bonds b"
                 " JOIN guild_bond_links l ON l.bond_id = b.id"
                 " JOIN bond_series s ON s.id = b.series_id"
-                " WHERE l.guild_id = ? ORDER BY b.id DESC",
+                " WHERE l.guild_id = ? AND b.status IN ('active', 'matured')"
+                " ORDER BY b.id DESC",
                 (int(guild_id),),
             ).fetchall()
         except Exception:  # domain: degrade-silently - pre-bond DB reads empty
@@ -274,7 +291,25 @@ def _settle_guild_bond_release(
     try:
         _move_bond_payout_poolward(conn, bond_id, owner_id, face + accrued)
     except Exception:  # domain: degrade-silently - maturity mail precedent
-        pass
+        # Audited, not invisible: the bond stays released (escrow already
+        # moved, so retry would double-pay), but the shortfall is on the
+        # event ledger as a pool-receivable instead of bare silence.
+        try:
+            import events
+
+            events.log_event(
+                events.EVT_BOND_MATURED,
+                actor_agent_id=None,
+                target_type="bond",
+                target_id=int(bond_id),
+                detail={
+                    "pool_redirect_failed": True,
+                    "guild_owner": int(owner_id),
+                },
+                conn=conn,
+            )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
