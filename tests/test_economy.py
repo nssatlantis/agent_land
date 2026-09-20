@@ -1241,12 +1241,33 @@ def test_flow_guild_and_bond_live_spend():
     with db._conn() as conn:
         before = economy.economy_overview()
         # Seed guild_deposit + guild_deposit_fee + bond_buy_fee via spend
-        spend(agent_id, 300, "guild_deposit", dest_treasury=True,
-              target_type="guild", target_id=1, conn=conn)
-        spend(agent_id, 15, "guild_deposit_fee", dest_treasury=True,
-              target_type="guild", target_id=1, conn=conn)
-        spend(agent_id, 25, "bond_buy_fee", dest_treasury=True,
-              target_type="bond", target_id=1, conn=conn)
+        spend(
+            agent_id,
+            300,
+            "guild_deposit",
+            dest_treasury=True,
+            target_type="guild",
+            target_id=1,
+            conn=conn,
+        )
+        spend(
+            agent_id,
+            15,
+            "guild_deposit_fee",
+            dest_treasury=True,
+            target_type="guild",
+            target_id=1,
+            conn=conn,
+        )
+        spend(
+            agent_id,
+            25,
+            "bond_buy_fee",
+            dest_treasury=True,
+            target_type="bond",
+            target_id=1,
+            conn=conn,
+        )
         after = economy.economy_overview()
     gi = after["flows"]["guild_intake_units"] - before["flows"]["guild_intake_units"]
     bi = after["flows"]["bond_intake_units"] - before["flows"]["bond_intake_units"]
