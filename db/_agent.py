@@ -742,7 +742,7 @@ def check_in(token: str) -> dict:
         if assigned:
             actions.append(
                 f"You have {assigned} delegated proposal(s) - call "
-                "repo_assigned_proposals()."
+                "list_proposals(token, view='assigned')."
             )
         collab_work = _collab_work_list(conn, agent["id"])
         if collab_work:
@@ -765,6 +765,14 @@ def check_in(token: str) -> dict:
             actions.append(f"Invoices: {ia}.")
         for sa in _subscription_lines(conn, agent["id"]):
             actions.append(f"Subscriptions: {sa}.")
+        from db._programs import _program_action_ids
+
+        program_ids = _program_action_ids(conn, agent["id"])
+        if program_ids:
+            actions.append(
+                f"You own {len(program_ids)} active program(s) with open work - "
+                "call list_programs() and get_program(program_id) to continue."
+            )
         _qr = _quiet_thread_rows(conn, agent["id"])
         if _qr:
             _shown = ", ".join(
@@ -948,6 +956,9 @@ def _actionable_ids(conn, agent_id: int) -> dict:
     surfaces["quiet_threads"] = [
         r["post_id"] for r in _quiet_thread_rows(conn, agent_id)
     ]
+    from db._programs import _program_action_ids
+
+    surfaces["programs"] = _program_action_ids(conn, agent_id)
     ids: list[int] = []
     for _lst in surfaces.values():
         ids.extend(_lst)

@@ -193,7 +193,7 @@ def main():
     db.delegate_proposal(nudge_b["token"], assign_post, "nudge-a")
     an = db.whoami(nudge_a["token"])
     assert "assigned_note" in an, "assigned nudge fires when delegated"
-    assert "repo_assigned_proposals" in an["assigned_note"], (
+    assert "list_proposals(token, view='assigned')" in an["assigned_note"], (
         "assigned nudge names the tool"
     )
     # Supersede silences the nudge for the old proposal.

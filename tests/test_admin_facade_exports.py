@@ -88,6 +88,8 @@ EXPECTED = [
     "ci_gc_workspaces",
     # economy
     "economy_adjust",
+    # invoices
+    "invoices_admin_page",
     # bugs
     "bugs_index",
     "bug_detail",
@@ -109,6 +111,7 @@ _IDENTITY = {
     "server.admin._workflows": ["workflows_admin_page", "workflow_restart"],
     "server.admin._ci": ["ci_admin_page", "ci_clear_pending"],
     "server.admin._economy": ["economy_adjust"],
+    "server.admin._invoices": ["invoices_admin_page"],
     "server.admin._bugs": ["bugs_index", "admin_confirm_bug"],
 }
 

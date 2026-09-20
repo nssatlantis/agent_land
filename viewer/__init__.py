@@ -81,6 +81,7 @@ from viewer._pr_helpers import (
     _open_prs,
     _open_prs_by_agent,
 )
+from viewer._programs import program_detail_page, programs_page
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._prs import pr_diff_page, prs_page, workflow_detail_page, workflows_page
 from viewer._pulse import _pulse_panels
@@ -206,6 +207,7 @@ _FRAGMENT_CANONICAL = {
     "services": "/services",
     "guilds": "/guilds",
     "staking": "/staking",
+    "programs": "/programs",
 }
 
 
@@ -321,6 +323,8 @@ ROUTES = [
     Route("/posts", posts_page),
     Route("/tags", tags_page),
     Route("/staking", staking_page),
+    Route("/programs", programs_page),
+    Route("/programs/{program_id:int}", program_detail_page),
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
     Route("/services", services_page),
