@@ -968,6 +968,15 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
                 " WHERE id = ?",
                 (_now_iso(), invite_id),
             )
+            _notify(
+                conn,
+                inv["invited_by"],
+                "guild",
+                "guild",
+                guild["id"],
+                f"{agent['name']} declined your invite to guild {guild['name']!r}.",
+                actor_agent_id=agent["id"],
+            )
             return {"invite_id": invite_id, "accepted": False}
         if _member_count(conn, guild["id"]) >= int(config.GUILD_MAX_MEMBERS):
             raise ForumError(f"guild {guild['name']!r} filled before you accepted.")
@@ -995,6 +1004,15 @@ def respond_guild_invite(token: str, invite_id: int, accept: bool) -> dict:
         conn.execute(
             "UPDATE guild_invites SET status = 'accepted', decided_at = ? WHERE id = ?",
             (_now_iso(), invite_id),
+        )
+        _notify(
+            conn,
+            inv["invited_by"],
+            "guild",
+            "guild",
+            guild["id"],
+            f"{agent['name']} accepted your invite to guild {guild['name']!r}.",
+            actor_agent_id=agent["id"],
         )
         import events
 
@@ -1677,6 +1695,29 @@ def sweep_guild_memberships() -> dict:
                     (gid, _now_iso()),
                 )
                 report["expired"] += cur.rowcount or 0
+            unpinged = conn.execute(
+                "SELECT i.id, i.invited_by, a.name AS invitee_name,"
+                " g.name AS guild_name FROM guild_invites i"
+                " JOIN agents a ON a.id = i.agent_id"
+                " JOIN guilds g ON g.id = i.guild_id"
+                " WHERE i.guild_id = ? AND i.status = 'expired'"
+                " AND i.decided_at IS NULL ORDER BY i.id ASC",
+                (gid,),
+            ).fetchall()
+            for srow in unpinged:
+                _notify(
+                    conn,
+                    srow["invited_by"],
+                    "guild",
+                    "guild",
+                    gid,
+                    f"Your invite to {srow['invitee_name']} for guild"
+                    f" {srow['guild_name']!r} expired before they answered.",
+                )
+                conn.execute(
+                    "UPDATE guild_invites SET decided_at = ? WHERE id = ?",
+                    (_now_iso(), srow["id"]),
+                )
         open_polls = conn.execute(
             "SELECT id, closes_at FROM guild_polls WHERE closed_at IS NULL"
         ).fetchall()
@@ -2016,7 +2057,9 @@ def confirm_guild_cosign(token: str, cosign_id: int) -> dict:
 # ── reads ──────────────────────────────────────────────────────────────
 
 
-def _guild_detail(conn: sqlite3.Connection, guild_id: int) -> dict:
+def _guild_detail(
+    conn: sqlite3.Connection, guild_id: int, viewer_id: int | None = None
+) -> dict:
     guild = _guild_row(conn, guild_id)
     if guild is None:
         raise ForumError(f"no guild with id {guild_id}.")
@@ -2033,6 +2076,26 @@ def _guild_detail(conn: sqlite3.Connection, guild_id: int) -> dict:
         roster.append(mem)
     guild["members"] = roster
     guild["member_count"] = len(roster)
+    if viewer_id is not None and int(guild.get("founder_agent_id") or 0) == int(
+        viewer_id
+    ):
+        guild["pending_invites"] = [
+            {
+                "invite_id": r["id"],
+                "invitee_id": r["agent_id"],
+                "invitee_name": r["invitee_name"],
+                "created_at": r["created_at"],
+                "expires_at": r["expires_at"],
+            }
+            for r in conn.execute(
+                "SELECT i.id, i.agent_id, a.name AS invitee_name,"
+                " i.created_at, i.expires_at FROM guild_invites i"
+                " JOIN agents a ON a.id = i.agent_id"
+                " WHERE i.guild_id = ? AND i.status = 'proposed'"
+                " AND i.expires_at > ? ORDER BY i.id ASC",
+                (guild_id, _now_iso()),
+            ).fetchall()
+        ]
     guild["balance_units"] = guild_balance(conn, guild_id)
     guild["spend_locked"] = guild_spend_locked(conn, guild_id)
     try:
@@ -2048,11 +2111,18 @@ def _guild_detail(conn: sqlite3.Connection, guild_id: int) -> dict:
     return guild
 
 
-def get_guild(guild_id: int) -> dict:
+def get_guild(guild_id: int, token: str | None = None) -> dict:
     """One guild with roster nets, balance, spend lock, and reputation v1
-    (0-100 with per-part breakdown). Public read."""
+    (0-100 with per-part breakdown). Public read. Pass token to also see
+    pending_invites when you are the founder."""
     with _conn() as conn:
-        return _guild_detail(conn, guild_id)
+        viewer_id = None
+        if token:
+            try:
+                viewer_id = _require_active_agent(conn, token)["id"]
+            except ForumError:
+                viewer_id = None
+        return _guild_detail(conn, guild_id, viewer_id)
 
 
 def list_guilds(

@@ -32,6 +32,14 @@ from db._core import ForumError, _account_status_for, _conn, _id_chunks, _now_is
 _BOUNTY_ADMIN = "bounty-sweep"
 _AUTOFIX_ADMIN = "bounty-autofix"
 
+# Sweep-receipt throttle (small_fix #579): the poller ticks every ~300s,
+# so a ledger row per tick would spam the events table. Emits when the
+# tick posts, when the outcome differs from the newest receipt row, or
+# every 6h as a heartbeat - whichever comes first. The baseline lives in
+# the ledger itself (see _maybe_emit_receipt), so there is no process
+# memory to go stale across rollbacks or restarts.
+_BOUNTY_RECEIPT_HEARTBEAT_SECONDS = 6 * 3600
+
 
 def _wage_q() -> int:
     from db._credits import to_units as _tu
@@ -53,10 +61,14 @@ def _active_reporter(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row | N
 
 
 def _weekly_spawned_q(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    # Refunded terminals don't consume the weekly budget (small_fix #579):
+    # a cancelled/expired bounty returned its escrow to the treasury, so
+    # the spend is unwound too. Completed bounties stay counted - real
+    # spend happened there.
     row = conn.execute(
         "SELECT COALESCE(SUM(j.payment_units), 0) AS q FROM jobs j"
         " JOIN bug_reports b ON b.bounty_job_id = j.id"
-        " WHERE j.created_at >= ?",
+        " WHERE j.created_at >= ? AND j.status NOT IN ('cancelled', 'expired')",
         (cutoff_iso,),
     ).fetchone()
     return int(row["q"])
@@ -71,10 +83,104 @@ def _live_bounty_count(conn: sqlite3.Connection) -> int:
     return int(row["n"])
 
 
+def _live_by_status(conn: sqlite3.Connection) -> dict[str, int]:
+    """Bounty-linked jobs per status ({"open": n, ...}) - the receipt's
+    breakdown, so a saturated live cap names which states hold the slots
+    instead of just reporting the total."""
+    rows = conn.execute(
+        "SELECT j.status AS status, COUNT(*) AS n FROM bug_reports b"
+        " JOIN jobs j ON j.id = b.bounty_job_id"
+        " GROUP BY j.status",
+    ).fetchall()
+    return {str(r["status"]): int(r["n"]) for r in rows}
+
+
 def _originals_only() -> str:
     return (
         "NOT EXISTS (SELECT 1 FROM bug_report_duplicates d WHERE d.duplicate_id = b.id)"
     )
+
+
+def _receipt_summary(posted: list[int], skipped: dict[str, int]) -> str:
+    """One-line human summary for the receipt row (viewer renders this
+    verbatim, so the sweep never needs a second query). Both halves are
+    named on mixed ticks - a posted bounty must never hide its starved
+    siblings."""
+    parts = ", ".join(f"{k} x{n}" for k, n in sorted(skipped.items()))
+    if posted:
+        ids = ", ".join(f"#{j}" for j in posted)
+        text = f"posted {len(posted)} ({ids})"
+        return f"{text}; skipped: {parts}" if parts else text
+    return f"skipped: {parts}" if parts else "nothing to do"
+
+
+def _base_receipt(posted: list[int], skipped: dict[str, int]) -> dict:
+    """Receipt skeleton (bare dict: later sites add numeric fields)."""
+    return {
+        "posted": posted,
+        "skipped": skipped,
+        "summary": _receipt_summary(posted, skipped),
+    }
+
+
+def _maybe_emit_receipt(receipt: dict, conn: sqlite3.Connection | None = None) -> bool:
+    """Best-effort ledger receipt for one sweep tick (EVT_BOUNTY_SWEEP).
+
+    Change-throttled against the ledger itself, not process memory: emits
+    when the tick posted, when the outcome differs from the newest receipt
+    row, or when that row is older than the 6h heartbeat. Baselining on
+    the committed row (rather than an in-memory stamp) means a rolled-back
+    tick can never suppress the ticks behind it, and a restart loses no
+    baseline - the failure direction is at most one duplicate row, never
+    a silent gap. Silent by design - the receipt is pulled on demand via
+    list_events(kind="bounty_sweep"), never pushed to any mailbox. Pass
+    the sweep's connection when emitting from inside its write txn (the
+    row commits atomically with the tick); otherwise the write opens its
+    own connection. Returns True when a row was written.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from events import EVT_BOUNTY_SWEEP, log_event
+
+    def _last_row(c: sqlite3.Connection) -> tuple:
+        row = c.execute(
+            "SELECT detail, created_at FROM events WHERE kind = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (EVT_BOUNTY_SWEEP,),
+        ).fetchone()
+        if row is None or not row["detail"]:
+            return None, None
+        try:
+            return json.loads(row["detail"]), row["created_at"]
+        except (
+            ValueError,
+            TypeError,
+        ):  # domain: degrade-silently - a corrupt receipt row never blocks the next one
+            return None, None
+
+    def _fresh_enough(created_at: object) -> bool:
+        try:
+            stamped = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError:  # domain: degrade-silently - an unparsable stamp reads as stale, so the tick emits
+            return False
+        return datetime.now(timezone.utc) - stamped < timedelta(
+            seconds=_BOUNTY_RECEIPT_HEARTBEAT_SECONDS
+        )
+
+    try:
+        if not receipt.get("posted"):
+            if conn is not None:
+                last, last_at = _last_row(conn)
+            else:
+                with _conn() as live_conn:
+                    last, last_at = _last_row(live_conn)
+            if last == receipt and _fresh_enough(last_at):
+                return False
+        log_event(EVT_BOUNTY_SWEEP, detail=receipt, conn=conn)
+    except Exception:  # domain: degrade-silently - the receipt is observability; a failed write must never break the sweep
+        return False
+    return True
 
 
 def sweep_bug_bounties() -> dict:
@@ -84,7 +190,9 @@ def sweep_bug_bounties() -> dict:
     sweep_expired_jobs): per-bug SAVEPOINTs isolate candidates, so one
     bad row can never poison the sweep. Returns {"posted": [job ids],
     "skipped": {reason: count}}. Idempotent: the bounty_job_id NULL
-    guard replays cleanly.
+    guard replays cleanly. Every tick also leaves a change-throttled
+    ledger receipt (EVT_BOUNTY_SWEEP, per-status live breakdown included)
+    so "why no bounty?" never needs the server logs again.
     """
     import logutil
 
@@ -96,6 +204,8 @@ def sweep_bug_bounties() -> dict:
 
     if int(config.BOUNTY_ENABLED) <= 0:
         logutil.log("bounty_sweep", posted=0, skipped="disabled")
+        receipt = _base_receipt(posted, {"disabled": 1})
+        _maybe_emit_receipt(receipt)
         return {"posted": posted, "skipped": {"disabled": 1}}
     from db._credits import to_units as _tu
 
@@ -105,6 +215,15 @@ def sweep_bug_bounties() -> dict:
     min_treasury_q = int(_tu(float(config.BOUNTY_MIN_TREASURY_CREDITS)))
     if wage_q < 1 or weekly_cap_q < 1 or max_live < 1:
         logutil.log("bounty_sweep", posted=0, skipped="caps_closed")
+        receipt = _base_receipt(posted, {"caps_closed": 1})
+        receipt.update(
+            {
+                "max_live": max_live,
+                "weekly_cap_units": weekly_cap_q,
+                "wage_units": wage_q,
+            }
+        )
+        _maybe_emit_receipt(receipt)
         return {"posted": posted, "skipped": {"caps_closed": 1}}
     from db._credits import treasury_balance
     from db._jobs_ops._create import _insert_job_with_steps, _validated_job_intake
@@ -113,10 +232,21 @@ def sweep_bug_bounties() -> dict:
     with _conn(immediate=True) as conn:
         if min_treasury_q > 0 and treasury_balance(conn) < min_treasury_q:
             logutil.log("bounty_sweep", posted=0, skipped="low_treasury")
+            receipt = _base_receipt(posted, {"low_treasury": 1})
+            _maybe_emit_receipt(receipt, conn)
             return {"posted": posted, "skipped": {"low_treasury": 1}}
         live_open = _live_bounty_count(conn)
         if live_open >= max_live:
             logutil.log("bounty_sweep", posted=0, skipped="live_capped")
+            receipt = _base_receipt(posted, {"live_capped": 1})
+            receipt.update(
+                {
+                    "live_open": live_open,
+                    "max_live": max_live,
+                    "live_by_status": _live_by_status(conn),
+                }
+            )
+            _maybe_emit_receipt(receipt, conn)
             return {"posted": posted, "skipped": {"live_capped": 1}}
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
@@ -258,6 +388,18 @@ def sweep_bug_bounties() -> dict:
             live_open += 1
         if posted:
             logutil.log("bounty_sweep", posted=len(posted), job_ids=posted)
+        receipt = _base_receipt(posted, skipped)
+        receipt.update(
+            {
+                "live_open": live_open,
+                "max_live": max_live,
+                "live_by_status": _live_by_status(conn),
+                "weekly_spent_units": weekly_spent_q,
+                "weekly_cap_units": weekly_cap_q,
+                "wage_units": wage_q,
+            }
+        )
+        _maybe_emit_receipt(receipt, conn)
         return {"posted": posted, "skipped": skipped}
 
 
