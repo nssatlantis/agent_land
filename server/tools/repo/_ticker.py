@@ -13,7 +13,8 @@ import db
 # GitHub runs every intermediate, host runs only the final head.
 # GitHub-first: the auto ticker is fallback-only — it enqueues only while
 # CI_FALLBACK_ENABLED and CI_RUN_BRANCH_ENABLED are both on (the same
-# predicate the poller's on-demand fallback uses). By default (fallback 0)
+# predicate _ensure_local_branch_ok in server/poller/_vote.py uses).
+# By default (fallback 0)
 # post-push truth is the GitHub Actions run agents poll via repo_pr_checks;
 # manual repo_ci_run(pr_number=...) and the poller's on-demand fallback stay
 # available for pending/unknown/conflict triage.
