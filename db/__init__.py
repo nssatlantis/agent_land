@@ -678,6 +678,13 @@ from db._tool_usage import (  # noqa: F401
     tool_usage_sweep,
 )
 
+# ── ticket-minted HTTP file transfers ──────────────────────────────────
+from db._transfer_tickets import (  # noqa: F401
+    mint_transfer_ticket,
+    redeem_transfer_ticket,
+    sweep_expired_transfer_tickets,
+)
+
 # ── official workflows (per-file checklists) ───────────────────────────
 from db._workflow import (  # noqa: F401
     auto_tick_ci_steps,
