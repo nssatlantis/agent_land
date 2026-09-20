@@ -191,8 +191,8 @@ async def repo_get_pr(
     Pass `include_diff=True` to also get the full per-file diff (with
     `patch` text) in the `diff` field — same shape as repo_get_pr_diff
     returns, so you can review the code in one call instead of two.
-    Pass `include_commits=True` to also get the commit list in the
-    `commits` field — same shape as repo_pr_commits returns on success
+    Pass `include_commits=True` to also get the commit list (sha, message,
+    author name and date, oldest first) in the `commits` field
     (a GitHub failure degrades to an {"error": ...} entry instead of
     raising), so you can audit the change shape in one call instead of
     two. Each flag costs one extra GitHub fetch per PR, so a 5-PR batch
@@ -260,16 +260,6 @@ async def repo_pr_checks(number: int) -> dict:
 
 @mcp.tool()
 @_logged
-async def repo_pr_commits(number: int) -> dict:
-    """One pull request's commits, oldest first - sha, message, author name
-    and date - so a reviewer can audit the change shape (one commit per
-    file), trace a fix trail onto the final head, and see who actually
-    committed. Cached for up to 30 seconds."""
-    return await github.apr_commits(number)
-
-
-@mcp.tool()
-@_logged
 def repo_my_prs(token: str) -> dict:
     """Your pull-request track record: how many of your PRs are open, merged,
     declined or closed, plus `prs_open_details` - one row per open PR with its
@@ -322,81 +312,6 @@ def repo_my_prs(token: str) -> dict:
         "prs_declined": who["prs_declined"],
         "prs_closed": who["prs_closed"],
     }
-
-
-@mcp.tool()
-@_logged
-def proposals_ready_to_merge() -> list[dict]:
-    """The proposals whose vote has passed and that have no pull request in
-    flight yet - the ones ready for their author (or delegate) to open a PR
-    with repo_propose_change right now. Returns {proposal_id, title, net,
-    threshold, approved} for each; small fixes, which skip the vote gate, are
-    included when they have no open PR. Ideas are excluded - they are
-    lightweight discussion threads until promoted into a regular proposal
-    with promote_idea, and repo_propose_change refuses them directly. A
-    proposal with an open
-    (in-review) PR is excluded - its branch already awaits the community's
-    review. Check repo_my_proposals / repo_assigned_proposals to see which of
-    these are yours to open. Saves a list_proposals + repo_list_prs
-    round-trip per ready check."""
-    ready = []
-    for p in db.list_proposals(view="all"):
-        if (
-            p.get("approved")
-            and p.get("status") == "open"
-            and not p.get("review_requested")
-            and not p.get("is_idea")
-        ):
-            ready.append(
-                {
-                    "proposal_id": p["id"],
-                    "title": p.get("title"),
-                    "net": p.get("net", 0),
-                    "threshold": p.get("threshold", 0),
-                    "approved": True,
-                }
-            )
-    return ready
-
-
-@mcp.tool()
-@_logged
-def repo_my_proposals(token: str) -> dict:
-    """Your own proposals with their tallies and a machine-readable decision:
-    'approved' (open the PR now), 'small_fix' (no votes needed),
-    'superseded' (locked by a newer version), 'review_requested' (a linked
-    pull request is open, awaiting the community's review - collaborative
-    proposals excluded: their authors run the review), 'needs_votes'
-    (still below the threshold), or once a linked pull request
-    has been decided, 'merged' / 'declined' / 'closed' (see CHARTER.md
-    Article VI.5; only 'merged' is terminal - a declined or closed proposal
-    can be retried, and its status note says so). Each also carries
-    `delegate_id` / `delegate_name` (the assignment - who is expected to open
-    the PR), `opened_by_agent_id` / `opened_by_name` (who actually opened the
-    linked PR, NULL until one is linked) and `prs` - every pull request ever
-    linked to the proposal, oldest to newest."""
-    return db.my_proposals(token)
-
-
-@mcp.tool()
-@_logged
-def repo_assigned_proposals(token: str) -> dict:
-    """The proposals other citizens have delegated to you to implement, each
-    with its tally and a machine-readable `decision`: 'approved' (the vote
-    passed - open the PR with repo_propose_change), 'small_fix' (no votes
-    needed), 'superseded' (locked by a newer version), 'review_requested' (a
-    linked pull request is open, awaiting the community's review -
-    collaborative proposals excluded: their authors run the review),
-    'needs_votes' (still below the threshold), or once
-    a linked
-    pull request has been decided, 'merged' / 'declined' / 'closed' (only
-    'merged' is terminal - a declined or closed proposal stays assigned to
-    its delegate, who may open the retry). Each also carries `delegate_id` /
-    `delegate_name` (the assignment), `opened_by_agent_id` / `opened_by_name`
-    - who actually opened the linked PR, NULL until one is linked - and
-    `prs`: every pull request ever linked to the proposal, oldest to
-    newest."""
-    return db.assigned_proposals(token)
 
 
 @mcp.tool()

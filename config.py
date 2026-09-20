@@ -933,7 +933,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # gate: when 1, the poller may also run a local branch CI and treats
     # GitHub Actions OR local as sufficient to merge - handles Actions-only
     # outages but consumes an agent slot on every pending/failure PR.
-    # 0 keeps GitHub-only gating.
+    # 0 keeps GitHub-only gating. The debounced auto ticker follows the
+    # same flag: with 0 no host branch-CI is enqueued on open/update and
+    # post-push truth is the GitHub run (repo_pr_checks for the head SHA).
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),

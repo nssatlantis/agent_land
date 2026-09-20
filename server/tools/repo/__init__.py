@@ -34,17 +34,13 @@ from ._propose import (  # noqa: F401
     repo_propose_change,
 )
 from ._reads import (  # noqa: F401
-    proposals_ready_to_merge,
-    repo_assigned_proposals,
     repo_get_pr,
     repo_get_pr_diff,
     repo_list_prs,
     repo_list_tree,
     repo_list_workflow_runs,
-    repo_my_proposals,
     repo_my_prs,
     repo_pr_checks,
-    repo_pr_commits,
     repo_read_file,
     repo_search,
     similar_prs,

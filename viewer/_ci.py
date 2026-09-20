@@ -369,7 +369,7 @@ def ci_page(request: Request) -> HTMLResponse:
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
     hint = ""
     if mode == "branch":
-        hint = "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>"
+        hint = "<p style='color:var(--muted);font-size:13px'>Branch mode (fallback-only while the auto ticker is gated): each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR. Post-push truth is the GitHub run — see the PR checks.</p>"
     elif mode == "local":
         hint = "<p style='color:var(--muted);font-size:13px'>Local mode: <code>repo_ci_run(files=[...])</code> rehearsals — the pre-push overlay of your diff on <code>origin/main</code>, tested in the same Docker sandbox as branch runs (ledger kind <code>ci_local_run</code>).</p>"
     elif mode == "bench":

@@ -18,6 +18,7 @@ Leaves:
   _economy     — treasury governance
   _bugs        — bug reports
   _guilds      — guild governance (index + detail + freeze/release/delete/disband)
+  _invoices    — invoice ledger (index with status tabs + agent search)
 """
 
 from __future__ import annotations
@@ -86,6 +87,9 @@ from server.admin._guilds import (  # noqa: F401
     guild_release_member,
     guild_unfreeze,
     guilds_admin_page,
+)
+from server.admin._invoices import (  # noqa: F401
+    invoices_admin_page,
 )
 from server.admin._jobs import (  # noqa: F401  # noqa: F401
     _render_jobs,
@@ -203,6 +207,7 @@ ROUTES = [
         guild_chat_delete,
         methods=["POST"],
     ),
+    Route("/admin/invoices", invoices_admin_page),
 ]
 
 __all__ = [

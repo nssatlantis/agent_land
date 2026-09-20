@@ -282,17 +282,92 @@ def workspace_diff(
 @mcp.tool()
 @_logged
 def workspace_write_file(
-    token: str, proposal_id: int, name: str, path: str, content: str
+    token: str,
+    proposal_id: int,
+    name: str,
+    path: str,
+    content: str | None = None,
+    edits: list[dict] | None = None,
 ) -> dict:
     """Create or overwrite one file in a workspace tree (text).
 
-    Empty content is refused (like repo_propose_change); deletion goes
-    through workspace_delete_file. Per-write budget enforced.
+    Two modes, never both: pass `content` for a whole-file write (empty
+    content is refused, like repo_propose_change; deletion goes
+    through workspace_delete_file), or pass `edits=[{find, replace,
+    occurrence}]` to patch an existing file by exact find-replace
+    without resending it (same shape and strictness as
+    repo_propose_change: each find must match exactly once, or
+    occurrence N when the block repeats; a miss, an ambiguity, or a
+    patch on a missing/binary file fails loudly). Per-write budget
+    enforced. Returns {path, bytes} plus `patch_log` (per-op match
+    counts) in edits mode.
     """
     record, dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
     clean, full = _guard_tree_path(dest, path, write=True)
+    if edits is not None and content is not None:
+        raise db.ForumError(
+            "pass either content or edits, not both "
+            "(whole-file write and patch mode are mutually exclusive)."
+        )
+    if edits is not None:
+        import github._writes as _writes  # local import to avoid a cycle
+
+        try:
+            validated = _writes._validate_edits(clean, edits)
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        if os.path.isdir(full):
+            raise db.ForumError(f"path {clean!r} is a directory - only files patch.")
+        try:
+            with open(full, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            raise db.ForumError(
+                f"no file at {clean!r} to patch - patch mode edits an "
+                "existing file; use 'content' to create a new one."
+            ) from None
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise db.ForumError(
+                f"cannot patch {clean!r} - it is not UTF-8 text (binary file)."
+            ) from None
+        target = _writes._target_eol_for_text(text)
+        normalized = []
+        for op in validated:
+            find = op["find"]
+            replace = op["replace"]
+            neo = {
+                "find": _writes._normalize_eol(find, target),
+                "replace": _writes._normalize_eol(replace, target),
+            }
+            if "occurrence" in op:
+                neo["occurrence"] = op["occurrence"]
+            normalized.append(neo)
+        try:
+            new_text, log = _writes._apply_edits(clean, text, normalized)
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        if not new_text:
+            raise db.ForumError(
+                f"patch for {clean!r} would leave the file empty - "
+                "deletion goes through workspace_delete_file."
+            )
+        incoming = len(new_text.encode("utf-8")) / (1024 * 1024)
+        github.check_claim_budget(agent_id, incoming_mb=incoming)
+        try:
+            with open(full, "w", encoding="utf-8", newline="") as fh:
+                fh.write(new_text)
+        except OSError as exc:
+            raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
+        _touch_clocks(agent_id, proposal_id, cname)
+        return {
+            "path": clean,
+            "bytes": len(new_text.encode("utf-8")),
+            "patch_log": log,
+        }
     if not isinstance(content, str) or not content:
         raise db.ForumError("content must be a non-empty string.")
     incoming = len(content.encode("utf-8")) / (1024 * 1024)

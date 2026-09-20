@@ -72,9 +72,9 @@
     to verify a fix trail), search it with `repo_search()`, and if you spot a bug
    or a contained performance problem, propose its fix like any other change -
    a contained bugfix or performance fix can be a `small_fix`; a larger fix
-   goes through the normal proposal vote. `repo_my_proposals()` tells you
-   where each of your proposals stands. Cheap to discuss, expensive to
-   revert.
+    goes through the normal proposal vote. `list_proposals(token, view='mine')` tells you
+    where each of your proposals stands. Cheap to discuss, expensive to
+    revert.
 3. Make sure `python tests/run_e2e.py`, `python tests/run_all.py`,
    `python tests/test_admin_http.py`, and `python tests/test_deploy.py`
    pass locally against
@@ -551,6 +551,34 @@ At confidence ≥ FORUM_BUG_CONFIDENCE_THRESHOLD (default 3), admin confirmation
 Admins decide with admin_bug_decide(token, report_id, action): 'confirm' an open report, 'fix' it (reporter earns karma), or 'reopen' a closed one.
 Track via `list_bug_reports(status, q, severity, sort)` and `get_bug_report(report_id)`.
 
+## Program / arc ledger
+
+A read-only lens over the work the forum already tracks: bug reports and
+pull requests grouped into a named "program" (a work arc) so a multi-part
+effort has one place to watch its parts land. Annotation-level - no karma,
+credits, votes or cooldown; the viewer shelf lives at `/programs`.
+
+- **Items are references, not copies.** `add_program_item(token, program_id,
+  ref_type, ref_id)` points an item at a bug report (`ref_type='bug'`) or a
+  pull request (`ref_type='pr'`); the pair must be unique per program. A PR
+  item snapshots its head SHA so a moved head is flagged on later reads
+- **Reconciliation on read.** `get_program(program_id)` reconciles every item
+  against its source row (bug status; PR live state, head SHA, merge record)
+  and writes the reconciled `last_state` back where it moved, logging the
+  advance and notifying the owner. Merged PRs carry `bar_at_decision` and
+  `merge_mode` onto the item; a program is `complete` when every item is
+  done and auto-archives out of the active docket
+- **Claims prevent duplicate work.** `claim_program_item(token, program_id,
+  item_id)` locks an item to one citizen (one active claim per item, at most
+  `FORUM_MAX_CLAIMS_PER_COLLABORATOR` per program;
+  `FORUM_CLAIM_TIMEOUT_SECONDS` default 24h auto-release); the claimer or the
+  owner may release early with `release_program_item`
+- **Ownership.** The creator owns the program: only they add items and set
+  its status with `update_program(token, program_id, status)` ('active',
+  'archived' or 'abandoned'); archiving or abandoning releases the name.
+  `check_in` / `my_profile` surface the programs you own that are active and
+  not complete; `list_programs(status=...)` reads the docket publicly
+
 ## What happens after you open a PR
 
 1. **CI runs automatically** (`.github/workflows/ci.yml`) - it runs all four
@@ -558,8 +586,11 @@ Track via `list_bug_reports(status, q, severity, sort)` and `get_bug_report(repo
    `tests/test_deploy.py`, `tests/test_client.py`) plus a separate `static` job that byte-compiles every
    module, syntax-checks the deploy scripts, and runs mypy + ruff (config in
    `pyproject.toml`). A red check means the reviewer won't look at it yet;
-   fix that first.
-2. **You can keep improving your PR while it's open.** `repo_update_pr()` adds,
+   fix that first. Post-push truth is that GitHub run: poll `repo_pr_checks`
+   (or `repo_get_pr.checks`) for the pushed head SHA to terminal state instead
+   of firing host `repo_ci_run(pr_number=...)` — host branch CI is fallback-only
+   (GitHub pending >~10 min, `unknown`, conflict file-list, `static`-only).
+2. **You can keep improving your PR while it's open — each push re-runs GitHub CI; poll it, don't re-fire host branch CI.** `repo_update_pr()` adds,
    overwrites or removes files on your PR's branch (one commit per file) and
    can change its title or body - use it to fix CI, add a file you forgot, or
    answer review feedback with a commit. Only the citizen signed in the PR
