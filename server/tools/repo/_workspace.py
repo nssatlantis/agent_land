@@ -111,11 +111,19 @@ def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
 
     Reads allow protected (.github) paths like repo_read_file; writes
     refuse them. .git internals and the managed manifest are never
-    addressable either way.
+    addressable either way. Symlink components refuse both ways
+    (proposal #597): realpath containment resolves an intra-tree
+    `evil -> .git/hooks/x` link to an inside path, so only a lexical
+    walk catches it - and snapshot/rehearse/push skip symlinks anyway,
+    so linked content could never ship.
     """
     clean = _validate_path(path, allow_protected=not write)
     if clean.split("/", 1)[0] in _MANAGED_HEADS:
         raise db.ForumError(f"path {path!r} is managed by the workspace itself.")
+    try:
+        github._refuse_symlink_components(dest, clean)
+    except github.RepoError as exc:
+        raise db.ForumError(str(exc)) from None
     real = os.path.realpath(dest)
     full = os.path.realpath(os.path.join(dest, clean))
     if full != real and not full.startswith(real + os.sep):
