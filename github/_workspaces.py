@@ -508,12 +508,39 @@ def _open_or_reuse_claim_pr(
 
 def _transfer_file_cap_bytes() -> int:
     """Per-file transfer cap (mirrors the 1MB MCP read cap): the data
-    plane carries no token cost, so this is purely a safety rail."""
+    plane carries no token cost, so this is purely a safety rail. A
+    non-positive knob falls back to the 1MB default (a cap of zero would
+    either disable transfers or uncap them - neither is an opt-out with
+    a safe reading, so the default wins, like the ticket TTL floor)."""
     try:
         mb = float(config.TRANSFER_MAX_FILE_MB)
     except Exception:  # domain: degrade-silently - a bad knob falls back to default
         return 1 << 20
-    return max(65536, int(mb * (1 << 20)))
+    if mb <= 0:
+        return 1 << 20
+    return int(mb * (1 << 20))
+
+
+def _refuse_symlink_components(dest: str, clean: str) -> None:
+    """Refuse any path with a symlink component (proposal #597): realpath
+    containment alone resolves an intra-tree `evil -> .git/hooks/x` link
+    to an inside-dest path, so name checks pass while reads/writes land
+    in .git internals. Walk every component lexically - islink needs no
+    target to exist, so dangling links refuse too."""
+    cur = dest
+    for part in clean.split("/"):
+        cur = os.path.join(cur, part)
+        try:
+            linked = os.path.islink(cur)
+        except (
+            OSError
+        ):  # domain: degrade-silently - an unreadable component reads as plain
+            return
+        if linked:
+            raise RepoError(
+                f"path {clean!r} walks through a symlink - links never"
+                " address workspace content (snapshot skips them too)."
+            )
 
 
 def _guard_transfer_path(dest: str, path: str) -> tuple[str, str]:
@@ -530,6 +557,7 @@ def _guard_transfer_path(dest: str, path: str) -> tuple[str, str]:
         raise RepoError(f"path {path!r} is managed by the workspace itself.")
     if clean.split("/", 1)[0] in _MANAGED:
         raise RepoError(f"path {path!r} is managed by the workspace itself.")
+    _refuse_symlink_components(dest, clean)
     real = os.path.realpath(dest)
     full = os.path.realpath(os.path.join(dest, clean))
     if full != real and not full.startswith(real + os.sep):
