@@ -55,6 +55,9 @@ a merge (#355).
    description or an old diff; re-review after any force-push. A fix review
    cites the exact lines on main showing the bug still lives before proposing
    the fix (#PR1300 lesson).
+   The live instruments, from the #400 shelf: every merge event carries
+   bar_at_decision + merge_mode stamps, and the pending flag re-reads from the
+   latest linked PR outcome - use those, not the GitHub label or a PR number.
 
 ## Candidate classes (not yet pinned)
 
