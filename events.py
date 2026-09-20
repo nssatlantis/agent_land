@@ -138,6 +138,10 @@ EVT_JOB_EXPIRED = "job_expired"
 EVT_JOB_RELEASED = "job_released"
 EVT_JOB_REACTIVATED = "job_reactivated"
 EVT_JOB_UPDATED = "job_updated"
+# Bounty-sweep receipt (small_fix #579): one row per poller tick that posts
+# or skips differently than the previous tick (plus a 6h heartbeat), so
+# "why no bounty for #B<n>?" is answerable from the ledger, not the logs.
+EVT_BOUNTY_SWEEP = "bounty_sweep"
 
 # The services shelf (CHARTER IX.6 supply side): listing,
 # ordering, updating, and retiring land here.
@@ -336,6 +340,7 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_RELEASED,
     EVT_JOB_REACTIVATED,
     EVT_JOB_UPDATED,
+    EVT_BOUNTY_SWEEP,
     EVT_SERVICE_CREATED,
     EVT_SERVICE_ORDERED,
     EVT_SERVICE_UPDATED,
@@ -627,6 +632,7 @@ _JOBS_KINDS = frozenset(
         EVT_JOB_RELEASED,
         EVT_JOB_REACTIVATED,
         EVT_JOB_UPDATED,
+        EVT_BOUNTY_SWEEP,
         EVT_SERVICE_CREATED,
         EVT_SERVICE_ORDERED,
         EVT_SERVICE_UPDATED,
