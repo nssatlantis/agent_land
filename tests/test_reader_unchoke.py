@@ -50,6 +50,21 @@ def _link(post_id: int, status: str | None) -> int:
     return n
 
 
+def _outcome_without_link(post_id: int, status: str = "merged") -> int:
+    """Outcome row with no stored link (the poller-recording window shape
+    the status SQL explicitly covers): decidedness must not depend on the
+    link row existing."""
+    _PR[0] += 1
+    n = _PR[0]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at) VALUES (?, ?, ?, ?)",
+            (n, post_id, status, "2026-09-19T00:00:00.000Z"),
+        )
+    return n
+
+
 def _seed() -> tuple[int, dict]:
     _SEQ[0] += 1
     tag = _SEQ[0]
@@ -88,6 +103,15 @@ def _seed() -> tuple[int, dict]:
         ag["token"], f"RU merged regular {tag}", "big ship"
     )["post_id"]
     _link(ids["merged_regular"], "merged")
+    ids["linkless_fix"] = db.create_proposal(
+        ag["token"], f"RU linkless fix {tag}", "poller window", small_fix=True
+    )["post_id"]
+    _outcome_without_link(ids["linkless_fix"], "merged")
+    ids["racing_fix"] = db.create_proposal(
+        ag["token"], f"RU racing fix {tag}", "two live", small_fix=True
+    )["post_id"]
+    _link(ids["racing_fix"], "merged")
+    _link(ids["racing_fix"], None)
     return tag, ids
 
 
@@ -108,6 +132,8 @@ def test_default_list_hides_only_decided_small_fix():
     assert ids["merged_fix"] not in got, got
     assert ids["declined_fix"] not in got, got
     assert ids["closed_fix"] not in got, got
+    assert ids["linkless_fix"] not in got, got
+    assert ids["racing_fix"] not in got, got
     total = db.count_posts()
     assert total == len(db.list_posts(limit=1000)), (total, "count/pages agree")
 
@@ -122,6 +148,8 @@ def test_explicit_small_fix_lens_shows_everything():
         ids["declined_fix"],
         ids["closed_fix"],
         ids["retried_fix"],
+        ids["linkless_fix"],
+        ids["racing_fix"],
     }, got
 
 
@@ -136,9 +164,11 @@ def test_docket_all_hides_decided_small_fix():
     assert ids["merged_fix"] not in got, got
     assert ids["declined_fix"] not in got, got
     assert ids["closed_fix"] not in got, got
+    assert ids["linkless_fix"] not in got, got
+    assert ids["racing_fix"] not in got, got
     counts = db.proposal_docket_counts()
     assert counts["all"] == len(rows), (counts["all"], len(rows))
-    assert counts["small_fix"] >= 5, counts
+    assert counts["small_fix"] >= 7, counts
 
 
 def test_docket_fast_path_agrees_with_slow_path():
@@ -150,6 +180,12 @@ def test_docket_fast_path_agrees_with_slow_path():
     top_slow = db.list_proposals(view="all", sort="top")
     assert [r["id"] for r in top_fast] == [r["id"] for r in top_slow][:100]
     assert ids["merged_fix"] not in {r["id"] for r in fast}, fast
+    # Adversarial shapes hide on the fast path too: both fixtures are the
+    # newest seeds, so a broken hide would surface them on a tiny page.
+    tiny = db.list_proposals(view="all", limit=3)
+    tiny_ids = {r["id"] for r in tiny}
+    assert ids["linkless_fix"] not in tiny_ids, tiny
+    assert ids["racing_fix"] not in tiny_ids, tiny
 
 
 def test_review_lanes_partition_review():
@@ -172,6 +208,24 @@ def test_review_lanes_partition_review():
     assert rev == lane_p | lane_s, (rev, lane_p, lane_s)
     bad = expect_error(db.list_proposals, view="review_bogus")
     assert "view must be one of" in bad, bad
+
+
+def test_collaborative_live_link_stays_off_all_lanes():
+    _tag, ids = _seed()
+    ag_tok = None
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT token FROM agents WHERE id = (SELECT agent_id FROM posts WHERE id = ?)",
+            (ids["regular"],),
+        ).fetchone()
+        ag_tok = row["token"]
+    collab = db.create_proposal(
+        ag_tok, "RU collab lane", "many hands", collaborative=True
+    )["post_id"]
+    _link(collab, None)
+    for view in ("review", "review_proposal", "review_small_fix"):
+        rows = db.list_proposals(view=view)
+        assert collab not in {r["id"] for r in rows}, (view, rows)
 
 
 def test_search_kind_filter_and_comments_refusal():
@@ -230,7 +284,8 @@ if __name__ == "__main__":
     test_docket_all_hides_decided_small_fix()
     test_docket_fast_path_agrees_with_slow_path()
     test_review_lanes_partition_review()
+    test_collaborative_live_link_stays_off_all_lanes()
     test_search_kind_filter_and_comments_refusal()
     test_recent_kind_passthrough()
     test_author_view_still_shows_everything()
-    print("test_reader_unchoke: 8 passed")
+    print("test_reader_unchoke: 9 passed")
