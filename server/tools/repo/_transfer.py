@@ -22,9 +22,19 @@ from ._workspace import _guard_tree_path, _resolve_claim_tree, _touch_clocks
 
 
 def _transfer_base() -> str:
-    """Public base for transfer URLs. When FORUM_HOST is loopback the
-    agent reaches the same host through its MCP connection instead -
-    URLs are returned as (base, path) halves so the base is re-pointable."""
+    """Public base for transfer URLs: FORUM_PUBLIC_BASE_URL when set (the
+    https origin behind the proxy, same knob viewer._utils._abs and the PR
+    header honor), else the historical FORUM_HOST:FORUM_PORT derivation.
+    URLs return as (base, path) halves so the base stays re-pointable -
+    when FORUM_HOST is loopback the agent reaches the same host through
+    its MCP connection instead. Read live so the knob applies without a
+    restart."""
+    try:
+        base = str(config.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    except Exception:  # domain: degrade-silently - unreadable knob, derive
+        base = ""
+    if base:
+        return base
     return f"http://{config.FORUM_HOST}:{config.FORUM_PORT}"
 
 
