@@ -1931,8 +1931,8 @@ def test_economy_store_panel():
     html = _economy_body(_Req())
     assert "Citizen store" in html, "store panel renders"
     assert "of which store in" in html, "sink row renders in flows"
-    assert "of which guilds in" in html, "guild sub-bar renders"
-    assert "of which bonds in" in html, "bond sub-bar renders"
+    assert "guild intake (deposit + fee)" in html, "guild sub-bar renders"
+    assert "bond intake (purchase fee)" in html, "bond sub-bar renders"
     assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
 
