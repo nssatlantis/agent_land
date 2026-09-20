@@ -36,6 +36,7 @@ _EVENT_KIND_BADGES = {
     "job_cancelled": ("Job cancelled", "var(--muted)"),
     "job_expired": ("Expired", "var(--muted)"),
     "job_reactivated": ("Reactivated", "var(--ok)"),
+    "bounty_sweep": ("Bounty sweep", "var(--muted)"),
     "stake_abandoned": ("Abandoned", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
@@ -357,6 +358,8 @@ def _event_description(e: dict) -> str:
             f" ({d.get('payment_credits', '?')} credits/cycle x"
             f" {d.get('remaining_cycles', '?')} remaining)"
         )
+    if k == "bounty_sweep":
+        return f"bounty sweep - {esc(d.get('summary', '?'))}"
     if k == "bounty_completed":
         return f"Bounty #{tid} completed (all PRs paid)"
     if k == "pr_opened":

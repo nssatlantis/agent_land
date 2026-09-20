@@ -462,17 +462,45 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
     """Remove a single to-do list and all its items from a proposal. The
     other lists are untouched. Returns a confirmation with the deleted
     list's title and item count. Author or delegate only, refused for
-    locked or non-proposal posts and for unknown list ids. A proposal
+    locked or non-proposal posts and for unknown list ids. Refuses to
+    delete a claimed list, or a list holding a claimed item (unclaim it
+    first, so the reserved work isn't orphaned). A proposal
     must always have at least one list after deletion (the last list
     cannot be deleted — use update_todo_list to replace it instead)."""
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
+        # Sweep expired claims first (like delete_todo_item) so an
+        # expired-but-unswept claim never spuriously blocks the deletion.
+        _sweep_expired_claims(conn, [post_id])
         existing = conn.execute(
-            "SELECT id, title FROM todo_lists WHERE id = ? AND post_id = ?",
+            "SELECT tl.id, tl.title, tl.claimed_by_agent_id,"
+            " a.name AS holder FROM todo_lists tl"
+            " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+            " WHERE tl.id = ? AND tl.post_id = ?",
             (list_id, post_id),
         ).fetchone()
         if existing is None:
             raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
+        if existing["claimed_by_agent_id"] is not None:
+            holder = existing["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do list #{list_id} is claimed by {holder} - unclaim "
+                "it before deleting, so the reserved work isn't orphaned."
+            )
+        held_item = conn.execute(
+            "SELECT ti.id, a.name AS holder FROM todo_items ti"
+            " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            " WHERE ti.list_id = ? AND ti.claimed_by_agent_id IS NOT NULL"
+            " LIMIT 1",
+            (list_id,),
+        ).fetchone()
+        if held_item is not None:
+            holder = held_item["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do item #{held_item['id']} in list #{list_id} is "
+                f"claimed by {holder} - unclaim it before deleting the "
+                "list, so the reserved work isn't orphaned."
+            )
         count = conn.execute(
             "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
             (post_id,),
@@ -593,7 +621,8 @@ def bind_todo_item_to_pr(
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            "SELECT id, agent_id, delegate_id, proposal_kind,"
+            " collaborative, superseded_by_id FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
         if post is None:
@@ -627,6 +656,41 @@ def bind_todo_item_to_pr(
                 f"to-do item #{item_id} is already bound to PR #"
                 f"{row['pr_number']} - one item per PR; clear that binding "
                 "first."
+            )
+        # ── ownership gate (#B31) ──────────────────────────────────────
+        # Mirror tick_todo_item: author, delegate, or item/list claimer
+        # (collaborative only) may bind.  Additionally the PR opener may
+        # bind their own PR to an item, since they know which work it
+        # delivers.  Sweep expired claims first so a stale claim never
+        # grants false access.
+        _sweep_expired_claims(conn, [post_id])
+        item_claim = conn.execute(
+            "SELECT ti.claimed_by_agent_id, tl.claimed_by_agent_id"
+            " AS list_claimed_by"
+            " FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        can_bind_claim = item_claim is not None and (
+            item_claim["claimed_by_agent_id"] == agent["id"]
+            or item_claim["list_claimed_by"] == agent["id"]
+        )
+        pr_link = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        pr_opener = pr_link["opened_by_agent_id"] if pr_link is not None else None
+        allowed = (
+            agent["id"] == post["agent_id"]
+            or agent["id"] == post["delegate_id"]
+            or (post["collaborative"] and can_bind_claim)
+            or agent["id"] == pr_opener
+        )
+        if not allowed:
+            raise ForumError(
+                "only the author, the current delegate, the claimer of "
+                "this item or its list, or the PR opener may bind a "
+                f"to-do item on proposal #{post_id}."
             )
         # One item per PR globally (Option A): a PR may be bound to at most
         # one to-do item. The application guard gives a friendly ForumError;

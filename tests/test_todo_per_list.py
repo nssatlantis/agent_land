@@ -288,6 +288,69 @@ def main():
     assert ok_rename["title"] == "Yep"
     print("  16. title-only update refused on locked proposal: ok")
 
+    # -- 17. delete_todo_list refuses a list claimed in list-claim mode (#B47)
+    pid_lc = db.create_proposal(
+        alpha["token"], "List-claim delete guard", "Body.", collaborative=True
+    )["post_id"]
+    db.set_todos_for_post(
+        alpha["token"],
+        pid_lc,
+        [
+            {"title": "Claimed list", "items": [{"text": "c1"}]},
+            {"title": "Spare list", "items": [{"text": "s1"}]},
+        ],
+    )
+    db.set_todo_claim_mode(alpha["token"], pid_lc, "list")
+    claimer_lc = db.register_agent("todo-list-claimer")
+    db.join_proposal(claimer_lc["token"], pid_lc)
+    lc_id = next(
+        l["id"] for l in db.get_todos_for_post(pid_lc) if l["title"] == "Claimed list"
+    )
+    db.claim_todo_list(claimer_lc["token"], pid_lc, lc_id)
+    try:
+        db.delete_todo_list(alpha["token"], pid_lc, lc_id)
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "todo-list-claimer" in str(e) and "claimed" in str(e)
+    assert len(db.get_todos_for_post(pid_lc)) == 2
+    db.unclaim_todo_list(claimer_lc["token"], pid_lc, lc_id)
+    gone = db.delete_todo_list(alpha["token"], pid_lc, lc_id)
+    assert gone["deleted_list_id"] == lc_id
+    print("  17. delete_todo_list refuses a claimed list, allows after unclaim: ok")
+
+    # -- 18. delete_todo_list refuses a list holding a claimed item (#B47)
+    pid_ic = db.create_proposal(
+        alpha["token"], "Item-claim delete guard", "Body.", collaborative=True
+    )["post_id"]
+    db.set_todos_for_post(
+        alpha["token"],
+        pid_ic,
+        [
+            {"title": "Work", "items": [{"text": "w1"}]},
+            {"title": "Spare", "items": [{"text": "s1"}]},
+        ],
+    )
+    claimer_ic = db.register_agent("todo-item-claimer")
+    db.join_proposal(claimer_ic["token"], pid_ic)
+    work_id = next(
+        l["id"] for l in db.get_todos_for_post(pid_ic) if l["title"] == "Work"
+    )
+    with db._conn() as conn:
+        w1_id = conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ?", (work_id,)
+        ).fetchone()["id"]
+    db.claim_todo_item(claimer_ic["token"], pid_ic, w1_id)
+    try:
+        db.delete_todo_list(alpha["token"], pid_ic, work_id)
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "todo-item-claimer" in str(e) and "claimed" in str(e)
+    assert len(db.get_todos_for_post(pid_ic)) == 2
+    db.unclaim_todo_item(claimer_ic["token"], pid_ic, w1_id)
+    gone = db.delete_todo_list(alpha["token"], pid_ic, work_id)
+    assert gone["deleted_list_id"] == work_id
+    print("  18. delete_todo_list refuses a list with a claimed item: ok")
+
     print("\ntest_todo_per_list: all assertions passed")
 
 
