@@ -109,7 +109,7 @@ def api_proposals(request: Request) -> JSONResponse:
     ):
         return JSONResponse(
             {
-                "error": "view must be one of: all, needs_votes, approved, review, review_proposal, review_small_fix, stale, merged, small_fix, collaborative, unclaimed, staking"
+                "error": "view must be one of: all, needs_votes, approved, review, review_proposal, review_small_fix, stale, merged, small_fix, collaborative, unclaimed, staking, ideas, lineage"
             },
             status_code=400,
         )
