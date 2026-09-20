@@ -652,24 +652,34 @@ async def _pr_outcome_poller() -> None:
             _collaborative_digest_sweep()
         except Exception:
             pass  # digest must never stall the poller
+        # Job-market housekeeping (CHARTER IX.6), one guard per sweeper
+        # (small_fix #579): a sick housekeeper must never silently starve
+        # the others - each failure logs its phase and retries next tick.
         try:
-            # Job-market housekeeping (CHARTER IX.6): expire unclaimed
-            # jobs past FORUM_JOB_EXPIRY_DAYS with automatic escrow
-            # refunds, send the once-daily "the market waits on you"
-            # digest (time-gated on ref_type 'job_digest' so transition
-            # mail never resets the clock), and nudge worker + creator
-            # once per cycle whose submission idles past
-            # FORUM_JOB_CYCLE_DUE_HOURS.
+            # Expire unclaimed jobs past FORUM_JOB_EXPIRY_DAYS with
+            # automatic escrow refunds.
             db._jobs.sweep_expired_jobs()
+        except Exception:  # domain: degrade-silently - expiry is advisory housekeeping; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="expiry")
+        try:
+            # Send the once-daily "the market waits on you" digest
+            # (time-gated on ref_type 'job_digest' so transition mail
+            # never resets the clock).
             db._jobs.send_job_digests()
+        except Exception:  # domain: degrade-silently - digests are advisory; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="digests")
+        try:
+            # Nudge worker + creator once per cycle whose submission
+            # idles past FORUM_JOB_CYCLE_DUE_HOURS.
             db._jobs.sweep_overdue_job_cycles()
+        except Exception:  # domain: degrade-silently - overdue nudges are advisory; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="overdue")
+        try:
             # Bug bounties (proposal #509): post treasury jobs for
             # confirmed bugs. Own connection, degrade-silently inside.
             db._bounty.sweep_bug_bounties()
-        except Exception:
-            # domain: degrade-silently - the job sweep is advisory
-            # housekeeping; a failed pass retries on the next poll tick.
-            pass  # the job sweep must never stall the poller
+        except Exception:  # domain: degrade-silently - the bounty sweep is advisory housekeeping; a failed pass retries on the next poll tick
+            logutil.log("jobs_sweep_failed", phase="bounty")
         try:
             # Invoices (small_fix #341): fire the 50/25/10% due-window
             # reminders plus the one-time overdue ping for accepted,
