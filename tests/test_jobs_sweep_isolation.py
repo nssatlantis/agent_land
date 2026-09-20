@@ -5,8 +5,9 @@ once wrapped four sweepers (expiry, digests, overdue, bounty) in a single
 try/except, so one sick sweeper silently starved the other three - the
 shape behind the 09-20 bounty starvation (every tick failed before the
 bounty line with no trace on the forum). Each sweeper now owns its guard
-with a per-phase failure tag; this test pins that shape so a later merge
-cannot re-fold them.
+with a per-phase failure tag; this test pins that shape on AST nodes (not
+source text) so a later merge cannot re-fold them and no comment can
+spoof the pin.
 """
 
 import ast
@@ -24,60 +25,79 @@ _PHASES = {
 }
 
 
-def _enclosing_try_calls():
-    """Map each target call to its enclosing Try node (by id)."""
+def _target_calls():
+    """Every Call node in the file invoking one of the four sweepers:
+    [(func-name, enclosing-Try-or-None, enclosing-Try-or-None...)] - the
+    full chain of enclosing Try nodes, innermost first."""
     tree = ast.parse((_TARGET).read_text(encoding="utf-8"), filename=str(_TARGET))
-    found: dict[str, int] = {}
-    stack: list[ast.AST] = []
+    hits: dict[str, list[list[ast.Try]]] = {name: [] for name in _PHASES}
 
-    def _visit(node: ast.AST):
-        stack.append(node)
+    def _visit(node: ast.AST, trys: list[ast.Try]):
+        if isinstance(node, ast.Try):
+            trys = trys + [node]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _PHASES
+        ):
+            hits[node.func.attr].append(list(trys))
         for child in ast.iter_child_nodes(node):
-            _visit(child)
-        stack.pop()
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            name = node.func.attr
-            if name in _PHASES and name not in found:
-                for parent in reversed(stack):
-                    if isinstance(parent, ast.Try):
-                        found[name] = id(parent)
-                        break
+            _visit(child, trys)
 
-    _visit(tree)
-    return tree, found
+    _visit(tree, [])
+    return hits
 
 
-def _try_node(tree: ast.AST, want_id: int):
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Try) and id(node) == want_id:
-            return node
-    raise AssertionError("try node vanished mid-test")
+def _phase_tagged(t: ast.Try, phase: str) -> bool:
+    """Some handler of this Try logs jobs_sweep_failed with phase=<phase>
+    as a real keyword literal (quote-style agnostic)."""
+    for handler in t.handlers:
+        for node in ast.walk(handler):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "log"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "jobs_sweep_failed"
+                and any(
+                    kw.arg == "phase"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value == phase
+                    for kw in node.keywords
+                )
+            ):
+                return True
+    return False
 
 
-def _handler_text(try_node: ast.Try) -> str:
-    src_lines = (_TARGET).read_text(encoding="utf-8").splitlines()
-    parts = []
-    for handler in try_node.handlers:
-        start = handler.lineno - 1
-        end = handler.end_lineno or start + 1
-        parts.append("\n".join(src_lines[start:end]))
-    return "\n".join(parts)
+def _domain_marked(t: ast.Try) -> bool:
+    """Some handler of this Try carries a domain marker comment."""
+    src = ast.get_source_segment((_TARGET).read_text(encoding="utf-8"), t)
+    return src is not None and "domain:" in src
 
 
 def test_jobs_sweep_isolation():
-    tree, found = _enclosing_try_calls()
-    missing = sorted(set(_PHASES) - set(found))
-    assert not missing, f"sweepers outside any try guard: {missing}"
-    # One guard per sweeper: no two targets may share a Try node.
-    owners = sorted(found.values())
-    assert len(set(owners)) == len(_PHASES), (
-        f"sweepers share a guard (re-folded): {found}"
-    )
-    # Each guard names its failure domain and logs its phase tag.
-    for name, want_id in found.items():
-        text = _handler_text(_try_node(tree, want_id))
-        assert "domain:" in text, f"{name}: guard handler lacks a domain marker"
-        assert f'"{_PHASES[name]}"' in text, f"{name}: guard never logs its phase tag"
+    hits = _target_calls()
+    for name, chains in hits.items():
+        # Exactly one call site per sweeper: a second, unguarded call
+        # anywhere in the file fails the pin.
+        assert len(chains) == 1, f"{name}: {len(chains)} call sites, want 1"
+        (chain,) = chains
+        # Exactly one guard, and it holds nothing but this sweeper.
+        assert len(chain) == 1, f"{name}: not guarded by exactly one try"
+        (guard,) = chain
+        solos = [
+            other
+            for other, other_chains in hits.items()
+            for c in other_chains
+            if c and c[0] is guard and other != name
+        ]
+        assert not solos, f"{name} shares its guard with {solos} (re-folded)"
+        assert _domain_marked(guard), f"{name}: guard lacks a domain marker"
+        assert _phase_tagged(guard, _PHASES[name]), (
+            f"{name}: guard never logs its phase tag"
+        )
     print("  jobs_sweep_isolation: ok")
 
 
