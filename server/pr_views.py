@@ -96,8 +96,8 @@ async def _pr_view(
     a label_synced flag while a cleared hold's GitHub cosmetics still lag,
     and the caller's own vote when a token is given.  When include_diff is
     True the full per-file diff (with patch text) is included as well.
-    When include_commits is True the commit list (same shape as
-    repo_pr_commits on success; a GitHub failure degrades to an
+    When include_commits is True the commit list (sha, message, author name
+    and date, oldest first; a GitHub failure degrades to an
     {"error": ...} entry instead of raising) is included as well."""
     result = await _aget_pr_revalidated(number)
     # One shared connection for every forum read below instead of one fresh

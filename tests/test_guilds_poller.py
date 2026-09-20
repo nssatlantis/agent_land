@@ -57,6 +57,18 @@ def _found(name: str | None = None) -> tuple[dict, dict]:
     return ag, db.found_guild(ag["token"], name or f"Poller-{_SEQ[0]}")
 
 
+def _age_guild(gid: int):
+    """Backdate every member's join past the upkeep grace so the sweep
+    bills normally (fixtures found-and-swept in the same week would
+    otherwise read as grace-skipped)."""
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_members SET joined_at = '2020-01-01T00:00:00.000Z'"
+            " WHERE guild_id = ?",
+            (gid,),
+        )
+
+
 def _upkeep_events() -> list:
     import events
 
@@ -128,6 +140,7 @@ def test_upkeep_work_logs_exactly_once():
     _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    _age_guild(guild["id"])
     before = len(_upkeep_events())
     report = db.sweep_guild_upkeep()
     assert report["issued"] >= 2, f"two members should be billed, got {report}"
@@ -169,6 +182,7 @@ def test_upkeep_runs_when_membership_throws():
     _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    _age_guild(guild["id"])
     real = db.sweep_guild_memberships
 
     def _boom():
@@ -203,6 +217,8 @@ def test_poisoned_guild_does_not_roll_back_neighbours():
     # Age invoices past the 48h sweep gate so the pool reads actually
     # execute (fresh guilds skip before them). Guild 1 sweeps clean
     # while guild 2's poisoned read skips without rolling it back.
+    _age_guild(guild["id"])
+    _age_guild(guild2["id"])
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         conn.execute(
@@ -240,6 +256,7 @@ def test_persistent_skip_stays_quiet():
     # Bill and age one invoice, then suspend directly: the sweep must
     # reach the grace-disband arm (issuance alone never suspends a
     # funded pool, so the flag is seeded like the arrears pins do).
+    _age_guild(gid)
     db.sweep_guild_upkeep()
     with db._conn() as conn:
         conn.execute(
@@ -279,6 +296,7 @@ def test_second_work_sweep_issues_nothing_new():
     _fund(mate["agent_id"], 300)
     inv = db.invite_guild_member(founder["token"], guild["id"], mate["name"])
     db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    _age_guild(guild["id"])
     before = len(_upkeep_events())
     first = db.sweep_guild_upkeep()
     assert first["issued"] >= 2, first

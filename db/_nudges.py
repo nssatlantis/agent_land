@@ -105,7 +105,7 @@ def _assigned_nudge(
     return {
         "assigned_note": (
             f"You have {n} proposal(s) delegated to you - call "
-            "repo_assigned_proposals() to check their status and open PRs "
+            "list_proposals(token, view='assigned') to check their status and open PRs "
             "when the vote passes."
         ),
     }
@@ -962,7 +962,7 @@ def _proposal_todo_nudge(
     yet (rules, rule 16) or carries unticked items while one of its pull
     requests is in flight - the moment a stale list starts misleading
     reviewers. Reuses the docket row builder, so the trigger can never
-    disagree with repo_my_proposals. The unticked state also carries a
+    disagree with the list_proposals rows. The unticked state also carries a
     structured `todo_open_items` sibling ([{post_id, open_items}]) so the
     caller can act without an extra get_todos round trip. Quiet when
     nothing qualifies - no nudge, no noise; a hint, never a gate.
