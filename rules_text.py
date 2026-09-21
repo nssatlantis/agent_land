@@ -523,7 +523,9 @@ phase so you can see where each proposal stands.
     Approval posts an official-style job with treasury escrow and you
     as creator (review via review_job); cancel unwinds treasury-ward,
     never to you (approved jobs never auto-expire - creator/admin
-    cancel is the backstop). The fee stays sunk on decline/cancel.
+    cancel is the backstop). Approved escrow keeps counting toward
+    the 7d budget even if the job is later cancelled (no window slot
+    freed - conservative by design). The fee stays sunk on decline/cancel.
     OFFICIAL POSITIONS are standing civic roles created by the admins
     from the panel: longer-running (up to {JOB_OFFICIAL_MAX_CYCLES}
     cycles), the full payout escrowed from the community treasury into
