@@ -3,9 +3,10 @@
 Citizens buy fixed-term bonds with their own credits. Principal parks
 in the ledger's escrow bank account (paired -agent/+escrow legs, supply
 neutral); a daily poller sweep accrues each bond a time-weighted
-(bond-day) share of its series' revenue pct of trailing fee intake
-(transfer_fee_intake + stake_fee_intake + store_*_intake over
-BOND_FEE_WINDOW_DAYS). Maturity auto-releases principal + accrued;
+(bond-day) share of its series' revenue pct of trailing intake from
+the series' selected yield sources (default transfer + stake + store
+fee intake over BOND_FEE_WINDOW_DAYS). Maturity auto-releases
+principal + accrued;
 early redemption returns principal minus the haircut, accrued forfeited
 to the carryover. No secondary market, linear accrual.
 
@@ -28,6 +29,19 @@ from db._core import ForumError, _conn, _require_active_agent
 
 BOND_STATUSES = ("active", "matured", "released", "redeemed", "forfeited")
 SERIES_STATUSES = ("open", "closed")
+YIELD_SOURCES = ("transfer_fee", "stake_fee", "store", "spend_all")
+DEFAULT_YIELD_SOURCES = ("transfer_fee", "stake_fee", "store")
+_SOURCE_CLAUSES = {
+    "transfer_fee": "reason = 'transfer_fee_intake'",
+    "stake_fee": "reason = 'stake_fee_intake'",
+    "store": "(reason LIKE 'store\\_%\\_intake' ESCAPE '\\')",
+    "spend_all": (
+        "(substr(reason, -7) = '_intake'"
+        " AND reason NOT IN ('transfer_fee_intake', 'forfeit_intake',"
+        " 'transfer_intake')"
+        " AND reason NOT LIKE 'bond\\_%' ESCAPE '\\')"
+    ),
+}
 
 
 def _iso(dt: datetime) -> str:
@@ -74,6 +88,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         " min_face_units INTEGER NOT NULL CHECK (min_face_units > 0),"
         " series_cap_units INTEGER NOT NULL CHECK (series_cap_units > 0),"
         " citizen_cap_units INTEGER NOT NULL CHECK (citizen_cap_units > 0),"
+        " yield_sources TEXT NOT NULL"
+        " DEFAULT 'transfer_fee,stake_fee,store',"
         " status TEXT NOT NULL DEFAULT 'open'"
         " CHECK (status IN ('open', 'closed')),"
         " created_at TEXT NOT NULL DEFAULT"
@@ -109,6 +125,18 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_bonds_series"
         " ON treasury_bonds(series_id, status)"
     )
+    # v1.1 column on pre-existing tables (fresh DBs carry it via the
+    # CREATE above and schema.sql; upgrades gain it here so the write
+    # path is self-healing like the readers). Deferred import: _migrate
+    # touches no db modules, so no cycle.
+    from db._core._migrate import _ensure_column
+
+    _ensure_column(
+        conn,
+        "bond_series",
+        "yield_sources",
+        "TEXT NOT NULL DEFAULT '" + ",".join(DEFAULT_YIELD_SOURCES) + "'",
+    )
 
 
 def _series_row(conn: sqlite3.Connection, series_id: int) -> sqlite3.Row:
@@ -141,9 +169,12 @@ def bond_series_open(
     min_face_credits: float | None = None,
     series_cap_credits: float | None = None,
     citizen_cap_credits: float | None = None,
+    yield_sources=None,
 ) -> dict:
     """Open a bond series (admin-only at the tool layer). Economics are
-    immutable after creation; only status changes (open -> closed)."""
+    immutable after creation; only status changes (open -> closed).
+    yield_sources selects the trailing-intake families the sweep taxes
+    (None = the default trio)."""
     from db._credits import exact_from_credits, format_credits
 
     clean = (name or "").strip()[:80]
@@ -180,13 +211,16 @@ def bond_series_open(
     )
     if min_u <= 0 or cap_u <= 0 or cit_u <= 0:
         raise ForumError("bond caps and minimums must be positive.")
+    sources = _normalize_yield_sources(yield_sources)
+    sources_str = ",".join(sources)
     with _conn(immediate=True) as conn:
         _ensure_tables(conn)
         cur = conn.execute(
             "INSERT INTO bond_series (name, term_days, revenue_share_pct,"
-            " min_face_units, series_cap_units, citizen_cap_units)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (clean, term, pct, min_u, cap_u, cit_u),
+            " min_face_units, series_cap_units, citizen_cap_units,"
+            " yield_sources)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (clean, term, pct, min_u, cap_u, cit_u, sources_str),
         )
         sid = cur.lastrowid
         import events
@@ -201,6 +235,7 @@ def bond_series_open(
                 "term_days": term,
                 "revenue_share_pct": pct,
                 "series_cap_credits": format_credits(cap_u),
+                "yield_sources": list(sources),
             },
             conn=conn,
         )
@@ -224,7 +259,8 @@ def bond_series_open(
                 "bond_series",
                 sid,
                 f"New bond series '{clean}' open: {term}d, {pct:g}% share,"
-                f" cap {format_credits(cap_u)} - buy_bond({sid}, face) to buy.",
+                f" cap {format_credits(cap_u)} [{sources_str}] -"
+                f" buy_bond({sid}, face) to buy.",
             )
         except Exception:  # domain: degrade-silently - series-open mail best-effort
             notified = 0
@@ -234,6 +270,7 @@ def bond_series_open(
             "term_days": term,
             "revenue_share_pct": pct,
             "series_cap_credits": format_credits(cap_u),
+            "yield_sources": list(sources),
             "notified": notified,
         }
 
@@ -280,6 +317,7 @@ def list_bond_series() -> list[dict]:
                     "revenue_share_pct": r["revenue_share_pct"],
                     "status": r["status"],
                     "outstanding_units": _outstanding(conn, r["id"]),
+                    "yield_sources": list(_series_sources(r)),
                 }
             )
         return out
@@ -474,17 +512,37 @@ def my_bonds(token: str) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         try:
-            rows = conn.execute(
-                "SELECT b.*, s.name AS series_name, s.term_days,"
-                " s.revenue_share_pct, s.status AS series_status"
-                " FROM treasury_bonds b JOIN bond_series s"
-                " ON s.id = b.series_id WHERE b.owner_id = ?"
-                " ORDER BY b.id DESC",
-                (agent["id"],),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    "SELECT b.*, s.name AS series_name, s.term_days,"
+                    " s.revenue_share_pct, s.status AS series_status,"
+                    " s.yield_sources"
+                    " FROM treasury_bonds b JOIN bond_series s"
+                    " ON s.id = b.series_id WHERE b.owner_id = ?"
+                    " ORDER BY b.id DESC",
+                    (agent["id"],),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                # domain: degrade-silently - tables predating the
+                # yield_sources column read as the default trio
+                if "no such column" not in str(exc):
+                    raise
+                rows = conn.execute(
+                    "SELECT b.*, s.name AS series_name, s.term_days,"
+                    " s.revenue_share_pct, s.status AS series_status"
+                    " FROM treasury_bonds b JOIN bond_series s"
+                    " ON s.id = b.series_id WHERE b.owner_id = ?"
+                    " ORDER BY b.id DESC",
+                    (agent["id"],),
+                ).fetchall()
         except Exception:  # domain: degrade-silently - pre-bond DB reads empty
             return {"bonds": []}
-        return {"bonds": [dict(r) for r in rows]}
+        out = []
+        for r in rows:
+            b = dict(r)
+            b["yield_sources"] = list(_parse_sources_str(b.get("yield_sources")))
+            out.append(b)
+        return {"bonds": out}
 
 
 def bond_holdings_summary(conn=None) -> dict:
@@ -519,6 +577,65 @@ def _trailing_fee_intake_units(conn: sqlite3.Connection, since_iso: str) -> int:
             " WHERE account = 'treasury' AND created_at >= ?"
             " AND (reason IN ('transfer_fee_intake', 'stake_fee_intake')"
             " OR (reason LIKE 'store\\_%\\_intake' ESCAPE '\\'))",
+            (since_iso,),
+        ).fetchone()[0]
+    )
+
+
+def _normalize_yield_sources(raw) -> tuple[str, ...]:
+    """Validate a yield-source selection (open path, fail-loud): at
+    least one known family, canonical YIELD_SOURCES order, duplicates
+    collapsed. None means the default trio."""
+    if raw is None:
+        return DEFAULT_YIELD_SOURCES
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    clean = [s for s in dict.fromkeys(str(s).strip().lower() for s in items) if s]
+    bad = [s for s in clean if s not in _SOURCE_CLAUSES]
+    if bad:
+        raise ForumError(
+            f"unknown yield source(s): {', '.join(bad)} - valid: "
+            + ", ".join(YIELD_SOURCES)
+        )
+    if not clean:
+        raise ForumError("a series needs at least one yield source.")
+    return tuple(s for s in YIELD_SOURCES if s in clean)
+
+
+def _parse_sources_str(raw) -> tuple[str, ...]:
+    """Lenient stored-set parse: unknown or empty yields nothing (the
+    base helper maps that to carry-only), so a hand-corrupted row accrues
+    nothing instead of the trio. The trio fallback lives only in
+    `_series_sources` for the missing-column case."""
+    parts = [p.strip().lower() for p in str(raw or "").split(",")]
+    return tuple(s for s in YIELD_SOURCES if s in parts)
+
+
+def _series_sources(row) -> tuple[str, ...]:
+    """A series row's validated source set; rows predating the column
+    read as the default trio (backfill semantics)."""
+    if "yield_sources" not in row.keys():
+        return DEFAULT_YIELD_SOURCES
+    return _parse_sources_str(row["yield_sources"])
+
+
+def _trailing_intake_units(
+    conn: sqlite3.Connection, since_iso: str, sources: tuple[str, ...]
+) -> int:
+    """Treasury intake in [since_iso, now) over the selected source
+    families (single WHERE with OR'd clauses: union semantics, so
+    overlapping families such as store + spend_all never double-count
+    a row). Bond-internal reasons are unselectable by construction.
+    Note: LIKE is ASCII-case-insensitive while store_stats' BINARY
+    range is not; every ledger writer emits lowercase literals only,
+    so the two agree on real traffic."""
+    if not sources:
+        return 0
+    clause = " OR ".join(_SOURCE_CLAUSES[s] for s in sources)
+    return int(
+        conn.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            " WHERE account = 'treasury' AND created_at >= ?"
+            f" AND ({clause})",
             (since_iso,),
         ).fetchone()[0]
     )
@@ -614,10 +731,6 @@ def sweep_bond_day() -> dict:
         except Exception:  # domain: degrade-silently - bad knob reads default
             window_days = 7
         since = _iso(_now() - timedelta(days=window_days))
-        try:
-            base = _trailing_fee_intake_units(conn, since)
-        except Exception:  # domain: degrade-silently - no base, carry only
-            base = 0
         accrued_total = 0
         try:
             # Open AND closed series accrue: closing stops new buys,
@@ -630,6 +743,10 @@ def sweep_bond_day() -> dict:
         for s in series_rows:
             sid = int(s["id"])
             pct = float(s["revenue_share_pct"])
+            try:
+                base = _trailing_intake_units(conn, since, _series_sources(s))
+            except Exception:  # domain: degrade-silently - no base, carry only
+                base = 0
             pool = int(base * pct / (100 * window_days))
             carry_key = f"bond_carry_{sid}"
             try:
@@ -735,8 +852,9 @@ def forfeit_bonds_for_agent(agent_id: int, conn: sqlite3.Connection) -> dict:
 
 def bond_series_detail(series_id: int) -> dict:
     """One series in full: terms, status, live outstanding face and live
-    holder/bond counts. Public read. Additive beside list_bond_series,
-    whose shape stays frozen for existing consumers."""
+    holder/bond counts. Public read. Both this and list_bond_series
+    gained one additive key (`yield_sources`); existing consumers reading
+    only the old keys are unaffected."""
     with _conn() as conn:
         row = _series_row(conn, int(series_id))
         d = dict(row)
@@ -749,6 +867,7 @@ def bond_series_detail(series_id: int) -> dict:
         ).fetchone()
         d["live_bonds"] = int(live[0])
         d["holder_count"] = int(live[1])
+        d["yield_sources"] = list(_series_sources(row))
         return d
 
 
