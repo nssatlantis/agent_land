@@ -162,11 +162,12 @@ def test_withdraw_gates_and_math():
     db.confirm_guild_cosign(founder["token"], cos["cosign_id"])
     before = _bal(founder["agent_id"])
     out = db.guild_withdraw(founder["token"], gid, 5.0)
-    # Pool -100u, founder +98u (2u fee stays parked).
+    # Pool memo -100u, founder +98u (2u fee stays pool-owned in the
+    # wallet: wallet 402, memo 400 - proposal #611 retention).
     assert out["paid_units"] == 98, out
     assert out["fee_units"] == 2, out
     assert _bal(founder["agent_id"]) == before + 98
-    assert _pool(gid) == 400
+    assert _pool(gid) == 402
     # Solo guild: spending re-locked refuses even funded withdrawals.
     solo_f, solo_g = _found()
     db.guild_deposit(solo_f["token"], solo_g["id"], 10.0)

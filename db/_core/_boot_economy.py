@@ -229,7 +229,8 @@ def run(conn) -> None:
         " ON credit_entries(created_at, reason, delta_units)"
         " WHERE account = 'treasury'"
     )
-    # The escrow bank account (proposal #319): widen the account
+    # The escrow bank account (proposal #319) and the guild wallets
+    # (proposal #611): widen the account
     # CHECK with 'escrow' on databases that predate it. CREATE TABLE
     # IF NOT EXISTS cannot widen a constraint and SQLite has no ALTER
     # for CHECKs - standard table-rebuild reusing the schema file's
@@ -241,7 +242,9 @@ def run(conn) -> None:
     stored_credits = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'credit_entries'"
     ).fetchone()
-    if stored_credits is not None and "'escrow'" not in stored_credits[0]:
+    if stored_credits is not None and (
+        "'escrow'" not in stored_credits[0] or "'guild'" not in stored_credits[0]
+    ):
         schema_text = SCHEMA_PATH.read_text()
         start = schema_text.index("CREATE TABLE IF NOT EXISTS credit_entries")
         end = schema_text.index(");\n", start) + 3
@@ -281,6 +284,8 @@ def run(conn) -> None:
             " ON credit_entries(tx_id);\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
             " ON credit_entries(account, id) WHERE account = 'treasury';\n"
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_guild"
+            " ON credit_entries(target_id) WHERE account = 'guild';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow"
             " ON credit_entries(account) WHERE account = 'escrow';\n"
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account"
@@ -305,15 +310,25 @@ def run(conn) -> None:
         " ON credit_entries(account) WHERE account = 'escrow'"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_credit_entries_guild"
+        " ON credit_entries(target_id) WHERE account = 'guild'"
+    )
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS economy_meta"
         " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
     )
     # First boot with the bank account: repair pre-cutover
     # single-sided escrow debits (deferred import - db._economy reads
     # db._core, so a top-level import would cycle).
-    from db._economy import backfill_escrow_account
+    from db._economy import backfill_escrow_account, backfill_guild_wallets
 
     backfill_escrow_account(conn)
+    # Proposal #611: seed pre-wallet guild wallets from their memo
+    # trails (idempotent, supply-neutral; pre-guild DBs seed nothing).
+    try:
+        backfill_guild_wallets(conn)
+    except Exception:  # domain: degrade-silently - boot never breaks on guilds
+        pass
     # The completion-sweep partial index (schema.sql): safe to
     # create here on every boot - plain additive index.
     conn.execute(

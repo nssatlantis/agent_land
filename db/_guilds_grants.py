@@ -7,13 +7,13 @@ linked PR merge. Linear decay max(0, 1-0.25 x completed) per repeat;
 merged and fully-decayed completions increment the count - decayed ones
 fire only at the 0 floor, so the floor is stable.
 
-Money model (memo-only, like the upkeep sweep): deposits park real funds
-in the treasury, so the pool's claim is already backed - a grant just
-encumbers treasury funds with a pool memo, moving no accounts. The
+Money model (proposal #611 - wallets): each pool holds its own custody,
+so a grant travels -treasury/+guild paired beside its pool memo. The
 treasury trio (pooled rolling-7d budget, runway gate, free-funds cover)
-runs FIRST: any failure raises before a memo, tranche, or link row
-exists, so money can never strand half-moved. Conservation holds by
-construction (supply and treasury untouched; pool claim up by the grant).
+runs FIRST, then the wallet move: any failure raises before a memo,
+tranche, or link row exists, so money can never strand half-moved.
+Conservation holds by construction (supply fixed; treasury down and
+pool claim up by the grant).
 
 No MCP tools here (thin wrappers ride PR-8); designation is a db-level
 founder act. No ALTER anywhere - the post linkage the PR-1 tables lack
@@ -34,7 +34,6 @@ from db._guilds import (
     _member_row,
     _require_founder,
     _require_guild,
-    guild_balance,
     member_net,
 )
 from notifications import _notify
@@ -77,17 +76,12 @@ def _last_release_age_days(conn: sqlite3.Connection, guild_id: int) -> float | N
 
 
 def _treasury_free(conn: sqlite3.Connection) -> int:
-    """Treasury units not already encumbered by pool claims. Every pool
-    claim is backed by parked funds inside the treasury balance, so only
-    the unencumbered remainder may back a new grant."""
+    """Free treasury units backing a new grant. Proposal #611: pools live
+    in guild wallets outside the treasury (the memo is not money), so
+    there is no parked subtraction - the treasury balance is the cover."""
     from db._credits import treasury_balance
 
-    parked = 0
-    for grow in conn.execute(
-        "SELECT id FROM guilds WHERE status = 'active'"
-    ).fetchall():
-        parked += guild_balance(conn, grow["id"])
-    return int(treasury_balance(conn)) - parked
+    return int(treasury_balance(conn))
 
 
 def _check_treasury_open(conn: sqlite3.Connection, amount_q: int, what: str) -> None:
@@ -414,6 +408,15 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
             link["id"],
         ),
     )
+    # Proposal #611: the tranche travels -treasury/+guild paired before
+    # the memo exists (grant-first); a dry treasury raises and the whole
+    # promotion rolls back.
+    from db._credits import treasury_to_guild
+
+    if not treasury_to_guild(conn, int(link["guild_id"]), t1, "guild_grant_t1"):
+        raise ForumError(
+            "the treasury cannot fund that grant right now - nothing moved."
+        )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'grant_t1', ?, ?)",
@@ -563,6 +566,15 @@ def grant_on_merge(
             conn=conn,
         )
         return {"status": "paused", "link_id": link["id"], "why": str(exc)}
+    # Proposal #611: -treasury/+guild paired before the memo (grant-first).
+    from db._credits import treasury_to_guild as _t2g
+
+    if not _t2g(
+        conn, int(link["guild_id"]), int(tranche["amount_units"]), "guild_grant_t2"
+    ):
+        raise ForumError(
+            "the treasury cannot fund that grant right now - nothing moved."
+        )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'grant_t2', ?, ?)",

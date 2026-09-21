@@ -144,7 +144,11 @@ def test_money_wrappers_move_pool():
     assert _pool(gid) == 700, _pool(gid)
     out = gtools.guild_withdraw(founder["token"], gid, 5.0)
     assert out["fee_units"] == 2, out
-    assert _pool(gid) == 700 - 100, _pool(gid)
+    # Proposal #611: the wallet pays the net (the 2u fee stays pool-owned
+    # via the retention pair) while the memo extinguishes the gross.
+    assert _pool(gid) == 700 - 98, _pool(gid)
+    with db._conn() as conn:
+        assert db.guild_memo_balance(conn, gid) == 700 - 100, _pool(gid)
 
 
 def test_invoice_wrapper_full_and_part():

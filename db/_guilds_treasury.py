@@ -1,8 +1,9 @@
 """db._guilds_treasury — guild↔treasury flows (proposal #525, PR-4).
 
 Stakes, upkeep, and arrears on top of the PR-2 engine and PR-3 money.
-Conservation model (unchanged): pool units are a memo - deposits park
-in the treasury, payouts grant back down, grant-first everywhere.
+Conservation model (proposal #611 - wallets): each pool holds its own
+custody (account='guild'); upkeep parks in the wallet, the sweep travels
+-guild/+treasury paired, grant-first everywhere.
 
 Guild stakes ride the v1 machinery through a founder-conduit: the stake
 row is an ordinary founder staker row (locks deduct the founder's
@@ -256,24 +257,27 @@ def guild_stake(
 def fund_guild_stake_lock(
     conn: sqlite3.Connection, link: dict, per_pr: int, staker_id: int
 ) -> int | None:
-    """Pool-fund one imminent lock: grant then memo, in that grant-first
-    order. Returns the memo row id, or None (skip this lock this pass,
-    retry on the next) when the pool cannot cover or the treasury cannot
-    fund - the transient-dip precedent from admin-funded stakes, never
-    an abandon. The caller bumps its running balance tracker past this
-    call, and reverses by memo id when the lock INSERT hits its dupe
-    guard (same undo discipline as the v1 debit paths)."""
-    from db._credits import grant
+    """Pool-fund one imminent lock: guild-wallet grant then memo, in that
+    grant-first order (proposal #611 - the pool's own wallet funds the
+    conduit, not the treasury). Returns the memo row id, or None (skip
+    this lock this pass, retry on the next) when the pool cannot cover -
+    the transient-dip precedent from admin-funded stakes, never an
+    abandon. The caller bumps its running balance tracker past this call,
+    and reverses by memo id (clawing the conduit back poolward) when the
+    lock INSERT hits its dupe guard (same undo discipline as the v1 debit
+    paths)."""
+    from db._credits import grant_from_guild
 
     if guild_balance(conn, link["guild_id"]) < per_pr:
         return None
-    ok = grant(
+    ok = grant_from_guild(
+        conn,
         staker_id,
         per_pr,
         "guild_stake_conduit",
+        int(link["guild_id"]),
         target_type="proposal_stake",
         target_id=link["stake_id"],
-        conn=conn,
     )
     if not ok:
         return None
@@ -294,12 +298,12 @@ def settle_guild_stake_payout(
 ) -> None:
     """Split merged-PR winnings: the opener's ex-ante bonus via the same
     always-settling principal return v1 uses, the pool's share as a memo
-    PLUS a matching treasury mint. The mint is load-bearing, not double
+    PLUS a matching guild mint (proposal #611 - mints to the pool's own
+    wallet, not the treasury). The mint is load-bearing, not double
     counting: the conduit lock burned real units (v1 spend with no
     destination), so without it the pool memo would be a claim without
-    backing and later payouts would hit an unfunded treasury. Total mint
-    volume equals v1's (bonus to opener + rest to treasury == full payout
-    to opener). Zero bonus pays the pool whole."""
+    backing. Total mint volume equals v1's (bonus to opener + rest to
+    the pool == full payout to opener). Zero bonus pays the pool whole."""
     from db._credits import _insert_entry, return_principal
 
     bonus = amount * int(link["opener_bonus_pct"]) // 100
@@ -317,11 +321,11 @@ def settle_guild_stake_payout(
         _insert_entry(
             conn,
             None,
-            "treasury",
+            "guild",
             rest,
             "guild_stake_winnings",
-            "proposal_stake",
-            link["stake_id"],
+            "guild",
+            int(link["guild_id"]),
         )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, note)"
@@ -339,17 +343,17 @@ def settle_guild_stake_self(conn: sqlite3.Connection, link: dict, amount: int) -
     refund the conduit, enriching the founder with pool money. Redirect
     whole to the pool instead (the founder nets zero across fund, lock,
     and return - the conduit invariant), minting the burned lock back to
-    the treasury so the memo stays backed."""
+    the guild wallet so the memo stays backed (proposal #611)."""
     from db._credits import _insert_entry
 
     _insert_entry(
         conn,
         None,
-        "treasury",
+        "guild",
         amount,
         "guild_stake_winnings",
-        "proposal_stake",
-        link["stake_id"],
+        "guild",
+        int(link["guild_id"]),
     )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
@@ -363,18 +367,19 @@ def settle_guild_stake_refund(
 ) -> None:
     """Declined-PR lock refund: the v1 founder refund is skipped (it
     would enrich the conduit with pool money) and the pool takes a memo
-    instead - plus the matching treasury mint, or the burned lock would
-    leave the memo unbacked (same conservation as the payout above)."""
+    instead - plus the matching guild mint, or the burned lock would
+    leave the memo unbacked (same conservation as the payout above,
+    proposal #611)."""
     from db._credits import _insert_entry
 
     _insert_entry(
         conn,
         None,
-        "treasury",
+        "guild",
         amount,
         "guild_stake_refund",
-        "proposal_stake",
-        link["stake_id"],
+        "guild",
+        int(link["guild_id"]),
     )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
@@ -514,6 +519,34 @@ def sweep_guild_upkeep() -> dict:
                     continue
                 pool = guild_balance(conn, gid)
                 if due > 0 and pool >= due:
+                    # Proposal #611: the sweep travels -guild/+treasury
+                    # paired (previously memo-only, so the pool dropped
+                    # while the treasury never rose). The treasury leg
+                    # reuses guild_upkeep_fee_intake so bond yield and
+                    # spend-intake dashboards read it exactly as before.
+                    from db._credits import _insert_entry, _new_tx_id
+
+                    sweep_tx = _new_tx_id(conn)
+                    _insert_entry(
+                        conn,
+                        None,
+                        "guild",
+                        -due,
+                        "guild_upkeep_fee",
+                        "guild",
+                        int(gid),
+                        tx_id=sweep_tx,
+                    )
+                    _insert_entry(
+                        conn,
+                        None,
+                        "treasury",
+                        due,
+                        "guild_upkeep_fee_intake",
+                        "guild",
+                        int(gid),
+                        tx_id=sweep_tx,
+                    )
                     conn.execute(
                         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
                         " VALUES (?, 'fee', ?, 'weekly upkeep sweep to Treasury')",
@@ -595,16 +628,18 @@ def settle_guild_fee_payment(
     conn: sqlite3.Connection, link: dict, payer_id: int, pay_q: int
 ) -> None:
     """Settle one upkeep payment poolward: member wallet parks in the
-    treasury, the pool takes a deposit memo, arrears settle oldest-first.
-    Shared by pay_invoice's guild branch (the single payment path - no
-    separate tool needed). No pool fee on dues; the pool receives full."""
+    guild's own wallet (proposal #611 - paired -agent/+guild legs, so
+    the ledger reads Nemo -> Guild), the pool takes a deposit memo,
+    arrears settle oldest-first. Shared by pay_invoice's guild branch
+    (the single payment path - no separate tool needed). No pool fee on
+    dues; the pool receives full."""
     from db._credits import spend
 
     spend(
         payer_id,
         pay_q,
         "guild_upkeep_fee",
-        dest_treasury=True,
+        dest_guild=int(link["guild_id"]),
         target_type="invoice",
         target_id=link["invoice_id"],
         conn=conn,

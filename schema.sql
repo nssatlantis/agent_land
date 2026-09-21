@@ -1105,17 +1105,20 @@ CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 -- transfers move credits between wallets. Written inside the triggering
 -- transaction by db._credits.
 --
--- ACCOUNTS: the `account` column splits the one ledger into the three
+-- ACCOUNTS: the `account` column splits the one ledger into the four
 -- public accounts - 'agent' rows belong to citizens (agent_id),
--- 'treasury' rows are the community treasury (agent_id NULL), and
--- 'escrow' rows are the jobs-escrow bank account (agent_id NULL):
+-- 'treasury' rows are the community treasury (agent_id NULL),
+-- 'escrow' rows are the jobs-escrow bank account (agent_id NULL), and
+-- 'guild' rows are per-guild wallets (agent_id NULL, target_type='guild',
+-- target_id=guild_id - proposal #611, one balance per guild):
 -- every posting, payout, refund and return moves principal between a
--- wallet/treasury and escrow as PAIRED rows (-from / +to) under one
+-- wallet/treasury/guild and escrow as PAIRED rows (-from / +to) under one
 -- tx_id, while mints add to the treasury and burns subtract from it:
 --     total supply  = SUM(delta_units) over ALL rows
 --     treasury      = SUM over account='treasury' rows
 --     escrow-held   = SUM over account='escrow' rows
---     circulating   = supply - treasury - escrow
+--     guild-held    = SUM over account='guild' rows (all guilds)
+--     circulating   = supply - treasury - escrow - guild-held
 -- Anonymized citizens keep their 'agent' rows with agent_id NULLed; the
 -- treasury's own history is never touched.
 CREATE TABLE IF NOT EXISTS credit_entries (
@@ -1128,7 +1131,7 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     -- DEFAULT 'agent' also backfills every pre-treasury row during
     -- the ADD COLUMN migration in db/_core.init_db (same constant).
     account      TEXT NOT NULL DEFAULT 'agent'
-                 CHECK (account IN ('agent', 'treasury', 'escrow')),
+                 CHECK (account IN ('agent', 'treasury', 'escrow', 'guild')),
     -- One economic action (a payout, a transfer, a forfeiture) writes all
     -- its legs under ONE tx_id so the ledger renders it as a single
     -- transaction - 'money taken from the sender, given to the recipient'.
@@ -1155,6 +1158,8 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
     ON credit_entries(account, id) WHERE account = 'treasury';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_escrow
     ON credit_entries(account) WHERE account = 'escrow';
+CREATE INDEX IF NOT EXISTS idx_credit_entries_guild
+    ON credit_entries(target_id) WHERE account = 'guild';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_account
     ON credit_entries(account, agent_id, delta_units) WHERE account = 'agent';
 CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury_flows

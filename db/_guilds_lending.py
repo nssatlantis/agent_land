@@ -7,10 +7,9 @@ one pooled rolling-7d budget (first-claimant wins) with the same
 grant-first discipline: eligibility, budget, runway, and free-funds
 cover resolve before any row exists.
 
-Money model (memo-only, like grants/upkeep): support payments write
-pool-claim memos with no account movement - deposits already park the
-backing in the treasury. Payback debts are the exception that proves
-the rule: the founder repays real units from their wallet into the
+Money model (proposal #611 - wallets): support payments travel
+-treasury/+guild paired beside their pool-claim memos - each pool holds
+its own custody. Payback debts still route founder wallet into the
 treasury via the invoice rail (the upkeep-fee precedent), and the debt
 ledger tracks the remainder.
 
@@ -182,6 +181,14 @@ def _pay_subsidy(conn: sqlite3.Connection, sub: dict, decided_by: int | None) ->
         " decided_at = ? WHERE id = ?",
         (decided_by, now, sub["id"]),
     )
+    # Proposal #611: the subsidy travels -treasury/+guild paired before
+    # the memo exists (grant-first).
+    from db._credits import treasury_to_guild
+
+    if not treasury_to_guild(conn, int(sub["guild_id"]), amount, "guild_subsidy"):
+        raise ForumError(
+            "the treasury cannot fund that subsidy right now - nothing moved."
+        )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'subsidy', ?, ?, ?)",
@@ -523,6 +530,14 @@ def open_guild_match_window(
                 (int(guild_id), amount, amount, agent["id"], now, now),
             )
             window_id = int(cur.lastrowid or 0)
+            # Proposal #611: the match travels -treasury/+guild paired
+            # before the memo exists (grant-first).
+            from db._credits import treasury_to_guild as _match_g
+
+            if not _match_g(conn, int(guild_id), amount, "guild_match"):
+                raise ForumError(
+                    "the treasury cannot fund that match right now - nothing moved."
+                )
             conn.execute(
                 "INSERT INTO guild_ledger (guild_id, kind, units, note)"
                 " VALUES (?, 'match', ?, ?)",
@@ -641,6 +656,14 @@ def _settle_match_window(conn: sqlite3.Connection, window: dict) -> dict:
         " settled_at = ? WHERE id = ?",
         (pay, _now_iso(), window["id"]),
     )
+    # Proposal #611: the match travels -treasury/+guild paired before
+    # the memo exists (grant-first).
+    from db._credits import treasury_to_guild as _wmatch_g
+
+    if not _wmatch_g(conn, int(window["guild_id"]), pay, "guild_match"):
+        raise ForumError(
+            "the treasury cannot fund that match right now - nothing moved."
+        )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'match', ?, ?)",
@@ -754,14 +777,44 @@ def _seize_for_debts(conn: sqlite3.Connection, guild_id: int) -> dict:
     debts = _open_debts(conn, guild_id)
     if not debts:
         return {"seized_units": 0, "debts": []}
+    # Proposal #611: both trails close independently - the wallet balance
+    # travels -guild/+treasury paired (reason without _intake so treasury
+    # flow buckets read it exactly as the old memo-only seizure: invisible),
+    # while the memo balance extinguishes the memo trail.
+    from db._credits import _insert_entry, _new_tx_id
+    from db._guilds import guild_memo_balance
+
     balance = guild_balance(conn, guild_id)
     taken = 0
     outcome: list[dict] = []
     if balance > 0:
+        _seize_tx = _new_tx_id(conn)
+        _insert_entry(
+            conn,
+            None,
+            "guild",
+            -balance,
+            "guild_debt_seize",
+            "guild",
+            int(guild_id),
+            tx_id=_seize_tx,
+        )
+        _insert_entry(
+            conn,
+            None,
+            "treasury",
+            balance,
+            "guild_debt_seize",
+            "guild",
+            int(guild_id),
+            tx_id=_seize_tx,
+        )
+    _memo_bal = guild_memo_balance(conn, guild_id)
+    if _memo_bal > 0:
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'transfer', ?, 'debt seizure to Treasury')",
-            (int(guild_id), balance),
+            (int(guild_id), _memo_bal),
         )
     for debt in debts:
         if taken >= balance:
@@ -872,10 +925,11 @@ def _forfeit_member(
     conn: sqlite3.Connection, guild_id: int, agent_id: int, why: str
 ) -> dict:
     """5027: a suspended/banned member is auto-released with their share
-    forfeited - half stays Treasury-parked (no movement, like the upkeep
-    remainder), half burns outright (odd unit to the burn; forfeiture
-    never inflates the supply). The pool memo extinguishes the FULL
-    share, so nothing pays twice. Never a refund, never a shelter."""
+    forfeited - half walks to the Treasury paired, half burns outright
+    via the wallet outflow itself (odd unit to the burn; forfeiture never
+    inflates the supply; proposal #611 - the wallet custodies the pool,
+    so both halves leave it explicitly). The pool memo extinguishes the
+    FULL share, so nothing pays twice. Never a refund, never a shelter."""
     from db._credits import _insert_entry, _new_tx_id
     from db._guilds import _payout_for, guild_balance
 
@@ -888,16 +942,27 @@ def _forfeit_member(
         )
         to_treasury = share // 2
         burned = share - to_treasury
-        if burned > 0:
+        _forfeit_tx = _new_tx_id(conn)
+        _insert_entry(
+            conn,
+            None,
+            "guild",
+            -share,
+            "forfeit_burned",
+            "guild",
+            int(guild_id),
+            tx_id=_forfeit_tx,
+        )
+        if to_treasury > 0:
             _insert_entry(
                 conn,
                 None,
                 "treasury",
-                -burned,
-                "forfeit_burned",
+                to_treasury,
+                "guild_forfeit",
                 "guild",
                 int(guild_id),
-                tx_id=_new_tx_id(conn),
+                tx_id=_forfeit_tx,
             )
     else:
         to_treasury, burned = 0, 0
