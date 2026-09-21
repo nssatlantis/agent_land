@@ -521,8 +521,9 @@ phase so you can see where each proposal stands.
     the public queue; decide_subsidy_request() is admin-only (7d budget
     + runway + free-funds gates re-checked, first-claimant-wins).
     Approval posts an official-style job with treasury escrow and you
-    as creator (review via review_job); cancel/expiry unwind
-    treasury-ward, never to you. The fee stays sunk on decline/cancel.
+    as creator (review via review_job); cancel unwinds treasury-ward,
+    never to you (approved jobs never auto-expire - creator/admin
+    cancel is the backstop). The fee stays sunk on decline/cancel.
     OFFICIAL POSITIONS are standing civic roles created by the admins
     from the panel: longer-running (up to {JOB_OFFICIAL_MAX_CYCLES}
     cycles), the full payout escrowed from the community treasury into

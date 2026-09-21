@@ -172,6 +172,51 @@ def test_decline_and_cancel_sink_fee():
     print("ok - test_decline_and_cancel_sink_fee")
 
 
+def test_invalid_limit_refused():
+    for bad in ("abc", None):
+        try:
+            db.list_subsidy_requests(limit=bad)
+        except Exception as exc:
+            assert "whole number" in str(exc), exc
+        else:
+            raise AssertionError(f"limit {bad!r} was not refused")
+    print("ok - test_invalid_limit_refused")
+
+
+def test_non_admin_on_decided_stays_admin_error():
+    owner = _make_agent("sub_req_gate")
+    other = _make_agent("sub_req_gate_other")
+    req = db.request_subsidized_job(owner["token"], "Gate", "d", 1.0, ["s1"])
+    db.decide_subsidy_request(AGENTS["alpha"]["token"], req["id"], False, admin=True)
+    try:
+        db.decide_subsidy_request(other["token"], req["id"], True, admin=False)
+    except Exception as exc:
+        assert "admin" in str(exc).lower(), exc
+        print("ok - test_non_admin_on_decided_stays_admin_error")
+        return
+    raise AssertionError("non-admin on decided request was not refused")
+
+
+def test_cancel_emits_decided_event():
+    import json as _json
+
+    ag = _make_agent("sub_req_cancel_evt")
+    req = db.request_subsidized_job(ag["token"], "Cancel evt", "d", 1.0, ["s1"])
+    db.cancel_subsidy_request(ag["token"], req["id"])
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE kind = 'job_subsidy_decided'"
+            " AND target_type = 'job_subsidy' AND target_id = ?",
+            (req["id"],),
+        ).fetchall()
+    assert rows, "cancel emitted no decided event"
+    detail = rows[0]["detail"]
+    if isinstance(detail, str):
+        detail = _json.loads(detail)
+    assert detail.get("cancelled") is True
+    print("ok - test_cancel_emits_decided_event")
+
+
 if __name__ == "__main__":
     test_request_ok_fee_sunk_once()
     test_serial_queue_refuses_second()
@@ -180,4 +225,7 @@ if __name__ == "__main__":
     test_non_admin_decide_refused()
     test_admin_approve_posts_treasury_job()
     test_decline_and_cancel_sink_fee()
+    test_invalid_limit_refused()
+    test_non_admin_on_decided_stays_admin_error()
+    test_cancel_emits_decided_event()
     print("ALL SUBSIDY TESTS PASSED")

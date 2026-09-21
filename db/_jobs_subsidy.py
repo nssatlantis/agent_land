@@ -8,8 +8,10 @@ posted official-style: the treasury escrows the full wage via the
 proven `treasury_to_escrow("job_escrow_treasury")` paired-legs path,
 `jobs.treasury_escrow_units` tracks it, and the requester is the
 creator (reviews via existing `review_job`, earns the creator karma
-leg). Cancel/expiry unwind treasury-ward via the existing official
-paths — never to the requester.
+leg). Cancel unwinds treasury-ward via the existing official paths —
+never to the requester. Approved jobs are official so they never
+auto-expire (the expiry sweep is official=0 only); the backstop is
+creator/admin cancel.
 
 Money discipline mirrors the guild subsidy gate: a 7d pooled-style
 budget (first-claimant-wins) + runway gate + free-funds cover resolve
@@ -267,7 +269,11 @@ def list_subsidy_requests(status: str | None = None, limit: int = 50) -> list[di
     """The subsidy queue, newest first. Public read."""
     if status is not None and status not in STATUSES:
         raise ForumError(f"status must be one of {STATUSES}.")
-    limit = max(1, min(int(limit), 100))
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise ForumError("limit must be a whole number.") from None
+    limit = max(1, min(limit, 100))
     with _conn() as conn:
         _ensure_tables(conn)
         if status is None:
@@ -306,6 +312,17 @@ def cancel_subsidy_request(token: str, request_id: int) -> dict:
             "UPDATE job_subsidy_requests SET status = 'cancelled' WHERE id = ?",
             (sub["id"],),
         )
+        import events
+
+        events.log_event(
+            events.EVT_JOB_SUBSIDY_DECIDED,
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
+            target_type="job_subsidy",
+            target_id=sub["id"],
+            detail={"approved": False, "cancelled": True},
+            conn=conn,
+        )
         row = conn.execute(
             "SELECT * FROM job_subsidy_requests WHERE id = ?", (sub["id"],)
         ).fetchone()
@@ -332,13 +349,13 @@ def decide_subsidy_request(
         if row is None:
             raise ForumError(f"no subsidy request with id {request_id}.")
         sub = dict(row)
+        if not admin:
+            raise ForumError("subsidy requests need an admin decision.")
         if sub["status"] != "requested":
             raise ForumError(
                 f"request #{request_id} is {sub['status']} - only requested"
                 " requests can be decided."
             )
-        if not admin:
-            raise ForumError("subsidy requests need an admin decision.")
         import events
         from notifications import _notify
 
@@ -374,9 +391,27 @@ def decide_subsidy_request(
             return _row_to_dict(out)
         payment_q = int(sub["payment_units"])
         _check_treasury_open(conn, payment_q, "that subsidy")
+        from db._credits import treasury_balance as _cover_balance
+
+        if _cover_balance(conn) < payment_q:
+            raise ForumError(
+                "the treasury cannot cover that subsidy right now -"
+                " waits for funds (nothing moved)."
+            )
         from db._jobs_ops._create import _insert_job_with_steps
 
-        steps = json.loads(sub["steps_json"] or "[]")
+        try:
+            steps = json.loads(sub["steps_json"] or "[]")
+        except Exception:
+            raise ForumError(
+                f"request #{request_id} carries unreadable steps -"
+                " file a fresh request (nothing moved)."
+            ) from None
+        if not isinstance(steps, list) or not steps:
+            raise ForumError(
+                f"request #{request_id} carries no usable steps -"
+                " file a fresh request (nothing moved)."
+            )
         job_id = _insert_job_with_steps(
             conn,
             creator_agent_id=sub["requester_agent_id"],
@@ -394,13 +429,8 @@ def decide_subsidy_request(
             treasury_escrow_units=payment_q,
             long_running=int(sub["long_running"] or 0),
         )
-        from db._credits import treasury_balance, treasury_to_escrow
+        from db._credits import treasury_to_escrow
 
-        if treasury_balance(conn) < payment_q:
-            raise ForumError(
-                "the treasury cannot cover that subsidy right now -"
-                " waits for funds (nothing moved)."
-            )
         treasury_to_escrow(
             payment_q,
             "job_escrow_treasury",

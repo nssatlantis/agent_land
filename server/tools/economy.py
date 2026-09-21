@@ -220,7 +220,8 @@ def request_subsidized_job(
 @mcp.tool()
 @_logged
 def list_subsidy_requests(status: str | None = None) -> list:
-    """The subsidy queue, newest first. Public read."""
+    """The subsidy queue, newest first. Public read (poll-only: filing
+    notifies nobody, watch the queue)."""
     return db.list_subsidy_requests(status=status)
 
 
