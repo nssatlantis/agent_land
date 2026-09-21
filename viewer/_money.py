@@ -1070,6 +1070,135 @@ def _treasury_trend_html() -> str:
     )
 
 
+def _daily_flows_html() -> str:
+    """Daily treasury flows, trailing 14 days (chart 2): per-day inflow
+    (up, green) vs outflow (down, red) SVG bars off
+    db.treasury_daily_flows, folded through the same _summarize_flows
+    buckets as the window tables. Quiet days read hairlines. Tooltips
+    carry exact credits. Display-only, degrade-silently."""
+    try:
+        days = _cached(
+            ("treasury_daily_flows", 14),
+            int(config.VIEWER_CACHE_TTL or 60),
+            lambda: db.treasury_daily_flows(14),
+        )
+    except Exception:  # domain: degrade-silently - series read never blocks /economy
+        return ""
+    if not isinstance(days, list) or not days:
+        return ""
+    inflow_keys = (
+        "minted_units",
+        "fees_in_units",
+        "forfeit_intake_units",
+        "spend_intake_units",
+        "guild_intake_units",
+        "bond_intake_units",
+        "transfer_intake_units",
+        "payout_returns_in_units",
+    )
+    outflow_keys = ("burned_units", "payouts_out_units")
+    rows = []
+    for d in days:
+        if not isinstance(d, dict) or not isinstance(d.get("flows"), dict):
+            continue
+        try:
+            f = d["flows"]
+            rows.append(
+                (
+                    str(d.get("day", ""))[5:],
+                    sum(int(f.get(k, 0) or 0) for k in inflow_keys),
+                    sum(int(f.get(k, 0) or 0) for k in outflow_keys),
+                )
+            )
+        except (  # domain: degrade-silently - corrupt buckets are skipped
+            TypeError,
+            ValueError,
+        ):
+            continue
+    if not rows:
+        return ""
+    mx = max([r[1] for r in rows] + [r[2] for r in rows] + [0]) or 1
+    slot, bw, mid, half = 34, 11, 62, 50
+    w = len(rows) * slot + 16
+    bars = []
+    for i, (label, inn, out) in enumerate(rows):
+        x = 8 + i * slot
+        hin = max(2, round(inn / mx * half)) if inn else 2
+        hout = max(2, round(out / mx * half)) if out else 2
+        in_col = "var(--ok)" if inn else "var(--line)"
+        out_col = "var(--fail)" if out else "var(--line)"
+        bars.append(
+            f'<rect x="{x}" y="{mid - hin}" width="{bw}" height="{hin}" rx="1.5" fill="{in_col}" opacity="0.85">'
+            f"<title>in {esc(_format_credits(inn))}</title></rect>"
+            f'<rect x="{x + bw + 2}" y="{mid}" width="{bw}" height="{hout}" rx="1.5" fill="{out_col}" opacity="0.85">'
+            f"<title>out {esc(_format_credits(out))}</title></rect>"
+        )
+        if i % 2 == 0:
+            bars.append(
+                f'<text x="{x + bw}" y="{mid + half + 12}" font-size="9" fill="var(--muted)" text-anchor="middle">{esc(label)}</text>'
+            )
+    return (
+        "<h3 style='margin:6px 0'>Daily flows, trailing 14 days</h3>"
+        f'<svg width="{w}" height="126" role="img" aria-label="daily treasury inflow vs outflow over the trailing 14 days">'
+        f'<line x1="8" y1="{mid}" x2="{w - 8}" y2="{mid}" stroke="var(--line)"/>'
+        + "".join(bars)
+        + "</svg>"
+        "<div class='meta'><span style='color:var(--ok)'>\u25a0</span> in "
+        "<span style='color:var(--fail)'>\u25a0</span> out &middot; same buckets as the window tables</div>"
+    )
+
+
+def _supply_split_html(overview: dict) -> str:
+    """Supply split stacked bar (chart 3): treasury / circulating /
+    escrow as exact shares of total supply (the three sum to supply by
+    construction: circulating = supply \u2212 treasury \u2212 escrow).
+    Committed stakes, guild pools and bonds overlap these accounts, so
+    they stay in the cards, named in the caption. Display-only,
+    degrade-silently."""
+    try:
+        total = int(overview["total_supply_units"])
+        if total <= 0:
+            return ""
+        parts = [
+            ("treasury", int(overview["treasury_units"]), "hsl(210 70% 45%)"),
+            ("circulating", int(overview["circulating_units"]), "hsl(140 45% 40%)"),
+            (
+                "job escrow",
+                int(overview["held_in_job_escrow_units"]),
+                "hsl(35 80% 45%)",
+            ),
+        ]
+    except (  # domain: degrade-silently - malformed overview degrades to no bar
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    segs = []
+    legend = []
+    for name, units, color in parts:
+        pct = max(0, min(100, units / total * 100))
+        if pct <= 0:
+            continue
+        segs.append(
+            f'<div style="flex:{pct:.3f};background:{color};min-width:4px" title="{esc(name)}: {esc(_format_credits(units))} ({pct:.1f}%)"></div>'
+        )
+        legend.append(
+            f"<span><span style='color:{color}'>\u25a0</span> {esc(name)} {pct:.1f}%</span>"
+        )
+    if not segs:
+        return ""
+    return (
+        "<div style='display:flex;height:14px;border-radius:7px;overflow:hidden;margin:12px 0 4px'>"
+        + "".join(segs)
+        + "</div>"
+        + "<div class='meta'>"
+        + " &middot; ".join(legend)
+        + " &middot; of total supply"
+        + " &middot; stakes, guild pools and bonds overlap these accounts (see cards)</div>"
+    )
+
+
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -1228,6 +1357,7 @@ def _economy_body(request: Request) -> str:
             tooltip="Outstanding bond face parked in escrow (supply-neutral) plus accrued revenue share awaiting maturity.",
         )
         + "</div>"
+        + _supply_split_html(overview)
         + _bonds_panel(overview)
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
@@ -1305,6 +1435,8 @@ def _economy_body(request: Request) -> str:
             )
             + "</div>"
         )
+
+    flow_panels = _daily_flows_html() + flow_panels
 
     holders_rows = (
         "".join(
