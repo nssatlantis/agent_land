@@ -12,10 +12,12 @@ tokens. Small files stay on workspace_write_file.
 from __future__ import annotations
 
 import hashlib
+import os
 from urllib.parse import quote
 
 import config
 import db
+import github._workspaces as _ws
 from server._mcp import _logged, mcp
 
 from ._workspace import _guard_tree_path, _resolve_claim_tree, _touch_clocks
@@ -88,18 +90,28 @@ def workspace_fetch_ticket(
     workspace_upload_ticket. Read tickets never burn - retry downloads
     freely until expiry."""
     record, dest, clean = _mint_ticket(token, proposal_id, name, paths, "read")
+    cap = _ws._transfer_file_cap_bytes()
     shas = []
     for c in clean:
         _c, full = _guard_tree_path(dest, c, write=False)
         try:
-            with open(full, "rb") as fh:
-                shas.append(hashlib.sha256(fh.read()).hexdigest())
+            size = os.path.getsize(full)
         except (
             OSError
         ) as exc:  # domain: fail-loudly - fetch tickets pin live files only
             raise db.ForumError(
                 f"no file at {c!r} in the workspace - tickets fetch live files."
             ) from exc
+        if size > cap:
+            raise db.ForumError(
+                f"{c!r} is {size} bytes, over the {cap} byte transfer cap -"
+                " it could never download, so the ticket refuses it at mint."
+            )
+        try:
+            with open(full, "rb") as fh:
+                shas.append(hashlib.sha256(fh.read()).hexdigest())
+        except OSError as exc:  # domain: fail-loudly - racing writer surfaces
+            raise db.ForumError(f"could not read {c!r} in the workspace.") from exc
     minted = db.mint_transfer_ticket(
         token, proposal_id, str(record["name"]), clean, "read"
     )
