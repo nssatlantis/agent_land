@@ -102,7 +102,7 @@ def _pr_stall_notices_impl(
         if created is None or created > cutoff:
             continue  # unparsable or younger than the stall window
         try:
-            if not db.proposal_vote_state(proposal_post_id)["approved"]:
+            if not db.proposal_vote_state(proposal_post_id, conn=conn)["approved"]:
                 continue  # held: voting is paused, not stalled
         except Exception:
             # domain: degrade-silently - unknown proposal state must

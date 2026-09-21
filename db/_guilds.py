@@ -25,7 +25,16 @@ from notifications import _notify, _notify_tally
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_-]+)")
 
-_INFLOW_KINDS = ("deposit", "grant_t1", "grant_t2", "subsidy", "match", "stake", "job")
+_INFLOW_KINDS = (
+    "deposit",
+    "grant_t1",
+    "grant_t2",
+    "subsidy",
+    "match",
+    "stake",
+    "job",
+    "bond",
+)
 _VELOCITY_KINDS = ("withdrawal", "invoice", "transfer")
 
 
@@ -417,6 +426,9 @@ def _force_release_empty_guild(
         )
     resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id)
     release_guild_stakes_for_disband(conn, guild_id)
+    from db._guilds_bonds import release_guild_bonds_for_disband
+
+    release_guild_bonds_for_disband(conn, guild_id)
     return _disband_distribute(conn, guild_id, "empty force-release")
 
 

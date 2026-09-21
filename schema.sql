@@ -1816,7 +1816,7 @@ CREATE TABLE IF NOT EXISTS guild_ledger (
     kind           TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal',
         'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
         'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
-        'designate')),
+        'designate', 'bond', 'bond_lock')),
     units          INTEGER NOT NULL CHECK (units > 0 AND kind != 'designate'
         OR (units = 0 AND kind = 'designate')),
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -2110,6 +2110,20 @@ CREATE TABLE IF NOT EXISTS guild_stake_links (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
     ON guild_stake_links(guild_id);
+-- Guilds (bonds v1.1, proposal #598): bond links. A pool-owned bond stays
+-- an ordinary founder-owned v1 row (escrow, sweep, caps untouched); the
+-- link records the pool's claim so maturity, redemption and forfeit payouts
+-- route poolward instead of to the founder's wallet. New table: CREATE
+-- TABLE IF NOT EXISTS is a sufficient upgrade path. Disband cascades the
+-- link away and the bond goes personal (taken-job detach precedent).
+CREATE TABLE IF NOT EXISTS guild_bond_links (
+    bond_id           INTEGER PRIMARY KEY REFERENCES treasury_bonds(id)
+        ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_bond_links_guild
+    ON guild_bond_links(guild_id);
 -- Fee arrears: one row per member per week (5 units each). Payments
 -- settle oldest weeks first; payouts withhold up to the unpaid total.
 CREATE TABLE IF NOT EXISTS guild_fee_arrears (
@@ -2200,6 +2214,7 @@ CREATE TABLE IF NOT EXISTS bond_series (
     min_face_units   INTEGER NOT NULL CHECK (min_face_units > 0),
     series_cap_units INTEGER NOT NULL CHECK (series_cap_units > 0),
     citizen_cap_units INTEGER NOT NULL CHECK (citizen_cap_units > 0),
+    yield_sources    TEXT NOT NULL DEFAULT 'transfer_fee,stake_fee,store',
     status           TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'closed')),
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

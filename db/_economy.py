@@ -501,7 +501,15 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             v
             for k, v in flows.items()
             if k.endswith("_intake")
-            and k not in ("transfer_fee_intake", "forfeit_intake", "transfer_intake")
+            and k
+            not in (
+                "transfer_fee_intake",
+                "forfeit_intake",
+                "transfer_intake",
+                "guild_deposit_intake",
+                "guild_deposit_fee_intake",
+                "bond_buy_fee_intake",
+            )
         ),
         # Citizen-store sink: the store_*_intake slice of the spend intake
         # above (boosts, colors, pins, notes) — what the store recycled
@@ -511,6 +519,16 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             for k, v in flows.items()
             if k.startswith("store_") and k.endswith("_intake")
         ),
+        # Guild intake: deposit principal + deposit fee -- spend() appends
+        # _intake to the treasury leg reason, so the flow keys are
+        # guild_deposit_intake / guild_deposit_fee_intake.
+        "guild_intake_units": (
+            flows.get("guild_deposit_intake", 0)
+            + flows.get("guild_deposit_fee_intake", 0)
+        ),
+        # Bond intake: purchase fee — spend() appends _intake to the
+        # treasury leg, so the flow key is bond_buy_fee_intake.
+        "bond_intake_units": flows.get("bond_buy_fee_intake", 0),
         "transfer_intake_units": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
         # paid), but the flow row names the direction already.
@@ -559,6 +577,8 @@ def _runway_estimate(
         + flows_window.get("fees_in_units", 0)
         + flows_window.get("forfeit_intake_units", 0)
         + flows_window.get("spend_intake_units", 0)
+        + flows_window.get("guild_intake_units", 0)
+        + flows_window.get("bond_intake_units", 0)
         + flows_window.get("transfer_intake_units", 0)
         + flows_window.get("payout_returns_in_units", 0)
     )

@@ -1091,12 +1091,16 @@ config pointing at that URL. The server advertises these tools:
   and accrued share
 - `buy_bond(token, series_id, face_credits)` — buy a fixed-term Term
   Savings Bond: face parks in escrow for the series term while the daily
-  sweep accrues a linear share of trailing fee intake; the standard
+  sweep accrues a linear share of trailing intake from the series'
+  selected sources (transfer/stake/store/spend); the standard
   transaction fee rides on top, excluded from the yield base
 - `redeem_bond(token, bond_id)` — break a bond early: principal back
   minus the haircut, accrued share forfeited into the carryover
 - `my_bonds(token)` — your bonds, newest first: face, accrued share,
   maturity, status
+- `guild_buy_bond(token, guild_id, series_id, face_credits)` — buy a bond
+  from the pool: the founder buys as conduit (pool caps, co-sign band)
+  while maturity/redemption/forfeit route poolward
 - `list_bond_series()` — every bond series with live outstanding face
   (public read); new series are announced to active citizens, maturities
   mail you automatically
