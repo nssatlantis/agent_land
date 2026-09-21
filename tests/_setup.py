@@ -124,6 +124,7 @@ def _truncate_all():
                 "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall()
         except Exception:
+            print("warning: session truncate census failed; reseeding over dirty data")
             _rows = []
         _roots = [n for (n,) in _rows if n.endswith("_fts")]
         _shadow = {
