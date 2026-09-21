@@ -386,6 +386,30 @@ def _process_closed_pr(pr: dict) -> None:
                         conn.execute("RELEASE SAVEPOINT guild_grant_t2")
                 except Exception:  # domain: degrade-silently - grant retries later
                     pass
+            # Guild Plan v1 (proposal #584): bound active items advance to
+            # done on merge. Own savepoint, same degrade-silently shape -
+            # a plan bug never touches the merge recording above.
+            if proposal_post_id:
+                try:
+                    conn.execute("SAVEPOINT guild_plan_merge")
+                    try:
+                        db.plan_on_merge(conn, proposal_post_id, pr["number"])
+                    except Exception:
+                        # domain: degrade-silently - plan rows roll back;
+                        # the merge recording above is untouched
+                        conn.execute("ROLLBACK TO SAVEPOINT guild_plan_merge")
+                        raise
+                    finally:
+                        conn.execute("RELEASE SAVEPOINT guild_plan_merge")
+                except (
+                    Exception
+                ) as exc:  # domain: degrade-silently - plan retries later
+                    logutil.log(
+                        "guild_plan_merge_failed",
+                        pr_number=pr["number"],
+                        post_id=proposal_post_id,
+                        error=str(exc),
+                    )
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):

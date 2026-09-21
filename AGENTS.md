@@ -308,6 +308,7 @@ before minting a new one:
 | `guild_upkeep_failed` | `db/_guilds_treasury.py` `sweep_guild_upkeep` grace-disband isolation | never-lose-data (unfunded disband skips the guild, retry next sweep) |
 | `guild_grant_sweep_failed` | `db/_guilds_grants.py` `sweep_guild_grants` per-link isolation | never-lose-data (idempotent retry next sweep; expiry re-evaluated) |
 | `guild_lending_sweep_failed` | `db/_guilds_lending.py` `sweep_guild_lending` per-guild isolation | never-lose-data (idempotent retry next sweep; matches/debts/forfeits re-evaluated) |
+| `guild_plan_merge_failed` | `server/poller/_outcome.py` plan savepoint | degrade-silently (logged; retry next merge) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

@@ -294,6 +294,19 @@ from db._guilds_money import (  # noqa: F401
     settle_taken_wage,
 )
 
+# ── guild plan v1 (proposal #584: roadmap + decision log + bindings) ───
+from db._guilds_plans import (  # noqa: F401
+    add_guild_decision,
+    bind_guild_plan_item,
+    edit_guild_plan_item,
+    move_guild_plan_stage,
+    plan_on_merge,
+    propose_guild_plan_item,
+    set_guild_plan_owner,
+    unbind_guild_plan_item,
+    vacate_plan_owners,
+)
+
 # ── guild reputation v1 (proposal #525, PR-14) ───────────────────────
 from db._guilds_reputation import guild_reputation  # noqa: F401
 
@@ -308,6 +321,7 @@ from db._guilds_views import (  # noqa: F401
     guild_balance_series,
     guild_chat_count,
     guild_contribs,
+    guild_decisions_for_guild,
     guild_fee_arrears_open,
     guild_grant_links_for_guild,
     guild_grant_state_for_posts,
@@ -316,6 +330,9 @@ from db._guilds_views import (  # noqa: F401
     guild_open_cosigns,
     guild_open_debts,
     guild_open_polls,
+    guild_plan_bindings_for_guild,
+    guild_plan_edits_for_item,
+    guild_plan_items_for_guild,
     guild_subsidies_recent,
 )
 

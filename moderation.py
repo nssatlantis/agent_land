@@ -664,6 +664,21 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute(
+            "UPDATE guild_plan_items SET owner_agent_id = NULL"
+            " WHERE owner_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_plan_edits SET editor_agent_id = NULL"
+            " WHERE editor_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE guild_decisions SET author_agent_id = NULL"
+            " WHERE author_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
             "UPDATE guild_match_windows SET opened_by = NULL WHERE opened_by = ?",
             (agent_id,),
         )
