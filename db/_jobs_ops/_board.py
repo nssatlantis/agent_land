@@ -64,6 +64,8 @@ def list_jobs(
         raise ForumError(f"view must be one of {', '.join(_JOB_VIEWS)}.")
     if status is not None and status not in _JOB_STATUSES:
         raise ForumError(f"status must be one of {', '.join(_JOB_STATUSES)}.")
+    if sort not in ("newest", "wage"):
+        raise ForumError("sort must be 'newest' or 'wage'.")
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     clauses: list[str] = []

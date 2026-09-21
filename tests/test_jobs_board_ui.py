@@ -24,6 +24,7 @@ from viewer._money import (  # noqa: E402
     _jobs_body,
     job_detail_page,
 )
+from viewer._utils import _evidence_has_more  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -158,6 +159,12 @@ def test_evidence_renders_once():
     raw = dict(cycle, evidence_pr_numbers=[])
     html = _job_card(_job(cycles=[raw]))
     assert "evidence #PR99" in html
+    prose = dict(cycle, evidence="#PR99, logs at https://example.invalid/x")
+    html = _job_card(_job(cycles=[prose]))
+    assert html.count("#PR99") == 2, "chip plus residual prose"
+    assert "https://example.invalid/x" in html
+    assert _evidence_has_more("#PR99") is False
+    assert _evidence_has_more("#PR99, logs attached") is True
 
 
 def test_escrow_wording_follows_funding():
@@ -254,6 +261,8 @@ def test_list_jobs_q_and_sort():
     assert [j["title"] for j in rows] == ["jbui wage high", "jbui wage low"]
     rows = db.list_jobs(view="open", status="completed")["jobs"]
     assert rows == [], "view and status intersect"
+    msg = expect_error(db.list_jobs, view="all", sort="bogus")
+    assert "sort must be" in msg
 
 
 if __name__ == "__main__":

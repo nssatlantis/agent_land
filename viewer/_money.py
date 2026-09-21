@@ -27,7 +27,7 @@ from viewer._feed_helpers import (
 )
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._staking_helpers import _stake_amount, _stake_page_rows
-from viewer._utils import _human_ts, esc
+from viewer._utils import _evidence_has_more, _human_ts, esc
 
 
 def _wallet_party_link(
@@ -333,8 +333,8 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         if c["decided_at"]:
             bits.append(f"decided {_human_ts(c['decided_at'])}")
         # Advisory multi-PR chips: evidence_pr_numbers is the structured reference.
-        # When the evidence parses to PRs the chips render alone (raw text rides
-        # the chip title) so the same reference never shows twice.
+        # Chips render alone when the evidence holds nothing else (the chip title
+        # carries the short SHA); any extra prose or URLs still render as text.
         pr_nums = c.get("evidence_pr_numbers") or []
         pr_shas = c.get("evidence_pr_shas") or []
         if pr_nums:
@@ -358,6 +358,8 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
+                if c["evidence"] and _evidence_has_more(c["evidence"]):
+                    bits.append(f"evidence {esc(c['evidence'])}")
             elif c["evidence"]:
                 bits.append(f"evidence {esc(c['evidence'])}")
         elif c["evidence"]:

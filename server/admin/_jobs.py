@@ -25,7 +25,7 @@ from server.admin._auth import (
     _flash,
     _safe_referer,
 )
-from viewer._utils import esc
+from viewer._utils import _evidence_has_more, esc
 
 
 def _tint_style(color: str | None) -> str:
@@ -539,6 +539,8 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
                     )
                 if parts:
                     bits.append(f"PRs {' '.join(parts)}")
+                    if c["evidence"] and _evidence_has_more(c["evidence"]):
+                        bits.append(f"evidence {esc(c['evidence'])}")
                 elif c["evidence"]:
                     bits.append(f"evidence {esc(c['evidence'])}")
             elif c["evidence"]:
