@@ -737,7 +737,11 @@ def run_checks(
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
-                tree, image_tag, script_rel, extra_env=anchor_env
+                tree,
+                image_tag,
+                script_rel,
+                extra_env=anchor_env,
+                mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -809,7 +813,11 @@ def run_checks(
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
-                tree, image_tag, script_rel, extra_env=anchor_env
+                tree,
+                image_tag,
+                script_rel,
+                extra_env=anchor_env,
+                mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -840,7 +848,11 @@ def run_checks(
                 image_tag = _sandbox_mod._ensure_image(tree, head_sha)
                 _sandbox_mod._ensure_tree_traversable(tree, head_sha)
                 argv, container_name = _sandbox_mod._sandbox_argv(
-                    tree, image_tag, script_rel, extra_env=anchor_env
+                    tree,
+                    image_tag,
+                    script_rel,
+                    extra_env=anchor_env,
+                    mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
                 )
                 _cpus_val = _slots_mod._cpus_from_argv(argv)
                 try:
@@ -1192,7 +1204,11 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             # Poller fallback benches arm the same anchor gate as user runs.
             p_anchor_env, p_anchor_event_id = _bench_anchor_env()
         argv, container_name = _sandbox_mod._sandbox_argv(
-            tree, image_tag, script_rel, extra_env=p_anchor_env
+            tree,
+            image_tag,
+            script_rel,
+            extra_env=p_anchor_env,
+            mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
         )
         _cpus_val = _slots_mod._cpus_from_argv(argv)
         try:

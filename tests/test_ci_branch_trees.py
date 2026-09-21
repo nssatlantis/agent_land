@@ -201,9 +201,11 @@ def main():
         config.CI_RUN_COOLDOWN_SECONDS = 0
         ci_runner._sandbox._docker_available = lambda: True
         ci_runner._sandbox._ensure_image = lambda t, rev: "fake:tag"
-        ci_runner._sandbox._sandbox_argv = lambda t, tag, rel, extra_env=None: (
-            [sys.executable, "-c", "pass"],
-            "test",
+        ci_runner._sandbox._sandbox_argv = (
+            lambda t, tag, rel, extra_env=None, mypy_cache_host_dir=None: (
+                [sys.executable, "-c", "pass"],
+                "test",
+            )
         )
         try:
             agent = db.register_agent("br-warm-reader")

@@ -400,14 +400,34 @@ def _ensure_image(tree: str, rev: str) -> str:
         shutil.rmtree(context, ignore_errors=True)
 
 
+def _mypy_host_dir(slot: int) -> str | None:
+    """Per-slot persistent mypy cache dir on the host, or None."""
+    base = getattr(config, "CI_RUN_MYPY_CACHE_DIR", "") or ""
+    if not base:
+        return None
+    d = os.path.join(str(base), f"slot{int(slot)}")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        return None  # domain: degrade-silently - tmpfs cache instead
+    return d
+
+
 def _sandbox_argv(
-    tree: str, image_tag: str, script_rel: str, extra_env: dict[str, str] | None = None
+    tree: str,
+    image_tag: str,
+    script_rel: str,
+    extra_env: dict[str, str] | None = None,
+    mypy_cache_host_dir: str | None = None,
 ) -> tuple[list[str], str]:
     """Build the docker run argv for one sandboxed suite execution.
     Returns (argv, container_name) - the name lets the timeout path stop
     the container even though the killed client detaches from it.
     extra_env appends --env K=V pairs (bench anchor injection); empty by
-    default so non-bench callers pass nothing."""
+    default so non-bench callers pass nothing. mypy_cache_host_dir mounts
+    a persistent per-slot mypy cache volume when configured (None keeps
+    the per-run tmpfs cache); mounts ride before the image tag so the
+    argv tail never moves."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
     # Busy-aware: ceil (2.5) alone, host/busy when contended - live-throttled via docker update
     try:
@@ -441,10 +461,18 @@ def _sandbox_argv(
         str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs",
         f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
+        # Writable bytecode cache on the run-scoped tmpfs: every suite
+        # child recompiles otherwise (read-only mount + dont-write).
+        # The tree is fixed for the run, so no staleness is possible.
         "--env",
-        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONPYCACHEPREFIX=/tmp/agentland_pyc",
         "--env",
         "HOME=/tmp",
+        *(
+            ["--env", f"AGENTLAND_CI_WORKERS={int(config.CI_RUN_SUITE_WORKERS)}"]
+            if int(config.CI_RUN_SUITE_WORKERS or 0) > 0
+            else []
+        ),
         # git >=2.35 guards repos owned by a different uid; the mounted tree
         # is host-owned while the container runs as 1000:1000, so trust /repo
         # explicitly or git-derived record enrichment degrades to nothing.
@@ -457,6 +485,13 @@ def _sandbox_argv(
     ]
     for _k, _v in (extra_env or {}).items():
         argv += ["--env", f"{_k}={_v}"]
+    if mypy_cache_host_dir:
+        argv += [
+            "--volume",
+            f"{mypy_cache_host_dir}:/tmp/agentland_mypy_cache:rw",
+            "--env",
+            "AGENTLAND_MYPY_CACHE_DIR=/tmp/agentland_mypy_cache",
+        ]
     argv += [
         "--volume",
         f"{tree}:/repo:ro",

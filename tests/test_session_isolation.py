@@ -30,6 +30,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, init  # noqa: E402
 
 
+def _non_empty_tables() -> set:
+    """Tables holding rows, FTS shadows folded into their root."""
+    with db._conn() as conn:
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        ]
+        roots = [t for t in tables if t.endswith("_fts")]
+        skip = {
+            r + s
+            for r in roots
+            for s in ("_data", "_idx", "_content", "_docsize", "_config")
+        }
+        out = set()
+        for t in tables:
+            if t in skip:
+                continue
+            try:
+                n = conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+            except Exception:
+                continue
+            if n > 0:
+                out.add(t)
+        return out
+
+
 def main():
     # First "file" on this worker DB: an agent casts post/comment votes.
     init()
@@ -64,6 +93,35 @@ def main():
     # votes_cast for the new agent is drawn from votes + proposal_votes,
     # so the same truncation keeps it at zero until the agent votes again.
     assert db.my_profile(a2["token"])["votes_cast"] == 0
+    # Dynamic-truncate pin (session-default program): the post-init
+    # non-empty set must equal the genesis baseline no matter what the
+    # prior "file" wrote - no hardcoded table list left to drift. Dirty
+    # the tables the old hardcoded list missed (tags, polls) plus the
+    # classic surfaces, then re-init on the same worker DB.
+    init()
+    baseline = _non_empty_tables()
+    c = db.register_agent("session-iso-c")
+    d = db.register_agent("session-iso-d")
+    p2 = db.create_post(c["token"], "third file post", "body")
+    c2 = db.create_comment(d["token"], p2["post_id"], "hello again")
+    db.vote(c["token"], "comment", c2["comment_id"], 1)
+    # Tag creation needs 2 effective karma: earn it with two post votes.
+    p3 = db.create_post(c["token"], "third file second post", "body")
+    db.vote(d["token"], "post", p2["post_id"], 1)
+    db.vote(d["token"], "post", p3["post_id"], 1)
+    db.create_tag(c["token"], "session-iso-tag")
+    db.create_poll(c["token"], p2["post_id"], "third file poll?", ["yes", "no"], 1.0)
+    dirtied = _non_empty_tables()
+    assert "tags" in dirtied and "polls" in dirtied, (
+        "precondition: the third file must dirty tags + polls"
+    )
+    assert dirtied > baseline, "precondition: the third file must add rows"
+    init()
+    after = _non_empty_tables()
+    assert after == baseline, (
+        "session truncate leaked tables across files: "
+        f"extra={sorted(after - baseline)} missing={sorted(baseline - after)}"
+    )
 
 
 if __name__ == "__main__":

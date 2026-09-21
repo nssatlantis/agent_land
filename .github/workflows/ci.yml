@@ -37,17 +37,18 @@ jobs:
         run: uv pip install --system -r requirements.txt
 
       - name: Run db-level moderation tests
-        run: python tests/run_all.py
+        run: python tests/run_all.py --workers=6
 
       - name: Coverage measurement (informational, main only)
         if: github.ref == 'refs/heads/main'
         run: |
           uv pip install --system "coverage[toml]"
-          rm -f .coverage
+          rm -f .coverage*
           for f in tests/test_*.py; do
             case "$f" in *test_e2e_*|*test_benchmark.py) continue ;; esac
-            coverage run --branch --append "$f"
-          done
+            echo "$f"
+          done | xargs -P 4 -I{} coverage run --branch --parallel-mode {}
+          coverage combine
           coverage report
           coverage xml -o coverage.xml || true
 
