@@ -1150,14 +1150,14 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
                 )
             except sqlite3.IntegrityError:
                 raise ForumError("that citizen is already a member.") from None
-        _clear_emptied(conn, guild["id"])
-        _record_churn(
-            conn,
-            guild["id"],
-            req["agent_id"],
-            _agent_name(conn, req["agent_id"]),
-            "join",
-        )
+            _clear_emptied(conn, guild["id"])
+            _record_churn(
+                conn,
+                guild["id"],
+                req["agent_id"],
+                _agent_name(conn, req["agent_id"]),
+                "join",
+            )
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",
