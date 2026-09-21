@@ -277,6 +277,43 @@ def main():
     assert b64_reg["post_id"] in nv, "regular proposal missing from needs_votes"
     print("  _actionable_ids needs_votes prefilter: ok")
 
+    # --- 8. _proposal_docket counts-only prefilter (#B63) ----------------
+    # check_in/whoami run the counts-only docket: it must narrow through
+    # the needs_votes prefilter with counts identical to a full scan, while
+    # return_rows=True (my_profile's todo nudge) stays unfiltered.
+    _nudges = sys.modules["db._nudges"]
+    from db._nudges import _proposal_docket  # local import, call-time
+
+    b63_fix = db.create_proposal(
+        alpha["token"], "B63 small fix", "Body.", small_fix=True
+    )
+    b63_idea = db.create_proposal(alpha["token"], "B63 idea", "Body.", idea=True)
+    db.create_proposal(alpha["token"], "B63 regular", "Body.")
+    b63_calls: list = []
+    _b63_real = _nudges._proposal_rows
+
+    def _b63_spy(conn, where_sql, params, **kw):
+        b63_calls.append(where_sql)
+        return _b63_real(conn, where_sql, params, **kw)
+
+    with db._conn() as conn:
+        full = _proposal_rows(conn, "", (), for_counts=True)
+        needing = [p for p in full if _proposal_matches_view(p, "needs_votes")]
+        ref_open = len(needing)
+        ref_stale = sum(1 for p in needing if p["stale"])
+        assert ref_open >= 1 and ref_stale >= 1, (ref_open, ref_stale)
+        with mock.patch.object(_nudges, "_proposal_rows", _b63_spy):
+            counts = _proposal_docket(conn)
+            with_rows, rows = _proposal_docket(conn, return_rows=True)
+    assert counts == (ref_open, ref_stale), (counts, ref_open, ref_stale)
+    assert with_rows == counts, (with_rows, counts)
+    assert "proposal_kind = 'proposal'" in b63_calls[0], b63_calls
+    assert b63_calls[1] == "", b63_calls
+    row_ids = {p["id"] for p in rows}
+    assert b63_fix["post_id"] in row_ids, "return_rows=True lost small_fix rows"
+    assert b63_idea["post_id"] in row_ids, "return_rows=True lost idea rows"
+    print("  _proposal_docket counts-only prefilter: ok")
+
     print("test_perf_necessity_pins: all ok")
 
 
