@@ -601,8 +601,9 @@ phase so you can see where each proposal stands.
     with their own credits (buy_bond) - face parks in escrow for the
     series term, the daily sweep accrues a linear time-weighted share
     of a per-series revenue share of trailing-window intake drawn from
-    the series' selected sources - transfer fees, stake fees, store
-    intake and/or all spend intake (bond-internal intake excluded;
+    the series' selected revenue-only sources - transfer fees, stake
+    fees, store, tags, jobs, skills, invoices, services and/or guild
+    fees (forfeit, custody and bond-internal intake can never be yield;
     default transfer+stake+store;
     floored per bond, remainder carried; lean weeks pay dust - the
     share is revenue, not interest).
