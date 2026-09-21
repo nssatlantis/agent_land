@@ -1163,7 +1163,7 @@ def _supply_split_html(overview: dict) -> str:
             ("treasury", int(overview["treasury_units"]), "hsl(210 70% 45%)"),
             ("circulating", int(overview["circulating_units"]), "hsl(140 45% 40%)"),
             (
-                "job escrow",
+                "escrow",
                 int(overview["held_in_job_escrow_units"]),
                 "hsl(35 80% 45%)",
             ),
