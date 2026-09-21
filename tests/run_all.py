@@ -107,6 +107,14 @@ def main():
     successes: list[str] = []
     durations: dict[str, float] = {}
     workers = min(len(tests), os.cpu_count() or 4)
+    # Sandboxed runs cap via env (see FORUM_CI_RUN_SUITE_WORKERS): the
+    # container sees host cpu_count, oversubscribing its cgroup. A manual
+    # --workers=N flag always wins over ambient env (checked here so this
+    # block stays correct with or without the CLI-override block).
+    _cli_workers = next((a for a in sys.argv[1:] if a.startswith("--workers=")), None)
+    _env_workers = os.environ.get("AGENTLAND_CI_WORKERS", "")
+    if _cli_workers is None and _env_workers.isdigit():
+        workers = max(1, min(int(_env_workers), len(tests)))
 
     # D1 session DBs: one per worker when --session
     session_q: queue.Queue | None = None
