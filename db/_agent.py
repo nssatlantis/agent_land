@@ -882,10 +882,12 @@ def _actionable_ids(conn, agent_id: int) -> dict:
     sibling id-projections (parity-pinned); quiet threads mirror as post
     ids (thread detail is one read further); issuer-side invoices stay out
     (waiting on the payer, not the caller)."""
-    from db._nudges import _proposal_docket, _proposal_matches_view
+    from db._nudges import _proposal_matches_view
+    from db._proposal_docket import _proposal_rows, _view_prefilter_sql
 
     surfaces: dict[str, list[int]] = {}
-    rows = _proposal_docket(conn, return_rows=True)[1]
+    where_sql, where_params = _view_prefilter_sql("needs_votes")
+    rows = _proposal_rows(conn, where_sql, where_params, for_counts=True)
     surfaces["proposals_needing_votes"] = [
         p["id"] for p in rows if _proposal_matches_view(p, "needs_votes")
     ]
