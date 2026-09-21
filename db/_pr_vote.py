@@ -237,7 +237,7 @@ def vote_on_pr(
             # threshold (net == threshold) is still accepted — only votes
             # that push net *past* the threshold are rolled back.
             post_tally = _tally(c, pr_number)
-            threshold = _pr_vote_threshold(c)
+            threshold = bar
             if value == 1 and existing is None and post_tally["net"] > threshold:
                 c.execute("ROLLBACK TO SAVEPOINT vote_sp")
                 raise ForumError(
@@ -254,9 +254,9 @@ def vote_on_pr(
         ):
             c.execute("ROLLBACK TO SAVEPOINT vote_sp")
             raise
-        threshold = _pr_vote_threshold(c)
+        threshold = bar
         eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
-        tally = _tally(c, pr_number)
+        tally = post_tally
         up_names = [v["name"] for v in tally["voters"] if v["value"] == 1]
         down_names = [v["name"] for v in tally["voters"] if v["value"] == -1]
         opener_body = _pr_tally_body(
