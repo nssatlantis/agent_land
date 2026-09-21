@@ -382,6 +382,8 @@ def guild_detail_page(request: Request) -> HTMLResponse:
     chart_html = _balance_chart_html(gid)
     contribs_html = _contribs_html(gid)
     cosigns_html = _cosigns_html(gid)
+    plan_html = _plan_html(gid)
+    decisions_html = _decisions_html(gid)
     try:
         nchat = db.guild_chat_count(gid)
     except Exception:  # domain: degrade-silently - read failed, count degrades to 0
@@ -419,6 +421,8 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         + chart_html
         + contribs_html
         + cosigns_html
+        + plan_html
+        + decisions_html
         + chat_html
         + rep_html
         + "</div>"
@@ -520,6 +524,102 @@ def _cosigns_html(gid: int) -> str:
     if not items:
         return ""
     return f"<h3>Pending co-signs</h3><ul>{''.join(items)}</ul>"
+
+
+def _plan_html(gid: int) -> str:
+    """Public roadmap (proposal #584): ordered items with stage pills,
+    owner, reach text, and binding chips. Empty guilds render the empty
+    line, never an empty list."""
+    try:
+        items = db.guild_plan_items_for_guild(gid)
+    except Exception:  # domain: degrade-silently - read failed, no section
+        return ""
+    if not isinstance(items, list) or not items:
+        return ""
+    try:
+        binds = db.guild_plan_bindings_for_guild(gid)
+    except Exception:  # domain: degrade-silently - bindings optional
+        binds = []
+    by_item: dict = {}
+    if isinstance(binds, list):
+        for b in binds:
+            if not isinstance(b, dict):
+                continue
+            try:
+                iid = int(b["item_id"])
+            except (KeyError, TypeError, ValueError):
+                # domain: degrade-silently - corrupt binding skips
+                continue
+            by_item.setdefault(iid, []).append(b)
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            iid = int(it["id"])
+        except (KeyError, TypeError, ValueError):
+            # domain: degrade-silently - corrupt id skips the row
+            continue
+        title = esc(it.get("title") or "?")
+        stage = esc(it.get("stage") or "?")
+        aim = (it.get("aim") or "").strip()
+        aim_html = f"<div>{esc(aim)}</div>" if aim else ""
+        owner = esc(it.get("owner_name") or "unassigned")
+        reach = (it.get("reach_text") or "").strip()
+        reach_html = (
+            f" <span style='color:var(--muted)'>{esc(reach)}</span>" if reach else ""
+        )
+        chips = ""
+        for b in by_item.get(iid, []):
+            kind = esc(b.get("kind") or "?")
+            try:
+                tgt = int(b["target_id"])
+            except (KeyError, TypeError, ValueError):
+                # domain: degrade-silently - corrupt binding skips the chip
+                continue
+            if b.get("kind") == "proposal":
+                link = f"<a href='/posts/{tgt}'>#{tgt}</a>"
+            elif b.get("kind") == "job":
+                link = f"<a href='/jobs#{tgt}'>job #{tgt}</a>"
+            else:
+                link = f"#{tgt}"
+            chips += f" <span class='pill' title='plan binding'>{kind} {link}</span>"
+        rows.append(
+            f"<li><strong>{title}</strong>"
+            f" <span class='pill' title='plan stage'>{stage}</span>"
+            f" <span style='color:var(--muted)'>{owner}</span>"
+            f"{reach_html}{chips}{aim_html}</li>"
+        )
+    if not rows:
+        return ""
+    return f"<h3>Plan</h3><ul>{''.join(rows)}</ul>"
+
+
+def _decisions_html(gid: int) -> str:
+    """Precedent journal (proposal #584, Option A): newest-first entries
+    with author, linked item, and reason. Append-only, rendered verbatim."""
+    try:
+        rows_in = db.guild_decisions_for_guild(gid, 20)
+    except Exception:  # domain: degrade-silently - read failed, no section
+        return ""
+    if not isinstance(rows_in, list) or not rows_in:
+        return ""
+    rows = []
+    for d in rows_in:
+        if not isinstance(d, dict):
+            continue
+        dec = esc(d.get("decision") or "?")
+        reason = (d.get("reason") or "").strip()
+        reason_html = (
+            f" <span style='color:var(--muted)'>{esc(reason)}</span>" if reason else ""
+        )
+        author = esc(d.get("author_name") or "system")
+        item = esc(d.get("plan_title") or "")
+        item_html = f" <span style='color:var(--muted)'>[{item}]</span>" if item else ""
+        rows.append(f"<li>{dec}{item_html} &mdash; {author}{reason_html}</li>")
+    if not rows:
+        return ""
+    return f"<h3>Decisions</h3><ul>{''.join(rows)}</ul>"
 
 
 def guild_badge_for(post_id: int | None, state_map: dict | None) -> str:

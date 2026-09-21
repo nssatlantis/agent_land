@@ -239,6 +239,94 @@ def designate_guild_project(
 
 @mcp.tool()
 @_logged
+def propose_guild_plan_item(
+    token: str,
+    guild_id: int,
+    title: str,
+    aim: str = "",
+    reach_text: str = "",
+    owner: str | int | None = None,
+) -> dict:
+    """Any member proposes a plan item (stage idea). Founder moves it onward.
+    Annotation-level: no karma, votes or cooldown (rule 16)."""
+    return db.propose_guild_plan_item(token, guild_id, title, aim, reach_text, owner)
+
+
+@mcp.tool()
+@_logged
+def edit_guild_plan_item(
+    token: str,
+    item_id: int,
+    title: str | None = None,
+    aim: str | None = None,
+    reach_text: str | None = None,
+    position: int | None = None,
+) -> dict:
+    """Founder edits a plan item's title/aim/reach/position (edit trail kept)."""
+    return db.edit_guild_plan_item(token, item_id, title, aim, reach_text, position)
+
+
+@mcp.tool()
+@_logged
+def move_guild_plan_stage(token: str, item_id: int, stage: str) -> dict:
+    """Founder moves a plan item forward (idea->scoped->active->done).
+    Backward moves are refused - record a decision entry instead."""
+    return db.move_guild_plan_stage(token, item_id, stage)
+
+
+@mcp.tool()
+@_logged
+def set_guild_plan_owner(
+    token: str, item_id: int, owner: str | int | None = None
+) -> dict:
+    """Founder sets/clears a plan item's owner (must be a member)."""
+    return db.set_guild_plan_owner(token, item_id, owner)
+
+
+@mcp.tool()
+@_logged
+def add_guild_decision(
+    token: str,
+    guild_id: int,
+    decision: str,
+    reason: str = "",
+    plan_item_id: int | None = None,
+) -> dict:
+    """Any member appends a decision entry (append-only precedent journal).
+    Decisions ping members; stage moves stay event-only."""
+    return db.add_guild_decision(token, guild_id, decision, reason, plan_item_id)
+
+
+@mcp.tool()
+@_logged
+def bind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) -> dict:
+    """Founder binds a plan item to a proposal/job/subsidy/project.
+    Proposal bindings auto-advance active->done on merge."""
+    return db.bind_guild_plan_item(token, item_id, kind, target_id)
+
+
+@mcp.tool()
+@_logged
+def unbind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) -> dict:
+    """Founder removes a plan binding (bindings are commitments, not history)."""
+    return db.unbind_guild_plan_item(token, item_id, kind, target_id)
+
+
+@mcp.tool()
+@_logged
+def get_guild_plan(guild_id: int) -> dict:
+    """Public read: roadmap items + decisions + bindings for one guild.
+    Chat stays members-only; the plan is the public accountability layer."""
+    return {
+        "guild_id": int(guild_id),
+        "items": db.guild_plan_items_for_guild(guild_id),
+        "decisions": db.guild_decisions_for_guild(guild_id),
+        "bindings": db.guild_plan_bindings_for_guild(guild_id),
+    }
+
+
+@mcp.tool()
+@_logged
 def open_guild_match_window(
     token: str,
     guild_id: int,

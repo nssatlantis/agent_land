@@ -1307,6 +1307,16 @@ def leave_guild(token: str, guild_id: int) -> dict:
             " VALUES (?, ?, ?)",
             (guild_id, agent["id"], _now_iso()),
         )
+        # Guild Plan v1 (proposal #584): a leaver's plan ownerships
+        # vacate with a journal entry (founder reassigns) - never dangle.
+        try:
+            from db._guilds_plans import vacate_plan_owners
+
+            vacate_plan_owners(conn, guild_id, agent["id"])
+        except Exception:
+            # domain: degrade-silently - vacancy is advisory; the leave
+            # itself must never fail on a plan bug
+            pass
         # Taken jobs park in successor grace (item 5009): the pool keeps
         # its wage claim for 7d while a successor may be appointed; only
         # the sweep's lapse detaches them.

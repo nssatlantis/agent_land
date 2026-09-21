@@ -578,7 +578,13 @@ phase so you can see where each proposal stands.
     leave with pro-rata remainder, succession, waterfall disband);
     shares are net deposits only; member pings batch (joins/leaves
     digest, individuals only for fee, co-sign, succession,
-    delinquency, tranches, designation, subsidy). Caps: 1 active
+    delinquency, tranches, designation, subsidy, plan decisions -
+    plan stage moves stay event-only). Plan v1 (#584): public roadmap
+    (title/aim/stage idea->scoped->active->done/owner/reach, ordered)
+    + append-only decision journal (any member appends, direct insert)
+    + bindings to proposal/job/subsidy/project (proposal merges
+    auto-advance active->done); founder edits/moves/owns/binds, mission
+    stays the one-line compass. Caps: 1 active
     founding, 3 concurrent memberships, 10 live guilds, 10 members per
     guild; spending re-locks below two members.
 26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum

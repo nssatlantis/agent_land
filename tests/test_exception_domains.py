@@ -104,6 +104,7 @@ FILE_LIST = (
     "db/_guilds_money.py",
     "db/_guilds_treasury.py",
     "db/_guilds_views.py",
+    "db/_guilds_plans.py",
     "db/_pr_vote.py",
     "db/_bug_reports.py",
     "db/_subscriptions.py",

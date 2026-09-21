@@ -129,6 +129,13 @@ EXPECTED = [
     "designate_guild_project",
     "guild_grant_state_for_posts",
     "sweep_guild_memberships",
+    "propose_guild_plan_item",
+    "move_guild_plan_stage",
+    "add_guild_decision",
+    "bind_guild_plan_item",
+    "plan_on_merge",
+    "guild_plan_items_for_guild",
+    "guild_decisions_for_guild",
     # term savings bonds (proposal #552, small_fix)
     "buy_bond",
     "redeem_bond",
