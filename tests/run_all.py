@@ -1,21 +1,22 @@
 """Run all test_*.py files in this directory as subprocesses.
 
-Usage: python tests/run_all.py [--durations] [--session]
+Usage: python tests/run_all.py [--durations] [--no-session] [--workers=N]
 
 test_e2e_*.py are skipped (need a live server — use run_e2e.py instead,
 which runs them ordered 01 -> 04 on one booted server).
 test_benchmark.py is skipped (seeds a large dataset for manual benchmarking).
 
-Suites run in parallel (up to CPU-count workers). Output is captured per
+Suites run in parallel (up to CPU-count workers, --workers=N overrides). Files run biggest-first (stateless bin-packing - order is correctness-free). Output is captured per
 suite and printed together to avoid interleaving. With --durations the
-5 slowest suites are printed. With --session each worker shares one DB
+5 slowest suites are printed; files over 60s are always reported (warning only - hard timeout stays 120s). Session mode is the default: each worker shares one DB
 file (D1, N workers = N files) instead of 60 mkdtemp DBs — each file
 still truncates via _setup so isolation is preserved but mkdtemp/init_db
-overhead is cut. Without --session each file gets its own mkdtemp (default).
+overhead is cut. With --no-session each file gets its own mkdtemp.
 """
 
 from __future__ import annotations
 
+import importlib
 import os
 import queue
 import shutil
@@ -53,7 +54,7 @@ def _run_one(
     extra = None
     sess_tmp = None
     # Session mode: share per-worker DB, but blocklisted tests need
-    # per-file isolation (they assert config.DB_PATH == per-file tmp)
+    # per-file isolation (per-file DB paths / file-lifecycle asserts)
     if session_q is not None and name not in _SESSION_BLOCKLIST:
         # Acquire a worker DB (one per parallel worker, not one global)
         try:
@@ -95,7 +96,15 @@ def _run_one(
 
 
 def main():
-    use_session = "--session" in sys.argv
+    args = sys.argv[1:]
+    use_session = "--no-session" not in args
+    workers_override: int | None = None
+    for _a in args:
+        if _a.startswith("--workers="):
+            try:
+                workers_override = max(1, int(_a.split("=", 1)[1]))
+            except ValueError:
+                print(f"ignoring invalid {_a} (expected --workers=N)")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     tests = sorted(str(p) for p in Path(__file__).parent.glob("test_*.py"))
     tests = [t for t in tests if os.path.basename(t) not in _SKIP]
@@ -103,24 +112,27 @@ def main():
         print("no test_*.py files found")
         sys.exit(1)
 
+    # Biggest-first: stateless bin-packing for the fixed worker pool -
+    # order is correctness-free (each file is an isolated subprocess).
+    def _sched_key(t):
+        try:
+            return (os.path.getsize(t), t)
+        except OSError:
+            return (0, t)  # file vanished mid-glob; run first, fail loud
+
+    tests.sort(key=_sched_key, reverse=True)
+
     failures: list[tuple[str, str]] = []
     successes: list[str] = []
     durations: dict[str, float] = {}
     workers = min(len(tests), os.cpu_count() or 4)
+    if workers_override is not None:
+        workers = max(1, min(workers_override, len(tests)))
     # Sandboxed runs cap via env (see FORUM_CI_RUN_SUITE_WORKERS): the
     # container sees host cpu_count, oversubscribing its cgroup. A manual
-    # --workers=N flag always wins over ambient env (checked here so this
-    # block stays correct with or without the CLI-override block).
-    _cli_workers = next(
-        (
-            a
-            for a in sys.argv[1:]
-            if a.startswith("--workers=") and a.split("=", 1)[1].lstrip("-").isdigit()
-        ),
-        None,
-    )
+    # --workers=N flag already won above; env applies only when no flag.
     _env_workers = os.environ.get("AGENTLAND_CI_WORKERS", "")
-    if _cli_workers is None and _env_workers.isdigit():
+    if workers_override is None and _env_workers.isdigit():
         workers = max(1, min(int(_env_workers), len(tests)))
 
     # D1 session DBs: one per worker when --session
@@ -131,7 +143,12 @@ def main():
         for i in range(workers):
             tmp = Path(tempfile.mkdtemp(prefix=f"agentland_session_w{i}_"))
             db_path = str(tmp / "forum.db")
-            # Pre-create schema so _truncate path works
+            # Pre-create schema so _truncate path works. Reload per
+            # worker: `import db` binds only on the first iteration
+            # (sys.modules cache), so without a reload every worker
+            # past 0 re-inits worker0's DB while their own files stay
+            # empty - and each of their children then pays a full
+            # init_db. Serial pre-pool phase: no threads live yet.
             sys.path.insert(0, repo)
             try:
                 # Force init for this worker's DB
@@ -139,9 +156,17 @@ def main():
                 prev_data = os.environ.get("AGENTLAND_DATA_DIR")
                 os.environ["FORUM_DB_PATH"] = db_path
                 os.environ["AGENTLAND_DATA_DIR"] = str(tmp)
+                import config as _cfg
                 import db as _db
 
-                _db.init_db()
+                importlib.reload(_cfg)
+                importlib.reload(_db)
+                try:
+                    _db.init_db()
+                except Exception as exc:
+                    print(
+                        f"warning: session pre-create w{i} failed ({exc}); child will full-boot"
+                    )
                 # Clean up any seed data from init (truncate will also do)
                 if prev is not None:
                     os.environ["FORUM_DB_PATH"] = prev
@@ -183,6 +208,15 @@ def main():
         print("\nSlowest 5:")
         for name, sec in slowest:
             print(f"  {name}: {sec:.2f}s")
+        over = sorted(
+            ((n, s) for n, s in durations.items() if s >= 60),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        if over:
+            print("\nSlow files (>=60s, warning only - timeout stays 120s):")
+            for name, sec in over:
+                print(f"  {name}: {sec:.2f}s")
         total = sum(durations.values())
         print(
             f"Total wall (parallel {workers} workers): {total:.2f}s sum, max {max(durations.values()):.2f}s"

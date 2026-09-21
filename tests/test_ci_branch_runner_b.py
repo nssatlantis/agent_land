@@ -189,7 +189,8 @@ def test_sandbox_argv_shape():
         assert "--pids-limit" in argv and "64" in argv
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"
-        assert "PYTHONDONTWRITEBYTECODE=1" in argv
+        assert "PYTHONPYCACHEPREFIX=/tmp/agentland_pyc" in argv
+        assert "PYTHONDONTWRITEBYTECODE=1" not in argv
         assert "GIT_CONFIG_COUNT=1" in argv
         assert "GIT_CONFIG_KEY_0=safe.directory" in argv
         assert "GIT_CONFIG_VALUE_0=/repo" in argv

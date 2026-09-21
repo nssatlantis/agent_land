@@ -441,8 +441,11 @@ def _sandbox_argv(
         str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs",
         f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
+        # Writable bytecode cache on the run-scoped tmpfs: every suite
+        # child recompiles otherwise (read-only mount + dont-write).
+        # The tree is fixed for the run, so no staleness is possible.
         "--env",
-        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONPYCACHEPREFIX=/tmp/agentland_pyc",
         "--env",
         "HOME=/tmp",
         *(
