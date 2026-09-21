@@ -189,7 +189,8 @@ def test_sandbox_argv_shape():
         assert "--pids-limit" in argv and "64" in argv
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"
-        assert "PYTHONDONTWRITEBYTECODE=1" in argv
+        assert "PYTHONPYCACHEPREFIX=/tmp/agentland_pyc" in argv
+        assert "PYTHONDONTWRITEBYTECODE=1" not in argv
         assert "GIT_CONFIG_COUNT=1" in argv
         assert "GIT_CONFIG_KEY_0=safe.directory" in argv
         assert "GIT_CONFIG_VALUE_0=/repo" in argv
@@ -198,6 +199,24 @@ def test_sandbox_argv_shape():
         assert argv[argv.index("img:abc") + 1 :] == ["python3", "tests/run_all.py"]
         assert name.startswith("agentland-ci-")
         assert "GITHUB_TOKEN" not in text
+    finally:
+        _restore_cfg()
+
+
+def test_sandbox_argv_suite_worker_cap():
+    # Armed by default (knob ships at 3): the env rides along.
+    argv, _ = ci_runner._sandbox._sandbox_argv("/tree", "img:abc", "tests/run_all.py")
+    assert "AGENTLAND_CI_WORKERS=3" in argv
+    assert argv[-2:] == ["python3", "tests/run_all.py"]
+    # Zero disables the override: no worker env anywhere.
+    _shadow("CI_RUN_SUITE_WORKERS", 0)
+    try:
+        argv, _ = ci_runner._sandbox._sandbox_argv(
+            "/tree", "img:abc", "tests/run_all.py"
+        )
+        assert not any(
+            isinstance(a, str) and a.startswith("AGENTLAND_CI_WORKERS=") for a in argv
+        )
     finally:
         _restore_cfg()
 

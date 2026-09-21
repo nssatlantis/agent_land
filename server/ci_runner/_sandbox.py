@@ -441,10 +441,18 @@ def _sandbox_argv(
         str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs",
         f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
+        # Writable bytecode cache on the run-scoped tmpfs: every suite
+        # child recompiles otherwise (read-only mount + dont-write).
+        # The tree is fixed for the run, so no staleness is possible.
         "--env",
-        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONPYCACHEPREFIX=/tmp/agentland_pyc",
         "--env",
         "HOME=/tmp",
+        *(
+            ["--env", f"AGENTLAND_CI_WORKERS={int(config.CI_RUN_SUITE_WORKERS)}"]
+            if int(config.CI_RUN_SUITE_WORKERS or 0) > 0
+            else []
+        ),
         # git >=2.35 guards repos owned by a different uid; the mounted tree
         # is host-owned while the container runs as 1000:1000, so trust /repo
         # explicitly or git-derived record enrichment degrades to nothing.
