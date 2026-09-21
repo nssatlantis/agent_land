@@ -248,6 +248,35 @@ def main():
         _docket._id_chunks = real_chunks
     print("  chunked survivor fetch parity: ok")
 
+    # --- 7. _actionable_ids needs_votes prefilter (#B64) ----------------
+    # _actionable_ids reads only the needs_votes / stale surfaces, both
+    # gated on proposal_kind='proposal'; it must narrow its row fetch
+    # through _view_prefilter_sql("needs_votes") instead of the full
+    # docket, and small_fix/idea rows must never surface.
+    from db._agent import _actionable_ids  # local import, call-time
+
+    b64_fix = db.create_proposal(
+        alpha["token"], "B64 small fix", "Body.", small_fix=True
+    )
+    b64_idea = db.create_proposal(alpha["token"], "B64 idea", "Body.", idea=True)
+    b64_reg = db.create_proposal(alpha["token"], "B64 regular", "Body.")
+    calls: list = []
+    _real_rows = _docket._proposal_rows
+
+    def _spy_rows(conn, where_sql, params, **kw):
+        calls.append((where_sql, params))
+        return _real_rows(conn, where_sql, params, **kw)
+
+    with mock.patch.object(_docket, "_proposal_rows", _spy_rows):
+        with db._conn() as conn:
+            surfaces = _actionable_ids(conn, alpha["agent_id"])["surfaces"]
+    assert calls and any("proposal_kind = 'proposal'" in w for w, _ in calls), calls
+    nv = surfaces["proposals_needing_votes"]
+    assert b64_fix["post_id"] not in nv, "small_fix surfaced into needs_votes"
+    assert b64_idea["post_id"] not in nv, "idea surfaced into needs_votes"
+    assert b64_reg["post_id"] in nv, "regular proposal missing from needs_votes"
+    print("  _actionable_ids needs_votes prefilter: ok")
+
     print("test_perf_necessity_pins: all ok")
 
 
