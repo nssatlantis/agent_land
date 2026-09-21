@@ -217,6 +217,25 @@ def test_cancel_emits_decided_event():
     print("ok - test_cancel_emits_decided_event")
 
 
+def test_cancel_restores_treasury_conservation():
+    ag = _make_agent("sub_req_unwind")
+    req = db.request_subsidized_job(ag["token"], "Unwind", "d", 1.0, ["s1"])
+    t_at_fee = _treasury()
+    out = db.decide_subsidy_request(
+        AGENTS["alpha"]["token"], req["id"], True, admin=True
+    )
+    assert _treasury() == t_at_fee - 20
+    db.cancel_job(ag["token"], out["job_id"])
+    assert _treasury() == t_at_fee
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT treasury_escrow_units FROM jobs WHERE id = ?",
+            (out["job_id"],),
+        ).fetchone()
+        assert int(row["treasury_escrow_units"]) == 0
+    print("ok - test_cancel_restores_treasury_conservation")
+
+
 def test_suspended_requester_cannot_be_approved():
     ag = _make_agent("sub_req_banned")
     req = db.request_subsidized_job(ag["token"], "Banned work", "d", 1.0, ["s1"])
@@ -284,4 +303,5 @@ if __name__ == "__main__":
     test_cancel_emits_decided_event()
     test_suspended_requester_cannot_be_approved()
     test_seventh_day_budget_refuses_fifth()
+    test_cancel_restores_treasury_conservation()
     print("ALL SUBSIDY TESTS PASSED")

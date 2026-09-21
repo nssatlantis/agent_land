@@ -275,7 +275,8 @@ def list_subsidy_requests(status: str | None = None, limit: int = 50) -> list[di
         raise ForumError("limit must be a whole number.") from None
     limit = max(1, min(limit, 100))
     with _conn() as conn:
-        _ensure_tables(conn)
+        # No _ensure_tables here: reads never migrate (boot + writes
+        # ensure); a missing table on a live server is a loud error.
         if status is None:
             rows = conn.execute(
                 "SELECT * FROM job_subsidy_requests ORDER BY id DESC LIMIT ?",

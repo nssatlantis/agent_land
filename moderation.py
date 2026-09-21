@@ -412,6 +412,16 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # the events cleanup below so its own events are anonymized too.
         from db._jobs import cancel_jobs_of_agent
 
+        # Subsidized job requests (proposal #600): three NO-ACTION legs -
+        # the requester, the deciding admin, and the posted job. The job_id
+        # leg must run BEFORE the cancel below deletes the victim's jobs
+        # (the job_penalties-before-cancel ordering lesson).
+        conn.execute(
+            "DELETE FROM job_subsidy_requests WHERE requester_agent_id = ?"
+            " OR decided_by = ? OR job_id IN"
+            " (SELECT id FROM jobs WHERE creator_agent_id = ?)",
+            (agent_id, agent_id, agent_id),
+        )
         # Job penalties reference the agent twice: the victim's own jobs'
         # penalties (job_id leg) and penalties the victim owes on survivor
         # jobs (agent_id leg). The cancellations below delete the victim's
