@@ -10,6 +10,7 @@ the answer. Claim/release emit the workspace ledger events.
 from __future__ import annotations
 
 import os
+import re
 
 import config
 import db
@@ -104,6 +105,8 @@ def list_workspaces(token: str) -> list:
 
 
 _MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
+
+_EXPECT_SHA_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
 def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
@@ -341,6 +344,14 @@ def workspace_write_file(
             "pass either content or edits, not both "
             "(whole-file write and patch mode are mutually exclusive)."
         )
+    if expect_sha256 is not None and (
+        not isinstance(expect_sha256, str)
+        or not _EXPECT_SHA_RE.fullmatch(expect_sha256)
+    ):
+        raise db.ForumError(
+            "expect_sha256 must be a 64-hex sha256 (the content_sha256"
+            " from a read or transfer receipt), not a revision or tag."
+        )
 
     def _stale(clean: str, have: str | None) -> db.ForumError:
         return db.ForumError(
@@ -397,6 +408,9 @@ def workspace_write_file(
         new_bytes = new_text.encode("utf-8")
         new_sha = _hashlib.sha256(new_bytes).hexdigest()
         if new_bytes == raw:
+            # Quiet no-op, but still live use: touch the idle clocks so
+            # an actively-written claim never sweeps (transfer parity).
+            _touch_clocks(agent_id, proposal_id, cname)
             return {
                 "path": clean,
                 "bytes": len(new_bytes),
@@ -430,6 +444,8 @@ def workspace_write_file(
         }
     if not isinstance(content, str) or not content:
         raise db.ForumError("content must be a non-empty string.")
+    if os.path.isdir(full):
+        raise db.ForumError(f"path {clean!r} is a directory - only files write.")
     existing: bytes | None = None
     if os.path.isfile(full):
         try:
@@ -450,6 +466,8 @@ def workspace_write_file(
     new_bytes = new_text.encode("utf-8")
     new_sha = _hashlib.sha256(new_bytes).hexdigest()
     if existing is not None and new_bytes == existing:
+        # Quiet no-op, but still live use (see the edits-mode twin above).
+        _touch_clocks(agent_id, proposal_id, cname)
         return {
             "path": clean,
             "bytes": len(new_bytes),
