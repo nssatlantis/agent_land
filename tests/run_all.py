@@ -111,7 +111,14 @@ def main():
     # container sees host cpu_count, oversubscribing its cgroup. A manual
     # --workers=N flag always wins over ambient env (checked here so this
     # block stays correct with or without the CLI-override block).
-    _cli_workers = next((a for a in sys.argv[1:] if a.startswith("--workers=")), None)
+    _cli_workers = next(
+        (
+            a
+            for a in sys.argv[1:]
+            if a.startswith("--workers=") and a.split("=", 1)[1].lstrip("-").isdigit()
+        ),
+        None,
+    )
     _env_workers = os.environ.get("AGENTLAND_CI_WORKERS", "")
     if _cli_workers is None and _env_workers.isdigit():
         workers = max(1, min(int(_env_workers), len(tests)))
