@@ -1423,16 +1423,16 @@ def test_pulse_panels_render_live_fragments():
 
 def test_activity_trend_caches_events_window():
     """_activity_trend must not re-scan the events ledger on every pulse-panels
-    poll (30s, hosted on /analytics): back-to-back calls within the cache window hit _trend_rows' cache,
-    so the underlying query_events runs once."""
+    poll (30s, hosted on /analytics): back-to-back calls within the cache window hit _trend_counts' cache,
+    so the underlying event_counts_by_day runs once."""
     from viewer import _pulse as pulse_mod
 
     calls = {"n": 0}
-    real_qe = pulse_mod.query_events
+    real_ecbd = pulse_mod.event_counts_by_day
 
-    def counting_qe(since, limit=2000):
+    def counting_ecbd(since, until):
         calls["n"] += 1
-        return real_qe(since=since, limit=limit)
+        return real_ecbd(since=since, until=until)
 
     import time as _time_mod
     from unittest import mock
@@ -1444,7 +1444,7 @@ def test_activity_trend_caches_events_window():
     _frozen = mock.patch.object(
         pulse_mod.time, "monotonic", return_value=_time_mod.monotonic()
     )
-    pulse_mod.query_events = counting_qe
+    pulse_mod.event_counts_by_day = counting_ecbd
     pulse_mod._trend_cache = None
     _frozen.start()
     try:
@@ -1460,11 +1460,11 @@ def test_activity_trend_caches_events_window():
         assert pulse_mod._trend_cache is not None, "cache should be populated"
         cached = pulse_mod._trend_cache
         assert isinstance(cached, tuple) and len(cached) == 2, (
-            "single-entry tuple cache: (bucket, rows), never a growing dict"
+            "single-entry tuple cache: (bucket, counts), never a growing dict"
         )
     finally:
         _frozen.stop()
-        pulse_mod.query_events = real_qe
+        pulse_mod.event_counts_by_day = real_ecbd
         pulse_mod._trend_cache = None
 
 
