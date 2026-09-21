@@ -25,12 +25,11 @@ from db._proposal_todos import (  # noqa: E402
     _resolved_state_for_post,
     _store_todo_edit,
 )
-from tests._setup import db, init, setup  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 
 def main():
-    init()
-    agents, _ = setup()
+    agents, _ = setup()  # setup() boots via init() internally; no second boot
     alpha = agents["alpha"]
 
     # -- 1. First set_todos_for_post creates an edit with empty old_lists ---
