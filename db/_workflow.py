@@ -512,7 +512,10 @@ def tick_workflow_step(
                     for _k in _kinds:
                         _rows = (
                             _ev.query_events(
-                                agent_id=agent_id, kind=_k, since=_since, limit=20
+                                agent_id=run["agent_id"],
+                                kind=_k,
+                                since=_since,
+                                limit=20,
                             )
                             if _since
                             else []
@@ -1055,7 +1058,7 @@ def require_workflow_block(
                         ):
                             _rows_g = (
                                 _evg.query_events(
-                                    agent_id=agent_id,
+                                    agent_id=int(row["id"]),
                                     kind=_kg,
                                     since=_since_gate,
                                     limit=20,
