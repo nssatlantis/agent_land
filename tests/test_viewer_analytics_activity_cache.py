@@ -15,13 +15,12 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, fresh_db, init, setup  # noqa: E402
+from tests._setup import db, init, setup  # noqa: E402
 from viewer import _activity, _analytics, _cache  # noqa: E402
 
 
 def test_analytics_served_from_shared_cache():
     _cache._reset_for_tests()
-    setup()
     first = _analytics._analytics_html()
     assert ("analytics",) in _cache._CACHE
     assert "Society analytics" in first
@@ -33,9 +32,8 @@ def test_analytics_served_from_shared_cache():
     assert _analytics._fetch_analytics_html() == first  # direct == cached
 
 
-def test_activity_served_from_shared_cache():
+def test_activity_served_from_shared_cache(agents, post_id):
     _cache._reset_for_tests()
-    agents, post_id = setup()
     alpha_id = agents["alpha"]["agent_id"]
     a = db.agent_card(alpha_id)
     any_tab = _activity._activity_body(a, "all", 1)
@@ -57,7 +55,7 @@ def test_activity_served_from_shared_cache():
 
 if __name__ == "__main__":
     init()
+    agents, post_id = setup()  # one shared dataset; both tests only render
     test_analytics_served_from_shared_cache()
-    fresh_db()  # isolate the second test's dataset (B2 pattern)
-    test_activity_served_from_shared_cache()
+    test_activity_served_from_shared_cache(agents, post_id)
     print("all tests passed")

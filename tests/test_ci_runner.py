@@ -73,6 +73,35 @@ class _StubTree:
         config.CI_RUN_NATIVE_SANDBOX = self._saved_native
 
 
+class _CannedProc:
+    """Canned suite child: a real OS pipe feeding fixed bytes through the
+    production _drain thread, with a fixed returncode. Exercises drain /
+    parse / tail-cut / summary / ledger logic byte-for-byte; only the
+    interpreter startup is skipped. Parse/logic tests only - spawn-behavior
+    pins (timeout kill, env sanitize, retained-bytes cap) keep real children."""
+
+    def __init__(self, out: bytes, returncode: int):
+        r, w = os.pipe()
+        os.write(w, out)
+        os.close(w)
+        self.stdout = os.fdopen(r, "rb")
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _canned_proc(out: bytes, returncode: int):
+    """Patch the _execute spawn seam with a canned child (see _CannedProc)."""
+    import unittest.mock as _mock
+
+    return _mock.patch.object(
+        ci_runner._sandbox.subprocess,
+        "Popen",
+        lambda *a, **k: _CannedProc(out, returncode),
+    )
+
+
 def test_knob_defaults():
     assert config.CI_RUN_ENABLED == 1
     assert config.CI_RUN_TIMEOUT_SECONDS == 600
@@ -115,15 +144,9 @@ def test_busy_lock_refuses():
 
 
 def test_success_run_parses_summary_and_logs_event():
-    stub = _StubTree(
-        "tests",
-        """
-        import sys
-        print("  test_a.py: ok")
-        print("all 1 test files passed")
-        sys.exit(0)
-    """,
-    )
+    stub = _StubTree("tests", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"  test_a.py: ok\nall 1 test files passed\n", 0)
+    _canned.start()
     uid = _uid()
     before = len(events.query_events(agent_id=uid, kind="ci_run"))
     try:
@@ -136,20 +159,16 @@ def test_success_run_parses_summary_and_logs_event():
         assert len(after) == before + 1
         assert after[0]["detail"]["checks"] == "tests"
     finally:
+        _canned.stop()
         stub.cleanup()
 
 
 def test_failing_run_lists_failed_files():
-    stub = _StubTree(
-        "tests",
-        """
-        import sys
-        print("FAILED: test_bad.py")
-        print("some traceback noise")
-        print("FAILED: 1 of 5 test files")
-        sys.exit(1)
-    """,
+    stub = _StubTree("tests", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(
+        b"FAILED: test_bad.py\nsome traceback noise\nFAILED: 1 of 5 test files\n", 1
     )
+    _canned.start()
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["ok"] is False and result["exit_code"] == 1
@@ -158,6 +177,7 @@ def test_failing_run_lists_failed_files():
             "bare basenames are normalized to repo-root paths"
         )
     finally:
+        _canned.stop()
         stub.cleanup()
 
 
@@ -290,20 +310,16 @@ def test_daily_cap_gate():
 
 
 def test_output_tail_truncation():
-    stub = _StubTree(
-        "benchmarks",
-        """
-        import sys
-        print("x" * 50000)
-        sys.exit(0)
-    """,
-    )
+    stub = _StubTree("benchmarks", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"x" * 50000 + b"\n", 0)
+    _canned.start()
     _shadow("CI_RUN_TAIL_BYTES", 100)
     try:
         result = ci_runner.run_checks(_uid(), "t", "benchmarks")
         assert result["output_truncated"] is True
         assert len(result["output_tail"]) <= 200
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -340,15 +356,11 @@ def test_output_retained_bytes_capped_against_host_memory():
 def test_multibyte_tail_is_byte_exact():
     """Truncation flag and returned tail must agree in BYTES: multi-byte
     output used to make a character slice exceed the byte budget ~3x."""
-    stub = _StubTree(
-        "tests",
-        """
-        import sys
-        print("héllo-🎉" * 5000)
-        print("all 1 test files passed")
-        sys.exit(0)
-    """,
+    stub = _StubTree("tests", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(
+        ("héllo-🎉" * 5000 + "\nall 1 test files passed\n").encode("utf-8"), 0
     )
+    _canned.start()
     _shadow("CI_RUN_TAIL_BYTES", 64)
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
@@ -357,6 +369,7 @@ def test_multibyte_tail_is_byte_exact():
             "tail exceeded its byte budget"
         )
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -366,14 +379,9 @@ def test_ledger_tail_is_capped_separately():
     CI_RUN_EVENT_TAIL_BYTES while the tool response keeps
     CI_RUN_TAIL_BYTES, and a ledger-only trim still flags
     output_truncated on the event."""
-    stub = _StubTree(
-        "benchmarks",
-        """
-        import sys
-        print("x" * 50000)
-        sys.exit(1)
-    """,
-    )
+    stub = _StubTree("benchmarks", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"x" * 50000 + b"\n", 1)
+    _canned.start()
     _shadow("CI_RUN_TAIL_BYTES", 4096)
     _shadow("CI_RUN_EVENT_TAIL_BYTES", 128)
     try:
@@ -394,6 +402,7 @@ def test_ledger_tail_is_capped_separately():
         # The ledger copy is the last cap bytes of the caller-facing tail.
         assert result["output_tail"].endswith(detail["output_tail"])
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -402,14 +411,9 @@ def test_ledger_tail_not_truncated_when_within_event_cap():
     """A RED run whose output fits inside CI_RUN_EVENT_TAIL_BYTES reaches the
     ledger uncapped and un-flagged (the ledger only reports a trim it
     actually made)."""
-    stub = _StubTree(
-        "benchmarks",
-        """
-        import sys
-        print("short output")
-        sys.exit(1)
-    """,
-    )
+    stub = _StubTree("benchmarks", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"short output\n", 1)
+    _canned.start()
     _shadow("CI_RUN_EVENT_TAIL_BYTES", 4096)
     try:
         uid = _uid()
@@ -424,6 +428,7 @@ def test_ledger_tail_not_truncated_when_within_event_cap():
         assert detail["output_tail"] == result["output_tail"]
         assert detail.get("output_truncated") is None
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -431,14 +436,9 @@ def test_ledger_tail_not_truncated_when_within_event_cap():
 def test_ledger_tail_full_when_event_cap_zero():
     """CI_RUN_EVENT_TAIL_BYTES=0 keeps the full caller tail on the ledger -
     the explicit out from the ledger cap."""
-    stub = _StubTree(
-        "benchmarks",
-        """
-        import sys
-        print("x" * 50000)
-        sys.exit(1)
-    """,
-    )
+    stub = _StubTree("benchmarks", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"x" * 50000 + b"\n", 1)
+    _canned.start()
     _shadow("CI_RUN_TAIL_BYTES", 2048)
     _shadow("CI_RUN_EVENT_TAIL_BYTES", 0)
     try:
@@ -454,6 +454,7 @@ def test_ledger_tail_full_when_event_cap_zero():
         assert detail["output_tail"] == result["output_tail"]
         assert detail["output_truncated"] is True
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -462,14 +463,13 @@ def test_ledger_drops_tail_on_green():
     """A green run's ledger detail carries no output_tail / output_truncated
     at all - the transcript is only for failing runs - while the verdict
     facts (summary, empty failed_files) still fold every time."""
-    stub = _StubTree(
-        "db_benchmark",
-        """
-        print("[Timing - 9 measured reps, min / median / max / stdev ms]")
-        print("  q                         1.00 /   2.00 /   3.00")
-        print("All checks passed.")
-    """,
+    stub = _StubTree("db_benchmark", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(
+        b"[Timing - 9 measured reps, min / median / max / stdev ms]\n"
+        b"  q                         1.00 /   2.00 /   3.00\nAll checks passed.\n",
+        0,
     )
+    _canned.start()
     try:
         uid = _uid()
         before = len(events.query_events(agent_id=uid, kind="ci_db_bench_run"))
@@ -487,6 +487,7 @@ def test_ledger_drops_tail_on_green():
         )
         assert detail.get("failed_files") is None
     finally:
+        _canned.stop()
         _restore()
         stub.cleanup()
 
@@ -512,14 +513,9 @@ def test_ledger_kind_mapping():
 def test_handoff_fast_run_returns_full_result():
     """Within the soft deadline the wrapper behaves exactly like run_checks:
     full result, no handoff, and the single-flight claim already released."""
-    stub = _StubTree(
-        "tests",
-        """
-        import sys
-        print("all 1 test files passed")
-        sys.exit(0)
-    """,
-    )
+    stub = _StubTree("tests", "# canned child (see _CannedProc)")
+    _canned = _canned_proc(b"all 1 test files passed\n", 0)
+    _canned.start()
     uid = _uid()
     try:
         result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
@@ -530,6 +526,7 @@ def test_handoff_fast_run_returns_full_result():
         assert isinstance(started_at, str) and "T" in started_at
         assert ci_runner._inflight_occupied(uid) is False
     finally:
+        _canned.stop()
         stub.cleanup()
 
 
