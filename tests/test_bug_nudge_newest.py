@@ -39,11 +39,48 @@ def test_bug_nudge_silence_then_names_newest():
     assert ci["open_bug_reports"] == 2
     assert ci["newest_open_bug"] == {"id": b2["id"], "title": "Second bug"}
     assert any(f"#{b2['id']}" in a for a in ci["suggested_actions"])
+    # Plain opens never escalate: no CRITICAL routing, no critical field.
+    assert "CRITICAL" not in wn["bug_note"], wn["bug_note"]
+    assert wn.get("top_critical_bug") is None, wn.get("top_critical_bug")
+    assert ci["top_critical_bug"] is None
+
+
+def test_confirmed_beats_open_critical():
+    # Priority rule pin: an unclaimed confirmed-critical beats a NEWER
+    # open-critical (status outranks novelty).
+    rep, dup, ver = (AGENTS[k]["token"] for k in ("beta", "gamma", "delta"))
+    old = db.file_bug_report(
+        rep,
+        "Older confirmed critical",
+        "body",
+        url="https://example.com/bug/beat-conf",
+        severity="critical",
+    )
+    db.file_bug_report(
+        dup,
+        "Older confirmed critical dup",
+        "body2",
+        url="https://example.com/bug/beat-conf",
+    )
+    db.verify_bug_report(ver, old["id"])
+    assert db.get_bug_report(old["id"])["status"] == "confirmed"
+    new = db.file_bug_report(
+        rep,
+        "Newer open critical",
+        "body",
+        url="https://example.com/bug/beat-open",
+        severity="critical",
+    )
+    wn = db.whoami(TOK)
+    assert wn["top_critical_bug"]["id"] == old["id"], wn["top_critical_bug"]
+    assert wn["top_critical_bug"]["action"] == "claim"
+    assert f"claim_bug({old['id']})" in wn["bug_note"], wn["bug_note"]
+    db.resolve_bug_report(rep, old["id"], "invalid", "cleanup")
+    db.resolve_bug_report(rep, new["id"], "invalid", "cleanup")
 
 
 def test_confirmed_critical_unclaimed_routes_claim():
-    # Confirmed-critical with no live claim leads, even with a newer
-    # open-critical and older plain opens around: fix-routing wins.
+    # Confirmed-critical with no live claim routes the fix path.
     rep, dup, ver = (AGENTS[k]["token"] for k in ("beta", "gamma", "delta"))
     url = "https://example.com/bug/conf-crit"
     r = db.file_bug_report(
@@ -65,6 +102,12 @@ def test_confirmed_critical_unclaimed_routes_claim():
     ci = db.check_in(TOK)
     assert ci["top_critical_bug"]["id"] == r["id"]
     assert ci["top_critical_bug"]["action"] == "claim"
+    assert any(
+        "CRITICAL" in a and f"#{r['id']}" in a for a in ci["suggested_actions"]
+    ), ci["suggested_actions"]
+    # A dedicated backlog open, so the suppression fallback below passes
+    # for the right reason standalone (not on leaked rows from test 1).
+    backlog = db.file_bug_report(TOK, "Suppression backlog", "body")
     # A live claim suppresses the fix routing (doctrine: suppress while
     # claimed); the generic backlog note returns instead.
     db.claim_bug(AGENTS["epsilon"]["token"], r["id"])
@@ -77,6 +120,7 @@ def test_confirmed_critical_unclaimed_routes_claim():
     assert f"claim_bug({r['id']})" in wn3["bug_note"], wn3["bug_note"]
     # Resolve to clean up: later tests must see no live criticals.
     db.resolve_bug_report(rep, r["id"], "invalid", "triage-test cleanup")
+    db.resolve_bug_report(TOK, backlog["id"], "invalid", "cleanup")
 
 
 def test_critical_open_routes_verify():
@@ -99,6 +143,9 @@ def test_critical_open_routes_verify():
     ci = db.check_in(TOK)
     assert ci["newest_open_bug"] == {"id": low["id"], "title": "Plain low"}
     assert ci["top_critical_bug"]["id"] == r["id"]
+    assert any(
+        "CRITICAL" in a and f"#{r['id']}" in a for a in ci["suggested_actions"]
+    ), ci["suggested_actions"]
     # Resolve to clean up: later tests must see no live criticals.
     db.resolve_bug_report(AGENTS["beta"]["token"], r["id"], "invalid", "cleanup")
     db.resolve_bug_report(TOK, low["id"], "invalid", "cleanup")
@@ -117,6 +164,21 @@ def test_untriaged_confirmed_never_leads():
     assert "CRITICAL" not in wn.get("bug_note", ""), wn.get("bug_note")
     assert wn.get("top_critical_bug") is None, wn.get("top_critical_bug")
     assert db.check_in(TOK)["top_critical_bug"] is None
+    # A confirmed HIGH is still not critical (doctrine: critical only).
+    high = db.file_bug_report(
+        rep,
+        "Confirmed high",
+        "body",
+        url="https://example.com/bug/conf-high",
+        severity="high",
+    )
+    db.file_bug_report(
+        dup, "Confirmed high dup", "body2", url="https://example.com/bug/conf-high"
+    )
+    db.verify_bug_report(ver, high["id"])
+    assert db.get_bug_report(high["id"])["status"] == "confirmed"
+    assert db.whoami(TOK).get("top_critical_bug") is None
+    db.resolve_bug_report(rep, high["id"], "invalid", "cleanup")
     db.resolve_bug_report(rep, r["id"], "invalid", "cleanup")
 
 
