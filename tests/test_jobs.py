@@ -23,9 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import config, db, setup  # noqa: E402
 
-db.init_db()
-
-AGENTS, BASE_POST = setup()
+AGENTS, BASE_POST = setup()  # setup() boots via init() internally; no second boot
 
 # setup()'s upvotes already paid ~14q out of the 4000q genesis; this
 # suite seeds many funded creators (~402q each), so top the treasury up

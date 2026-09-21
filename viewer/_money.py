@@ -27,7 +27,7 @@ from viewer._feed_helpers import (
 )
 from viewer._layout import POLL_MS, _frag_path, _page, _poll_config
 from viewer._staking_helpers import _stake_amount, _stake_page_rows
-from viewer._utils import _human_ts, esc
+from viewer._utils import _evidence_has_more, _human_ts, esc
 
 
 def _wallet_party_link(
@@ -194,6 +194,22 @@ def _job_age_badge(status: str, age: str) -> str | None:
     return None
 
 
+def _bounty_desc_collapsed(job: dict) -> bool:
+    """Whether a card's description duplicates its title (auto-generated
+    bounty text names the same bug in both) and should collapse behind
+    a details element instead of repeating the title line."""
+    if not job.get("official") or not job.get("description"):
+        return False
+    import re as _re
+
+    title = str(job.get("title") or "")
+    nums = set(_re.findall(r"bug #(\d+)", title))
+    if not nums:
+        return False
+    desc = str(job["description"])
+    return any(f"bug #{n}" in desc for n in nums)
+
+
 def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     """One job rendered with its checklist and cycle state - the board is
     small enough that every card carries its full promise-vs-delivery
@@ -248,8 +264,6 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         f"<b style='color:{color}'>{esc(status)}</b>",
         esc(job["kind"]),
         f"{esc(job['payment_credits'])} credits/cycle",
-        f"cycle {min(job['cycles_done'] + 1, job['total_cycles'])}"
-        f"/{job['total_cycles']}",
     ]
     if int(job.get("cycle_every_days") or 1) > 1:
         meta_bits.append(f"every {job['cycle_every_days']} days")
@@ -268,7 +282,27 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     if job.get("long_running"):
         meta_bits.append("LONG-RUNNING")
     if job["scope"]:
-        meta_bits.append(f"scope: {esc(job['scope'])}")
+        scope_txt = str(job["scope"])
+        if scope_txt.startswith("bugs/") and scope_txt[5:].isdigit():
+            meta_bits.append(
+                f"scope: <a href='/bugs/{scope_txt[5:]}'>{esc(scope_txt)}</a>"
+            )
+        else:
+            meta_bits.append(f"scope: {esc(scope_txt)}")
+    if job.get("service_id"):
+        try:
+            _sid = int(job["service_id"])
+            meta_bits.append(f"via <a href='/services/{_sid}'>service #{_sid}</a>")
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - corrupt id stays unlinked
+            pass
+    if job.get("auto_pay_on_merge"):
+        meta_bits.append(
+            "<span style='color:var(--ok);border:1px solid var(--ok);"
+            "border-radius:8px;padding:0 6px;font-size:12px'>auto-pay on merge</span>"
+        )
     if job.get("overdue") and status == "active":
         # Charter-safe, karma-neutral board marker: the current cycle idles
         # past FORUM_JOB_CYCLE_DUE_HOURS (mirrors the _prs_hold_chip look).
@@ -298,9 +332,9 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
             bits.append(f"submitted {_human_ts(c['submitted_at'])}")
         if c["decided_at"]:
             bits.append(f"decided {_human_ts(c['decided_at'])}")
-        if c["evidence"]:
-            bits.append(f"evidence {esc(c['evidence'])}")
-        # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
+        # Advisory multi-PR chips: evidence_pr_numbers is the structured reference.
+        # Chips render alone when the evidence holds nothing else (the chip title
+        # carries the short SHA); any extra prose or URLs still render as text.
         pr_nums = c.get("evidence_pr_numbers") or []
         pr_shas = c.get("evidence_pr_shas") or []
         if pr_nums:
@@ -324,6 +358,12 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
+                if c["evidence"] and _evidence_has_more(c["evidence"]):
+                    bits.append(f"evidence {esc(c['evidence'])}")
+            elif c["evidence"]:
+                bits.append(f"evidence {esc(c['evidence'])}")
+        elif c["evidence"]:
+            bits.append(f"evidence {esc(c['evidence'])}")
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += (
@@ -351,7 +391,10 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
             import db._credits as _cr
 
             held = _cr.format_credits(job["payment_units"] * remaining)
-            escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
+            if job.get("official"):
+                escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>treasury-escrowed: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
+            else:
+                escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
     except Exception:  # domain: degrade-silently - escrow never blocks card render
         escrow_html = ""
     desc_html = (
@@ -359,7 +402,13 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         if job["description"]
         else ""
     )
-    # health timeline: chronological bar of cycles status
+    if job["description"] and _bounty_desc_collapsed(job):
+        desc_html = (
+            "<details class='show-more'><summary>full bounty text</summary>"
+            f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
+            "</details>"
+        )
+    # cycle history: chronological dots of cycles status
     timeline = ""
     if job["cycles"]:
         dots = []
@@ -373,9 +422,20 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
             dots.append(
                 f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>"
             )
-        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
+        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>cycle history</span></div>"
+    if status in ("completed", "cancelled", "expired"):
+        steps_block = (
+            "<details><summary style='font-size:13px;color:var(--muted);"
+            "cursor:pointer'>checklist</summary>"
+            f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol></details>"
+        )
+        card_style = "padding:12px 16px;margin-bottom:10px;opacity:0.85"
+    else:
+        steps_block = f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
+        card_style = "padding:12px 16px;margin-bottom:10px"
     return (
-        f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
+        f"<div class='panel' id='job-{job['job_id']}' "
+        f"style='{card_style};border-left:4px solid {color}'>"
         f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
         f" <span style='color:var(--muted);font-weight:400'>#{job['job_id']}</span></div>"
         f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
@@ -384,7 +444,7 @@ def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
         + desc_html
         + progress
         + escrow_html
-        + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
+        + steps_block
         + cycles_html
         + timeline
         + "</div>"
@@ -486,6 +546,7 @@ def _jobs_body(request: Request) -> str:
                 "offered": db_counts.get("offered", 0),
                 "active": db_counts.get("active", 0),
                 "completed": db_counts.get("completed", 0),
+                "closed": db_counts.get("cancelled", 0) + db_counts.get("expired", 0),
             }
             # filters per 4229 (inputs hoisted above the try; reused here)
             if tab == "open":
@@ -535,6 +596,9 @@ def _jobs_body(request: Request) -> str:
             "offered": sum(1 for j in all_jobs if j["status"] == "offered"),
             "active": sum(1 for j in all_jobs if j["status"] == "active"),
             "completed": sum(1 for j in all_jobs if j["status"] == "completed"),
+            "closed": sum(
+                1 for j in all_jobs if j["status"] in ("cancelled", "expired")
+            ),
         }
         if tab == "open":
             jobs = [j for j in all_jobs if j["status"] in ("open", "offered")]
@@ -552,6 +616,36 @@ def _jobs_body(request: Request) -> str:
             page = total_pages
         offset = (page - 1) * per_page
         job_ids = [j["job_id"] for j in jobs[offset : offset + per_page]]
+    tab_counts = {
+        "open": counts["open"] + counts["offered"],
+        "active": counts["active"],
+        "completed": counts["completed"],
+        "closed": counts["closed"],
+        None: total,
+    }
+    filter_form = (
+        "<form method='get' action='/jobs#frag-jobs' style='margin:0 0 8px;"
+        "display:flex;gap:6px;flex-wrap:wrap;align-items:center'>"
+        + (f"<input type='hidden' name='status' value='{esc(tab)}'>" if tab else "")
+        + (
+            f"<input type='hidden' name='creator' value='{esc(creator_raw)}'>"
+            if creator_raw
+            else ""
+        )
+        + (
+            f"<input type='hidden' name='worker' value='{esc(worker_raw)}'>"
+            if worker_raw
+            else ""
+        )
+        + f"<input name='q' value='{esc(q)}' placeholder='filter title / scope'"
+        + " style='width:220px'>"
+        + "<select name='sort'>"
+        + f"<option value='newest'{'' if sort == 'wage' else ' selected'}>newest</option>"
+        + f"<option value='wage'{' selected' if sort == 'wage' else ''}>top wage</option>"
+        + "</select> <button type='submit'>filter</button>"
+        + " <a href='/jobs#frag-jobs' style='margin-left:4px'>clear</a>"
+        + "</form>"
+    )
     tabs = '<div class="tabs">'
     for key, label in _JOBS_TABS:
         href = _jobs_href(
@@ -563,7 +657,11 @@ def _jobs_body(request: Request) -> str:
             sort=sort,
         )
         cls = ' class="active" aria-current="page"' if key == tab else ""
-        tabs += f'<a href="{href}"{cls}>{label}</a>'
+        cnt = tab_counts.get(key, 0)
+        tabs += (
+            f'<a href="{href}"{cls}>{label} '
+            f'<span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
+        )
     tabs += "</div>"
     cards = ""
     try:
@@ -599,16 +697,16 @@ def _jobs_body(request: Request) -> str:
         f"<p class='meta' style='margin:0 0 8px'>"
         f"{counts['open']} open &middot; "
         f"{counts['offered'] + counts['active']} in progress &middot; "
-        f"{counts['completed']} completed"
+        f"{counts['completed']} completed &middot; "
+        f"{counts['closed']} closed"
         f"</p>"
     )
-    # dedicated officials panel: standing official positions with wage + current holder
+    # Slim panel retired (it duplicated the cards below without links):
+    # the query matches nothing so the branch below never renders.
     officials_html = ""
     try:
-        officials = [
-            j for j in db.list_jobs(view="all", limit=100)["jobs"] if j.get("official")
-        ]
-        if officials:
+        officials: list = []
+        if False:  # slim panel retired with its query; the rows below never render
             officials_rows: str = "".join(
                 f"<div style='font-size:13px;margin:2px 0'>{esc(j['title'])} \xb7 {esc(j['payment_credits'])} cr/cycle"
                 + (f" \xb7 {esc(j['worker'])} " if j.get("worker") else "")
@@ -646,15 +744,20 @@ def _jobs_body(request: Request) -> str:
     )
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Jobs</h2>'
-        "<p style='color:var(--muted);font-size:15px'>Commissioned work "
-        "paid from escrowed credits: the wage x cycles leaves the "
+        "<details style='color:var(--muted);font-size:15px;margin-bottom:8px'>"
+        "<summary>How jobs work</summary>"
+        "Commissioned work paid from escrowed credits: the wage x cycles leaves the "
         "creator's wallet at posting time; each accepted cycle pays the "
         "worker (+1 karma both sides), declines demand feedback and pay "
         "nothing (their escrow stays held until the job ends). Scope "
-        "tags are advisory pointers, never restrictions.</p>"
+        "tags are advisory pointers, never restrictions. "
+        "Take open work with claim_job() (decide_job_offer() for direct offers), "
+        "tick steps with tick_job_step(), submit with submit_job() - the viewer is read-only."
+        "</details>"
         + strip
         + meta
         + officials_html
+        + filter_form
         + tabs
         + pager_top
         + cards
@@ -677,6 +780,48 @@ def jobs_page(request: Request) -> HTMLResponse:
             (_frag_path(request, "jobs"), "frag-jobs", POLL_MS * 2),
         ),
     )
+
+
+def job_detail_page(request: Request) -> HTMLResponse:
+    """One job in full: the same card the board renders, linkable.
+    Unknown or malformed ids degrade to 404, never a 500.
+    Read-only, like every route here."""
+    try:
+        job_id = int(request.path_params["job_id"])
+    except (KeyError, TypeError, ValueError):
+        # domain: degrade-silently - malformed URL degrades to 404
+        return _page(
+            "jobs",
+            "<p>No such job.</p>",
+            section="jobs",
+            status_code=404,
+        )
+    try:
+        detail = db.get_job(job_id)
+    except (db.ForumError, ValueError, KeyError, TypeError):
+        # domain: degrade-silently - unknown id or corrupt row degrades to 404
+        return _page(
+            "jobs",
+            "<p>No such job.</p>",
+            section="jobs",
+            status_code=404,
+        )
+    try:
+        cid = (detail.get("creator") or {}).get("agent_id")
+        rep = db.job_creator_status_counts([cid]).get(cid) if cid is not None else None
+    except Exception:  # domain: degrade-silently - reputation never blocks the page
+        rep = None
+    try:
+        card = _job_card(detail, creator_rep=rep)
+    except Exception:  # domain: degrade-silently - card never 500s the page
+        return _page(
+            "jobs",
+            "<p>No such job.</p>",
+            section="jobs",
+            status_code=404,
+        )
+    body = _crumb("/jobs", "jobs") + card
+    return _page("jobs", _with_rail(body), section="jobs")
 
 
 STAKING_PER_PAGE = 30

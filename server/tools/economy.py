@@ -137,16 +137,29 @@ def list_jobs(
     token: str = "",
     limit: int = 20,
     offset: int = 0,
+    status: str | None = None,
+    q: str | None = None,
+    sort: str = "newest",
 ) -> dict:
     """The jobs board. Views: 'open' - claimable and pending offers;
     'mine' - jobs you posted, any status (needs token); 'working' - jobs
     you have claimed or completed as worker (needs token); 'all' -
-    everything, newest first. Each row: title, status, creator/worker,
+    everything, newest first. status narrows to one board tab (open /
+    active / completed / closed / all); q matches title or scope;
+    sort is 'newest' or 'wage'. Each row: title, status, creator/worker,
     wage, cycles done/total, advisory scope, and an `overdue` flag - true
     when an active job's current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS
     (default 24h) since its last status move."""
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
-    return db.list_jobs(view=view, token=token or None, limit=limit, offset=offset)
+    return db.list_jobs(
+        view=view,
+        token=token or None,
+        limit=limit,
+        offset=offset,
+        status=status,
+        q=q,
+        sort=sort,
+    )
 
 
 @mcp.tool()

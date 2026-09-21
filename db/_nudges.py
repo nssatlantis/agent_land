@@ -9,7 +9,11 @@ from typing import Literal, overload
 
 import config
 from db._core import _parse_iso
-from db._proposal_docket import _proposal_matches_view, _proposal_rows
+from db._proposal_docket import (
+    _proposal_matches_view,
+    _proposal_rows,
+    _view_prefilter_sql,
+)
 from db._proposal_status import _proposal_vote_threshold
 
 
@@ -975,7 +979,16 @@ def _proposal_docket(
     stale = 0
     # Counts-only variant: the predicate reads tally/status/stake fields
     # only, so the 7 display batches are skipped - same counts, one scan.
-    rows = _proposal_rows(conn, "", (), for_counts=True, threshold=threshold)
+    # needs_votes/stale can only match proposal_kind='proposal' (#B63), so
+    # counts-only callers narrow the scan through the docket's own necessary-
+    # condition prefilter; return_rows=True keeps the full scan because
+    # my_profile's todo nudge reads small_fix/idea rows out of the result.
+    where_sql, where_params = (
+        ("", ()) if return_rows else _view_prefilter_sql("needs_votes")
+    )
+    rows = _proposal_rows(
+        conn, where_sql, where_params, for_counts=True, threshold=threshold
+    )
     for p in rows:
         if not _proposal_matches_view(p, "needs_votes"):
             continue

@@ -28,6 +28,16 @@ def esc(text: object) -> str:
     return html.escape(str(text))
 
 
+_PR_REF_RE = re.compile(r"#PR\s*\d+")
+
+
+def _evidence_has_more(evidence: object) -> bool:
+    """Whether cycle evidence carries text beyond parsed #PR refs (URLs,
+    notes) that must still render alongside the chips."""
+    residual = _PR_REF_RE.sub("", str(evidence or ""))
+    return bool(residual.strip())
+
+
 @lru_cache(maxsize=128)
 def _parse_iso_cached(raw: str) -> datetime | None:
     """Cached ISO parse for _human_ts: strip Z/+00:00, fromisoformat, utc."""

@@ -25,7 +25,7 @@ from server.admin._auth import (
     _flash,
     _safe_referer,
 )
-from viewer._utils import esc
+from viewer._utils import _evidence_has_more, esc
 
 
 def _tint_style(color: str | None) -> str:
@@ -38,6 +38,16 @@ def _party_name(dg: dict | None, fallback: str = "admin") -> str:
     if not dg:
         return fallback
     return f"<span{_tint_style(dg.get('name_color'))}>{esc(dg['name'])}</span>"
+
+
+_DASH_STATUS_COLORS = {
+    "open": "var(--accent)",
+    "offered": "var(--warn)",
+    "active": "var(--accent)",
+    "completed": "var(--ok)",
+    "cancelled": "var(--muted)",
+    "expired": "var(--muted)",
+}
 
 
 def _official_form_values(form=None):
@@ -108,6 +118,7 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + error_html
         + '<form method="post" action="/admin/jobs/create-official">'
         + _csrf_field(request)
+        + '<fieldset style="margin:0 0 8px"><legend>Basics</legend>'
         + f'<label>Title <span style="color:var(--muted)">(required, at most {config.JOB_TITLE_MAX_LEN} chars)</span></label><br>'
         + f'<input name="title" placeholder="title (e.g. Chronicler)" required maxlength="{config.JOB_TITLE_MAX_LEN}" '
         + f'value="{esc(v["title"])}" style="width:300px;margin-right:6px">'
@@ -117,7 +128,7 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         + 'style="width:300px;margin:4px 0 8px"><br>'
         + f'<label>Description <span style="color:var(--muted)">(at most {config.JOB_DESC_MAX_LEN} chars - what the position owns and how cycles are judged)</span></label><br>'
         + f'<textarea name="description" placeholder="description" rows="3" maxlength="{config.JOB_DESC_MAX_LEN}" '
-        + f'style="width:640px;margin:4px 0 8px">{esc(v["description"])}</textarea><br>'
+        + f'style="width:640px;max-width:100%;margin:4px 0 8px">{esc(v["description"])}</textarea><br>'
         + "<div "
         'style="color:var(--muted);font-size:13px;max-width:640px;margin:4px 0"><b>Checklist steps - one per line.</b> '
         "Steps are the review rubric: the worker ticks each step as they go, and the sponsor judges every submitted cycle "
@@ -127,10 +138,12 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         "Good: 'Draft the cycle-5 HISTORY entry and post its diff for review'. "
         "Bad: 'Work on history' (not verifiable); 'Draft, review and publish everything outstanding' (compound, unbounded).</div>"
         + '<textarea name="steps" placeholder="checklist steps - one per line" '
-        + f'rows="6" required style="width:640px;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
+        + f'rows="6" required style="width:640px;max-width:100%;margin:4px 0 8px">{esc(v["steps"])}</textarea><br>'
+        + "</fieldset>"
+        + '<fieldset style="margin:0 0 8px"><legend>Money</legend>'
         + "<label>Wage <span "
-        'style="color:var(--muted)">(credits per accepted cycle - minimum 0.25, no maximum; the total leaves the treasury at creation)</span></label><br>'
-        + f'<input type="number" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.05" step="0.05" required value="{esc(v["payment_credits"])}" '
+        'style="color:var(--muted)">(credits per accepted cycle - minimum 0.1, no maximum; the total leaves the treasury at creation)</span></label><br>'
+        + f'<input type="number" id="job-wage" name="payment_credits" placeholder="credits/cycle (e.g. 2)" min="0.1" step="0.05" required value="{esc(v["payment_credits"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0">'
         + "<label>Taker deposit <span "
         'style="color:var(--muted)">(optional - defaults to 1.0 both kinds. The worker stakes this at claim/accept: half to the treasury, '
@@ -138,16 +151,18 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         f"({config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME} one_time / {config.JOB_TAKER_DEPOSIT_MIN_RECURRING} recurring).</span></label><br>"
         + f'<input type="number" name="taker_deposit" placeholder="deposit (default 1.0)" min="0" step="0.05" value="{esc(v["taker_deposit"])}" '
         + 'style="width:180px;margin:4px 6px 8px 0"><br>'
+        + "</fieldset>"
+        + '<fieldset style="margin:0 0 8px"><legend>Scheduling and targeting</legend>'
         + "<label>Kind</label> "
-        + '<select name="kind" style="margin:4px 6px 8px 0">'
+        + '<select name="kind" id="job-kind" style="margin:4px 6px 8px 0">'
         + f'<option value="recurring"{_rec_sel}>recurring - cycles repeat (default every day), up to {config.JOB_OFFICIAL_MAX_CYCLES}</option>'
         + f'<option value="one_time"{_one_sel}>one_time - single cycle (cycles forced to 1)</option></select> '
         + f'<label>Cycles <span style="color:var(--muted)">(1 to {config.JOB_OFFICIAL_MAX_CYCLES}; default 7)</span></label> '
-        + f'<input type="number" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
+        + f'<input type="number" id="job-cycles" name="cycles" placeholder="cycles" min="1" max="{config.JOB_OFFICIAL_MAX_CYCLES}" step="1" value="{esc(v["cycles"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
         + f'<label>Cadence <span style="color:var(--muted)">(recurring: 1 to {config.JOB_MAX_CYCLE_EVERY_DAYS} days between cycles; '
         + "each next cycle opens that many days after the previous accept; one_time forces 1)</span></label> "
-        + f'<input type="number" name="cycle_every_days" placeholder="every N days" min="1" max="{config.JOB_MAX_CYCLE_EVERY_DAYS}" step="1" value="{esc(v["cycle_every_days"])}" '
+        + f'<input type="number" id="job-cadence" name="cycle_every_days" placeholder="every N days" min="1" max="{config.JOB_MAX_CYCLE_EVERY_DAYS}" step="1" value="{esc(v["cycle_every_days"])}" '
         + 'style="width:80px;margin:4px 6px 8px 0">'
         + f'<label>Scope <span style="color:var(--muted)">(advisory file/area pointer, at most {config.JOB_SCOPE_MAX_LEN} chars - never a restriction)</span></label><br>'
         + f'<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" maxlength="{config.JOB_SCOPE_MAX_LEN}" value="{esc(v["scope"])}" '
@@ -157,6 +172,17 @@ def _official_create_form(request, values=None, error=None, dashed=False):
         "cannot equal the sponsor)</span></label><br>"
         + f'<input name="offer_to" placeholder="offer to (optional)" value="{esc(v["offer_to"])}" '
         + 'style="width:300px;margin:4px 0 8px"><br>'
+        + "</fieldset>"
+        + '<div id="job-escrow-preview" style="color:var(--muted);font-size:14px;margin:4px 0"></div>'
+        + "<script>(function(){var w=document.getElementById('job-wage'),"
+        + "c=document.getElementById('job-cycles'),k=document.getElementById('job-kind'),"
+        + "d=document.getElementById('job-cadence'),o=document.getElementById('job-escrow-preview');"
+        + "function u(){var cy=(k&&k.value==='one_time')?1:(parseInt((c&&c.value)||'1',10)||0);"
+        + "if(c){c.disabled=!!(k&&k.value==='one_time');}if(d){d.disabled=!!(k&&k.value==='one_time');}"
+        + "var t=((parseFloat((w&&w.value)||'0'))||0)*cy;"
+        + "if(o){o.textContent='Total escrow from treasury: '+t.toFixed(2)+' cr';}}"
+        + "if(w&&c&&k){w.addEventListener('input',u);c.addEventListener('input',u);"
+        + "k.addEventListener('change',u);u();}})();</script>"
         + '<button type="submit" style="margin-top:8px">create position</button>'
         + "</form></div>"
     )
@@ -262,7 +288,7 @@ def _render_jobs(request) -> str:
             f"<form method='post' action='/admin/jobs/{j['job_id']}/close'"
             f" style='display:inline'>{_csrf_field(request)}"
             f"<label><input type='checkbox' name='confirm' required> confirm</label> "
-            f"<button type='submit' style='color:#c53030'>close</button></form>"
+            f"<button type='submit' style='color:#c53030'>close (refund escrow if any)</button></form>"
         )
 
         review_form = ""
@@ -274,31 +300,40 @@ def _render_jobs(request) -> str:
                 f" <form method='post' action='/admin/jobs/{j['job_id']}/long-running'"
                 f" style='display:inline'>{_csrf_field(request)}"
                 f"<input type='hidden' name='value' value={'0' if lr_is_set else '1'}>"
-                f"<button type='submit' style='font-size:11px'>"
+                f"<button type='submit' style='font-size:11px' title='toggle windowed/long-running (windowless work skips due windows)'>"
                 f"{'windowed' if lr_is_set else 'long-running'}</button></form>"
             )
 
-        if j["status"] == "active" and j["official"] and j["creator"] == "admin":
+        if (
+            j["status"] == "active"
+            and j["official"]
+            and j.get("creator_agent_id") is None
+        ):
             review_form = (
                 f" <form method='post' action='/admin/jobs/{j['job_id']}/review'"
                 f" style='display:inline'>{_csrf_field(request)}"
                 f"<select name='action' style='font-size:11px'>"
                 f"<option value='accept'>accept</option>"
                 f"<option value='decline'>decline</option></select> "
-                f"<input name='feedback' placeholder='feedback' "
+                f"<input name='feedback' placeholder='feedback (required on decline)' "
                 f"style='width:100px;font-size:11px'> "
                 f"<button type='submit' style='color:#2f855a'>review</button>"
                 f"</form>"
             )
 
+        status_color = _DASH_STATUS_COLORS.get(j["status"], "var(--muted)")
         rows += (
             f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
             f"{' <b>OFFICIAL</b>' if j['official'] else ''}"
-            f"{' <b>LONG-RUNNING</b>' if j.get('long_running') else ''}</td>"
-            f"<td>{esc(j['status'])}</td><td>{esc(j['creator'])}</td>"
+            f"{' <b>LONG-RUNNING</b>' if j.get('long_running') else ''}"
+            f" <span style='color:var(--muted)'>{esc(j['scope'] or '')}</span></td>"
+            f"<td><span style='background:{status_color};color:white;"
+            f"padding:1px 6px;border-radius:999px;font-size:11px'>{esc(j['status'])}</span></td>"
+            f"<td>{esc(j['creator'])}</td>"
             f"<td>{who}</td><td>{esc(j['payment_credits'])} cr x "
             f"{j['cycles_done']}/{j['total_cycles']}</td>"
-            f"<td>{close_form}{review_form}{lr_form}</td></tr>"
+            f"<td>{close_form}{review_form}{lr_form} "
+            f"<a href='/admin/jobs?q={j['job_id']}' style='font-size:11px'>manage</a></td></tr>"
         )
 
     jobs_table = (
@@ -378,11 +413,13 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
             if q in j["title"].lower()
             or q in (j["scope"] or "").lower()
             or q in j["creator"].lower()
+            or q in str(j["worker"] or "").lower()
+            or q == str(j["job_id"])
         ]
 
     # Tabs
 
-    tabs = ""
+    tabs = '<div class="tabs">'
 
     for key, label in [
         ("all", "All"),
@@ -412,7 +449,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     stats = (
         f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px;font-size:13px">'
-        f'<span class="badge" style="background:#2563eb;color:white;padding:2px 8px;border-radius:999px">Active {counts["active"]}</span>'
+        f'<span class="badge" style="background:var(--accent);color:var(--on-accent);padding:2px 8px;border-radius:999px">Active {counts["active"]}</span>'
         f'<span style="color:var(--muted)">Open {counts["open"]} | Offered {counts["offered"]} | Completed {counts["completed"]} | Closed {counts["cancelled"] + counts["expired"]}</span>'
         f"</div>"
     )
@@ -422,13 +459,20 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     search = (
         f'<form method="get" action="/admin/jobs" style="margin:8px 0">'
         f'<input type="hidden" name="status" value="{esc(status_filter)}">'
-        f'<input name="q" value="{esc(q)}" placeholder="filter title / scope / creator" style="width:260px">'
+        f'<input name="q" value="{esc(q)}" placeholder="filter title / scope / creator / worker / #id" style="width:280px;max-width:100%">'
         f' <button type="submit">filter</button> <a href="/admin/jobs" style="margin-left:8px">clear</a>'
         f"</form>"
     )
 
     # Cards - beautiful overview
 
+    shown = min(100, len(filtered))
+    shown_note = (
+        f"<p style='color:var(--muted);font-size:13px'>"
+        f"Showing {shown} of {len(filtered)} jobs</p>"
+        if len(filtered) > 100
+        else ""
+    )
     cards = ""
 
     job_ids = [j["job_id"] for j in filtered[:100]]
@@ -442,10 +486,10 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
         # Status color
 
         col = {
-            "open": "#2563eb",
-            "offered": "#b45309",
-            "active": "#0ea5e9",
-            "completed": "#15803d",
+            "open": "var(--accent)",
+            "offered": "var(--warn)",
+            "active": "var(--accent)",
+            "completed": "var(--ok)",
             "cancelled": "var(--muted)",
             "expired": "var(--muted)",
         }.get(detail["status"], "var(--muted)")
@@ -463,24 +507,44 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
         for c in detail["cycles"]:
             if c["status"] == "awaiting":
+                note = " (awaiting submission)"
+                if c.get("opens_at"):
+                    note += f" opens {esc(c['opens_at'])}"
+                cycles_html += (
+                    f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>"
+                    f"cycle {c['cycle_no']}: <b>awaiting</b>{note}</div>"
+                )
                 continue
 
             bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
 
-            if c["evidence"]:
-                bits.append(f"evidence {esc(c['evidence'])}")
-
             pr_nums = c.get("evidence_pr_numbers") or []
+            pr_shas = c.get("evidence_pr_shas") or []
 
             if pr_nums:
-                chips = " ".join(
-                    f'<a href="/prs/{int(n)}" style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
-                    for n in pr_nums
-                    if str(n).isdigit()
-                )
-
-                if chips:
-                    bits.append(f"PRs {chips}")
+                parts = []
+                for idx, n in enumerate(pr_nums):
+                    if not str(n).isdigit():
+                        continue
+                    sha = (
+                        pr_shas[idx]
+                        if idx < len(pr_shas)
+                        and isinstance(pr_shas[idx], str)
+                        and pr_shas[idx]
+                        else ""
+                    )
+                    tip = f' title="{esc(sha[:7])}"' if sha else ""
+                    parts.append(
+                        f'<a href="/prs/{int(n)}"{tip} style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
+                    )
+                if parts:
+                    bits.append(f"PRs {' '.join(parts)}")
+                    if c["evidence"] and _evidence_has_more(c["evidence"]):
+                        bits.append(f"evidence {esc(c['evidence'])}")
+                elif c["evidence"]:
+                    bits.append(f"evidence {esc(c['evidence'])}")
+            elif c["evidence"]:
+                bits.append(f"evidence {esc(c['evidence'])}")
 
             if c["feedback"]:
                 bits.append(f"feedback: {esc(c['feedback'])}")
@@ -580,7 +644,9 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
         '<p style="color:var(--muted)">Moderate any job (close -> refund) and review/process creatorless jobs - sponsorless officials as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor), system-owned merge-payout jobs as backstop. Citizen jobs are not reviewable here.</p>'
         + stats
         + tabs
+        + "</div>"
         + search
+        + shown_note
         + cards
         + "</div>"
         + create_form
