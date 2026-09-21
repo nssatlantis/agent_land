@@ -104,85 +104,41 @@ def _truncate_all():
     """Clear all forum tables for session reuse — keep schema, drop data.
 
     Used when AGENTLAND_SESSION=1 so 60 files share one DB file.
-    Deletes in FK-safe order (children first) and resets autoincrement.
-    FTS virtual tables are cleared via DELETE FROM <fts>."""
+    Tables are enumerated live from sqlite_master, never a hardcoded
+    list - a hardcoded list silently leaks every table added later
+    across files (the D1-revert class: bonds, services, guilds,
+    todo_item_flags and bug_remarks all postdate the old list). FK is
+    OFF during the sweep so order is irrelevant; autoincrement resets
+    via sqlite_sequence. FTS shadow tables (xxx_data/idx/content/
+    docsize/config) are skipped - the root DELETE clears the whole
+    index, and direct shadow deletes would corrupt it."""
     with db._conn() as conn:
         # Disable FK for bulk delete, then re-enable (degrade-silently if pragma fails)
         try:
             conn.execute("PRAGMA foreign_keys=OFF")
         except Exception:
             pass
-        # Child tables first, parents last (reverse FK order)
-        for tbl in (
-            "todo_items",
-            "todo_lists",
-            "todo_edits",
-            "job_rewards",
-            "job_penalties",
-            "job_cycles",
-            "job_steps",
-            "jobs",
-            "stake_rewards",
-            "stake_locks",
-            "proposal_stakes",
-            "post_tags",
-            "tags",
-            "karma_spends",
-            "credit_entries",
-            "invoices",
-            "skill_ratings",
-            "economy_checkpoints",
-            "economy_meta",
-            "pr_votes",
-            "pr_decline_grace",
-            "pr_merges",
-            "pr_record",
-            "proposal_outcomes",
-            "proposal_links",
-            "proposal_votes",
-            "proposal_edits",
-            "post_edits",
-            "proposal_collaborators",
-            "proposal_claims",
-            "workspace_claims",
-            "transfer_tickets",
-            "events",
-            "notifications",
-            "report_votes",
-            "report_votes_archive",
-            "reports",
-            "bug_report_duplicates",
-            "bug_reports",
-            "bug_rewards",
-            "post_subscriptions",
-            "pinned_comments",
-            "personal_notes",
-            "post_drafts",
-            "store_entitlements",
-            "workflow_run_steps",
-            "workflow_runs",
-            "pr_ci_state",
-            "pr_comment_seen",
-            "admin_actions",
-            "poll_votes",
-            "poll_options",
-            "polls",
-            "comments",
-            "posts",
-            "votes",
-            "program_items",
-            "programs",
-            "agents",
-        ):
+        try:
+            _rows = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        except Exception:
+            print("warning: session truncate census failed; reseeding over dirty data")
+            _rows = []
+        _roots = [n for (n,) in _rows if n.endswith("_fts")]
+        _shadow = {
+            r + s
+            for r in _roots
+            for s in ("_data", "_idx", "_content", "_docsize", "_config")
+        }
+        for (tbl,) in _rows:
+            if tbl in _shadow:
+                continue
             try:
-                conn.execute(f"DELETE FROM {tbl}")
+                conn.execute(f'DELETE FROM "{tbl}"')
             except Exception:
-                pass  # domain: degrade-silently - table may not exist on first run
-        for fts in ("posts_fts", "comments_fts", "todo_items_fts"):
-            try:
-                conn.execute(f"DELETE FROM {fts}")
-            except Exception:
-                pass
+                pass  # domain: degrade-silently - virtual-table quirk
         try:
             conn.execute("DELETE FROM sqlite_sequence")
         except Exception:
