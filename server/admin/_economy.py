@@ -15,8 +15,40 @@ from server.admin._auth import (
 )
 from viewer._utils import _human_ts, esc
 
+_BOND_SOURCE_LABELS = {
+    "transfer_fee": "tx fees",
+    "stake_fee": "stake fees",
+    "store": "store",
+    "tags": "tags",
+    "jobs": "jobs",
+    "skills": "skills",
+    "invoices": "invoices",
+    "services": "services",
+    "guild_fees": "guild fees",
+}
+
+
+def _bond_source_boxes() -> str:
+    """Yield-family checkboxes with live trailing-window intake beside
+    each (proposal #601): choosing bond yield informed, not blind."""
+    from db._bonds import _SELECTABLE_SOURCES, DEFAULT_YIELD_SOURCES
+
+    try:
+        live = db.bond_family_trailing()
+    except Exception:  # domain: degrade-silently - pre-bond admin reads plain boxes
+        live = {}
+    return "".join(
+        '<label><input type="checkbox" name="yield_sources"'
+        f' value="{s}"' + (" checked" if s in DEFAULT_YIELD_SOURCES else "") + ">"
+        f" {_BOND_SOURCE_LABELS[s]}"
+        + (f" ({db.format_credits(live[s])})" if s in live else "")
+        + "</label> "
+        for s in _SELECTABLE_SOURCES
+    )
+
 
 def _bond_series_table() -> str:
+    """Live series with ids (what the close form needs) plus every holding."""
     """Live series with ids (what the close form needs) plus every holding."""
     try:
         series = db.list_bond_series()
@@ -99,15 +131,7 @@ def _render_economy(request) -> str:
         'style="width:120px;margin-right:6px"> '
         '<input name="min_face" placeholder="min face (1.0)" '
         'style="width:110px;margin-right:6px"> '
-        '<span style="margin-right:6px">sources:'
-        ' <label><input type="checkbox" name="yield_sources"'
-        ' value="transfer_fee" checked> tx fees</label>'
-        ' <label><input type="checkbox" name="yield_sources"'
-        ' value="stake_fee" checked> stake fees</label>'
-        ' <label><input type="checkbox" name="yield_sources"'
-        ' value="store" checked> store</label>'
-        ' <label><input type="checkbox" name="yield_sources"'
-        ' value="spend_all"> all spend</label></span> '
+        '<span style="margin-right:6px">sources: ' + _bond_source_boxes() + "</span> "
         '<button type="submit">open series</button></form>'
         + _bond_series_table()
         + '<form method="post" action="/admin/economy/bonds/close">'
