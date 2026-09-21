@@ -887,6 +887,95 @@ def economy_overview() -> dict:
         }
 
 
+def treasury_supply_series(limit: int = 120) -> list[dict]:
+    """Sealed supply/treasury history for the /economy time chart: one
+    point per checkpoint seal (created_at, total supply, treasury),
+    oldest-first, downsampled to at most 60 points so a dense seal
+    cadence never bloats the page. Checkpoints are never pruned in
+    production, so depth grows with seal history; a fresh database
+    seals on demand and reads short. Read-only."""
+    try:
+        limit = max(2, min(int(limit), 500))
+    except (  # domain: degrade-silently - garbage limit reads the default window
+        TypeError,
+        ValueError,
+    ):
+        limit = 120
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT created_at, total_supply_u, treasury_u FROM economy_checkpoints"
+            " ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            out.append(
+                {
+                    "created_at": str(r["created_at"]),
+                    "supply_units": int(r["total_supply_u"]),
+                    "treasury_units": int(r["treasury_u"]),
+                }
+            )
+        except (  # domain: degrade-silently - one corrupt seal never kills the series
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            continue
+    out.reverse()
+    if len(out) > 60:
+        stride = len(out) / 60.0
+        picked = [out[int(i * stride)] for i in range(60)]
+        if picked[-1] is not out[-1]:
+            picked[-1] = out[-1]
+        out = picked
+    return out
+
+
+def treasury_daily_flows(days: int = 14) -> list[dict]:
+    """Per-day treasury flow magnitudes for the /economy daily chart:
+    one row per UTC day (day, per-bucket units via _summarize_flows),
+    oldest-first; quiet days read all-zero buckets so the chart renders
+    hairlines instead of gaps. The GROUP BY rides
+    idx_credit_entries_treasury_flows (covering, pinned by
+    test_economy_charts). Read-only."""
+    try:
+        days = max(1, min(int(days), 90))
+    except (  # domain: degrade-silently - garbage window reads the default fortnight
+        TypeError,
+        ValueError,
+    ):
+        days = 14
+    now_dt = datetime.now(timezone.utc)
+    bound = day_dt_to_iso(now_dt - timedelta(days=days))
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT substr(created_at, 1, 10) AS day, reason,"
+            " SUM(delta_units) AS total FROM credit_entries"
+            " WHERE account = 'treasury' AND created_at >= ?"
+            " GROUP BY day, reason ORDER BY day",
+            (bound,),
+        ).fetchall()
+    by_day: dict[str, dict[str, int]] = {}
+    for r in rows:
+        try:
+            by_day.setdefault(str(r["day"]), {})[str(r["reason"])] = int(r["total"])
+        except (  # domain: degrade-silently - one corrupt aggregate never kills the series
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            continue
+    out = []
+    for i in range(days - 1, -1, -1):
+        day = (now_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+        out.append({"day": day, "flows": _summarize_flows(by_day.get(day, {}))})
+    return out
+
+
 # -- conservation audit (the escrow bank account's invariant) ------------
 
 _ESCROW_BACKFILL_SUFFIX = "_backfill"
