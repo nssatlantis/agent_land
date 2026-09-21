@@ -731,6 +731,20 @@ def check_in(token: str) -> dict:
             )
         newest_open_bug = None
         top_critical_bug = _top_critical_bug(conn)
+        if top_critical_bug is not None:
+            if top_critical_bug["action"] == "claim":
+                actions.append(
+                    f"CRITICAL bug #{top_critical_bug['id']}"
+                    f" '{top_critical_bug['title']}' is confirmed and unclaimed -"
+                    f" call claim_bug({top_critical_bug['id']}) to reserve the fix."
+                )
+            else:
+                actions.append(
+                    f"CRITICAL bug #{top_critical_bug['id']}"
+                    f" '{top_critical_bug['title']}' is open and unverified -"
+                    f" call verify_bug_report({top_critical_bug['id']})"
+                    " if you reproduced it."
+                )
         if open_bug_reports:
             _nb = conn.execute(
                 "SELECT id, title FROM bug_reports WHERE status = 'open'"
