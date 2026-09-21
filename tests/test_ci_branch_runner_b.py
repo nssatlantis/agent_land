@@ -189,6 +189,12 @@ def test_sandbox_argv_shape():
         assert "--pids-limit" in argv and "64" in argv
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"
+        # No persistent cache by default: no volume, no cache env.
+        assert "AGENTLAND_MYPY_CACHE_DIR=/tmp/agentland_mypy_cache" not in argv
+        assert not any(
+            isinstance(a, str) and a.endswith(":/tmp/agentland_mypy_cache:rw")
+            for a in argv
+        )
         assert "PYTHONDONTWRITEBYTECODE=1" in argv
         assert "GIT_CONFIG_COUNT=1" in argv
         assert "GIT_CONFIG_KEY_0=safe.directory" in argv
@@ -198,6 +204,32 @@ def test_sandbox_argv_shape():
         assert argv[argv.index("img:abc") + 1 :] == ["python3", "tests/run_all.py"]
         assert name.startswith("agentland-ci-")
         assert "GITHUB_TOKEN" not in text
+    finally:
+        _restore_cfg()
+
+
+def test_sandbox_argv_mypy_cache_volume():
+    argv, _ = ci_runner._sandbox._sandbox_argv(
+        "/tree", "img:abc", "tests/run_all.py", mypy_cache_host_dir="/h/slot2"
+    )
+    assert "/h/slot2:/tmp/agentland_mypy_cache:rw" in argv
+    assert "AGENTLAND_MYPY_CACHE_DIR=/tmp/agentland_mypy_cache" in argv
+    # Mounts ride before the image tag: the tail shape never moves.
+    assert argv[-2:] == ["python3", "tests/run_all.py"]
+    assert argv[argv.index("img:abc") + 1 :] == ["python3", "tests/run_all.py"]
+
+
+def test_mypy_host_dir_unconfigured_is_none():
+    assert ci_runner._sandbox._mypy_host_dir(0) is None
+
+
+def test_mypy_host_dir_makes_per_slot_dirs():
+    base = tempfile.mkdtemp(prefix="agentland_mypy_cfg_")
+    _shadow("CI_RUN_MYPY_CACHE_DIR", base)
+    try:
+        d = ci_runner._sandbox._mypy_host_dir(2)
+        assert d == os.path.join(base, "slot2")
+        assert Path(d).is_dir()
     finally:
         _restore_cfg()
 
@@ -303,7 +335,9 @@ def _patched_execution(stub_script: str):
         rev_holder["rev"] = rev
         return "fake:tag"
 
-    def fake_argv(tree, image_tag, script_rel, extra_env=None):
+    def fake_argv(
+        tree, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+    ):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 
     ci_runner._sandbox._ensure_image = fake_image
