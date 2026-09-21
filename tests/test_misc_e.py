@@ -15,7 +15,15 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import aggregates, config, db, expect_error, moderation, reports, setup  # noqa: E402
+from tests._setup import (  # noqa: E402
+    aggregates,
+    config,
+    db,
+    expect_error,
+    moderation,
+    reports,
+    setup,
+)
 
 
 def main():
