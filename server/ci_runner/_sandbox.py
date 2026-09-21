@@ -454,7 +454,9 @@ def _sandbox_argv(
         "--memory",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
-        # instead of OOM-killing, while still bounding total host pressure (2 slots x 1G).
+        # instead of OOM-killing, while still bounding total host pressure
+        # (2 slots x (1024+256 mem/swap + 512 tmpfs-limit); tmpfs allocates
+        # on use, so the limit only caps a runaway, not the common case).
         "--memory-swap",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
         "--pids-limit",
