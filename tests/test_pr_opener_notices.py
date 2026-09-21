@@ -11,7 +11,6 @@ No real GitHub calls - all github module functions are stubbed."""
 import os
 import sys
 import tempfile
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -217,7 +216,6 @@ def test_conflict_notice_once_per_head():
         # The notice was written moments ago, so the new head must be
         # strictly newer - hence the one-minute margin.
         pr["updated_at"] = _iso(datetime.now(timezone.utc) + timedelta(minutes=1))
-        time.sleep(0.01)
         _pr_vote_sweep(open_prs=[pr])
         with db._conn() as conn:
             assert _conflict_count(conn, AGENTS["alpha"]["agent_id"], number) == 2

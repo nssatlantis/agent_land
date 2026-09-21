@@ -17,12 +17,11 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
-from tests._setup import db, init, setup  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 
 def main():
-    init()
-    agents, _ = setup()
+    agents, _ = setup()  # setup() boots via init() internally; no second boot
     alpha = agents["alpha"]
     beta = agents["beta"]
 
