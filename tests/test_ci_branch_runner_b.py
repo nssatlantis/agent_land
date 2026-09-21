@@ -147,12 +147,16 @@ def test_gate_bucket_is_branch_kind():
     saved_img = ci_runner._sandbox._ensure_image
     ci_runner._sandbox._ensure_image = lambda tree, rev: "fake:tag"
     saved_argv = ci_runner._sandbox._sandbox_argv
-    ci_runner._sandbox._sandbox_argv = (
-        lambda tree, image_tag, script_rel, extra_env=None: (
+
+    def _fake_gate_argv(
+        tree, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+    ):
+        return (
             [sys.executable, "-c", "print('hi')"],
             "c1",
         )
-    )
+
+    ci_runner._sandbox._sandbox_argv = _fake_gate_argv
     try:
         ci_runner.run_checks(actor, "t", "tests", pr_number=7)
         raise AssertionError("expected ForumError")
