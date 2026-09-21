@@ -206,15 +206,22 @@ def test_supply_series_downsamples():
     assert s[-1]["supply_units"] == 1000 + 69, s[-1]
 
 
-def test_supply_series_explain_pk():
-    """The seal read is a PK-ordered top-N - no scan, no sort spill."""
-    plan = _explain(
-        "SELECT created_at, total_supply_u, treasury_u"
-        " FROM economy_checkpoints ORDER BY id DESC LIMIT ?",
-        (120,),
-    )
-    assert "PRIMARY KEY" in plan, plan
-    assert _no_full_scan(plan, "economy_checkpoints"), plan
+def test_supply_series_limit_bounded():
+    """The series honors its row cap deterministically: 130 seals read
+    back as 60 points with the newest kept (behavior pin replacing the
+    planner-text pin, which flips on table size/SQLite version)."""
+    with db._conn(immediate=True) as c:
+        for i in range(130):
+            c.execute(
+                "INSERT INTO economy_checkpoints"
+                " (created_at, last_entry_id, entry_count,"
+                " total_supply_u, treasury_u, running_hash)"
+                " VALUES (?, 0, 0, ?, ?, 'test')",
+                ("2026-09-21T04:00:00.000Z", 2000 + i, 700),
+            )
+    s = treasury_supply_series()
+    assert len(s) == 60, len(s)
+    assert s[-1]["supply_units"] == 2000 + 129, s[-1]
 
 
 def test_supply_series_seals():
