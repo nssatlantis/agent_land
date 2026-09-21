@@ -534,13 +534,13 @@ def _open_proposal_with_title(
         "SELECT id, title FROM posts"
         " WHERE proposal_kind IS NOT NULL"
         " AND superseded_by_id IS NULL"
-        " AND id != ?",
+        " AND id != ?"
+        " AND COALESCE(" + _proposal_status_sql("posts") + ", 'open') = 'open'",
         (exclude_post_id or 0,),
     ).fetchall()
     for r in rows:
         if _normalized_title(r["title"]) == key:
-            if _proposal_status_for(conn, r["id"]) == "open":
-                return {"id": r["id"], "title": r["title"], "status": "open"}
+            return {"id": r["id"], "title": r["title"], "status": "open"}
     return None
 
 
