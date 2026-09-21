@@ -1269,12 +1269,12 @@ def test_flow_guild_and_bond_live_spend():
             conn=conn,
         )
         after = economy.economy_overview()
-    gi = after["flows"]["guild_intake_units"] - before["flows"]["guild_intake_units"]
-    bi = after["flows"]["bond_intake_units"] - before["flows"]["bond_intake_units"]
+    gi = after["flows"]["all_time"]["guild_intake_units"] - before["flows"]["all_time"]["guild_intake_units"]
+    bi = after["flows"]["all_time"]["bond_intake_units"] - before["flows"]["all_time"]["bond_intake_units"]
     assert gi == 315, f"guild_intake_units delta expected 315, got {gi}"
     assert bi == 25, f"bond_intake_units delta expected 25, got {bi}"
     # Both should be excluded from spend_intake (not in catch-all)
-    si = after["flows"]["spend_intake_units"] - before["flows"]["spend_intake_units"]
+    si = after["flows"]["all_time"]["spend_intake_units"] - before["flows"]["all_time"]["spend_intake_units"]
     assert si == 0, f"spend_intake should not absorb guild/bond, got delta {si}"
     print("  flow_guild_and_bond_live_spend: ok")
 
