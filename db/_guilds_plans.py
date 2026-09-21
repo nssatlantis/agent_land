@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 
+import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
 from db._guilds import (
     _member_row,
@@ -294,7 +295,9 @@ def add_guild_decision(
     """Any member appends a decision entry (Option A: direct insert).
 
     Append-only: no edit or delete path exists. Stage moves stay
-    event-only; decisions fan out to members (the loud-humans half).
+    event-only; decisions fan out to members (the loud-humans half),
+    capped at GUILD_DECISION_DAILY_CAP appends per member per guild
+    per UTC day (0 disables the cap).
     """
     clean_d = (decision or "").strip()
     if not clean_d:
@@ -314,6 +317,21 @@ def add_guild_decision(
                 raise ForumError(f"no plan item with id {plan_item_id}.")
             if int(item["guild_id"]) != int(guild_id):
                 raise ForumError("that plan item belongs to another guild.")
+        cap = int(config.GUILD_DECISION_DAILY_CAP)
+        if cap > 0:
+            day = _now_iso()[:10]
+            today = conn.execute(
+                "SELECT COUNT(*) FROM guild_decisions"
+                " WHERE guild_id = ? AND author_agent_id = ?"
+                " AND substr(created_at, 1, 10) = ?",
+                (int(guild_id), agent["id"], day),
+            ).fetchone()[0]
+            if int(today or 0) >= cap:
+                raise ForumError(
+                    "decision journal is capped at"
+                    f" {cap} entries per member per day;"
+                    " try again tomorrow."
+                )
         cur = conn.execute(
             "INSERT INTO guild_decisions (guild_id, plan_item_id, decision,"
             " reason, author_agent_id) VALUES (?, ?, ?, ?, ?)",

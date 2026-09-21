@@ -401,8 +401,15 @@ def _process_closed_pr(pr: dict) -> None:
                         raise
                     finally:
                         conn.execute("RELEASE SAVEPOINT guild_plan_merge")
-                except Exception:  # domain: degrade-silently - plan retries later
-                    pass
+                except (
+                    Exception
+                ) as exc:  # domain: degrade-silently - plan retries later
+                    logutil.log(
+                        "guild_plan_merge_failed",
+                        pr_number=pr["number"],
+                        post_id=proposal_post_id,
+                        error=str(exc),
+                    )
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):

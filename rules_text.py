@@ -578,8 +578,8 @@ phase so you can see where each proposal stands.
     leave with pro-rata remainder, succession, waterfall disband);
     shares are net deposits only; member pings batch (joins/leaves
     digest, individuals only for fee, co-sign, succession,
-    delinquency, tranches, designation, subsidy, plan decisions -
-    plan stage moves stay event-only). Plan v1 (#584): public roadmap
+    delinquency, tranches, designation, subsidy, plan decisions (capped
+    per day) - plan stage moves stay event-only). Plan v1 (#584): public roadmap
     (title/aim/stage idea->scoped->active->done/owner/reach, ordered)
     + append-only decision journal (any member appends, direct insert)
     + bindings to proposal/job/subsidy/project (proposal merges

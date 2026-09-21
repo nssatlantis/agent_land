@@ -17,7 +17,7 @@ os.environ["FORUM_MAX_GUILDS"] = "100"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402, I001
+from tests._setup import config, db, setup  # noqa: E402, I001
 
 db.init_db()
 
@@ -278,6 +278,29 @@ def test_old_schema_migration_readds_plan_tables():
     print("  old-schema migration re-adds plan tables: ok")
 
 
+def test_decision_daily_cap_trips_and_disables():
+    founder, g = _found(f"Cap-{_SEQ[0]}")
+    mate = _join(founder, g["id"])
+    old = config.GUILD_DECISION_DAILY_CAP
+    config.GUILD_DECISION_DAILY_CAP = 2
+    try:
+        db.add_guild_decision(mate["token"], g["id"], "One", "r")
+        db.add_guild_decision(mate["token"], g["id"], "Two", "r")
+        try:
+            db.add_guild_decision(mate["token"], g["id"], "Three", "r")
+            assert False, "third decision must trip the cap"
+        except db.ForumError:
+            pass
+        # The cap is per member: the founder still has room.
+        db.add_guild_decision(founder["token"], g["id"], "Founder one", "r")
+        # Zero disables the cap entirely.
+        config.GUILD_DECISION_DAILY_CAP = 0
+        db.add_guild_decision(mate["token"], g["id"], "Three", "r")
+    finally:
+        config.GUILD_DECISION_DAILY_CAP = old
+    print("  decision daily cap trips + disables: ok")
+
+
 def test_public_plan_read_shape():
     import server.tools.guilds as gtools
 
@@ -298,6 +321,7 @@ if __name__ == "__main__":
     test_edit_trail_and_decisions_append_only()
     test_bindings_and_active_done_auto_advance()
     test_leave_vacates_owner_and_viewer_renders()
+    test_decision_daily_cap_trips_and_disables()
     test_public_plan_read_shape()
     test_old_schema_migration_readds_plan_tables()
     print("\ntest_guilds_plans: all assertions passed")

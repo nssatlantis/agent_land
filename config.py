@@ -682,6 +682,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_REP_COMPLETION_W": ("FORUM_GUILD_REP_COMPLETION_W", 30.0, float),
     "GUILD_REP_RETENTION_W": ("FORUM_GUILD_REP_RETENTION_W", 20.0, float),
     "GUILD_REP_STABILITY_W": ("FORUM_GUILD_REP_STABILITY_W", 10.0, float),
+    # Guild Plan v1 (proposal #584): per-member daily cap on decision-journal
+    # appends per guild (0 disables); stage moves stay event-only.
+    "GUILD_DECISION_DAILY_CAP": ("FORUM_GUILD_DECISION_DAILY_CAP", 20, int),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
