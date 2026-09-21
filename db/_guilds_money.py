@@ -810,6 +810,9 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
         from db._guilds_lending import release_guild_stakes_for_disband
 
         release_guild_stakes_for_disband(conn, guild_id)
+        from db._guilds_bonds import release_guild_bonds_for_disband
+
+        release_guild_bonds_for_disband(conn, guild_id)
         balance = guild_balance(conn, guild_id)
         paid: dict[int, int] = {}
         if mode == "zero":
@@ -882,6 +885,9 @@ def admin_disband_guild(admin: str, guild_id: int) -> dict:
             raise ForumError("that guild holds open Treasury debts - repay them first.")
         resolve_guild_jobs_for_disband(conn, guild_id, actor_agent_id=agent["id"])
         release_guild_stakes_for_disband(conn, guild_id)
+        from db._guilds_bonds import release_guild_bonds_for_disband
+
+        release_guild_bonds_for_disband(conn, guild_id)
         out = _disband_distribute(conn, guild_id, "admin disband")
         import events
 

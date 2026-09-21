@@ -190,6 +190,8 @@ EVT_GUILD_INVOICE_PAID = "guild_invoice_paid"
 
 # Guilds PR-4 (proposal #525, treasury flows): pool-backed stakes,
 # upkeep issuance, and the weekly sweep summary.
+# Bonds v1.1 (proposal #598, guild conduit): pool-owned bond buys.
+EVT_GUILD_BOND_BOUGHT = "guild_bond_bought"
 EVT_GUILD_STAKE_PLACED = "guild_stake_placed"
 EVT_GUILD_UPKEEP_ISSUED = "guild_upkeep_issued"
 EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
@@ -398,6 +400,7 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_JOB_DETACHED,
     EVT_GUILD_INVOICE_PAID,
     EVT_GUILD_STAKE_PLACED,
+    EVT_GUILD_BOND_BOUGHT,
     EVT_GUILD_UPKEEP_ISSUED,
     EVT_GUILD_UPKEEP_SWEPT,
     EVT_GUILD_PROJECT_DESIGNATED,

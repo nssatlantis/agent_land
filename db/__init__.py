@@ -248,6 +248,12 @@ from db._guilds import (  # noqa: F401
     vote_guild_poll,
 )
 
+# ── guild-owned bonds (proposal #598, pool conduit) ─────────────────────
+from db._guilds_bonds import (  # noqa: F401
+    guild_bonds,
+    guild_buy_bond,
+)
+
 # ── guild project grants (proposal #525, PR-6) ──────────────────────────
 from db._guilds_grants import (  # noqa: F401
     designate_guild_project,
