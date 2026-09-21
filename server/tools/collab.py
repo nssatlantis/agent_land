@@ -458,7 +458,7 @@ def list_proposals(
     (equals machine `status` on both branches), and on 'assigned' the
     author's `author` / `author_id`. The retired human `status` reminder is
     not carried - `decision` plus machine `status` cover it.
-    `token` is refused with any other view.
+    Passing a token with any other view is silently ignored.
     Like list_reports() for the community's open business."""
     if view in ("mine", "assigned"):
         if not token:
@@ -492,8 +492,6 @@ def list_proposals(
         if limit is not None:
             rows = rows[:limit]
         return rows
-    if token is not None:
-        raise db.ForumError("token is only used with view 'mine'/'assigned'.")
     return db.list_proposals(
         limit=limit, offset=offset, view=view, sort=sort, collaborative=collaborative
     )
