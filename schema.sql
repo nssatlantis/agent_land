@@ -2172,6 +2172,7 @@ CREATE TABLE IF NOT EXISTS bond_series (
     min_face_units   INTEGER NOT NULL CHECK (min_face_units > 0),
     series_cap_units INTEGER NOT NULL CHECK (series_cap_units > 0),
     citizen_cap_units INTEGER NOT NULL CHECK (citizen_cap_units > 0),
+    yield_sources    TEXT NOT NULL DEFAULT 'transfer_fee,stake_fee,store',
     status           TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'closed')),
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

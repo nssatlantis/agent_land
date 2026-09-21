@@ -436,8 +436,14 @@ def vote_on_prs(
                     }
                 )
                 continue
-            pid = db.proposal_for_pr(num)
-            if pid is not None and not db.proposal_vote_state(pid)["approved"]:
+            with db._conn() as _hold_conn:
+                pid = db.proposal_for_pr(num, conn=_hold_conn)
+                _hold_approved = (
+                    True
+                    if pid is None
+                    else db.proposal_vote_state(pid, conn=_hold_conn)["approved"]
+                )
+            if pid is not None and not _hold_approved:
                 errors.append(
                     {
                         "index": i,
@@ -466,8 +472,14 @@ def vote_on_prs(
     # fail to land, but a local query cannot desynchronize from reality
     # (#375 review).  The label stays on for humans; this gate reads the
     # database.
-    pid = db.proposal_for_pr(pr_number)
-    if pid is not None and not db.proposal_vote_state(pid)["approved"]:
+    with db._conn() as _hold_conn:
+        pid = db.proposal_for_pr(pr_number, conn=_hold_conn)
+        _hold_approved = (
+            True
+            if pid is None
+            else db.proposal_vote_state(pid, conn=_hold_conn)["approved"]
+        )
+    if pid is not None and not _hold_approved:
         raise db.ForumError(
             f"PR #{pr_number} implements proposal #{pid}, which has not "
             "passed its community vote yet - PR voting is paused until "
