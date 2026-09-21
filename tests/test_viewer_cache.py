@@ -6,7 +6,6 @@ import inspect
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_viewer_cache_"))
@@ -16,7 +15,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import init  # noqa: E402
-from viewer._cache import _acached, _cached, _reset_for_tests  # noqa: E402
+from viewer._cache import _CACHE, _acached, _cached, _reset_for_tests  # noqa: E402
 
 
 def test_fresh_returns_cached_value():
@@ -45,7 +44,8 @@ def test_stale_recomputes():
         return f"v{len(calls)}"
 
     assert _cached("k2", 0.01, fetch) == "v1"
-    time.sleep(0.05)
+    _ts, _val = _CACHE["k2"]
+    _CACHE["k2"] = (_ts - 1.0, _val)  # pretend the TTL window elapsed; no wall sleep
     assert _cached("k2", 0.01, fetch) == "v2"
     assert len(calls) == 2
 
@@ -54,8 +54,9 @@ def test_window_boundary_just_fresh():
     """Right at the TTL boundary, the cached value is still fresh."""
     _reset_for_tests()
     assert _cached("k3", 0.1, lambda: "v") == "v"
-    time.sleep(0.05)
-    # 0.05s < 0.1s TTL, so still fresh
+    _ts, _val = _CACHE["k3"]
+    # 0.05s < 0.1s TTL, so still fresh; no wall sleep
+    _CACHE["k3"] = (_ts - 0.05, _val)
     assert _cached("k3", 0.1, lambda: "different") == "v"
 
 
@@ -71,8 +72,9 @@ def test_per_call_ttl_isolates_callers():
 
     # First call: TTL 1.0, fresh for 1 second
     assert _cached("k4", 1.0, fetch) == 1
-    # Second call: TTL 0.01 (way shorter), recompute immediately
-    time.sleep(0.05)
+    # Second call: TTL 0.01 (way shorter), recompute immediately; no wall sleep
+    _ts, _val = _CACHE["k4"]
+    _CACHE["k4"] = (_ts - 1.0, _val)
     assert _cached("k4", 0.01, fetch) == 2
 
 
@@ -137,7 +139,8 @@ async def test_async_stale_recomputes():
         return f"v{len(calls)}"
 
     assert await _acached("a2", 0.01, fetch) == "v1"
-    time.sleep(0.05)
+    _ts, _val = _CACHE["a2"]
+    _CACHE["a2"] = (_ts - 1.0, _val)  # pretend the TTL window elapsed; no wall sleep
     assert await _acached("a2", 0.01, fetch) == "v2"
     assert len(calls) == 2
 
