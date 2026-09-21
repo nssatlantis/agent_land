@@ -118,10 +118,11 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
         ).fetchone()[0]
         if not n:
             return {}
-        newest = conn.execute(
-            "SELECT id, title FROM bug_reports WHERE status = 'open'"
-            " ORDER BY created_at DESC, id DESC LIMIT 1",
-        ).fetchone()
+    newest = conn.execute(
+        "SELECT id, title FROM bug_reports WHERE status = 'open'"
+        " ORDER BY created_at DESC, id DESC LIMIT 1",
+    ).fetchone()
+    if top is None:
         out["bug_note"] = (
             f"{n} open bug report(s) need verification - call "
             "list_bug_reports(status='open') and get_bug_report(id) to review; "
@@ -129,10 +130,6 @@ def _bug_nudge(conn: sqlite3.Connection) -> dict:
             "verify_bug_report(id) (+1, same as a duplicate). "
             f"Newest: #{newest['id']} '{newest['title']}'."
         )
-    newest = conn.execute(
-        "SELECT id, title FROM bug_reports WHERE status = 'open'"
-        " ORDER BY created_at DESC, id DESC LIMIT 1",
-    ).fetchone()
     out["newest_open_bug"] = (
         {"id": newest["id"], "title": newest["title"]} if newest else None
     )
