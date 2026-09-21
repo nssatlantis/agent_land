@@ -1199,6 +1199,95 @@ def _supply_split_html(overview: dict) -> str:
     )
 
 
+def _store_donut_html(store: dict) -> str:
+    """Store revenue donut + 7-day bars (chart 4): conic-gradient share
+    of units sold across items (top 6 + Other) plus per-item trailing-7d
+    bars. Reads the already-loaded store_stats dict - zero new queries.
+    Display-only, degrade-silently."""
+    try:
+        items = [i for i in store["items"] if int(i.get("units", 0) or 0) > 0]
+    except (  # domain: degrade-silently - malformed store dict renders no chart
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    if not items:
+        return ""
+    try:
+        ranked = sorted(items, key=lambda i: int(i.get("units", 0) or 0), reverse=True)
+    except (  # domain: degrade-silently - unsortable rows render no chart
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    total = sum(int(i.get("units", 0) or 0) for i in ranked) or 1
+    hues = [160, 210, 265, 320, 25, 55]
+    top, rest = ranked[:6], ranked[6:]
+    stops = []
+    acc = 0.0
+    legend = []
+    for idx, item in enumerate(top):
+        try:
+            units = int(item.get("units", 0) or 0)
+        except (  # domain: degrade-silently - one bad row never blocks the donut
+            TypeError,
+            ValueError,
+        ):
+            continue
+        pct = units / total * 100
+        color = f"hsl({hues[idx % len(hues)]} 60% 42%)"
+        stops.append(f"{color} {acc:.1f}% {acc + pct:.1f}%")
+        acc += pct
+        legend.append(
+            f"<div><span style='color:{color}'>\u25a0</span> {esc(str(item.get('label', '?')))} "
+            f"&middot; {units} sold &middot; {esc(str(item.get('revenue_credits', '0')))} "
+            f"&middot; 7d {int(item.get('units_7d', 0) or 0)}</div>"
+        )
+    if rest:
+        rest_u = sum(int(i.get("units", 0) or 0) for i in rest)
+        stops.append(f"var(--line) {acc:.1f}% 100%")
+        legend.append(
+            f"<div><span style='color:var(--muted)'>\u25a0</span> Other ({len(rest)} items) &middot; {rest_u} sold</div>"
+        )
+    if not stops:
+        return ""
+    bars = []
+    try:
+        max7 = max(int(i.get("units_7d", 0) or 0) for i in ranked) or 0
+    except (  # domain: degrade-silently - bad 7d counts drop the bars only
+        TypeError,
+        ValueError,
+    ):
+        max7 = 0
+    if max7:
+        for item in top:
+            try:
+                units7 = int(item.get("units_7d", 0) or 0)
+            except (  # domain: degrade-silently - one bad row never blocks the bars
+                TypeError,
+                ValueError,
+            ):
+                continue
+            width = int(round(units7 / max7 * 100)) if units7 else 0
+            width_css = "width:" + str(width) + "%"
+            bars.append(
+                f"<div style='display:flex;align-items:center;gap:8px;font-size:13px'>"
+                f"<span style='min-width:140px'>{esc(str(item.get('label', '?')))}</span>"
+                f"<div style='height:8px;background:var(--accent);{width_css};border-radius:4px;opacity:0.7'></div>"
+                f"<span style='color:var(--muted)'>{units7} in 7d</span></div>"
+            )
+    return (
+        '<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
+        f'<div style="width:72px;height:72px;border-radius:50%;background:conic-gradient({", ".join(stops)});"></div>'
+        + '<div style="font-size:13px">'
+        + "".join(legend)
+        + "</div>"
+        + "</div>"
+        + ("".join(bars) if bars else "")
+    )
+
+
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -2032,7 +2121,8 @@ def _economy_body(request: Request) -> str:
             + _card(str(_st["units"]), "units sold")
             + _card(str(_st["buyers"]), "citizens bought")
             + "</div>"
-            "<p style='color:var(--muted);font-size:13px'>Citizens served "
+            + _store_donut_html(_store)
+            + "<p style='color:var(--muted);font-size:13px'>Citizens served "
             f"(ever bought): {int(_store['installed']['citizens_served'])}</p>"
             "<table><thead><tr><th>item</th><th style='text-align:right'>sold</th>"
             "<th style='text-align:right'>revenue</th>"
