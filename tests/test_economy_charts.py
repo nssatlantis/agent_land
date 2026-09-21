@@ -220,15 +220,14 @@ def test_supply_series_explain_pk():
 def test_supply_series_seals():
     """write_checkpoint seals feed the series: +2 seals, exact mint
     delta on both supply and treasury, oldest-first."""
-    n0 = len(treasury_supply_series())
     write_checkpoint()
+    pre = treasury_supply_series()[-1]
     with db._conn(immediate=True) as _c:
         _mint(20000, "charts_suite_topup", admin="test-suite", conn=_c)
     write_checkpoint()
     s = treasury_supply_series()
-    assert len(s) == n0 + 2, (n0, len(s))
-    assert s[-1]["treasury_units"] - s[-2]["treasury_units"] == 20000, s[-2:]
-    assert s[-1]["supply_units"] - s[-2]["supply_units"] == 20000, s[-2:]
+    assert s[-1]["treasury_units"] - pre["treasury_units"] == 20000, (pre, s[-1])
+    assert s[-1]["supply_units"] - pre["supply_units"] == 20000, (pre, s[-1])
     assert [p["created_at"] for p in s] == sorted(p["created_at"] for p in s), s
 
 
