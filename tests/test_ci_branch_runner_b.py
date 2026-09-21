@@ -203,6 +203,24 @@ def test_sandbox_argv_shape():
         _restore_cfg()
 
 
+def test_sandbox_argv_suite_worker_cap():
+    # Armed by default (knob ships at 3): the env rides along.
+    argv, _ = ci_runner._sandbox._sandbox_argv("/tree", "img:abc", "tests/run_all.py")
+    assert "AGENTLAND_CI_WORKERS=3" in argv
+    assert argv[-2:] == ["python3", "tests/run_all.py"]
+    # Zero disables the override: no worker env anywhere.
+    _shadow("CI_RUN_SUITE_WORKERS", 0)
+    try:
+        argv, _ = ci_runner._sandbox._sandbox_argv(
+            "/tree", "img:abc", "tests/run_all.py"
+        )
+        assert not any(
+            isinstance(a, str) and a.startswith("AGENTLAND_CI_WORKERS=") for a in argv
+        )
+    finally:
+        _restore_cfg()
+
+
 def test_image_tag_tracks_requirements_hash():
     repo = Path(tempfile.mkdtemp(prefix="agentland_ci_revfx_"))
     _git(repo, "init", "-b", "main")

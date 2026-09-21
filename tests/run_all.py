@@ -128,6 +128,12 @@ def main():
     workers = min(len(tests), os.cpu_count() or 4)
     if workers_override is not None:
         workers = max(1, min(workers_override, len(tests)))
+    # Sandboxed runs cap via env (see FORUM_CI_RUN_SUITE_WORKERS): the
+    # container sees host cpu_count, oversubscribing its cgroup. A manual
+    # --workers=N flag already won above; env applies only when no flag.
+    _env_workers = os.environ.get("AGENTLAND_CI_WORKERS", "")
+    if workers_override is None and _env_workers.isdigit():
+        workers = max(1, min(int(_env_workers), len(tests)))
 
     # D1 session DBs: one per worker when --session
     session_q: queue.Queue | None = None
@@ -155,6 +161,11 @@ def main():
 
                 importlib.reload(_cfg)
                 importlib.reload(_db)
+                # STALE-CAPTURE fix (citizen-one): reload(_db) re-reads
+                # the cached db._core, whose paths bound at first import;
+                # force the facade attrs every reader resolves via getattr.
+                _db.DATA_DIR = _cfg.DATA_DIR
+                _db.DB_PATH = _cfg.DB_PATH
                 try:
                     _db.init_db()
                 except Exception as exc:
