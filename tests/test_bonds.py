@@ -814,6 +814,8 @@ _V2_EXCLUDED_REASONS = [
     "bond_early_haircut_intake",
     "guild_deposit_intake",
     "job_deposit_treasury_intake",
+    "guild_bond_payout_intake",
+    "guild_stake_conduit_revert_intake",
 ]
 
 
@@ -847,7 +849,13 @@ def test_sources_v2_families_count_their_rows():
 
 
 def test_sources_v2_structural_exclusions_yield_zero():
-    from db._bonds import _SELECTABLE_SOURCES, _trailing_intake_units
+    from db._bonds import _EXCLUDED_REASONS, _SELECTABLE_SOURCES, _trailing_intake_units
+
+    # The product tuple and this pin's list must move together: a new
+    # exclusion without a zero-pin fails here, not silently in prod.
+    assert set(_EXCLUDED_REASONS) <= set(_V2_EXCLUDED_REASONS), set(
+        _EXCLUDED_REASONS
+    ) - set(_V2_EXCLUDED_REASONS)
 
     with db._conn() as conn:
         since = _since_7d()
@@ -908,6 +916,11 @@ def test_bond_family_trailing_keys():
     got = db.bond_family_trailing()
     assert set(got) == set(_SELECTABLE_SOURCES), got
     assert all(isinstance(v, int) for v in got.values()), got
+    # Value pin, not just shape: the helper's own window/loop wiring
+    # must move when traffic lands (an all-zeros stub passes the above).
+    before = got["tags"]
+    _seed_intake("tag_apply_intake", 321)
+    assert db.bond_family_trailing()["tags"] - before == 321
 
 
 if __name__ == "__main__":
