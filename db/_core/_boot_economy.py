@@ -422,6 +422,16 @@ def run(conn) -> None:
     # schema.sql). Plain CREATE TABLE IF NOT EXISTS: both tables are
     # new, no ALTER anywhere. Indexes ride here, never schema.sql's
     # executescript on a possibly-migrating tree (AGENTS.md rule).
-    from db._bonds import _ensure_tables
+    from db._bonds import DEFAULT_YIELD_SOURCES, _ensure_tables
 
     _ensure_tables(conn)
+    # Per-series yield sources (Bonds v1.1): existing series predate the
+    # column and correctly read as the default trio; fresh DBs carry it
+    # via schema.sql. No CHECK twin: SQLite cannot add constraints to a
+    # live table, and every reader parses leniently with trio fallback.
+    _ensure_column(
+        conn,
+        "bond_series",
+        "yield_sources",
+        "TEXT NOT NULL DEFAULT '" + ",".join(DEFAULT_YIELD_SOURCES) + "'",
+    )

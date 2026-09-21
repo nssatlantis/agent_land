@@ -200,8 +200,9 @@ def _process_closed_pr(pr: dict) -> None:
     # or 'Proposal:' line written into the description must not
     # redirect karma or proposal lifecycle. The parse is the
     # fallback for PRs never linked in our database.
-    opener = db.pr_opener(pr["number"]) or pr.get("citizen")
-    db_linked = db.proposal_for_pr(pr["number"])
+    with db._conn() as _read_conn:
+        opener = db.pr_opener(pr["number"], conn=_read_conn) or pr.get("citizen")
+        db_linked = db.proposal_for_pr(pr["number"], conn=_read_conn)
     proposal_post_id = db_linked or pr.get("proposal_post_id")
     if pr.get("merged_at"):
         # Bug bounties (proposal #509): a merged fix auto-closes the

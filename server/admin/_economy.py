@@ -27,7 +27,8 @@ def _bond_series_table() -> str:
     rows = "".join(
         f"<tr><td>{int(s['series_id'])}</td><td>{esc(s['name'])}</td>"
         f"<td>{int(s['term_days'])}d</td><td>{esc(s['status'])}</td>"
-        f"<td>{esc(db.format_credits(s['outstanding_units']))}</td></tr>"
+        f"<td>{esc(db.format_credits(s['outstanding_units']))}</td>"
+        f"<td>{esc('+'.join(s['yield_sources']))}</td></tr>"
         for s in series
     )
     holds = []
@@ -44,7 +45,7 @@ def _bond_series_table() -> str:
     table = (
         "<h3>Bond series (ids for the close form)</h3>"
         "<table><tr><th>id</th><th>series</th><th>term</th>"
-        "<th>status</th><th>outstanding</th></tr>" + rows + "</table>"
+        "<th>status</th><th>outstanding</th><th>sources</th></tr>" + rows + "</table>"
     )
     if holds:
         table += (
@@ -98,6 +99,15 @@ def _render_economy(request) -> str:
         'style="width:120px;margin-right:6px"> '
         '<input name="min_face" placeholder="min face (1.0)" '
         'style="width:110px;margin-right:6px"> '
+        '<span style="margin-right:6px">sources:'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="transfer_fee" checked> tx fees</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="stake_fee" checked> stake fees</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="store" checked> store</label>'
+        ' <label><input type="checkbox" name="yield_sources"'
+        ' value="spend_all"> all spend</label></span> '
         '<button type="submit">open series</button></form>'
         + _bond_series_table()
         + '<form method="post" action="/admin/economy/bonds/close">'
@@ -175,6 +185,12 @@ async def bond_series_open(request):
         return float(raw) if raw else None
 
     try:
+        selected = list(form.getlist("yield_sources"))
+    except AttributeError:
+        # domain: fail-loudly - an unexpected form shape surfaces as a
+        # flash, never a 500 (getlist has no other in-repo precedent)
+        return _flash(request, "yield sources arrived in an unexpected shape.")
+    try:
         result = db.bond_series_open(
             str(form.get("name") or ""),
             term,
@@ -182,6 +198,7 @@ async def bond_series_open(request):
             series_cap_credits=_opt("series_cap"),
             citizen_cap_credits=_opt("citizen_cap"),
             min_face_credits=_opt("min_face"),
+            yield_sources=selected,
         )
     except db.ForumError as exc:
         # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
