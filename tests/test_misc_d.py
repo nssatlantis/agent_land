@@ -247,6 +247,8 @@ def main():
             "idx_credit_entries_tx must exist after the migration"
         )
 
+    from tests._helpers import assert_upgrade_column
+
     assert_upgrade_column(
         "credit_entries",
         _OLD_CREDIT_DDL,
