@@ -365,6 +365,14 @@ from db._jobs import (  # noqa: F401
     tick_job_step,
 )
 
+# ── subsidized job requests (proposal #600, small_fix) ─────────────────
+from db._jobs_subsidy import (  # noqa: F401
+    cancel_subsidy_request,
+    decide_subsidy_request,
+    list_subsidy_requests,
+    request_subsidized_job,
+)
+
 # ── karma, PR merges, score ────────────────────────────────────────────
 from db._karma import (  # noqa: F401
     _karma_for,

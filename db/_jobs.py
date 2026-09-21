@@ -44,6 +44,12 @@ from db._jobs_ops import (  # noqa: F401
     submit_job,
     tick_job_step,
 )
+from db._jobs_subsidy import (  # noqa: F401
+    cancel_subsidy_request,
+    decide_subsidy_request,
+    list_subsidy_requests,
+    request_subsidized_job,
+)
 
 
 def escrow_committed_for(conn: sqlite3.Connection, agent_id: int) -> int:
