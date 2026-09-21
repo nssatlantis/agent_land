@@ -56,6 +56,46 @@ def _count_formatted(result) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _scratch_dir(name: str, target: str) -> str:
+    """Writable scratch dir for static-check caches.
+
+    `tempfile.gettempdir()` raises when no candidate is usable (e.g. the
+    sandbox /tmp tmpfs filled mid-suite) - fall back through /tmp, HOME,
+    then a dot-dir under the checked-out target. Every candidate is
+    probed with makedirs + mkstemp so an unwritable pick never escapes.
+    Raises OSError when nothing is writable; the caller reports that as
+    a parseable STATIC RESULT: FAIL instead of a bare traceback."""
+    candidates: list[str] = []
+    try:
+        candidates.append(tempfile.gettempdir())
+    except Exception:
+        pass  # domain: degrade-silently - try the next candidate
+    candidates.append("/tmp")
+    _home = os.environ.get("HOME")
+    if _home:
+        candidates.append(_home)
+    candidates.append(os.path.join(target, ".agentland_tmp"))
+    _seen: set[str] = set()
+    last_exc: Exception | None = None
+    for _base in candidates:
+        if _base in _seen:
+            continue
+        _seen.add(_base)
+        try:
+            _d = os.path.join(_base, name)
+            os.makedirs(_d, exist_ok=True)
+            _fd, _probe = tempfile.mkstemp(prefix=".w_", dir=_d)
+            os.close(_fd)
+            os.unlink(_probe)
+            return _d
+        except Exception as _exc:
+            last_exc = _exc
+            continue  # domain: degrade-silently - try next candidate
+    raise OSError(  # domain: fail-loudly - caller reports STATIC FAIL
+        f"no writable scratch dir for {name!r}: {last_exc or 'all skipped'}"
+    )
+
+
 def run_static_checks(target: str = REPO) -> int:
     """The static half, shared verbatim with tests/run_ci.py (which
     imports this - one source, never two copies drifting apart). `target`
@@ -82,9 +122,19 @@ def run_static_checks(target: str = REPO) -> int:
 
     # compileall -q . -- pyc goes to tmpfs because /repo is read-only in the
     # sandbox, and the compile itself must not touch the mounted checkout.
+    # _scratch_dir falls back past a filled tmpfs so exhaustion reports a
+    # parseable FAIL instead of an unhandled gettempdir traceback.
     env = dict(os.environ)
-    pycache_dir = os.path.join(tempfile.gettempdir(), "agentland_pyc")
-    os.makedirs(pycache_dir, exist_ok=True)
+    try:
+        pycache_dir = _scratch_dir("agentland_pyc", target)
+    except OSError as _exc:  # domain: fail-loudly - parseable STATIC FAIL
+        print(f"compileall: fail ({_exc})")
+        print(
+            "STATIC SUMMARY: compileall=fail mypy=-1 "
+            "ruff_check=-1 ruff_format=-1 bash_n=skip"
+        )
+        print(f"STATIC RESULT: FAIL ({_exc})")
+        return 1
     env["PYTHONPYCACHEPREFIX"] = pycache_dir
     r = _run([sys.executable, "-m", "compileall", "-q", target], target, env=env)
     compileall = "ok" if r.returncode == 0 else "fail"
@@ -96,7 +146,11 @@ def run_static_checks(target: str = REPO) -> int:
     # pyproject.toml [tool.mypy]). The sandbox mounts a persistent
     # per-slot cache at AGENTLAND_MYPY_CACHE_DIR when configured;
     # anything unwritable falls back to the per-run tmpfs cache.
-    _default_mypy_cache = os.path.join(tempfile.gettempdir(), "agentland_mypy", "cache")
+    try:
+        _mypy_scratch = _scratch_dir("agentland_mypy", target)
+    except OSError:  # domain: degrade-silently - reuse the proven base
+        _mypy_scratch = os.path.join(os.path.dirname(pycache_dir), "agentland_mypy")
+    _default_mypy_cache = os.path.join(_mypy_scratch, "cache")
     mypy_cache = os.environ.get("AGENTLAND_MYPY_CACHE_DIR") or _default_mypy_cache
     try:
         os.makedirs(mypy_cache, exist_ok=True)

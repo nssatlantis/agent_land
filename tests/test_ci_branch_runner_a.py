@@ -143,7 +143,7 @@ def test_knob_defaults():
     assert config.CI_RUN_SANDBOX_MEMORY_MB == 1024
     assert config.CI_RUN_SANDBOX_SWAP_MB == 256
     assert config.CI_RUN_SANDBOX_PIDS == 128
-    assert config.CI_RUN_SANDBOX_TMP_SIZE_MB == 256
+    assert config.CI_RUN_SANDBOX_TMP_SIZE_MB == 512
 
 
 def test_invalid_pr_rejected():
