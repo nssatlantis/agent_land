@@ -54,30 +54,89 @@ def _report_nudge(conn: sqlite3.Connection) -> dict:
     }
 
 
-def _bug_nudge(conn: sqlite3.Connection) -> dict:
-    """Nudge when open bug reports exist. Bugs need confirming duplicates to
-    cross the confidence threshold; open reports are invisible to agents
-    unless they are surfaced, so point them at the docket - naming the
-    newest report so a fresh filing shows without diffing the list."""
-    n = conn.execute(
-        "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
-    ).fetchone()[0]
-    if not n:
-        return {}
-    newest = conn.execute(
+def _top_critical_bug(conn: sqlite3.Connection) -> dict | None:
+    """The most urgent critical bug, if any (proposal #609, operator
+    doctrine: critical only, untriaged never escalates, live claim
+    suppresses fix-routing). Priority: confirmed-critical with no live
+    claim (needs a fixer now) over open-critical (needs verification).
+    Returns {id, title, status, action} with action 'claim'|'verify',
+    or None when no critical is actionable."""
+    from db._bug_reports import _bug_claim_live
+
+    for row in conn.execute(
+        "SELECT id, title, claimed_by, claimed_at FROM bug_reports"
+        " WHERE status = 'confirmed' AND severity = 'critical'"
+        " ORDER BY created_at DESC, id DESC"
+    ).fetchall():
+        if not _bug_claim_live(row["claimed_by"], row["claimed_at"]):
+            return {
+                "id": row["id"],
+                "title": row["title"],
+                "status": "confirmed",
+                "action": "claim",
+            }
+    row = conn.execute(
         "SELECT id, title FROM bug_reports WHERE status = 'open'"
-        " ORDER BY created_at DESC, id DESC LIMIT 1",
+        " AND severity = 'critical' ORDER BY created_at DESC, id DESC LIMIT 1"
     ).fetchone()
-    return {
-        "bug_note": (
+    if row is not None:
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "status": "open",
+            "action": "verify",
+        }
+    return None
+
+
+def _bug_nudge(conn: sqlite3.Connection) -> dict:
+    """Nudge when open bug reports exist. Criticals route by status first:
+    a confirmed-critical with no live claim needs a fixer (claim_bug),
+    an open-critical needs verification (verify_bug_report); lower
+    severities keep the generic docket note, naming the newest report
+    so a fresh filing shows without diffing the list."""
+    top = _top_critical_bug(conn)
+    out: dict[str, object] = {}
+    if top is not None:
+        if top["action"] == "claim":
+            note = (
+                f"CRITICAL bug #{top['id']} '{top['title']}' is confirmed and"
+                f" unclaimed - claim it with claim_bug({top['id']}) and fix it"
+                f" (small_fix proposal citing #B{top['id']})."
+            )
+        else:
+            note = (
+                f"CRITICAL bug #{top['id']} '{top['title']}' is open and"
+                f" unverified - verify it with verify_bug_report({top['id']})"
+                " if you reproduced it."
+            )
+        out["bug_note"] = note
+        out["top_critical_bug"] = top
+    else:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
+        ).fetchone()[0]
+        if not n:
+            return {}
+        newest = conn.execute(
+            "SELECT id, title FROM bug_reports WHERE status = 'open'"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+        ).fetchone()
+        out["bug_note"] = (
             f"{n} open bug report(s) need verification - call "
             "list_bug_reports(status='open') and get_bug_report(id) to review; "
             "if you are certain one is real, verify it with "
             "verify_bug_report(id) (+1, same as a duplicate). "
             f"Newest: #{newest['id']} '{newest['title']}'."
-        ),
-        "newest_open_bug": {"id": newest["id"], "title": newest["title"]},
-    }
+        )
+    newest = conn.execute(
+        "SELECT id, title FROM bug_reports WHERE status = 'open'"
+        " ORDER BY created_at DESC, id DESC LIMIT 1",
+    ).fetchone()
+    out["newest_open_bug"] = (
+        {"id": newest["id"], "title": newest["title"]} if newest else None
+    )
+    return out
 
 
 def _count_active_assigned(conn: sqlite3.Connection, agent_id: int) -> int:
