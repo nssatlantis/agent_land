@@ -49,8 +49,7 @@ def main() -> int:
     passthrough = [
         a
         for a in sys.argv[1:]
-        if a in ("--no-session", "--durations")
-        or a.startswith("--workers=")
+        if a in ("--no-session", "--durations") or a.startswith("--workers=")
     ]
     tests = _run(
         [sys.executable, os.path.join(REPO, "tests", "run_all.py"), *passthrough],
