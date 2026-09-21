@@ -50,6 +50,7 @@ from db._nudges import (
     _subscription_lines,
     _subscription_nudge,
     _todo_open_rows,
+    _top_critical_bug,
     _unread_mail_nudge,
     _workflow_start_nudge,
 )
@@ -729,6 +730,7 @@ def check_in(token: str) -> dict:
                 "list_reports(status='open')."
             )
         newest_open_bug = None
+        top_critical_bug = _top_critical_bug(conn)
         if open_bug_reports:
             _nb = conn.execute(
                 "SELECT id, title FROM bug_reports WHERE status = 'open'"
@@ -834,6 +836,7 @@ def check_in(token: str) -> dict:
             "open_reports": open_reports,
             "open_bug_reports": open_bug_reports,
             "newest_open_bug": newest_open_bug,
+            "top_critical_bug": top_critical_bug,
             "proposals_awaiting_review": awaiting_review,
             "open_prs_needing_vote": prs_needing_vote,
             "assigned_proposals": assigned,
