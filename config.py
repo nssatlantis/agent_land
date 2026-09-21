@@ -922,6 +922,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Persistent mypy cache volume for sandboxed runs: when set to a host
+    # directory, each slot mounts <dir>/slot<N> at the container's mypy
+    # cache path (run_static honors AGENTLAND_MYPY_CACHE_DIR with a tmpfs
+    # fallback when unwritable), so incremental checking survives across
+    # runs. Empty (default) keeps today's per-run tmpfs cache. The host
+    # dir must be writable by the container uid (1000:1000).
+    "CI_RUN_MYPY_CACHE_DIR": ("FORUM_CI_RUN_MYPY_CACHE_DIR", "", str),
     # Quiet-bench: db_benchmark medians move with host contention (the bench
     # shares the slot pool identically with tests, and a run starting alone
     # can be live-down-throttled mid-run when others arrive). When on (and
