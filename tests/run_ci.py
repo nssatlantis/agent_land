@@ -49,7 +49,7 @@ def main() -> int:
     passthrough = [
         a
         for a in sys.argv[1:]
-        if a in ("--session", "--no-session", "--durations")
+        if a in ("--no-session", "--durations")
         or a.startswith("--workers=")
     ]
     tests = _run(
