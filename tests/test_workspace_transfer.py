@@ -921,6 +921,93 @@ def test_download_filename_sanitized():
     print("  download filename sanitized (CRLF/quotes/controls): ok")
 
 
+def test_non_ascii_ticket_404s(agents):
+    # A URL-decoded non-ASCII ticket can never be minted (token_urlsafe
+    # is ASCII): it must 404 as unknown, never 500 into a bug report.
+    try:
+        db.redeem_transfer_ticket("xfer_\u00e9", "read", "a.txt")
+    except Exception as exc:
+        assert "unknown transfer ticket" in str(exc), exc
+        assert getattr(exc, "detail", {}).get("http_status") == 404, exc
+    else:
+        raise AssertionError("expected 404 for a non-ASCII ticket")
+    resp = _run(TR.transfer_download(_req("GET", "xfer_\u00e9", "a.txt")))
+    assert resp.status_code == 404, (resp.status_code, resp.body)
+    print("  non-ASCII ticket 404s (never 500s): ok")
+
+
+def test_fetch_mint_enforces_cap(agents):
+    pid = _prop(agents, "epsilon", title="Bigmint Xfer")
+    tok = agents["epsilon"]["token"]
+    _claim(agents, pid, "big", who="epsilon")
+    dest = ws._claim_dir(agents["epsilon"]["agent_id"], pid, "big")
+    with open(os.path.join(dest, "huge.bin"), "wb") as fh:
+        fh.write(b"z" * ((1 << 20) + 8))
+    # Over-cap files refuse at mint (they could never download): no
+    # full read, no ticket row spent on an unusable path.
+    assert "transfer cap" in expect_error(
+        TT.workspace_fetch_ticket, tok, pid, "big", ["huge.bin"]
+    )
+    print("  fetch mint fails fast over the transfer cap: ok")
+
+
+def test_content_write_directory_refused(agents):
+    pid = _prop(agents, "epsilon", title="Dirwrite Xfer")
+    tok = agents["epsilon"]["token"]
+    _claim(agents, pid, "dirw", who="epsilon")
+    dest = ws._claim_dir(agents["epsilon"]["agent_id"], pid, "dirw")
+    os.makedirs(os.path.join(dest, "subdir"), exist_ok=True)
+    try:
+        WT.workspace_write_file(tok, pid, "dirw", "subdir", content="x\n")
+    except Exception as exc:
+        assert "is a directory" in str(exc), exc
+    else:
+        raise AssertionError("expected is-a-directory refusal")
+    print("  content write to a directory names itself: ok")
+
+
+def test_expect_shape_validated(agents):
+    pid = _prop(agents, "gamma", title="Shape Xfer")
+    tok = agents["gamma"]["token"]
+    _claim(agents, pid, "shape", who="gamma")
+    WT.workspace_write_file(tok, pid, "shape", "s.txt", content="v\n")
+    try:
+        WT.workspace_write_file(
+            tok, pid, "shape", "s.txt", content="v2\n", expect_sha256="zzz"
+        )
+    except Exception as exc:
+        assert "64-hex" in str(exc), exc
+    else:
+        raise AssertionError("expected shape refusal for a garbage pin")
+    print("  garbage expect_sha256 misreports never (shape first): ok")
+
+
+def test_mcp_noop_touches_clocks(agents):
+    pid = _prop(agents, "zeta", title="Nooptouch Xfer")
+    tok = agents["zeta"]["token"]
+    _claim(agents, pid, "ntouch", who="zeta")
+    WT.workspace_write_file(tok, pid, "ntouch", "n.txt", content="same\n")
+    dest = ws._claim_dir(agents["zeta"]["agent_id"], pid, "ntouch")
+    before_mtime = os.path.getmtime(os.path.join(dest, "n.txt"))
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE workspace_claims SET updated_at = '2000-01-01T00:00:00.000Z'"
+            " WHERE proposal_id = ? AND name = 'ntouch'",
+            (pid,),
+        )
+    r = WT.workspace_write_file(tok, pid, "ntouch", "n.txt", content="same\n")
+    assert r["changed"] is False, r
+    assert os.path.getmtime(os.path.join(dest, "n.txt")) == before_mtime
+    with db._conn() as conn:
+        updated = conn.execute(
+            "SELECT updated_at FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = 'ntouch'",
+            (pid,),
+        ).fetchone()["updated_at"]
+    assert updated > "2000-01-01T00:00:00.000Z", updated
+    print("  MCP quiet no-op advances clocks without writing: ok")
+
+
 def test_public_base_url_parity():
     import config as _cfg
 
@@ -978,6 +1065,11 @@ def main():
     test_corrupt_row_fails_loud(agents)
     test_cap_floor_defaults(agents)
     test_download_filename_sanitized()
+    test_non_ascii_ticket_404s(agents)
+    test_fetch_mint_enforces_cap(agents)
+    test_content_write_directory_refused(agents)
+    test_expect_shape_validated(agents)
+    test_mcp_noop_touches_clocks(agents)
     test_legacy_db_migrates()
     _SB.close()
     print("test_workspace_transfer: all scenarios passed")
