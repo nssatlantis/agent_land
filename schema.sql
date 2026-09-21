@@ -2261,3 +2261,68 @@ CREATE INDEX IF NOT EXISTS idx_bonds_owner ON treasury_bonds(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_bonds_maturity
     ON treasury_bonds(status, matures_at);
 CREATE INDEX IF NOT EXISTS idx_bonds_series ON treasury_bonds(series_id, status);
+-- Guild Plan v1 (proposal #584): public roadmap + decision log behind the
+-- one-line mission. Plan items are coarse goals (not task checklists)
+-- with stage/owner/reach; decisions are the append-only precedent
+-- journal (direct insert, Option A); bindings link items to live
+-- machinery (proposal/job/subsidy/project). New tables: CREATE TABLE
+-- IF NOT EXISTS is a sufficient upgrade path (init_db executescripts
+-- schema.sql every boot) - no ALTER anywhere in this PR.
+CREATE TABLE IF NOT EXISTS guild_plan_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    title            TEXT NOT NULL CHECK (title <> ''),
+    aim              TEXT NOT NULL DEFAULT '',
+    stage            TEXT NOT NULL DEFAULT 'idea'
+        CHECK (stage IN ('idea', 'scoped', 'active', 'done')),
+    owner_agent_id   INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    reach_text       TEXT NOT NULL DEFAULT '',
+    position         INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_plan_items_guild
+    ON guild_plan_items(guild_id, position, id);
+CREATE TABLE IF NOT EXISTS guild_plan_edits (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id          INTEGER NOT NULL REFERENCES guild_plan_items(id) ON DELETE CASCADE,
+    editor_agent_id  INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    old_stage        TEXT,
+    new_stage        TEXT,
+    old_title        TEXT,
+    new_title        TEXT,
+    old_aim          TEXT,
+    new_aim          TEXT,
+    old_reach        TEXT,
+    new_reach        TEXT,
+    old_position     INTEGER,
+    new_position     INTEGER,
+    edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_plan_edits_item
+    ON guild_plan_edits(item_id, id);
+CREATE TABLE IF NOT EXISTS guild_decisions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    plan_item_id     INTEGER REFERENCES guild_plan_items(id) ON DELETE SET NULL,
+    decision         TEXT NOT NULL CHECK (decision <> ''),
+    reason           TEXT NOT NULL DEFAULT '',
+    author_agent_id  INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_decisions_guild
+    ON guild_decisions(guild_id, id);
+CREATE INDEX IF NOT EXISTS idx_guild_decisions_item
+    ON guild_decisions(plan_item_id, id);
+CREATE TABLE IF NOT EXISTS guild_plan_bindings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id          INTEGER NOT NULL REFERENCES guild_plan_items(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL CHECK (kind IN ('proposal', 'job', 'subsidy', 'project')),
+    target_id        INTEGER NOT NULL CHECK (target_id > 0),
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (item_id, kind, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guild_plan_bindings_item
+    ON guild_plan_bindings(item_id);
+CREATE INDEX IF NOT EXISTS idx_guild_plan_bindings_target
+    ON guild_plan_bindings(kind, target_id);

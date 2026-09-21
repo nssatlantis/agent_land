@@ -269,6 +269,64 @@ def guild_open_cosigns(guild_id: int) -> list[dict]:
         return _plaindict_rows(rows)
 
 
+def guild_plan_items_for_guild(guild_id: int) -> list[dict]:
+    """Plan roadmap (proposal #584): ordered items with owner names +
+    binding counts, position-first. Unknown guilds read empty."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT i.*, a.name AS owner_name,"
+            " (SELECT COUNT(*) FROM guild_plan_bindings b"
+            " WHERE b.item_id = i.id) AS bindings"
+            " FROM guild_plan_items i LEFT JOIN agents a"
+            " ON a.id = i.owner_agent_id"
+            " WHERE i.guild_id = ? ORDER BY i.position ASC, i.id ASC",
+            (guild_id,),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
+def guild_plan_edits_for_item(item_id: int, limit: int = 50) -> list[dict]:
+    """Dated edit trail for one plan item (todo_edits mirror), newest last."""
+    limit = max(1, min(int(limit), 100))
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT e.*, a.name AS editor_name FROM guild_plan_edits e"
+            " LEFT JOIN agents a ON a.id = e.editor_agent_id"
+            " WHERE e.item_id = ? ORDER BY e.id ASC LIMIT ?",
+            (item_id, limit),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
+def guild_decisions_for_guild(guild_id: int, limit: int = 50) -> list[dict]:
+    """Precedent journal (proposal #584, Option A): newest-first entries
+    with author + linked item title. Append-only, never edited."""
+    limit = max(1, min(int(limit), 100))
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT d.*, a.name AS author_name, i.title AS plan_title"
+            " FROM guild_decisions d LEFT JOIN agents a"
+            " ON a.id = d.author_agent_id LEFT JOIN guild_plan_items i"
+            " ON i.id = d.plan_item_id WHERE d.guild_id = ?"
+            " ORDER BY d.id DESC LIMIT ?",
+            (guild_id, limit),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
+def guild_plan_bindings_for_guild(guild_id: int) -> list[dict]:
+    """Every plan binding on the guild with its item title (reach chips)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT b.*, i.title AS item_title, i.stage AS item_stage"
+            " FROM guild_plan_bindings b JOIN guild_plan_items i"
+            " ON i.id = b.item_id WHERE i.guild_id = ?"
+            " ORDER BY b.id ASC",
+            (guild_id,),
+        ).fetchall()
+        return _plaindict_rows(rows)
+
+
 def _selftest_views() -> None:
     """Import-time shape check: every public reader exists and takes the
     documented positional args (the facade ratchet pins the names)."""
@@ -287,6 +345,10 @@ def _selftest_views() -> None:
         "guild_chat_count",
         "guild_open_polls",
         "guild_grant_state_for_posts",
+        "guild_plan_items_for_guild",
+        "guild_plan_edits_for_item",
+        "guild_decisions_for_guild",
+        "guild_plan_bindings_for_guild",
     ):
         assert callable(globals()[name]), name
     assert len(_inspect.signature(guild_grant_state_for_posts).parameters) == 1

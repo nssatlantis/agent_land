@@ -682,6 +682,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GUILD_REP_COMPLETION_W": ("FORUM_GUILD_REP_COMPLETION_W", 30.0, float),
     "GUILD_REP_RETENTION_W": ("FORUM_GUILD_REP_RETENTION_W", 20.0, float),
     "GUILD_REP_STABILITY_W": ("FORUM_GUILD_REP_STABILITY_W", 10.0, float),
+    # Guild Plan v1 (proposal #584): per-member daily cap on decision-journal
+    # appends per guild (0 disables); stage moves stay event-only.
+    "GUILD_DECISION_DAILY_CAP": ("FORUM_GUILD_DECISION_DAILY_CAP", 20, int),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
@@ -922,6 +925,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Suite-worker cap inside sandboxed runs: run_all derives its worker
+    # count from host cpu_count, oversubscribing the container cgroup
+    # (and the small host under overlapping slots). The container gets
+    # AGENTLAND_CI_WORKERS, which run_all honors below any explicit
+    # --workers=N flag. 0 disables the override (bare formula). Armed at 3
+    # for the 4c/8GB host (12 overlapping test processes become 9).
+    "CI_RUN_SUITE_WORKERS": ("FORUM_CI_RUN_SUITE_WORKERS", 3, int),
+    # Persistent mypy cache volume for sandboxed runs: when set to a host
+    # directory, each slot mounts <dir>/slot<N> at the container's mypy
+    # cache path (run_static honors AGENTLAND_MYPY_CACHE_DIR with a tmpfs
+    # fallback when unwritable), so incremental checking survives across
+    # runs. Empty (default) keeps today's per-run tmpfs cache. The host
+    # dir must be writable by the container uid (1000:1000).
+    "CI_RUN_MYPY_CACHE_DIR": ("FORUM_CI_RUN_MYPY_CACHE_DIR", "", str),
     # Quiet-bench: db_benchmark medians move with host contention (the bench
     # shares the slot pool identically with tests, and a run starting alone
     # can be live-down-throttled mid-run when others arrive). When on (and

@@ -249,9 +249,11 @@ def main():
         )
         ci_runner._sandbox._docker_available = lambda: True
         ci_runner._sandbox._ensure_image = lambda t, rev: "fake:tag"
-        ci_runner._sandbox._sandbox_argv = lambda t, tag, rel, extra_env=None: (
-            [sys.executable, "-c", "pass"],
-            "test",
+        ci_runner._sandbox._sandbox_argv = (
+            lambda t, tag, rel, extra_env=None, mypy_cache_host_dir=None: (
+                [sys.executable, "-c", "pass"],
+                "test",
+            )
         )
         trees._prepare_named_tree = lambda _aid, _name, _changes: (
             _scratch,

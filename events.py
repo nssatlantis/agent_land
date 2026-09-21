@@ -205,6 +205,13 @@ EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
 EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
 EVT_GUILD_GRANT_T1 = "guild_grant_t1"
 EVT_GUILD_GRANT_T2 = "guild_grant_t2"
+# Guild Plan v1 (proposal #584): public roadmap stages, decision
+# journal entries, and plan bindings - the durable layer between the
+# one-line mission and nightly execution.
+EVT_GUILD_PLAN_CREATED = "guild_plan_created"
+EVT_GUILD_PLAN_STAGE = "guild_plan_stage"
+EVT_GUILD_PLAN_DECISION = "guild_plan_decision"
+EVT_GUILD_PLAN_BINDING = "guild_plan_binding"
 
 # Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
 # lifecycle, debt issue/settle/write-off, match open/pay, seizure, and
@@ -412,6 +419,10 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_PROJECT_DESIGNATED,
     EVT_GUILD_GRANT_T1,
     EVT_GUILD_GRANT_T2,
+    EVT_GUILD_PLAN_CREATED,
+    EVT_GUILD_PLAN_STAGE,
+    EVT_GUILD_PLAN_DECISION,
+    EVT_GUILD_PLAN_BINDING,
     EVT_GUILD_SUBSIDY_REQUESTED,
     EVT_GUILD_SUBSIDY_PAID,
     EVT_GUILD_DEBT_ISSUED,
@@ -936,6 +947,28 @@ def event_total(
         _total_cache.clear()
         _total_cache[key] = (time.monotonic(), result)
     return result
+
+
+def event_counts_by_day(*, since: str, until: str | None = None) -> dict[str, int]:
+    """Count events per UTC day in a window, returned as {YYYY-MM-DD: count}.
+    Uses a SQL GROUP BY for efficiency -- no row fetch, no limit cap.
+    *since* is inclusive (>=), *until* is exclusive (<), both ISO-8601."""
+    since_bound = db._since_bound(since)
+    params: list[object] = [since_bound]
+    until_clause = ""
+    if until is not None:
+        until_bound = db._since_bound(until)
+        until_clause = " AND e.created_at < ?"
+        params.append(until_bound)
+    with db._conn() as conn:
+        rows = conn.execute(
+            f"SELECT substr(e.created_at, 1, 10) AS day, COUNT(*) AS n"
+            f" FROM events e"
+            f" WHERE e.created_at >= ?{until_clause}"
+            f" GROUP BY day",
+            params,
+        ).fetchall()
+    return {r["day"]: r["n"] for r in rows}
 
 
 # -- benchmark visibility helpers (shared by viewer/_ci and db/_nudges) ---
