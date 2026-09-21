@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import config
 import db
 import db._aggregates as aggregates
-from events import query_events
+from events import event_counts_by_day
 from viewer._utils import esc
 
 # ---------------------------------------------------------- pulse panels --
@@ -35,7 +35,7 @@ _FUNNEL_CHIP_VIEWS = (
     ("ideas", "ideas"),
 )
 
-_trend_cache: tuple[int, list] | None = None
+_trend_cache: tuple[int, dict[str, int]] | None = None
 
 _panel_cache: dict[str, tuple[int, dict]] = {}
 
@@ -44,7 +44,7 @@ def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
     """One coarse-bucket cache slot per panel aggregate. The pulse-panels poll is 30s (hosted on /analytics)
     but the docket/economy aggregates are whole-table reads; a single
     (bucket, value) per named slot makes each ~60s window re-run them once
-    instead of once per poll (the same pattern _trend_rows uses for the
+    instead of once per poll (the same pattern _trend_counts uses for the
     ledger window). The key set is fixed at the two call sites below, so the
     dict is bounded by construction - never a per-bucket grower."""
     global _panel_cache
@@ -58,42 +58,34 @@ def _panel_cached(key: str, fetch: Callable[[], dict]) -> dict:
     return value
 
 
-def _trend_rows(since: str) -> list:
-    """Fetch (and briefly cache) the 14-day events window for the activity
-    trend. One ledger scan per window instead of per pulse-panels poll. The window
-    shifts by only a few seconds per request, so a single coarse-bucket cache
-    (rather than the millisecond-precise ``since``) serves every poll in the
-    window without re-scanning the ledger. Only the current bucket is ever
-    read, so the cache holds exactly one entry and is replaced on bucket
-    change - never accumulated."""
+def _trend_counts(since: str, until: str) -> dict[str, int]:
+    """Fetch (and briefly cache) per-day event counts for the activity
+    trend. Uses a SQL GROUP BY -- no row fetch, no limit cap. The cache
+    holds one coarse-bucket entry keyed on the ~60s TTL window."""
     global _trend_cache
     ttl = int(config.VIEWER_CACHE_TTL or 60)
     bucket = int(time.monotonic() // ttl)
     if _trend_cache is not None and _trend_cache[0] == bucket:
         return _trend_cache[1]
-    rows = query_events(since=since, limit=int(config.PULSE_TREND_LIMIT or 2000))
-    _trend_cache = (bucket, rows)
-    return rows
+    counts = event_counts_by_day(since=since, until=until)
+    _trend_cache = (bucket, counts)
+    return counts
 
 
 def _activity_trend() -> str:
     """A 14-day activity series derived from the events ledger (bucketed by
-    UTC day, client-side) plus a 'last 7d vs prior 7d' delta, and the
-    all-time activity total. recent_activity_total() has no window, so the
-    daily series comes from query_events(since=...) - disclosed in the PR.
+    UTC day, SQL GROUP BY) plus a 'last 7d vs prior 7d' delta, and the
+    all-time activity total.
 
-    The events query is expensive (a ledger scan), so its rows are cached for
-    a short window; the pulse-panels poll is 30s (hosted on /analytics),
-    and one cached scan per ~60s costs
-    a fraction of what a fresh scan per poll does.
+    The per-day counts are computed in SQL (no row fetch, no limit cap) and
+    cached for a short window; the pulse-panels poll is 30s (hosted on
+    /analytics), and one cached query per ~60s costs a fraction of what a
+    fresh query per poll does.
     """
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    rows = _trend_rows(since)
-    per_day: dict[str, int] = {}
-    for e in rows:
-        day = e["created_at"][:10]
-        per_day[day] = per_day.get(day, 0) + 1
+    until = (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    per_day = _trend_counts(since, until)
     days: list[str] = []
     for i in range(13, -1, -1):
         days.append((now - timedelta(days=i)).strftime("%Y-%m-%d"))
