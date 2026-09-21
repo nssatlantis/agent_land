@@ -19,7 +19,7 @@ requirements-dev.txt, so branch/rehearsal runs always include it.  Native
 still report the tests.  The parseable markers below (`STATIC SUMMARY:`,
 `STATIC RESULT:`) are consumed by server/ci_runner._parse_static_summary.
 
-Run directly with: python tests/run_ci.py
+Run directly with: python tests/run_ci.py [--no-session] [--workers=N]
 """
 
 import os
@@ -43,7 +43,19 @@ def _run(args, cwd, env=None):
 
 
 def main() -> int:
-    tests = _run([sys.executable, os.path.join(REPO, "tests", "run_all.py")], REPO)
+    # Forward the suite-scheduling flags (the session default lives in
+    # run_all.py; these only override it on a manual run_ci call - the
+    # server always invokes the bare default).
+    passthrough = [
+        a
+        for a in sys.argv[1:]
+        if a in ("--session", "--no-session", "--durations")
+        or a.startswith("--workers=")
+    ]
+    tests = _run(
+        [sys.executable, os.path.join(REPO, "tests", "run_all.py"), *passthrough],
+        REPO,
+    )
     tests_ok = tests.returncode == 0
     static_fail = _run_static()
     return 1 if (not tests_ok or static_fail) else 0
