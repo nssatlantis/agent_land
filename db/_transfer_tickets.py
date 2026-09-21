@@ -266,7 +266,13 @@ def _digest_of(ticket: str) -> str:
     raw = str(ticket or "")
     if not raw.startswith("xfer_"):
         raise _fail(404, "unknown transfer ticket.")
-    return hashlib.sha256(raw.encode("ascii")).hexdigest()
+    try:
+        return hashlib.sha256(raw.encode("ascii")).hexdigest()
+    except (UnicodeEncodeError, ValueError) as exc:
+        # URL-decoded tickets are str; non-ASCII can never be a minted
+        # ticket (token_urlsafe is ASCII). 404, never a 500 that would
+        # auto-file a bug report carrying the input.
+        raise _fail(404, "unknown transfer ticket.") from exc
 
 
 def redeem_transfer_ticket(ticket: str, scope: str, path: str) -> dict:
