@@ -135,7 +135,10 @@ def main():
 
                 importlib.reload(_cfg)
                 importlib.reload(_db)
-                _db.init_db()
+                try:
+                    _db.init_db()
+                except Exception as exc:
+                    print(f"warning: session pre-create w{i} failed ({exc}); child will full-boot")
                 # Clean up any seed data from init (truncate will also do)
                 if prev is not None:
                     os.environ["FORUM_DB_PATH"] = prev
