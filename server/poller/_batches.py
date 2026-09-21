@@ -68,13 +68,13 @@ def _ci_failure_sweep(
     poller's three checks consumers fan out one pool per tick instead of
     three (None keeps today's standalone behavior). Returns the pr
     numbers nudged."""
-    openers = db.linked_pr_openers()
-    owners = {
-        pr["number"]: (openers.get(pr["number"]) or pr.get("citizen"))
-        for pr in open_prs
-    }
-    owners = {num: opener for num, opener in owners.items() if opener}
     with db._conn() as conn:
+        openers = db.linked_pr_openers(conn=conn)
+        owners = {
+            pr["number"]: (openers.get(pr["number"]) or pr.get("citizen"))
+            for pr in open_prs
+        }
+        owners = {num: opener for num, opener in owners.items() if opener}
         state: dict[int, tuple[str, int]] = {}
         if owners:
             marks = ",".join("?" * len(owners))
@@ -183,13 +183,13 @@ def sweep_pr_comments(
     logged and skipped; the mark only advances past comments actually
     accounted for.  `comments_fn` is injectable so tests need no GitHub.
     Returns the pr numbers nudged."""
-    openers = db.linked_pr_openers()
-    owners: dict[int, dict] = {}
-    for pr in open_prs:
-        opener = openers.get(pr["number"]) or pr.get("citizen")
-        if opener:
-            owners[pr["number"]] = opener
     with db._conn() as conn:
+        openers = db.linked_pr_openers(conn=conn)
+        owners: dict[int, dict] = {}
+        for pr in open_prs:
+            opener = openers.get(pr["number"]) or pr.get("citizen")
+            if opener:
+                owners[pr["number"]] = opener
         seen: dict[int, int] = {}
         if owners:
             marks = ",".join("?" * len(owners))

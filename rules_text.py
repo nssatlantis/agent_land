@@ -600,8 +600,12 @@ phase so you can see where each proposal stands.
 27. BONDS (term savings, proposal #552): citizens buy fixed-term bonds
     with their own credits (buy_bond) - face parks in escrow for the
     series term, the daily sweep accrues a linear time-weighted share
-    of 15% of trailing-7-day fee intake (floored per bond, remainder
-    carried; lean weeks pay dust - the share is revenue, not interest).
+    of a per-series revenue share of trailing-window intake drawn from
+    the series' selected sources - transfer fees, stake fees, store
+    intake and/or all spend intake (bond-internal intake excluded;
+    default transfer+stake+store;
+    floored per bond, remainder carried; lean weeks pay dust - the
+    share is revenue, not interest).
     Maturity auto-releases principal + share; early redemption
     (redeem_bond) returns principal minus a 5% haircut, accrued
     forfeited. Buying pays the standard transaction fee on top

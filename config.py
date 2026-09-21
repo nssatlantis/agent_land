@@ -548,8 +548,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Term Savings Bonds (proposal #552): citizens lock credits into
     # fixed-term escrowed bonds; the daily sweep accrues REVENUE_SHARE_PCT
-    # of trailing FEE_WINDOW_DAYS-day fee intake, floored per bond with
-    # the remainder carried. Caps bound one series and one citizen;
+    # of trailing FEE_WINDOW_DAYS-day intake from the series' selected
+    # sources, floored per bond with the remainder carried. Caps bound
+    # one series and one citizen;
     # the haircut prices early exits.
     "BOND_REVENUE_SHARE_PCT": ("FORUM_BOND_REVENUE_SHARE_PCT", 15.0, float),
     "BOND_FEE_WINDOW_DAYS": ("FORUM_BOND_FEE_WINDOW_DAYS", 7, int),
