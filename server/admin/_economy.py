@@ -115,7 +115,8 @@ def _render_economy(request) -> str:
         '<div class="panel"><h2>Bond series</h2>'
         '<p style="color:var(--muted)">Open a Term Savings Bond series '
         "(fixed term, revenue share and caps are immutable afterwards) "
-        "or close one to new buys - live bonds always run to maturity.</p>"
+        "or close one to new buys - live bonds always run to maturity. "
+        "A new series accrues only on intake after opening.</p>"
         '<form method="post" action="/admin/economy/bonds/open">'
         + _csrf_field(request)
         + '<input name="name" placeholder="series name" required '
