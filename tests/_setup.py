@@ -145,6 +145,7 @@ def _truncate_all():
             "proposal_collaborators",
             "proposal_claims",
             "workspace_claims",
+            "transfer_tickets",
             "events",
             "notifications",
             "report_votes",

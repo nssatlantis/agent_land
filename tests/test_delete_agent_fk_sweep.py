@@ -1,8 +1,8 @@
 """Regression for bug #B35: delete_agent must sweep every NO-ACTION FK
 family before removing the agents row - job_penalties, the bug-report
 family (reports/duplicates/resolutions/verifications/rewards plus the
-solved_by / claimed_by seats), services, workspace_claims, thread closures,
-invoices, to-do claims and pr_rows.
+solved_by / claimed_by seats), services, workspace_claims, transfer
+tickets, thread closures, invoices, to-do claims and pr_rows.
 
 Seeds one row per arm, then runs delete_agent(destroy_content=True) and a
 fresh PRAGMA foreign_key_check pin: any dangling reference rolls the whole
@@ -161,6 +161,15 @@ def test_delete_agent_fk_sweep():
             "INSERT INTO workspace_claims (proposal_id, agent_id, name)"
             " VALUES (?, ?, 'ws')",
             (spost, victim["agent_id"]),
+        )
+        # A transfer ticket minted by the victim (operational rows die
+        # with their owner - proposal #597).
+        conn.execute(
+            "INSERT INTO transfer_tickets (agent_id, proposal_id, claim_name,"
+            " scope, paths_json, ticket_hash, status, expires_at)"
+            " VALUES (?, ?, 'ws', 'read', '[\"a.txt\"]', 'seedhash',"
+            " 'unused', '2099-01-01T00:00:00.000Z')",
+            (victim["agent_id"], spost),
         )
         # A thread the victim CLOSED on a helper thread (opened_by stays).
         conn.execute(

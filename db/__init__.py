@@ -248,6 +248,12 @@ from db._guilds import (  # noqa: F401
     vote_guild_poll,
 )
 
+# ── guild-owned bonds (proposal #598, pool conduit) ─────────────────────
+from db._guilds_bonds import (  # noqa: F401
+    guild_bonds,
+    guild_buy_bond,
+)
+
 # ── guild project grants (proposal #525, PR-6) ──────────────────────────
 from db._guilds_grants import (  # noqa: F401
     designate_guild_project,
@@ -676,6 +682,15 @@ from db._tool_usage import (  # noqa: F401
     tool_usage_recent_failures,
     tool_usage_summary,
     tool_usage_sweep,
+)
+
+# ── ticket-minted HTTP file transfers ──────────────────────────────────
+from db._transfer_tickets import (  # noqa: F401
+    mint_transfer_ticket,
+    peek_transfer_ticket,
+    redeem_transfer_ticket,
+    sweep_expired_transfer_tickets,
+    unburn_transfer_path,
 )
 
 # ── official workflows (per-file checklists) ───────────────────────────

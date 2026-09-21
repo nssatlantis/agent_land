@@ -1212,6 +1212,94 @@ def test_treasury_runway_overview_wiring():
     print("  treasury_runway_overview_wiring: ok")
 
 
+def test_flow_summarize_guild_and_bond_intake():
+    """_summarize_flows exposes guild_intake_units and bond_intake_units
+    for guild deposit/bond fee treasury legs. spend() appends _intake to
+    the treasury-side reason, so the flow keys are suffixed."""
+    # Correct keys: spend() appends _intake to the treasury leg
+    flows = {
+        "guild_deposit_intake": 500,
+        "guild_deposit_fee_intake": 20,
+        "bond_buy_fee_intake": 50,
+        "tag_apply_intake": 10,
+    }
+    r = economy._summarize_flows(flows)
+    assert r["guild_intake_units"] == 520, r["guild_intake_units"]
+    assert r["bond_intake_units"] == 50, r["bond_intake_units"]
+    # Existing buckets still work: tag_apply_intake is in spend_intake
+    assert r["spend_intake_units"] == 10, r["spend_intake_units"]
+    # Missing reasons produce zero, not KeyError
+    empty = economy._summarize_flows({})
+    assert empty["guild_intake_units"] == 0
+    assert empty["bond_intake_units"] == 0
+    print("  flow_summarize_guild_and_bond_intake: ok")
+
+
+def test_flow_guild_and_bond_live_spend():
+    """Live-path: spend() with dest_treasury=True writes _intake-suffixed
+    reasons, and _summarize_flows picks them up into the correct bars."""
+    from db._credits import spend
+
+    agent_id = AGENTS["alpha"]["agent_id"]
+    before = economy.economy_overview()
+    # Each spend() commits on its own connection so economy_overview()
+    # (which opens a fresh connection) can see the ledger rows.
+    spend(
+        agent_id,
+        300,
+        "guild_deposit",
+        dest_treasury=True,
+        target_type="guild",
+        target_id=1,
+    )
+    spend(
+        agent_id,
+        15,
+        "guild_deposit_fee",
+        dest_treasury=True,
+        target_type="guild",
+        target_id=1,
+    )
+    spend(
+        agent_id,
+        25,
+        "bond_buy_fee",
+        dest_treasury=True,
+        target_type="bond",
+        target_id=1,
+    )
+    after = economy.economy_overview()
+    gi = (
+        after["flows"]["all_time"]["guild_intake_units"]
+        - before["flows"]["all_time"]["guild_intake_units"]
+    )
+    bi = (
+        after["flows"]["all_time"]["bond_intake_units"]
+        - before["flows"]["all_time"]["bond_intake_units"]
+    )
+    assert gi == 315, f"guild_intake_units delta expected 315, got {gi}"
+    assert bi == 25, f"bond_intake_units delta expected 25, got {bi}"
+    # Both should be excluded from spend_intake (not in catch-all)
+    si = (
+        after["flows"]["all_time"]["spend_intake_units"]
+        - before["flows"]["all_time"]["spend_intake_units"]
+    )
+    assert si == 0, f"spend_intake should not absorb guild/bond, got delta {si}"
+    print("  flow_guild_and_bond_live_spend: ok")
+
+
+def test_forfeit_burned_in_burn_reasons():
+    """forfeit_burned is counted in the burned flow bar (economy
+    _summarize_flows uses it in _take('burned')) and now also appears
+    in the Burned ledger tab via _CREDIT_BURN_REASONS."""
+    from db._credits import _CREDIT_BURN_REASONS
+
+    assert "forfeit_burned" in _CREDIT_BURN_REASONS, _CREDIT_BURN_REASONS
+    assert "admin_burn" in _CREDIT_BURN_REASONS
+    assert "proposal_burn" in _CREDIT_BURN_REASONS
+    print("  forfeit_burned_in_burn_reasons: ok")
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -1254,6 +1342,9 @@ def main():
     test_burn_shares_the_daily_budget()
     test_event_amount_fallback_formats_credits()
     test_proposal_author_credit_cap()
+    test_flow_summarize_guild_and_bond_intake()
+    test_flow_guild_and_bond_live_spend()
+    test_forfeit_burned_in_burn_reasons()
     print("test_economy: all ok")
 
 

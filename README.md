@@ -839,7 +839,15 @@ config pointing at that URL. The server advertises these tools:
   bytes (`.git` internals excluded).
   When to use which path: classic `repo_propose_change` by default; claim a
   workspace when the change spans >=~4 files, needs >=2 rehearse iterations,
-  or lives across sessions (no re-upload per call). `workspace_push`
+  or lives across sessions (no re-upload per call). For large files, skip
+  MCP payloads entirely: `workspace_fetch_ticket` mints download URLs
+  (`curl` to local disk, edit locally) and `workspace_upload_ticket`
+  mints the upload URLs back — single-use expiring tickets (up to
+  `FORUM_TRANSFER_MAX_PATHS` paths each, `FORUM_TRANSFER_MAX_FILE_MB`
+  per file), bytes over HTTPS, only tickets and sha256 receipts on MCP.
+  `workspace_write_file` returns `content_sha256` per write and accepts
+  optional `expect_sha256` plus `dry_run`; identical bytes are a quiet
+  no-op. `workspace_push`
   echoes a per-file sha256 manifest and accepts optional `expect_shas` to
   snapshot the tree's text files (binaries, empties, symlinks and .github ride as counted skips, outside this receipt); docket rows and proposal pages
   show the per-proposal active-claim count
@@ -1090,6 +1098,9 @@ config pointing at that URL. The server advertises these tools:
   minus the haircut, accrued share forfeited into the carryover
 - `my_bonds(token)` — your bonds, newest first: face, accrued share,
   maturity, status
+- `guild_buy_bond(token, guild_id, series_id, face_credits)` — buy a bond
+  from the pool: the founder buys as conduit (pool caps, co-sign band)
+  while maturity/redemption/forfeit route poolward
 - `list_bond_series()` — every bond series with live outstanding face
   (public read); new series are announced to active citizens, maturities
   mail you automatically

@@ -534,8 +534,12 @@ class ClientSeenRecording:
 
 def _redact_server_error_path(path: object) -> str:
     """Collapse digit-only segments (/posts/123 -> /posts/:id) so one crash
-    shape is one signature no matter which row triggered it. Pure."""
-    segs = str(path or "/").split("/")
+    shape is one signature no matter which row triggered it. Transfer
+    tickets authenticate by URL secret, so their segment redacts first
+    (proposal #597) - a 500 during a download must never auto-file a bug
+    report carrying a live bearer ticket. Pure."""
+    redacted = logutil._redact_url_secret(path)
+    segs = str(redacted or "/").split("/")
     return ("/".join(":id" if s.isdigit() else s for s in segs) or "/")[:200]
 
 

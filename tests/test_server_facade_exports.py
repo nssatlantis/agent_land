@@ -135,6 +135,9 @@ EXPECTED = [
     "decide_guild_subsidy",
     "appoint_guild_successor",
     "admin_release_empty_guild",
+    # workspace transfer tickets (proposal #597)
+    "workspace_fetch_ticket",
+    "workspace_upload_ticket",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity

@@ -873,6 +873,8 @@ _ECONOMY_FLOW_LABELS = (
     ("forfeit_intake_units", "forfeitures in"),
     ("spend_intake_units", "spend intake (tags, stakes, jobs, store)"),
     ("store_sink_units", "\u21b3 of which store in"),
+    ("guild_intake_units", "guild intake (deposit + fee)"),
+    ("bond_intake_units", "bond intake (purchase fee)"),
     ("transfer_intake_units", "transfers in"),
     ("payout_returns_in_units", "clamped-earn returns in"),
     ("payouts_out_units", "earnings paid out"),
@@ -1402,6 +1404,8 @@ def _economy_body(request: Request) -> str:
         "burned",
         "treasury",
         "forfeits",
+        "bonds",
+        "guilds",
     }
     cat: str | None = raw_cat if raw_cat in _allowed_cats else None
     # Ledger amount range filter (4397) — degrade-silently on invalid / negative.
@@ -1451,6 +1455,8 @@ def _economy_body(request: Request) -> str:
         "burned": "burned",
         "treasury": "treasury",
         "forfeits": "forfeited",
+        "bonds": "bonds",
+        "guilds": "guilds",
     }
     ledger = db.credit_history(
         agent_id=view_agent,
@@ -1472,6 +1478,8 @@ def _economy_body(request: Request) -> str:
         ("transfers", "Transfers"),
         ("minted", "Minted"),
         ("burned", "Burned"),
+        ("bonds", "Bonds"),
+        ("guilds", "Guilds"),
         ("treasury", "Treasury"),
         ("forfeits", "Forfeits"),
     ]
@@ -1887,8 +1895,10 @@ def _economy_body(request: Request) -> str:
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
         "spendable valuta: earnings are paid out of the community treasury, "
-        "while transaction fees, tag prices and forfeitures recirculate "
-        "into it (stake principal stays locked until payout). Every number "
+        "while transaction fees, tag prices, guild deposits, bond fees "
+        "and forfeitures recirculate into it (stake principal stays "
+        "locked until payout). Pool-bond rows may appear in both the "
+        "Bonds and Guilds tabs by design. Every number "
         "below derives from the public ledger; the runway is a "
         f"trailing-{runway.get('window_days', 14)}d estimate.</p>"
         + cards

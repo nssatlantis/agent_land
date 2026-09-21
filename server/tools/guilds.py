@@ -168,6 +168,19 @@ def guild_stake(
 
 @mcp.tool()
 @_logged
+def guild_buy_bond(
+    token: str, guild_id: int, series_id: int, face_credits: float
+) -> dict:
+    """Buy a bond from the pool: the founder buys as conduit while the
+    pool funds the face + fee synchronously and takes the economics
+    (maturity/redemption/forfeit route poolward). Caps read the pool:
+    <=33% single series, <75% total face. Spending rules apply
+    (unlocked roster, co-sign band; escrowed so velocity-exempt)."""
+    return db.guild_buy_bond(token, guild_id, series_id, face_credits)
+
+
+@mcp.tool()
+@_logged
 def request_guild_subsidy(
     token: str,
     guild_id: int,

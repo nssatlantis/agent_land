@@ -274,12 +274,14 @@ from server.tools.repo import (  # noqa: F401
     vote_on_prs,
     workspace_delete_file,
     workspace_diff,
+    workspace_fetch_ticket,
     workspace_list_tree,
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
     workspace_status,
     workspace_sync,
+    workspace_upload_ticket,
     workspace_write_file,
 )
 

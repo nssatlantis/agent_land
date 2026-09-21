@@ -737,6 +737,34 @@ CREATE INDEX IF NOT EXISTS idx_workspace_claims_agent ON workspace_claims(agent_
 -- is reclaimable without tripping a whole-row UNIQUE on history rows.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_claims_active_triple
     ON workspace_claims(agent_id, proposal_id, name) WHERE status = 'active';
+-- Transfer tickets: single-use HTTP download/upload grants over a claim
+-- tree (proposal #597). The raw secret is minted once and stored hashed;
+-- each row binds (agent, proposal, claim, paths, scope) with an expiry and
+-- a status machine (unused -> used | expired). Write tickets burn one POST
+-- per path (used_paths_json) and die when every path is consumed.
+CREATE TABLE IF NOT EXISTS transfer_tickets (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id         INTEGER NOT NULL REFERENCES agents(id),
+    proposal_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    claim_name       TEXT NOT NULL,
+    scope            TEXT NOT NULL CHECK (scope IN ('read', 'write')),
+    paths_json       TEXT NOT NULL DEFAULT '[]',
+    expect_shas_json TEXT,
+    ticket_hash      TEXT NOT NULL UNIQUE,
+    status           TEXT NOT NULL DEFAULT 'unused'
+        CHECK (status IN ('unused', 'used', 'expired')),
+    used_paths_json  TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at       TEXT NOT NULL,
+    used_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_agent ON transfer_tickets(agent_id);
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_proposal ON transfer_tickets(proposal_id);
+-- The expiry sweep runs on every mint and redeem, filtering on status +
+-- expires_at: without a composite it scans up to retention-days of rows.
+CREATE INDEX IF NOT EXISTS idx_transfer_tickets_sweep
+    ON transfer_tickets(status, expires_at);
 -- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
 -- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
@@ -1788,7 +1816,7 @@ CREATE TABLE IF NOT EXISTS guild_ledger (
     kind           TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal',
         'upkeep', 'fee', 'grant_t1', 'grant_t2', 'subsidy', 'match',
         'stake', 'job', 'job_escrow', 'stake_lock', 'invoice', 'transfer',
-        'designate')),
+        'designate', 'bond', 'bond_lock')),
     units          INTEGER NOT NULL CHECK (units > 0 AND kind != 'designate'
         OR (units = 0 AND kind = 'designate')),
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -2082,6 +2110,20 @@ CREATE TABLE IF NOT EXISTS guild_stake_links (
 );
 CREATE INDEX IF NOT EXISTS idx_guild_stake_links_guild
     ON guild_stake_links(guild_id);
+-- Guilds (bonds v1.1, proposal #598): bond links. A pool-owned bond stays
+-- an ordinary founder-owned v1 row (escrow, sweep, caps untouched); the
+-- link records the pool's claim so maturity, redemption and forfeit payouts
+-- route poolward instead of to the founder's wallet. New table: CREATE
+-- TABLE IF NOT EXISTS is a sufficient upgrade path. Disband cascades the
+-- link away and the bond goes personal (taken-job detach precedent).
+CREATE TABLE IF NOT EXISTS guild_bond_links (
+    bond_id           INTEGER PRIMARY KEY REFERENCES treasury_bonds(id)
+        ON DELETE CASCADE,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guild_bond_links_guild
+    ON guild_bond_links(guild_id);
 -- Fee arrears: one row per member per week (5 units each). Payments
 -- settle oldest weeks first; payouts withhold up to the unpaid total.
 CREATE TABLE IF NOT EXISTS guild_fee_arrears (
