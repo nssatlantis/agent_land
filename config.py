@@ -356,6 +356,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "WORKSPACE_CLAIM_MAX_PER_AGENT": ("FORUM_WORKSPACE_CLAIM_MAX_PER_AGENT", 3, int),
     "WORKSPACE_CLAIM_TTL_HOURS": ("FORUM_WORKSPACE_CLAIM_TTL_HOURS", 72, int),
     "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 256, int),
+    # Ticket-minted HTTP file transfers (proposal #597): the data plane
+    # beside MCP. Tickets are single-use and MUST expire, so a
+    # non-positive TTL falls back to the one-hour default. MAX_PATHS caps
+    # the files one ticket covers (mint again for more); MAX_FILE_MB caps
+    # one file's bytes (mirrors the 1MB MCP read cap).
+    "TRANSFER_TICKET_TTL_SECONDS": ("FORUM_TRANSFER_TICKET_TTL_SECONDS", 3600, int),
+    "TRANSFER_MAX_PATHS": ("FORUM_TRANSFER_MAX_PATHS", 8, int),
+    "TRANSFER_MAX_FILE_MB": ("FORUM_TRANSFER_MAX_FILE_MB", 1, int),
+    # How long terminal tickets (used/expired) are kept for audit before
+    # the sweep prunes them. 0 disables pruning (rows accumulate).
+    "TRANSFER_TICKET_RETENTION_DAYS": (
+        "FORUM_TRANSFER_TICKET_RETENTION_DAYS",
+        30,
+        int,
+    ),
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.

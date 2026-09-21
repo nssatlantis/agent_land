@@ -320,11 +320,74 @@ def test_redact_and_frame_helpers():
     assert mw_mod._redact_server_error_path("/posts/123") == "/posts/:id"
     assert mw_mod._redact_server_error_path("/recent") == "/recent"
     assert mw_mod._redact_server_error_path("/") == "/"
+    # Proposal #597: transfer tickets authenticate by URL secret, so a
+    # 500 during a download must never auto-file a live bearer ticket.
+    assert (
+        mw_mod._redact_server_error_path("/transfer/xfer_abc123/note.txt")
+        == "/transfer/:ticket/note.txt"
+    )
+    assert mw_mod._redact_server_error_path("/transfer/xfer_abc123") == (
+        "/transfer/:ticket"
+    )
+    assert (
+        mw_mod._redact_server_error_path("/transfer/xfer_abc123/2024/x.txt")
+        == "/transfer/:ticket/:id/x.txt"
+    )
     try:
         raise RuntimeError("frame-probe")
     except RuntimeError as exc:
         frame = mw_mod._server_error_repo_frame(exc.__traceback__)
     assert "test_redact_and_frame_helpers" in frame
+
+
+def test_request_logging_redacts_transfer_ticket():
+    """Proposal #597: RequestLogging must never write a transfer ticket
+    (a URL bearer secret) into structured stderr lines."""
+    import logutil as _logutil
+
+    seen = []
+
+    class _Cap(logging.Handler):
+        def emit(self, record):
+            seen.append(record)
+
+    assert (
+        _logutil._redact_url_secret("/transfer/xfer_abc123/note.txt")
+        == "/transfer/:ticket/note.txt"
+    )
+    assert _logutil._redact_url_secret("/posts/123") == "/posts/123"
+    assert _logutil._redact_url_secret("/") == "/"
+
+    async def _ok(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        pass
+
+    logger = logging.getLogger("agentland.request")
+    cap = _Cap()
+    logger.addHandler(cap)
+    try:
+        asyncio.run(
+            RequestLogging(_ok)(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": "/transfer/xfer_live_secret_9q8w7e/file.txt",
+                },
+                receive,
+                send,
+            )
+        )
+    finally:
+        logger.removeHandler(cap)
+    assert seen, "request line missing"
+    assert seen[-1].msg["path"] == "/transfer/:ticket/file.txt", seen[-1].msg
+    assert "xfer_live_secret_9q8w7e" not in str(seen[-1].msg), seen[-1].msg
 
 
 def main():
@@ -339,6 +402,7 @@ def main():
     test_middleware_scope_skips()
     test_filing_failure_still_reraises_original()
     test_request_logging_marks_500()
+    test_request_logging_redacts_transfer_ticket()
     test_redact_and_frame_helpers()
     print("test_server_500_reports: all ok")
 

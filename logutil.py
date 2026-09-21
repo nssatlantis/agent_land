@@ -74,6 +74,17 @@ def tool_log(
     logging.getLogger("agentland.tool").info(fields)
 
 
+def _redact_url_secret(path: object) -> str:
+    """Redact URL-secret segments from a logged request path (proposal
+    #597): transfer tickets authenticate by URL (`/transfer/{ticket}/…`),
+    so the raw ticket must never land in structured stderr lines. Pure -
+    unknown shapes pass through untouched."""
+    segs = str(path or "/").split("/")
+    if len(segs) >= 3 and segs[1] == "transfer" and segs[2]:
+        segs[2] = ":ticket"
+    return "/".join(segs)
+
+
 class RequestLogging:
     """Pure-ASGI middleware: one JSON log line per HTTP request with status
     and duration. Path is logged but never the query string (it may carry
@@ -104,7 +115,7 @@ class RequestLogging:
                 {
                     "event": "http",
                     "method": scope.get("method"),
-                    "path": scope.get("path"),
+                    "path": _redact_url_secret(scope.get("path")),
                     "status": status["code"],
                     "duration_ms": round((time.perf_counter() - start) * 1000, 1),
                 }
