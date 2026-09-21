@@ -1092,7 +1092,9 @@ config pointing at that URL. The server advertises these tools:
 - `buy_bond(token, series_id, face_credits)` — buy a fixed-term Term
   Savings Bond: face parks in escrow for the series term while the daily
   sweep accrues a linear share of trailing intake from the series'
-  selected sources (transfer/stake/store/spend); the standard
+  selected revenue-only sources (transfer/stake/store/tags/jobs/skills/
+  invoices/services/guild fees; forfeit, custody and bond-internal
+  intake can never be yield); the standard
   transaction fee rides on top, excluded from the yield base
 - `redeem_bond(token, bond_id)` — break a bond early: principal back
   minus the haircut, accrued share forfeited into the carryover

@@ -740,8 +740,9 @@ def bond_series_open(
     yield_sources: list[str] | None = None,
 ) -> dict:
     """Open a bond series (admin-only): fixed term, revenue share,
-    yield sources (transfer_fee/stake_fee/store/spend_all, default the
-    first three) and caps are immutable after creation; close it with
+    yield sources (transfer_fee/stake_fee/store/tags/jobs/skills/
+    invoices/services/guild_fees, default the first three) and caps
+    are immutable after creation; close it with
     bond_series_close."""
     from server.tools.moderation import _require_admin
 

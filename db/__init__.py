@@ -43,6 +43,7 @@ from db._bench_history import bench_history  # noqa: F401
 
 # ── term savings bonds (proposal #552, small_fix) ───────────────────────
 from db._bonds import (  # noqa: F401
+    bond_family_trailing,
     bond_holdings_summary,
     bond_series_close,
     bond_series_detail,

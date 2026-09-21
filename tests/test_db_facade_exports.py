@@ -137,6 +137,7 @@ EXPECTED = [
     "bond_series_open",
     "bond_series_close",
     "bond_series_detail",
+    "bond_family_trailing",
     "bonds_for_series",
     "sweep_bond_day",
     # ticket-minted HTTP file transfers (proposal #597)

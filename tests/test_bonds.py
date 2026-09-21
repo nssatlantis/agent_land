@@ -219,11 +219,22 @@ def test_carryover_holds_remainder():
     saved = _arm_fee(10.0)
     try:
         peer = _make_holder("bd-carry-peer")
-        db.transfer_credits(holder["agent_id"], peer["agent_id"], 100)
-        b = buy_bond(holder["token"], sid, 10.0)
-        _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
-        base = _base_now()
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1500)
+        b1 = buy_bond(holder["token"], sid, 10.0)
+        b2 = buy_bond(holder["token"], sid, 10.0)
+        _backdate(b1["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        _backdate(b2["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        # Expectation mirrors the sweep's clamp (proposal #604): only
+        # post-open intake funds this series, so earlier tests' leftover
+        # intake never leaks in - hermetic by construction, not by slate.
+        with db._conn() as conn:
+            opened = conn.execute(
+                "SELECT created_at FROM bond_series WHERE id = ?", (sid,)
+            ).fetchone()[0]
+            base = _trailing_fee_intake_units(conn, max(_since_7d(), opened))
+        assert base == 150, base
         pool = int(base * 15.0 / 700)
+        assert pool == 3, pool
         _reset_sweep_day()
         sweep_bond_day()
         with db._conn() as conn:
@@ -231,8 +242,9 @@ def test_carryover_holds_remainder():
                 "SELECT value FROM economy_meta WHERE key = ?",
                 (f"bond_carry_{sid}",),
             ).fetchone()[0]
-        got = my_bonds(holder["token"])["bonds"]
-        acc = [x for x in got if x["id"] == b["bond_id"]][0]["accrued_units"]
+        got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+        acc = got[b1["bond_id"]]["accrued_units"] + got[b2["bond_id"]]["accrued_units"]
+        assert (acc, int(carry)) == (2, 1), (acc, carry)
         assert int(carry) == pool - acc, (carry, pool, acc)
     finally:
         _unarm_fee(saved)
@@ -539,6 +551,18 @@ def test_sources_invalid_refused():
     assert "unknown yield source" in expect_error(
         db.bond_series_open, "src-bad-3", 7, yield_sources=["store", "nope"]
     )
+    assert "retired" in expect_error(
+        db.bond_series_open, "src-bad-4", 7, yield_sources=["spend_all"]
+    )
+    assert "retired" in expect_error(
+        db.bond_series_open, "src-bad-5", 7, yield_sources=["store", "spend_all"]
+    )
+    # Structural exclusions are refused as unknown: forfeit (punishment
+    # is never yield), custody (parked principal is never revenue).
+    for bad in ("forfeit", "guild_deposit", "job_deposit_treasury"):
+        assert "unknown yield source" in expect_error(
+            db.bond_series_open, f"src-bad-{bad}-7", 7, yield_sources=[bad]
+        ), bad
 
 
 def test_sources_open_returns_canonical_order():
@@ -589,11 +613,11 @@ def test_sources_sweep_respects_selection():
 def test_sources_close_preserves_and_legacy_defaults():
     from db._bonds import bond_series_close, bond_series_detail
 
-    out = db.bond_series_open("src-close-7", 7, yield_sources=["store", "spend_all"])
+    out = db.bond_series_open("src-close-7", 7, yield_sources=["tags", "guild_fees"])
     sid = out["series_id"]
-    assert out["yield_sources"] == ["store", "spend_all"], out
+    assert out["yield_sources"] == ["tags", "guild_fees"], out
     bond_series_close(sid)
-    assert bond_series_detail(sid)["yield_sources"] == ["store", "spend_all"]
+    assert bond_series_detail(sid)["yield_sources"] == ["tags", "guild_fees"]
     with db._conn() as conn:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(bond_series)")}
         assert "yield_sources" in cols
@@ -609,21 +633,16 @@ def test_sources_close_preserves_and_legacy_defaults():
 
 def test_admin_sources_checkboxes_match():
     import re
-    from pathlib import Path
 
-    from db._bonds import DEFAULT_YIELD_SOURCES, YIELD_SOURCES
+    from db._bonds import _SELECTABLE_SOURCES, DEFAULT_YIELD_SOURCES
+    from server.admin._economy import _bond_source_boxes
 
-    src = (
-        Path(__file__)
-        .resolve()
-        .parent.parent.joinpath("server", "admin", "_economy.py")
-        .read_text(encoding="utf-8")
-    )
     boxes = re.findall(
-        r'name="yield_sources"\'\s*\n\s*\' value="([^"]+)"( checked)?>', src
+        r'name="yield_sources" value="([^"]+)"( checked)?>', _bond_source_boxes()
     )
-    assert [v for v, _ in boxes] == list(YIELD_SOURCES), boxes
+    assert [v for v, _ in boxes] == list(_SELECTABLE_SOURCES), boxes
     assert [v for v, c in boxes if c] == list(DEFAULT_YIELD_SOURCES), boxes
+    assert "spend_all" not in _bond_source_boxes(), "retired family not offered"
 
 
 def test_sources_like_escape_rejects_near_miss():
@@ -649,11 +668,13 @@ def test_sources_like_escape_rejects_near_miss():
 def test_admin_series_table_shows_sources():
     from server.admin._economy import _bond_series_table
 
-    sid = db.bond_series_open("src-tbl-7", 7, yield_sources=["spend_all"])["series_id"]
+    sid = db.bond_series_open("src-tbl-7", 7, yield_sources=["tags", "guild_fees"])[
+        "series_id"
+    ]
     html = _bond_series_table()
     assert f"<td>{sid}</td>" in html, html
     assert "<th>sources</th>" in html, html
-    assert "spend_all" in html, html
+    assert "tags+guild_fees" in html, html
 
 
 def test_sources_migration_readds_column_and_readers_degrade():
@@ -760,13 +781,14 @@ def test_admin_bonds_open_post_subset_and_empty():
                         ("term_days", "7"),
                         ("yield_sources", "store"),
                         ("yield_sources", "stake_fee"),
+                        ("yield_sources", "tags"),
                     ]
                 )
             )
         )
         assert resp.status_code == 200, resp.status_code
         got = [s for s in list_bond_series() if s["name"] == "srcadm-post-7"][0]
-        assert got["yield_sources"] == ["stake_fee", "store"], got
+        assert got["yield_sources"] == ["stake_fee", "store", "tags"], got
         bad = asyncio.run(
             admin_open(
                 _admin_req(
@@ -779,6 +801,195 @@ def test_admin_bonds_open_post_subset_and_empty():
     finally:
         if saved_pw is not None:
             os.environ["ADMIN_PASSWORD"] = saved_pw
+
+
+_V2_FAMILY_REASONS = {
+    "transfer_fee": ["transfer_fee_intake"],
+    "stake_fee": ["stake_fee_intake"],
+    "store": ["store_vote_intake"],
+    "tags": ["tag_create_intake", "tag_apply_intake"],
+    "jobs": ["job_fee_intake"],
+    "skills": ["skill_rate_intake"],
+    "invoices": ["invoice_create_intake"],
+    "services": ["service_listing_fee_intake"],
+    "guild_fees": [
+        "guild_deposit_fee_intake",
+        "guild_found_cost_intake",
+        "guild_upkeep_fee_intake",
+        "guild_debt_pay_intake",
+    ],
+}
+_V2_EXCLUDED_REASONS = [
+    "forfeit_intake",
+    "transfer_intake",
+    "bond_buy_fee_intake",
+    "bond_early_haircut_intake",
+    "guild_deposit_intake",
+    "job_deposit_treasury_intake",
+    "guild_bond_payout_intake",
+    "guild_stake_conduit_revert_intake",
+]
+
+
+def _seed_intake(reason: str, units: int):
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
+            " account) VALUES (NULL, ?, ?, 'treasury')",
+            (units, reason),
+        )
+
+
+def test_sources_v2_families_count_their_rows():
+    from db._bonds import _SELECTABLE_SOURCES, _trailing_intake_units
+
+    with db._conn() as conn:
+        since = _since_7d()
+        before = {
+            s: _trailing_intake_units(conn, since, (s,)) for s in _SELECTABLE_SOURCES
+        }
+    seeded = {}
+    for i, s in enumerate(_SELECTABLE_SOURCES):
+        for j, reason in enumerate(_V2_FAMILY_REASONS[s]):
+            units = 1000 + 100 * i + j
+            _seed_intake(reason, units)
+            seeded[s] = seeded.get(s, 0) + units
+    with db._conn() as conn:
+        since = _since_7d()
+        for s in _SELECTABLE_SOURCES:
+            assert _trailing_intake_units(conn, since, (s,)) - before[s] == seeded[s], s
+
+
+def test_sources_v2_structural_exclusions_yield_zero():
+    from db._bonds import _EXCLUDED_REASONS, _SELECTABLE_SOURCES, _trailing_intake_units
+
+    # The product tuple and this pin's list must move together: a new
+    # exclusion without a zero-pin fails here, not silently in prod.
+    assert set(_EXCLUDED_REASONS) <= set(_V2_EXCLUDED_REASONS), set(
+        _EXCLUDED_REASONS
+    ) - set(_V2_EXCLUDED_REASONS)
+
+    with db._conn() as conn:
+        since = _since_7d()
+        before_all = {
+            s: _trailing_intake_units(conn, since, (s,)) for s in _SELECTABLE_SOURCES
+        }
+        before_legacy = _trailing_intake_units(conn, since, ("spend_all",))
+    for i, reason in enumerate(_V2_EXCLUDED_REASONS):
+        _seed_intake(reason, 500 + i)
+    with db._conn() as conn:
+        since = _since_7d()
+        for s in _SELECTABLE_SOURCES:
+            assert _trailing_intake_units(conn, since, (s,)) - before_all[s] == 0, s
+        assert _trailing_intake_units(conn, since, ("spend_all",)) - before_legacy == 0
+
+
+def test_sources_v2_legacy_spend_all_frozen():
+    from db._bonds import _series_sources, _trailing_intake_units, bond_series_detail
+
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO bond_series (name, term_days, revenue_share_pct,"
+            " min_face_units, series_cap_units, citizen_cap_units,"
+            " yield_sources) VALUES ('src-legacy-all-7', 7, 10.0, 20, 2000,"
+            " 600, 'spend_all')"
+        )
+    sid = next(
+        s["series_id"] for s in list_bond_series() if s["name"] == "src-legacy-all-7"
+    )
+    assert bond_series_detail(sid)["yield_sources"] == ["spend_all"]
+    with db._conn() as conn:
+        since = _since_7d()
+        before = _trailing_intake_units(conn, since, ("spend_all",))
+    # Frozen clause: guild fee rows count, transfer fees and custody do not.
+    _seed_intake("guild_upkeep_fee_intake", 400)
+    _seed_intake("transfer_fee_intake", 400)
+    _seed_intake("guild_deposit_intake", 400)
+    with db._conn() as conn:
+        assert _trailing_intake_units(conn, _since_7d(), ("spend_all",)) - before == 400
+        row = conn.execute("SELECT * FROM bond_series WHERE id = ?", (sid,)).fetchone()
+        assert list(_series_sources(row)) == ["spend_all"]
+
+
+def test_sources_v2_canonical_order_all():
+    from db._bonds import _SELECTABLE_SOURCES, bond_series_detail
+
+    rev = list(reversed(_SELECTABLE_SOURCES))
+    out = db.bond_series_open("src-ord-all-7", 7, yield_sources=rev)
+    assert out["yield_sources"] == list(_SELECTABLE_SOURCES), out
+    assert bond_series_detail(out["series_id"])["yield_sources"] == list(
+        _SELECTABLE_SOURCES
+    )
+
+
+def test_bond_family_trailing_keys():
+    from db._bonds import _SELECTABLE_SOURCES
+
+    got = db.bond_family_trailing()
+    assert set(got) == set(_SELECTABLE_SOURCES), got
+    assert all(isinstance(v, int) for v in got.values()), got
+    # Value pin, not just shape: the helper's own window/loop wiring
+    # must move when traffic lands (an all-zeros stub passes the above).
+    before = got["tags"]
+    _seed_intake("tag_apply_intake", 321)
+    assert db.bond_family_trailing()["tags"] - before == 321
+
+
+def test_clamp_since_unit():
+    from db._bonds import _clamp_since
+
+    assert (
+        _clamp_since(
+            "2020-01-01T00:00:00.000Z", {"created_at": "2020-06-01T00:00:00.000Z"}
+        )
+        == "2020-06-01T00:00:00.000Z"
+    )
+    assert (
+        _clamp_since(
+            "2020-06-01T00:00:00.000Z", {"created_at": "2020-01-01T00:00:00.000Z"}
+        )
+        == "2020-06-01T00:00:00.000Z"
+    )
+    assert _clamp_since("2020-01-01T00:00:00.000Z", {}) == "2020-01-01T00:00:00.000Z"
+    assert (
+        _clamp_since("2020-01-01T00:00:00.000Z", {"created_at": ""})
+        == "2020-01-01T00:00:00.000Z"
+    )
+
+
+def _set_series_opened(sid: int, created_at: str):
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bond_series SET created_at = ? WHERE id = ?", (created_at, sid)
+        )
+
+
+def test_series_cutoff_future_open_counts_zero():
+    holder = _make_holder("bd-cut-fut")
+    sid = db.bond_series_open("cut-fut-7", 7, yield_sources=["store"])["series_id"]
+    _set_series_opened(sid, "2030-01-01T00:00:00.000Z")
+    _seed_store_intake(1000)
+    b = buy_bond(holder["token"], sid, 2.0)
+    _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["swept"] is True
+    got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+    assert got[b["bond_id"]]["accrued_units"] == 0
+
+
+def test_series_cutoff_backdated_open_counts():
+    holder = _make_holder("bd-cut-old")
+    sid = db.bond_series_open("cut-old-7", 7, yield_sources=["store"])["series_id"]
+    _set_series_opened(sid, "2020-01-01T00:00:00.000Z")
+    _seed_store_intake(1000)
+    b = buy_bond(holder["token"], sid, 2.0)
+    _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["swept"] is True
+    got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+    assert got[b["bond_id"]]["accrued_units"] > 0
 
 
 if __name__ == "__main__":
