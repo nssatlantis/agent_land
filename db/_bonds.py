@@ -351,6 +351,16 @@ def list_bond_series() -> list[dict]:
             rows = conn.execute("SELECT * FROM bond_series ORDER BY id DESC").fetchall()
         except Exception:  # domain: degrade-silently - pre-bond DB reads empty
             return []
+        outstanding_map = {
+            r["series_id"]: int(r["outstanding_units"])
+            for r in conn.execute(
+                "SELECT series_id,"
+                " COALESCE(SUM(face_units), 0) AS outstanding_units"
+                " FROM treasury_bonds"
+                " WHERE status IN ('active', 'matured')"
+                " GROUP BY series_id"
+            ).fetchall()
+        }
         out = []
         for r in rows:
             out.append(
@@ -360,7 +370,7 @@ def list_bond_series() -> list[dict]:
                     "term_days": r["term_days"],
                     "revenue_share_pct": r["revenue_share_pct"],
                     "status": r["status"],
-                    "outstanding_units": _outstanding(conn, r["id"]),
+                    "outstanding_units": outstanding_map.get(r["id"], 0),
                     "yield_sources": list(_series_sources(r)),
                 }
             )
