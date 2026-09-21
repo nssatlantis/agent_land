@@ -20,17 +20,20 @@ from ._helpers import (
 
 _JOB_VIEWS = ("open", "mine", "working", "all")
 
-_BOARD_TOTAL_CACHE: dict[tuple[str, int | None], tuple[float, int]] = {}
+_JOB_STATUSES = ("open", "active", "completed", "closed", "all")
+
+_BOARD_TOTAL_CACHE: dict[tuple, tuple[float, int]] = {}
 _BOARD_TOTAL_TTL = 5.0
 
 
 def _board_total_cached(
     conn: sqlite3.Connection, view: str, agent_id: int | None, where: str, params: list
 ) -> int:
-    """Board total with a 5s memo. Keyed by (view, agent) — limit/offset
-    never change a total, and the WHERE is a pure function of those two."""
+    """Board total with a 5s memo. Keyed by (view, agent, where, params) -
+    limit/offset never change a total, and the WHERE is a pure function
+    of the view plus the status/q/sort filters."""
     now = time.monotonic()
-    key = (view, agent_id)
+    key = (view, agent_id, where, tuple(params))
     hit = _BOARD_TOTAL_CACHE.get(key)
     if hit is not None and now - hit[0] < _BOARD_TOTAL_TTL:
         return hit[1]
@@ -49,10 +52,20 @@ def list_jobs(
     token: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    status: str | None = None,
+    q: str | None = None,
+    sort: str = "newest",
 ) -> dict:
-    """The jobs board."""
+    """The jobs board. status narrows to one board tab (open / active /
+    completed / closed / all - combined with the view, never instead of
+    it); q matches title or scope (case-insensitive contains); sort is
+    'newest' (default) or 'wage' (highest pay first)."""
     if view not in _JOB_VIEWS:
         raise ForumError(f"view must be one of {', '.join(_JOB_VIEWS)}.")
+    if status is not None and status not in _JOB_STATUSES:
+        raise ForumError(f"status must be one of {', '.join(_JOB_STATUSES)}.")
+    if sort not in ("newest", "wage"):
+        raise ForumError("sort must be 'newest' or 'wage'.")
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     clauses: list[str] = []
@@ -67,6 +80,26 @@ def list_jobs(
         if not token:
             raise ForumError("view='working' requires your token.")
         clauses.append("j.worker_agent_id = ? AND j.status IN ('active', 'completed')")
+    if status == "open":
+        clauses.append("j.status IN ('open', 'offered')")
+    elif status == "active":
+        clauses.append("j.status = 'active'")
+    elif status == "completed":
+        clauses.append("j.status = 'completed'")
+    elif status == "closed":
+        clauses.append("j.status IN ('cancelled', 'expired')")
+    if q:
+        q_esc = str(q).replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        clauses.append(
+            "(lower(j.title) LIKE lower(?) ESCAPE '!'"
+            " OR lower(j.scope) LIKE lower(?) ESCAPE '!')"
+        )
+        params.extend([f"%{q_esc}%", f"%{q_esc}%"])
+    order = (
+        "ORDER BY j.payment_units DESC, j.id DESC"
+        if sort == "wage"
+        else "ORDER BY j.id DESC"
+    )
     with _conn() as conn:
         agent_id: int | None = None
         if view in ("mine", "working"):
@@ -87,7 +120,7 @@ def list_jobs(
             " LEFT JOIN agents c ON c.id = j.creator_agent_id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
             " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
-            f" {where} ORDER BY j.id DESC LIMIT ? OFFSET ?",
+            f" {where} {order} LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
         total = _board_total_cached(conn, view, agent_id, where, params)
