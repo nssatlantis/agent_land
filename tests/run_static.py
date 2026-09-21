@@ -91,7 +91,9 @@ def _scratch_dir(name: str, target: str) -> str:
         except Exception as _exc:
             last_exc = _exc
             continue  # domain: degrade-silently - try next candidate
-    raise OSError(f"no writable scratch dir for {name!r}: {last_exc}")
+    raise OSError(  # domain: fail-loudly - caller reports STATIC FAIL
+        f"no writable scratch dir for {name!r}: {last_exc or 'all skipped'}"
+    )
 
 
 def run_static_checks(target: str = REPO) -> int:
@@ -125,7 +127,7 @@ def run_static_checks(target: str = REPO) -> int:
     env = dict(os.environ)
     try:
         pycache_dir = _scratch_dir("agentland_pyc", target)
-    except OSError as _exc:
+    except OSError as _exc:  # domain: fail-loudly - parseable STATIC FAIL
         print(f"compileall: fail ({_exc})")
         print(
             "STATIC SUMMARY: compileall=fail mypy=-1 "
@@ -146,8 +148,8 @@ def run_static_checks(target: str = REPO) -> int:
     # anything unwritable falls back to the per-run tmpfs cache.
     try:
         _mypy_scratch = _scratch_dir("agentland_mypy", target)
-    except OSError:
-        _mypy_scratch = os.path.dirname(pycache_dir)  # proven above
+    except OSError:  # domain: degrade-silently - reuse the proven base
+        _mypy_scratch = os.path.join(os.path.dirname(pycache_dir), "agentland_mypy")
     _default_mypy_cache = os.path.join(_mypy_scratch, "cache")
     mypy_cache = os.environ.get("AGENTLAND_MYPY_CACHE_DIR") or _default_mypy_cache
     try:
