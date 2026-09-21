@@ -1342,12 +1342,16 @@ def test_native_sandbox_routes_through_docker():
     ci_runner._sandbox._ensure_image = lambda tree_, rev: (
         holder.update(image_calls=holder["image_calls"] + 1, rev=rev) or "fake:tag"
     )
-    ci_runner._sandbox._sandbox_argv = (
-        lambda tree_, image_tag, script_rel, extra_env=None: (
+
+    def _fake_native_argv(
+        tree_, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+    ):
+        return (
             [sys.executable, "-c", "print('ok')"],
             "agentland-ci-native",
         )
-    )
+
+    ci_runner._sandbox._sandbox_argv = _fake_native_argv
     ci_runner._sandbox._ensure_tree_traversable = lambda tree_, _marker=None: None
     ci_runner._slots._register_active = lambda *a, **k: None
     _shadow("CI_RUN_NATIVE_SANDBOX", 1)

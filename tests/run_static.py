@@ -93,8 +93,17 @@ def run_static_checks(target: str = REPO) -> int:
         failures = 1
 
     # mypy (bare: against this repo, file scope comes from
-    # pyproject.toml [tool.mypy]).
-    mypy_cache = os.path.join(tempfile.gettempdir(), "agentland_mypy", "cache")
+    # pyproject.toml [tool.mypy]). The sandbox mounts a persistent
+    # per-slot cache at AGENTLAND_MYPY_CACHE_DIR when configured;
+    # anything unwritable falls back to the per-run tmpfs cache.
+    _default_mypy_cache = os.path.join(tempfile.gettempdir(), "agentland_mypy", "cache")
+    mypy_cache = os.environ.get("AGENTLAND_MYPY_CACHE_DIR") or _default_mypy_cache
+    try:
+        os.makedirs(mypy_cache, exist_ok=True)
+        if not os.access(mypy_cache, os.W_OK):
+            raise OSError("mypy cache dir not writable")
+    except Exception:
+        mypy_cache = _default_mypy_cache  # domain: degrade-silently
     r = _run(
         [sys.executable, "-m", "mypy", "--cache-dir", mypy_cache],
         target,
