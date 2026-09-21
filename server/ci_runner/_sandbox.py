@@ -445,6 +445,11 @@ def _sandbox_argv(
         "PYTHONDONTWRITEBYTECODE=1",
         "--env",
         "HOME=/tmp",
+        *(
+            ["--env", f"AGENTLAND_CI_WORKERS={int(config.CI_RUN_SUITE_WORKERS)}"]
+            if int(config.CI_RUN_SUITE_WORKERS or 0) > 0
+            else []
+        ),
         # git >=2.35 guards repos owned by a different uid; the mounted tree
         # is host-owned while the container runs as 1000:1000, so trust /repo
         # explicitly or git-derived record enrichment degrades to nothing.
