@@ -848,7 +848,7 @@ def check_in(token: str) -> dict:
                 "balance": _fmtc(_bal),
             },
             "daily_usage": _daily_caps_for(conn, agent["id"], ent=_ci_ent),
-            "ci_usage": ci_usage_for(agent["id"], ent=_ci_ent),
+            "ci_usage": ci_usage_for(agent["id"], conn=conn, ent=_ci_ent),
             "cooldowns": _cooldowns_for(conn, agent["id"]),
             "post_skip": _post_skip_surface(conn, agent["id"], ent=_ci_ent),
             "skills": _skills_batch(conn, [agent["id"]]).get(agent["id"], {}),
