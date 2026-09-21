@@ -993,6 +993,83 @@ def _led_target(e: dict, threads: dict[int, int] | None = None) -> str:
     return esc(f"{e['target_type']} #{e['target_id']}")
 
 
+def _treasury_trend_html() -> str:
+    """Supply + treasury over time (seal-series line chart, chart 1): two
+    SVG polylines off db.treasury_supply_series, shared zero-based scale
+    on max supply, gridlines at 0/50/100% with credit labels, first/last
+    seal dates on the x-axis. Fewer than 2 seals reads the house
+    empty-state copy. Display-only, degrade-silently."""
+    try:
+        series = _cached(
+            ("treasury_supply_series", 120),
+            int(config.VIEWER_CACHE_TTL or 60),
+            lambda: db.treasury_supply_series(120),
+        )
+    except Exception:  # domain: degrade-silently - series read never blocks /economy
+        return ""
+    if not isinstance(series, list):
+        return ""
+    pts = []
+    for e in series:
+        if not isinstance(e, dict):
+            continue
+        try:
+            pts.append(
+                (
+                    str(e["created_at"])[:10],
+                    int(e["supply_units"]),
+                    int(e["treasury_units"]),
+                )
+            )
+        except (  # domain: degrade-silently - corrupt points are skipped
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            continue
+    if len(pts) < 2:
+        return (
+            "<h3 style='margin:12px 0 6px'>Treasury over time</h3>"
+            "<p style='color:var(--muted)'>Not enough history yet.</p>"
+        )
+    sup = [p[1] for p in pts]
+    tre = [p[2] for p in pts]
+    hi = max(sup) or 1
+    w, h, pad = 560, 120, 8
+    span = max(len(pts) - 1, 1)
+
+    def _line(vals: list[int]) -> str:
+        return " ".join(
+            f"{pad + i * (w - 2 * pad) / span:.1f},"
+            f"{h - pad - v / hi * (h - 2 * pad):.1f}"
+            for i, v in enumerate(vals)
+        )
+
+    def _grid(v: float) -> float:
+        return h - pad - v / hi * (h - 2 * pad)
+
+    first, last = pts[0][0][5:], pts[-1][0][5:]
+    return (
+        "<h3 style='margin:12px 0 6px'>Treasury over time</h3>"
+        f"<svg width='{w}' height='{h}' role='img' aria-label='supply "
+        f"{esc(_format_credits(sup[0]))} to {esc(_format_credits(sup[-1]))}, "
+        f"treasury {esc(_format_credits(tre[0]))} to "
+        f"{esc(_format_credits(tre[-1]))} over {len(pts)} seals'>"
+        f"<line x1='{pad}' y1='{_grid(hi):.1f}' x2='{w - pad}' y2='{_grid(hi):.1f}' stroke='var(--line)'/>"
+        f"<line x1='{pad}' y1='{_grid(hi / 2):.1f}' x2='{w - pad}' y2='{_grid(hi / 2):.1f}' stroke='var(--line)' opacity='0.6'/>"
+        f"<text x='{w - pad}' y='{_grid(hi) + 10:.1f}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(_format_credits(hi))}</text>"
+        f"<text x='{w - pad}' y='{_grid(hi / 2) + 10:.1f}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(_format_credits(hi // 2))}</text>"
+        f"<polyline points='{_line(sup)}' fill='none' stroke='var(--accent)' stroke-width='1.5'/>"
+        f"<polyline points='{_line(tre)}' fill='none' stroke='var(--ok)' stroke-width='1.5'/>"
+        f"<text x='{pad}' y='{h - 1}' font-size='9' fill='var(--muted)'>{esc(first)}</text>"
+        f"<text x='{w - pad}' y='{h - 1}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(last)}</text>"
+        "</svg>"
+        "<div class='meta'><span style='color:var(--accent)'>\u2014</span> supply "
+        "<span style='color:var(--ok)'>\u2014</span> treasury "
+        f"&middot; {len(pts)} seals &middot; per checkpoint seal</div>"
+    )
+
+
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -1158,6 +1235,7 @@ def _economy_body(request: Request) -> str:
             overview["treasury_units"],
             overview["flows"]["all_time"]["burned_units"],
         )
+        + _treasury_trend_html()
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs'] + overview['offered_jobs']} open &middot; "
