@@ -43,6 +43,14 @@ _SESSION_BLOCKLIST = {
     "test_bug_reports.py",
     "test_bug_overhaul.py",
     "test_misc.py",
+    "test_misc_a.py",
+    "test_misc_b.py",
+    "test_misc_c.py",
+    "test_misc_d.py",
+    "test_misc_e.py",
+    "test_misc_f.py",
+    "test_misc_g.py",
+    "test_misc_h.py",
 }
 
 
