@@ -47,15 +47,20 @@ _SELECTABLE_SOURCES = (
 YIELD_SOURCES = _SELECTABLE_SOURCES + ("spend_all",)
 DEFAULT_YIELD_SOURCES = ("transfer_fee", "stake_fee", "store")
 # Structural exclusions (proposal #601 doctrine, locked by operator):
-# forfeits can never be yield, custody can never be yield, bond-internal
-# rows can never fund their own accrual. These reasons match NO family,
-# so they accrue nothing on any series, selectable or legacy.
+# forfeits can never be yield, custody can never be yield,
+# bond-routed rows (payouts, haircuts, conduit reverts) can never fund
+# their own accrual. These reasons match NO family, so they accrue
+# nothing on any series, selectable or legacy. The legacy clause below
+# is driven from this tuple so the invariant cannot rot.
 _EXCLUDED_REASONS = (
     "transfer_intake",
     "forfeit_intake",
     "guild_deposit_intake",
     "job_deposit_treasury_intake",
+    "guild_bond_payout_intake",
+    "guild_stake_conduit_revert_intake",
 )
+_LEGACY_NOT_IN = ("transfer_fee_intake",) + _EXCLUDED_REASONS
 _SOURCE_CLAUSES = {
     "transfer_fee": "reason = 'transfer_fee_intake'",
     "stake_fee": "reason = 'stake_fee_intake'",
@@ -77,9 +82,7 @@ _SOURCE_CLAUSES = {
     # _normalize_yield_sources).
     "spend_all": (
         "(substr(reason, -7) = '_intake'"
-        " AND reason NOT IN ('transfer_fee_intake', 'forfeit_intake',"
-        " 'transfer_intake', 'guild_deposit_intake',"
-        " 'job_deposit_treasury_intake')"
+        " AND reason NOT IN ('" + "', '".join(_LEGACY_NOT_IN) + "')"
         " AND reason NOT LIKE 'bond\\_%' ESCAPE '\\')"
     ),
 }
