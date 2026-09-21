@@ -425,6 +425,12 @@ def run(conn) -> None:
     from db._bonds import DEFAULT_YIELD_SOURCES, _ensure_tables
 
     _ensure_tables(conn)
+    # Subsidized job requests (proposal #600, small_fix): side table on
+    # existing databases (fresh ones carry it via schema.sql). Plain
+    # CREATE TABLE IF NOT EXISTS, no ALTER anywhere.
+    from db._jobs_subsidy import _ensure_tables as _ensure_subsidy_tables
+
+    _ensure_subsidy_tables(conn)
     # Per-series yield sources (Bonds v1.1): existing series predate the
     # column and correctly read as the default trio; fresh DBs carry it
     # via schema.sql. No CHECK twin: SQLite cannot add constraints to a

@@ -688,6 +688,22 @@ def _series_sources(row) -> tuple[str, ...]:
     return _parse_sources_str(row["yield_sources"])
 
 
+def _clamp_since(since_iso: str, series_row) -> str:
+    """A series earns only on intake at or after its own opening
+    (proposal #604): clamp the sweep window's start to the series'
+    created_at. String max is chronological on the ISO shapes the
+    ledger writes; sub-second precision differences between writers
+    don't matter at sweep granularity. Missing/empty reads unclamped
+    (backfill semantics, never a refusal inside the sweep)."""
+    try:
+        opened = series_row["created_at"]
+    except (KeyError, IndexError, TypeError):
+        return since_iso
+    if not opened:
+        return since_iso
+    return max(since_iso, str(opened))
+
+
 def _trailing_intake_units(
     conn: sqlite3.Connection, since_iso: str, sources: tuple[str, ...]
 ) -> int:
@@ -838,7 +854,9 @@ def sweep_bond_day() -> dict:
             sid = int(s["id"])
             pct = float(s["revenue_share_pct"])
             try:
-                base = _trailing_intake_units(conn, since, _series_sources(s))
+                base = _trailing_intake_units(
+                    conn, _clamp_since(since, s), _series_sources(s)
+                )
             except Exception:  # domain: degrade-silently - no base, carry only
                 base = 0
             pool = int(base * pct / (100 * window_days))

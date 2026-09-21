@@ -219,11 +219,22 @@ def test_carryover_holds_remainder():
     saved = _arm_fee(10.0)
     try:
         peer = _make_holder("bd-carry-peer")
-        db.transfer_credits(holder["agent_id"], peer["agent_id"], 100)
-        b = buy_bond(holder["token"], sid, 10.0)
-        _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
-        base = _base_now()
+        db.transfer_credits(holder["agent_id"], peer["agent_id"], 1500)
+        b1 = buy_bond(holder["token"], sid, 10.0)
+        b2 = buy_bond(holder["token"], sid, 10.0)
+        _backdate(b1["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        _backdate(b2["bond_id"], bought="2020-01-01T00:00:00.000Z")
+        # Expectation mirrors the sweep's clamp (proposal #604): only
+        # post-open intake funds this series, so earlier tests' leftover
+        # intake never leaks in - hermetic by construction, not by slate.
+        with db._conn() as conn:
+            opened = conn.execute(
+                "SELECT created_at FROM bond_series WHERE id = ?", (sid,)
+            ).fetchone()[0]
+            base = _trailing_fee_intake_units(conn, max(_since_7d(), opened))
+        assert base == 150, base
         pool = int(base * 15.0 / 700)
+        assert pool == 3, pool
         _reset_sweep_day()
         sweep_bond_day()
         with db._conn() as conn:
@@ -231,8 +242,9 @@ def test_carryover_holds_remainder():
                 "SELECT value FROM economy_meta WHERE key = ?",
                 (f"bond_carry_{sid}",),
             ).fetchone()[0]
-        got = my_bonds(holder["token"])["bonds"]
-        acc = [x for x in got if x["id"] == b["bond_id"]][0]["accrued_units"]
+        got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+        acc = got[b1["bond_id"]]["accrued_units"] + got[b2["bond_id"]]["accrued_units"]
+        assert (acc, int(carry)) == (2, 1), (acc, carry)
         assert int(carry) == pool - acc, (carry, pool, acc)
     finally:
         _unarm_fee(saved)
@@ -921,6 +933,63 @@ def test_bond_family_trailing_keys():
     before = got["tags"]
     _seed_intake("tag_apply_intake", 321)
     assert db.bond_family_trailing()["tags"] - before == 321
+
+
+def test_clamp_since_unit():
+    from db._bonds import _clamp_since
+
+    assert (
+        _clamp_since(
+            "2020-01-01T00:00:00.000Z", {"created_at": "2020-06-01T00:00:00.000Z"}
+        )
+        == "2020-06-01T00:00:00.000Z"
+    )
+    assert (
+        _clamp_since(
+            "2020-06-01T00:00:00.000Z", {"created_at": "2020-01-01T00:00:00.000Z"}
+        )
+        == "2020-06-01T00:00:00.000Z"
+    )
+    assert _clamp_since("2020-01-01T00:00:00.000Z", {}) == "2020-01-01T00:00:00.000Z"
+    assert (
+        _clamp_since("2020-01-01T00:00:00.000Z", {"created_at": ""})
+        == "2020-01-01T00:00:00.000Z"
+    )
+
+
+def _set_series_opened(sid: int, created_at: str):
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE bond_series SET created_at = ? WHERE id = ?", (created_at, sid)
+        )
+
+
+def test_series_cutoff_future_open_counts_zero():
+    holder = _make_holder("bd-cut-fut")
+    sid = db.bond_series_open("cut-fut-7", 7, yield_sources=["store"])["series_id"]
+    _set_series_opened(sid, "2030-01-01T00:00:00.000Z")
+    _seed_store_intake(1000)
+    b = buy_bond(holder["token"], sid, 2.0)
+    _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["swept"] is True
+    got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+    assert got[b["bond_id"]]["accrued_units"] == 0
+
+
+def test_series_cutoff_backdated_open_counts():
+    holder = _make_holder("bd-cut-old")
+    sid = db.bond_series_open("cut-old-7", 7, yield_sources=["store"])["series_id"]
+    _set_series_opened(sid, "2020-01-01T00:00:00.000Z")
+    _seed_store_intake(1000)
+    b = buy_bond(holder["token"], sid, 2.0)
+    _backdate(b["bond_id"], bought="2020-01-01T00:00:00.000Z")
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["swept"] is True
+    got = {x["id"]: x for x in my_bonds(holder["token"])["bonds"]}
+    assert got[b["bond_id"]]["accrued_units"] > 0
 
 
 if __name__ == "__main__":

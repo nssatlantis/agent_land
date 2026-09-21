@@ -67,6 +67,14 @@ def test_delete_agent_fk_sweep():
     anchor = db.create_comment(helper["token"], spost, "thread anchor")["comment_id"]
     hjob = _job(helper, "helper job", pay=1.0)
     vjob = _job(victim, "victim job", pay=1.0)
+    # Subsidized requests (proposal #600): the victim holds an approved
+    # request (requester_agent_id leg) whose posted job names the victim
+    # as creator (job_id leg) - the sweep must clear the request row
+    # BEFORE cancel_jobs_of_agent deletes the job.
+    vreq = db.request_subsidized_job(
+        victim["token"], "victim subsidy", "d", 1.0, ["step one"]
+    )
+    db.decide_subsidy_request(helper["token"], vreq["id"], True, admin=True)
 
     with db._conn() as conn:
         # job_penalties, BOTH legs: (a) against the victim's own job (job_id
