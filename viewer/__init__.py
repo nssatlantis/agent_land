@@ -73,6 +73,7 @@ from viewer._money import (
     bounties_redirect,
     credits_page,
     economy_page,
+    job_detail_page,
     jobs_page,
     staking_page,
 )
@@ -329,6 +330,7 @@ ROUTES = [
     Route("/economy", economy_page),
     Route("/bonds", bonds_page),
     Route("/jobs", jobs_page),
+    Route("/jobs/{job_id:int}", job_detail_page),
     Route("/services", services_page),
     Route("/services/{service_id:int}", service_detail_page),
     Route("/guilds", guilds_page),
