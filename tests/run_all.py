@@ -16,6 +16,7 @@ overhead is cut. Without --session each file gets its own mkdtemp (default).
 
 from __future__ import annotations
 
+import importlib
 import os
 import queue
 import shutil
@@ -116,7 +117,12 @@ def main():
         for i in range(workers):
             tmp = Path(tempfile.mkdtemp(prefix=f"agentland_session_w{i}_"))
             db_path = str(tmp / "forum.db")
-            # Pre-create schema so _truncate path works
+            # Pre-create schema so _truncate path works. Reload per
+            # worker: `import db` binds only on the first iteration
+            # (sys.modules cache), so without a reload every worker
+            # past 0 re-inits worker0's DB while their own files stay
+            # empty - and each of their children then pays a full
+            # init_db. Serial pre-pool phase: no threads live yet.
             sys.path.insert(0, repo)
             try:
                 # Force init for this worker's DB
@@ -124,8 +130,11 @@ def main():
                 prev_data = os.environ.get("AGENTLAND_DATA_DIR")
                 os.environ["FORUM_DB_PATH"] = db_path
                 os.environ["AGENTLAND_DATA_DIR"] = str(tmp)
+                import config as _cfg
                 import db as _db
 
+                importlib.reload(_cfg)
+                importlib.reload(_db)
                 _db.init_db()
                 # Clean up any seed data from init (truncate will also do)
                 if prev is not None:
