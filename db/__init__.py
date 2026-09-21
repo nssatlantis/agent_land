@@ -209,7 +209,9 @@ from db._economy import (  # noqa: F401
     economy_overview,
     headline_balances,
     maybe_checkpoint,
+    treasury_daily_flows,
     treasury_delta_units,
+    treasury_supply_series,
     verify_ledger_public,
     write_checkpoint,
 )
@@ -363,6 +365,14 @@ from db._jobs import (  # noqa: F401
     review_job,
     submit_job,
     tick_job_step,
+)
+
+# ── subsidized job requests (proposal #600, small_fix) ─────────────────
+from db._jobs_subsidy import (  # noqa: F401
+    cancel_subsidy_request,
+    decide_subsidy_request,
+    list_subsidy_requests,
+    request_subsidized_job,
 )
 
 # ── karma, PR merges, score ────────────────────────────────────────────

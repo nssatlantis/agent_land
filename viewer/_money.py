@@ -993,6 +993,301 @@ def _led_target(e: dict, threads: dict[int, int] | None = None) -> str:
     return esc(f"{e['target_type']} #{e['target_id']}")
 
 
+def _treasury_trend_html() -> str:
+    """Supply + treasury over time (seal-series line chart, chart 1): two
+    SVG polylines off db.treasury_supply_series, shared zero-based scale
+    on max supply, gridlines at 0/50/100% with credit labels, first/last
+    seal dates on the x-axis. Fewer than 2 seals reads the house
+    empty-state copy. Display-only, degrade-silently."""
+    try:
+        series = _cached(
+            ("treasury_supply_series", 120),
+            int(config.VIEWER_CACHE_TTL or 60),
+            lambda: db.treasury_supply_series(120),
+        )
+    except Exception:  # domain: degrade-silently - series read never blocks /economy
+        return ""
+    if not isinstance(series, list):
+        return ""
+    pts = []
+    for e in series:
+        if not isinstance(e, dict):
+            continue
+        try:
+            pts.append(
+                (
+                    str(e["created_at"])[:10],
+                    int(e["supply_units"]),
+                    int(e["treasury_units"]),
+                )
+            )
+        except (  # domain: degrade-silently - corrupt points are skipped
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            continue
+    if len(pts) < 2:
+        return (
+            "<h3 style='margin:12px 0 6px'>Treasury over time</h3>"
+            "<p style='color:var(--muted)'>Not enough history yet.</p>"
+        )
+    sup = [p[1] for p in pts]
+    tre = [p[2] for p in pts]
+    hi = max(sup) or 1
+    w, h, pad = 560, 120, 8
+    span = max(len(pts) - 1, 1)
+
+    def _line(vals: list[int]) -> str:
+        return " ".join(
+            f"{pad + i * (w - 2 * pad) / span:.1f},"
+            f"{h - pad - v / hi * (h - 2 * pad):.1f}"
+            for i, v in enumerate(vals)
+        )
+
+    def _grid(v: float) -> float:
+        return h - pad - v / hi * (h - 2 * pad)
+
+    first, last = pts[0][0][5:], pts[-1][0][5:]
+    return (
+        "<h3 style='margin:12px 0 6px'>Treasury over time</h3>"
+        f"<svg width='{w}' height='{h}' role='img' aria-label='supply "
+        f"{esc(_format_credits(sup[0]))} to {esc(_format_credits(sup[-1]))}, "
+        f"treasury {esc(_format_credits(tre[0]))} to "
+        f"{esc(_format_credits(tre[-1]))} over {len(pts)} seals'>"
+        f"<line x1='{pad}' y1='{_grid(hi):.1f}' x2='{w - pad}' y2='{_grid(hi):.1f}' stroke='var(--line)'/>"
+        f"<line x1='{pad}' y1='{_grid(hi / 2):.1f}' x2='{w - pad}' y2='{_grid(hi / 2):.1f}' stroke='var(--line)' opacity='0.6'/>"
+        f"<text x='{w - pad}' y='{_grid(hi) + 10:.1f}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(_format_credits(hi))}</text>"
+        f"<text x='{w - pad}' y='{_grid(hi / 2) + 10:.1f}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(_format_credits(hi // 2))}</text>"
+        f"<polyline points='{_line(sup)}' fill='none' stroke='var(--accent)' stroke-width='1.5'/>"
+        f"<polyline points='{_line(tre)}' fill='none' stroke='var(--ok)' stroke-width='1.5'/>"
+        f"<text x='{pad}' y='{h - 1}' font-size='9' fill='var(--muted)'>{esc(first)}</text>"
+        f"<text x='{w - pad}' y='{h - 1}' font-size='9' fill='var(--muted)' text-anchor='end'>{esc(last)}</text>"
+        "</svg>"
+        "<div class='meta'><span style='color:var(--accent)'>\u2014</span> supply "
+        "<span style='color:var(--ok)'>\u2014</span> treasury "
+        f"&middot; {len(pts)} seals &middot; per checkpoint seal</div>"
+    )
+
+
+def _daily_flows_html() -> str:
+    """Daily treasury flows, trailing 14 days (chart 2): per-day inflow
+    (up, green) vs outflow (down, red) SVG bars off
+    db.treasury_daily_flows, folded through the same _summarize_flows
+    buckets as the window tables. Quiet days read hairlines. Tooltips
+    carry exact credits. Display-only, degrade-silently."""
+    try:
+        days = _cached(
+            ("treasury_daily_flows", 14),
+            int(config.VIEWER_CACHE_TTL or 60),
+            lambda: db.treasury_daily_flows(14),
+        )
+    except Exception:  # domain: degrade-silently - series read never blocks /economy
+        return ""
+    if not isinstance(days, list) or not days:
+        return ""
+    inflow_keys = (
+        "minted_units",
+        "fees_in_units",
+        "forfeit_intake_units",
+        "spend_intake_units",
+        "guild_intake_units",
+        "bond_intake_units",
+        "transfer_intake_units",
+        "payout_returns_in_units",
+    )
+    outflow_keys = ("burned_units", "payouts_out_units")
+    rows = []
+    for d in days:
+        if not isinstance(d, dict) or not isinstance(d.get("flows"), dict):
+            continue
+        try:
+            f = d["flows"]
+            rows.append(
+                (
+                    str(d.get("day", ""))[5:],
+                    sum(int(f.get(k, 0) or 0) for k in inflow_keys),
+                    sum(int(f.get(k, 0) or 0) for k in outflow_keys),
+                )
+            )
+        except (  # domain: degrade-silently - corrupt buckets are skipped
+            TypeError,
+            ValueError,
+        ):
+            continue
+    if not rows:
+        return ""
+    mx = max([r[1] for r in rows] + [r[2] for r in rows] + [0]) or 1
+    slot, bw, mid, half = 34, 11, 62, 50
+    w = len(rows) * slot + 16
+    bars = []
+    for i, (label, inn, out) in enumerate(rows):
+        x = 8 + i * slot
+        hin = max(2, round(inn / mx * half)) if inn else 2
+        hout = max(2, round(out / mx * half)) if out else 2
+        in_col = "var(--ok)" if inn else "var(--line)"
+        out_col = "var(--fail)" if out else "var(--line)"
+        bars.append(
+            f'<rect x="{x}" y="{mid - hin}" width="{bw}" height="{hin}" rx="1.5" fill="{in_col}" opacity="0.85">'
+            f"<title>in {esc(_format_credits(inn))}</title></rect>"
+            f'<rect x="{x + bw + 2}" y="{mid}" width="{bw}" height="{hout}" rx="1.5" fill="{out_col}" opacity="0.85">'
+            f"<title>out {esc(_format_credits(out))}</title></rect>"
+        )
+        if i % 2 == 0:
+            bars.append(
+                f'<text x="{x + bw}" y="{mid + half + 12}" font-size="9" fill="var(--muted)" text-anchor="middle">{esc(label)}</text>'
+            )
+    return (
+        "<h3 style='margin:6px 0'>Daily flows, trailing 14 days</h3>"
+        f'<svg width="{w}" height="126" role="img" aria-label="daily treasury inflow vs outflow over the trailing 14 days">'
+        f'<line x1="8" y1="{mid}" x2="{w - 8}" y2="{mid}" stroke="var(--line)"/>'
+        + "".join(bars)
+        + "</svg>"
+        "<div class='meta'><span style='color:var(--ok)'>\u25a0</span> in "
+        "<span style='color:var(--fail)'>\u25a0</span> out &middot; same buckets as the window tables</div>"
+    )
+
+
+def _supply_split_html(overview: dict) -> str:
+    """Supply split stacked bar (chart 3): treasury / circulating /
+    escrow as exact shares of total supply (the three sum to supply by
+    construction: circulating = supply \u2212 treasury \u2212 escrow).
+    Committed stakes, guild pools and bonds overlap these accounts, so
+    they stay in the cards, named in the caption. Display-only,
+    degrade-silently."""
+    try:
+        total = int(overview["total_supply_units"])
+        if total <= 0:
+            return ""
+        parts = [
+            ("treasury", int(overview["treasury_units"]), "hsl(210 70% 45%)"),
+            ("circulating", int(overview["circulating_units"]), "hsl(140 45% 40%)"),
+            (
+                "escrow",
+                int(overview["held_in_job_escrow_units"]),
+                "hsl(35 80% 45%)",
+            ),
+        ]
+    except (  # domain: degrade-silently - malformed overview degrades to no bar
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    segs = []
+    legend = []
+    for name, units, color in parts:
+        pct = max(0, min(100, units / total * 100))
+        if pct <= 0:
+            continue
+        segs.append(
+            f'<div style="flex:{pct:.3f};background:{color};min-width:4px" title="{esc(name)}: {esc(_format_credits(units))} ({pct:.1f}%)"></div>'
+        )
+        legend.append(
+            f"<span><span style='color:{color}'>\u25a0</span> {esc(name)} {pct:.1f}%</span>"
+        )
+    if not segs:
+        return ""
+    return (
+        "<div style='display:flex;height:14px;border-radius:7px;overflow:hidden;margin:12px 0 4px'>"
+        + "".join(segs)
+        + "</div>"
+        + "<div class='meta'>"
+        + " &middot; ".join(legend)
+        + " &middot; of total supply"
+        + " &middot; stakes, guild pools and bonds overlap these accounts (see cards)</div>"
+    )
+
+
+def _store_donut_html(store: dict) -> str:
+    """Store revenue donut + 7-day bars (chart 4): conic-gradient share
+    of units sold across items (top 6 + Other) plus per-item trailing-7d
+    bars. Reads the already-loaded store_stats dict - zero new queries.
+    Display-only, degrade-silently."""
+    try:
+        items = [i for i in store["items"] if int(i.get("units", 0) or 0) > 0]
+    except (  # domain: degrade-silently - malformed store dict renders no chart
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    if not items:
+        return ""
+    try:
+        ranked = sorted(items, key=lambda i: int(i.get("units", 0) or 0), reverse=True)
+    except (  # domain: degrade-silently - unsortable rows render no chart
+        TypeError,
+        ValueError,
+    ):
+        return ""
+    total = sum(int(i.get("units", 0) or 0) for i in ranked) or 1
+    hues = [160, 210, 265, 320, 25, 55]
+    top, rest = ranked[:6], ranked[6:]
+    stops = []
+    acc = 0.0
+    legend = []
+    for idx, item in enumerate(top):
+        try:
+            units = int(item.get("units", 0) or 0)
+        except (  # domain: degrade-silently - one bad row never blocks the donut
+            TypeError,
+            ValueError,
+        ):
+            continue
+        pct = units / total * 100
+        color = f"hsl({hues[idx % len(hues)]} 60% 42%)"
+        stops.append(f"{color} {acc:.1f}% {acc + pct:.1f}%")
+        acc += pct
+        legend.append(
+            f"<div><span style='color:{color}'>\u25a0</span> {esc(str(item.get('label', '?')))} "
+            f"&middot; {units} sold &middot; {esc(str(item.get('revenue_credits', '0')))} "
+            f"&middot; 7d {int(item.get('units_7d', 0) or 0)}</div>"
+        )
+    if rest:
+        rest_u = sum(int(i.get("units", 0) or 0) for i in rest)
+        stops.append(f"var(--line) {acc:.1f}% 100%")
+        legend.append(
+            f"<div><span style='color:var(--muted)'>\u25a0</span> Other ({len(rest)} items) &middot; {rest_u} sold</div>"
+        )
+    if not stops:
+        return ""
+    bars = []
+    try:
+        max7 = max(int(i.get("units_7d", 0) or 0) for i in ranked) or 0
+    except (  # domain: degrade-silently - bad 7d counts drop the bars only
+        TypeError,
+        ValueError,
+    ):
+        max7 = 0
+    if max7:
+        for item in top:
+            try:
+                units7 = int(item.get("units_7d", 0) or 0)
+            except (  # domain: degrade-silently - one bad row never blocks the bars
+                TypeError,
+                ValueError,
+            ):
+                continue
+            width = int(round(units7 / max7 * 100)) if units7 else 0
+            width_css = "width:" + str(width) + "%"
+            bars.append(
+                f"<div style='display:flex;align-items:center;gap:8px;font-size:13px'>"
+                f"<span style='min-width:140px'>{esc(str(item.get('label', '?')))}</span>"
+                f"<div style='height:8px;background:var(--accent);{width_css};border-radius:4px;opacity:0.7'></div>"
+                f"<span style='color:var(--muted)'>{units7} in 7d</span></div>"
+            )
+    return (
+        '<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
+        f'<div style="width:72px;height:72px;border-radius:50%;background:conic-gradient({", ".join(stops)});"></div>'
+        + '<div style="font-size:13px">'
+        + "".join(legend)
+        + "</div>"
+        + "</div>"
+        + ("".join(bars) if bars else "")
+    )
+
+
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -1151,6 +1446,7 @@ def _economy_body(request: Request) -> str:
             tooltip="Outstanding bond face parked in escrow (supply-neutral) plus accrued revenue share awaiting maturity.",
         )
         + "</div>"
+        + _supply_split_html(overview)
         + _bonds_panel(overview)
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
@@ -1158,6 +1454,7 @@ def _economy_body(request: Request) -> str:
             overview["treasury_units"],
             overview["flows"]["all_time"]["burned_units"],
         )
+        + _treasury_trend_html()
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs'] + overview['offered_jobs']} open &middot; "
@@ -1227,6 +1524,8 @@ def _economy_body(request: Request) -> str:
             )
             + "</div>"
         )
+
+    flow_panels = _daily_flows_html() + flow_panels
 
     holders_rows = (
         "".join(
@@ -1822,7 +2121,8 @@ def _economy_body(request: Request) -> str:
             + _card(str(_st["units"]), "units sold")
             + _card(str(_st["buyers"]), "citizens bought")
             + "</div>"
-            "<p style='color:var(--muted);font-size:13px'>Citizens served "
+            + _store_donut_html(_store)
+            + "<p style='color:var(--muted);font-size:13px'>Citizens served "
             f"(ever bought): {int(_store['installed']['citizens_served'])}</p>"
             "<table><thead><tr><th>item</th><th style='text-align:right'>sold</th>"
             "<th style='text-align:right'>revenue</th>"

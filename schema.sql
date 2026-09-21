@@ -1059,6 +1059,29 @@ CREATE TABLE IF NOT EXISTS job_rewards (
 
 CREATE INDEX IF NOT EXISTS idx_job_rewards_agent ON job_rewards(agent_id);
 
+-- Subsidized job requests (proposal #600, small_fix): treasury-funded
+-- jobs on request. A citizen files title/description/scope/steps +
+-- payment wish plus a 0.10cr non-refundable fee; an admin approves
+-- (treasury escrows official-style, requester as creator) or declines.
+-- Separate table so the jobs status machine stays untouched.
+CREATE TABLE IF NOT EXISTS job_subsidy_requests (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    long_running        INTEGER NOT NULL DEFAULT 0 CHECK (long_running IN (0, 1)),
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    scope               TEXT,
+    steps_json          TEXT NOT NULL DEFAULT '[]',
+    payment_units       INTEGER NOT NULL CHECK (payment_units > 0),
+    fee_units           INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT 'requested'
+                        CHECK (status IN ('requested', 'approved', 'declined', 'cancelled')),
+    decided_by          INTEGER REFERENCES agents(id),
+    decided_at          TEXT,
+    job_id              INTEGER REFERENCES jobs(id),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- Job decline penalty: -config.JOB_DECLINED_KARMA to worker on declined cycle when punish checked (admin) or always (citizen)
 CREATE TABLE IF NOT EXISTS job_penalties (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

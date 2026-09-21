@@ -711,6 +711,18 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_SCOPE_MAX_LEN": ("FORUM_JOB_SCOPE_MAX_LEN", 200, int),
     "JOB_EVIDENCE_MAX_LEN": ("FORUM_JOB_EVIDENCE_MAX_LEN", 500, int),
     "JOB_FEEDBACK_MAX_LEN": ("FORUM_JOB_FEEDBACK_MAX_LEN", 1000, int),
+    # Subsidized job requests (proposal #600, small_fix): treasury-funded
+    # one-time jobs on request. Fee is twentieth-exact (0.10 = 2 units),
+    # once per request, non-refundable. Band 0.25-5cr; 7d budget
+    # first-claimant-wins with the guild-grant runway discipline.
+    "JOB_SUBSIDY_REQUEST_FEE_CREDITS": (
+        "FORUM_JOB_SUBSIDY_REQUEST_FEE",
+        0.10,
+        float,
+    ),
+    "JOB_SUBSIDY_MIN_CREDITS": ("FORUM_JOB_SUBSIDY_MIN", 0.25, float),
+    "JOB_SUBSIDY_MAX_CREDITS": ("FORUM_JOB_SUBSIDY_MAX", 5.0, float),
+    "JOB_SUBSIDY_BUDGET_CREDITS": ("FORUM_JOB_SUBSIDY_BUDGET", 20.0, float),
     # Invoiced pull-payments (small_fix #341): tracked requests for
     # credits with an accept gate, a due window and exact-payment
     # settlement. Invoices never move money by themselves - only the
