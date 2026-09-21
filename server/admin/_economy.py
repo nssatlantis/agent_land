@@ -40,15 +40,14 @@ def _bond_source_boxes() -> str:
     return "".join(
         '<label><input type="checkbox" name="yield_sources"'
         f' value="{s}"' + (" checked" if s in DEFAULT_YIELD_SOURCES else "") + ">"
-        f" {_BOND_SOURCE_LABELS[s]}"
-        + (f" ({db.format_credits(live[s])})" if s in live else "")
+        f" {_BOND_SOURCE_LABELS.get(s, s)}"
+        + (f" ({esc(db.format_credits(live[s]))})" if s in live else "")
         + "</label> "
         for s in _SELECTABLE_SOURCES
     )
 
 
 def _bond_series_table() -> str:
-    """Live series with ids (what the close form needs) plus every holding."""
     """Live series with ids (what the close form needs) plus every holding."""
     try:
         series = db.list_bond_series()
