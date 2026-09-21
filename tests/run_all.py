@@ -112,7 +112,13 @@ def main():
         sys.exit(1)
     # Biggest-first: stateless bin-packing for the fixed worker pool -
     # order is correctness-free (each file is an isolated subprocess).
-    tests.sort(key=lambda t: (os.path.getsize(t), t), reverse=True)
+    def _sched_key(t):
+        try:
+            return (os.path.getsize(t), t)
+        except OSError:
+            return (0, t)  # file vanished mid-glob; run first, fail loud
+
+    tests.sort(key=_sched_key, reverse=True)
 
     failures: list[tuple[str, str]] = []
     successes: list[str] = []
