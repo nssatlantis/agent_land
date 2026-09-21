@@ -217,6 +217,60 @@ def test_cancel_emits_decided_event():
     print("ok - test_cancel_emits_decided_event")
 
 
+def test_suspended_requester_cannot_be_approved():
+    ag = _make_agent("sub_req_banned")
+    req = db.request_subsidized_job(ag["token"], "Banned work", "d", 1.0, ["s1"])
+    t_at_decide = _treasury()
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (ag["agent_id"],))
+    try:
+        db.decide_subsidy_request(AGENTS["alpha"]["token"], req["id"], True, admin=True)
+    except Exception as exc:
+        assert "not an active citizen" in str(exc), exc
+    else:
+        raise AssertionError("suspended requester was approved")
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status, job_id FROM job_subsidy_requests WHERE id = ?",
+            (req["id"],),
+        ).fetchone()
+        assert row["status"] == "requested" and row["job_id"] is None
+    assert _treasury() == t_at_decide
+    print("ok - test_suspended_requester_cannot_be_approved")
+
+
+def test_seventh_day_budget_refuses_fifth():
+    # Order-robust: earlier tests in this file already approved escrow
+    # into the same 7d window, so approve 5.0cr requests until the gate
+    # trips instead of hard-coding the count (budget is 20.0cr).
+    made = []
+    refused = None
+    for i in range(8):
+        ag = _make_agent(f"sub_req_budget{i}")
+        req = db.request_subsidized_job(ag["token"], f"Budget {i}", "d", 5.0, ["s1"])
+        t_before_decide = _treasury()
+        try:
+            out = db.decide_subsidy_request(
+                AGENTS["alpha"]["token"], req["id"], True, admin=True
+            )
+        except Exception as exc:
+            assert "7d subsidy budget" in str(exc), exc
+            refused = req
+            break
+        assert out["status"] == "approved"
+        made.append(req)
+    assert refused is not None, "budget gate never refused in 8 approvals"
+    assert len(made) >= 3, f"budget refused too early after {len(made)}"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status, job_id FROM job_subsidy_requests WHERE id = ?",
+            (refused["id"],),
+        ).fetchone()
+        assert row["status"] == "requested" and row["job_id"] is None
+    assert _treasury() == t_before_decide
+    print("ok - test_seventh_day_budget_refuses_fifth")
+
+
 if __name__ == "__main__":
     test_request_ok_fee_sunk_once()
     test_serial_queue_refuses_second()
@@ -228,4 +282,6 @@ if __name__ == "__main__":
     test_invalid_limit_refused()
     test_non_admin_on_decided_stays_admin_error()
     test_cancel_emits_decided_event()
+    test_suspended_requester_cannot_be_approved()
+    test_seventh_day_budget_refuses_fifth()
     print("ALL SUBSIDY TESTS PASSED")

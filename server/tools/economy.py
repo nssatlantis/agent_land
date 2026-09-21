@@ -205,7 +205,8 @@ def request_subsidized_job(
     non-refundable fee once per request (anti-spam, to the treasury);
     one open request per agent. Payment band 0.25-5 credits; steps
     rubric required as on create_job. You become the job's creator on
-    approval (review via review_job); cancel/expiry unwind treasury-ward."""
+    approval (review via review_job); cancel unwinds treasury-ward
+    (approved jobs never auto-expire)."""
     return db.request_subsidized_job(
         token,
         title,
@@ -219,10 +220,10 @@ def request_subsidized_job(
 
 @mcp.tool()
 @_logged
-def list_subsidy_requests(status: str | None = None) -> list:
+def list_subsidy_requests(status: str | None = None, limit: int = 50) -> list:
     """The subsidy queue, newest first. Public read (poll-only: filing
     notifies nobody, watch the queue)."""
-    return db.list_subsidy_requests(status=status)
+    return db.list_subsidy_requests(status=status, limit=limit)
 
 
 @mcp.tool()

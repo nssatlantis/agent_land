@@ -391,13 +391,6 @@ def decide_subsidy_request(
             return _row_to_dict(out)
         payment_q = int(sub["payment_units"])
         _check_treasury_open(conn, payment_q, "that subsidy")
-        from db._credits import treasury_balance as _cover_balance
-
-        if _cover_balance(conn) < payment_q:
-            raise ForumError(
-                "the treasury cannot cover that subsidy right now -"
-                " waits for funds (nothing moved)."
-            )
         from db._jobs_ops._create import _insert_job_with_steps
 
         try:
@@ -411,6 +404,18 @@ def decide_subsidy_request(
             raise ForumError(
                 f"request #{request_id} carries no usable steps -"
                 " file a fresh request (nothing moved)."
+            )
+        from db._core import _account_status_for
+
+        req_row = conn.execute(
+            "SELECT id, name, banned, suspended_until FROM agents WHERE id = ?",
+            (sub["requester_agent_id"],),
+        ).fetchone()
+        if req_row is None or _account_status_for(req_row) != "active":
+            raise ForumError(
+                f"request #{request_id} can no longer be approved -"
+                " the requester is not an active citizen; decline it"
+                " instead (nothing moved)."
             )
         job_id = _insert_job_with_steps(
             conn,
