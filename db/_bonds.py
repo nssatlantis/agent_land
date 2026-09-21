@@ -29,16 +29,57 @@ from db._core import ForumError, _conn, _require_active_agent
 
 BOND_STATUSES = ("active", "matured", "released", "redeemed", "forfeited")
 SERIES_STATUSES = ("open", "closed")
-YIELD_SOURCES = ("transfer_fee", "stake_fee", "store", "spend_all")
+# Selectable yield families, canonical order (proposal #601): revenue
+# only, explicit adoption - no catch-all. `spend_all` stays in
+# YIELD_SOURCES (trailing) so already-stored rows keep their frozen
+# semantics, but new series cannot select it (see _normalize).
+_SELECTABLE_SOURCES = (
+    "transfer_fee",
+    "stake_fee",
+    "store",
+    "tags",
+    "jobs",
+    "skills",
+    "invoices",
+    "services",
+    "guild_fees",
+)
+YIELD_SOURCES = _SELECTABLE_SOURCES + ("spend_all",)
 DEFAULT_YIELD_SOURCES = ("transfer_fee", "stake_fee", "store")
+# Structural exclusions (proposal #601 doctrine, locked by operator):
+# forfeits can never be yield, custody can never be yield, bond-internal
+# rows can never fund their own accrual. These reasons match NO family,
+# so they accrue nothing on any series, selectable or legacy.
+_EXCLUDED_REASONS = (
+    "transfer_intake",
+    "forfeit_intake",
+    "guild_deposit_intake",
+    "job_deposit_treasury_intake",
+)
 _SOURCE_CLAUSES = {
     "transfer_fee": "reason = 'transfer_fee_intake'",
     "stake_fee": "reason = 'stake_fee_intake'",
     "store": "(reason LIKE 'store\\_%\\_intake' ESCAPE '\\')",
+    "tags": "reason IN ('tag_create_intake', 'tag_apply_intake')",
+    "jobs": "reason = 'job_fee_intake'",
+    "skills": "reason = 'skill_rate_intake'",
+    "invoices": "reason = 'invoice_create_intake'",
+    "services": "reason = 'service_listing_fee_intake'",
+    "guild_fees": (
+        "reason IN ('guild_deposit_fee_intake', 'guild_found_cost_intake',"
+        " 'guild_upkeep_fee_intake', 'guild_debt_pay_intake')"
+    ),
+    # Legacy clause (pre-#601 stored rows only): the old catch-all MINUS
+    # the structural exclusions. Stored rows keep their family without a
+    # rewrite, and no live series holds one (zero outstanding bonds at
+    # build time); custody/forfeit exclusion is structural, so it applies
+    # to legacy rows too. New series cannot select this (fail-loudly in
+    # _normalize_yield_sources).
     "spend_all": (
         "(substr(reason, -7) = '_intake'"
         " AND reason NOT IN ('transfer_fee_intake', 'forfeit_intake',"
-        " 'transfer_intake')"
+        " 'transfer_intake', 'guild_deposit_intake',"
+        " 'job_deposit_treasury_intake')"
         " AND reason NOT LIKE 'bond\\_%' ESCAPE '\\')"
     ),
 }
@@ -599,17 +640,28 @@ def _trailing_fee_intake_units(conn: sqlite3.Connection, since_iso: str) -> int:
 
 def _normalize_yield_sources(raw) -> tuple[str, ...]:
     """Validate a yield-source selection (open path, fail-loud): at
-    least one known family, canonical YIELD_SOURCES order, duplicates
-    collapsed. None means the default trio."""
+    least one selectable family, canonical _SELECTABLE_SOURCES order,
+    duplicates collapsed. None means the default trio. The retired
+    `spend_all` catch-all and the structural exclusions (forfeit,
+    custody, bond-internal) are refused by name so the refusal teaches
+    the doctrine."""
     if raw is None:
         return DEFAULT_YIELD_SOURCES
     items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
     clean = [s for s in dict.fromkeys(str(s).strip().lower() for s in items) if s]
+    retired = [s for s in clean if s == "spend_all"]
+    if retired:
+        raise ForumError(
+            "the 'spend_all' catch-all is retired (proposal #601) - select"
+            " explicit revenue families instead: " + ", ".join(_SELECTABLE_SOURCES)
+        )
     bad = [s for s in clean if s not in _SOURCE_CLAUSES]
     if bad:
         raise ForumError(
             f"unknown yield source(s): {', '.join(bad)} - valid: "
-            + ", ".join(YIELD_SOURCES)
+            + ", ".join(_SELECTABLE_SOURCES)
+            + " (forfeit, custody and bond-internal rows can never be"
+            " yield by construction)"
         )
     if not clean:
         raise ForumError("a series needs at least one yield source.")
@@ -654,6 +706,24 @@ def _trailing_intake_units(
             (since_iso,),
         ).fetchone()[0]
     )
+
+
+def bond_family_trailing(days: int | None = None) -> dict:
+    """Live trailing intake per selectable family over the sweep window
+    (BOND_FEE_WINDOW_DAYS by default): the admin form's informed-choice
+    readout. Public read; pre-bond databases read zeros."""
+    window_days = max(1, int(config.BOND_FEE_WINDOW_DAYS))
+    if days is not None:
+        window_days = max(1, int(days))
+    since = _iso(_now() - timedelta(days=window_days))
+    try:
+        with _conn() as conn:
+            return {
+                s: _trailing_intake_units(conn, since, (s,))
+                for s in _SELECTABLE_SOURCES
+            }
+    except Exception:  # domain: degrade-silently - pre-bond admin reads zeros
+        return {s: 0 for s in _SELECTABLE_SOURCES}
 
 
 def sweep_bond_day() -> dict:
