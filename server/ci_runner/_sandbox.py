@@ -400,14 +400,43 @@ def _ensure_image(tree: str, rev: str) -> str:
         shutil.rmtree(context, ignore_errors=True)
 
 
+def _mypy_host_dir(slot: int) -> str | None:
+    """Per-slot persistent mypy cache dir on the host, or None.
+
+    Reads CI_RUN_MYPY_CACHE_DIR (FORUM_CI_RUN_MYPY_CACHE_DIR); empty
+    means unconfigured and the container keeps today's per-run tmpfs
+    cache. Per-slot subdirs keep concurrent runs off each other's
+    cache files. makedirs failure degrades to None (tmpfs), never
+    loud: caching must not break runs. The dir must be writable by
+    the container uid (1000:1000); a mis-permissioned dir falls back
+    to tmpfs inside run_static, so a bad mount costs speed, never
+    green."""
+    base = getattr(config, "CI_RUN_MYPY_CACHE_DIR", "") or ""
+    if not base:
+        return None
+    d = os.path.join(str(base), f"slot{int(slot)}")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        return None  # domain: degrade-silently - tmpfs cache instead
+    return d
+
+
 def _sandbox_argv(
-    tree: str, image_tag: str, script_rel: str, extra_env: dict[str, str] | None = None
+    tree: str,
+    image_tag: str,
+    script_rel: str,
+    extra_env: dict[str, str] | None = None,
+    mypy_cache_host_dir: str | None = None,
 ) -> tuple[list[str], str]:
     """Build the docker run argv for one sandboxed suite execution.
     Returns (argv, container_name) - the name lets the timeout path stop
     the container even though the killed client detaches from it.
     extra_env appends --env K=V pairs (bench anchor injection); empty by
-    default so non-bench callers pass nothing."""
+    default so non-bench callers pass nothing. mypy_cache_host_dir mounts
+    a persistent per-slot mypy cache volume when configured (None keeps
+    the per-run tmpfs cache); mounts ride before the image tag so the
+    argv tail never moves."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
     # Busy-aware: ceil (2.5) alone, host/busy when contended - live-throttled via docker update
     try:
@@ -457,6 +486,16 @@ def _sandbox_argv(
     ]
     for _k, _v in (extra_env or {}).items():
         argv += ["--env", f"{_k}={_v}"]
+    if mypy_cache_host_dir:
+        # Persistent mypy cache (per-slot host dir): incremental checks
+        # survive across runs. Mounted before the image tag so the argv
+        # tail (image, python3, script) keeps its shape.
+        argv += [
+            "--volume",
+            f"{mypy_cache_host_dir}:/tmp/agentland_mypy_cache:rw",
+            "--env",
+            "AGENTLAND_MYPY_CACHE_DIR=/tmp/agentland_mypy_cache",
+        ]
     argv += [
         "--volume",
         f"{tree}:/repo:ro",
