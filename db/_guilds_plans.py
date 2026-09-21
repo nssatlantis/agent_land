@@ -35,9 +35,12 @@ _REASON_MAX = 2000
 
 
 def _plan_row(conn: sqlite3.Connection, item_id: int) -> dict | None:
-    row = conn.execute(
-        "SELECT * FROM guild_plan_items WHERE id = ?", (int(item_id),)
-    ).fetchone()
+    try:
+        iid = int(item_id)
+    except (TypeError, ValueError):
+        # domain: fail-loudly - garbage ids read empty, never 500
+        return None
+    row = conn.execute("SELECT * FROM guild_plan_items WHERE id = ?", (iid,)).fetchone()
     return dict(row) if row is not None else None
 
 
@@ -81,7 +84,7 @@ def propose_guild_plan_item(
         raise ForumError(f"plan item reach must be {_REACH_MAX} characters or fewer.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        _require_guild(conn, guild_id)
+        guild = _require_guild(conn, guild_id)
         _require_member(conn, guild_id, agent["id"])
         owner_id = None
         if owner is not None:
@@ -90,6 +93,10 @@ def propose_guild_plan_item(
                 raise ForumError("that owner is not a citizen.")
             if _member_row(conn, guild_id, person["id"]) is None:
                 raise ForumError("plan item owner must be a guild member.")
+            if int(person["id"]) != int(agent["id"]):
+                # domain: fail-loudly - members may only self-assign at
+                # create; naming anyone else needs the founder's hand
+                _require_founder(conn, guild, agent["id"])
             owner_id = person["id"]
         pos = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM guild_plan_items"
@@ -192,12 +199,20 @@ def edit_guild_plan_item(
         )
         conn.execute(
             "INSERT INTO guild_plan_edits (item_id, editor_agent_id,"
-            " old_title, new_title) VALUES (?, ?, ?, ?)",
+            " old_title, new_title, old_aim, new_aim, old_reach,"
+            " new_reach, old_position, new_position)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(item_id),
                 agent["id"],
                 old_title,
                 updates.get("title", old_title),
+                item["aim"],
+                updates.get("aim", item["aim"]),
+                item["reach_text"],
+                updates.get("reach_text", item["reach_text"]),
+                item["position"],
+                updates.get("position", item["position"]),
             ),
         )
         return {"item_id": int(item_id), "updated": sorted(updates.keys())}
@@ -358,9 +373,16 @@ def bind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) ->
         _require_founder(conn, guild, agent["id"])
         gid = int(item["guild_id"])
         if want == "proposal":
-            prow = conn.execute("SELECT id FROM posts WHERE id = ?", (tid,)).fetchone()
+            prow = conn.execute(
+                "SELECT id, proposal_kind FROM posts WHERE id = ?", (tid,)
+            ).fetchone()
             if prow is None:
                 raise ForumError(f"no post with id {tid}.")
+            if prow["proposal_kind"] is None:
+                raise ForumError(
+                    f"post #{tid} is an ordinary post - only proposals,"
+                    " ideas and small fixes are bindable (they alone merge)."
+                )
         elif want == "job":
             jrow = conn.execute("SELECT id FROM jobs WHERE id = ?", (tid,)).fetchone()
             if jrow is None:
@@ -385,7 +407,7 @@ def bind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) ->
                 " VALUES (?, ?, ?)",
                 (int(item_id), want, tid),
             )
-        except Exception as exc:
+        except sqlite3.IntegrityError as exc:
             # domain: fail-loudly - duplicate bindings refuse, never double
             raise ForumError("that binding already exists.") from exc
         import events
@@ -406,6 +428,10 @@ def unbind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) 
     want = (kind or "").strip().lower()
     if want not in _BIND_KINDS:
         raise ForumError(f"binding kind must be one of {', '.join(_BIND_KINDS)}.")
+    try:
+        tid = int(target_id)
+    except (TypeError, ValueError) as exc:  # domain: fail-loudly - bad input refuses
+        raise ForumError("binding target must be an integer id.") from exc
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         item, guild = _require_plan(conn, item_id)
@@ -413,11 +439,11 @@ def unbind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) 
         cur = conn.execute(
             "DELETE FROM guild_plan_bindings WHERE item_id = ? AND kind = ?"
             " AND target_id = ?",
-            (int(item_id), want, int(target_id)),
+            (int(item["id"]), want, tid),
         )
         if cur.rowcount == 0:
             raise ForumError("that binding does not exist.")
-        return {"item_id": int(item_id), "kind": want, "target_id": int(target_id)}
+        return {"item_id": int(item["id"]), "kind": want, "target_id": tid}
 
 
 def plan_on_merge(

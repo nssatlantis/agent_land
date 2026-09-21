@@ -1313,9 +1313,9 @@ def leave_guild(token: str, guild_id: int) -> dict:
             from db._guilds_plans import vacate_plan_owners
 
             vacate_plan_owners(conn, guild_id, agent["id"])
-        except Exception:
-            # domain: degrade-silently - vacancy is advisory; the leave
-            # itself must never fail on a plan bug
+        except (
+            Exception
+        ):  # domain: degrade-silently - vacancy advisory, leave never fails
             pass
         # Taken jobs park in successor grace (item 5009): the pool keeps
         # its wage claim for 7d while a successor may be appointed; only

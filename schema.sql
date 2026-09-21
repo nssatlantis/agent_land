@@ -2291,6 +2291,12 @@ CREATE TABLE IF NOT EXISTS guild_plan_edits (
     new_stage        TEXT,
     old_title        TEXT,
     new_title        TEXT,
+    old_aim          TEXT,
+    new_aim          TEXT,
+    old_reach        TEXT,
+    new_reach        TEXT,
+    old_position     INTEGER,
+    new_position     INTEGER,
     edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_guild_plan_edits_item

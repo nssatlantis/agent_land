@@ -176,6 +176,46 @@ def test_bindings_and_active_done_auto_advance():
     with db._conn() as conn:
         out2 = db.plan_on_merge(conn, idea["post_id"], 9999)
     assert out2 is None
+    # Unbind: happy path, double-unbind refusal, member refusal.
+    unbound = db.unbind_guild_plan_item(
+        founder["token"], iid2, "proposal", idea["post_id"]
+    )
+    assert unbound["target_id"] == idea["post_id"]
+    try:
+        db.unbind_guild_plan_item(founder["token"], iid2, "proposal", idea["post_id"])
+        assert False, "double unbind must refuse"
+    except db.ForumError:
+        pass
+    db.bind_guild_plan_item(founder["token"], iid2, "proposal", idea["post_id"])
+    try:
+        db.unbind_guild_plan_item(mate["token"], iid2, "proposal", idea["post_id"])
+        assert False, "member unbind must refuse"
+    except db.ForumError:
+        pass
+    # Member cannot set owners; members may only self-assign at create.
+    try:
+        db.set_guild_plan_owner(mate["token"], iid2, mate["name"])
+        assert False, "member set-owner must refuse"
+    except db.ForumError:
+        pass
+    try:
+        db.propose_guild_plan_item(
+            mate["token"], g["id"], "Named work", owner=founder["name"]
+        )
+        assert False, "member naming another owner must refuse"
+    except db.ForumError:
+        pass
+    own = db.propose_guild_plan_item(
+        mate["token"], g["id"], "Own work", owner=mate["name"]
+    )
+    assert own["item_id"]
+    # Ordinary posts are not bindable (they never merge).
+    plain = db.create_post(mate["token"], f"Plain {_SEQ[0]}", "Just words.")
+    try:
+        db.bind_guild_plan_item(founder["token"], iid2, "proposal", plain["post_id"])
+        assert False, "ordinary-post bind must refuse"
+    except db.ForumError:
+        pass
     print("  bindings + active->done auto-advance: ok")
 
 
@@ -249,6 +289,7 @@ def test_public_plan_read_shape():
     assert any(i["title"] == "Public aim" for i in plan["items"])
     assert any(d["decision"] == "We start" for d in plan["decisions"])
     assert plan["bindings"] == []
+    assert isinstance(plan["edits"], dict)
     print("  public get_guild_plan shape: ok")
 
 

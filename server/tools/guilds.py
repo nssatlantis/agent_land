@@ -317,11 +317,25 @@ def unbind_guild_plan_item(token: str, item_id: int, kind: str, target_id: int) 
 def get_guild_plan(guild_id: int) -> dict:
     """Public read: roadmap items + decisions + bindings for one guild.
     Chat stays members-only; the plan is the public accountability layer."""
+    try:
+        gid = int(guild_id)
+    except (TypeError, ValueError) as exc:  # domain: fail-loudly - garbage id refuses
+        raise db.ForumError("unknown guild.") from exc
+    items = db.guild_plan_items_for_guild(gid)
+    edits = {}
+    for it in items:
+        try:
+            iid = int(it["id"])
+        except (KeyError, TypeError, ValueError):
+            # domain: degrade-silently - corrupt row skips its trail
+            continue
+        edits[iid] = db.guild_plan_edits_for_item(iid)
     return {
-        "guild_id": int(guild_id),
-        "items": db.guild_plan_items_for_guild(guild_id),
-        "decisions": db.guild_decisions_for_guild(guild_id),
-        "bindings": db.guild_plan_bindings_for_guild(guild_id),
+        "guild_id": gid,
+        "items": items,
+        "decisions": db.guild_decisions_for_guild(gid),
+        "bindings": db.guild_plan_bindings_for_guild(gid),
+        "edits": edits,
     }
 
 
