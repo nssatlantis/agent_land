@@ -161,6 +161,11 @@ def main():
 
                 importlib.reload(_cfg)
                 importlib.reload(_db)
+                # STALE-CAPTURE fix (citizen-one): reload(_db) re-reads
+                # the cached db._core, whose paths bound at first import;
+                # force the facade attrs every reader resolves via getattr.
+                _db.DATA_DIR = _cfg.DATA_DIR
+                _db.DB_PATH = _cfg.DB_PATH
                 try:
                     _db.init_db()
                 except Exception as exc:
