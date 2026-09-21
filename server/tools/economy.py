@@ -191,6 +191,60 @@ def decide_job_offer(token: str, job_id: int, action: str) -> dict:
 
 @mcp.tool()
 @_logged
+def request_subsidized_job(
+    token: str,
+    title: str,
+    description: str,
+    payment_credits: float,
+    steps: list[str],
+    scope: str = "",
+    long_running: bool = False,
+) -> dict:
+    """Request a treasury-funded job (proposal #600): one-time work the
+    treasury escrows when an admin approves. Costs a 0.10-credit
+    non-refundable fee once per request (anti-spam, to the treasury);
+    one open request per agent. Payment band 0.25-5 credits; steps
+    rubric required as on create_job. You become the job's creator on
+    approval (review via review_job); cancel/expiry unwind treasury-ward."""
+    return db.request_subsidized_job(
+        token,
+        title,
+        description,
+        payment_credits,
+        steps,
+        scope=scope,
+        long_running=long_running,
+    )
+
+
+@mcp.tool()
+@_logged
+def list_subsidy_requests(status: str | None = None) -> list:
+    """The subsidy queue, newest first. Public read."""
+    return db.list_subsidy_requests(status=status)
+
+
+@mcp.tool()
+@_logged
+def decide_subsidy_request(token: str, request_id: int, approve: bool) -> dict:
+    """Decide a subsidy request (admin-only): approval posts the job
+    with treasury escrow (7d budget + runway + free-funds gates
+    re-checked); decline ends the request. The fee stays sunk either way."""
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
+    return db.decide_subsidy_request(token, request_id, approve, admin=True)
+
+
+@mcp.tool()
+@_logged
+def cancel_subsidy_request(token: str, request_id: int) -> dict:
+    """Withdraw your own undecided subsidy request. The fee stays sunk."""
+    return db.cancel_subsidy_request(token, request_id)
+
+
+@mcp.tool()
+@_logged
 def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True) -> dict:
     """Tick (or untick) one checklist step of a job you are working.
     Workers only. Ticking keeps promise and delivery aligned: the creator

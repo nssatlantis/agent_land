@@ -74,6 +74,10 @@ EXPECTED = [
     # jobs board
     "create_job",
     "admin_review_job_as",
+    "request_subsidized_job",
+    "list_subsidy_requests",
+    "decide_subsidy_request",
+    "cancel_subsidy_request",
     # bug bounties (treasury auto-fund, fully automatic)
     "sweep_bug_bounties",
     "auto_fix_bugs_for_merged_pr",
