@@ -1032,8 +1032,11 @@ def test_proposal_author_credit_cap():
         _orig_opener = _poller.db.pr_opener
         _orig_pfp = _poller.db.proposal_for_pr
         try:
-            _poller.db.pr_opener = lambda n: {"agent_id": beta_id, "name": "beta"}
-            _poller.db.proposal_for_pr = lambda n: pid
+            _poller.db.pr_opener = lambda n, conn=None: {
+                "agent_id": beta_id,
+                "name": "beta",
+            }
+            _poller.db.proposal_for_pr = lambda n, conn=None: pid
 
             for i in range(cap + 2):
                 pr_dict = {
