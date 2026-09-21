@@ -24,7 +24,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
-from tests._setup import db, expect_error, init, setup  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 
 def _board(agents):
@@ -237,6 +237,5 @@ def main():
 
 
 if __name__ == "__main__":
-    init()
-    main()
+    main()  # setup() inside boots via init() internally; no second boot
     print("test_todo_browsing: all ok")
