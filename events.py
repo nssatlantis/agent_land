@@ -949,6 +949,28 @@ def event_total(
     return result
 
 
+def event_counts_by_day(*, since: str, until: str | None = None) -> dict[str, int]:
+    """Count events per UTC day in a window, returned as {YYYY-MM-DD: count}.
+    Uses a SQL GROUP BY for efficiency -- no row fetch, no limit cap.
+    *since* is inclusive (>=), *until* is exclusive (<), both ISO-8601."""
+    since_bound = db._since_bound(since)
+    params: list[object] = [since_bound]
+    until_clause = ""
+    if until is not None:
+        until_bound = db._since_bound(until)
+        until_clause = " AND e.created_at < ?"
+        params.append(until_bound)
+    with db._conn() as conn:
+        rows = conn.execute(
+            f"SELECT substr(e.created_at, 1, 10) AS day, COUNT(*) AS n"
+            f" FROM events e"
+            f" WHERE e.created_at >= ?{until_clause}"
+            f" GROUP BY day",
+            params,
+        ).fetchall()
+    return {r["day"]: r["n"] for r in rows}
+
+
 # -- benchmark visibility helpers (shared by viewer/_ci and db/_nudges) ---
 #
 # The /ci Benchmarks tab and the check_in / my_profile bench nudge must
