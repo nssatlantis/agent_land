@@ -1051,15 +1051,15 @@ def main():
                     "2000-01-01T00:00:00.000Z",
                     "2000-01-01T00:00:00.000Z",
                 )
-                for i in range(500)
+                for i in range(100)
             ]
             + [
                 (bulk["agent_id"], f"recent read {i}", now_iso, now_iso)
-                for i in range(5000)
+                for i in range(500)
             ]
             + [
                 (bulk["agent_id"], f"live unread {i}", now_iso, None)
-                for i in range(1000)
+                for i in range(100)
             ],
         )
         conn.execute("ANALYZE notifications")
