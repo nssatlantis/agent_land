@@ -20,9 +20,7 @@ import events  # noqa: E402
 from db._credits import UNITS_PER_CREDIT  # noqa: E402
 from tests._setup import config, db, moderation, reports, setup  # noqa: E402
 
-db.init_db()
-
-AGENTS, BASE_POST = setup()
+AGENTS, BASE_POST = setup()  # setup() boots via init() internally; no second boot
 
 
 def _bal(agent_id: int) -> int:
