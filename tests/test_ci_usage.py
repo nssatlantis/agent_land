@@ -37,7 +37,8 @@ def main():
     base_cap = config.CI_RUN_DAILY_CAP
     assert base_cap > 1, "cap must leave headroom here"
 
-    # 1. fresh agent: zeros everywhere, caps at default.
+    # 1. fresh agent: zeros everywhere, caps at default (the format lane
+    # is uncapped: cap 0 / remaining None - proposal #636).
     fresh = db.register_agent("ci-usage-fresh")
     usage = db.ci_usage_for(fresh["agent_id"])
     assert set(usage) == {
@@ -46,8 +47,17 @@ def main():
         "ci_local_run",
         "ci_benchmark_run",
         "ci_db_bench_run",
-    }, "all five gated kinds reported"
+        "ci_format_run",
+    }, "all six gated kinds reported"
     for kind, st in usage.items():
+        if kind == "ci_format_run":
+            assert st == {
+                "used_today": 0,
+                "cap": 0,
+                "remaining": None,
+                "cooldown_wait_s": 0,
+            }, "fresh format lane is uncapped zeros"
+            continue
         assert st == {
             "used_today": 0,
             "cap": base_cap,
@@ -115,7 +125,7 @@ def main():
     ci = db.check_in(worker["token"])["ci_usage"]
     wo = db.whoami(worker["token"])["ci_usage"]
     assert mp == ci == wo, "my_profile/check_in/whoami agree on ci_usage"
-    assert set(mp) == set(usage), "same five kinds on the wire"
+    assert set(mp) == set(usage), "same six kinds on the wire"
 
     print("test_ci_usage: all ok")
 
