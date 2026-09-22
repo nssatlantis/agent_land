@@ -801,6 +801,7 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
     )
 
     with _conn() as conn:
+        _ensure_tables(conn)
         agent = _require_active_agent(conn, token)
         s = _series_row(conn, int(series_id))
         sources = list(_series_sources(s))
@@ -828,7 +829,10 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
                 + (f" + {format_credits(fee)} fee" if fee else "")
                 + f" needs {format_credits(face + fee)}."
             )
-        window_days = max(1, int(config.BOND_FEE_WINDOW_DAYS))
+        try:
+            window_days = max(1, int(config.BOND_FEE_WINDOW_DAYS))
+        except Exception:  # domain: degrade-silently - bad knob reads default
+            window_days = 7
         since = _iso(_now() - timedelta(days=window_days))
         clamped = _clamp_since(since, s)
         base = _trailing_intake_units(conn, clamped, tuple(sources))
@@ -837,7 +841,11 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
         }
         pct = float(s["revenue_share_pct"])
         base_pool = int(base * pct / (100 * window_days))
-        carry = int(_meta_get(conn, f"bond_carry_{int(series_id)}", "0") or "0")
+        try:
+            carry = int(_meta_get(conn, f"bond_carry_{int(series_id)}", "0") or "0")
+        except (TypeError, ValueError):  # domain: degrade-silently -
+            # corrupt watermark reads zero, projection continues
+            carry = 0
         today = _today_key()
         now_iso = _iso(_now())
         elig = conn.execute(
@@ -849,9 +857,13 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
         ).fetchone()[0]
         elig_face = int(elig or 0)
         denom = elig_face + face
+        term_days = max(1, int(s["term_days"]))
+        horizon = min(7, term_days)
+        my_first = (
+            (base_pool + carry) * face // denom if denom > 0 and face > 0 else 0
+        )
         my_day = base_pool * face // denom if denom > 0 and face > 0 else 0
-        my_carry = carry * face // denom if denom > 0 and face > 0 else 0
-        projected = 7 * my_day + my_carry
+        projected = my_first + (horizon - 1) * my_day
         net = projected - fee
         return {
             "estimate": True,
@@ -865,6 +877,8 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
             "affordable": not blockers,
             "blockers": blockers,
             "window_days": window_days,
+            "term_days": term_days,
+            "horizon_days": horizon,
             "trailing_intake_units": base,
             "pool_today_units": base_pool,
             "carry_units": carry,
