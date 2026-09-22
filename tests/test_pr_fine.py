@@ -161,7 +161,7 @@ def test_fine_skips_pair_cap():
     _set_knob("0.5")
     _set_admin(AGENTS["beta"]["name"])
     try:
-        bills = _open_treasury_bills(opener["agent_id"], 2)
+        bills = _open_treasury_bills(opener["agent_id"], 3)
         try:
             out = _fine(900006, opener["agent_id"])
             assert out["skip"] == "pair_cap", out

@@ -188,7 +188,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         async with mcp.session_manager.run():
             yield
     finally:
-        # D3: graceful 10s drain — mark shutting down, serve 503 with Retry-After
+        # D3: graceful 5s drain — mark shutting down, serve 503 with Retry-After
         # instead of RST, let in-flight tool calls finish.
         try:
             app.state.shutting_down = True

@@ -541,7 +541,7 @@ def pr_checks(
     'failure' / 'pending' / 'unknown'. get_pr's `checks` field uses the same
     builder, so a red PR carries its reason everywhere it is read.
 
-    Cached for PR_CACHE_SECONDS (default 30 s).  ``_pr`` is an optional
+    Cached for PR_CACHE_SECONDS (default 45 s).  ``_pr`` is an optional
     pre-fetched raw PR dict to avoid a redundant API call; ``_head_sha`` is
     a private shortcut for callers that already hold the head sha (the CI
     poller) - it skips the PR fetch entirely."""
