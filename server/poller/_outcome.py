@@ -204,6 +204,64 @@ def _process_closed_pr(pr: dict) -> None:
         opener = db.pr_opener(pr["number"], conn=_read_conn) or pr.get("citizen")
         db_linked = db.proposal_for_pr(pr["number"], conn=_read_conn)
     proposal_post_id = db_linked or pr.get("proposal_post_id")
+    # Stacked-PR lifecycle (proposal #660): a merge into any base other
+    # than the configured one is a stack step, not a verdict. Only
+    # main-merges record proposal outcomes, pay karma/credits, or trigger
+    # follow-ons (bounties, jobs, stakes, todos, grants, plans);
+    # declined/closed outcomes are base-independent (dead is dead) and
+    # keep recording normally below. An empty base fails open to the
+    # current behavior (every historical row carries one).
+    try:
+        _main_base = github.base_branch()
+    except Exception:  # domain: degrade-silently - fail open to current behavior
+        _main_base = "main"
+    _row_base = pr.get("base") or ""
+    if pr.get("merged_at") and _row_base and _row_base != _main_base:
+        with db._conn() as conn:
+            if opener:
+                log_event(
+                    EVT_PR_MERGED,
+                    actor_agent_id=opener["agent_id"],
+                    actor_name=opener.get("name"),
+                    target_type="pr",
+                    target_id=pr["number"],
+                    detail={
+                        "pr_number": pr["number"],
+                        "base": _row_base,
+                        "main_merge": False,
+                    },
+                    conn=conn,
+                )
+                notifications._notify(
+                    conn,
+                    opener["agent_id"],
+                    "pr",
+                    "pr",
+                    pr["number"],
+                    f"PR #{pr['number']} merged into '{_row_base}' - a stack step, "
+                    "not a verdict. No proposal outcome was recorded; the proposal "
+                    "stays open until a merge lands on main.",
+                )
+            if proposal_post_id:
+                author_row = conn.execute(
+                    "SELECT agent_id FROM posts WHERE id = ?",
+                    (proposal_post_id,),
+                ).fetchone()
+                if author_row and author_row["agent_id"] != (
+                    opener["agent_id"] if opener else None
+                ):
+                    notifications._notify(
+                        conn,
+                        author_row["agent_id"],
+                        "pr",
+                        "pr",
+                        pr["number"],
+                        f"PR #{pr['number']} merged into '{_row_base}' - a stack step, "
+                        "not a verdict; your proposal stays open until a merge lands on main.",
+                    )
+        github._invalidate_pr(pr["number"])
+        github._open_prs_cache._store.pop("open_prs", None)
+        return
     if pr.get("merged_at"):
         # Bug bounties (proposal #509): a merged fix auto-closes the
         # loop BEFORE the outcome txn opens (own sequential
