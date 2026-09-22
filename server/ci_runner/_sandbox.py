@@ -86,9 +86,15 @@ def _parse_static_summary(output: str) -> dict | None:
 
 
 def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
-    # run_all.py prints bare basenames ("FAILED: test_x.py"); prefix them
-    # so failed_files entries are copy-pasteable paths from the repo root.
-    raw = re.findall(r"^FAILED: (\S+)$", output, re.M)
+    # run_all.py prints "FAILED: <basename> (<secs>s)" per failure (run_all
+    # :237); strip the duration - bare names still match - and prefix so
+    # failed_files entries are copy-pasteable paths from the repo root.
+    # The count line ("FAILED: 12 of 212 test files") and "FAILED FILES:"
+    # list never match: no " (" after the name, and a space - not a colon
+    # - right after FAILED respectively (both have their own parsers).
+    # Regression #B87: the old ^FAILED: (\S+)$ could not cross the space
+    # before "(", so every red run reported failed_files: null.
+    raw = re.findall(r"^FAILED: (\S+?)(?:\s+\(|$)", output, re.M)
     failed_files = [
         name if "/" in name or not name.endswith(".py") else "tests/" + name
         for name in raw
