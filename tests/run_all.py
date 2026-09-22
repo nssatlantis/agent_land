@@ -2,7 +2,7 @@
 
 Usage: python tests/run_all.py [--durations] [--no-session] [--workers=N] [selector ...]
 
-A bare selector runs only matching files (substring on basenames:
+A bare selector runs only matching files (case-sensitive substring on basenames:
 'guilds_engine' matches test_guilds_engine.py, 'job' matches every
 test_*job*.py). The matched list is echoed before running; a selector
 matching nothing exits fail-loud (code 2), never a silent green.
@@ -127,7 +127,10 @@ def main():
         for sel in selectors:
             hits = [t for t in tests if sel in os.path.basename(t)]
             if not hits:
-                print(f"no test files match selector {sel!r}")
+                print(
+                    f"no test files match selector {sel!r}"
+                    " (e2e/benchmark files are always skipped)"
+                )
                 sys.exit(2)
             picked.extend(hits)
         tests = sorted(set(picked))
