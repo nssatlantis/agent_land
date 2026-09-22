@@ -176,6 +176,21 @@ def member_net(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:
     return int(row[0] or 0)
 
 
+def _member_nets(conn: sqlite3.Connection, guild_id: int) -> dict[int, int]:
+    """Every member's net deposits in one query (the batched twin of
+    member_net, for the _guild_detail roster). Same deposit-minus-
+    withdrawal semantics, grouped per actor."""
+    rows = conn.execute(
+        "SELECT actor_agent_id,"
+        " COALESCE(SUM(CASE WHEN kind = 'deposit' THEN units"
+        " WHEN kind = 'withdrawal' THEN -units ELSE 0 END), 0) AS net"
+        " FROM guild_ledger WHERE guild_id = ?"
+        " AND actor_agent_id IS NOT NULL GROUP BY actor_agent_id",
+        (guild_id,),
+    ).fetchall()
+    return {int(r["actor_agent_id"]): int(r["net"] or 0) for r in rows}
+
+
 def _total_shares(conn: sqlite3.Connection, guild_id: int) -> int:
     rows = conn.execute(
         "SELECT actor_agent_id,"
@@ -2143,10 +2158,11 @@ def _guild_detail(
         " ORDER BY m.joined_at ASC, m.id ASC",
         (guild_id,),
     ).fetchall()
+    nets = _member_nets(conn, guild_id)
     roster = []
     for row in members:
         mem = dict(row)
-        mem["net_units"] = member_net(conn, guild_id, mem["agent_id"])
+        mem["net_units"] = nets.get(mem["agent_id"], 0)
         roster.append(mem)
     guild["members"] = roster
     guild["member_count"] = len(roster)
