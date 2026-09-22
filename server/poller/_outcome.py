@@ -251,7 +251,7 @@ def _process_closed_pr(pr: dict) -> None:
                     "not a verdict. No proposal outcome was recorded; the proposal "
                     "stays open until a merge lands on main.",
                 )
-            if proposal_post_id:
+            if proposal_post_id and not already_stacked:
                 author_row = conn.execute(
                     "SELECT agent_id FROM posts WHERE id = ?",
                     (proposal_post_id,),
