@@ -784,6 +784,117 @@ def bond_family_trailing(days: int | None = None) -> dict:
         return {s: 0 for s in _SELECTABLE_SOURCES}
 
 
+def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
+    """Estimate-only 7-day projection for a hypothetical buy (read-only:
+    writes nothing, moves no money). Reuses the exact sweep core
+    (_clamp_since, _trailing_intake_units, pool/carry/share math) against
+    live trailing intake, so projection and sweep agree on method - only
+    on future intake, which no one knows. `estimate` is always True: lean
+    weeks pay dust, carry shifts, and a projection is not a promise.
+    Blockers mirror buy_bond's gates as data (closed / face / minimums /
+    caps / funds) instead of refusals."""
+    from db._credits import (
+        balance_for,
+        exact_from_credits,
+        fee_units,
+        format_credits,
+    )
+
+    with _conn() as conn:
+        _ensure_tables(conn)
+        agent = _require_active_agent(conn, token)
+        s = _series_row(conn, int(series_id))
+        sources = list(_series_sources(s))
+        face = exact_from_credits(face_credits, what="the bond face")
+        fee = fee_units(face)
+        blockers: list[str] = []
+        if s["status"] != "open":
+            blockers.append(f"series {int(series_id)} is closed to new buys.")
+        if face <= 0:
+            blockers.append("bond face must be positive.")
+        if face < int(s["min_face_units"]):
+            blockers.append(
+                "bond face must be at least"
+                f" {format_credits(int(s['min_face_units']))}."
+            )
+        live_face = int(_outstanding(conn, int(series_id)))
+        if live_face + face > int(s["series_cap_units"]):
+            blockers.append("that buy would breach the series cap.")
+        mine = int(_outstanding(conn, int(series_id), agent["id"]))
+        if mine + face > int(s["citizen_cap_units"]):
+            blockers.append("that buy would breach your per-citizen cap.")
+        if balance_for(conn, agent["id"]) < face + fee:
+            blockers.append(
+                f"insufficient credits: a {format_credits(face)} bond"
+                + (f" + {format_credits(fee)} fee" if fee else "")
+                + f" needs {format_credits(face + fee)}."
+            )
+        try:
+            window_days = max(1, int(config.BOND_FEE_WINDOW_DAYS))
+        except Exception:  # domain: degrade-silently - bad knob reads default
+            window_days = 7
+        since = _iso(_now() - timedelta(days=window_days))
+        clamped = _clamp_since(since, s)
+        base = _trailing_intake_units(conn, clamped, tuple(sources))
+        by_family = {
+            fam: _trailing_intake_units(conn, clamped, (fam,)) for fam in sources
+        }
+        pct = float(s["revenue_share_pct"])
+        base_pool = int(base * pct / (100 * window_days))
+        try:
+            carry = int(_meta_get(conn, f"bond_carry_{int(series_id)}", "0") or "0")
+        except (TypeError, ValueError):  # domain: degrade-silently -
+            # corrupt watermark reads zero, projection continues
+            carry = 0
+        today = _today_key()
+        now_iso = _iso(_now())
+        elig = conn.execute(
+            "SELECT COALESCE(SUM(face_units), 0) FROM treasury_bonds"
+            " WHERE series_id = ? AND status = 'active'"
+            " AND substr(bought_at, 1, 10) < ?"
+            " AND matures_at > ?",
+            (int(series_id), today, now_iso),
+        ).fetchone()[0]
+        elig_face = int(elig or 0)
+        denom = elig_face + face
+        term_days = max(1, int(s["term_days"]))
+        horizon = min(7, term_days)
+        my_first = (base_pool + carry) * face // denom if denom > 0 and face > 0 else 0
+        my_day = base_pool * face // denom if denom > 0 and face > 0 else 0
+        projected = my_first + (horizon - 1) * my_day
+        net = projected - fee
+        return {
+            "estimate": True,
+            "series_id": int(series_id),
+            "series_name": s["name"],
+            "status": s["status"],
+            "face_units": face,
+            "face_credits": format_credits(face),
+            "fee_units": fee,
+            "fee_credits": format_credits(fee),
+            "affordable": not blockers,
+            "blockers": blockers,
+            "window_days": window_days,
+            "term_days": term_days,
+            "horizon_days": horizon,
+            "trailing_intake_units": base,
+            "pool_today_units": base_pool,
+            "carry_units": carry,
+            "eligible_face_units": elig_face,
+            "by_family": by_family,
+            "projected_7d_yield_units": projected,
+            "projected_7d_yield_credits": format_credits(projected),
+            "net_units": net,
+            "net_credits": format_credits(net),
+            "net_pct": round(100 * net / face, 2) if face > 0 else 0.0,
+            "disclaimer": (
+                "Projection from live trailing intake, not a promise:"
+                " lean weeks pay dust, carry shifts, and future intake"
+                " moves the number."
+            ),
+        }
+
+
 def sweep_bond_day() -> dict:
     """Daily bond sweep (poller, degrade-silently outside): release
     matured bonds, then accrue one bond-day per eligible bond from each
@@ -1014,7 +1125,8 @@ def bond_series_detail(series_id: int) -> dict:
     """One series in full: terms, status, live outstanding face and live
     holder/bond counts. Public read. Both this and list_bond_series
     gained one additive key (`yield_sources`); existing consumers reading
-    only the old keys are unaffected."""
+    only the old keys are unaffected. Released sums and `realized_pct`
+    (None until the first release) ride along the same way."""
     with _conn() as conn:
         row = _series_row(conn, int(series_id))
         d = dict(row)
@@ -1028,6 +1140,17 @@ def bond_series_detail(series_id: int) -> dict:
         d["live_bonds"] = int(live[0])
         d["holder_count"] = int(live[1])
         d["yield_sources"] = list(_series_sources(row))
+        rel = conn.execute(
+            "SELECT COALESCE(SUM(face_units), 0),"
+            " COALESCE(SUM(accrued_units), 0) FROM treasury_bonds"
+            " WHERE series_id = ? AND status = 'released'",
+            (int(series_id),),
+        ).fetchone()
+        d["released_face_units"] = int(rel[0])
+        d["released_yield_units"] = int(rel[1])
+        d["realized_pct"] = (
+            round(100 * int(rel[1]) / int(rel[0]), 2) if int(rel[0]) else None
+        )
         return d
 
 

@@ -756,6 +756,17 @@ def list_bond_series() -> dict:
 
 @mcp.tool()
 @_logged
+def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
+    """Preview a hypothetical bond buy as an estimate (moves nothing):
+    projected yield over min(7, term) days, fee, net return and per-family
+    intake breakdown for face on series_id, plus any buy blockers.
+    Wallet-buy preview (pool-funded buys ignore the funds blocker).
+    Projections, not promises - lean weeks pay dust."""
+    return db.preview_bond_yield(token, series_id, face_credits)
+
+
+@mcp.tool()
+@_logged
 def bond_series_open(
     token: str,
     name: str,
