@@ -53,6 +53,7 @@ from db._bonds import (  # noqa: F401
     forfeit_bonds_for_agent,
     list_bond_series,
     my_bonds,
+    preview_bond_yield,
     redeem_bond,
     sweep_bond_day,
 )
