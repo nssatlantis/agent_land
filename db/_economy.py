@@ -965,6 +965,7 @@ def economy_overview() -> dict:
             "bonds_accrued_units": bond_hold["accrued_units"],
             "bonds_accrued_credits": _fmt(bond_hold["accrued_units"]),
             "conservation": verify_conservation(conn),
+            "supply_reconciliation": verify_supply_reconciliation(conn),
             "guild_conservation": verify_guild_wallets(conn),
             "open_jobs": jobs_open,
             "offered_jobs": jobs_offered,
@@ -1510,4 +1511,174 @@ def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
         import logutil
 
         logutil.log("economy_conservation_watch_failed", error=str(exc))
+        return {"ok": False, "event": None, "error": str(exc)}
+
+
+# -- supply reconciliation (the whole-ledger invariant) -------------------
+
+# Proposal #648: reasons that intentionally move total supply outside
+# mint/burn. Guild settle paths mint pool backing for burned conduit
+# locks (proposal #611 - real legs, not bugs); *_backfill legs are
+# one-time repairs (paired ones net to zero, so sweeping the suffix is
+# safe); transiently unescrowed locked stake principal is counted
+# separately below, never here.
+_SUPPLY_GUILD_MINT_REASONS = ("guild_stake_winnings", "guild_stake_refund")
+_SUPPLY_STAKE_ESCROW_REASONS = (
+    "stake_lock_held",
+    "stake_paid_release",
+    "stake_refund_release",
+    "stake_escrow_backfill",
+)
+
+
+def verify_supply_reconciliation(
+    conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Whole-ledger supply invariant (proposal #648): total supply must
+    equal genesis+mints, minus burns, plus documented guild mints and
+    backfill repairs, minus transiently unescrowed locked stake
+    principal (wallet locks dip supply until pay/refund; post-#644 admin
+    locks are escrow-paired and net to zero here). A mismatch means a
+    single-sided ledger bug exactly like stake #6's treasury-only lock
+    pair - the checkpoints cannot see that class (they attest
+    history-untampered, not write-balanced) and the escrow audit only
+    covers escrow-touching txs. Total function: never raises - a weird
+    ledger reports failure, it never breaks /economy or any money path.
+    Test fixtures must top up with a mint-family reason: a custom-reason
+    mint is indistinguishable from a bug and trips the audit by design.
+    """
+    try:
+        from db._credits import _CREDIT_BURN_REASONS, _CREDIT_MINT_REASONS
+
+        with _conn() if conn is None else nullcontext(conn) as c:
+            supply = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            ).fetchone()[0]
+            mints = set(_CREDIT_MINT_REASONS)
+            minted = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                f" WHERE reason IN ({','.join('?' * len(mints))})",
+                tuple(mints),
+            ).fetchone()[0]
+            burns = set(_CREDIT_BURN_REASONS)
+            burned = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                f" WHERE reason IN ({','.join('?' * len(burns))})",
+                tuple(burns),
+            ).fetchone()[0]
+            guild_minted = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                " WHERE reason IN (?, ?)",
+                _SUPPLY_GUILD_MINT_REASONS,
+            ).fetchone()[0]
+            backfilled = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                " WHERE reason LIKE '%_backfill'"
+            ).fetchone()[0]
+            try:
+                locked = c.execute(
+                    "SELECT COALESCE(SUM(sl.amount), 0) FROM stake_locks sl"
+                    " JOIN proposal_stakes s ON s.id = sl.stake_id"
+                    " WHERE sl.status = 'locked' AND s.currency = 'credits'"
+                ).fetchone()[0]
+                held = c.execute(
+                    "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                    " WHERE account = 'escrow'"
+                    " AND target_type = 'proposal_stake'"
+                    " AND reason IN (?, ?, ?, ?)",
+                    _SUPPLY_STAKE_ESCROW_REASONS,
+                ).fetchone()[0]
+            except Exception:  # domain: degrade-silently - pre-stake DB holds nothing
+                locked, held = 0, 0
+            in_flight = int(locked) - int(held)
+            expected = (
+                int(minted)
+                + int(burned)
+                + int(guild_minted)
+                + int(backfilled)
+                - in_flight
+            )
+            diff = int(supply) - expected
+            return {
+                "ok": diff == 0,
+                "supply_units": int(supply),
+                "expected_units": expected,
+                "diff_units": diff,
+                "minted_units": int(minted),
+                "burned_units": int(burned),
+                "guild_minted_units": int(guild_minted),
+                "backfilled_units": int(backfilled),
+                "in_flight_units": in_flight,
+            }
+    except Exception as exc:  # domain: degrade-silently - audit never breaks callers
+        return {
+            "ok": False,
+            "error": str(exc),
+            "supply_units": 0,
+            "expected_units": 0,
+            "diff_units": 0,
+            "minted_units": 0,
+            "burned_units": 0,
+            "guild_minted_units": 0,
+            "backfilled_units": 0,
+            "in_flight_units": 0,
+        }
+
+
+def supply_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
+    """Poller hook: edge-triggered supply-reconciliation alerting.
+    Compares the live audit against economy_meta.supply_last_ok and logs
+    economy_supply_tripped on ok->fail, economy_supply_resolved on
+    fail->ok (a first observation just records). Loud, never
+    load-bearing: failures degrade to a log line, the money paths never
+    gate on this."""
+    try:
+        with _conn() if conn is None else nullcontext(conn) as c:
+            result = verify_supply_reconciliation(c)
+            try:
+                row = c.execute(
+                    "SELECT value FROM economy_meta WHERE key = 'supply_last_ok'"
+                ).fetchone()
+            except Exception:  # domain: degrade-silently - no meta table yet
+                row = None
+            last = row[0] if row else None
+            now = "1" if result["ok"] else "0"
+            if last is None or last == now:
+                c.execute(
+                    "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+                    " ('supply_last_ok', ?)",
+                    (now,),
+                )
+                return {**result, "event": None}
+            import events
+
+            kind = (
+                events.EVT_ECONOMY_SUPPLY_RESOLVED
+                if result["ok"]
+                else events.EVT_ECONOMY_SUPPLY_TRIPPED
+            )
+            events.log_event(
+                kind,
+                actor_agent_id=None,
+                target_type="economy",
+                target_id=None,
+                detail={
+                    "supply_units": result["supply_units"],
+                    "expected_units": result["expected_units"],
+                    "diff_units": result["diff_units"],
+                },
+                conn=c,
+            )
+            c.execute(
+                "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+                " ('supply_last_ok', ?)",
+                (now,),
+            )
+            return {**result, "event": kind}
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - watch never breaks a poll tick
+        import logutil
+
+        logutil.log("economy_supply_watch_failed", error=str(exc))
         return {"ok": False, "event": None, "error": str(exc)}
