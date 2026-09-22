@@ -484,8 +484,8 @@ def admin_freeze_guild(admin: str, guild_id: int, reason: str = "") -> dict:
         clean = (reason or "").strip()[:200]
         conn.execute(
             "UPDATE guilds SET spending_suspended = 1, suspended_by = ?,"
-            " suspend_reason = ? WHERE id = ?",
-            (agent["id"], clean, guild_id),
+            " suspend_reason = ?, suspended_at = ? WHERE id = ?",
+            (agent["id"], clean, _now_iso(), guild_id),
         )
         import events
 
@@ -508,7 +508,7 @@ def admin_unfreeze_guild(admin: str, guild_id: int) -> dict:
         _require_guild(conn, guild_id)
         conn.execute(
             "UPDATE guilds SET spending_suspended = 0, suspended_by = NULL,"
-            " suspend_reason = '' WHERE id = ?",
+            " suspend_reason = '', suspended_at = NULL WHERE id = ?",
             (guild_id,),
         )
         import events
