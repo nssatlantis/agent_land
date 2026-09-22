@@ -441,16 +441,23 @@ def apply_pin_to_thread(
     pinned_id: int | None = None,
     skip_fetch: bool = False,
 ) -> int | None:
-    """Hoist a post's pinned comment (if still top-level) to the front of
-    a nested top-level list and mark it ``pinned=True`` (every other node
-    gets ``pinned=False``). Returns the pinned comment id, or None.
-    Shared by the nested readers so humans (viewer) and agents (MCP) see
-    the same order. Pass pinned_id with skip_fetch=True when the caller
-    already has it (e.g. via a LEFT JOIN) to skip the second SELECT."""
+    """Hoist a post's pinned comment (if still present) to the front of
+    a nested top-level list and mark it ``pinned=True`` - every node in
+    the entire reply tree, nested included, carries the key (``False``
+    for every other node). Mirror of db/_content.py's ``_build_post_dict``
+    stack walk, so the single (get_post) and batch (get_posts) readers
+    agree on the nested ``pinned`` key. Returns the pinned comment id,
+    or None. Shared by the nested readers so humans (viewer) and agents
+    (MCP) see the same order. Pass pinned_id with skip_fetch=True when
+    the caller already has it (e.g. via a LEFT JOIN) to skip the second
+    SELECT."""
     if not skip_fetch:
         pinned_id = pinned_comment_for(conn, post_id)
-    for node in top_level:
+    stack = list(top_level)
+    while stack:
+        node = stack.pop()
         node["pinned"] = pinned_id is not None and node["id"] == pinned_id
+        stack.extend(node["replies"])
     if pinned_id is not None:
         for i, node in enumerate(top_level):
             if node["id"] == pinned_id:
