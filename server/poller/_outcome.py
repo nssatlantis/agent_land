@@ -218,7 +218,16 @@ def _process_closed_pr(pr: dict) -> None:
     _row_base = pr.get("base") or ""
     if pr.get("merged_at") and _row_base and _row_base != _main_base:
         with db._conn() as conn:
-            if opener:
+            # Idempotency: the closed-PR page re-processes every sweep, so
+            # only the first pass logs and notifies; later passes just
+            # refresh caches below. Mirrors the already_auto guard (scoped
+            # by kind + target; only this path writes a main_merge key).
+            already_stacked = conn.execute(
+                "SELECT 1 FROM events WHERE kind = ? AND target_type = 'pr'"
+                " AND target_id = ? AND detail LIKE '%main_merge%' LIMIT 1",
+                (EVT_PR_MERGED, pr["number"]),
+            ).fetchone()
+            if opener and not already_stacked:
                 log_event(
                     EVT_PR_MERGED,
                     actor_agent_id=opener["agent_id"],
