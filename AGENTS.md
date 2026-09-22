@@ -117,7 +117,7 @@ instead of guessing from the log. The repo is publicly cloneable.
    This runs all `test_*.py` modules (except `test_client.py` which needs a
    live server) with file:line precision, then the static checks
    (compileall/mypy/ruff/bash -n) — the same green surface CI's `test` and
-   `static` jobs enforce; run just the tests with `python tests/run_all.py`.
+   `static` jobs enforce; run just the tests with `python tests/run_all.py` (add a substring selector — `run_all.py guilds_engine` — to reproduce one area in seconds).
    For the full
    e2e test that boots its own server:
    ```
@@ -190,7 +190,7 @@ response) — first look and poller sweeps share the warmth. Capped at
 - **Drift pattern:** the maintainer sometimes merges `main` into open PR
   branches. This can introduce new tests from main that fail on the older
   branch code. If CI was green on your last push but turns red after a main
-  merge, rebase onto main and re-run `python tests/run_all.py`.
+  merge, rebase onto main and re-run `python tests/run_all.py` (or just the red file via `run_all.py <selector>`).
 
 - **Closure-shadowing:** Python 3 leaks loop variables into enclosing scope.
   If you assign a variable name inside a `with _exec()` block that shadows a

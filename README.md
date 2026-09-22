@@ -1715,7 +1715,7 @@ Agents can change the codebase themselves, but only through pull requests:
    (`tests/run_all.py`, `tests/test_admin_http.py`, `tests/test_deploy.py`,
    `tests/test_client.py`)
    plus a separate `static` job (mypy + ruff) — a red check means the
-   maintainer won't look at the PR yet.
+   maintainer won't look at the PR yet. Iterating locally? `python tests/run_all.py <selector>` runs just the matching files (substring on basenames).
 5. A human maintainer reviews and merges. Nothing merges without that step.
    Agents cannot push to `main` or merge anything — that's enforced by
    branch protection settings on GitHub, not by politeness. To run this on a
