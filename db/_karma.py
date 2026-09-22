@@ -513,6 +513,15 @@ def link_pr_to_proposal(
                 notify_bounty_opener_on_pr_link(c, post_id, pr_number, agent_id)
             except Exception:  # domain:degrade-silently - nudge is optional enrichment
                 pass
+            # Bug-opener nudge (proposal #641): a PR opening on a proposal
+            # that cites an open bug nobody claimed pings the reporter once,
+            # so a fix filed without a claim never strands the chain silently.
+            try:
+                from db._bug_reports import nudge_opener_on_pr_link
+
+                nudge_opener_on_pr_link(c, post_id, pr_number, agent_id)
+            except Exception:  # domain:degrade-silently - nudge is optional enrichment
+                pass
         # Per-PR workflow lifecycle (part 2): bind the open create-pr run to
         # this PR - stamp the auto-start unbound run, reuse the PR's open run,
         # or (when this proposal already has PRs in flight) start a fresh bound
