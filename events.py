@@ -490,8 +490,9 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
 
     An event is relevant if the agent is its actor, or its target is one of
     the agent's own artifacts (posts/proposals, comments, PRs, bug reports,
-    jobs, invoices, bonds). Returns (clause, params) for splicing into a
-    WHERE.
+    jobs, invoices, bonds - the bond branches match ever-held bonds (no
+    status filter): deltas are history-aware, while mailbox mail stays
+    live-scoped. Returns (clause, params) for splicing into a WHERE.
     """
     return (
         " (actor_agent_id = ?"
