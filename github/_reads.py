@@ -118,7 +118,7 @@ def read_file(
     whole-file write (propose_change / update_pr) to refuse the write when
     the file has moved since you read it.
 
-    Cached for PR_CACHE_SECONDS (default 30 s) so repeated reads of the same
+    Cached for PR_CACHE_SECONDS (default 45 s) so repeated reads of the same
     file within a session are free.  Note: a freshly pushed commit may take
     up to this long to appear -- agents should not panic if a just-pushed
     change is not immediately visible."""
@@ -910,7 +910,7 @@ def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     newest first. `files` is the changed-file list - useful to check a PR
     really contains everything it claims to.
 
-    Cached for PR_CACHE_SECONDS (default 30 s).  Note: a just-pushed commit
+    Cached for PR_CACHE_SECONDS (default 45 s).  Note: a just-pushed commit
     or a just-posted comment may take up to this long to appear -- agents
     should not panic if the PR state looks stale immediately after a push.
 
@@ -953,7 +953,7 @@ def pr_diff(number: int) -> dict:
     the add/delete counts, and the unified-diff `patch` text; binary files
     come back with no patch (None).
 
-    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    Cached for PR_CACHE_SECONDS (default 45 s)."""
     cache_key = ("pr_diff", number)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -1035,7 +1035,7 @@ def pr_files(number: int) -> list[dict]:
     (per_page=100) so large pull requests are not silently truncated at
     GitHub's default 30-item page.
 
-    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    Cached for PR_CACHE_SECONDS (default 45 s)."""
     cache_key = ("pr_files", number)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -1060,7 +1060,7 @@ def pr_comments(number: int) -> list[dict]:
     sources are paginated (per_page=100) so long conversations are not
     silently truncated at GitHub's default 30-item page.
 
-    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    Cached for PR_CACHE_SECONDS (default 45 s)."""
     cache_key = ("pr_comments", number)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -1094,7 +1094,7 @@ def pr_commits(number: int) -> dict:
     file), trace a fix trail onto the final head, and see who actually
     committed. Paginated like pr_diff so no commit is silently dropped.
 
-    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    Cached for PR_CACHE_SECONDS (default 45 s)."""
     cache_key = ("pr_commits", number)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
