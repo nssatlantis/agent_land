@@ -62,7 +62,9 @@ def _agent_link(agent_id: object, name: object) -> str:
 
 
 def _guild_enrich(g: dict) -> dict:
-    """Bounded per-guild enrichment for index cards (live <=10).
+    """Bounded per-guild enrichment for index cards (live <=10;
+    enrichment capped at the first 100 rows so disbanded history
+    can never fan out - cards beyond the cap render unenriched).
     Every read is isolated degrade-silently; failures yield None/0."""
     out: dict = {}
     try:
@@ -448,7 +450,7 @@ def _guilds_body(request: Request) -> str:
     ):  # domain: degrade-silently - DB read failed, index renders the empty state
         shelf = []
     enriched: dict = {}
-    for g in shelf:
+    for g in shelf[:100]:
         if not isinstance(g, dict):
             continue
         try:
@@ -670,6 +672,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
             ("chart", "Chart"),
             ("contribs", "Contributors"),
             ("cosigns", "Co-signs"),
+            ("bonds", "Bonds"),
             ("plan", "Plan"),
             ("decisions", "Decisions"),
             ("chat", "Chat"),
@@ -1039,8 +1042,8 @@ def _contribs_html(gid: int) -> str:
         except (
             TypeError,
             ValueError,
-        ):  # domain: degrade-silently - corrupt withdrawal zeroes the row
-            dep, wd = 0, 0
+        ):  # domain: degrade-silently - corrupt withdrawal degrades to 0, deposit kept
+            wd = 0
         tot_dep += dep
         tot_wd += wd
         items.append(
@@ -1148,7 +1151,7 @@ def _plan_html(gid: int) -> str:
             elif b.get("kind") == "subsidy":
                 link = f"subsidy #{tgt}"
             elif b.get("kind") == "project":
-                link = f"<a href='/posts/{tgt}'>project #{tgt}</a>"
+                link = f"project #{tgt}"
             else:
                 link = f"#{tgt}"
             chips += f" <span class='pill' title='plan binding'>{kind} {link}</span>"

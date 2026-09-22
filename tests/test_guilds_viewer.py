@@ -270,10 +270,55 @@ def test_guilds_upgrade_637_pins():
     assert _filter_ui("", None, "newest") and _filter_ui("x", "active", "reputation")
 
 
+def test_guilds_upgrade_637_branches():
+    from viewer._guilds import guild_detail_page
+
+    founder, g = _found(f"Branch-{_SEQ[0]}")
+    gid = g["id"]
+    mate = _new_agent("gv-bm2")
+    _fund(mate["agent_id"], 2000)
+    inv = db.invite_guild_member(founder["token"], gid, mate["name"])
+    db.respond_guild_invite(mate["token"], inv["invite_id"], True)
+    for _ in range(13):
+        db.guild_deposit(mate["token"], gid, 0.25)
+    idea = db.create_proposal(mate["token"], f"Chip idea {_SEQ[0]}", "Body.", idea=True)
+    item = db.propose_guild_plan_item(founder["token"], gid, "Chip work")
+    db.bind_guild_plan_item(
+        founder["token"], item["item_id"], "proposal", idea["post_id"]
+    )
+    idea2 = db.create_proposal(
+        mate["token"], f"Arch idea {_SEQ[0]}", "Build.", idea=True
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE posts SET created_at = ? WHERE id = ?",
+            ("2026-09-01T00:00:00.000Z", idea2["post_id"]),
+        )
+    c1, c2 = _new_agent("gv-bc1"), _new_agent("gv-bc2")
+    db.create_comment(c1["token"], idea2["post_id"], "aye")
+    db.create_comment(c2["token"], idea2["post_id"], "aye aye")
+    db.designate_guild_project(founder["token"], gid, idea2["post_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE guild_grant_links SET status = ? WHERE idea_post_id = ?",
+            ("complete", idea2["post_id"]),
+        )
+    html = guild_detail_page(_Req(path_params={"guild_id": str(gid)})).body.decode(
+        "utf-8"
+    )
+    assert "plan binding" in html, "bound chip renders"
+    assert f"/posts/{idea['post_id']}" in html
+    assert "Archive" in html, "past link renders archive"
+    assert "guild-archive" in html
+    assert "show all" in html, "13 deposits trip the ledger cap"
+    assert "/jobs#" not in html
+
+
 if __name__ == "__main__":
     test_guilds_index_renders_cards_and_filters()
     test_guild_detail_sections_and_404s()
     test_guild_docket_badge_designated_and_released()
     test_guild_pages_degrade_on_corrupt_rows()
     test_guilds_upgrade_637_pins()
+    test_guilds_upgrade_637_branches()
     print("test_guilds_viewer: all passed")
