@@ -1644,7 +1644,7 @@ def sweep_expired_workflows(
         ids = [int(r["id"]) for r in rows]
         cur = conn.execute(
             "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
-            " WHERE id IN ({})".format(",".join("?" * len(ids))),
+            " WHERE id IN ({}) AND status = 'open'".format(",".join("?" * len(ids))),
             [now_iso, *ids],
         )
         closed = int(cur.rowcount) if cur.rowcount else 0
