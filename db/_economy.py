@@ -707,13 +707,17 @@ def economy_overview() -> dict:
         # zero: pre-guild databases carry no guild tables, and the
         # overview must never break on them.
         try:
-            from db._guilds import guild_balance
-
-            guild_held_u = 0
-            for grow in conn.execute(
-                "SELECT id FROM guilds WHERE status = 'active'"
-            ).fetchall():
-                guild_held_u += guild_balance(conn, grow["id"])
+            guild_held_u = int(
+                conn.execute(
+                    "SELECT COALESCE(SUM("
+                    " CASE WHEN l.kind IN ('deposit', 'grant_t1', 'grant_t2',"
+                    " 'subsidy', 'match', 'stake', 'job', 'bond')"
+                    " THEN l.units ELSE -l.units END), 0)"
+                    " FROM guild_ledger l JOIN guilds g ON g.id = l.guild_id"
+                    " WHERE g.status = 'active'"
+                ).fetchone()[0]
+                or 0
+            )
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
             guild_held_u = 0
@@ -722,15 +726,13 @@ def economy_overview() -> dict:
 
             guild_escrow_u = 0
             for jrow in conn.execute(
-                "SELECT l.job_id FROM guild_job_links l JOIN jobs j"
+                "SELECT j.id, j.total_cycles, j.cycles_done,"
+                " j.official, j.payment_units"
+                " FROM guild_job_links l JOIN jobs j"
                 " ON j.id = l.job_id WHERE l.role = 'commissioned'"
                 " AND j.status IN ('open', 'offered', 'active')"
             ).fetchall():
-                job = conn.execute(
-                    "SELECT * FROM jobs WHERE id = ?", (jrow["job_id"],)
-                ).fetchone()
-                if job is not None:
-                    guild_escrow_u += int(_remaining_escrow(job) or 0)
+                guild_escrow_u += int(_remaining_escrow(jrow) or 0)
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
             guild_escrow_u = 0

@@ -163,14 +163,14 @@ def member_net(conn: sqlite3.Connection, guild_id: int, agent_id: int) -> int:
 
 def _total_shares(conn: sqlite3.Connection, guild_id: int) -> int:
     rows = conn.execute(
-        "SELECT actor_agent_id FROM guild_ledger WHERE guild_id = ?"
+        "SELECT actor_agent_id,"
+        " COALESCE(SUM(CASE WHEN kind = 'deposit' THEN units"
+        " WHEN kind = 'withdrawal' THEN -units ELSE 0 END), 0) AS net"
+        " FROM guild_ledger WHERE guild_id = ?"
         " AND actor_agent_id IS NOT NULL GROUP BY actor_agent_id",
         (guild_id,),
     ).fetchall()
-    total = 0
-    for row in rows:
-        total += max(0, member_net(conn, guild_id, row[0]))
-    return total
+    return sum(max(0, int(r["net"])) for r in rows)
 
 
 def _payout_for(
@@ -1150,14 +1150,14 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
                 )
             except sqlite3.IntegrityError:
                 raise ForumError("that citizen is already a member.") from None
-        _clear_emptied(conn, guild["id"])
-        _record_churn(
-            conn,
-            guild["id"],
-            req["agent_id"],
-            _agent_name(conn, req["agent_id"]),
-            "join",
-        )
+            _clear_emptied(conn, guild["id"])
+            _record_churn(
+                conn,
+                guild["id"],
+                req["agent_id"],
+                _agent_name(conn, req["agent_id"]),
+                "join",
+            )
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",
@@ -2123,7 +2123,7 @@ def _guild_detail(
     try:
         from db._guilds_reputation import guild_reputation
 
-        rep = guild_reputation(guild_id)
+        rep = guild_reputation(guild_id, conn)
         guild["reputation"] = rep["score"]
         guild["reputation_parts"] = rep["parts"]
     except Exception:
@@ -2190,7 +2190,7 @@ def list_guilds(
 
             for g in out:
                 try:
-                    g["reputation"] = guild_reputation(g["id"])["score"]
+                    g["reputation"] = guild_reputation(g["id"], conn)["score"]
                 except Exception:
                     # domain: degrade-silently - one unratable guild
                     # sorts at the prior, never breaks the index

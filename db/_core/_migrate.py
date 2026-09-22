@@ -53,11 +53,28 @@ def _widen_notifications_check(conn: sqlite3.Connection, kind: str) -> None:
     pattern is used: read the DDL from schema.sql, create a new table, copy
     data, drop old, rename. Idempotent -- once the stored DDL contains the
     kind string, this no-ops.
+
+    The copy list is adaptive: pre-denormalization databases (#111 item 2633
+    added the column) have no `actor_name` to copy, and naming it would fail
+    the rebuild; those rows take NULL and `_boot_workflow`'s backfill fills
+    them from agents. Databases that have the column keep every name (#B71).
     """
+    if "actor_name" in {
+        row[1] for row in conn.execute("PRAGMA table_info(notifications)")
+    }:
+        copy_columns = (
+            "id, agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name,"
+            " body, created_at, read_at"
+        )
+    else:
+        copy_columns = (
+            "id, agent_id, kind, ref_type, ref_id, actor_agent_id,"
+            " body, created_at, read_at"
+        )
     _rebuild_table(
         conn,
         "notifications",
-        "id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at",
+        copy_columns,
         f"'{kind}'",
     )
 

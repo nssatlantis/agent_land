@@ -242,22 +242,14 @@ def available_next_steps(steps: list[dict]) -> list[str]:
     ]
 
 
-def effective_run_expiry(
+def _adaptive_ttl_expiry(
     conn: sqlite3.Connection, proposal_id: int, ttl_seconds: int
-) -> dict:
-    """The effective expiry a freshly-started create-pr run would get for
-    `proposal_id`, mirroring the adaptive TTL computation in
-    bind_open_run/start_workflow: the run's expiry is never earlier than
-    PROPOSAL_STALE_DAYS after the proposal was created (the natural
-    proposal lifetime), and is capped at `_TTL_CAP_DAYS` (365d) so an
-    abandoned run still expires. Returns
-    {"effective_expires_at": <ISO stamp or None>, "effective_ttl_seconds":
-    <seconds from now to that expiry, or None>}; both None when the TTL
-    is 0 (never expires). repo_workflow_status surfaces these so a caller
-    sees a mid-vote run's true lifetime instead of the bare TTL, avoiding
-    a spurious repo_restart_workflow."""
+) -> tuple:
+    """Adaptive TTL expiry: never earlier than PROPOSAL_STALE_DAYS after
+    the proposal was created, capped at _TTL_CAP_DAYS (365d).
+    Returns (stamp, ttl_seconds) or (None, None) if TTL is 0."""
     if ttl_seconds <= 0:
-        return {"effective_expires_at": None, "effective_ttl_seconds": None}
+        return (None, None)
     now = datetime.now(timezone.utc)
     floor = now + timedelta(seconds=ttl_seconds)
     try:
@@ -273,8 +265,28 @@ def effective_run_expiry(
     cap = now + timedelta(days=_TTL_CAP_DAYS)
     floor = min(floor, cap)
     stamp = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    seconds = int((floor - now).total_seconds())
-    return {"effective_expires_at": stamp, "effective_ttl_seconds": seconds}
+    return (stamp, int((floor - now).total_seconds()))
+
+
+def effective_run_expiry(
+    conn: sqlite3.Connection, proposal_id: int, ttl_seconds: int
+) -> dict:
+    """The effective expiry a freshly-started create-pr run would get for
+    `proposal_id`, mirroring the adaptive TTL computation in
+    bind_open_run/start_workflow: the run's expiry is never earlier than
+    PROPOSAL_STALE_DAYS after the proposal was created (the natural
+    proposal lifetime), and is capped at `_TTL_CAP_DAYS` (365d) so an
+    abandoned run still expires. Returns
+    {"effective_expires_at": <ISO stamp or None>, "effective_ttl_seconds":
+    <seconds from now to that expiry, or None>}; both None when the TTL
+    is 0 (never expires). repo_workflow_status surfaces these so a caller
+    sees a mid-vote run's true lifetime instead of the bare TTL, avoiding
+    a spurious repo_restart_workflow."""
+    stamp, seconds = _adaptive_ttl_expiry(conn, proposal_id, ttl_seconds)
+    return {
+        "effective_expires_at": stamp,
+        "effective_ttl_seconds": seconds,
+    }
 
 
 def _ensure_run_steps(
@@ -693,34 +705,7 @@ def start_workflow(
         ttl = int(config.WORKFLOW_TTL_SECONDS)
     except Exception:  # domain: degrade-silently
         ttl = 3600
-    expires_at = None
-    if ttl > 0:
-        # Adaptive TTL (P1-2): a create-pr run auto-starts at proposal
-        # creation but a real proposal may take days to clear its vote
-        # bar (max(3, ceil(active/3))). A bare TTL (default 1h) would
-        # expire the run mid-vote and, with ENFORCE, hard-block the PR
-        # until the gate's lazy restart. So the run's expiry is never
-        # earlier than PROPOSAL_STALE_DAYS after the proposal was
-        # created - the natural proposal lifetime - keeping the TTL as a
-        # floor, not a ceiling. Probing the proposal clock is
-        # best-effort: on failure we fall back to a plain now+TTL (D2),
-        # and the result is always capped at `_TTL_CAP_DAYS` (W4) so an
-        # abandoned run still expires.
-        now = datetime.now(timezone.utc)
-        floor = now + timedelta(seconds=ttl)
-        try:
-            created_row = conn.execute(
-                "SELECT created_at FROM posts WHERE id = ?", (proposal_id,)
-            ).fetchone()
-            if created_row is not None and created_row["created_at"]:
-                created = _parse_iso(created_row["created_at"])
-                stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
-                floor = max(floor, stale_floor)
-        except Exception:  # domain:degrade-silently - fall back to plain now+TTL
-            pass
-        cap = now + timedelta(days=_TTL_CAP_DAYS)
-        floor = min(floor, cap)
-        expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    expires_at, _ = _adaptive_ttl_expiry(conn, proposal_id, ttl)
     # Start-race guard (review #5, now per-PR): the partial UNIQUE indexes
     # idx_workflow_runs_open_unbound / idx_workflow_runs_open_pr (schema.sql)
     # plus INSERT OR IGNORE make this atomic - two concurrent starts cannot
