@@ -482,7 +482,65 @@ def _flow_rows_between(
     return {r["reason"]: r["total"] for r in rows}
 
 
-def _summarize_flows(flows: dict[str, int]) -> dict:
+def _flow_rows_guild(conn: sqlite3.Connection, since_iso: str | None) -> dict[str, int]:
+    """Guild-wallet movements grouped by reason, optionally since a
+    timestamp (proposal #611). Treasury flow buckets never see these
+    (guild account); the summarizer folds the pool-intake slice into
+    guild_intake_units and the forfeit burn into burned_units."""
+    where = "WHERE account = 'guild'"
+    params: tuple = ()
+    if since_iso is not None:
+        where += " AND created_at >= ?"
+        params = (since_iso,)
+    rows = conn.execute(
+        "SELECT reason, SUM(delta_units) AS total FROM credit_entries"
+        f" {where} GROUP BY reason",
+        params,
+    ).fetchall()
+    return {r["reason"]: r["total"] for r in rows}
+
+
+def _flow_rows_guild_between(
+    conn: sqlite3.Connection, start_iso: str, end_iso: str
+) -> dict[str, int]:
+    """Guild-wallet movements between two timestamps [start, end)."""
+    rows = conn.execute(
+        "SELECT reason, SUM(delta_units) AS total FROM credit_entries"
+        " WHERE account = 'guild' AND created_at >= ? AND created_at < ?"
+        " GROUP BY reason",
+        (start_iso, end_iso),
+    ).fetchall()
+    return {r["reason"]: r["total"] for r in rows}
+
+
+# External-income reasons whose +guild legs count as pool intake
+# (proposal #611, review #1344): member deposits and dues plus
+# treasury-funded pool income (grants, subsidies, matches). Every other
+# positive guild leg is a custody move, not income - the one-time wallet
+# backfill seed, escrow returns (job refunds, disband cancels, taken
+# wages), stake winnings/refunds, bond payouts, conduit reverts and
+# retention pairs - and stays out of the intake bucket (the #1313
+# instrumentation-coupling class).
+_GUILD_INCOME_INTAKES = frozenset(
+    {
+        "guild_deposit_intake",
+        "guild_upkeep_fee_intake",
+        "guild_grant_t1_intake",
+        "guild_grant_t2_intake",
+        "guild_subsidy_intake",
+        "guild_match_intake",
+    }
+)
+
+
+def _summarize_flows(
+    flows: dict[str, int], guild_flows: dict[str, int] | None = None
+) -> dict:
+    """Fold raw reason totals into dashboard buckets. guild_flows carries
+    the same window over account='guild' rows (proposal #611); existing
+    single-arg callers read exactly as before."""
+    guild_flows = guild_flows or {}
+
     def _take(*reasons: str) -> int:
         return sum(-flows[r] for r in reasons if flows.get(r))
 
@@ -494,7 +552,12 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
         # their magnitude is the plain sum - _take would invert it into
         # a negative 'minted' figure (review 4425).
         "minted_units": _give("genesis", "admin_mint", "proposal_mint"),
-        "burned_units": _take("admin_burn", "proposal_burn", "forfeit_burned"),
+        # Guild-wallet forfeit burns ride account='guild' (proposal #611 -
+        # suspension forfeits leave the wallet explicitly), so their
+        # magnitude joins the treasury-side burn reasons here; the
+        # legs are negative, hence the negation.
+        "burned_units": _take("admin_burn", "proposal_burn", "forfeit_burned")
+        + (-guild_flows.get("forfeit_burned", 0)),
         "fees_in_units": flows.get("transfer_fee_intake", 0),
         "forfeit_intake_units": flows.get("forfeit_intake", 0),
         "spend_intake_units": sum(
@@ -519,15 +582,35 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
             for k, v in flows.items()
             if k.startswith("store_") and k.endswith("_intake")
         ),
-        # Guild intake: deposit principal + deposit fee -- spend() appends
-        # _intake to the treasury leg reason, so the flow keys are
-        # guild_deposit_intake / guild_deposit_fee_intake.
+        # Guild intake: pool-bound principal used to arrive as treasury
+        # legs (guild_deposit_intake); since proposal #611 it lands in the
+        # guild wallets instead, so the bucket sums the allowlisted
+        # external-income slice of the guild account (review #1344:
+        # custody moves are not income) beside the treasury-side deposit
+        # fee, which still parks in the treasury.
         "guild_intake_units": (
-            flows.get("guild_deposit_intake", 0)
-            + flows.get("guild_deposit_fee_intake", 0)
+            flows.get("guild_deposit_fee_intake", 0)
+            + sum(
+                v
+                for k, v in guild_flows.items()
+                if v > 0 and k in _GUILD_INCOME_INTAKES
+            )
         ),
+        # Guild outflows: treasury-funded pool income (grants, subsidies,
+        # matches) leaves the treasury visibly now that pools hold their
+        # own custody (proposal #611 - previously memo-only, invisible).
+        # Runway counts it as expense.
         # Bond intake: purchase fee — spend() appends _intake to the
         # treasury leg, so the flow key is bond_buy_fee_intake.
+        "guild_outflows_units": -sum(
+            flows.get(r, 0)
+            for r in (
+                "guild_grant_t1",
+                "guild_grant_t2",
+                "guild_subsidy",
+                "guild_match",
+            )
+        ),
         "bond_intake_units": flows.get("bond_buy_fee_intake", 0),
         "transfer_intake_units": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
@@ -582,8 +665,10 @@ def _runway_estimate(
         + flows_window.get("transfer_intake_units", 0)
         + flows_window.get("payout_returns_in_units", 0)
     )
-    expense = flows_window.get("burned_units", 0) + flows_window.get(
-        "payouts_out_units", 0
+    expense = (
+        flows_window.get("burned_units", 0)
+        + flows_window.get("payouts_out_units", 0)
+        + flows_window.get("guild_outflows_units", 0)
     )
     net_burn = expense - income
     base = {
@@ -613,26 +698,30 @@ def _fmt(units: int) -> str:
 
 
 def headline_balances(conn: sqlite3.Connection | None = None) -> dict:
-    """The three numbers the overview page leads with: the treasury's
-    balance, the escrow bank account's holding, and total circulating
-    supply (supply minus treasury minus escrow). One query - the slices
-    are conditional SUMs over the same scan - no flows/holders work,
-    cheap enough for a soft-refreshing fragment. Pass conn to reuse the
-    caller's connection (the /overview treasury pair does)."""
+    """The numbers the overview page leads with: the treasury's balance,
+    the escrow bank account's holding, the guild wallets' holding, and
+    total circulating supply (supply minus treasury minus escrow minus
+    guild, proposal #611). One query - the slices are conditional SUMs
+    over the same scan - no flows/holders work, cheap enough for a
+    soft-refreshing fragment. Pass conn to reuse the caller's connection
+    (the /overview treasury pair does)."""
     with _conn() if conn is None else nullcontext(conn) as c:
         row = c.execute(
             "SELECT COALESCE(SUM(delta_units), 0),"
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
             " THEN delta_units ELSE 0 END), 0),"
             " COALESCE(SUM(CASE WHEN account = 'escrow'"
+            " THEN delta_units ELSE 0 END), 0),"
+            " COALESCE(SUM(CASE WHEN account = 'guild'"
             " THEN delta_units ELSE 0 END), 0)"
             " FROM credit_entries",
         ).fetchone()
-        supply_u, treasury_u, escrow_u = row[0], row[1], row[2]
+        supply_u, treasury_u, escrow_u, guild_u = row[0], row[1], row[2], row[3]
     return {
         "treasury_units": treasury_u,
         "escrow_units": escrow_u,
-        "circulating_units": supply_u - treasury_u - escrow_u,
+        "guild_units": guild_u,
+        "circulating_units": supply_u - treasury_u - escrow_u - guild_u,
     }
 
 
@@ -667,11 +756,14 @@ def economy_overview() -> dict:
             " COALESCE(SUM(CASE WHEN account = 'treasury'"
             " THEN delta_units ELSE 0 END), 0) AS t,"
             " COALESCE(SUM(CASE WHEN account = 'escrow'"
-            " THEN delta_units ELSE 0 END), 0) AS e"
+            " THEN delta_units ELSE 0 END), 0) AS e,"
+            " COALESCE(SUM(CASE WHEN account = 'guild'"
+            " THEN delta_units ELSE 0 END), 0) AS g"
             " FROM credit_entries"
         ).fetchone()
         treasury_u = totals["t"]
         escrow_u = totals["e"]
+        guild_u = totals["g"]
         # Remaining commitment per active credit stake: everything not
         # yet paid out, escrowed locks INCLUDED (they can still pay a
         # future merge) and already-paid capacity excluded. Same formula
@@ -702,22 +794,15 @@ def economy_overview() -> dict:
             bond_hold = bond_holdings_summary(conn)
         except Exception:  # domain: degrade-silently - pre-bond DB reads zero
             bond_hold = {"face_units": 0, "accrued_units": 0, "count": 0}
-        # Guild pools (item 5034): Treasury-parked pool balances plus the
-        # remaining escrow on open guild-commissioned jobs. Guarded to
-        # zero: pre-guild databases carry no guild tables, and the
-        # overview must never break on them.
+        # Guild pools (item 5034, proposal #611): per-guild wallet legs
+        # summed straight off the ledger - the same slice as totals["g"]
+        # above, reused instead of scanning twice. Guarded to zero:
+        # pre-guild databases read zero, and the overview must never
+        # break on them.
         try:
-            guild_held_u = int(
-                conn.execute(
-                    "SELECT COALESCE(SUM("
-                    " CASE WHEN l.kind IN ('deposit', 'grant_t1', 'grant_t2',"
-                    " 'subsidy', 'match', 'stake', 'job', 'bond')"
-                    " THEN l.units ELSE -l.units END), 0)"
-                    " FROM guild_ledger l JOIN guilds g ON g.id = l.guild_id"
-                    " WHERE g.status = 'active'"
-                ).fetchone()[0]
-                or 0
-            )
+            from db._credits import guild_held_total
+
+            guild_held_u = int(guild_held_total(conn))
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
             guild_held_u = 0
@@ -726,13 +811,15 @@ def economy_overview() -> dict:
 
             guild_escrow_u = 0
             for jrow in conn.execute(
-                "SELECT j.id, j.total_cycles, j.cycles_done,"
-                " j.official, j.payment_units"
-                " FROM guild_job_links l JOIN jobs j"
+                "SELECT l.job_id FROM guild_job_links l JOIN jobs j"
                 " ON j.id = l.job_id WHERE l.role = 'commissioned'"
                 " AND j.status IN ('open', 'offered', 'active')"
             ).fetchall():
-                guild_escrow_u += int(_remaining_escrow(jrow) or 0)
+                job = conn.execute(
+                    "SELECT * FROM jobs WHERE id = ?", (jrow["job_id"],)
+                ).fetchone()
+                if job is not None:
+                    guild_escrow_u += int(_remaining_escrow(job) or 0)
         except Exception:
             # domain: degrade-silently - pre-guild database reads zero
             guild_escrow_u = 0
@@ -741,7 +828,9 @@ def economy_overview() -> dict:
         prev_windows: dict[str, dict] = {}
         for name, delta in (("day", timedelta(days=1)), ("week", timedelta(days=7))):
             bound = day_dt_to_iso(now_dt - delta)
-            flows = _summarize_flows(_flow_rows(conn, bound))
+            flows = _summarize_flows(
+                _flow_rows(conn, bound), _flow_rows_guild(conn, bound)
+            )
             flows["window_start"] = bound
             windows[name] = flows
             # previous window of same length immediately before current
@@ -749,14 +838,17 @@ def economy_overview() -> dict:
             prev_end = bound
             try:
                 pflows = _summarize_flows(
-                    _flow_rows_between(conn, prev_start, prev_end)
+                    _flow_rows_between(conn, prev_start, prev_end),
+                    _flow_rows_guild_between(conn, prev_start, prev_end),
                 )
             except (
                 Exception
             ):  # domain: degrade-silently - prev window never blocks overview
                 pflows = _summarize_flows({})
             prev_windows[name] = pflows
-        windows["all_time"] = _summarize_flows(_flow_rows(conn, None))
+        windows["all_time"] = _summarize_flows(
+            _flow_rows(conn, None), _flow_rows_guild(conn, None)
+        )
 
         holders = [
             {
@@ -836,7 +928,10 @@ def economy_overview() -> dict:
         try:
             _runway_window = max(1, int(config.ECONOMY_RUNWAY_WINDOW_DAYS))
             _runway_bound = day_dt_to_iso(now_dt - timedelta(days=_runway_window))
-            _runway_flows = _summarize_flows(_flow_rows(conn, _runway_bound))
+            _runway_flows = _summarize_flows(
+                _flow_rows(conn, _runway_bound),
+                _flow_rows_guild(conn, _runway_bound),
+            )
             runway = _runway_estimate(
                 _runway_flows,
                 treasury_u,
@@ -854,8 +949,8 @@ def economy_overview() -> dict:
             "total_supply_credits": _fmt(supply_u),
             "treasury_units": treasury_u,
             "treasury_credits": _fmt(treasury_u),
-            "circulating_units": supply_u - treasury_u - escrow_u,
-            "circulating_credits": _fmt(supply_u - treasury_u - escrow_u),
+            "circulating_units": supply_u - treasury_u - escrow_u - guild_u,
+            "circulating_credits": _fmt(supply_u - treasury_u - escrow_u - guild_u),
             "committed_to_active_stakes_units": committed,
             "committed_to_active_stakes_credits": _fmt(committed),
             "held_in_job_escrow_units": job_escrow,
@@ -870,6 +965,7 @@ def economy_overview() -> dict:
             "bonds_accrued_units": bond_hold["accrued_units"],
             "bonds_accrued_credits": _fmt(bond_hold["accrued_units"]),
             "conservation": verify_conservation(conn),
+            "guild_conservation": verify_guild_wallets(conn),
             "open_jobs": jobs_open,
             "offered_jobs": jobs_offered,
             "active_jobs": jobs_active,
@@ -1201,6 +1297,160 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             f" ('escrow_cutover_entry_id', '{int(max_id)}')"
         )
         return {"backfilled_units": total, "jobs": jobs, "already_live": False}
+
+
+def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
+    """Audit the guild wallets (proposal #611, Rule D): per live guild,
+    wallet - memo == retained, where retained is the SUM of +guild
+    guild_retained legs (pool-owned withholds/fees the memo
+    extinguished but the wallet kept). Live guilds only (review #1344:
+    the disband waterfall zeroes both trails while append-only retained
+    legs persist, so auditing disbanded guilds would fail 0 - 0 == R
+    forever - dead guilds verify trivially by exclusion). Suspended
+    guilds stay in scope - their wallets are live custody. Per-guild
+    rows (never a global sum) so one poisoned guild cannot mask the
+    rest. Total function: never raises - a weird ledger reports failure,
+    it never breaks /economy."""
+    try:
+        with _conn() if conn is None else nullcontext(conn) as c:
+            try:
+                grows = c.execute(
+                    "SELECT id FROM guilds WHERE status IN ('active', 'suspended')"
+                ).fetchall()
+            except Exception:
+                return {"ok": True, "guilds": [], "checked": 0}
+            from db._credits import guild_wallet_balance
+            from db._guilds import guild_memo_balance
+
+            rows = []
+            ok = True
+            for grow in grows:
+                gid = int(grow[0])
+                wallet = int(guild_wallet_balance(c, gid))
+                memo = int(guild_memo_balance(c, gid))
+                retained = int(
+                    c.execute(
+                        "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                        " WHERE account = 'guild' AND reason = 'guild_retained'"
+                        " AND target_type = 'guild' AND target_id = ?"
+                        " AND delta_units > 0",
+                        (gid,),
+                    ).fetchone()[0]
+                )
+                good = (wallet - memo) == retained
+                ok = ok and good
+                rows.append(
+                    {
+                        "guild_id": gid,
+                        "wallet_units": wallet,
+                        "memo_units": memo,
+                        "retained_units": retained,
+                        "ok": good,
+                    }
+                )
+            return {"ok": ok, "guilds": rows, "checked": len(rows)}
+    except Exception:
+        return {"ok": False, "guilds": [], "checked": 0}
+
+
+def backfill_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
+    """One-time repair (proposal #611): seed each pre-wallet guild's
+    wallet from its memo trail (-treasury / +guild paired under one tx
+    per guild, reason guild_wallet_backfill so flow buckets never see
+    it). Only pristine guilds seed (wallet == 0 with memo > 0); live
+    guilds already move both trails together. Live guilds only
+    (active + suspended - same scope as verify_guild_wallets, review
+    #1344). Sufficiency-gated (review #1344): the seed draws the memo
+    out of the live treasury, so a treasury that cannot cover the whole
+    seed skips instead of driving itself negative - the live flag stays
+    unset and a later boot retries once funds recover. Idempotent via
+    economy_meta.guild_wallet_live. Supply-neutral (custody moves,
+    nothing mints) and circulating-neutral with it."""
+    from db._credits import _insert_entry, _new_tx_id, treasury_balance
+
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        try:
+            live = c.execute(
+                "SELECT value FROM economy_meta WHERE key = 'guild_wallet_live'"
+            ).fetchone()
+        except Exception:  # domain: economy-migration - no meta table yet
+            live = None
+        if live is not None and live[0] == "1":
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": True,
+                "skipped_shortfall_units": 0,
+            }
+        try:
+            grows = c.execute(
+                "SELECT id FROM guilds WHERE status IN ('active', 'suspended')"
+            ).fetchall()
+        except Exception:  # domain: degrade-silently - pre-guild DB seeds nothing
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": False,
+                "skipped_shortfall_units": 0,
+            }
+        from db._credits import guild_wallet_balance
+        from db._guilds import guild_memo_balance
+
+        pending: list[tuple[int, int]] = []
+        for grow in grows:
+            gid = int(grow[0])
+            try:
+                memo = int(guild_memo_balance(c, gid))
+                wallet = int(guild_wallet_balance(c, gid))
+            except Exception:
+                continue
+            if memo <= 0 or wallet != 0:
+                continue
+            pending.append((gid, memo))
+        shortfall = sum(memo for _, memo in pending)
+        if shortfall > 0 and int(treasury_balance(c)) < shortfall:
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": False,
+                "skipped_shortfall_units": shortfall,
+            }
+        total = 0
+        guilds = 0
+        for gid, memo in pending:
+            tx_id = _new_tx_id(c)
+            _insert_entry(
+                c,
+                None,
+                "treasury",
+                -memo,
+                "guild_wallet_backfill",
+                "guild",
+                gid,
+                tx_id=tx_id,
+            )
+            _insert_entry(
+                c,
+                None,
+                "guild",
+                memo,
+                "guild_wallet_backfill",
+                "guild",
+                gid,
+                tx_id=tx_id,
+            )
+            total += memo
+            guilds += 1
+        c.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('guild_wallet_live', '1')"
+        )
+        return {
+            "backfilled_units": total,
+            "guilds": guilds,
+            "already_live": False,
+            "skipped_shortfall_units": 0,
+        }
 
 
 def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:

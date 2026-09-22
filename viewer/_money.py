@@ -1295,11 +1295,11 @@ def _daily_flows_html() -> str:
 
 def _supply_split_html(overview: dict) -> str:
     """Supply split stacked bar (chart 3): treasury / circulating /
-    escrow as exact shares of total supply (the three sum to supply by
-    construction: circulating = supply \u2212 treasury \u2212 escrow).
-    Committed stakes, guild pools and bonds overlap these accounts, so
-    they stay in the cards, named in the caption. Display-only,
-    degrade-silently."""
+    escrow / guild wallets as shares of total supply (proposal #611 -
+    circulating = supply \u2212 treasury \u2212 escrow \u2212 guild, so
+    the guild segment restores what circulating deducts). Committed
+    stakes and bonds overlap these accounts, so they stay in the cards,
+    named in the caption. Display-only, degrade-silently."""
     try:
         total = int(overview["total_supply_units"])
         if total <= 0:
@@ -1311,6 +1311,11 @@ def _supply_split_html(overview: dict) -> str:
                 "escrow",
                 int(overview["held_in_job_escrow_units"]),
                 "hsl(35 80% 45%)",
+            ),
+            (
+                "guild pools",
+                int(overview.get("held_in_guild_pools_units", 0)),
+                "hsl(280 60% 55%)",
             ),
         ]
     except (  # domain: degrade-silently - malformed overview degrades to no bar
@@ -1340,7 +1345,7 @@ def _supply_split_html(overview: dict) -> str:
         + "<div class='meta'>"
         + " &middot; ".join(legend)
         + " &middot; of total supply"
-        + " &middot; stakes, guild pools and bonds overlap these accounts (see cards)</div>"
+        + " &middot; stakes and bonds overlap these accounts (see cards)</div>"
     )
 
 
@@ -1578,7 +1583,7 @@ def _economy_body(request: Request) -> str:
         + _card(
             overview.get("held_in_guild_pools_credits", "0"),
             "held in guild pools",
-            tooltip="Treasury-parked pool balances across active guilds (memo-only claims, supply-neutral).",
+            tooltip="Per-guild wallet balances across active guilds (proposal #611 - own custody, supply-neutral).",
         )
         + _card(
             overview.get("held_in_guild_escrow_credits", "0"),

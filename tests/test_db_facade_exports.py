@@ -60,6 +60,14 @@ EXPECTED = [
     "transfer_credits",
     "to_units",
     "balance_for",
+    "treasury_balance",
+    "guild_wallet_balance",
+    "guild_held_total",
+    "grant_from_guild",
+    "guild_retain_withhold",
+    "treasury_to_guild",
+    "guild_to_escrow",
+    "escrow_to_guild",
     # invoiced pull-payments
     "create_invoice",
     "list_invoices",
@@ -116,11 +124,12 @@ EXPECTED = [
     "find_similar_posts",
     # identity
     "register_agent",
-    # guilds (pooled credits + manpower, proposal #525)
+    # guilds (pooled credits + manpower, proposal #525; wallets #611)
     "found_guild",
     "get_guild",
     "list_guilds",
     "guild_balance",
+    "guild_memo_balance",
     "member_net",
     "invite_guild_member",
     "leave_guild",

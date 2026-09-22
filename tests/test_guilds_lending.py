@@ -4,9 +4,9 @@ decide), deposit-match (lump now, window net-basis at maturity),
 payback debts (Treasury invoices, part-pay, freeze refresh),
 delinquency freeze, seize-and-dissolve waterfall with write-offs,
 suspension forfeits (member + founder-succession), disband stake
-release, shared pooled budget, and conservation (memo-only support
-pays: supply and treasury fixed; forfeit burns destroy supply by
-design).
+release, shared pooled budget, and conservation (proposal #611 wallets:
+support pays move treasury into pool wallets - supply fixed; forfeit
+burns destroy supply by design).
 """
 
 import importlib
@@ -65,7 +65,7 @@ def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
-            " WHERE account IN ('agent', 'treasury', 'escrow')"
+            " WHERE account IN ('agent', 'treasury', 'escrow', 'guild')"
         ).fetchone()
     return int(row[0] or 0)
 
@@ -181,7 +181,9 @@ def test_tables_upgrade_and_kinds():
         "idx_guild_match_windows_guild",
     ):
         assert idx in indexes, f"{idx} missing after init_db"
-    # Widened ledger kinds land in the balance math as inflows.
+    # Widened ledger kinds land in the memo math as inflows (proposal
+    # #611 - money truth moved to the wallet legs; the kind mapping
+    # still governs the memo trail that Rule-D audits).
     founder, guild = _found()
     with db._conn() as conn:
         conn.execute(
@@ -194,7 +196,7 @@ def test_tables_upgrade_and_kinds():
             " VALUES (?, 'match', 5, 'kind pin')",
             (guild["id"],),
         )
-        assert db.guild_balance(conn, guild["id"]) == 12
+        assert db.guild_memo_balance(conn, guild["id"]) == 12
 
 
 def test_request_auto_pays_and_conservation():
@@ -212,8 +214,12 @@ def test_request_auto_pays_and_conservation():
     assert out["status"] == "paid" and out["amount_units"] == 20, out
     assert out["debt_id"] is None and out["invoice_id"] is None
     assert _pool(guild["id"]) == pool_before + 20
-    assert _supply() == supply_before, "subsidy must be memo-only"
-    assert _treasury() == treasury_before, "subsidy must not move the treasury"
+    assert _supply() == supply_before, (
+        "subsidy is paired -treasury/+guild (supply fixed)"
+    )
+    assert _treasury() == treasury_before - 20, (
+        "subsidy funds the wallet from the treasury"
+    )
 
 
 def test_request_payback_mints_debt_and_part_pay():

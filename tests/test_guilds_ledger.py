@@ -44,7 +44,7 @@ def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
-            " WHERE account IN ('agent', 'treasury', 'escrow')"
+            " WHERE account IN ('agent', 'treasury', 'escrow', 'guild')"
         ).fetchone()
     return int(row[0] or 0)
 
