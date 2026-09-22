@@ -32,6 +32,7 @@ def _series_table(series: list[dict]) -> str:
             f"you &le; {esc(db.format_credits(d['citizen_cap_units']))}"
             f" &middot; src {esc('+'.join(d['yield_sources']))}"
         )
+        paid = f"{d['realized_pct']:g}%" if d.get("realized_pct") is not None else "-"
         rows.append(
             f"<tr><td>{int(d['series_id'])}</td><td>{esc(d['name'])}</td>"
             f"<td>{int(d['term_days'])}d</td>"
@@ -40,12 +41,13 @@ def _series_table(series: list[dict]) -> str:
             f"<td>{terms}</td>"
             f"<td>{esc(db.format_credits(d['outstanding_units']))}</td>"
             f"<td>{int(d['holder_count'])}</td>"
+            f"<td>{paid}</td>"
             f"<td>{_human_ts(d['created_at'])}</td></tr>"
         )
     return (
         "<table class='grid'><tr><th>id</th><th>series</th><th>term</th>"
         "<th>share</th><th>status</th><th>terms</th><th>outstanding</th>"
-        "<th>holders</th><th>opened</th></tr>" + "".join(rows) + "</table>"
+        "<th>holders</th><th>paid</th><th>opened</th></tr>" + "".join(rows) + "</table>"
     )
 
 
