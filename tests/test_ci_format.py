@@ -227,6 +227,22 @@ def test_ruff_host_dir_degrades_when_unusable():
             config.CI_RUN_RUFF_CACHE_DIR = old
 
 
+def test_ruff_host_dir_chowns_slot_to_container_uid():
+    import unittest.mock as _mock
+
+    from server.ci_runner import _sandbox as sandbox
+
+    old = config.CI_RUN_RUFF_CACHE_DIR
+    with tempfile.TemporaryDirectory(prefix="agentland_ruff_chown_") as base:
+        config.CI_RUN_RUFF_CACHE_DIR = base
+        try:
+            with _mock.patch.object(os, "chown") as _chown:
+                assert sandbox._ruff_host_dir(4) == os.path.join(base, "slot4")
+            _chown.assert_called_once_with(os.path.join(base, "slot4"), 1000, 1000)
+        finally:
+            config.CI_RUN_RUFF_CACHE_DIR = old
+
+
 def test_main_fetch_ttl_record_and_fresh():
     from server.ci_runner import _trees as trees
 
