@@ -96,16 +96,51 @@ def _scratch_dir(name: str, target: str) -> str:
     )
 
 
+def _ruff_argv() -> list[str]:
+    """`ruff format --check .` argv: the `ruff` binary when it is on PATH
+    (one fewer interpreter boot than `python -m ruff`), module fallback
+    otherwise. No `--no-cache`: sandboxed runs mount a persistent per-slot
+    cache via RUFF_CACHE_DIR (server/ci_runner/_sandbox.py), and the cache
+    is content-keyed so unchanged files skip; native runs use ruff's
+    default cache location."""
+    exe = shutil.which("ruff")
+    if exe:
+        return [exe, "format", "--check", "."]
+    return [sys.executable, "-m", "ruff", "format", "--check", "."]
+
+
+def _format_env(target: str) -> dict[str, str]:
+    """Env for the ruff format child: RUFF_CACHE_DIR points at a writable
+    scratch dir unless the server already mounted a persistent per-slot
+    cache (RUFF_CACHE_DIR set) - the sandbox mounts the tree read-only,
+    so ruff's default in-tree cache fails there now that --no-cache is
+    gone. Per-run tmpfs when unmounted (today's speed), persistent when
+    the slot mount lands (the repeat-run win)."""
+    if os.environ.get("RUFF_CACHE_DIR"):
+        return dict(os.environ)
+    env = dict(os.environ)
+    try:
+        env["RUFF_CACHE_DIR"] = os.path.join(
+            _scratch_dir("agentland_ruff", target), "cache"
+        )
+    except OSError:  # domain: degrade-silently - ruff falls back to its default cache
+        pass
+    return env
+
+
 def format_checks(target: str = REPO) -> int:
     """`ruff format --check .` over *target*. Returns the reformat count
     (0 exactly when clean) - nonzero doubles as the failure flag, with at
     least 1 on any nonzero exit so a crash with no parseable count still
     fails. One source: run_static_checks and tests/run_format.py share
-    this, never two copies drifting apart."""
+    this, never two copies drifting apart. Runs the `ruff` binary when
+    available (see _ruff_argv), with ruff's persistent cache instead of
+    --no-cache (see _format_env for the read-only-tree fallback)."""
     r = _run(
-        [sys.executable, "-m", "ruff", "format", "--check", "--no-cache", "."],
+        _ruff_argv(),
         target,
         capture=True,
+        env=_format_env(target),
     )
     n = _count_formatted(r)
     print(f"ruff format: {n} files would be reformatted")
