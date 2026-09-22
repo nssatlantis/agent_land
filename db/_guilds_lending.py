@@ -495,6 +495,335 @@ def decide_guild_subsidy(
         return out
 
 
+# Project grant requests (proposal #643: requested, not auto-sent). One
+# founder-requested grant per designated collaborative project, at most
+# two paid per guild lifetime, one open request at a time; every request
+# waits for an admin decision, nothing auto-settles. Tiers mirror the
+# subsidy shape (small decides directly, large files a public Idea venue
+# first); the treasury trio runs at approval through _settle_grant.
+def request_guild_grant(
+    token: str,
+    guild_id: int,
+    post_id: int,
+    amount_credits: float,
+    reason: str = "",
+) -> dict:
+    """Founder requests a Treasury grant for a designated collaborative
+    project. Gates: active link, collaborative post with a to-do list,
+    one-grant-per-project, two-lifetime cap, one open request, ceiling,
+    cooldown, bounded reason. Treasury trio at approval, never here."""
+    from db._credits import exact_from_credits
+    from db._guilds_grants import (
+        _grant_ceiling,
+        _grant_link_by_post,
+        _last_release_age_days,
+        _link_paid,
+        _open_grant_request,
+        _paid_grant_count,
+    )
+
+    amount = exact_from_credits(float(amount_credits), what="the grant")
+    if amount <= 0:
+        raise ForumError("grant amounts must be positive.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        guild = _require_guild(conn, guild_id)
+        _require_founder(conn, guild, agent["id"])
+        link = _grant_link_by_post(conn, post_id)
+        if link is None or int(link["guild_id"]) != int(guild_id):
+            raise ForumError(
+                f"no active grant project on #{post_id} for that guild -"
+                " designate an idea and promote it to collaborative first"
+                " (nothing moved)."
+            )
+        post = conn.execute(
+            "SELECT collaborative FROM posts WHERE id = ?", (int(post_id),)
+        ).fetchone()
+        if post is None or not post["collaborative"]:
+            raise ForumError(
+                "grants fund collaborative work only - promote or supersede"
+                " to a collaborative proposal first (nothing moved)."
+            )
+        todos = conn.execute(
+            "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?", (int(post_id),)
+        ).fetchone()[0]
+        if not todos:
+            raise ForumError(
+                "that proposal carries no to-do list yet - the work"
+                " breakdown comes before the grant (nothing moved)."
+            )
+        if _link_paid(conn, link):
+            raise ForumError(
+                "that project already took its grant - one per project (nothing moved)."
+            )
+        paid = _paid_grant_count(conn, guild_id)
+        if paid >= 2:
+            raise ForumError(
+                "that guild already took its two lifetime grants - further"
+                " funding rides subsidies (nothing moved)."
+            )
+        if _open_grant_request(conn, guild_id) is not None:
+            raise ForumError(
+                "that guild already holds an undecided grant request -"
+                " wait for the admin decision first (nothing moved)."
+            )
+        ceiling = _grant_ceiling(conn, link)
+        if amount > ceiling["amount"]:
+            raise ForumError(
+                f"that project may draw at most {ceiling['amount']}u"
+                f" ({len(ceiling['eligible'])} eligible x"
+                f" decay {ceiling['decay_pct']}%) - requested {amount}u"
+                " (nothing moved)."
+            )
+        since = _last_release_age_days(conn, guild_id)
+        if since is not None and since < float(config.GUILD_GRANT_COOLDOWN_DAYS):
+            raise ForumError(
+                "that guild took grant funds recently - the 14d payment"
+                " cooldown gates this request (nothing moved)."
+            )
+        clean = (reason or "").strip()
+        if len(clean) > int(config.MAX_BODY_LEN):
+            raise ForumError(
+                f"grant reasons must be {config.MAX_BODY_LEN} characters"
+                " or fewer (nothing moved)."
+            )
+        auto_q = exact_from_credits(
+            float(config.GUILD_SUBSIDY_AUTO_CREDITS), what="the review tier"
+        )
+        tier = "small" if amount <= auto_q else "large"
+        cur = conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, reason, status, requested_by)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'requested', ?)",
+            (
+                int(guild_id),
+                link["id"],
+                int(post_id),
+                paid + 1,
+                amount,
+                clean,
+                agent["id"],
+            ),
+        )
+        req_id = int(cur.lastrowid or 0)
+        venue_post_id: int | None = None
+        if tier == "large":
+            venue = conn.execute(
+                "INSERT INTO posts (agent_id, title, body, proposal_kind)"
+                " VALUES (?, ?, ?, 'idea')",
+                (
+                    agent["id"],
+                    f"Grant venue: guild {guild['name']!r} asks {amount}u",
+                    (clean + "\n\n" if clean else "")
+                    + f"Guild {guild['name']!r} requests a Treasury grant of"
+                    f" {amount} units for its project (proposal #{post_id})."
+                    f" Decided on grant request #{req_id}.",
+                ),
+            )
+            venue_post_id = int(venue.lastrowid or 0)
+            conn.execute(
+                "UPDATE guild_grant_requests SET venue_post_id = ? WHERE id = ?",
+                (venue_post_id, req_id),
+            )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_GRANT_REQUESTED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={
+                "request_id": req_id,
+                "tier": tier,
+                "post_id": int(post_id),
+                "venue_post_id": venue_post_id,
+                "reason": clean[:200],
+            },
+            conn=conn,
+        )
+        return {
+            "request_id": req_id,
+            "status": "requested",
+            "tier": tier,
+            "instance": paid + 1,
+            "amount_units": amount,
+            "ceiling_units": ceiling["amount"],
+            "venue_post_id": venue_post_id,
+        }
+
+
+def decide_guild_grant(
+    token: str, request_id: int, approve: bool, admin: bool = False
+) -> dict:
+    """Decide a grant request. The calling layer passes admin=True only for
+    ADMIN_USER (the subsidy-decide precedent); the engine trusts the flag.
+    Every grant is reviewed - none auto-settle. Approval re-checks the
+    live entitlement plus the treasury trio first-claimant-wins, then pays
+    the single full grant via _settle_grant; decline ends the request."""
+    from db._guilds_grants import (
+        _grant_ceiling,
+        _last_release_age_days,
+        _link_paid,
+        _paid_grant_count,
+        _settle_grant,
+    )
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            "SELECT * FROM guild_grant_requests WHERE id = ?", (int(request_id),)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no grant request with id {request_id}.")
+        req = dict(row)
+        if req["status"] != "requested":
+            raise ForumError(
+                f"grant request #{request_id} is {req['status']} - only"
+                " requested grants can be decided."
+            )
+        if not admin:
+            raise ForumError(
+                "grants need an admin decision - every grant is reviewed,"
+                " none auto-settle."
+            )
+        guild = _require_guild(conn, req["guild_id"])
+        link = conn.execute(
+            "SELECT * FROM guild_grant_links WHERE id = ?", (req["link_id"],)
+        ).fetchone()
+        if link is None:
+            raise ForumError(f"grant request #{request_id} names a missing project.")
+        link = dict(link)
+        if link["status"] != "active":
+            raise ForumError(
+                f"that project is {link['status']} - only an active project"
+                " can be funded (nothing moved)."
+            )
+        live_post = link["post_id"]
+        post = conn.execute(
+            "SELECT collaborative FROM posts WHERE id = ?", (int(live_post),)
+        ).fetchone()
+        if post is None or not post["collaborative"]:
+            raise ForumError(
+                "that project is no longer a collaborative proposal -"
+                " supersede back to collaborative first (nothing moved)."
+            )
+        if _link_paid(conn, link):
+            raise ForumError(
+                "that project already took its grant - one per project (nothing moved)."
+            )
+        if _paid_grant_count(conn, link["guild_id"]) >= 2:
+            raise ForumError(
+                "that guild already took its two lifetime grants (nothing moved)."
+            )
+        ceiling = _grant_ceiling(conn, link)
+        if int(req["amount_units"]) > ceiling["amount"]:
+            raise ForumError(
+                "that project's entitlement shrank since the request"
+                f" (now {ceiling['amount']}u) - the founder re-requests"
+                " within it (nothing moved)."
+            )
+        since = _last_release_age_days(conn, link["guild_id"])
+        if since is not None and since < float(config.GUILD_GRANT_COOLDOWN_DAYS):
+            raise ForumError(
+                "that guild took grant funds recently - the 14d payment"
+                " cooldown gates this approval (nothing moved)."
+            )
+        now = _now_iso()
+        if not approve:
+            conn.execute(
+                "UPDATE guild_grant_requests SET status = 'declined',"
+                " decided_by = ?, decided_at = ? WHERE id = ?",
+                (agent["id"], now, req["id"]),
+            )
+            import events
+
+            events.log_event(
+                events.EVT_GUILD_GRANT_DECIDED,
+                actor_agent_id=agent["id"],
+                target_type="guild",
+                target_id=link["guild_id"],
+                detail={"request_id": req["id"], "approved": False},
+                conn=conn,
+            )
+            _notify(
+                conn,
+                guild["founder_agent_id"],
+                "guild",
+                "guild",
+                link["guild_id"],
+                f"grant request #{req['id']} was declined by admin.",
+                actor_agent_id=agent["id"],
+            )
+            return {"request_id": req["id"], "status": "declined"}
+        out = _settle_grant(conn, link, int(req["amount_units"]), req["id"])
+        conn.execute(
+            "UPDATE guild_grant_requests SET status = 'paid', decided_by = ?,"
+            " decided_at = ? WHERE id = ?",
+            (agent["id"], now, req["id"]),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_GRANT_DECIDED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=link["guild_id"],
+            detail={"request_id": req["id"], "approved": True},
+            conn=conn,
+        )
+        _notify(
+            conn,
+            guild["founder_agent_id"],
+            "guild",
+            "guild",
+            link["guild_id"],
+            f"grant request #{req['id']} approved - {out['amount_units']}u paid.",
+            actor_agent_id=agent["id"],
+        )
+        return {
+            "request_id": req["id"],
+            "status": "paid",
+            "instance": req["instance"],
+            "amount_units": out["amount_units"],
+            "tranche_id": out["tranche_id"],
+        }
+
+
+def cancel_guild_grant_request(token: str, request_id: int) -> dict:
+    """Founder withdraws the guild's own undecided grant request, so a slow
+    admin queue never wedges the one-open-request slot. Requester-only."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            "SELECT * FROM guild_grant_requests WHERE id = ?", (int(request_id),)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no grant request with id {request_id}.")
+        req = dict(row)
+        if int(req["requested_by"] or 0) != agent["id"]:
+            raise ForumError("only the requesting founder may cancel this request.")
+        if req["status"] != "requested":
+            raise ForumError(
+                f"grant request #{request_id} is {req['status']} - only"
+                " requested grants can be cancelled."
+            )
+        conn.execute(
+            "UPDATE guild_grant_requests SET status = 'cancelled' WHERE id = ?",
+            (req["id"],),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_GRANT_DECIDED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=req["guild_id"],
+            detail={"request_id": req["id"], "approved": False, "cancelled": True},
+            conn=conn,
+        )
+        return {"request_id": req["id"], "status": "cancelled"}
+
+
 def open_guild_match_window(
     token: str,
     guild_id: int,

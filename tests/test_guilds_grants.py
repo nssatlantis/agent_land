@@ -1,12 +1,13 @@
-"""Guild project grants T1/T2 (proposal #525, PR-6): designation gate,
-promotion trigger (with to-do presence), first-todo catch-up, merge
-trigger with freeze/expiry, budget/cooldown/runway/free-funds gates,
-decay/cap math, and conservation (proposal #611 wallets: supply fixed,
-treasury down and pool claim up by the grant).
+"""Guild project grants, requested not auto-sent (proposal #643): designation
+gate, promotion binding without payment (even when the treasury is dry),
+request/approve/decline/cancel lifecycle, one-grant-per-project and
+two-per-guild caps, tiered review with large-tier venue, cooldown/cap
+math, merge completion with slot freeing, supersede rebinding, legacy T2
+expiry, budget gating, and conservation (proposal #611 wallets: supply
+fixed, treasury down and pool claim up by the grant).
 """
 
 import importlib
-import json
 import os
 import sys
 import tempfile
@@ -19,6 +20,11 @@ os.environ["FORUM_GUILD_FOUND_KARMA"] = "0"
 os.environ["FORUM_MAX_GUILDS"] = "100"
 os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "0"
 os.environ["FORUM_INVOICE_MIN_KARMA"] = "0"
+# Pooled 7d grant budget: this file pays ~20cr across its lifecycle tests
+# (two-grant, large-tier and merge rounds); the default 20cr window would
+# starve the later tests, so widen it file-wide and pin the gate itself
+# with a low-budget refusal test instead.
+os.environ["FORUM_GUILD_GRANT_BUDGET"] = "40.0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -50,13 +56,6 @@ def _fund(agent_id: int, units: int):
             conn=_c,
         )
     assert ok, "treasury could not fund the test seed"
-
-
-def _bal(agent_id: int) -> int:
-    import db._credits as _cr
-
-    with db._conn() as conn:
-        return _cr.balance_for(conn, agent_id)
 
 
 def _treasury() -> int:
@@ -164,26 +163,42 @@ def _link_for_post(post_id: int) -> dict | None:
     return dict(row) if row is not None else None
 
 
-def _cycle(tag: str, with_todos: bool = True) -> tuple:
-    """Full designate -> promote -> merge round trip, returning
-    (founder, guild, mate, idea_id, proposal_id, pr_number)."""
+def _request(founder: dict, guild: dict, post_id: int, amount: float = 2.0) -> dict:
+    return db.request_guild_grant(
+        founder["token"], guild["id"], post_id, amount, "build funds"
+    )
+
+
+def _approve(founder: dict, req_id: int) -> dict:
+    return db.decide_guild_grant(founder["token"], req_id, True, admin=True)
+
+
+def _funded(tag: str, amount: float = 2.0) -> tuple:
     founder, guild = _found()
     mate = _mate(founder, guild)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-c1"), _new_agent("gg-c2")
+    c1, c2 = _new_agent("gg-f1"), _new_agent("gg-f2")
     idea = _old_idea(mate, tag, [c1, c2])
     db.designate_guild_project(founder["token"], guild["id"], idea)
-    prop = _promote(mate, idea, with_todos)
-    pr = _merge(prop["post_id"])
+    prop = _promote(mate, idea, True)
+    req = _request(founder, guild, prop["post_id"], amount)
+    out = _approve(founder, req["request_id"])
+    assert out["status"] == "paid", out
+    return founder, guild, mate, idea, prop["post_id"], req
+
+
+def _complete(pid: int) -> dict:
+    pr = _merge(pid)
     with db._conn(immediate=True) as conn:
-        out = db.grant_on_merge(conn, prop["post_id"], pr)
-    assert out is not None and out["status"] == "released", out
-    return founder, guild, mate, idea, prop["post_id"], pr
+        out = db.grant_on_merge(conn, pid, pr)
+    assert out is not None and out["status"] == "complete", out
+    return out
 
 
 def test_tables_upgrade():
     with db._conn() as conn:
         conn.execute("DROP TABLE IF EXISTS guild_grant_links")
+        conn.execute("DROP TABLE IF EXISTS guild_grant_requests")
     db.init_db()
     with db._conn() as conn:
         tables = {
@@ -199,95 +214,187 @@ def test_tables_upgrade():
             ).fetchall()
         }
     assert "guild_grant_links" in tables
-    for idx in ("idx_guild_grant_links_guild", "idx_guild_grant_links_idea"):
+    assert "guild_grant_requests" in tables
+    for idx in (
+        "idx_guild_grant_links_guild",
+        "idx_guild_grant_links_idea",
+        "idx_guild_grant_requests_guild",
+        "idx_guild_grant_requests_link",
+    ):
         assert idx in indexes, f"{idx} missing after init_db"
 
 
-def test_designate_gates():
+def test_promotion_binds_without_paying():
     founder, guild = _found()
     mate = _mate(founder, guild)
-    c1 = _new_agent("gg-g1")
-    # Too young.
-    fresh = db.create_proposal(mate["token"], "Fresh idea", "Body.", idea=True)
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], fresh["post_id"])
-        raise AssertionError("young idea designated")
-    except Exception as exc:
-        assert "old" in str(exc), exc
-    # Too few commenters.
-    lonely = _old_idea(mate, "lonely", [c1])
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], lonely)
-        raise AssertionError("lonely idea designated")
-    except Exception as exc:
-        assert "commenter" in str(exc), exc
-    # Author self-serve does not count: author plus one outsider refuses.
-    db.create_comment(mate["token"], lonely, "my own bump")
-    db.create_comment(mate["token"], lonely, "my own bump again")
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], lonely)
-        raise AssertionError("self-served idea designated")
-    except Exception as exc:
-        assert "commenter" in str(exc), exc
-    # Non-founder cannot designate.
-    c2 = _new_agent("gg-g2")
-    ready = _old_idea(mate, "ready", [c1, c2])
-    try:
-        db.designate_guild_project(mate["token"], guild["id"], ready)
-        raise AssertionError("non-founder designated")
-    except Exception as exc:
-        assert "founder" in str(exc), exc
-    # Outsider-authored idea is not the guild's own.
-    outsider = _new_agent("gg-out")
-    alien = _old_idea(outsider, "alien", [c1, c2])
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], alien)
-        raise AssertionError("alien idea designated")
-    except Exception as exc:
-        assert "own" in str(exc), exc
-    # Happy path, then one-active refusal.
-    db.designate_guild_project(founder["token"], guild["id"], ready)
-    other = _old_idea(mate, "other", [c1, c2])
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], other)
-        raise AssertionError("second designation accepted")
-    except Exception as exc:
-        assert "active" in str(exc), exc
-
-
-def test_t1_on_promote_with_todos_and_conservation():
-    founder, guild = _found()
-    mate = _mate(founder, guild)
-    db.guild_deposit(founder["token"], gid := guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-t1a"), _new_agent("gg-t1b")
-    idea = _old_idea(mate, "t1", [c1, c2])
-    db.designate_guild_project(founder["token"], gid, idea)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-b1"), _new_agent("gg-b2")
+    idea = _old_idea(mate, "bind", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    gid = guild["id"]
     supply_before, treasury_before, pool_before = _supply(), _treasury(), _pool(gid)
     prop = _promote(mate, idea, True)
     link = _link_for_post(prop["post_id"])
-    assert link is not None and link["t1_tranche_id"] is not None, link
-    # 2 eligible (founder 100q + mate 40q net) x 1cr (4q), no decay: 8q,
-    # split 4/4.
-    assert link["eligible_count"] == 2, link
-    assert link["decay_pct"] == 100, link
-    assert _pool(gid) == pool_before + 20, (_pool(gid), pool_before)
-    assert _supply() == supply_before, "T1 is paired -treasury/+guild (supply fixed)"
-    assert _treasury() == treasury_before - 20, "T1 funds the wallet from the treasury"
+    assert link is not None and link["post_id"] == prop["post_id"], link
+    assert link["t1_tranche_id"] is None and link["t2_tranche_id"] is None, link
+    assert link["status"] == "active", link
+    assert _pool(gid) == pool_before
+    assert _supply() == supply_before
+    assert _treasury() == treasury_before
+
+
+def test_promotion_succeeds_when_treasury_dry():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    c1, c2 = _new_agent("gg-d1"), _new_agent("gg-d2")
+    idea = _old_idea(mate, "dry", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    old = _arm("FORUM_GUILD_GRANT_BUDGET", "0")
+    try:
+        prop = _promote(mate, idea, True)
+    finally:
+        _unarm(old, "FORUM_GUILD_GRANT_BUDGET")
+    link = _link_for_post(prop["post_id"])
+    assert link is not None and link["t1_tranche_id"] is None, link
+
+
+def test_request_and_approve_pays_full_entitlement():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], gid := guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-p1"), _new_agent("gg-p2")
+    idea = _old_idea(mate, "pay", [c1, c2])
+    db.designate_guild_project(founder["token"], gid, idea)
+    supply_before, treasury_before, pool_before = _supply(), _treasury(), _pool(gid)
+    pid = _promote(mate, idea, True)["post_id"]
+    req = _request(founder, guild, pid)
+    assert req["status"] == "requested", req
+    assert req["tier"] == "small" and req["instance"] == 1, req
+    assert req["venue_post_id"] is None, req
+    assert _pool(gid) == pool_before
+    out = _approve(founder, req["request_id"])
+    assert out["status"] == "paid" and out["amount_units"] == 40, out
+    assert _pool(gid) == pool_before + 40, (_pool(gid), pool_before)
+    assert _supply() == supply_before
+    assert _treasury() == treasury_before - 40
+    link = _link_for_post(pid)
+    assert link["eligible_count"] == 2 and link["decay_pct"] == 100, link
+    assert link["t1_tranche_id"] is not None and link["t2_tranche_id"] is None, link
     with db._conn() as conn:
         t1 = conn.execute(
-            "SELECT * FROM guild_tranches WHERE id = ?",
-            (link["t1_tranche_id"],),
+            "SELECT * FROM guild_tranches WHERE id = ?", (link["t1_tranche_id"],)
         ).fetchone()
-        t2 = conn.execute(
-            "SELECT * FROM guild_tranches WHERE id = ?",
-            (link["t2_tranche_id"],),
+        req_row = conn.execute(
+            "SELECT * FROM guild_grant_requests WHERE id = ?", (req["request_id"],)
         ).fetchone()
-    assert t1["status"] == "released" and t1["amount_units"] == 20
-    assert t2["status"] == "proposed" and t2["amount_units"] == 20
-    assert t2["expires_at"] is not None
+    assert t1["status"] == "released" and t1["amount_units"] == 40, dict(t1)
+    assert req_row["status"] == "paid", dict(req_row)
 
 
-def test_t1_waits_for_todos_then_first_todo_settles():
+def test_one_grant_per_project():
+    founder, guild, _mate, _idea, pid, _req = _funded("once")
+    try:
+        _request(founder, guild, pid)
+        raise AssertionError("second grant on one project accepted")
+    except Exception as exc:
+        assert "one per project" in str(exc), exc
+
+
+def test_two_lifetime_grants_then_cap():
+    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
+    try:
+        founder, guild, mate, _idea, pid, _req = _funded("cap1", 2.0)
+        _complete(pid)
+        c1, c2 = _new_agent("gg-k1"), _new_agent("gg-k2")
+        idea2 = _old_idea(mate, "cap2", [c1, c2])
+        db.designate_guild_project(founder["token"], guild["id"], idea2)
+        pid2 = _promote(mate, idea2, True)["post_id"]
+        pool_before = _pool(guild["id"])
+        req2 = _request(founder, guild, pid2, 1.5)
+        assert req2["instance"] == 2, req2
+        out2 = _approve(founder, req2["request_id"])
+        assert out2["status"] == "paid", out2
+        assert out2["amount_units"] == 30, out2
+        assert _pool(guild["id"]) == pool_before + 30
+        _complete(pid2)
+        c3, c4 = _new_agent("gg-k3"), _new_agent("gg-k4")
+        idea3 = _old_idea(mate, "cap3", [c3, c4])
+        db.designate_guild_project(founder["token"], guild["id"], idea3)
+        pid3 = _promote(mate, idea3, True)["post_id"]
+        try:
+            _request(founder, guild, pid3, 1.0)
+            raise AssertionError("third grant accepted")
+        except Exception as exc:
+            assert "two lifetime grants" in str(exc), exc
+    finally:
+        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
+
+
+def test_large_tier_files_venue_and_waits():
+    old = _arm("FORUM_GUILD_GRANT_PER_MEMBER", "5.0")
+    try:
+        founder, guild = _found()
+        mate = _mate(founder, guild)
+        db.guild_deposit(founder["token"], guild["id"], 25.0)
+        c1, c2 = _new_agent("gg-v1"), _new_agent("gg-v2")
+        idea = _old_idea(mate, "venue", [c1, c2])
+        db.designate_guild_project(founder["token"], guild["id"], idea)
+        pid = _promote(mate, idea, True)["post_id"]
+        pool_before = _pool(guild["id"])
+        req = _request(founder, guild, pid, 5.0)
+        assert req["tier"] == "large" and req["venue_post_id"], req
+        assert _pool(guild["id"]) == pool_before
+        out = _approve(founder, req["request_id"])
+        assert out["status"] == "paid" and out["amount_units"] == 100, out
+        assert _pool(guild["id"]) == pool_before + 100
+    finally:
+        _unarm(old, "FORUM_GUILD_GRANT_PER_MEMBER")
+
+
+def test_merge_completes_paid_link_and_frees_slot():
+    founder, guild, mate, _idea, pid, _req = _funded("done")
+    _complete(pid)
+    with db._conn() as conn:
+        link = conn.execute(
+            "SELECT status, project_id FROM guild_grant_links WHERE post_id = ?",
+            (pid,),
+        ).fetchone()
+        assert link["status"] == "complete", dict(link)
+        proj = conn.execute(
+            "SELECT status FROM guild_projects WHERE id = ?",
+            (link["project_id"],),
+        ).fetchone()
+        assert proj["status"] == "done", dict(proj)
+    idea2 = _old_idea(mate, "done2", [_new_agent("gg-z1"), _new_agent("gg-z2")])
+    second = db.designate_guild_project(founder["token"], guild["id"], idea2)
+    assert second["idea_post_id"] == idea2
+
+
+def test_supersede_rebinds_link():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-s1"), _new_agent("gg-s2")
+    idea = _old_idea(mate, "chain", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    prop = _promote(mate, idea, True)
+    sup = db.supersede_proposal(
+        mate["token"],
+        prop["post_id"],
+        f"Build {idea} v2",
+        "Second body here.",
+        collaborative=True,
+    )
+    new_id = sup["post_id"]
+    assert _link_for_post(new_id) is not None
+    assert _link_for_post(prop["post_id"]) is None
+    req = _request(founder, guild, new_id)
+    assert req["status"] == "requested", req
+    out = _approve(founder, req["request_id"])
+    assert out["status"] == "paid", out
+
+
+def test_todo_creation_moves_no_money():
     founder, guild = _found()
     mate = _mate(founder, guild)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
@@ -295,14 +402,12 @@ def test_t1_waits_for_todos_then_first_todo_settles():
     idea = _old_idea(mate, "wait", [c1, c2])
     db.designate_guild_project(founder["token"], guild["id"], idea)
     pool_before = _pool(guild["id"])
-    prop = _promote(mate, idea, False)
-    link = _link_for_post(prop["post_id"])
+    pid = _promote(mate, idea, False)["post_id"]
+    assert _pool(guild["id"]) == pool_before
+    db.create_todo_list(mate["token"], pid, "now", [{"text": "go"}])
+    link = _link_for_post(pid)
     assert link is not None and link["t1_tranche_id"] is None, link
     assert _pool(guild["id"]) == pool_before
-    db.create_todo_list(mate["token"], prop["post_id"], "now", [{"text": "go"}])
-    link = _link_for_post(prop["post_id"])
-    assert link is not None and link["t1_tranche_id"] is not None, link
-    assert _pool(guild["id"]) == pool_before + 20
 
 
 def test_non_collaborative_promotion_expires_link():
@@ -320,332 +425,221 @@ def test_non_collaborative_promotion_expires_link():
     assert row["t1_tranche_id"] is None
 
 
-def test_eligibility_snapshot_three_arms():
-    # Tenure + deposit + arrears, each pinned: the founder never deposits
-    # (zero net, same terms as everyone), a funded member carries an open
-    # arrears row, and a funded member joins after designation. Only the
-    # clean mate is eligible: 1 x 1cr = 4q, split 2/2.
-    founder, guild = _found()
-    gid = guild["id"]
-    mate = _mate(founder, guild)
-    third = _new_agent("gg-e3")
-    _fund(third["agent_id"], 300)
-    inv = db.invite_guild_member(founder["token"], gid, third["name"])
-    db.respond_guild_invite(third["token"], inv["invite_id"], True)
-    db.guild_deposit(third["token"], gid, 5.0)
-    with db._conn() as conn:
-        conn.execute(
-            "INSERT INTO guild_fee_arrears (guild_id, member_agent_id,"
-            " week, units, status) VALUES (?, ?, '2026-W38', 5, 'open')",
-            (gid, third["agent_id"]),
-        )
+def test_request_over_ceiling_refused():
+    founder, guild, mate, _idea, pid, _req = _funded("ceil", 2.0)
+    _complete(pid)
     c1, c2 = _new_agent("gg-e1"), _new_agent("gg-e2")
-    idea = _old_idea(mate, "elig", [c1, c2])
-    db.designate_guild_project(founder["token"], gid, idea)
-    late = _new_agent("gg-late")
-    _fund(late["agent_id"], 300)
-    inv = db.invite_guild_member(founder["token"], gid, late["name"])
-    db.respond_guild_invite(late["token"], inv["invite_id"], True)
-    db.guild_deposit(late["token"], gid, 5.0)
-    prop = _promote(mate, idea, True)
-    link = _link_for_post(prop["post_id"])
-    assert link is not None and link["t1_tranche_id"] is not None, link
-    ids = sorted(json.loads(link["eligible_agent_ids"]))
-    assert ids == [mate["agent_id"]], ids
-    assert link["eligible_count"] == 1, link
-    with db._conn() as conn:
-        amounts = {
-            r["tier"]: r["amount_units"]
-            for r in conn.execute(
-                "SELECT tier, amount_units FROM guild_tranches WHERE id IN (?, ?)",
-                (link["t1_tranche_id"], link["t2_tranche_id"]),
-            ).fetchall()
-        }
-    assert amounts == {"T1": 10, "T2": 10}, amounts
-
-
-def test_t2_settles_on_merge_freeze_and_expiry():
-    founder, guild, mate, idea, pid, pr = _cycle("t2")
-    link = _link_for_post(pid)
-    assert link is not None and link["status"] == "complete", link
-    assert _pool(guild["id"]) == 500 + 200 + 20 + 20, _pool(guild["id"])
-    # Freeze: another merge while a second PR is still open waits.
-    founder2, guild2 = _found()
-    mate2 = _mate(founder2, guild2)
-    db.guild_deposit(founder2["token"], guild2["id"], 25.0)
-    c1, c2 = _new_agent("gg-f1"), _new_agent("gg-f2")
-    idea2 = _old_idea(mate2, "frozen", [c1, c2])
-    db.designate_guild_project(founder2["token"], guild2["id"], idea2)
-    prop2 = _promote(mate2, idea2, True)
-    _PR[0] += 1
-    live_pr = _PR[0]
-    _PR[0] += 1
-    later_pr = _PR[0]
-    with db._conn() as conn:
-        conn.execute(
-            "INSERT INTO proposal_links (pr_number, post_id) VALUES (?, ?)",
-            (live_pr, prop2["post_id"]),
-        )
-        conn.execute(
-            "INSERT INTO proposal_links (pr_number, post_id) VALUES (?, ?)",
-            (later_pr, prop2["post_id"]),
-        )
-        conn.execute(
-            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
-            " happened_at) VALUES (?, ?, 'merged', ?)",
-            (later_pr, prop2["post_id"], "2026-09-17T00:00:00.000Z"),
-        )
-    with db._conn(immediate=True) as cx:
-        out = db.grant_on_merge(cx, prop2["post_id"], later_pr)
-    assert out is not None and out["status"] == "frozen", out
-    assert _link_for_post(prop2["post_id"])["status"] == "active"
-    # Expiry: backdate the clock with no live PRs, the sweep expires it.
-    with db._conn() as conn:
-        conn.execute(
-            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
-            " happened_at) VALUES (?, ?, 'closed', ?)",
-            (live_pr, prop2["post_id"], "2026-09-17T00:00:00.000Z"),
-        )
-        conn.execute(
-            "UPDATE guild_tranches SET expires_at = ? WHERE id = ?",
-            (
-                "2026-09-01T00:00:00.000Z",
-                _link_for_post(prop2["post_id"])["t2_tranche_id"],
-            ),
-        )
-    report = db.sweep_guild_grants()
-    assert report["expired"], report
-    assert _link_for_post(prop2["post_id"])["status"] == "expired"
-    # Expiry is not completion: the next grant keeps full decay (cooldown
-    # stood down for this sequencing pin).
-    mate3 = _mate(founder2, guild2, prefix="gg-m3")
-    idea3 = _old_idea(mate3, "after-expiry", [c1, c2])
-    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
+    idea2 = _old_idea(mate, "ceil2", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea2)
+    pid2 = _promote(mate, idea2, True)["post_id"]
     try:
-        db.designate_guild_project(founder2["token"], guild2["id"], idea3)
-        prop3 = _promote(mate3, idea3, True)
-    finally:
-        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
-    link3 = _link_for_post(prop3["post_id"])
-    assert link3 is not None and link3["decay_pct"] == 100, link3
+        _request(founder, guild, pid2, 2.0)
+        raise AssertionError("over-ceiling request accepted")
+    except Exception as exc:
+        assert "at most 30u" in str(exc), exc
 
 
-def test_decay_cap_and_completed_counts_merges_only():
-    founder, guild, mate, idea, pid, pr = _cycle("d1")
-    link = _link_for_post(pid)
-    assert link["decay_pct"] == 100 and link["eligible_count"] == 2
-    # Second grant decays to 75%: 8q x 75% = 6q, split 3/3. The cooldown
-    # from the first grant is stood down for this math pin (own test).
-    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
-    try:
-        c1, c2 = _new_agent("gg-d1"), _new_agent("gg-d2")
-        idea2 = _old_idea(mate, "d2", [c1, c2])
-        db.designate_guild_project(founder["token"], guild["id"], idea2)
-        prop2 = _promote(mate, idea2, True)
-    finally:
-        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
-    link2 = _link_for_post(prop2["post_id"])
-    assert link2 is not None and link2["decay_pct"] == 75, link2
-    with db._conn() as conn:
-        t1 = conn.execute(
-            "SELECT amount_units FROM guild_tranches WHERE id = ?",
-            (link2["t1_tranche_id"],),
-        ).fetchone()
-    assert t1["amount_units"] == 15, dict(t1)
-
-
-def test_cap_binds_before_decay():
-    # Cap applies BEFORE decay (not after): complete one grant, then arm
-    # a 1cr cap on the decay-75 second grant. Cap-first: 20*75//100 = 15
-    # (1/2); decay-first would give min(4, 8*75//100 = 6) = 4 (2/2).
+def test_request_gates():
     founder, guild = _found()
     mate = _mate(founder, guild)
     db.guild_deposit(founder["token"], guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-cp1"), _new_agent("gg-cp2")
-    idea1 = _old_idea(mate, "cap1", [c1, c2])
-    db.designate_guild_project(founder["token"], guild["id"], idea1)
-    prop1 = _promote(mate, idea1, True)
-    pr1 = _merge(prop1["post_id"])
-    with db._conn(immediate=True) as conn:
-        out = db.grant_on_merge(conn, prop1["post_id"], pr1)
-    assert out is not None and out["status"] == "released", out
-    idea2 = _old_idea(mate, "cap2", [c1, c2])
-    old_cap = _arm("FORUM_GUILD_GRANT_CAP", "1.0")
-    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
-    try:
-        db.designate_guild_project(founder["token"], guild["id"], idea2)
-        prop2 = _promote(mate, idea2, True)
-    finally:
-        _unarm(old_cap, "FORUM_GUILD_GRANT_CAP")
-        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
-    link2 = _link_for_post(prop2["post_id"])
-    assert link2 is not None and link2["decay_pct"] == 75, link2
-    with db._conn() as conn:
-        amounts = {
-            r["tier"]: r["amount_units"]
-            for r in conn.execute(
-                "SELECT tier, amount_units FROM guild_tranches WHERE id IN (?, ?)",
-                (link2["t1_tranche_id"], link2["t2_tranche_id"]),
-            ).fetchall()
-        }
-    assert amounts == {"T1": 7, "T2": 8}, amounts
-
-
-def test_decay_dust_completes_without_pay():
-    # Fifth repeat at decay 0 with one eligible member: 20*0//100 = 0u,
-    # below the smallest splittable tranche - the link completes with no
-    # tranches and no pay (documented; expiry-style terminal, no merge).
-    founder, guild = _found()
-    db.guild_deposit(founder["token"], guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-x1"), _new_agent("gg-x2")
-    old_cd = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
-    try:
-        last = None
-        for rnd in range(5):
-            idea = _old_idea(founder, f"dust{rnd}", [c1, c2])
-            db.designate_guild_project(founder["token"], guild["id"], idea)
-            prop = _promote(founder, idea, True)
-            if rnd < 4:
-                pr = _merge(prop["post_id"])
-                with db._conn(immediate=True) as conn:
-                    out = db.grant_on_merge(conn, prop["post_id"], pr)
-                assert out is not None and out["status"] == "released", out
-            else:
-                last = prop["post_id"]
-    finally:
-        _unarm(old_cd, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
-    link = _link_for_post(last)
-    assert link is not None and link["status"] == "complete", link
-    assert link["decay_pct"] == 0, link
-    assert link["t1_tranche_id"] is None and link["t2_tranche_id"] is None
-    # Rounds 1-4 paid 20+15+10+5u; the dust round added nothing.
-    with db._conn() as conn:
-        paid = conn.execute(
-            "SELECT COALESCE(SUM(units), 0) FROM guild_ledger"
-            " WHERE guild_id = ? AND kind IN ('grant_t1', 'grant_t2')",
-            (guild["id"],),
-        ).fetchone()[0]
-    assert paid == 50, paid
-
-
-def test_budget_and_cooldown_gates():
-    founder, guild = _found()
-    mate = _mate(founder, guild)
-    db.guild_deposit(founder["token"], guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-b1"), _new_agent("gg-b2")
+    c1, c2 = _new_agent("gg-g1"), _new_agent("gg-g2")
     idea = _old_idea(mate, "gated", [c1, c2])
     db.designate_guild_project(founder["token"], guild["id"], idea)
-    old = _arm("FORUM_GUILD_GRANT_BUDGET", "0.25")
+    pid = _promote(mate, idea, True)["post_id"]
+    try:
+        _request(founder, guild, pid + 999999)
+        raise AssertionError("linkless post accepted")
+    except Exception as exc:
+        assert "no active grant project" in str(exc), exc
+    other, oguild = _found()
+    try:
+        db.request_guild_grant(other["token"], oguild["id"], pid, 1.0, "mine?")
+        raise AssertionError("foreign post accepted")
+    except Exception as exc:
+        assert "no active grant project" in str(exc), exc
+    try:
+        db.request_guild_grant(mate["token"], guild["id"], pid, 1.0, "gimme")
+        raise AssertionError("non-founder request accepted")
+    except Exception as exc:
+        assert "founder" in str(exc).lower(), exc
+    f2, g2 = _found()
+    m2 = _mate(f2, g2)
+    db.guild_deposit(f2["token"], g2["id"], 25.0)
+    d1, d2 = _new_agent("gg-g3"), _new_agent("gg-g4")
+    idea_b = _old_idea(m2, "bare", [d1, d2])
+    db.designate_guild_project(f2["token"], g2["id"], idea_b)
+    bare = _promote(m2, idea_b, False)["post_id"]
+    try:
+        _request(f2, g2, bare)
+        raise AssertionError("todo-less post accepted")
+    except Exception as exc:
+        assert "to-do list" in str(exc), exc
+
+
+def test_cooldown_gates_request():
+    founder, guild, mate, _idea, pid, _req = _funded("cool", 2.0)
+    _complete(pid)
+    old = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "99999")
+    try:
+        c1, c2 = _new_agent("gg-q1"), _new_agent("gg-q2")
+        idea2 = _old_idea(mate, "cool2", [c1, c2])
+        db.designate_guild_project(founder["token"], guild["id"], idea2)
+        pid2 = _promote(mate, idea2, True)["post_id"]
+        try:
+            _request(founder, guild, pid2, 1.0)
+            raise AssertionError("cooldown ignored")
+        except Exception as exc:
+            assert "cooldown" in str(exc), exc
+    finally:
+        _unarm(old, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
+
+
+def test_decline_ends_request():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-d1"), _new_agent("gg-d2")
+    idea = _old_idea(mate, "nope", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    pid = _promote(mate, idea, True)["post_id"]
+    pool_before = _pool(guild["id"])
+    req = _request(founder, guild, pid)
+    out = db.decide_guild_grant(founder["token"], req["request_id"], False, admin=True)
+    assert out["status"] == "declined", out
+    assert _pool(guild["id"]) == pool_before
+    again = _request(founder, guild, pid)
+    assert again["status"] == "requested", again
+
+
+def test_cancel_by_requester():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-x1"), _new_agent("gg-x2")
+    idea = _old_idea(mate, "cancel", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    pid = _promote(mate, idea, True)["post_id"]
+    req = _request(founder, guild, pid)
+    try:
+        db.cancel_guild_grant_request(mate["token"], req["request_id"])
+        raise AssertionError("stranger cancel accepted")
+    except Exception as exc:
+        assert "requesting founder" in str(exc), exc
+    out = db.cancel_guild_grant_request(founder["token"], req["request_id"])
+    assert out["status"] == "cancelled", out
+    try:
+        db.decide_guild_grant(founder["token"], req["request_id"], True, admin=True)
+        raise AssertionError("cancelled request decided")
+    except Exception as exc:
+        assert "cancelled" in str(exc), exc
+
+
+def test_merge_without_payment_leaves_link_active():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-u1"), _new_agent("gg-u2")
+    idea = _old_idea(mate, "unfunded", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    pid = _promote(mate, idea, True)["post_id"]
+    pr = _merge(pid)
+    with db._conn(immediate=True) as conn:
+        out = db.grant_on_merge(conn, pid, pr)
+    assert out is not None and out["status"] == "unfunded", out
+    link = _link_for_post(pid)
+    assert link is not None and link["status"] == "active", link
+
+
+def test_legacy_t2_expires_unpaid_and_counts_cap():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-l1"), _new_agent("gg-l2")
+    idea = _old_idea(mate, "legacy", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    pid = _promote(mate, idea, True)["post_id"]
+    link = _link_for_post(pid)
+    with db._conn(immediate=True) as conn:
+        from db._credits import treasury_to_guild as _t2g
+
+        assert _t2g(conn, guild["id"], 20, "guild_grant_t1")
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'grant_t1', ?, ?)",
+            (guild["id"], 20, "synthetic legacy T1"),
+        )
+        cur = conn.execute(
+            "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
+            " project_id, released_at) VALUES (?, 'T1', ?, 'released', ?, ?)",
+            (guild["id"], 20, link["project_id"], "2026-09-01T00:00:00.000Z"),
+        )
+        t1 = int(cur.lastrowid or 0)
+        cur2 = conn.execute(
+            "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
+            " project_id, expires_at) VALUES (?, 'T2', ?, 'proposed', ?, ?)",
+            (guild["id"], 20, link["project_id"], "2026-09-01T00:00:00.000Z"),
+        )
+        t2 = int(cur2.lastrowid or 0)
+        conn.execute(
+            "UPDATE guild_grant_links SET t1_tranche_id = ?, t2_tranche_id = ?"
+            " WHERE id = ?",
+            (t1, t2, link["id"]),
+        )
+    with db._conn() as conn2:
+        assert db._guilds_grants._paid_grant_count(conn2, guild["id"]) == 1
+    pr = _merge(pid)
+    with db._conn(immediate=True) as conn:
+        out = db.grant_on_merge(conn, pid, pr)
+    assert out is not None and out["status"] == "complete", out
+    with db._conn() as conn:
+        t2row = conn.execute(
+            "SELECT status FROM guild_tranches WHERE id = ?", (t2,)
+        ).fetchone()
+        assert t2row["status"] == "expired", dict(t2row)
+        assert _link_for_post(pid)["status"] == "complete"
+
+
+def test_budget_gates_approval():
+    founder, guild = _found()
+    mate = _mate(founder, guild)
+    db.guild_deposit(founder["token"], guild["id"], 25.0)
+    c1, c2 = _new_agent("gg-j1"), _new_agent("gg-j2")
+    idea = _old_idea(mate, "budget", [c1, c2])
+    db.designate_guild_project(founder["token"], guild["id"], idea)
+    pid = _promote(mate, idea, True)["post_id"]
+    req = _request(founder, guild, pid)
+    old = _arm("FORUM_GUILD_GRANT_BUDGET", "0.5")
     try:
         try:
-            _promote(mate, idea, True)
-            raise AssertionError("budget-busted T1 settled")
+            _approve(founder, req["request_id"])
+            raise AssertionError("over-budget approval paid")
         except Exception as exc:
             assert "budget" in str(exc), exc
     finally:
         _unarm(old, "FORUM_GUILD_GRANT_BUDGET")
-    # Window restored: the same promotion retries clean (nothing moved).
-    prop = _promote(mate, idea, True)
-    assert _link_for_post(prop["post_id"])["t1_tranche_id"] is not None
-    # T2 is exempt from the payment cooldown: it settles on merge minutes
-    # after T1 (every _cycle proves this; pinned explicitly here).
-    pr = _merge(prop["post_id"])
-    with db._conn(immediate=True) as conn:
-        out = db.grant_on_merge(conn, prop["post_id"], pr)
-    assert out is not None and out["status"] == "released", out
-    # Slot freed by completion: a second designation lands, but its T1
-    # hits the 14d payment cooldown.
-    idea2 = _old_idea(mate, "gated2", [c1, c2])
-    db.designate_guild_project(founder["token"], guild["id"], idea2)
-    try:
-        _promote(mate, idea2, True)
-        raise AssertionError("cooldown-busted T1 settled")
-    except Exception as exc:
-        assert "cooldown" in str(exc), exc
+    out = _approve(founder, req["request_id"])
+    assert out["status"] == "paid", out
 
 
-def test_t2_savepoint_isolates_grant_failure():
-    # The poller runs grant_on_merge inside SAVEPOINT guild_grant_t2: a
-    # grant bug rolls back only grant rows while the outer transaction
-    # commits. Pinned at the seam with a poisoned treasury check.
-    import db._guilds_grants as _gg
-
-    founder, guild = _found()
-    mate = _mate(founder, guild)
-    db.guild_deposit(founder["token"], guild["id"], 25.0)
-    c1, c2 = _new_agent("gg-s1"), _new_agent("gg-s2")
-    idea = _old_idea(mate, "savepoint", [c1, c2])
-    db.designate_guild_project(founder["token"], guild["id"], idea)
-    prop = _promote(mate, idea, True)
-    pid = prop["post_id"]
-    pr = _merge(pid)
-    real = _gg._check_treasury_open
-
-    def _boom(conn, amount_q, what):
-        raise RuntimeError("treasury probe down")
-
-    _gg._check_treasury_open = _boom
-    try:
-        with db._conn(immediate=True) as conn:
-            conn.execute("SAVEPOINT gg_probe")
-            try:
-                db.grant_on_merge(conn, pid, pr)
-                raise AssertionError("poisoned settle did not raise")
-            except RuntimeError:
-                conn.execute("ROLLBACK TO SAVEPOINT gg_probe")
-            finally:
-                conn.execute("RELEASE SAVEPOINT gg_probe")
-            outer_mark = conn.execute(
-                "SELECT COUNT(*) FROM guild_ledger WHERE guild_id = ?"
-                " AND kind = 'grant_t2'",
-                (guild["id"],),
-            ).fetchone()[0]
-    finally:
-        _gg._check_treasury_open = real
-    assert outer_mark == 0, "grant rows leaked past the rollback"
-    link = _link_for_post(pid)
-    assert link is not None and link["status"] == "active", link
-    with db._conn() as conn:
-        tranche = conn.execute(
-            "SELECT status FROM guild_tranches WHERE id = ?",
-            (link["t2_tranche_id"],),
-        ).fetchone()
-    assert tranche["status"] == "proposed", dict(tranche)
-
-
-def test_double_settle_idempotent():
-    founder, guild, mate, idea, pid, pr = _cycle("idem")
-    pool_once = _pool(guild["id"])
-    # Completed links are invisible to the merge listener: a replayed
-    # merge is a quiet no-op, never a second payout.
-    with db._conn(immediate=True) as conn:
-        out = db.grant_on_merge(conn, pid, pr)
-    assert out is None, out
-    assert _pool(guild["id"]) == pool_once
-    with db._conn(immediate=True) as conn:
-        again = db.grant_on_first_todo(conn, pid)
-    assert again is None, again
-
-
-def test_grant_poller_sweep_quiet_when_idle():
-    before = db.sweep_guild_grants()
-    assert before == {"expired": [], "skipped": []}, before
-
-
-# -- run all --
 if __name__ == "__main__":
     test_tables_upgrade()
-    test_designate_gates()
-    test_t1_on_promote_with_todos_and_conservation()
-    test_t1_waits_for_todos_then_first_todo_settles()
+    test_promotion_binds_without_paying()
+    test_promotion_succeeds_when_treasury_dry()
+    test_request_and_approve_pays_full_entitlement()
+    test_one_grant_per_project()
+    test_two_lifetime_grants_then_cap()
+    test_large_tier_files_venue_and_waits()
+    test_merge_completes_paid_link_and_frees_slot()
+    test_supersede_rebinds_link()
+    test_todo_creation_moves_no_money()
     test_non_collaborative_promotion_expires_link()
-    test_eligibility_snapshot_three_arms()
-    test_decay_dust_completes_without_pay()
-    test_t2_savepoint_isolates_grant_failure()
-    test_t2_settles_on_merge_freeze_and_expiry()
-    test_decay_cap_and_completed_counts_merges_only()
-    test_cap_binds_before_decay()
-    test_budget_and_cooldown_gates()
-    test_double_settle_idempotent()
-    test_grant_poller_sweep_quiet_when_idle()
-    print("\n== test_guilds_grants: all passed ==")
+    test_request_over_ceiling_refused()
+    test_request_gates()
+    test_cooldown_gates_request()
+    test_decline_ends_request()
+    test_cancel_by_requester()
+    test_merge_without_payment_leaves_link_active()
+    test_legacy_t2_expires_unpaid_and_counts_cap()
+    test_budget_gates_approval()
+    print("test_guilds_grants: all passed")

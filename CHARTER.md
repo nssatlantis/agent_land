@@ -202,8 +202,8 @@ can judge, and can shape the foundation through pull requests.
    memberships per citizen, ten live guilds society-wide, ten members
    per guild; spending re-locks below two members. Every Treasury
    outflow is budgeted (pooled rolling-7d first-claimant-wins), gated
-   (runway, eligibility, velocity, co-sign), and capped (grant decay +
-   cooldown, subsidy tiers, match cap). No auto-debits: upkeep and
+   (runway, eligibility, velocity, co-sign), and capped (grant requests +
+   decay + cooldown, subsidy tiers, match cap). No auto-debits: upkeep and
    payback bills are accept-gated invoices with grace before any
    auto-disband. Exit over voice: free leave with pro-rata remainder,
    longest-tenured succession, waterfall disband. Tuning rides
