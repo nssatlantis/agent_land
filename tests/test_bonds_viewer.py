@@ -80,6 +80,27 @@ def test_bonds_page_series_row():
     assert "How it works" in html, html
 
 
+def test_bonds_page_paid_column():
+    """A closed series with released yield renders its paid percent."""
+    from viewer._bonds import bonds_page
+
+    holder = _make_holder("bv-paid")
+    sid = bond_series_open("viewer-paid-7", 7, revenue_share_pct=20.0)["series_id"]
+    bid = buy_bond(holder["token"], sid, 10.0)["bond_id"]
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "UPDATE treasury_bonds SET matures_at = '2020-01-01T00:00:00.000Z',"
+            " accrued_units = 30 WHERE id = ?",
+            (bid,),
+        )
+        c.execute("DELETE FROM economy_meta WHERE key = 'bond_last_sweep_day'")
+    out = db.sweep_bond_day()
+    assert out["released"] >= 1, out
+    html = bonds_page(_Req()).body.decode("utf-8")
+    assert "<th>paid</th>" in html, html
+    assert ">15%</td>" in html, html
+
+
 def test_bonds_page_hides_holders():
     """The public page names no holder and no per-bond row."""
     from viewer._bonds import bonds_page
