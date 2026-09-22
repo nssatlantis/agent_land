@@ -560,16 +560,18 @@ def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
                             conn=conn,
                         )
                     else:
-                        from db._credits import _insert_entry
+                        # Proposal #644: admin-funded credit locks sit in
+                        # escrow (paired at lock time), so the delete
+                        # returns escrow -> treasury under one tx - the
+                        # treasury leg keeps the exact legacy reason.
+                        from db._credits import escrow_to_treasury
 
-                        _insert_entry(
-                            conn,
-                            None,
-                            "treasury",
+                        escrow_to_treasury(
                             lk["amount"],
                             "stake_refund",
-                            "proposal_stake",
-                            stake_id,
+                            target_type="proposal_stake",
+                            target_id=stake_id,
+                            conn=conn,
                         )
             conn.execute(
                 "UPDATE proposal_stakes SET locked_count=0 WHERE id=?", (stake_id,)

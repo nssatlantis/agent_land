@@ -202,6 +202,114 @@ def test_overview_identity_holds_with_open_admin_lock():
     )
 
 
+def test_admin_delete_refunds_escrow_paired():
+    sid = _admin_stake("Escrow Delete")
+    pid = _pid_of(sid)
+    s0, t0, e0 = _supply(), _treasury(), _escrow()
+    db.lock_stakes_for_pr(None, pid, 97206, AGENTS["gamma"]["agent_id"])
+    db.admin_delete_stake("admin", sid)
+    assert _supply() == s0, "delete never moves supply"
+    assert _treasury() == t0, "delete returns the lock to treasury"
+    assert _escrow() == e0, "delete draws escrow down"
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM proposal_stakes WHERE id = ?",
+            (sid,),
+        ).fetchone()["status"]
+    assert status == "withdrawn"
+    assert db.economy_overview()["conservation"]["ok"] is True
+
+
+def test_completed_guard_reverts_paired():
+    sid = _admin_stake("Escrow Guard", max_prs=1)
+    pid = _pid_of(sid)
+    db.lock_stakes_for_pr(None, pid, 97207, AGENTS["gamma"]["agent_id"])
+    s1, t1, e1 = _supply(), _treasury(), _escrow()
+    # Simulate a concurrent pay landing between SELECT and INSERT:
+    # paid out, but completion not yet observed.
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "UPDATE proposal_stakes SET paid_count = max_prs WHERE id = ?",
+            (sid,),
+        )
+    locked = db.lock_stakes_for_pr(None, pid, 97208, AGENTS["gamma"]["agent_id"])
+    assert locked == 0, "the completed guard takes no second lock"
+    assert _supply() == s1, "guard revert never moves supply"
+    assert _treasury() == t1, "guard revert nets zero on treasury"
+    assert _escrow() == e1, "guard revert nets zero on escrow"
+    assert db.economy_overview()["conservation"]["ok"] is True
+
+
+def test_karma_admin_writes_no_ledger_legs():
+    pid = db.create_proposal(AGENTS["beta"]["token"], "Escrow Karma", "Body")["post_id"]
+    db.admin_stake("admin", pid, per_pr=1, max_prs=1, currency="karma")
+    with db._conn() as conn:
+        sid = conn.execute(
+            "SELECT id FROM proposal_stakes WHERE proposal_id = ?",
+            (pid,),
+        ).fetchone()["id"]
+    s0, e0 = _supply(), _escrow()
+    with db._conn() as conn:
+        hold0 = db._economy._live_escrow_holdings(conn)
+    db.lock_stakes_for_pr(None, pid, 97209, AGENTS["gamma"]["agent_id"])
+    db.pay_stake_rewards(None, 97209)
+    assert _supply() == s0, "karma stakes never touch the ledger"
+    assert _escrow() == e0
+    with db._conn() as conn:
+        assert db._economy._live_escrow_holdings(conn) == hold0
+        n = conn.execute(
+            "SELECT COUNT(*) FROM credit_entries"
+            " WHERE target_type = 'proposal_stake' AND target_id = ?",
+            (sid,),
+        ).fetchone()[0]
+    assert n == 0, "karma admin stakes write zero ledger legs"
+    assert db.economy_overview()["conservation"]["ok"] is True
+
+
+def test_backfilled_legacy_lock_pays_clean():
+    sid = _admin_stake("Escrow Legacy Pay")
+    pid = _pid_of(sid)
+    opener = AGENTS["gamma"]["agent_id"]
+    w0 = _bal(opener)
+    s0, t0, e0 = _supply(), _treasury(), _escrow()
+    db.lock_stakes_for_pr(None, pid, 97210, opener)
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "DELETE FROM credit_entries WHERE reason = 'stake_lock_held'"
+            " AND target_id = ?",
+            (sid,),
+        )
+        c.execute(
+            "UPDATE credit_entries SET tx_id = NULL WHERE reason = 'stake_lock'"
+            " AND target_id = ?",
+            (sid,),
+        )
+        c.execute("DELETE FROM economy_meta WHERE key = 'stake_escrow_live'")
+    db._economy.backfill_stake_escrow()
+    paid = db.pay_stake_rewards(None, 97210)
+    assert paid == 1, paid
+    assert _supply() == s0, "legacy pay never moves supply"
+    assert _escrow() == e0, "legacy pay draws the backfilled holding down"
+    assert _treasury() == t0 - 5, "the community paid the winner"
+    assert _bal(opener) == w0 + 5
+    assert db.economy_overview()["conservation"]["ok"] is True
+
+
+def test_backfill_noop_on_paired_lock():
+    sid = _admin_stake("Escrow Backfill Noop")
+    pid = _pid_of(sid)
+    db.lock_stakes_for_pr(None, pid, 97211, AGENTS["gamma"]["agent_id"])
+    assert sid > 0
+    s0 = _supply()
+    with db._conn(immediate=True) as c:
+        c.execute("DELETE FROM economy_meta WHERE key = 'stake_escrow_live'")
+    res = db._economy.backfill_stake_escrow()
+    assert res["backfilled_units"] == 0 and res["stakes"] == 0, res
+    assert res["already_live"] is False
+    assert _supply() == s0
+    assert db.economy_overview()["conservation"]["ok"] is True
+
+
 def _pid_of(stake_id: int) -> int:
     with db._conn() as conn:
         return conn.execute(

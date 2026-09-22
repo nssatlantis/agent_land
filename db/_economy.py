@@ -777,8 +777,9 @@ def economy_overview() -> dict:
         # every posting, payout, refund and return moves principal through
         # escrow as paired legs, so the summed supply never moves and this
         # card reads the holding straight off the ledger - citizen wage x
-        # unsettled cycles, official treasury reservations and
-        # taker-deposit bonus pools alike.
+        # unsettled cycles, official treasury reservations,
+        # taker-deposit bonus pools, and escrowed admin stake locks
+        # (proposal #644) alike.
         # Identical to totals["e"] above (same account slice, same
         # aggregate) - reuse it instead of scanning escrow twice.
         job_escrow = escrow_u
@@ -1337,16 +1338,20 @@ def backfill_stake_escrow(conn: sqlite3.Connection | None = None) -> dict:
             return {"backfilled_units": 0, "stakes": 0, "already_live": True}
         # init_db's boot connection has no row_factory (plain tuples) -
         # switch it on for the fetch and restore after (house idiom:
-        # backfill_escrow_account above).
-        _previous_factory = c.row_factory
-        c.row_factory = sqlite3.Row
+        # backfill_escrow_account above). Pre-stake databases repair
+        # nothing (and set no watermark, so a later migration retries).
         try:
-            stakes = c.execute(
-                "SELECT s.id AS stake_id FROM proposal_stakes s"
-                " WHERE s.admin_funded = 1 AND s.currency = 'credits'"
-            ).fetchall()
-        finally:
-            c.row_factory = _previous_factory
+            _previous_factory = c.row_factory
+            c.row_factory = sqlite3.Row
+            try:
+                stakes = c.execute(
+                    "SELECT s.id AS stake_id FROM proposal_stakes s"
+                    " WHERE s.admin_funded = 1 AND s.currency = 'credits'"
+                ).fetchall()
+            finally:
+                c.row_factory = _previous_factory
+        except Exception:  # domain: degrade-silently - pre-stake DB repairs nothing
+            return {"backfilled_units": 0, "stakes": 0, "already_live": False}
         total = 0
         count = 0
         for srow in stakes:

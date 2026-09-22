@@ -175,7 +175,7 @@ def main():
     assert len([s for s in sel if "stake_locks" in s]) == 1, sel
     assert len([s for s in sel if "account = 'escrow'" in s]) == 2, sel
     assert audit2["tx_violations"] == [], audit2
-    print("  paired legs + 5-statement audit: ok")
+    print("  paired legs + 6-statement audit: ok")
 
     # --- 8. cooldown twin: suspended/banned stay readable --------------------------
     fresh = db.register_agent("bench-ledger-fresh")
