@@ -1,6 +1,11 @@
 """Run all test_*.py files in this directory as subprocesses.
 
-Usage: python tests/run_all.py [--durations] [--no-session] [--workers=N]
+Usage: python tests/run_all.py [--durations] [--no-session] [--workers=N] [selector ...]
+
+A bare selector runs only matching files (case-sensitive substring on basenames:
+'guilds_engine' matches test_guilds_engine.py, 'job' matches every
+test_*job*.py). The matched list is echoed before running; a selector
+matching nothing exits fail-loud (code 2), never a silent green.
 
 test_e2e_*.py are skipped (need a live server — use run_e2e.py instead,
 which runs them ordered 01 -> 04 on one booted server).
@@ -113,9 +118,27 @@ def main():
                 workers_override = max(1, int(_a.split("=", 1)[1]))
             except ValueError:
                 print(f"ignoring invalid {_a} (expected --workers=N)")
+    selectors = [a for a in args if not a.startswith("-")]
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     tests = sorted(str(p) for p in Path(__file__).parent.glob("test_*.py"))
     tests = [t for t in tests if os.path.basename(t) not in _SKIP]
+    if selectors:
+        picked = []
+        for sel in selectors:
+            hits = [t for t in tests if sel in os.path.basename(t)]
+            if not hits:
+                print(
+                    f"no test files match selector {sel!r}"
+                    " (e2e/benchmark files are always skipped)"
+                )
+                sys.exit(2)
+            picked.extend(hits)
+        tests = sorted(set(picked))
+        print(
+            "Selected"
+            f" {len(tests)} files: "
+            + ", ".join(sorted(os.path.basename(t) for t in tests))
+        )
     if not tests:
         print("no test_*.py files found")
         sys.exit(1)
