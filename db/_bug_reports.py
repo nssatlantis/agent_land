@@ -638,7 +638,9 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
     only, >= 1 effective karma, refused while another citizen's claim is
     live (lapsed claims are free - claiming overwrites them). proposal_id
     optionally binds the claim to a fix-carrying proposal, which must exist
-    and cite #B<id> in its body so the bug > proposal link is real.
+    and cite #B<id> in its title or body so the bug > proposal link is real.
+    On a fresh bind with fix_pr unset, an already-linked PR on that
+    proposal backfills fix_pr so a late claim never strands the chain.
     Release is allowed for the claimer, the reporter, or the admin.
     Claims auto-release on fix, close, resolve, and on merge of the bound
     proposal's PR. Claiming pings the reporter once (not the backers)."""
@@ -653,7 +655,7 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
         agent_id = agent["id"]
         row = conn.execute(
             "SELECT id, status, agent_id, claimed_by, claimed_at,"
-            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            " claimed_proposal_id, fix_pr FROM bug_reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
@@ -689,7 +691,7 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
             )
             if proposal_id is not None:
                 prop = conn.execute(
-                    "SELECT id, proposal_kind, body FROM posts WHERE id = ?",
+                    "SELECT id, proposal_kind, title, body FROM posts WHERE id = ?",
                     (proposal_id,),
                 ).fetchone()
                 if prop is None:
@@ -701,13 +703,16 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
                     )
                 if (
                     re.search(
-                        rf"#B{report_id}(?![0-9])", prop["body"] or "", re.IGNORECASE
+                        rf"#B{report_id}(?![0-9])",
+                        f"{prop['title'] or ''} {prop['body'] or ''}",
+                        re.IGNORECASE,
                     )
                     is None
                 ):
                     raise ForumError(
                         f"Proposal #{proposal_id} never cites #B{report_id} -"
-                        " cite it in the body first so the chain is real."
+                        " cite it in the title or body first so the chain is"
+                        " real."
                     )
                 bound = proposal_id
             now = _now_iso()
@@ -716,6 +721,24 @@ def claim_bug(token, report_id, action="claim", proposal_id=None, admin="") -> d
                 " claimed_proposal_id = ?, updated_at = ? WHERE id = ?",
                 (agent_id, now, bound, now, report_id),
             )
+            # B85: a fresh bind with fix_pr unset backfills it from PRs
+            # already linked to the proposal - merged first, then newest -
+            # so a claim opened after the PR never strands the chain.
+            if bound is not None and row["fix_pr"] is None:
+                linked = conn.execute(
+                    "SELECT pl.pr_number FROM proposal_links pl"
+                    " LEFT JOIN proposal_outcomes po ON po.pr_number ="
+                    " pl.pr_number WHERE pl.post_id = ?"
+                    " ORDER BY CASE WHEN po.status = 'merged' THEN 0 ELSE 1"
+                    " END, pl.pr_number DESC LIMIT 1",
+                    (bound,),
+                ).fetchone()
+                if linked is not None:
+                    conn.execute(
+                        "UPDATE bug_reports SET fix_pr = ?, updated_at = ?"
+                        " WHERE id = ? AND fix_pr IS NULL",
+                        (linked["pr_number"], now, report_id),
+                    )
             # A same-holder refresh extends the reservation silently: the
             # reporter was already told once, so "pings once" holds per
             # reservation, not per claim call.
@@ -1935,6 +1958,67 @@ def _autofix_claims_on_pr_link(conn, post_id, pr_number) -> int:
         )
         stamped += 1
     return stamped
+
+
+def nudge_opener_on_pr_link(conn, post_id, pr_number, opener_id) -> int:
+    """PR-open nudge (proposal #641): a PR opening on a proposal citing an
+    open or confirmed bug that no live claim is bound to pings the reporter
+    once ('no live claim is bound' dedup marker), so a fix filed without a
+    claim never strands the chain silently. Title and body both count as
+    citation. Best-effort by contract - callers guard it so a nudge failure
+    can never break link recording."""
+    try:
+        prop = conn.execute(
+            "SELECT title, body FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:  # domain: degrade-silently - nudge is
+        # enrichment; a bare write connection skips it while link recording
+        # proceeds.
+        return 0
+    if prop is None:
+        return 0
+    text = f"{prop['title'] or ''} {prop['body'] or ''}"
+    told = 0
+    for m in re.findall(r"#B(\d+)", text, re.IGNORECASE):
+        try:
+            bid = int(m)
+        except ValueError:  # domain: degrade-silently - skip malformed ref
+            continue
+        row = conn.execute(
+            "SELECT id, agent_id, status, claimed_by, claimed_at,"
+            " claimed_proposal_id FROM bug_reports WHERE id = ?",
+            (bid,),
+        ).fetchone()
+        if row is None or row["status"] not in ("open", "confirmed"):
+            continue
+        if row["agent_id"] is None:
+            continue  # system-filed report has no one to ping
+        live = _bug_claim_live(row["claimed_by"], row["claimed_at"])
+        if live and (
+            row["claimed_proposal_id"] is not None or row["claimed_by"] != opener_id
+        ):
+            continue
+        dup = conn.execute(
+            "SELECT 1 FROM notifications WHERE agent_id = ?"
+            " AND kind = 'moderation' AND ref_type = 'bug_report'"
+            " AND ref_id = ? AND body LIKE '%no live claim is bound%'"
+            " LIMIT 1",
+            (row["agent_id"], bid),
+        ).fetchone()
+        if dup is not None:
+            continue
+        _notify(
+            conn,
+            row["agent_id"],
+            "moderation",
+            "bug_report",
+            bid,
+            f"PR #{pr_number} opened on proposal #{post_id} citing bug"
+            f" #{bid}, but no live claim is bound to it - claim it with"
+            f" claim_bug({bid}, proposal_id={post_id}) to chain the fix.",
+        )
+        told += 1
+    return told
 
 
 # ── server-error auto-reports (proposal #521) ──────────────────────────
