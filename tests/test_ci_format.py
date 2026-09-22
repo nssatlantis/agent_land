@@ -6,6 +6,9 @@ None), cooldown + inflight still enforced - and never ticks workflow
 steps. Pins: kind routing per mode, _NO_TICK_CHECKS membership,
 parser round-trip on format transcripts, uncapped readout + gate
 behavior on a throwaway DB, and a live script run (tools-or-SKIPPED).
+Also pins: the ruff argv shape (binary-or-module, never --no-cache),
+the cache fallback env, the per-slot ruff cache mount, and the
+main-fetch TTL record/fresh semantics.
 """
 
 import os
@@ -133,7 +136,7 @@ def test_format_script_green_fast():
     assert "TESTS: SKIPPED (static-only format" in r.stdout
     summary, _ = _parse_summary(r.stdout)
     assert summary is not None and summary.get("tests_run") is False
-    assert dt < 120, f"format-only run took {dt:.0f}s - must stay seconds"
+    assert dt < 60, f"format-only run took {dt:.0f}s - must stay seconds"
 
 
 def test_format_red_on_planted_violation():
@@ -157,6 +160,72 @@ def test_format_red_on_planted_violation():
     # The direct call skips main()'s TESTS marker by design (it belongs to
     # the harness entrypoint, exactly like run_static_checks).
     assert "TESTS: SKIPPED" not in out
+
+
+def test_format_ruff_argv_shape():
+    from tests.run_static import _ruff_argv
+
+    argv = _ruff_argv()
+    assert argv[-3:] == ["format", "--check", "."]
+    assert "--no-cache" not in argv, "persistent per-slot cache replaces --no-cache"
+    if argv[1:2] == ["-m"]:
+        assert argv[0] == sys.executable and argv[2] == "ruff"
+    else:
+        assert os.path.basename(argv[0]).startswith("ruff")
+
+
+def test_format_cache_fallback_sets_writable_dir():
+    from tests.run_static import _format_env
+
+    old_var = os.environ.get("RUFF_CACHE_DIR")
+    os.environ.pop("RUFF_CACHE_DIR", None)
+    try:
+        with tempfile.TemporaryDirectory(prefix="agentland_format_target_") as target:
+            env = _format_env(target)
+            assert "RUFF_CACHE_DIR" in env, "read-only trees need a cache fallback"
+            assert os.path.isdir(os.path.dirname(env["RUFF_CACHE_DIR"]))
+    finally:
+        if old_var is None:
+            os.environ.pop("RUFF_CACHE_DIR", None)
+        else:
+            os.environ["RUFF_CACHE_DIR"] = old_var
+    os.environ["RUFF_CACHE_DIR"] = "/mounted/slot0"
+    try:
+        assert _format_env(target)["RUFF_CACHE_DIR"] == "/mounted/slot0"
+    finally:
+        if old_var is None:
+            os.environ.pop("RUFF_CACHE_DIR", None)
+        else:
+            os.environ["RUFF_CACHE_DIR"] = old_var
+
+
+def test_format_ruff_cache_mount():
+    from server.ci_runner import _sandbox as sandbox
+
+    argv, _ = sandbox._sandbox_argv("/tree", "img:abc", "tests/run_format.py")
+    assert "RUFF_CACHE_DIR=/tmp/agentland_ruff_cache" not in argv
+    argv, _ = sandbox._sandbox_argv(
+        "/tree", "img:abc", "tests/run_format.py", ruff_cache_host_dir="/h/slot0"
+    )
+    assert "/h/slot0:/tmp/agentland_ruff_cache:rw" in argv
+    assert "RUFF_CACHE_DIR=/tmp/agentland_ruff_cache" in argv
+
+
+def test_main_fetch_ttl_record_and_fresh():
+    from server.ci_runner import _trees as trees
+
+    trees._record_main_fetch("ttl-probe", "main", "a" * 40)
+    try:
+        assert trees._fresh_main_sha("ttl-probe", "main", 120) == "a" * 40
+        assert trees._fresh_main_sha("ttl-probe", "main", 0) is None
+        assert trees._fresh_main_sha("ttl-probe", "other", 120) is None
+        assert trees._fresh_main_sha("nope", "main", 120) is None
+        key = ("ttl-probe", "main")
+        stamped, sha = trees._MAIN_FETCH[key]
+        trees._MAIN_FETCH[key] = (stamped - 1000.0, sha)
+        assert trees._fresh_main_sha("ttl-probe", "main", 120) is None
+    finally:
+        trees._MAIN_FETCH.pop(("ttl-probe", "main"), None)
 
 
 if __name__ == "__main__":
