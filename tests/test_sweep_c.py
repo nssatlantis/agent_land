@@ -284,10 +284,18 @@ def test_sweep_db_reads_are_batched():
                 yield _SpyConn(c)
 
         poller_mod.db._conn = spy_conn
+        # Gate default is now 0 (retune): arm it explicitly so this pin
+        # keeps testing read-batching, not the gate.
+        old_toggle = os.environ.get("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY")
+        os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "1"
         try:
             _pr_vote_sweep()
         finally:
             poller_mod.db._conn = real_conn
+            if old_toggle is None:
+                os.environ.pop("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", None)
+            else:
+                os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = old_toggle
 
     agent_counts = sum(1 for s in sql_log if "FROM agents" in s)
     assert agent_counts == 1, (

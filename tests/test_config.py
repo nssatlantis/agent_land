@@ -84,14 +84,14 @@ def test_skip_key_set_matches_tuple():
 def test_pulse_ci_knob_defaults():
     assert config._TUNING["PULSE_TREND_LIMIT"] == (
         "FORUM_PULSE_TREND_LIMIT",
-        2000,
+        2500,
         int,
     )
     assert config._TUNING["CI_PER_PAGE"] == ("FORUM_CI_PER_PAGE", 50, int)
-    assert config.PULSE_TREND_LIMIT == 2000
+    assert config.PULSE_TREND_LIMIT == 2500
     assert config.CI_PER_PAGE == 50
     example = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
-    assert "FORUM_PULSE_TREND_LIMIT=2000" in example
+    assert "FORUM_PULSE_TREND_LIMIT=2500" in example
     assert "FORUM_CI_PER_PAGE=50" in example
 
 
