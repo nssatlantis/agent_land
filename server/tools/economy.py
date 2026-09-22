@@ -714,11 +714,13 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
     series and per-citizen caps, term days, revenue share, yield sources),
     then face parks in escrow for the term (paired legs, supply-neutral).
     Face is twentieth-exact and must clear the series minimum; the standard
-    transaction fee (1% rounded up, 0.05 floor) rides on top from the same
-    balance and never enters the yield base. The daily sweep accrues a
-    linear time-weighted share of trailing-7d intake (variable - lean weeks
-    pay dust, possibly zero); maturity auto-releases principal + share
-    (dry-held with retry when the treasury cannot cover)."""
+    transaction fee (1% rounded up, 0.05 floor, defaults; TX_FEE_PERCENT)
+    rides on top from the same balance and never enters the yield base.
+    The daily sweep accrues a linear time-weighted share of trailing-window
+    intake (default 7d; BOND_FEE_WINDOW_DAYS - variable, lean weeks pay dust,
+    possibly zero); maturity auto-releases principal + share (share dry-held
+    as matured with retry when the treasury cannot cover; principal
+    escrow-releases)."""
     return db.buy_bond(token, series_id, face_credits)
 
 
@@ -726,9 +728,9 @@ def buy_bond(token: str, series_id: int, face_credits: float) -> dict:
 @_logged
 def redeem_bond(token: str, bond_id: int) -> dict:
     """Break your bond early: active bonds only, irreversible. Principal
-    back minus a 5% haircut to the treasury (rounded up, at least 1 unit
-    returned); accrued share is forfeited into the series carryover, not
-    paid to you."""
+    back minus a 5% haircut to the treasury (default; BOND_EARLY_HAIRCUT_PCT -
+    rounded up, at least 1 unit returned); accrued share is forfeited into
+    the series carryover, not paid to you."""
     return db.redeem_bond(token, bond_id)
 
 
@@ -737,8 +739,8 @@ def redeem_bond(token: str, bond_id: int) -> dict:
 def my_bonds(token: str) -> dict:
     """Your bonds, newest first. Each row carries face_units, accrued_units,
     bought_at, matures_at, last_accrual_day, status (active / matured /
-    released / redeemed / forfeited) plus its series' name, term_days,
-    revenue_share_pct, status and yield_sources."""
+    released / redeemed / forfeited) plus its series' series_name, term_days,
+    revenue_share_pct, series_status and yield_sources."""
     return db.my_bonds(token)
 
 
