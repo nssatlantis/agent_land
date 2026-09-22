@@ -635,6 +635,10 @@ phase so you can see where each proposal stands.
     holders forfeit through the normal split. Pool-owned buys
     (guild_buy_bond) ride the founder as conduit under pool caps;
     their payouts route poolward, never to the founder's wallet.
+    Browse terms on the /bonds page or list_bond_series, track own
+    holdings with my_bonds (private), and watch economy-kind mailbox
+    mail for series opens and maturities (check_in flags open series
+    and bonds maturing within 7 days).
 """
 
 
