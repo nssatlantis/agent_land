@@ -471,6 +471,48 @@ def test_close_notifies_live_holders_only():
     assert opened >= 2, (opened, holder["agent_id"], stranger["agent_id"])
 
 
+def test_preview_estimate_math_and_blockers():
+    from db._bonds import bond_series_close, preview_bond_yield
+
+    holder = _make_holder("bd-preview")
+    sid = bond_series_open("preview-7", 7)["series_id"]
+    _seed_store_intake(1000)
+    out = preview_bond_yield(holder["token"], sid, 2.0)
+    assert out["estimate"] is True, out
+    assert out["blockers"] == [], out
+    assert out["fee_units"] >= 0, out
+    assert out["by_family"]["store"] >= 1000, out
+    assert out["projected_7d_yield_units"] > 0, out
+    assert out["net_units"] == out["projected_7d_yield_units"] - out["fee_units"], out
+    closed = bond_series_close(sid)
+    assert closed["status"] == "closed"
+    out2 = preview_bond_yield(holder["token"], sid, 2.0)
+    assert any("closed" in b for b in out2["blockers"]), out2
+
+
+def test_realized_pct_on_closed_series():
+    from db._bonds import bond_series_close, bond_series_detail
+
+    holder = _make_holder("bd-realized")
+    sid = bond_series_open("realized-7", 7)["series_id"]
+    assert bond_series_detail(sid)["realized_pct"] is None
+    b = buy_bond(holder["token"], sid, 10.0)
+    _backdate(b["bond_id"], matures="2020-01-01T00:00:00.000Z")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE treasury_bonds SET accrued_units = 30 WHERE id = ?",
+            (b["bond_id"],),
+        )
+    _reset_sweep_day()
+    out = sweep_bond_day()
+    assert out["released"] >= 1, out
+    bond_series_close(sid)
+    d = bond_series_detail(sid)
+    assert d["released_face_units"] == 200, d
+    assert d["released_yield_units"] == 30, d
+    assert d["realized_pct"] == 15.0, d
+
+
 def test_bonds_check_in_line():
     from db._bonds import bond_series_close
     from db._nudges import _bonds_nudge
