@@ -560,16 +560,18 @@ def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
                             conn=conn,
                         )
                     else:
-                        from db._credits import _insert_entry
+                        # Proposal #644: admin-funded credit locks sit in
+                        # escrow (paired at lock time), so the delete
+                        # returns escrow -> treasury under one tx - the
+                        # treasury leg keeps the exact legacy reason.
+                        from db._credits import escrow_to_treasury
 
-                        _insert_entry(
-                            conn,
-                            None,
-                            "treasury",
+                        escrow_to_treasury(
                             lk["amount"],
                             "stake_refund",
-                            "proposal_stake",
-                            stake_id,
+                            target_type="proposal_stake",
+                            target_id=stake_id,
+                            conn=conn,
                         )
             conn.execute(
                 "UPDATE proposal_stakes SET locked_count=0 WHERE id=?", (stake_id,)
@@ -858,8 +860,6 @@ def lock_stakes_for_pr(
                 # a normal stake but from the community account. Karma
                 # admin stakes have no wallet to debit.
                 if currency == "credits":
-                    from db._credits import _insert_entry
-
                     if treasury_remaining is None or treasury_remaining < b["per_pr"]:
                         # Finding 4428: the treasury is the community
                         # float (fees, mints and job payouts refill it on
@@ -870,14 +870,18 @@ def lock_stakes_for_pr(
                         # abandon: a staker's wallet shortfall is a real
                         # condition until that citizen tops up.
                         continue
-                    _insert_entry(
-                        c,
-                        None,
-                        "treasury",
-                        -b["per_pr"],
+                    from db._credits import treasury_to_escrow
+
+                    # Proposal #644: escrow the lock (paired treasury /
+                    # escrow legs under one tx) so supply never moves at
+                    # lock time - the pre-fix single treasury debit
+                    # dropped live supply 1000 -> 999.5 on stake #6.
+                    treasury_to_escrow(
+                        b["per_pr"],
                         "stake_lock",
-                        "proposal_stake",
-                        b["id"],
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        conn=c,
                     )
                     if treasury_remaining is not None:
                         treasury_remaining -= b["per_pr"]
@@ -900,16 +904,17 @@ def lock_stakes_for_pr(
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
                 if treasury_debited:
-                    from db._credits import _insert_entry
+                    from db._credits import escrow_to_treasury
 
-                    _insert_entry(
-                        c,
-                        None,
-                        "treasury",
+                    # Proposal #644: the lock debit sits in escrow
+                    # (paired at lock time), so the revert returns
+                    # escrow -> treasury under one tx.
+                    escrow_to_treasury(
                         b["per_pr"],
                         "stake_refund",
-                        "proposal_stake",
-                        b["id"],
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        conn=c,
                     )
                     if treasury_remaining is not None:
                         treasury_remaining += b["per_pr"]
@@ -1002,16 +1007,17 @@ def lock_stakes_for_pr(
                         remaining["credits"].get(staker, 0) - b["per_pr"]
                     )
                 if treasury_debited:
-                    from db._credits import _insert_entry
+                    from db._credits import escrow_to_treasury
 
-                    _insert_entry(
-                        c,
-                        None,
-                        "treasury",
+                    # Proposal #644: the lock debit sits in escrow
+                    # (paired at lock time), so the revert returns
+                    # escrow -> treasury under one tx.
+                    escrow_to_treasury(
                         b["per_pr"],
                         "stake_refund",
-                        "proposal_stake",
-                        b["id"],
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        conn=c,
                     )
                     if treasury_remaining is not None:
                         treasury_remaining += b["per_pr"]
@@ -1188,6 +1194,22 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                         settle_guild_stake_payout(
                             c, _glink, lk["agent_id"], lk["amount"], pr_number
                         )
+                    elif lk["staker_agent_id"] is None:
+                        # Proposal #644: admin-funded locks sit in escrow
+                        # (paired at lock time), so the payout releases
+                        # escrow -> winner under one tx - supply never
+                        # moves. The agent leg keeps the exact legacy
+                        # reason.
+                        from db._credits import release_escrow
+
+                        release_escrow(
+                            lk["agent_id"],
+                            lk["amount"],
+                            "stake_paid",
+                            target_type="proposal_stake",
+                            target_id=lk["stake_id"],
+                            conn=c,
+                        )
                     else:
                         from db._credits import return_principal
 
@@ -1336,17 +1358,18 @@ def refund_stake_locks(
                             conn=c,
                         )
                 else:
-                    # admin-funded credit stake: refund to treasury (escrow return)
-                    from db._credits import _insert_entry
+                    # Proposal #644: admin-funded credit locks sit in
+                    # escrow (paired at lock time), so the refund returns
+                    # escrow -> treasury under one tx - the treasury leg
+                    # keeps the exact legacy reason.
+                    from db._credits import escrow_to_treasury
 
-                    _insert_entry(
-                        c,
-                        None,
-                        "treasury",
+                    escrow_to_treasury(
                         lk["amount"],
                         "stake_refund",
-                        "proposal_stake",
-                        lk["stake_id"],
+                        target_type="proposal_stake",
+                        target_id=lk["stake_id"],
+                        conn=c,
                     )
             log_event(
                 EVT_STAKE_REFUNDED,
