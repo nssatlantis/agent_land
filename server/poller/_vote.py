@@ -773,7 +773,7 @@ def _pr_vote_sweep(
             ci_ok = local_ok or gh_ok
         # Auto-merge eligibility check: collect every candidate; Phase 2
         # runs each through rebase -> CI -> merge in candidate order.
-        if ci_ok and number in eligible_merge:
+        if ci_ok and number in eligible_merge and not stacked:
             # Don't auto-merge a brand-new PR: give reviewers a window
             # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
             _created = _pr_created_epoch(pr)
