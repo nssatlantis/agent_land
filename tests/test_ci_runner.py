@@ -1341,7 +1341,12 @@ def test_native_sandbox_routes_through_docker():
     )
 
     def _fake_native_argv(
-        tree_, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+        tree_,
+        image_tag,
+        script_rel,
+        extra_env=None,
+        mypy_cache_host_dir=None,
+        ruff_cache_host_dir=None,
     ):
         return (
             [sys.executable, "-c", "print('ok')"],

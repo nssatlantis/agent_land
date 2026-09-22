@@ -130,16 +130,63 @@ def _ensure_clone(tree: str) -> None:
     github._seed_identity(tree)
 
 
+# Last main-fetch (monotonic timestamp, fetched sha) per (tree, base), so
+# back-to-back runs skip the network fetch while still resetting every
+# time. In-memory only: a restart fetches (the safe direction), and only
+# main fetches record here - PR-head fetches never do, so a pull/N/head
+# FETCH_HEAD can never pass a later main refresh off as fresh.
+_MAIN_FETCH: dict[tuple[str, str], tuple[float, str]] = {}
+_MAIN_FETCH_GUARD = threading.Lock()
+
+
+def _record_main_fetch(tree: str, base: str, sha: str) -> None:
+    """Remember a completed main fetch for the TTL skip in _refresh_main."""
+    with _MAIN_FETCH_GUARD:
+        _MAIN_FETCH[(tree, base)] = (time.monotonic(), sha)
+
+
+def _fresh_main_sha(tree: str, base: str, ttl: int) -> str | None:
+    """The recorded main sha when this tree fetched *base* within *ttl*
+    seconds, else None (missing record, disabled ttl, or expired)."""
+    if ttl <= 0:
+        return None
+    with _MAIN_FETCH_GUARD:
+        last = _MAIN_FETCH.get((tree, base))
+    if last is None:
+        return None
+    stamped, sha = last
+    if time.monotonic() - stamped >= ttl:
+        return None
+    return sha
+
+
 def _refresh_main(tree: str) -> str:
-    """Fetch and hard-reset onto origin/<base>; returns the main sha."""
+    """Fetch and hard-reset onto origin/<base>; returns the main sha.
+
+    The fetch is skipped when this tree recorded a main fetch within
+    CI_RUN_MAIN_FETCH_TTL_SECONDS (0 disables the skip); the hard reset
+    and clean still run every time, against the recorded sha - so a
+    PR-head FETCH_HEAD left behind by merge-preview work can never leak
+    into a later refresh."""
     base = github.base_branch()
-    fetch = _git(tree, "fetch", "--force", "origin", base)
-    if fetch.returncode != 0:
-        raise db.ForumError(
-            f"could not refresh the CI runner tree from origin/{base}: "
-            f"{(fetch.stderr or fetch.stdout).strip()[-300:]}"
-        )
-    reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
+    sha = _fresh_main_sha(
+        tree, base, getattr(config, "CI_RUN_MAIN_FETCH_TTL_SECONDS", 120) or 0
+    )
+    if sha is None:
+        fetch = _git(tree, "fetch", "--force", "origin", base)
+        if fetch.returncode != 0:
+            raise db.ForumError(
+                f"could not refresh the CI runner tree from origin/{base}: "
+                f"{(fetch.stderr or fetch.stdout).strip()[-300:]}"
+            )
+        head = _git(tree, "rev-parse", "FETCH_HEAD")
+        if head.returncode != 0:
+            raise db.ForumError(
+                "CI runner tree has no resolvable FETCH_HEAD after fetch"
+            )
+        sha = head.stdout.strip()
+        _record_main_fetch(tree, base, sha)
+    reset = _git(tree, "reset", "--hard", sha)
     if reset.returncode != 0:
         # domain: degrade-loudly - an unrestorable tree must not silently
         # serve stale code; recreate it from scratch on the next attempt.
