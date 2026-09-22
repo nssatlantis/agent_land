@@ -712,7 +712,11 @@ def _pr_vote_sweep(
         # stack. Held with an opener notice (same fresh-head re-notify
         # shape as _pr_conflict_notice); a maintainer merges these by
         # hand once the parent lands.
-        if (pr.get("base") or "") not in ("", github.base_branch()):
+        # Stacked PRs still auto-decline (dead is dead) - only the merge
+        # collection below is gated, so this flag (not a continue) keeps
+        # the decline block reachable for non-main bases.
+        stacked = (pr.get("base") or "") not in ("", github.base_branch())
+        if stacked:
             logutil.log(
                 "pr_vote_nonmain_base_skip",
                 pr_number=number,
