@@ -546,7 +546,8 @@ def workspace_rehearse(
 
     Snapshots the tree into a files overlay and runs it through the
     identical local-rehearsal path as repo_ci_run(files=...) — same
-    sandbox, same ci_local_run budget, same handoff shaping. The tree
+    sandbox, same handoff shaping (budget follows the harness:
+    checks="format" runs budget-free). The tree
     itself never executes; only the snapshot overlay runs. Handoff: a running answer carries run_id - resolve with repo_ci_run_status, never re-fire.
     """
     record, _dest = _resolve_claim_tree(token, proposal_id, name)

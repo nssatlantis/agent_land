@@ -96,6 +96,25 @@ def _scratch_dir(name: str, target: str) -> str:
     )
 
 
+def format_checks(target: str = REPO) -> int:
+    """`ruff format --check .` over *target*. Returns the reformat count
+    (0 exactly when clean) - nonzero doubles as the failure flag, with at
+    least 1 on any nonzero exit so a crash with no parseable count still
+    fails. One source: run_static_checks and tests/run_format.py share
+    this, never two copies drifting apart."""
+    r = _run(
+        [sys.executable, "-m", "ruff", "format", "--check", "--no-cache", "."],
+        target,
+        capture=True,
+    )
+    n = _count_formatted(r)
+    print(f"ruff format: {n} files would be reformatted")
+    if r.returncode != 0:
+        _dump(r)
+        return max(n, 1)
+    return n
+
+
 def run_static_checks(target: str = REPO) -> int:
     """The static half, shared verbatim with tests/run_ci.py (which
     imports this - one source, never two copies drifting apart). `target`
@@ -181,17 +200,10 @@ def run_static_checks(target: str = REPO) -> int:
         failures = 1
         _dump(r)
 
-    # ruff format --check .
-    r = _run(
-        [sys.executable, "-m", "ruff", "format", "--check", "--no-cache", "."],
-        target,
-        capture=True,
-    )
-    ruff_format = _count_formatted(r)
-    print(f"ruff format: {ruff_format} files would be reformatted")
-    if r.returncode != 0:
+    # ruff format --check . (factored: tests/run_format.py reuses this).
+    ruff_format = format_checks(target)
+    if ruff_format:
         failures = 1
-        _dump(r)
 
     # bash -n deploy/*.sh
     if shutil.which("bash") is None:
