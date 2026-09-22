@@ -631,6 +631,23 @@ def test_sources_close_preserves_and_legacy_defaults():
     assert got["yield_sources"] == ["transfer_fee", "stake_fee", "store"], got
 
 
+def test_list_row_carries_terms():
+    out = db.bond_series_open(
+        "terms-row-7",
+        14,
+        min_face_credits=2.0,
+        series_cap_credits=50.0,
+        citizen_cap_credits=10.0,
+    )
+    sid = out["series_id"]
+    got = [s for s in list_bond_series() if s["series_id"] == sid][0]
+    assert got["min_face_units"] == 40, got
+    assert got["series_cap_units"] == 1000, got
+    assert got["citizen_cap_units"] == 200, got
+    assert got["created_at"], got
+    assert got["closed_at"] is None, got
+
+
 def test_admin_sources_checkboxes_match():
     import re
 
