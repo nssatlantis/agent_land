@@ -183,12 +183,12 @@ def main():
     # --- config-drift guard ------------------------------------------------
     # Every knob config.py knows must sit in the CONFIG_KNOBS manifest (the
     # /about "Effective configuration" panel and this check both derive from
-    # it) and be documented in .env.example; and .env.example must not
-    # document a FORUM_*/VIEWER_* knob config.py doesn't read. So a
-    # hardcoded value or an undocumented knob is caught here, not in
-    # production. The deployment-only vars (GITHUB_* / ADMIN_* /
-    # AGENTLAND_ALLOW_EMPTY_DB) are read outside config.py and are exempt
-    # from the reverse direction.
+    # it) and be documented with a leading comment in config.py itself;
+    # .env.example stays deployment-only and must NOT duplicate tuning
+    # knobs. So a hardcoded value or an undocumented knob is caught here,
+    # not in production. The deployment-only vars (GITHUB_* / ADMIN_* /
+    # AGENTLAND_ALLOW_EMPTY_DB) are read outside config.py and may appear
+    # in .env.example alongside the startup-bound keys.
     #
     # Tunables resolve at call time through the _TUNING registry (their env
     # names are never literal in the module), and startup-bound keys are read
@@ -342,9 +342,23 @@ def main():
     example_knobs = set(
         re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE)
     )
-    assert knob_envs <= example_knobs, (
-        "every knob config.py reads must be documented in .env.example; "
-        f"undocumented: {sorted(knob_envs - example_knobs)}"
+    # .env.example is deployment-only (proposal #656): tuning knobs live
+    # solely in config.py, so none of the registry env names may appear
+    # here - only startup-bound keys (host/port/paths/poll interval), the
+    # proxy URL and the deployment vars read outside config.py.
+    example_allowed = startup_envs | {
+        "FORUM_PUBLIC_BASE_URL",
+        "GITHUB_TOKEN",
+        "GITHUB_REPO",
+        "GITHUB_BASE_BRANCH",
+        "ADMIN_USER",
+        "ADMIN_PASSWORD",
+        "AGENTLAND_ALLOW_EMPTY_DB",
+    }
+    stray = example_knobs - example_allowed
+    assert not stray, (
+        ".env.example must stay deployment-only; tuning knobs live in "
+        f"config.py: {sorted(stray)}"
     )
     exempt = {
         "GITHUB_TOKEN",
@@ -354,11 +368,6 @@ def main():
         "ADMIN_PASSWORD",
         "AGENTLAND_ALLOW_EMPTY_DB",
     }
-    undocumented = (example_knobs - knob_envs) - exempt
-    assert not undocumented, (
-        ".env.example documents knobs config.py does not read; "
-        f"orphaned: {sorted(undocumented)}"
-    )
     # README's env table is the human-facing subset of the same knobs: every
     # row it names must still be a real config knob (or a deployment-only /
     # test-only var read outside config.py - GITHUB_* / ADMIN_* above plus
@@ -366,7 +375,7 @@ def main():
     # renamed in config.py leaves a stale README row behind, and that drift is
     # caught here, not in production. The forward direction (every knob must
     # appear in README) is deliberately NOT asserted - README curates its
-    # 'useful variables' list; .env.example (asserted above) is the complete
+    # 'useful variables' list; config.py (asserted above) is the complete
     # reference.
     readme_text = Path(config.REPO_DIR / "README.md").read_text(encoding="utf-8")
     readme_knobs = set(
