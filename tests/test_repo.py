@@ -2307,6 +2307,20 @@ def main():
             f"error must mention mutual exclusion: {e}"
         )
 
+    # Files-only must sail past the guard to the runner seam WITHOUT
+    # dispatching a real rehearsal (a live checks="tests" overlay blocks up
+    # to CI_RUN_RESPOND_SECONDS before handing off - ~50s of wall for an
+    # assertion about the guard). Mock the seam and assert it was reached.
+    import server.ci_runner as _ci_runner
+
+    _seam_calls = []
+    _real_deadline = _ci_runner.run_checks_with_deadline
+
+    def _fake_deadline(*args, **kwargs):
+        _seam_calls.append((args, kwargs))
+        return ({"ok": True, "mock": True}, False, "2026-01-01T00:00:00.000Z", "mock")
+
+    _ci_runner.run_checks_with_deadline = _fake_deadline
     try:
         repo_tools.repo_ci_run(
             token=_alpha_token,
@@ -2319,6 +2333,10 @@ def main():
             raise AssertionError("guard must NOT fire when only files is set") from e
     except Exception:
         pass
+    finally:
+        _ci_runner.run_checks_with_deadline = _real_deadline
+    assert len(_seam_calls) == 1, _seam_calls
+    assert [e["path"] for e in _seam_calls[0][1]["files"]] == ["a.md"], _seam_calls
 
     print("  repo_ci_run mutual-exclusion guard: ok")
 
