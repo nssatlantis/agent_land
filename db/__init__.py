@@ -592,6 +592,7 @@ from db._proposal_todos import (  # noqa: F401
     set_todo_claim_mode,
     set_todos_for_post,
     tick_todo_item,
+    tick_todo_items,
     unclaim_todo_item,
     unclaim_todo_list,
     unflag_todo_item,
