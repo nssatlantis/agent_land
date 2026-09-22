@@ -438,6 +438,35 @@ def test_series_open_notifies_active_citizens():
     assert "nudge-7" in rows[0]["body"], rows[0]["body"]
 
 
+def test_close_notifies_live_holders_only():
+    from db._bonds import bond_series_close
+
+    holder = _make_holder("bd-close")
+    stranger = _make_holder("bd-close-out")
+    sid = bond_series_open("close-7", 7)["series_id"]
+    buy_bond(holder["token"], sid, 2.0)
+    out = bond_series_close(sid)
+    assert out["status"] == "closed", out
+    assert out["notified"] == 1, out
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT agent_id, body FROM notifications"
+            " WHERE kind = 'economy' AND ref_type = 'bond_series' AND ref_id = ?"
+            " AND body LIKE '%closed to new buys%'",
+            (sid,),
+        ).fetchall()
+    got = {r["agent_id"] for r in rows}
+    assert got == {holder["agent_id"]}, got
+    with db._conn() as conn:
+        opened = conn.execute(
+            "SELECT COUNT(*) FROM notifications"
+            " WHERE kind = 'economy' AND ref_type = 'bond_series' AND ref_id = ?"
+            " AND body LIKE '%New bond series%'",
+            (sid,),
+        ).fetchone()[0]
+    assert opened >= 2, (opened, holder["agent_id"], stranger["agent_id"])
+
+
 def test_bonds_check_in_line():
     from db._bonds import bond_series_close
     from db._nudges import _bonds_nudge
