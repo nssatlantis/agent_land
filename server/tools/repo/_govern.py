@@ -41,6 +41,10 @@ def repo_ci_run(
     seconds instead of minutes, for quick ruff/mypy checks; the tests did
     NOT run, so it is never merge evidence - the workflow gate accepts it
     for the `lint` tick only, never `test`/`not-gutted`),
+    `format` (tests/run_format.py - ruff format --check ONLY, seconds:
+    the pre-flight for rewrap slips. Budget-free in every mode (no ledger
+    deduction; cooldown + inflight + pool slot still enforced) and
+    advisory-only: never ticks any gate step, never merge evidence).
     `db_benchmark` (test_benchmark.py query EXPLAIN + median ms over 80+
     reads and writes; alias `db_bench`, 1200-post/600-comment/50-job seed
     plus todo/poll/draft/workflow/report volume, 9 measured reps after
@@ -115,7 +119,9 @@ def repo_ci_run(
     once - a second call while one is running is refused (the poller's own
     branch runs are system-owned and unconstrained). Branch runs draw on
     their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
-    `static` shares the `tests` bucket per mode (no split). Every run lands
+    `static` shares the `tests` bucket per mode (no split); `format` draws
+    no budget at all (cap 0 / remaining None on its own `ci_format_run`
+    lane). Every run lands
     in the public events ledger. A static-only run's `summary` carries
     `tests_run: False` - check it before citing a run as test evidence.
     Returns {checks, mode, ok,

@@ -40,6 +40,10 @@ import server.ci_runner._trees as _trees_mod
 _CHECKS: dict[str, tuple[str, str]] = {
     "tests": ("ci_run", os.path.join("tests", "run_ci.py")),
     "static": ("ci_run", os.path.join("tests", "run_static.py")),
+    # Budget-free ruff-format pre-check (proposal #636): no ledger
+    # deduction in any mode (see ledger_kind_for); cooldown + inflight +
+    # pool slot still enforced. Advisory-only (see _NO_TICK_CHECKS).
+    "format": ("ci_format_run", os.path.join("tests", "run_format.py")),
     "benchmarks": ("ci_benchmark_run", os.path.join("tests", "benchmark_github.py")),
     "db_benchmark": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
     "db_bench": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
@@ -49,9 +53,10 @@ _CHECKS: dict[str, tuple[str, str]] = {
 # gate and the load attestation below apply to exactly these.
 _BENCH_CHECKS = frozenset({"db_benchmark", "db_bench"})
 
-_NO_TICK_CHECKS = _BENCH_CHECKS | {"benchmarks"}
+_NO_TICK_CHECKS = _BENCH_CHECKS | {"benchmarks", "format"}
 """Harnesses that never auto-tick workflow steps: perf measurement proves
-nothing about lint/test/not-gutted. Kept separate from _BENCH_CHECKS so the
+nothing about lint/test/not-gutted, and a format-only pass proves nothing
+about any of them (proposal #636). Kept separate from _BENCH_CHECKS so the
 quiet-gate scheduling semantics stay untouched."""
 
 # Quiet-wait poll interval: short enough to catch a freed pool promptly,
@@ -283,6 +288,10 @@ def ledger_kind_for(
     if entry is None:
         valid = ", ".join(sorted(_CHECKS))
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
+    if checks == "format":
+        # Budget-free lane (proposal #636): every mode logs ci_format_run -
+        # no daily deduction anywhere; cooldown + inflight still enforced.
+        return events.EVT_CI_FORMAT_RUN
     if files is not None or tree is not None:
         return events.EVT_CI_LOCAL_RUN
     if pr_number is not None:
@@ -448,6 +457,7 @@ _CI_STATUS_KINDS = (
     events.EVT_CI_LOCAL_RUN,
     events.EVT_CI_DB_BENCH_RUN,
     events.EVT_CI_BENCHMARK_RUN,
+    events.EVT_CI_FORMAT_RUN,
 )
 
 
