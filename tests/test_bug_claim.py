@@ -400,6 +400,81 @@ def test_review_terminal_clears_lapsed_and_reopen():
     assert tuple(raw2) == (None, None, None)
 
 
+def test_claim_backfills_fix_pr_from_linked_prs():
+    # B85: a late claim binds and backfills fix_pr from PRs already linked
+    # to the proposal - merged first, then newest.
+    rep = _karmaed("cl-b85rep")
+    worker = _karmaed("cl-b85work")
+    bug = _file(rep["token"], "B85 Backfill")
+    prop = db.create_proposal(
+        worker["token"], "B85 backfill prop", f"fixes #B{bug['id']} for real"
+    )
+    # PR 7001 linked first and merged; 7002 linked later, still open.
+    db.link_pr_to_proposal(7001, prop["post_id"], worker["agent_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status,"
+            " happened_at, created_at) VALUES (7001, ?, 'merged', ?, ?)",
+            (prop["post_id"], out_now(), out_now()),
+        )
+        conn.commit()
+    db.link_pr_to_proposal(7002, prop["post_id"], worker["agent_id"])
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] is None
+    out = bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop["post_id"])
+    assert out["claimed_proposal_id"] == prop["post_id"]
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] == 7001
+
+
+def test_claim_title_citation_binds_and_backfills():
+    # B85: the title counts as citation; the backfill reaches a late claim.
+    rep = _karmaed("cl-b85trep")
+    worker = _karmaed("cl-b85twork")
+    bug = _file(rep["token"], "B85 Title Citation")
+    prop = db.create_proposal(
+        worker["token"], f"Fix #B{bug['id']} in title", "body never cites it"
+    )
+    db.link_pr_to_proposal(7003, prop["post_id"], worker["agent_id"])
+    out = bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop["post_id"])
+    assert out["claimed_proposal_id"] == prop["post_id"]
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] == 7003
+
+
+def test_claim_no_backfill_without_linked_prs():
+    # B85: no linked PR means no backfill; a later link still stamps.
+    rep = _karmaed("cl-b85nrep")
+    worker = _karmaed("cl-b85nwork")
+    bug = _file(rep["token"], "B85 No PR Yet")
+    prop = db.create_proposal(
+        worker["token"], "B85 no-pr prop", f"fixes #B{bug['id']} for real"
+    )
+    out = bug_mod.claim_bug(worker["token"], bug["id"], proposal_id=prop["post_id"])
+    assert out["claimed_proposal_id"] == prop["post_id"]
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] is None
+    db.link_pr_to_proposal(7004, prop["post_id"], worker["agent_id"])
+    assert bug_mod.get_bug_report(bug["id"])["fix_pr"] == 7004
+
+
+def test_opener_nudge_fires_once_for_unclaimed_bug():
+    # B85: an unclaimed cited bug pings the reporter once per bug; later
+    # links dedup, and a bound live claim silences the nudge.
+    rep = _karmaed("cl-b85rep2")
+    worker = _karmaed("cl-b85work2")
+    other = _karmaed("cl-b85other")
+    bug = _file(rep["token"], "B85 Nudge")
+    prop = db.create_proposal(
+        worker["token"], "B85 nudge prop", f"fixes #B{bug['id']} for real"
+    )
+    db.link_pr_to_proposal(7005, prop["post_id"], worker["agent_id"])
+    assert len(_pings(rep["agent_id"], "%no live claim is bound%")) == 1
+    # Dedup: a second PR on the same bug never double-pings.
+    db.link_pr_to_proposal(7006, prop["post_id"], worker["agent_id"])
+    assert len(_pings(rep["agent_id"], "%no live claim is bound%")) == 1
+    # A bound live claim silences any further nudge.
+    bug_mod.claim_bug(other["token"], bug["id"], proposal_id=prop["post_id"])
+    db.link_pr_to_proposal(7007, prop["post_id"], worker["agent_id"])
+    assert len(_pings(rep["agent_id"], "%no live claim is bound%")) == 1
+
+
 def test_zz_migration_claim_columns():
     # Runs last (alphabetical): replants the file DB with the pre-claim
     # shape (triage present, claim columns absent), so no later test may
