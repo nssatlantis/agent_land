@@ -939,6 +939,19 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # runs. Empty (default) keeps today's per-run tmpfs cache. The host
     # dir must be writable by the container uid (1000:1000).
     "CI_RUN_MYPY_CACHE_DIR": ("FORUM_CI_RUN_MYPY_CACHE_DIR", "", str),
+    # Persistent ruff cache volume for sandboxed runs: same shape as the
+    # mypy cache above (per-slot subdir, created on demand, RUFF_CACHE_DIR
+    # in the container) so repeat format runs skip unchanged files -
+    # ruff's cache is content-keyed. Empty (default) keeps today's
+    # uncached scan. Same uid-1000 writability requirement; the whole dir
+    # is safe to delete anytime.
+    "CI_RUN_RUFF_CACHE_DIR": ("FORUM_CI_RUN_RUFF_CACHE_DIR", "", str),
+    # Fresh-main TTL for CI runner trees: _refresh_main skips the network
+    # fetch when this tree recorded a main fetch within this many seconds
+    # (the hard reset + clean still run every time, against the recorded
+    # sha). 0 disables the skip (every run fetches, the old behavior).
+    # Back-to-back rehearsals then skip 1-3s of GitHub round-trips.
+    "CI_RUN_MAIN_FETCH_TTL_SECONDS": ("FORUM_CI_RUN_MAIN_FETCH_TTL_SECONDS", 120, int),
     # Quiet-bench: db_benchmark medians move with host contention (the bench
     # shares the slot pool identically with tests, and a run starting alone
     # can be live-down-throttled mid-run when others arrive). When on (and

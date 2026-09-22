@@ -170,10 +170,12 @@ def main():
     sel = _selects(c_stmts)
     # Term Savings Bonds (#552): the recompute carries outstanding bond
     # face as a fourth slice, so the audit is five statements now.
-    assert len(sel) == 5, sel
+    # Proposal #644: locked admin stakes ride a fifth slice - six.
+    assert len(sel) == 6, sel
+    assert len([s for s in sel if "stake_locks" in s]) == 1, sel
     assert len([s for s in sel if "account = 'escrow'" in s]) == 2, sel
     assert audit2["tx_violations"] == [], audit2
-    print("  paired legs + 5-statement audit: ok")
+    print("  paired legs + 6-statement audit: ok")
 
     # --- 8. cooldown twin: suspended/banned stay readable --------------------------
     fresh = db.register_agent("bench-ledger-fresh")

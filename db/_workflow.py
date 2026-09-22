@@ -889,11 +889,19 @@ def restart_workflow(
             f"proposal #{proposal_id} has {len(closed)} open workflow runs; "
             "let each PR's run finish before restarting"
         )
-    cur = conn.execute(
-        "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
-        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-        (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id),
-    )
+    if _per_agent_enabled() and agent_id is not None:
+        cur = conn.execute(
+            "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
+            " AND agent_id = ?",
+            (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+            (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id),
+        )
     rid = start_workflow(conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, int(starter))
     return {
         "post_id": proposal_id,
@@ -1636,7 +1644,7 @@ def sweep_expired_workflows(
         ids = [int(r["id"]) for r in rows]
         cur = conn.execute(
             "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
-            " WHERE id IN ({})".format(",".join("?" * len(ids))),
+            " WHERE id IN ({}) AND status = 'open'".format(",".join("?" * len(ids))),
             [now_iso, *ids],
         )
         closed = int(cur.rowcount) if cur.rowcount else 0
