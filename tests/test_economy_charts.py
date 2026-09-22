@@ -113,7 +113,7 @@ def test_economy_body_renders_charts():
     for marker in (
         "Treasury over time",
         "Daily flows, trailing 14 days",
-        "stakes, guild pools and bonds overlap",
+        "stakes and bonds overlap",
         "<svg",
         "<polyline",
     ):

@@ -26,17 +26,21 @@ traceability.
 
 ACCOUNTS (the treasury economy): the `account` column splits the one
 append-only ledger into 'agent' rows (citizen wallets), 'treasury' rows
-(the community treasury, agent_id NULL) and 'escrow' rows (the
-jobs-escrow bank account, agent_id NULL).  Every payout, transfer, fee
+(the community treasury, agent_id NULL), 'escrow' rows (the
+jobs-escrow bank account, agent_id NULL) and 'guild' rows (per-guild
+wallets, proposal #611: agent_id NULL, target_type='guild',
+target_id=guild_id - one balance per guild, every guild leg targets its
+guild or the per-guild balance misses it).  Every payout, transfer, fee
 and forfeiture is written as PAIRED single-entry legs (-from / +to),
-and every jobs-escrow move pairs a wallet/treasury leg with an escrow
-leg under one tx_id - while mints add to and burns subtract from the
-treasury - so at any moment:
+and every jobs-escrow move pairs a wallet/treasury/guild leg with an
+escrow leg under one tx_id - while mints add to and burns subtract -
+so at any moment:
 
     total supply = SUM(delta_units) over ALL rows
     treasury     = SUM over account='treasury' rows
     escrow-held  = SUM over account='escrow' rows
-    circulating  = supply - treasury - escrow
+    guild-held   = SUM over account='guild' rows (all guilds)
+    circulating  = supply - treasury - escrow - guild-held
 
 When TREASURY_FUNDS_PAYOUTS is on, earnings are paid OUT of the treasury
 (never minted from nothing); an empty treasury skips the payout and logs
@@ -198,6 +202,171 @@ def treasury_balance(conn: sqlite3.Connection) -> int:
         "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
         " WHERE account = 'treasury'"
     ).fetchone()[0]
+
+
+def guild_wallet_balance(conn: sqlite3.Connection, guild_id: int) -> int:
+    """One guild's wallet balance in units (proposal #611 - derived,
+    never cached). Sums account='guild' legs pointing at that guild
+    (target_type='guild', target_id=gid), so every guild keeps its own
+    balance and multi-guild boards never commingle."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+        " WHERE account = 'guild' AND target_type = 'guild'"
+        " AND target_id = ?",
+        (int(guild_id),),
+    ).fetchone()[0]
+
+
+def guild_held_total(conn: sqlite3.Connection) -> int:
+    """All guild wallets summed (the circulating-supply deduction)."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+        " WHERE account = 'guild'"
+    ).fetchone()[0]
+
+
+def grant_from_guild(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    amount_units: int,
+    reason: str,
+    guild_id: int,
+    target_type: str | None = None,
+    target_id: int | None = None,
+) -> bool:
+    """Pay units from a guild wallet to a citizen: paired -guild / +agent
+    legs under one tx_id (proposal #611). Grant-first like the treasury
+    path: an underfunded guild wallet refuses (returns False) before any
+    row exists, so pool claims stay backed. The caller owns the
+    transaction (pass conn - a separate connection would deadlock against
+    the caller's write lock). Emits one EVT_CREDIT_EARNED like grant(),
+    so event consumers read pool payouts exactly as treasury payouts.
+    Mirrors grant()'s kill switch: with credits disabled the payout is
+    refused (False), never debited."""
+    if not config.CREDITS_ENABLED:
+        return False
+    if amount_units <= 0:
+        return False
+    if guild_wallet_balance(conn, int(guild_id)) < amount_units:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        -amount_units,
+        reason,
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        agent_id,
+        "agent",
+        amount_units,
+        reason,
+        target_type,
+        target_id,
+        tx_id=tx_id,
+    )
+    import events
+
+    events.log_event(
+        events.EVT_CREDIT_EARNED,
+        actor_agent_id=agent_id,
+        target_type=target_type or "credit",
+        target_id=target_id,
+        detail={
+            "reason": reason,
+            "credits": format_credits(amount_units),
+            "delta_units": amount_units,
+            "guild_id": int(guild_id),
+        },
+        conn=conn,
+    )
+    return True
+
+
+def guild_retain_withhold(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    settled_units: int,
+    reason: str = "guild_retained",
+) -> bool:
+    """Retention record for pool-owned value withheld from a payout
+    (proposal #611 - fee-arrears settlements and withdrawal fees: the
+    pool memo extinguishes the FULL computed share while the member nets
+    less, so the wallet rightly stays higher by the settled amount).
+    Writes a net-zero -guild/+guild pair (same tx) that names the
+    retention in history; conservation Rule-D reads it back as
+    wallet - memo == SUM(+guild guild_retained legs). No-op on zero."""
+    if settled_units <= 0:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        -settled_units,
+        reason,
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        settled_units,
+        reason,
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    return True
+
+
+def treasury_to_guild(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    amount_units: int,
+    reason: str,
+    target_type: str | None = None,
+    target_id: int | None = None,
+) -> bool:
+    """Move units from the community treasury into a guild wallet
+    (proposal #611 - project grants, subsidies, deposit matches): paired
+    -treasury / +guild legs under one tx_id, so the summed supply never
+    moves and the outflow is visible in treasury flows. Treasury-gated
+    (returns False) before any row exists - callers raise under their
+    grant-first discipline. The caller owns the transaction."""
+    if amount_units <= 0:
+        return False
+    if treasury_balance(conn) < amount_units:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "treasury",
+        -amount_units,
+        reason,
+        target_type if target_type is not None else "guild",
+        target_id if target_id is not None else int(guild_id),
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        amount_units,
+        f"{reason}_intake",
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    return True
 
 
 def fee_units(amount_units: int) -> int:
@@ -488,6 +657,7 @@ def spend(
     *,
     dest_treasury: bool = False,
     dest_escrow: bool = False,
+    dest_guild: int | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
@@ -503,8 +673,13 @@ def spend(
     postings, taker-deposit escrow halves) parks the amount in the
     ledger's escrow bank account instead - a paired -agent / +escrow
     write (the escrow leg takes reason + "_held") under the same tx_id,
-    so the summed supply never moves.  The two destinations are mutually
-    exclusive.  Stake locks keep both False: their credits are merely
+    so the summed supply never moves.  dest_guild=gid (proposal #611)
+    parks the amount in that guild's wallet instead - a paired -agent /
+    +guild write (the guild leg takes reason + "_intake" with
+    target_type='guild', target_id=gid) under the same tx_id, so the
+    summed supply never moves and each guild keeps its own balance.
+    The three destinations are mutually exclusive.  Stake locks keep all
+    False: their credits are merely
     locked, refunded later, so no second row exists until the refund
     pays out.
 
@@ -519,7 +694,9 @@ def spend(
         return False
     if amount_units < 0:
         raise ForumError("credit amounts must be positive.")
-    if dest_treasury and dest_escrow:
+    if dest_guild is not None and int(dest_guild) <= 0:
+        raise ForumError("dest_guild must be a guild id.")
+    if sum([bool(dest_treasury), bool(dest_escrow), dest_guild is not None]) > 1:
         raise ForumError("spend takes at most one destination.")
     # BEGIN IMMEDIATE: the balance check and its debit form one atomic
     # step - a concurrent spend can't both pass the check and overspend
@@ -565,6 +742,17 @@ def spend(
                 target_id,
                 tx_id=tx_id,
             )
+        if dest_guild is not None:
+            _insert_entry(
+                c,
+                None,
+                "guild",
+                amount_units,
+                f"{reason}_intake",
+                "guild",
+                int(dest_guild),
+                tx_id=tx_id,
+            )
         import events
 
         detail: dict[str, object] = {
@@ -576,6 +764,9 @@ def spend(
             detail["to"] = "treasury"
         if dest_escrow:
             detail["to"] = "escrow"
+        if dest_guild is not None:
+            detail["to"] = "guild"
+            detail["guild_id"] = int(dest_guild)
         events.log_event(
             events.EVT_CREDIT_SPENT,
             actor_agent_id=agent_id,
@@ -821,6 +1012,119 @@ def escrow_to_treasury(
             },
             conn=c,
         )
+    return True
+
+
+def guild_to_escrow(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    amount_units: int,
+    reason: str,
+    target_type: str | None = None,
+    target_id: int | None = None,
+) -> bool:
+    """Move principal from a guild wallet into the escrow bank account
+    (proposal #611 - pool-funded job commissions): paired -guild / +escrow
+    legs under one tx_id, so the summed supply never moves and the
+    escrow conservation audit still nets zero. Guild-gated (returns False)
+    before any row exists. The caller owns the transaction."""
+    if amount_units <= 0:
+        return False
+    if guild_wallet_balance(conn, int(guild_id)) < amount_units:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        -amount_units,
+        reason,
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        None,
+        "escrow",
+        amount_units,
+        f"{reason}_held",
+        target_type,
+        target_id,
+        tx_id=tx_id,
+    )
+    import events
+
+    events.log_event(
+        events.EVT_CREDIT_SPENT,
+        actor_agent_id=None,
+        target_type=target_type or "credit",
+        target_id=target_id,
+        detail={
+            "reason": reason,
+            "credits": format_credits(amount_units),
+            "delta_units": amount_units,
+            "to": "escrow",
+            "guild_id": int(guild_id),
+        },
+        conn=conn,
+    )
+    return True
+
+
+def escrow_to_guild(
+    conn: sqlite3.Connection,
+    guild_id: int,
+    amount_units: int,
+    reason: str,
+    target_type: str | None = None,
+    target_id: int | None = None,
+) -> bool:
+    """Move principal from the escrow bank account back into a guild
+    wallet (proposal #611 - commissioned-job refunds, taken-job wages,
+    disband cancels): paired -escrow / +guild legs under one tx_id. The
+    guild leg takes reason + "_intake" with target_type='guild' so the
+    per-guild balance counts it; treasury flow buckets never see it
+    (guild account), preserving today's dashboard shapes."""
+    if amount_units <= 0:
+        return False
+    tx_id = _new_tx_id(conn)
+    _insert_entry(
+        conn,
+        None,
+        "escrow",
+        -amount_units,
+        f"{reason}_release",
+        target_type,
+        target_id,
+        tx_id=tx_id,
+    )
+    _insert_entry(
+        conn,
+        None,
+        "guild",
+        amount_units,
+        f"{reason}_intake",
+        "guild",
+        int(guild_id),
+        tx_id=tx_id,
+    )
+    import events
+
+    events.log_event(
+        events.EVT_CREDIT_EARNED,
+        actor_agent_id=None,
+        target_type=target_type or "credit",
+        target_id=target_id,
+        detail={
+            "reason": reason,
+            "credits": format_credits(amount_units),
+            "delta_units": amount_units,
+            "escrow_return": True,
+            "guild_id": int(guild_id),
+        },
+        conn=conn,
+    )
     return True
 
 
@@ -1562,6 +1866,11 @@ def _group_one_transaction(legs: list[dict]) -> dict:
     )
     if to_leg is None:
         to_leg = next(
+            (l for l in legs if l["account"] == "guild" and l["delta_units"] > 0),
+            None,
+        )
+    if to_leg is None:
+        to_leg = next(
             (l for l in legs if l["account"] == "treasury" and l["delta_units"] > 0),
             None,
         )
@@ -1609,14 +1918,18 @@ def _group_one_transaction(legs: list[dict]) -> dict:
 
 def _leg_party(leg: dict | None) -> str | None:
     """The display name of a ledger leg's account: the citizen's name,
-    'Treasury' for the community account, or 'Escrow' for the
-    jobs-escrow bank account."""
+    'Treasury' for the community account, 'Escrow' for the
+    jobs-escrow bank account, or 'Guild #N' for a per-guild wallet
+    (proposal #611 - the wallet leg carries target_type='guild')."""
     if leg is None:
         return None
     if leg["account"] == "treasury":
         return "Treasury"
     if leg["account"] == "escrow":
         return "Escrow"
+    if leg["account"] == "guild":
+        gid = leg.get("target_id")
+        return f"Guild #{gid}" if gid else "Guild pool"
     return leg.get("agent_name") or "(deleted citizen)"
 
 

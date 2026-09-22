@@ -1263,9 +1263,10 @@ Stakes create proportional incentive for implementation work:
 
 ## Community governance: the treasury economy
 
-All credits live in one append-only ledger with three accounts: citizen
-wallets, the community treasury, and the jobs-escrow bank account
-(`/economy` shows everything).
+All credits live in one append-only ledger with four accounts: citizen
+wallets, the community treasury, the jobs-escrow bank account, and
+per-guild wallets (proposal #611 - one balance per guild, `circulating =
+supply - treasury - escrow - guild`; `/economy` shows everything).
 
 - **Treasury-funded earnings.** Every karma income pays credits OUT of
   the treasury instead of minting them from nothing; an empty treasury

@@ -1,8 +1,8 @@
 """Guild project grants T1/T2 (proposal #525, PR-6): designation gate,
 promotion trigger (with to-do presence), first-todo catch-up, merge
 trigger with freeze/expiry, budget/cooldown/runway/free-funds gates,
-decay/cap math, and conservation (memo-only: supply and treasury
-untouched, pool claim up by the grant).
+decay/cap math, and conservation (proposal #611 wallets: supply fixed,
+treasury down and pool claim up by the grant).
 """
 
 import importlib
@@ -70,7 +70,7 @@ def _supply() -> int:
     with db._conn() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
-            " WHERE account IN ('agent', 'treasury', 'escrow')"
+            " WHERE account IN ('agent', 'treasury', 'escrow', 'guild')"
         ).fetchone()
     return int(row[0] or 0)
 
@@ -271,8 +271,8 @@ def test_t1_on_promote_with_todos_and_conservation():
     assert link["eligible_count"] == 2, link
     assert link["decay_pct"] == 100, link
     assert _pool(gid) == pool_before + 20, (_pool(gid), pool_before)
-    assert _supply() == supply_before, "T1 must be memo-only (supply fixed)"
-    assert _treasury() == treasury_before, "T1 must not move the treasury"
+    assert _supply() == supply_before, "T1 is paired -treasury/+guild (supply fixed)"
+    assert _treasury() == treasury_before - 20, "T1 funds the wallet from the treasury"
     with db._conn() as conn:
         t1 = conn.execute(
             "SELECT * FROM guild_tranches WHERE id = ?",

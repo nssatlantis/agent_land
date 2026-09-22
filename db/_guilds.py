@@ -3,8 +3,9 @@
 L3 membership, governance, and chat on top of the PR-1 tables. A guild is
 a ledger + roster, never a citizen: no karma, no votes, no posts. Money
 moves only through the pool-settlement helpers at the bottom, whose
-invariant is stated there - every grant out of the pool is drawn from the
-treasury that already parks every deposit, so conservation holds by
+invariant is stated there - every grant out of the pool is drawn from
+the guild's own wallet (proposal #611 - per-guild custody in
+credit_entries, one balance per guild), so conservation holds by
 construction and a failed grant refuses loudly before any row is written.
 
 No co-founder role exists (operator direction, recorded on #525): the
@@ -132,9 +133,23 @@ def _agent_name(conn: sqlite3.Connection, agent_id: int) -> str:
 
 
 def guild_balance(conn: sqlite3.Connection, guild_id: int) -> int:
-    """Pool units: signed ledger sum. Inflow kinds add, everything else
-    subtracts - writers only ever emit known kinds (CHECK-gated), so the
-    ELSE arm is unreachable, not a policy choice."""
+    """Pool units: the guild wallet's derived balance (proposal #611 -
+    SUM over account='guild' legs pointing at this guild). Every guild
+    keeps its own balance; multi-guild boards never commingle. Money
+    truth lives in credit_entries; guild_ledger stays the
+    attribution/history trail (see guild_memo_balance, the Rule-D
+    comparator)."""
+    from db._credits import guild_wallet_balance
+
+    return int(guild_wallet_balance(conn, int(guild_id)) or 0)
+
+
+def guild_memo_balance(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Pool units per the guild_ledger memo trail (pre-#611 reader,
+    kept as the conservation Rule-D comparator and the backfill source).
+    Inflow kinds add, everything else subtracts - writers only ever emit
+    known kinds (CHECK-gated), so the ELSE arm is unreachable, not a
+    policy choice."""
     marks = ",".join("?" for _ in _INFLOW_KINDS)
     row = conn.execute(
         "SELECT COALESCE(SUM(CASE WHEN kind IN ("
@@ -229,27 +244,26 @@ def _settle_out(
     kind: str,
     note: str,
 ) -> int:
-    """Pay pool units to a citizen. Every deposit parks in the treasury
-    (spend with dest_treasury), so the treasury already holds the pool's
-    funds and grant() draws them back down - conservation holds without a
-    second mover. The grant runs FIRST: a False (unfunded treasury) raises
-    before the ledger row exists, so money can never strand half-moved."""
+    """Pay pool units to a citizen. The pool is custodied in its own
+    wallet (proposal #611), so grant_from_guild() draws the guild's own
+    funds down - conservation holds without a second mover. The grant
+    runs FIRST: a False (underfunded pool) raises before the ledger row
+    exists, so money can never strand half-moved."""
     if units <= 0:
         return 0
-    from db._credits import grant
+    from db._credits import grant_from_guild
 
-    ok = grant(
+    ok = grant_from_guild(
+        conn,
         agent_id,
         units,
         f"guild_{kind}",
+        int(guild_id),
         target_type="guild",
         target_id=guild_id,
-        conn=conn,
     )
     if not ok:
-        raise ForumError(
-            "the treasury cannot fund that payout right now - nothing moved."
-        )
+        raise ForumError("the pool cannot fund that payout right now - nothing moved.")
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, ?, ?, ?, ?)",
@@ -263,29 +277,34 @@ def _pay_member_out(
 ) -> int:
     """Pay one member's pro-rata share, minus any fee-arrears withhold.
     The pool memo always extinguishes the FULL computed share while the
-    grant pays only the net - otherwise a withheld share would stay
-    ledger-entitled and pay twice. Grant-first still holds: an unfunded
-    treasury raises before memo or arrears move."""
-    from db._credits import grant
+    wallet grant pays only the net (retained withholds stay pool-owned
+    via a guild_retained pair) - otherwise a withheld share would stay
+    ledger-entitled and pay twice. Grant-first still holds: an
+    underfunded pool raises before memo or arrears move."""
     from db._guilds_treasury import _apply_arrears_withhold
 
     gross = _payout_for(conn, guild_id, agent_id, guild_balance(conn, guild_id))
     if gross <= 0:
         return 0
-    net, _settled = _apply_arrears_withhold(conn, guild_id, agent_id, gross)
+    from db._credits import grant_from_guild, guild_retain_withhold
+
+    net, settled = _apply_arrears_withhold(conn, guild_id, agent_id, gross)
     if net > 0:
-        ok = grant(
+        ok = grant_from_guild(
+            conn,
             agent_id,
             net,
             "guild_withdrawal",
+            int(guild_id),
             target_type="guild",
             target_id=guild_id,
-            conn=conn,
         )
         if not ok:
             raise ForumError(
-                "the treasury cannot fund that payout right now - nothing moved."
+                "the pool cannot fund that payout right now - nothing moved."
             )
+    if settled > 0:
+        guild_retain_withhold(conn, int(guild_id), settled)
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
         " note) VALUES (?, 'withdrawal', ?, ?, ?)",
@@ -484,8 +503,8 @@ def admin_freeze_guild(admin: str, guild_id: int, reason: str = "") -> dict:
         clean = (reason or "").strip()[:200]
         conn.execute(
             "UPDATE guilds SET spending_suspended = 1, suspended_by = ?,"
-            " suspend_reason = ? WHERE id = ?",
-            (agent["id"], clean, guild_id),
+            " suspend_reason = ?, suspended_at = ? WHERE id = ?",
+            (agent["id"], clean, _now_iso(), guild_id),
         )
         import events
 
@@ -508,7 +527,7 @@ def admin_unfreeze_guild(admin: str, guild_id: int) -> dict:
         _require_guild(conn, guild_id)
         conn.execute(
             "UPDATE guilds SET spending_suspended = 0, suspended_by = NULL,"
-            " suspend_reason = '' WHERE id = ?",
+            " suspend_reason = '', suspended_at = NULL WHERE id = ?",
             (guild_id,),
         )
         import events
@@ -635,9 +654,9 @@ def _free_guild_name(conn: sqlite3.Connection, guild_id: int) -> str:
 
 def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) -> dict:
     """Waterfall shared by every disband path: each member takes their
-    pro-rata share, the remainder (pool income, dust) stays
-    Treasury-parked with a memo row and no credit movement - the treasury
-    already holds it from the original deposits. All-or-nothing: any
+    pro-rata share from the guild wallet, the remainder (pool income,
+    dust) moves -guild/+treasury paired with a memo row (proposal #611 -
+    the wallet custodies the pool, so the remainder must travel). All-or-nothing: any
     unfunded payout raises and the whole transaction rolls back, so a
     retry next tick (or a founder retry) sees the exact pre-attempt
     state. Callers isolate failures (sweep skips + logs, leave defers)
@@ -677,12 +696,45 @@ def _disband_distribute(conn: sqlite3.Connection, guild_id: int, reason: str) ->
     conn.execute("DELETE FROM guild_members WHERE guild_id = ?", (guild_id,))
     # No roster left to digest to: drop pending churn with the roster.
     conn.execute("DELETE FROM guild_churn WHERE guild_id = ?", (guild_id,))
-    remainder = guild_balance(conn, guild_id)
-    if remainder > 0:
+    # Both trails close independently: the wallet remainder travels
+    # -guild/+treasury paired, while the memo remainder (which can differ
+    # by retained arrears-withholds, pool-owned either way) extinguishes
+    # the memo trail. Either one is zero-skipped on its own.
+    remainder_wallet = guild_balance(conn, guild_id)
+    if remainder_wallet > 0:
+        from db._credits import _insert_entry, _new_tx_id
+
+        tx_id = _new_tx_id(conn)
+        _insert_entry(
+            conn,
+            None,
+            "guild",
+            -remainder_wallet,
+            "guild_disband_remainder",
+            "guild",
+            int(guild_id),
+            tx_id=tx_id,
+        )
+        _insert_entry(
+            conn,
+            None,
+            "treasury",
+            remainder_wallet,
+            "guild_disband_remainder",
+            "guild",
+            int(guild_id),
+            tx_id=tx_id,
+        )
+    remainder_memo = guild_memo_balance(conn, guild_id)
+    if remainder_memo > 0:
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'withdrawal', ?, ?)",
-            (guild_id, remainder, f"disband remainder to Treasury ({reason})"),
+            (
+                guild_id,
+                remainder_memo,
+                f"disband remainder to Treasury ({reason})",
+            ),
         )
     conn.execute(
         "UPDATE guilds SET status = 'disbanded', disbanded_at = ? WHERE id = ?",
@@ -1150,14 +1202,14 @@ def respond_guild_join(token: str, request_id: int, approve: bool) -> dict:
                 )
             except sqlite3.IntegrityError:
                 raise ForumError("that citizen is already a member.") from None
-        _clear_emptied(conn, guild["id"])
-        _record_churn(
-            conn,
-            guild["id"],
-            req["agent_id"],
-            _agent_name(conn, req["agent_id"]),
-            "join",
-        )
+            _clear_emptied(conn, guild["id"])
+            _record_churn(
+                conn,
+                guild["id"],
+                req["agent_id"],
+                _agent_name(conn, req["agent_id"]),
+                "join",
+            )
         conn.execute(
             "UPDATE guild_join_requests SET status = ?, decided_at = ?,"
             " decided_by = ? WHERE id = ?",

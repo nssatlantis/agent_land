@@ -254,6 +254,22 @@ def test_auto_tick_only_keys_scopes_static():
         assert [d[k] for k in TRIPLE] == [False, True, False], d
 
 
+def test_require_block_run_lookup_selects_agent():
+    # #B84: require_workflow_block's CI double-check reads row["agent_id"],
+    # so its run lookup must select the column (sqlite3.Row raises
+    # IndexError on a missing name). The double-check cannot execute under
+    # pytest by design (PYTEST guard + enforce off), so the contract is
+    # pinned at the source: fails pre-fix, passes post-fix.
+    import inspect
+
+    import db._workflow as _wf
+
+    src = inspect.getsource(_wf.require_workflow_block)
+    assert "SELECT id, agent_id FROM workflow_runs" in src, (
+        "run lookup must select agent_id for the starter query"
+    )
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)

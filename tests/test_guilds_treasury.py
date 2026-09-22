@@ -392,6 +392,14 @@ def test_upkeep_suspend_recover_grace():
             ("2020-01-01T00:00:00.000Z", gid),
         )
         conn.execute("DELETE FROM guild_ledger WHERE guild_id = ?", (gid,))
+        # Proposal #611: the pool lives in the wallet (account='guild'
+        # legs), not the memo - a no-funds setup must wipe both trails,
+        # or the sweep correctly reads real funds and recovers.
+        conn.execute(
+            "DELETE FROM credit_entries WHERE account = 'guild'"
+            " AND target_type = 'guild' AND target_id = ?",
+            (gid,),
+        )
         conn.execute(
             "UPDATE invoices SET created_at = ? WHERE id IN (SELECT invoice_id"
             " FROM guild_fee_invoices WHERE guild_id = ?)",
@@ -503,9 +511,10 @@ def test_conservation_per_lifecycle():
     assert _pool(gid) == 500 - 50 + 25, _pool(gid)
     assert _bal(founder["agent_id"]) == f0
     # Bonus minted to opener (+25 supply), pool share minted back to the
-    # treasury (+25): the lock's burn is exactly unwound.
+    # guild wallet (+25, proposal #611 - not the treasury): the lock's
+    # burn is exactly unwound and the treasury does not move.
     t3, s3 = snapshot()
-    assert t3 == t2 + 25 and s3 == s2 + 50, ((t2, s2), (t3, s3))
+    assert t3 == t2 and s3 == s2 + 50, ((t2, s2), (t3, s3))
 
 
 def test_broke_founder_dupe_undo():

@@ -6,11 +6,17 @@ mover-pays pool fee, pool-funded invoice payments, guild-commissioned jobs
 executor-taken jobs (wage to pool, detach on leave), and voluntary disband
 (zero-balance vs fee'd dissolve distribution).
 
-Conservation model (shared with the PR-2 settlement): pool units are a
-memo - every deposit parks citizen units in the treasury
-(spend/dest_treasury) and every payout grants them back down. The pool
-ledger only ever records; it never creates. Grant-first ordering holds
-everywhere: an unfunded treasury raises before any memo row exists.
+Conservation model (proposal #611 - wallets, superseding the PR-3
+treasury-parked memo): each pool holds its own custody in
+credit_entries (account='guild', one balance per guild) - every deposit
+parks citizen units in the guild wallet (spend/dest_guild) and every
+payout grants them back down from it. The pool memo trail stays as
+attribution/history (Rule-D: wallet - memo == guild_retained). No
+treasury leg moves on pool-internal flows; treasury legs exist only
+where value truly enters/leaves the pool (deposit fees, sweeps,
+grants/subsidies/matches in, disbands/seizures out). Grant-first
+ordering holds everywhere: an underfunded pool raises before any memo
+row exists.
 
 Deliberate non-goals (follow-ups named in the PR body): the guild stake
 variant (needs founder-conduit design), upkeep/arrears (weekly sweep
@@ -122,8 +128,10 @@ def guild_job_link(conn: sqlite3.Connection, job_id: int) -> dict | None:
 
 def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
     """Move citizen units into the pool: debit amount + 2% fee (mover
-    pays), pool credited full. Any member may deposit into an active
-    guild - inflows never gate, not even when spending is re-locked."""
+    pays), pool credited full in its own wallet (proposal #611 -
+    paired -agent/+guild legs, one balance per guild). Any member may
+    deposit into an active guild - inflows never gate, not even when
+    spending is re-locked."""
     from db._credits import exact_from_credits, spend
 
     units = int(exact_from_credits(float(amount_credits), what="deposit"))
@@ -140,7 +148,7 @@ def guild_deposit(token: str, guild_id: int, amount_credits: float) -> dict:
             agent["id"],
             units,
             "guild_deposit",
-            dest_treasury=True,
+            dest_guild=int(guild_id),
             target_type="guild",
             target_id=guild_id,
             conn=conn,
@@ -182,9 +190,11 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
     """Pay pool units to the founder's wallet: pool deducts the full
     amount, the founder receives amount minus arrears-withhold minus the
     2% fee. Gated on the spend lock, upkeep suspension, the velocity
-    window, and the co-sign band; grant-first, so an unfunded treasury
-    refuses before anything moves."""
-    from db._credits import exact_from_credits, grant
+    window, and the co-sign band; grant-first, so an underfunded pool
+    refuses before anything moves (proposal #611 - the wallet custodies
+    the pool; retained withholds/fees stay pool-owned and are named by a
+    net-zero guild_retained pair for the Rule-D audit)."""
+    from db._credits import exact_from_credits, grant_from_guild, guild_retain_withhold
     from db._guilds_treasury import _apply_arrears_withhold
 
     units = int(exact_from_credits(float(amount_credits), what="withdrawal"))
@@ -198,21 +208,24 @@ def guild_withdraw(token: str, guild_id: int, amount_credits: float) -> dict:
         _require_spend_allowed(conn, guild, units, "withdrawal")
         net, withheld = _apply_arrears_withhold(conn, guild_id, agent["id"], units)
         fee_q = _guild_fee_u(net) if net > 0 else 0
-        # Grant-first: the treasury leg lands before the pool memo exists.
+        # Grant-first: the guild leg lands before the pool memo exists.
         if net > 0:
-            ok = grant(
+            ok = grant_from_guild(
+                conn,
                 agent["id"],
                 net - fee_q,
                 "guild_withdrawal",
+                int(guild_id),
                 target_type="guild",
                 target_id=guild_id,
-                conn=conn,
             )
             if not ok:
                 raise ForumError(
-                    "the treasury cannot fund that withdrawal right now -"
-                    " nothing moved."
+                    "the pool cannot fund that withdrawal right now - nothing moved."
                 )
+        retained = withheld + fee_q
+        if retained > 0:
+            guild_retain_withhold(conn, int(guild_id), retained)
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'founder withdrawal')",
@@ -250,9 +263,10 @@ def guild_pay_invoice(
     """Pay an invoice addressed to the founder from the pool. The founder
     must be the invoice's payer (invoices address citizens, never guilds);
     settlement mirrors pay_invoice's full/part logic, but the source is
-    the parked pool: treasury grants the issuer (memo-only when the bill
-    is Treasury-issued), and the pool takes the velocity-counted outflow."""
-    from db._credits import grant, to_units
+    the guild wallet (proposal #611): grant_from_guild pays a citizen
+    issuer, or -guild/+treasury paired when the bill is Treasury-issued.
+    The pool takes the velocity-counted outflow either way."""
+    from db._credits import _insert_entry, _new_tx_id, grant_from_guild, to_units
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
@@ -301,18 +315,41 @@ def guild_pay_invoice(
         _require_spend_allowed(conn, guild, pay_q, "invoice payment")
         issuer = inv["issuer_agent_id"]
         if issuer is not None:
-            ok = grant(
+            ok = grant_from_guild(
+                conn,
                 issuer,
                 pay_q,
                 "guild_invoice_payment",
+                int(guild_id),
                 target_type="invoice",
                 target_id=inv["id"],
-                conn=conn,
             )
             if not ok:
                 raise ForumError(
-                    "the treasury cannot fund that payment right now - nothing moved."
+                    "the pool cannot fund that payment right now - nothing moved."
                 )
+        else:
+            tx_id = _new_tx_id(conn)
+            _insert_entry(
+                conn,
+                None,
+                "guild",
+                -pay_q,
+                "guild_invoice_payment",
+                "guild",
+                int(guild_id),
+                tx_id=tx_id,
+            )
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                pay_q,
+                "guild_invoice_payment",
+                "invoice",
+                int(inv["id"]),
+                tx_id=tx_id,
+            )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'invoice', ?, ?, ?)",
@@ -421,8 +458,9 @@ def settle_guild_commission(
     escrow_q: int,
     fees_q: int,
 ) -> None:
-    """Fund a posted job from the pool: escrow moves treasury -> escrow
-    bank (the worker's later payout draws it down exactly like v1), and
+    """Fund a posted job from the pool: escrow moves guild wallet -> escrow
+    bank (proposal #611 - the pool's own custody funds it; the worker's
+    later payout draws it down exactly like v1), and
     the commissioned link records the pool's claim (cancel refunds route
     back here). Guild commissions are fee-free: fees_q is accepted and
     ignored (the v1 job_fee spend never runs on the guild path, so the
@@ -430,16 +468,20 @@ def settle_guild_commission(
     single spend, and per-cycle wages + creator legs write no further
     pool memos."""
     import events
-    from db._credits import treasury_to_escrow
+    from db._credits import guild_to_escrow
 
     if escrow_q > 0:
-        treasury_to_escrow(
+        if not guild_to_escrow(
+            conn,
+            int(guild["id"]),
             escrow_q,
             "guild_job_escrow",
             target_type="job",
             target_id=job_id,
-            conn=conn,
-        )
+        ):
+            raise ForumError(
+                "the pool cannot fund that escrow right now - nothing moved."
+            )
         # Outflow kind: pool-funded escrow leaves spendable balance at
         # once (velocity-exempt by kind - only withdrawal/invoice/
         # transfer count). The cancel return rides kind 'job' back in.
@@ -472,20 +514,22 @@ def settle_job_refund(
     """Creator-refund with a guild redirect - the single funnel for all
     five v1 refund sites (cancel, admin-cancel, deletion-close, expiry,
     overdue release). Commissioned jobs return unearned escrow to the
-    pool (treasury-parked + memo, no wallet touches); everything else
-    pays the creator exactly as v1. Returns where it went."""
-    from db._credits import escrow_to_treasury, release_escrow
+    pool wallet (proposal #611 - escrow -> guild paired + memo, no other
+    wallet touches); everything else pays the creator exactly as v1.
+    Returns where it went."""
+    from db._credits import escrow_to_guild, release_escrow
 
     if remaining <= 0:
         return "none"
     link = guild_job_link(conn, job["id"])
     if link is not None and link["role"] == "commissioned":
-        escrow_to_treasury(
+        escrow_to_guild(
+            conn,
+            int(link["guild_id"]),
             remaining,
-            reason,
+            "guild_job_return",
             target_type="job",
             target_id=job["id"],
-            conn=conn,
         )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, note)"
@@ -534,19 +578,21 @@ def link_taken_job(
 
 def settle_taken_wage(conn: sqlite3.Connection, job: sqlite3.Row, link: dict) -> None:
     """Route an accepted cycle's wage to the pool: the outer creator's
-    escrow returns Treasury-parked (not to any wallet) with a pool memo.
-    The executor's worker karma + reward leg still pays personally via the
-    shared award path - only the wage moves."""
-    from db._credits import escrow_to_treasury
+    escrow returns guild-parked (proposal #611 - escrow -> guild paired,
+    not to any citizen wallet) with a pool memo. The executor's worker
+    karma + reward leg still pays personally via the shared award path -
+    only the wage moves."""
+    from db._credits import escrow_to_guild
 
     wage = int(job["payment_units"])
     if wage > 0:
-        escrow_to_treasury(
+        escrow_to_guild(
+            conn,
+            int(link["guild_id"]),
             wage,
             "guild_taken_wage",
             target_type="job",
             target_id=job["id"],
-            conn=conn,
         )
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
@@ -723,14 +769,17 @@ def resolve_guild_jobs_for_disband(
 
         remaining = _remaining_escrow(row)
         if remaining > 0:
-            from db._credits import escrow_to_treasury
+            # Proposal #611: cancelled escrow returns to the pool wallet
+            # (not the treasury) ahead of the waterfall below.
+            from db._credits import escrow_to_guild
 
-            escrow_to_treasury(
+            escrow_to_guild(
+                conn,
+                int(guild_id),
                 remaining,
                 "guild_disband_cancel",
                 target_type="job",
                 target_id=row["job_id"],
-                conn=conn,
             )
             conn.execute(
                 "INSERT INTO guild_ledger (guild_id, kind, units, note)"
@@ -775,8 +824,8 @@ def disband_guild(token: str, guild_id: int, mode: str = "zero") -> dict:
     gated on locks (there is no lock state in v1). Two modes: 'zero'
     needs a zero pool and no live commissioned jobs (pure close);
     'dissolve' pays every member their pro-rata share minus the 2% fee
-    per transfer (atomic single transaction), sweeps the remainder
-    Treasury-parked, and closes. Taken jobs detach; live commissioned
+    per transfer (atomic single transaction), sweeps the wallet remainder
+    to the Treasury paired, and closes. Taken jobs detach; live commissioned
     jobs block both modes until cancelled or finished (their escrow is
     pool money in flight)."""
     if mode not in ("zero", "dissolve"):
@@ -905,11 +954,12 @@ def admin_disband_guild(admin: str, guild_id: int) -> dict:
 
 def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int]:
     """Waterfall with the per-transfer fee: each member takes their
-    pro-rata share minus 2% (pool deducts the full share, the recipient
-    nets share-minus-fee, the treasury keeps the fee it already parks);
-    the remainder sweeps Treasury-parked with a memo. Atomic: any
+    pro-rata share minus 2% from the guild wallet (proposal #611 - pool
+    deducts the full share, the recipient nets share-minus-fee, retained
+    withholds/fees stay pool-owned via guild_retained pairs); the wallet
+    remainder sweeps to the Treasury paired with a memo. Atomic: any
     unfunded grant rolls the whole dissolve back."""
-    from db._credits import grant
+    from db._credits import grant_from_guild, guild_retain_withhold
     from db._guilds import _payout_for
     from db._guilds_treasury import _apply_arrears_withhold
 
@@ -926,22 +976,25 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
         if share <= 0:
             paid[aid] = 0
             continue
-        net, _withheld = _apply_arrears_withhold(conn, gid, aid, share)
+        net, withheld = _apply_arrears_withhold(conn, gid, aid, share)
         fee_q = _guild_fee_u(net) if net > 0 else 0
         if net > 0:
-            ok = grant(
+            ok = grant_from_guild(
+                conn,
                 aid,
                 net - fee_q,
                 "guild_dissolve",
+                int(gid),
                 target_type="guild",
                 target_id=gid,
-                conn=conn,
             )
             if not ok:
                 raise ForumError(
-                    "the treasury cannot fund that distribution right now -"
-                    " nothing moved."
+                    "the pool cannot fund that distribution right now - nothing moved."
                 )
+        retained = withheld + fee_q
+        if retained > 0:
+            guild_retain_withhold(conn, int(gid), retained)
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'withdrawal', ?, ?, 'dissolve distribution')",
@@ -951,11 +1004,40 @@ def _dissolve_distribute(conn: sqlite3.Connection, guild: dict) -> dict[int, int
     from db._guilds_treasury import _void_open_arrears
 
     _void_open_arrears(conn, gid)
-    remainder = guild_balance(conn, gid)
-    if remainder > 0:
+    # Both trails close independently (retained withholds/fees can leave
+    # the memo above the wallet here, same as _disband_distribute).
+    from db._credits import _insert_entry as _diss_entry
+    from db._credits import _new_tx_id as _diss_tx
+    from db._guilds import guild_memo_balance as _diss_memo
+
+    remainder_wallet = guild_balance(conn, gid)
+    if remainder_wallet > 0:
+        _dtx = _diss_tx(conn)
+        _diss_entry(
+            conn,
+            None,
+            "guild",
+            -remainder_wallet,
+            "guild_dissolve_remainder",
+            "guild",
+            int(gid),
+            tx_id=_dtx,
+        )
+        _diss_entry(
+            conn,
+            None,
+            "treasury",
+            remainder_wallet,
+            "guild_dissolve_remainder",
+            "guild",
+            int(gid),
+            tx_id=_dtx,
+        )
+    remainder_memo = _diss_memo(conn, gid)
+    if remainder_memo > 0:
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, note)"
             " VALUES (?, 'withdrawal', ?, 'dissolve remainder to Treasury')",
-            (gid, remainder),
+            (gid, remainder_memo),
         )
     return paid

@@ -524,7 +524,10 @@ def tick_workflow_step(
                     for _k in _kinds:
                         _rows = (
                             _ev.query_events(
-                                agent_id=agent_id, kind=_k, since=_since, limit=20
+                                agent_id=run["agent_id"],
+                                kind=_k,
+                                since=_since,
+                                limit=20,
                             )
                             if _since
                             else []
@@ -932,7 +935,7 @@ def require_workflow_block(
     except Exception:  # domain: degrade-silently
         pass
     row = conn.execute(
-        "SELECT id FROM workflow_runs"
+        "SELECT id, agent_id FROM workflow_runs"
         " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
         + (" AND agent_id = ?" if _per_agent_enabled() else ""),
         (workflow_path, proposal_id) + ((agent_id,) if _per_agent_enabled() else ()),
@@ -1040,7 +1043,7 @@ def require_workflow_block(
                         ):
                             _rows_g = (
                                 _evg.query_events(
-                                    agent_id=agent_id,
+                                    agent_id=int(row["agent_id"]),
                                     kind=_kg,
                                     since=_since_gate,
                                     limit=20,
