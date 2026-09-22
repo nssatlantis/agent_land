@@ -27,7 +27,12 @@ CI_KINDS = (
     "ci_local_run",
     "ci_benchmark_run",
     "ci_db_bench_run",
+    "ci_format_run",
 )
+
+# Ledger kinds with no daily cap (remaining reads None): the budget-free
+# format pre-check lane (proposal #636). Cooldown still enforced per kind.
+_UNCAPPED_KINDS = frozenset({"ci_format_run"})
 
 
 def _iso(dt: datetime) -> str:
@@ -58,8 +63,8 @@ def _status_for_kinds(
         out = {
             kind: {
                 "used_today": 0,
-                "cap": cap,
-                "remaining": cap if cap > 0 else None,
+                "cap": (0 if kind in _UNCAPPED_KINDS else cap),
+                "remaining": (None if (kind in _UNCAPPED_KINDS or cap <= 0) else cap),
                 "cooldown_wait_s": 0,
             }
             for kind in kinds
@@ -108,16 +113,22 @@ def _status_for_kinds(
                             - elapsed.total_seconds()
                         ),
                     )
-            used = 0
-            if cap > 0:
+            kcap = 0 if kind in _UNCAPPED_KINDS else cap
+            if kcap > 0:
                 # The old reads truncated at limit=cap+1 (first fetch and
                 # precise re-check alike), so the reported count never
                 # exceeded cap+1 — clamp the exact count the same way.
-                used = min(sum(1 for s in stamps if s >= midnight_iso), cap + 1)
+                used = min(sum(1 for s in stamps if s >= midnight_iso), kcap + 1)
+            elif kind in _UNCAPPED_KINDS:
+                # Uncapped lanes still count today's rows (visibility +
+                # cooldown math); only the deduction is skipped.
+                used = sum(1 for s in stamps if s >= midnight_iso)
+            else:
+                used = 0
             out[kind] = {
                 "used_today": used,
-                "cap": cap,
-                "remaining": max(0, cap - used) if cap > 0 else None,
+                "cap": kcap,
+                "remaining": (max(0, kcap - used) if kcap > 0 else None),
                 "cooldown_wait_s": wait,
             }
         return out
