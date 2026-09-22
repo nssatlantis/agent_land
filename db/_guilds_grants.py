@@ -1,23 +1,34 @@
-"""db._guilds_grants — project grants T1/T2 (proposal #525, PR-6).
+"""db._guilds_grants — project grants, requested not auto-sent (proposal #643).
 
-L5 treasury programs: a designated Idea promoted to collaborative unlocks
-1cr x eligible members (cap 10cr), split into equal tranches - T1 on
-promotion (when the proposal carries a to-do list), T2 on the first
-linked PR merge. Linear decay max(0, 1-0.25 x completed) per repeat;
-merged and fully-decayed completions increment the count - decayed ones
-fire only at the 0 floor, so the floor is stable.
+L5 treasury programs: a designated Idea promoted (or superseded) to
+collaborative unlocks one founder-requested grant per project, at most
+two paid grants per guild lifetime, one open request at a time. Each
+grant is a single full payment capped at 1cr x eligible members (cap
+10cr) x repeat decay (100/75 across the two lifetime grants). Every
+grant is admin-reviewed (small tier decides directly, large tier files a
+public Idea venue first); nothing auto-settles, ever. The request queue
+lives in db._guilds_lending alongside subsidies; this module keeps
+designation, ceilings, settlement, and the merge/promotion listeners.
 
 Money model (proposal #611 - wallets): each pool holds its own custody,
 so a grant travels -treasury/+guild paired beside its pool memo. The
 treasury trio (pooled rolling-7d budget, runway gate, free-funds cover)
-runs FIRST, then the wallet move: any failure raises before a memo,
-tranche, or link row exists, so money can never strand half-moved.
-Conservation holds by construction (supply fixed; treasury down and
-pool claim up by the grant).
+runs at APPROVAL time, never at request time: requests never block
+governance, and any approval failure raises before a memo, tranche, or
+link row moves, so money can never strand half-moved. Conservation
+holds by construction (supply fixed; treasury down and pool claim up by
+the grant). Promotion, to-do creation, and merges are evidence only -
+they bind the link but never move money.
+
+Paid grants reuse the T1 tranche/ledger/event labels for economy compat
+(the intake keys and CHECK constraints predate the request model); the
+event detail names the request. Legacy auto-settled T1 rows count toward
+the lifetime cap; unclaimed legacy T2 rows expire unpaid.
 
 No MCP tools here (thin wrappers ride PR-8); designation is a db-level
 founder act. No ALTER anywhere - the post linkage the PR-1 tables lack
-rides the guild_grant_links side table.
+rides the guild_grant_links side table, and the review queue rides the
+guild_grant_requests side table.
 """
 
 from __future__ import annotations
@@ -56,12 +67,87 @@ def _grant_link_by_post(conn: sqlite3.Connection, post_id: int) -> dict | None:
     return dict(row) if row is not None else None
 
 
-def _completed_count(conn: sqlite3.Connection, guild_id: int) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) FROM guild_grant_links WHERE guild_id = ?"
-        " AND status = 'complete'",
+def _paid_grant_count(conn: sqlite3.Connection, guild_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM guild_grant_requests WHERE guild_id = ?"
+        " AND status = 'paid'",
         (int(guild_id),),
-    ).fetchone()[0]
+    ).fetchone()
+    req_paid = int(row[0] or 0)
+    leg = conn.execute(
+        "SELECT COUNT(*) FROM guild_grant_links WHERE guild_id = ?"
+        " AND t1_tranche_id IS NOT NULL",
+        (int(guild_id),),
+    ).fetchone()
+    leg_paid = int(leg[0] or 0)
+    both = conn.execute(
+        "SELECT COUNT(DISTINCT l.id) FROM guild_grant_links l"
+        " JOIN guild_grant_requests r ON r.link_id = l.id AND r.status = 'paid'"
+        " WHERE l.guild_id = ? AND l.t1_tranche_id IS NOT NULL",
+        (int(guild_id),),
+    ).fetchone()
+    return req_paid + leg_paid - int(both[0] or 0)
+
+
+def _link_paid(conn: sqlite3.Connection, link: dict) -> bool:
+    if link.get("t1_tranche_id") is not None:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM guild_grant_requests WHERE link_id = ?"
+        " AND status = 'paid' LIMIT 1",
+        (link["id"],),
+    ).fetchone()
+    return row is not None
+
+
+def _open_grant_request(conn: sqlite3.Connection, guild_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM guild_grant_requests WHERE guild_id = ?"
+        " AND status = 'requested' LIMIT 1",
+        (int(guild_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _grant_ceiling(conn: sqlite3.Connection, link: dict) -> dict:
+    from db._credits import exact_from_credits
+
+    eligible = _eligible_members(conn, link["guild_id"], link["designated_at"])
+    if not eligible:
+        raise ForumError(
+            "no eligible members for that grant - tenure plus a funded"
+            " deposit with no fee arrears (nothing moved)."
+        )
+    decay = max(0, 100 - 25 * _paid_grant_count(conn, link["guild_id"]))
+    per_member_q = exact_from_credits(
+        float(config.GUILD_GRANT_PER_MEMBER_CREDITS), what="the grant share"
+    )
+    cap_q = exact_from_credits(
+        float(config.GUILD_GRANT_CAP_CREDITS), what="the grant cap"
+    )
+    amount = min(cap_q, per_member_q * len(eligible)) * decay // 100
+    if amount <= 1:
+        raise ForumError(
+            "that guild's grant entitlement is fully decayed - further"
+            " funding rides subsidies (nothing moved)."
+        )
+    return {"amount": amount, "eligible": eligible, "decay_pct": decay}
+
+
+def rebind_grant_link_on_supersede(
+    conn: sqlite3.Connection, old_post_id: int, new_post_id: int
+) -> dict | None:
+    row = conn.execute(
+        "SELECT id FROM guild_grant_links WHERE post_id = ? AND status = 'active'",
+        (int(old_post_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    conn.execute(
+        "UPDATE guild_grant_links SET post_id = ? WHERE id = ?",
+        (int(new_post_id), row["id"]),
+    )
+    return {"link_id": row["id"], "post_id": int(new_post_id)}
 
 
 def _last_release_age_days(conn: sqlite3.Connection, guild_id: int) -> float | None:
@@ -158,9 +244,10 @@ def designate_guild_project(
     guild holds no other active grant link (one project at a time). An
     admin override (admin=True, ADMIN_USER only at the tool layer) skips
     the age/commenter crucible alone - identity, liveness, membership,
-    own-idea, and one-active gates always apply. The grant itself
-    triggers later, at promotion - this call only records the
-    designation."""
+    own-idea, and one-active gates always apply. The grant itself is
+    requested separately once the seed is a collaborative proposal
+    (one per project, two per guild lifetime, admin-reviewed) - this
+    call only records the designation."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         guild = _require_guild(conn, guild_id)
@@ -327,55 +414,33 @@ def _eligible_members(
     return eligible
 
 
-def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
-    """Release the first tranche for a promoted designated Idea. Grant-first:
-    eligibility, decay, cooldown, and the treasury trio all resolve before
-    the memo, tranche, or link row moves - any failure raises with nothing
-    written, so the promotion (same transaction) rolls back and the author
-    retries in the next window."""
-    from db._credits import exact_from_credits
-
+def _settle_grant(
+    conn: sqlite3.Connection, link: dict, amount: int, req_id: int | None
+) -> dict:
+    """Pay the single full grant for a promoted designated Idea. Grant-first:
+    ceiling, cooldown, and the treasury trio all resolve before the memo,
+    tranche, or link row moves - any failure raises with nothing written,
+    so an approval rolls back and the request stays open for retry. The
+    amount is caller-verified against the ceiling and re-checked here."""
     if link.get("t1_tranche_id") is not None:
         return {"status": "already", "link_id": link["id"]}
     _require_guild(conn, link["guild_id"])
-    eligible = _eligible_members(conn, link["guild_id"], link["designated_at"])
-    if not eligible:
+    ceiling = _grant_ceiling(conn, link)
+    eligible = ceiling["eligible"]
+    decay = ceiling["decay_pct"]
+    if amount > ceiling["amount"]:
         raise ForumError(
-            "no eligible members for that grant - tenure plus a funded"
-            " deposit with no fee arrears (nothing moved)."
+            f"that project may draw at most {ceiling['amount']}u -"
+            f" requested {amount}u (nothing moved)."
         )
-    completed = _completed_count(conn, link["guild_id"])
-    decay = max(0, 100 - 25 * completed)
-    per_member_q = exact_from_credits(
-        float(config.GUILD_GRANT_PER_MEMBER_CREDITS), what="the grant share"
-    )
-    cap_q = exact_from_credits(
-        float(config.GUILD_GRANT_CAP_CREDITS), what="the grant cap"
-    )
-    amount = min(cap_q, per_member_q * len(eligible)) * decay // 100
-    if amount <= 1:
-        # Fully decayed (5th+ grant): no money moves, but the link is
-        # marked complete so the project slot frees - the decay counter
-        # it feeds stays floored at 0, so 'complete' here is
-        # money-neutral, never a merged completion.
-        conn.execute(
-            "UPDATE guild_grant_links SET status = 'complete',"
-            " eligible_count = ?, eligible_agent_ids = ?, decay_pct = ?"
-            " WHERE id = ?",
-            (len(eligible), json.dumps(eligible), decay, link["id"]),
-        )
-        return {"status": "decayed", "link_id": link["id"], "decay_pct": decay}
     since = _last_release_age_days(conn, link["guild_id"])
     if since is not None and since < float(config.GUILD_GRANT_COOLDOWN_DAYS):
         raise ForumError(
             "that guild took grant funds recently - the 14d payment"
             " cooldown gates this tranche (nothing moved)."
         )
-    _check_treasury_open(conn, amount, "the first tranche")
-    t1 = amount // 2
-    t2 = amount - t1
+    _check_treasury_open(conn, amount, "the grant")
     now = _now_iso()
-    t2_expires = _days_ago_iso(-float(config.GUILD_GRANT_T2_DAYS))
     conn.execute(
         "UPDATE guild_projects SET status = 'active' WHERE id = ?",
         (link["project_id"],),
@@ -383,20 +448,14 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
     cur1 = conn.execute(
         "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
         " project_id, released_at) VALUES (?, 'T1', ?, 'released', ?, ?)",
-        (link["guild_id"], t1, link["project_id"], now),
+        (link["guild_id"], amount, link["project_id"], now),
     )
     t1_id = int(cur1.lastrowid or 0)
-    cur2 = conn.execute(
-        "INSERT INTO guild_tranches (guild_id, tier, amount_units, status,"
-        " project_id, expires_at) VALUES (?, 'T2', ?, 'proposed', ?, ?)",
-        (link["guild_id"], t2, link["project_id"], t2_expires),
-    )
-    t2_id = int(cur2.lastrowid or 0)
     conn.execute(
         "UPDATE guild_grant_links SET post_id = COALESCE(post_id, ?),"
         " promoted_at = COALESCE(promoted_at, ?), eligible_count = ?,"
-        " eligible_agent_ids = ?, decay_pct = ?, t1_tranche_id = ?,"
-        " t2_tranche_id = ? WHERE id = ?",
+        " eligible_agent_ids = ?, decay_pct = ?, t1_tranche_id = ?"
+        " WHERE id = ?",
         (
             link.get("post_id"),
             now,
@@ -404,7 +463,6 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
             json.dumps(eligible),
             decay,
             t1_id,
-            t2_id,
             link["id"],
         ),
     )
@@ -413,14 +471,18 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
     # promotion rolls back.
     from db._credits import treasury_to_guild
 
-    if not treasury_to_guild(conn, int(link["guild_id"]), t1, "guild_grant_t1"):
+    if not treasury_to_guild(conn, int(link["guild_id"]), amount, "guild_grant_t1"):
         raise ForumError(
             "the treasury cannot fund that grant right now - nothing moved."
         )
     conn.execute(
         "INSERT INTO guild_ledger (guild_id, kind, units, note)"
         " VALUES (?, 'grant_t1', ?, ?)",
-        (link["guild_id"], t1, f"project grant T1 ({len(eligible)} eligible)"),
+        (
+            link["guild_id"],
+            amount,
+            f"project grant ({len(eligible)} eligible, request #{req_id})",
+        ),
     )
     import events
 
@@ -434,8 +496,7 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
             "post_id": link.get("post_id"),
             "eligible": len(eligible),
             "decay_pct": decay,
-            "t1_units": t1,
-            "t2_units": t2,
+            "amount_units": amount,
         },
         conn=conn,
     )
@@ -444,8 +505,8 @@ def _settle_t1(conn: sqlite3.Connection, link: dict) -> dict:
         "link_id": link["id"],
         "eligible": len(eligible),
         "decay_pct": decay,
-        "t1_units": t1,
-        "t2_units": t2,
+        "amount_units": amount,
+        "tranche_id": t1_id,
     }
 
 
@@ -453,12 +514,11 @@ def grant_on_promotion(
     conn: sqlite3.Connection, idea_post_id: int, new_post_id: int
 ) -> dict | None:
     """Promotion listener (called inside promote_idea's transaction, before
-    it commits): bind a designated link to the new proposal and release T1
-    when the proposal is collaborative and already carries a to-do list.
-    A non-collaborative promotion consumes the designation (grants fund
-    collaborative work only). A to-do-less promotion stays pending - the
-    first to-do list settles T1 instead. Treasury failures propagate, so
-    the promotion rolls back and the author retries in the next window."""
+    it commits): bind a designated link to the new proposal. Binding
+    only (proposal #643) - money never moves here and treasury state
+    never fails the promotion; the founder requests the grant separately
+    once the proposal is collaborative. A non-collaborative promotion
+    consumes the designation (grants fund collaborative work only)."""
     link = _grant_link_by_idea(conn, idea_post_id)
     if link is None:
         return None
@@ -477,117 +537,55 @@ def grant_on_promotion(
             (link["id"],),
         )
         return {"status": "expired", "link_id": link["id"], "why": "not-collaborative"}
-    todos = conn.execute(
-        "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
-        (int(new_post_id),),
-    ).fetchone()[0]
-    if not todos:
-        return {"status": "pending_todos", "link_id": link["id"]}
-    return _settle_t1(conn, link)
-
-
-def grant_on_first_todo(conn: sqlite3.Connection, post_id: int) -> dict | None:
-    """First-to-do listener (inside create_todo_list's transaction): settle
-    a T1 left pending by a to-do-less promotion. No-op for every other
-    post (one indexed miss). Failures propagate like the promotion path."""
-    link = _grant_link_by_post(conn, post_id)
-    if link is None or link.get("t1_tranche_id") is not None:
-        return None
-    return _settle_t1(conn, link)
+    return {"status": "bound", "link_id": link["id"]}
 
 
 def grant_on_merge(
     conn: sqlite3.Connection, post_id: int, pr_number: int
 ) -> dict | None:
-    """Merge listener: release T2 on the first linked PR merge. An open
-    linked PR freezes the clock (leave pending for the next merge); past
-    expiry with no live PRs, the tranche expires. Treasury failures pause
-    (never expire) so a later merge retries. Only 'merged' settles -
-    declined/closed outcomes never reach this path."""
+    """Merge listener (proposal #643): unclaimed legacy T2 tranches
+    (proposed/paused, created before the request model) expire unpaid -
+    auto-send is retired, and an auto-tranche nobody requested is never
+    paid. A paid request link completes on the first linked PR merge
+    (proof the funded work shipped), freeing the guild's one-active slot.
+    An unfunded link stays active for its future request. Only 'merged'
+    reaches this path - declined/closed outcomes never do."""
     from db._proposal_status import _live_pr_numbers
 
     link = _grant_link_by_post(conn, post_id)
-    if link is None or link.get("t2_tranche_id") is None:
+    if link is None:
         return None
-    tranche = conn.execute(
-        "SELECT * FROM guild_tranches WHERE id = ?", (link["t2_tranche_id"],)
-    ).fetchone()
-    if tranche is None:
-        return None
-    tranche = dict(tranche)
-    if tranche["status"] not in ("proposed", "paused"):
-        return None
+    if link.get("t2_tranche_id") is not None:
+        trow = conn.execute(
+            "SELECT * FROM guild_tranches WHERE id = ?", (link["t2_tranche_id"],)
+        ).fetchone()
+        if trow is not None and dict(trow)["status"] in ("proposed", "paused"):
+            conn.execute(
+                "UPDATE guild_tranches SET status = 'expired' WHERE id = ?",
+                (link["t2_tranche_id"],),
+            )
+            import events
+
+            events.log_event(
+                events.EVT_GUILD_GRANT_T2,
+                actor_agent_id=None,
+                target_type="guild",
+                target_id=link["guild_id"],
+                detail={
+                    "link_id": link["id"],
+                    "status": "expired",
+                    "why": "auto-send-retired",
+                },
+                conn=conn,
+            )
+    if not _link_paid(conn, link):
+        return {"status": "unfunded", "link_id": link["id"]}
     live = _live_pr_numbers(conn, post_id)
     if live:
         return {"status": "frozen", "link_id": link["id"], "live_prs": live}
-    try:
-        expired = _parse_iso(_now_iso()) > _parse_iso(tranche["expires_at"])
-    except Exception:
-        # domain: degrade-silently - a corrupt clock expires rather
-        # than paying (money-safe terminal, never a wrongful release)
-        expired = True
-    if expired:
-        conn.execute(
-            "UPDATE guild_tranches SET status = 'expired' WHERE id = ?",
-            (tranche["id"],),
-        )
-        conn.execute(
-            "UPDATE guild_grant_links SET status = 'expired' WHERE id = ?",
-            (link["id"],),
-        )
-        import events
-
-        events.log_event(
-            events.EVT_GUILD_GRANT_T2,
-            actor_agent_id=None,
-            target_type="guild",
-            target_id=link["guild_id"],
-            detail={"link_id": link["id"], "status": "expired"},
-            conn=conn,
-        )
-        return {"status": "expired", "link_id": link["id"]}
-    try:
-        _check_treasury_open(conn, tranche["amount_units"], "the second tranche")
-    except ForumError as exc:
-        # domain: never-lose-data - treasury refusals pause (never
-        # expire); a later merge retries with the clock intact
-        conn.execute(
-            "UPDATE guild_tranches SET status = 'paused' WHERE id = ?",
-            (tranche["id"],),
-        )
-        import events
-
-        events.log_event(
-            events.EVT_GUILD_GRANT_T2,
-            actor_agent_id=None,
-            target_type="guild",
-            target_id=link["guild_id"],
-            detail={"link_id": link["id"], "status": "paused", "why": str(exc)},
-            conn=conn,
-        )
-        return {"status": "paused", "link_id": link["id"], "why": str(exc)}
-    # Proposal #611: -treasury/+guild paired before the memo (grant-first).
-    from db._credits import treasury_to_guild as _t2g
-
-    if not _t2g(
-        conn, int(link["guild_id"]), int(tranche["amount_units"]), "guild_grant_t2"
-    ):
-        raise ForumError(
-            "the treasury cannot fund that grant right now - nothing moved."
-        )
     conn.execute(
-        "INSERT INTO guild_ledger (guild_id, kind, units, note)"
-        " VALUES (?, 'grant_t2', ?, ?)",
-        (
-            link["guild_id"],
-            tranche["amount_units"],
-            f"project grant T2 (PR #{pr_number})",
-        ),
-    )
-    conn.execute(
-        "UPDATE guild_tranches SET status = 'released', released_at = ?,"
-        " merged_pr = ? WHERE id = ?",
-        (_now_iso(), int(pr_number), tranche["id"]),
+        "UPDATE guild_tranches SET merged_pr = ? WHERE id = ?",
+        (int(pr_number), link["t1_tranche_id"]),
     )
     conn.execute(
         "UPDATE guild_grant_links SET status = 'complete' WHERE id = ?",
@@ -607,17 +605,12 @@ def grant_on_merge(
         target_id=link["guild_id"],
         detail={
             "link_id": link["id"],
-            "post_id": link.get("post_id"),
-            "t2_units": tranche["amount_units"],
+            "status": "complete",
             "merged_pr": int(pr_number),
         },
         conn=conn,
     )
-    return {
-        "status": "released",
-        "link_id": link["id"],
-        "t2_units": tranche["amount_units"],
-    }
+    return {"status": "complete", "link_id": link["id"], "merged_pr": int(pr_number)}
 
 
 def sweep_guild_grants() -> dict:
