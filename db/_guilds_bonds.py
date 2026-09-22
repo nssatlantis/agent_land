@@ -138,7 +138,7 @@ def guild_buy_bond(
         exact_from_credits,
         fee_units,
         format_credits,
-        grant,
+        grant_from_guild,
     )
 
     face = int(exact_from_credits(float(face_credits), what="the bond face"))
@@ -185,19 +185,19 @@ def guild_buy_bond(
         from db._guilds_money import _require_spend_allowed
 
         _require_spend_allowed(conn, guild, total, "bond buy", velocity_exempt=True)
-        # Grant-first: the treasury leg lands before any memo or bond row.
-        ok = grant(
+        # Grant-first: the guild-wallet leg lands before any memo or bond
+        # row (proposal #611 - the pool's own custody funds the conduit).
+        ok = grant_from_guild(
+            conn,
             agent["id"],
             total,
             "guild_bond_conduit",
+            int(gid),
             target_type="bond",
             target_id=int(series_id),
-            conn=conn,
         )
         if not ok:
-            raise ForumError(
-                "the treasury cannot fund that buy right now - nothing moved."
-            )
+            raise ForumError("the pool cannot fund that buy right now - nothing moved.")
         conn.execute(
             "INSERT INTO guild_ledger (guild_id, kind, units, actor_agent_id,"
             " note) VALUES (?, 'bond_lock', ?, ?, 'pool bond buy')",
@@ -245,11 +245,11 @@ def _move_bond_payout_poolward(
     conn: sqlite3.Connection, bond_id: int, owner_id: int, units: int
 ) -> int | None:
     """Route a founder-received bond payout to its pool: spend back to
-    the treasury plus a 'bond' inflow memo. Returns the guild id, or
-    None when the bond is not pool-claimed. Raises on failure - every
-    caller runs inside an atomic transaction (redeem's whole-tx
-    rollback, forfeit's per-bond retry), so a failure never strands
-    half-moved money."""
+    the guild wallet (proposal #611) plus a 'bond' inflow memo. Returns
+    the guild id, or None when the bond is not pool-claimed. Raises on
+    failure - every caller runs inside an atomic transaction (redeem's
+    whole-tx rollback, forfeit's per-bond retry), so a failure never
+    strands half-moved money."""
     from db._credits import spend
 
     link = _guild_bond_link(conn, bond_id)
@@ -261,7 +261,7 @@ def _move_bond_payout_poolward(
         int(owner_id),
         int(units),
         "guild_bond_payout",
-        dest_treasury=True,
+        dest_guild=int(link["guild_id"]),
         target_type="bond",
         target_id=int(bond_id),
         conn=conn,

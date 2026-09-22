@@ -20,7 +20,9 @@ import events  # noqa: E402
 from db._credits import UNITS_PER_CREDIT  # noqa: E402
 from tests._setup import config, db, moderation, reports, setup  # noqa: E402
 
-AGENTS, BASE_POST = setup()  # setup() boots via init() internally; no second boot
+db.init_db()
+
+AGENTS, BASE_POST = setup()
 
 
 def _bal(agent_id: int) -> int:
@@ -1211,17 +1213,21 @@ def test_treasury_runway_overview_wiring():
 
 
 def test_flow_summarize_guild_and_bond_intake():
-    """_summarize_flows exposes guild_intake_units and bond_intake_units
-    for guild deposit/bond fee treasury legs. spend() appends _intake to
-    the treasury-side reason, so the flow keys are suffixed."""
-    # Correct keys: spend() appends _intake to the treasury leg
+    """_summarize_flows exposes guild_intake_units and bond_intake_units.
+    Since proposal #611 pool principal lands in the guild wallets, so the
+    bucket sums the guild-account intake slice beside the treasury-side
+    deposit fee; spend() still appends _intake to treasury legs."""
+    # Correct keys: treasury-side fee plus guild-account principal slice
     flows = {
-        "guild_deposit_intake": 500,
         "guild_deposit_fee_intake": 20,
         "bond_buy_fee_intake": 50,
         "tag_apply_intake": 10,
     }
-    r = economy._summarize_flows(flows)
+    guild_flows = {
+        "guild_deposit_intake": 500,
+        "guild_retained": 7,
+    }
+    r = economy._summarize_flows(flows, guild_flows)
     assert r["guild_intake_units"] == 520, r["guild_intake_units"]
     assert r["bond_intake_units"] == 50, r["bond_intake_units"]
     # Existing buckets still work: tag_apply_intake is in spend_intake
@@ -1230,12 +1236,14 @@ def test_flow_summarize_guild_and_bond_intake():
     empty = economy._summarize_flows({})
     assert empty["guild_intake_units"] == 0
     assert empty["bond_intake_units"] == 0
+    assert empty["guild_outflows_units"] == 0
     print("  flow_summarize_guild_and_bond_intake: ok")
 
 
 def test_flow_guild_and_bond_live_spend():
-    """Live-path: spend() with dest_treasury=True writes _intake-suffixed
-    reasons, and _summarize_flows picks them up into the correct bars."""
+    """Live-path: spend() with dest_guild= writes the guild-wallet leg
+    and _summarize_flows picks pool principal up into guild_intake while
+    the treasury-side fee stays treasury-parked."""
     from db._credits import spend
 
     agent_id = AGENTS["alpha"]["agent_id"]
@@ -1246,9 +1254,7 @@ def test_flow_guild_and_bond_live_spend():
         agent_id,
         300,
         "guild_deposit",
-        dest_treasury=True,
-        target_type="guild",
-        target_id=1,
+        dest_guild=1,
     )
     spend(
         agent_id,

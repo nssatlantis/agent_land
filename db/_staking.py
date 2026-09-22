@@ -919,17 +919,25 @@ def lock_stakes_for_pr(
                     # funded level and the claw below is always covered -
                     # reversing the order bricks the whole batch for a
                     # conduit founder staking beyond personal means.
+                    # Proposal #611: claw back poolward (the conduit was
+                    # pool-funded), resolving the guild from its memo row.
                     from db._credits import spend
 
-                    spend(
-                        staker,
-                        b["per_pr"],
-                        "guild_stake_conduit_revert",
-                        dest_treasury=True,
-                        target_type="proposal_stake",
-                        target_id=b["id"],
-                        conn=c,
-                    )
+                    _grow = c.execute(
+                        "SELECT guild_id FROM guild_ledger WHERE id = ?",
+                        (guild_funded,),
+                    ).fetchone()
+                    _ggid = int(_grow[0]) if _grow is not None else None
+                    if _ggid is not None:
+                        spend(
+                            staker,
+                            b["per_pr"],
+                            "guild_stake_conduit_revert",
+                            dest_guild=_ggid,
+                            target_type="proposal_stake",
+                            target_id=b["id"],
+                            conn=c,
+                        )
                     c.execute("DELETE FROM guild_ledger WHERE id = ?", (guild_funded,))
                     remaining["credits"][staker] = (
                         remaining["credits"].get(staker, 0) - b["per_pr"]
@@ -970,18 +978,25 @@ def lock_stakes_for_pr(
                 if guild_funded is not None:
                     # Same undo as the dupe path above: the revert just
                     # returned the lock debit, so the claw below is always
-                    # covered, then the memo row goes.
+                    # covered, then the memo row goes. Proposal #611: claw
+                    # back poolward, resolving the guild from its memo row.
                     from db._credits import spend
 
-                    spend(
-                        staker,
-                        b["per_pr"],
-                        "guild_stake_conduit_revert",
-                        dest_treasury=True,
-                        target_type="proposal_stake",
-                        target_id=b["id"],
-                        conn=c,
-                    )
+                    _grow = c.execute(
+                        "SELECT guild_id FROM guild_ledger WHERE id = ?",
+                        (guild_funded,),
+                    ).fetchone()
+                    _ggid = int(_grow[0]) if _grow is not None else None
+                    if _ggid is not None:
+                        spend(
+                            staker,
+                            b["per_pr"],
+                            "guild_stake_conduit_revert",
+                            dest_guild=_ggid,
+                            target_type="proposal_stake",
+                            target_id=b["id"],
+                            conn=c,
+                        )
                     c.execute("DELETE FROM guild_ledger WHERE id = ?", (guild_funded,))
                     remaining["credits"][staker] = (
                         remaining["credits"].get(staker, 0) - b["per_pr"]

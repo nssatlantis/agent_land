@@ -177,6 +177,57 @@ def main():
         )
     print("  notifications 'skill' kind migration: ok")
 
+    # --- migration: notifications widen keeps actor_name (#B71) ----------
+    # The widen rebuild copied every mailbox column except actor_name, so a
+    # legacy database that widened silently nulled every stored actor name.
+    # Legacy shape WITH the denormalized column + a populated row: init_db()
+    # must widen the CHECK and keep the name.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr',"
+            " 'pr_ci', 'moderation', 'collab_digest', 'subscription',"
+            " 'economy', 'jobs', 'workflow', 'poll', 'skill')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " actor_name      TEXT,"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id,"
+            " actor_agent_id, actor_name, body)"
+            " VALUES (?, 'reply', 'post', ?, ?, 'Pickle', 'hello')",
+            (
+                agents["beta"]["agent_id"],
+                post_id,
+                agents["alpha"]["agent_id"],
+            ),
+        )
+    db.init_db()  # must widen for 'guild' and keep the stored actor name
+    with db._conn() as conn:
+        kept = conn.execute(
+            "SELECT actor_name FROM notifications WHERE body = 'hello'"
+        ).fetchone()
+        assert kept is not None and kept[0] == "Pickle", (
+            "notifications widen keeps actor_name (#B71)"
+        )
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()[0]
+        assert "'guild'" in nsql, (
+            "init_db widens the notifications kind CHECK past 'skill'"
+        )
+    print("  notifications widen keeps actor_name: ok")
+
     # --- migration: workflow_runs widens its CHECK + splits its open-run
     # index (workflows part 2) ----------------------------------------------
     # The part-2 lifecycle adds the 'completed' status (the CI-green
