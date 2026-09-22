@@ -216,6 +216,33 @@ def test_delete_agent_fk_sweep():
             "INSERT INTO pr_rows (pr_number, citizen_agent_id) VALUES (910001, ?)",
             (victim["agent_id"],),
         )
+        # A guild-grant request queue naming the victim on each agent leg
+        # (proposal #643): one row filed by the victim, one decided by
+        # them. The sweep deletes queue rows outright.
+        conn.execute(
+            "INSERT INTO guilds (name, founder_agent_id) VALUES ('fk guild', ?)",
+            (helper["agent_id"],),
+        )
+        fg = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO guild_grant_links (guild_id, idea_post_id,"
+            " designated_by, designated_at)"
+            " VALUES (?, ?, ?, '2026-09-22T00:00:00.000Z')",
+            (fg, spost, helper["agent_id"]),
+        )
+        fl = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by, decided_by)"
+            " VALUES (?, ?, ?, 1, 20, ?, ?)",
+            (fg, fl, spost, victim["agent_id"], helper["agent_id"]),
+        )
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by, decided_by)"
+            " VALUES (?, ?, ?, 2, 20, ?, ?)",
+            (fg, fl, spost, helper["agent_id"], victim["agent_id"]),
+        )
 
     # Seed sanity: the agent row must not come out clean until every arm
     # above is swept. delete_agent raises on the first dangling FK.

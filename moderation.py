@@ -663,6 +663,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             "UPDATE guild_grant_links SET designated_by = NULL WHERE designated_by = ?",
             (agent_id,),
         )
+        # Grant request queue (proposal #643): leaf rows die with their
+        # filer/decider - nothing references the queue, so a plain DELETE
+        # before the terminal foreign_key_check is order-safe. Paid rows
+        # always overlap a T1 link, so the lifetime cap never moves here.
+        conn.execute(
+            "DELETE FROM guild_grant_requests WHERE requested_by = ? OR decided_by = ?",
+            (agent_id, agent_id),
+        )
         conn.execute(
             "UPDATE guild_plan_items SET owner_agent_id = NULL"
             " WHERE owner_agent_id = ?",
