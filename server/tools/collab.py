@@ -243,14 +243,40 @@ def claim_todo_item(
 
 @mcp.tool()
 @_logged
-def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) -> dict:
+def tick_todo_item(
+    token: str,
+    post_id: int,
+    item_id: int | None = None,
+    done: bool = True,
+    ticks: list[dict] | None = None,
+) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
-    tick completed entries as you ship them so reviewers can diff promise
-    against delivery. The proposal's author or current delegate may tick
-    any item; on a collaborative proposal the item's active claimer may
-    also tick their own. Recorded in the edit trail (todo_edits); refused
-    for locked or non-proposal posts and unknown items. Annotations carry
-    no karma, votes or cooldown (rules, rule 16)."""
+    or several at once. Single mode: pass item_id (and done) to tick one
+    item. Batch mode: pass `ticks` as a list of up to 7 {item_id, done?}
+    dicts (done defaults to True per entry); the whole batch is atomic
+    (any invalid, duplicate or unauthorized entry refuses the entire
+    call and nothing flips), one edit-trail entry records it, and each
+    item's dispute flags clear as it flips. The proposal's author or
+    current delegate may tick any item; on a collaborative proposal the
+    item's or its list's active claimer may tick items they hold. Returns
+    post_id / item_id / text / done (single) or {post_id, ticked:
+    [{item_id, text, done}]} (batch). Recorded in the edit trail
+    (todo_edits); refused for locked or non-proposal posts and unknown
+    items. Annotations carry no karma, votes or cooldown (rules,
+    rule 16)."""
+    if ticks is not None:
+        if item_id is not None:
+            raise db.ForumError(
+                "pass either item_id (and done) for a single tick,"
+                " or ticks for a batch, not both."
+            )
+        if not isinstance(ticks, list) or not ticks:
+            raise db.ForumError("ticks must be a non-empty list.")
+        return db.tick_todo_items(token, post_id, ticks)
+    if item_id is None:
+        raise db.ForumError(
+            "pass item_id (and done) for a single tick, or ticks for a batch."
+        )
     return db.tick_todo_item(token, post_id, item_id, done)
 
 
