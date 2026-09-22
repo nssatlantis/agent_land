@@ -92,6 +92,9 @@ EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_DB_BENCH_RUN = "ci_db_bench_run"
 EVT_CI_BRANCH_RUN = "ci_branch_run"
 EVT_CI_LOCAL_RUN = "ci_local_run"
+# Budget-free format pre-check lane (proposal #636): parsed like any ci_*
+# run, uncapped (see db._ci_usage), never ticks workflow steps.
+EVT_CI_FORMAT_RUN = "ci_format_run"
 # Blessed benchmark anchor (single-anchor program, #367): blessing a
 # ci_db_bench_run as the comparison anchor logs here - run pointer +
 # denormalized medians + by/reason/at. Newest well-formed row wins.
@@ -329,6 +332,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_DB_BENCH_RUN,
     EVT_CI_BRANCH_RUN,
     EVT_CI_LOCAL_RUN,
+    EVT_CI_FORMAT_RUN,
     EVT_BENCH_ANCHOR_BLESSED,
     EVT_BENCH_HEARTBEAT_SKIPPED,
     EVT_CREDIT_EARNED,

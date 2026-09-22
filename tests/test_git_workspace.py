@@ -510,6 +510,48 @@ def test_pool_counters_track_saturation_fallback():
     print("  pool counters track saturation fallback: ok")
 
 
+def test_scrub_aborts_in_progress_merge():
+    """Bug #80: a failed resolve leaves MERGE_HEAD plus a conflicted
+    worktree with HEAD on pr_head. The scrub must abort the merge first:
+    without it `checkout -B` refuses on unmerged paths and `branch -D`
+    refuses the checked-out branch (both check=False, silently ignored), so
+    pr_head survives and the next `checkout -b pr_head` dies with 'already
+    exists' forever. Drive a real conflicting merge --no-commit plus a
+    simulated resolve failure, then prove the next acquire is clean."""
+    sb = _PoolSandbox(pool=1)
+    try:
+        try:
+            with gh._workspace() as d:
+                _git("checkout", "-b", "pr_head", "origin/main", cwd=d)
+                with open(os.path.join(d, "README.md"), "w") as f:
+                    f.write("pr-side\n")
+                _git("-C", d, "add", "-A")
+                _git("-C", d, "commit", "-m", "pr-side")
+                _git("-C", d, "checkout", "main")
+                with open(os.path.join(d, "README.md"), "w") as f:
+                    f.write("main-side\n")
+                _git("-C", d, "commit", "-a", "-m", "main-side")
+                _git("-C", d, "checkout", "pr_head")
+                r = subprocess.run(
+                    ["git", "merge", "--no-commit", "--no-ff", "main"],
+                    cwd=d,
+                    capture_output=True,
+                )
+                assert r.returncode != 0, "fixture must conflict"
+                assert os.path.exists(os.path.join(d, ".git", "MERGE_HEAD"))
+                raise RuntimeError("simulated resolve failure")
+        except RuntimeError:
+            pass
+        with gh._workspace() as d2:
+            assert not os.path.exists(os.path.join(d2, ".git", "MERGE_HEAD")), (
+                "scrub must abort the in-progress merge"
+            )
+            _git("checkout", "-b", "pr_head", "origin/main", cwd=d2)
+    finally:
+        sb.close()
+    print("  scrub aborts an in-progress merge (bug #80): ok")
+
+
 def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
@@ -524,6 +566,7 @@ def main():
     test_resize_during_hold_never_double_issues_and_stays_whole()
     test_pool_counters_track_acquires_fetches_and_fallbacks()
     test_pool_counters_track_saturation_fallback()
+    test_scrub_aborts_in_progress_merge()
     print("test_git_workspace: all ok")
     return 0
 

@@ -398,10 +398,17 @@ def _ws_git_scrub(dir_: str) -> None:
     """Best-effort cleanup to the fresh-clone state (no network). Deletes
     every local branch except base: flows create working branches by name
     (`checkout -b pr_head ...`), and a leftover one from an earlier
-    operation must not turn that into a fatal error. Also restores the
+    operation must not turn that into a fatal error. Aborts any
+    in-progress merge first (bug #80): a failed resolve leaves MERGE_HEAD
+    plus a conflicted worktree with HEAD on pr_head, on which the checkout
+    below refuses (unmerged paths) and the branch delete refuses (checked
+    out branch) - both check=False, so pr_head would survive and wedge the
+    next `checkout -b pr_head` forever. Also restores the
     anonymous remote URL: a previous operation's push auth must not
     outlive it on a warm slot, and a slot whose process died between
     set-url and push is healed here on the next acquire."""
+    # No-op (nonzero, ignored) when no merge is in progress.
+    _abort_merge(dir_)
     _git(
         dir_,
         "checkout",
