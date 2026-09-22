@@ -1102,7 +1102,9 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
     """Recompute what the escrow bank account SHOULD hold from the jobs
     table (the independent counterweight to the ledger sum): citizen wage
     x unsettled cycles on live jobs, official treasury reservations on
-    live positions, and taker-deposit bonus pools on live jobs."""
+    live positions, taker-deposit bonus pools on live jobs, and locked
+    admin-funded credit stakes (proposal #644 parks each such lock in
+    escrow until pay/refund)."""
     live = "status IN ('open', 'offered', 'active')"
     # One scan, three conditional slices (headline_balances idiom): the
     # predicates partition live rows citizen/official, pools ride all live
@@ -1128,7 +1130,18 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
         ).fetchone()[0]
     except Exception:  # domain: degrade-silently - pre-bond DB adds nothing
         bonds = 0
-    return int(citizen) + int(official) + int(pools) + int(bonds)
+    try:
+        # Proposal #644: escrowed admin stake locks. Karma locks have
+        # no ledger legs, so only credit stakes count here.
+        stakes = conn.execute(
+            "SELECT COALESCE(SUM(sl.amount), 0) FROM stake_locks sl"
+            " JOIN proposal_stakes s ON s.id = sl.stake_id"
+            " WHERE sl.status = 'locked' AND s.admin_funded = 1"
+            " AND s.currency = 'credits'"
+        ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - pre-stake DB adds nothing
+        stakes = 0
+    return int(citizen) + int(official) + int(pools) + int(bonds) + int(stakes)
 
 
 def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
@@ -1297,6 +1310,81 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
             f" ('escrow_cutover_entry_id', '{int(max_id)}')"
         )
         return {"backfilled_units": total, "jobs": jobs, "already_live": False}
+
+
+def backfill_stake_escrow(conn: sqlite3.Connection | None = None) -> dict:
+    """One-time repair (proposal #644): write the missing '+escrow'
+    legs for admin-funded credit locks taken before escrow pairing
+    existed (single-sided treasury debits the old code wrote - live
+    stake #6 dropped supply 1000 -> 999.5). Per-stake remainder math
+    like backfill_escrow_account: locked exposure minus the stake's
+    escrow legs already on the ledger, so re-runs and post-fix paired
+    locks backfill zero. Each leg gets its own tx_id and a
+    'stake_escrow_backfill' reason so the audit exempts it from Rule A
+    by design. Idempotent via economy_meta.stake_escrow_live: a second
+    run writes nothing. Supply RISES by the restored total - that is
+    the repair; circulating does not move."""
+    from db._credits import _insert_entry, _new_tx_id
+
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        try:
+            live = c.execute(
+                "SELECT value FROM economy_meta WHERE key = 'stake_escrow_live'"
+            ).fetchone()
+        except Exception:  # domain: economy-migration - no meta table yet
+            live = None
+        if live is not None and live[0] == "1":
+            return {"backfilled_units": 0, "stakes": 0, "already_live": True}
+        # init_db's boot connection has no row_factory (plain tuples) -
+        # switch it on for the fetch and restore after (house idiom:
+        # backfill_escrow_account above).
+        _previous_factory = c.row_factory
+        c.row_factory = sqlite3.Row
+        try:
+            stakes = c.execute(
+                "SELECT s.id AS stake_id FROM proposal_stakes s"
+                " WHERE s.admin_funded = 1 AND s.currency = 'credits'"
+            ).fetchall()
+        finally:
+            c.row_factory = _previous_factory
+        total = 0
+        count = 0
+        for srow in stakes:
+            sid = int(srow["stake_id"])
+            locked = c.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM stake_locks"
+                " WHERE stake_id = ? AND status = 'locked'",
+                (sid,),
+            ).fetchone()[0]
+            held = c.execute(
+                "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+                " WHERE account = 'escrow' AND target_type = 'proposal_stake'"
+                " AND target_id = ? AND reason IN ('stake_lock_held',"
+                " 'stake_paid_release', 'stake_refund_release',"
+                " 'stake_escrow_backfill')",
+                (sid,),
+            ).fetchone()[0]
+            remainder = int(locked) - int(held)
+            if remainder <= 0:
+                continue
+            tx_id = _new_tx_id(c)
+            _insert_entry(
+                c,
+                None,
+                "escrow",
+                remainder,
+                "stake_escrow_backfill",
+                "proposal_stake",
+                sid,
+                tx_id=tx_id,
+            )
+            total += remainder
+            count += 1
+        c.execute(
+            "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
+            " ('stake_escrow_live', '1')"
+        )
+        return {"backfilled_units": total, "stakes": count, "already_live": False}
 
 
 def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
