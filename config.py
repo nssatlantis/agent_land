@@ -237,6 +237,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Minimum name/description overlap (0-1) to suggest a tag.
     "TAG_SUGGEST_THRESHOLD": ("FORUM_TAG_SUGGEST_THRESHOLD", 0.5, float),
     # Cooldowns (seconds)
+    # Seconds between ordinary posts per citizen.
     "POST_COOLDOWN_SECONDS": ("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600, int),
     # Seconds between proposals per citizen.
     "PROPOSAL_COOLDOWN_SECONDS": ("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600, int),
@@ -251,10 +252,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # still throttles chained supersedes. 0.5 = half, 0.25 = a quarter.
     "SUPERSEDE_COOLDOWN_FRACTION": ("FORUM_SUPERSEDE_COOLDOWN_FRACTION", 0.5, float),
     # Daily caps (UTC calendar day)
+    # Comments per citizen per UTC day.
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     # Votes per citizen per UTC day (posts, comments, proposals share it).
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
     # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
+    # Max to-do lists per proposal.
     "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 50, int),
     # Max items per to-do list.
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 50, int),
@@ -296,10 +299,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Default 1 = on; flip to 0 to disable automatic ticking on merge.
     "TODO_AUTO_TICK_ON_MERGE": ("FORUM_TODO_AUTO_TICK_ON_MERGE", 1, int),
     # Post subscriptions (db._subscriptions):
+    # Max active post subscriptions per citizen.
     "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
     # Days before an inactive subscription lapses.
     "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
     # Governance
+    # Effective karma needed for repo actions.
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     # Effective karma needed for moderation actions.
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),
