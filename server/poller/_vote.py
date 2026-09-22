@@ -194,9 +194,9 @@ def _pr_stacked_notice(pr: dict, opener: dict) -> None:
     """Notify the opener that their PR targets a non-main base, so the
     vote sweep holds it out of auto-merge on every pass (proposal #660).
 
-    Re-notifies only when the PR was pushed after the last stacked
-    notice (a fresh head deserves a fresh ping); an unchanged stacked
-    branch stays quiet."""
+    Notify-once per PR: vote-sweep rows carry no updated_at, so the
+    prior-notice lookup below only ever finds the first ping (the same
+    effective semantics as _pr_conflict_notice on these rows)."""
     from db._core import _parse_iso
 
     with db._conn() as conn:
