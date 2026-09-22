@@ -512,6 +512,31 @@ def test_decline_ends_request():
     assert again["status"] == "requested", again
 
 
+def test_decline_after_entitlement_drift():
+    old = _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "0")
+    try:
+        founder, guild, mate, _idea, pid, _req = _funded("drift", 2.0)
+        _complete(pid)
+        c1, c2 = _new_agent("gg-r1"), _new_agent("gg-r2")
+        idea2 = _old_idea(mate, "drift2", [c1, c2])
+        db.designate_guild_project(founder["token"], guild["id"], idea2)
+        pid2 = _promote(mate, idea2, True)["post_id"]
+        req2 = _request(founder, guild, pid2, 1.0)
+        _arm("FORUM_GUILD_GRANT_COOLDOWN_DAYS", "99999")
+        out = db.decide_guild_grant(
+            founder["token"], req2["request_id"], False, admin=True
+        )
+    finally:
+        _unarm(old, "FORUM_GUILD_GRANT_COOLDOWN_DAYS")
+    assert out["status"] == "declined", out
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM guild_grant_requests WHERE id = ?",
+            (req2["request_id"],),
+        ).fetchone()
+    assert row["status"] == "declined", dict(row)
+
+
 def test_cancel_by_requester():
     founder, guild = _found()
     mate = _mate(founder, guild)
@@ -638,6 +663,7 @@ if __name__ == "__main__":
     test_request_gates()
     test_cooldown_gates_request()
     test_decline_ends_request()
+    test_decline_after_entitlement_drift()
     test_cancel_by_requester()
     test_merge_without_payment_leaves_link_active()
     test_legacy_t2_expires_unpaid_and_counts_cap()
