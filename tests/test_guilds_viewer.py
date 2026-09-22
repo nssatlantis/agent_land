@@ -70,7 +70,7 @@ def test_guilds_index_renders_cards_and_filters():
     assert f"guild-{g1['id']}" in html
     html = _guilds_body(_Req({"q": "no-such-guild-zzz"}))
     assert f"guild-{g1['id']}" not in html
-    assert "No guilds yet" in html
+    assert "No guilds match" in html
     # ?status=unknown degrades to unfiltered, never a 500.
     html = _guilds_body(_Req({"status": "bogus"}))
     assert f"guild-{g1['id']}" in html
@@ -92,11 +92,14 @@ def test_guild_detail_sections_and_404s():
         "Roster",
         mate["name"],
         "2 cr",  # mate's 2.0-credit deposit lands in the pool
-        "Founder ledger",
+        "Pool ledger",
         "deposit",
         "Chat",
         "list_guild_chat",
         "Reputation:",
+        "sec-roster",
+        "sec-ledger",
+        "jumpnav",
     ):
         assert section in html, section
     # Unknown + malformed ids degrade to 404, never a 500.
@@ -201,9 +204,76 @@ def test_guild_pages_degrade_on_corrupt_rows():
     ), "corrupt net degrades to ? display"
 
 
+def test_guilds_upgrade_637_pins():
+    from viewer._guilds import (
+        _filter_ui,
+        _guild_card,
+        _guild_enrich,
+        _guilds_body,
+        guild_detail_page,
+    )
+
+    founder, g = _found(f"Upgrade-{_SEQ[0]}", "Upgrade mission.")
+    body = _guilds_body(_Req())
+    for needle in (
+        "search guilds",
+        "sort:",
+        "/guilds?sort=",
+        "How guilds work",
+        "pooled",
+    ):
+        assert needle in body, needle
+    ex = _guild_enrich({"id": g["id"]})
+    assert ex.get("balance_units") is not None
+    assert ex.get("reputation") is not None
+    card = _guild_card(
+        {
+            "id": g["id"],
+            "name": g["name"],
+            "mission": "m",
+            "member_count": 1,
+            "founder_name": founder["name"],
+            "founder_agent_id": founder["agent_id"],
+            "enrollment": "invite_only",
+            "status": "active",
+            "created_at": "2026-09-01T00:00:00.000Z",
+        },
+        ex,
+    )
+    for needle in ("pool", "Rep", "founded", f"/guilds/{g['id']}"):
+        assert needle in card, needle
+    assert "/jobs#" not in body, "fragment job links must be /jobs/{id}"
+    detail = guild_detail_page(
+        _Req(path_params={"guild_id": str(g["id"])})
+    ).body.decode("utf-8")
+    for needle in (
+        "sec-arrears",
+        "sec-debts",
+        "sec-subsidies",
+        "sec-project",
+        "sec-locks",
+        "sec-polls",
+        "sec-chart",
+        "sec-contribs",
+        "sec-cosigns",
+        "sec-plan",
+        "sec-decisions",
+        "sec-chat",
+    ):
+        assert needle in detail, needle
+    assert "No active project" in detail
+    assert "Nothing tied up" in detail
+    assert "No open polls" in detail
+    assert "/jobs#" not in detail
+    assert "joined" in detail, "roster joined column"
+    assert "create_guild()" in body, "config-driven found hint"
+    assert _filter_ui("", None, "newest") and _filter_ui("x", "active", "reputation")
+
+
 if __name__ == "__main__":
     test_guilds_index_renders_cards_and_filters()
     test_guild_detail_sections_and_404s()
     test_guild_docket_badge_designated_and_released()
     test_guild_pages_degrade_on_corrupt_rows()
+    test_guilds_upgrade_637_pins()
     print("test_guilds_viewer: all passed")
