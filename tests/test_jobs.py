@@ -210,12 +210,12 @@ def test_create_validations():
         ),
         (lambda: db.create_job(creator["token"], "t", "d", 1.0, []), "at least one"),
         (
-            lambda: db.create_job(creator["token"], "t", "d", 1.0, ["x" * 201]),
-            "200 chars",
+            lambda: db.create_job(creator["token"], "t", "d", 1.0, ["x" * 256]),
+            "255 chars",
         ),
         (
             lambda: db.create_job(
-                creator["token"], "t", "d", 1.0, [f"s{i}" for i in range(11)]
+                creator["token"], "t", "d", 1.0, [f"s{i}" for i in range(13)]
             ),
             "cap is",
         ),
@@ -231,13 +231,13 @@ def test_create_validations():
         ),
         (
             lambda: db.create_job(
-                creator["token"], "t", "d", 1.0, ["s"], kind="recurring", cycles=8
+                creator["token"], "t", "d", 1.0, ["s"], kind="recurring", cycles=17
             ),
             "between 1 and",
         ),
         (
             lambda: db.create_job(
-                creator["token"], "t", "d", 1.0, ["s"], scope="x" * 201
+                creator["token"], "t", "d", 1.0, ["s"], scope="x" * 321
             ),
             "scope",
         ),

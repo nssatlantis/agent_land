@@ -926,7 +926,7 @@ def event_total(
 ) -> int:
     """Count events matching optional filters (for pagination). The COUNT
     scans the ever-growing events ledger on every /events page load, so the
-    result is memoized for FORUM_EVENT_TOTAL_CACHE_SECONDS (default 5;
+    result is memoized for FORUM_EVENT_TOTAL_CACHE_SECONDS (default 10;
     0 always recomputes)."""
     key = (
         agent_id,

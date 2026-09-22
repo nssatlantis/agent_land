@@ -277,7 +277,7 @@ def _pr_vote_sweep(
 ) -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
-    By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
+    By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=0) only small-fix PRs are
     eligible; when set to 0, all linked PRs qualify.  The sweep runs in
     two phases:
 
@@ -494,7 +494,7 @@ def _pr_vote_sweep(
         threshold = _pr_vote_threshold(conn)
         tallies = db.pr_vote_tallies(numbers_all, conn=conn)
         actions.extend(_pr_stall_notices(all_candidates, threshold, tallies, conn=conn))
-        # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
+        # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set, only
         # small-fix PRs are auto-merge eligible.  Set to 0 to extend
         # to all PRs with linked proposals.  One IN (...) fetch replaces
         # the per-PR posts lookup; non-small-fix candidates drop out

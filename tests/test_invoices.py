@@ -52,7 +52,7 @@ def test_create_get_list():
         issuer["token"], payer["name"], 2.0, "fronted tag fees", due_in_days=7
     )
     assert inv["status"] == "pending", inv
-    assert inv["fee_units"] == 5, inv  # 0.25cr creation fee receipt
+    assert inv["fee_units"] == 4, inv  # 0.2cr creation fee receipt
     assert inv["remaining_units"] == 40, inv
     assert inv["overdue"] is False, inv
     got = db.get_invoice(issuer["token"], inv["invoice_id"])
@@ -91,11 +91,11 @@ def test_create_validation():
     short = expect_error(
         db.create_invoice, issuer["token"], payer["name"], 1.0, "x", due_in_days=1
     )
-    assert "between 3 and 14" in short, short
+    assert "between 5 and 21" in short, short
     far = expect_error(
         db.create_invoice, issuer["token"], payer["name"], 1.0, "x", due_in_days=99
     )
-    assert "between 3 and 14" in far, far
+    assert "between 5 and 21" in far, far
     bad = expect_error(
         db.create_invoice, issuer["token"], payer["name"], 1.0, "x", due_in_days="soon"
     )
@@ -118,29 +118,30 @@ def test_create_validation():
 def test_caps():
     issuer = AGENTS["beta"]
     _fund(issuer["agent_id"], 200)
-    for name in ("inv-cap-a", "inv-cap-b", "inv-cap-c", "inv-cap-d"):
+    for name in ("inv-cap-a", "inv-cap-b", "inv-cap-c", "inv-cap-d", "inv-cap-e"):
         try:
             db.register_agent(name)
         except Exception:  # name already taken on a rerun — reuse it
             pass
     a = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "one")
     b = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "two")
-    pair = expect_error(db.create_invoice, issuer["token"], "inv-cap-a", 1.0, "three")
+    c = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "three")
+    pair = expect_error(db.create_invoice, issuer["token"], "inv-cap-a", 1.0, "four")
     assert "already bill" in pair, pair
     db.cancel_invoice(issuer["token"], a["invoice_id"])
-    c = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "three retries")
-    assert c["status"] == "pending", c
-    # Per-agent cap is 4: issuer now holds b, c + 2 more to distinct payers.
+    d = db.create_invoice(issuer["token"], "inv-cap-a", 1.0, "four retries")
+    assert d["status"] == "pending", d
+    # Per-agent cap is 6: issuer now holds b, c, d + 3 more to distinct payers.
     extras = [
         db.create_invoice(issuer["token"], name, 1.0, f"cap {name}")
-        for name in ("inv-cap-b", "inv-cap-c")
+        for name in ("inv-cap-b", "inv-cap-c", "inv-cap-d")
     ]
-    assert len(extras) == 2, extras
+    assert len(extras) == 3, extras
     full = expect_error(
-        db.create_invoice, issuer["token"], "inv-cap-d", 1.0, "over the cap"
+        db.create_invoice, issuer["token"], "inv-cap-e", 1.0, "over the cap"
     )
     assert "open invoice" in full, full
-    for inv in (b, c, *extras):
+    for inv in (b, c, d, *extras):
         db.cancel_invoice(issuer["token"], inv["invoice_id"])
 
 
@@ -346,15 +347,15 @@ def test_no_auto_debit():
         b0 = _cr.balance_for(conn, payer["agent_id"])
         i0 = _cr.balance_for(conn, issuer["agent_id"])
     inv = db.create_invoice(issuer["token"], payer["name"], 3.0, "big ask")
-    assert inv["fee_units"] == 5, inv  # the creation fee is the only move
+    assert inv["fee_units"] == 4, inv  # the creation fee is the only move
     with db._conn() as conn:
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 5
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 4
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
     db.accept_invoice(payer["token"], inv["invoice_id"])
     with db._conn() as conn:
         # Accepting moves nothing — only creation (fee) and paying move money.
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 5
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 4
     db.cancel_invoice(issuer["token"], inv["invoice_id"])
 
 
@@ -464,13 +465,16 @@ def test_treasury_guards():
     second = db.create_invoice(
         creator["token"], payer["name"], 1.0, "t-bill two", from_treasury=True
     )
-    # The per-pair cap still holds for Treasury bills.
+    third = db.create_invoice(
+        creator["token"], payer["name"], 1.0, "t-bill three", from_treasury=True
+    )
+    # The per-pair cap (3) still holds for Treasury bills.
     capped = expect_error(
         db.create_invoice,
         creator["token"],
         payer["name"],
         1.0,
-        "t-bill three",
+        "t-bill four",
         from_treasury=True,
     )
     assert "already bill" in capped, capped
@@ -481,6 +485,7 @@ def test_treasury_guards():
     assert "not yours to cancel" in stranger, stranger
     db.cancel_invoice(creator["token"], first["invoice_id"])
     db.cancel_invoice(creator["token"], second["invoice_id"])
+    db.cancel_invoice(creator["token"], third["invoice_id"])
     # The MCP tool gates Treasury issuance on ADMIN_USER.
     import server.tools.economy as economy_tools
 
