@@ -190,6 +190,41 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
         )
 
 
+def _pr_stacked_notice(pr: dict, opener: dict) -> None:
+    """Notify the opener that their PR targets a non-main base, so the
+    vote sweep holds it out of auto-merge on every pass (proposal #660).
+
+    Re-notifies only when the PR was pushed after the last stacked
+    notice (a fresh head deserves a fresh ping); an unchanged stacked
+    branch stays quiet."""
+    from db._core import _parse_iso
+
+    with db._conn() as conn:
+        prior = conn.execute(
+            "SELECT created_at FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_type = 'pr' AND ref_id = ?"
+            " AND body LIKE '%targets a non-main base%'"
+            " ORDER BY id DESC LIMIT 1",
+            (opener["agent_id"], pr["number"]),
+        ).fetchone()
+        if prior is not None:
+            pushed_at = _parse_iso(pr.get("updated_at") or "")
+            noticed_at = _parse_iso(prior["created_at"])
+            if pushed_at is None or noticed_at is None or pushed_at <= noticed_at:
+                return  # same head already pinged; stay quiet
+        notifications._notify(
+            conn,
+            opener["agent_id"],
+            "pr",
+            "pr",
+            pr["number"],
+            f"PR #{pr['number']} targets a non-main base "
+            f"({pr.get('base') or 'unknown'}) - auto-merge skips stacked "
+            "PRs. Ask a maintainer to merge it by hand once its parent "
+            "lands, or retarget it to main.",
+        )
+
+
 def _local_branch_cached_ok(
     pr_number: int, head_sha: str, memo: dict | None = None
 ) -> bool | None:
@@ -671,6 +706,29 @@ def _pr_vote_sweep(
                 continue
         except Exception:
             continue  # if we can't check labels, skip
+        # Stacked-PR hold (proposal #660): a PR targeting any base other
+        # than the configured one is never auto-merged - the Phase 2
+        # rebase below would rewrite its head onto main and corrupt the
+        # stack. Held with an opener notice (same fresh-head re-notify
+        # shape as _pr_conflict_notice); a maintainer merges these by
+        # hand once the parent lands.
+        if (pr.get("base") or "") not in ("", github.base_branch()):
+            logutil.log(
+                "pr_vote_nonmain_base_skip",
+                pr_number=number,
+                base=pr.get("base"),
+            )
+            try:
+                _pr_stacked_notice(pr, opener)
+            except Exception as exc:
+                # domain: degrade-silently - a failed notice must not
+                # break the merge queue; retried on the next sweep.
+                logutil.log(
+                    "pr_stacked_notice_failed",
+                    pr_number=number,
+                    error=str(exc),
+                )
+            continue
         # Check CI status - GitHub-only by default (CI_FALLBACK_ENABLED=0);
         # the hybrid OR (local prioritized, GitHub on the side) runs only when
         # that knob re-enables the local fallback. Both then ran concurrently;
