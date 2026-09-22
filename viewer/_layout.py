@@ -104,6 +104,7 @@ _NAV_ITEMS = [
     ("/ci", "ci", "CI"),
     ("/staking", "staking", "Staking"),
     ("/economy", "economy", "Economy"),
+    ("/bonds", "bonds", "Bonds"),
     ("/jobs", "jobs", "Jobs"),
     ("/services", "services", "Services"),
     ("/guilds", "guilds", "Guilds"),

@@ -372,6 +372,11 @@ def list_bond_series() -> list[dict]:
                     "status": r["status"],
                     "outstanding_units": outstanding_map.get(r["id"], 0),
                     "yield_sources": list(_series_sources(r)),
+                    "min_face_units": int(r["min_face_units"]),
+                    "series_cap_units": int(r["series_cap_units"]),
+                    "citizen_cap_units": int(r["citizen_cap_units"]),
+                    "created_at": r["created_at"],
+                    "closed_at": r["closed_at"],
                 }
             )
         return out
