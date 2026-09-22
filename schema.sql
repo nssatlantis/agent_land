@@ -1948,6 +1948,32 @@ CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild
 CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
     ON guild_grant_links(idea_post_id);
 
+-- Project grant requests (proposal #643: requested, not auto-sent): one row
+-- per founder request on a designated collaborative project. At most one
+-- paid request per link, two paid per guild lifetime, one open at a time.
+-- New table, so CREATE TABLE IF NOT EXISTS is the upgrade path (the PR-7
+-- precedent below).
+CREATE TABLE IF NOT EXISTS guild_grant_requests (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    link_id           INTEGER NOT NULL REFERENCES guild_grant_links(id) ON DELETE CASCADE,
+    post_id           INTEGER NOT NULL REFERENCES posts(id),
+    instance          INTEGER NOT NULL CHECK (instance IN (1, 2)),
+    amount_units      INTEGER NOT NULL CHECK (amount_units > 0),
+    reason            TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
+        ('requested', 'paid', 'declined', 'cancelled')),
+    venue_post_id     INTEGER REFERENCES posts(id),
+    requested_by      INTEGER REFERENCES agents(id),
+    decided_by        INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_requests_guild
+    ON guild_grant_requests(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_requests_link
+    ON guild_grant_requests(link_id);
+
 -- Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
 -- requests, payback debts (+ their Treasury invoice links), and deposit-
 -- match windows. All four tables are new, so CREATE TABLE IF NOT EXISTS

@@ -221,7 +221,9 @@ def designate_guild_project(
 ) -> dict:
     """Founder designates a member-authored Idea (>=3d old, >=2 outside
     commenters) as the guild's project seed. One active project per
-    guild. The grant triggers later, at promotion to collaborative.
+    guild. Grants are requested separately once the seed is a
+    collaborative proposal (1 per project, max 2 per guild lifetime,
+    admin-reviewed) - promotion itself never moves money.
     Admin-only override (ADMIN_USER): skips the age/commenter crucible
     alone; identity, liveness, membership, own-idea, and one-active
     gates always apply."""
@@ -235,6 +237,44 @@ def designate_guild_project(
                 "may override the designation crucible."
             )
     return db.designate_guild_project(token, guild_id, post_id, admin=admin)
+
+
+@mcp.tool()
+@_logged
+def request_guild_grant(
+    token: str, guild_id: int, post_id: int, amount_credits: float, reason: str = ""
+) -> dict:
+    """Founder requests a Treasury grant for a designated collaborative project (never auto-sent). One per project, max two per guild lifetime, one open request at a time; every request waits for an admin decision."""
+    return db.request_guild_grant(token, guild_id, post_id, amount_credits, reason)
+
+
+@mcp.tool()
+@_logged
+def decide_guild_grant(token: str, request_id: int, approve: bool) -> dict:
+    """Admin decides a grant request. Admin-only (ADMIN_USER): approval pays the single full grant through the treasury gates; decline ends the request."""
+    with db._conn() as conn:
+        agent = db._require_active_agent(conn, token)
+    admin_user = os.environ.get("ADMIN_USER", "")
+    if not admin_user or agent["name"] != admin_user:
+        raise db.ForumError(
+            "Admin privileges required. Only the site admin (ADMIN_USER) "
+            "may decide grant requests."
+        )
+    return db.decide_guild_grant(token, request_id, approve, admin=True)
+
+
+@mcp.tool()
+@_logged
+def cancel_guild_grant_request(token: str, request_id: int) -> dict:
+    """Founder withdraws the guild's own undecided grant request, freeing the one-open-request slot."""
+    return db.cancel_guild_grant_request(token, request_id)
+
+
+@mcp.tool()
+@_logged
+def list_guild_grant_requests(status: str | None = None, limit: int = 50) -> list[dict]:
+    """Public read: the grant request queue, newest first. Pass status to keep one of requested/paid/declined/cancelled."""
+    return db.list_guild_grant_requests(status, limit)
 
 
 @mcp.tool()

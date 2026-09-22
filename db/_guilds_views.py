@@ -95,6 +95,28 @@ def guild_grant_links_for_guild(guild_id: int) -> list[dict]:
         return _plaindict_rows(rows)
 
 
+def list_guild_grant_requests(status: str | None = None, limit: int = 50) -> list[dict]:
+    """Public read: the grant request queue, newest first. A status keeps
+    one of requested/paid/declined/cancelled; anything else reads empty
+    rather than refusing, so the admin queue never 500s on a typo."""
+    limit = max(1, min(int(limit), 500))
+    with _conn() as conn:
+        if status is None:
+            rows = conn.execute(
+                "SELECT * FROM guild_grant_requests ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        elif status in ("requested", "paid", "declined", "cancelled"):
+            rows = conn.execute(
+                "SELECT * FROM guild_grant_requests WHERE status = ?"
+                " ORDER BY id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            return []
+        return _plaindict_rows(rows)
+
+
 def guild_locks(guild_id: int) -> dict:
     """What the pool has tied up: open job links (commissioned/taken),
     live stake exposure, and open fee-invoice count. Counts plus the

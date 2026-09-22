@@ -782,6 +782,17 @@ def supersede_proposal(
                     " have been copied.",
                     actor_agent_id=agent["id"],
                 )
+        # Guilds (proposal #525, PR-6; request model #643): an active grant
+        # link rides the version chain to the newest proposal. Binding
+        # only - the request-time collaborative gate decides whether money
+        # may move. Degrade-silently like the workspace release above: a
+        # grant bug never blocks governance.
+        try:
+            from db._guilds_grants import rebind_grant_link_on_supersede
+
+            rebind_grant_link_on_supersede(conn, post_id, new_id)
+        except Exception:  # domain: degrade-silently - link continuity advisory
+            pass
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
 
         log_event(
@@ -1507,13 +1518,11 @@ def promote_idea(
             )
         except Exception:  # domain: degrade-silently - run id is enrichment
             _prom_run_id = None
-        # Guilds (proposal #525, PR-6): a designated Idea promoted to
-        # collaborative settles grant T1 here when the proposal already
-        # carries a to-do list. The call runs inside this transaction and
-        # its failures propagate on purpose - a treasury refusal rolls
-        # the promotion back and the author retries in the next window
-        # (first-claimant wins); a non-designated idea is one indexed
-        # miss and returns None.
+        # Guilds (proposal #525, PR-6; request model #643): a designated
+        # Idea promoted to collaborative binds the grant link here.
+        # Binding only - money never moves and treasury state never fails
+        # the promotion; a non-designated idea is one indexed miss and
+        # returns None.
         from db._guilds_grants import grant_on_promotion
 
         grant_on_promotion(conn, post_id, new_id)
