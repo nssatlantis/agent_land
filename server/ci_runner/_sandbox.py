@@ -421,6 +421,10 @@ def _ruff_host_dir(slot: int) -> str | None:
     d = os.path.join(str(base), f"slot{int(slot)}")
     try:
         os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".wprobe")
+        with open(probe, "w") as _fh:
+            _fh.write("ok")
+        os.remove(probe)
     except Exception:
         return None  # domain: degrade-silently - uncached scan instead
     return d
