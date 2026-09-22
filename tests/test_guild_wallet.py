@@ -291,6 +291,153 @@ def test_overview_supply_identity():
     print("  overview supply identity: ok")
 
 
+def test_verify_ignores_disbanded_with_retained():
+    # Review #1344 BLOCKER: the disband waterfall zeroes both trails
+    # while append-only retained legs persist - auditing the dead guild
+    # would fail 0 - 0 == R forever, so it must be out of scope.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 25.0)
+    db.guild_withdraw(founder["token"], gid, 2.0)
+    with db._conn() as conn:
+        retained = conn.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            " WHERE account = 'guild' AND reason = 'guild_retained'"
+            " AND target_type = 'guild' AND target_id = ? AND delta_units > 0",
+            (gid,),
+        ).fetchone()[0]
+    assert retained > 0, retained
+    db.disband_guild(founder["token"], gid, "dissolve")
+    with db._conn() as conn:
+        status = conn.execute(
+            "SELECT status FROM guilds WHERE id = ?", (gid,)
+        ).fetchone()[0]
+    assert status == "disbanded", status
+    rep = db._economy.verify_guild_wallets()
+    assert rep["ok"], rep
+    assert all(r["guild_id"] != gid for r in rep["guilds"]), rep
+    print("  verify ignores disbanded with retained: ok")
+
+
+def test_verify_scopes_suspended_live():
+    # Review #1344 BLOCKER companion: suspended pools still hold live
+    # custody, so they stay inside the audit scope.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    db.guild_deposit(founder["token"], gid, 5.0)
+    with db._conn() as conn:
+        conn.execute("UPDATE guilds SET status = 'suspended' WHERE id = ?", (gid,))
+    rep = db._economy.verify_guild_wallets()
+    assert rep["ok"], rep
+    row = [r for r in rep["guilds"] if r["guild_id"] == gid]
+    assert len(row) == 1 and row[0]["ok"], rep
+    print("  verify scopes suspended live: ok")
+
+
+def test_backfill_shortfall_skips_without_negative():
+    # Review #1344 MED-1: a treasury that cannot cover the whole seed
+    # skips (never negative); the live flag stays unset so a later boot
+    # retries, and a fundable seed completes afterwards.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    import db._credits as _cr
+
+    with db._conn() as conn:
+        treasury = _cr.treasury_balance(conn)
+        probe = treasury + 1000
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'deposit', ?, 'shortfall probe')",
+            (gid, probe),
+        )
+        conn.execute("DELETE FROM economy_meta WHERE key = 'guild_wallet_live'")
+    with db._conn() as conn:
+        t_before = _cr.treasury_balance(conn)
+    out = db._economy.backfill_guild_wallets()
+    assert out["backfilled_units"] == 0, out
+    assert out["skipped_shortfall_units"] == probe, out
+    with db._conn() as conn:
+        assert _cr.treasury_balance(conn) == t_before
+        assert _pool(gid) == 0
+        live = conn.execute(
+            "SELECT value FROM economy_meta WHERE key = 'guild_wallet_live'"
+        ).fetchone()
+    assert live is None or live[0] != "1", live
+    with db._conn() as conn:
+        conn.execute(
+            "DELETE FROM guild_ledger WHERE guild_id = ? AND note = 'shortfall probe'",
+            (gid,),
+        )
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'deposit', 100, 'fundable probe')",
+            (gid,),
+        )
+        conn.execute("DELETE FROM economy_meta WHERE key = 'guild_wallet_live'")
+    out2 = db._economy.backfill_guild_wallets()
+    assert out2["backfilled_units"] == 100 and out2["guilds"] == 1, out2
+    assert _pool(gid) == 100, _pool(gid)
+    assert _memo(gid) == 100, _memo(gid)
+    _rule_d(gid)
+    print("  backfill shortfall skips without negative: ok")
+
+
+def _guild_intake():
+    with db._conn() as conn:
+        return db._economy._summarize_flows(
+            db._economy._flow_rows(conn, None),
+            db._economy._flow_rows_guild(conn, None),
+        )["guild_intake_units"]
+
+
+def test_backfill_seed_excluded_from_guild_intake():
+    # Review #1344 MED-2: the one-time backfill seed is a custody move,
+    # not income - the intake bucket must not move when it lands, while
+    # a real deposit still lands in it.
+    founder, guild = _found()
+    gid = guild["id"]
+    _add_mate(founder, gid)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guild_ledger (guild_id, kind, units, note)"
+            " VALUES (?, 'deposit', 100, 'intake probe')",
+            (gid,),
+        )
+        conn.execute("DELETE FROM economy_meta WHERE key = 'guild_wallet_live'")
+    before = _guild_intake()
+    out = db._economy.backfill_guild_wallets()
+    assert out["backfilled_units"] == 100, out
+    assert _guild_intake() == before, (_guild_intake(), before)
+    dep = db.guild_deposit(founder["token"], gid, 5.0)
+    assert _guild_intake() - before == 100 + dep["fee_units"], _guild_intake()
+    _rule_d(gid)
+    print("  backfill seed excluded from guild intake: ok")
+
+
+def test_guild_intake_allowlist_ignores_custody_moves():
+    # Review #1344 MED-2, pure-function pin: every positive guild leg
+    # outside the external-income allowlist stays out of the bucket -
+    # backfill, winnings, refunds, returns, reverts and retention pairs.
+    gf = {
+        "guild_wallet_backfill": 100,
+        "guild_stake_winnings": 50,
+        "guild_stake_refund": 40,
+        "guild_job_return_intake": 30,
+        "guild_taken_wage_intake": 20,
+        "guild_disband_cancel_intake": 10,
+        "guild_bond_payout_intake": 60,
+        "guild_stake_conduit_revert_intake": 70,
+        "guild_retained": 5,
+        "guild_deposit_intake": 100,
+    }
+    got = db._economy._summarize_flows({}, gf)["guild_intake_units"]
+    assert got == 100, got
+    print("  guild intake allowlist ignores custody moves: ok")
+
+
 if __name__ == "__main__":
     test_deposit_holds_in_wallet()
     test_upkeep_pays_poolward_not_treasury()
@@ -300,4 +447,9 @@ if __name__ == "__main__":
     test_guild_leg_target_invariant()
     test_backfill_seeds_and_idempotent()
     test_overview_supply_identity()
+    test_verify_ignores_disbanded_with_retained()
+    test_verify_scopes_suspended_live()
+    test_backfill_shortfall_skips_without_negative()
+    test_backfill_seed_excluded_from_guild_intake()
+    test_guild_intake_allowlist_ignores_custody_moves()
     print("\n== test_guild_wallet: all passed ==")

@@ -513,6 +513,26 @@ def _flow_rows_guild_between(
     return {r["reason"]: r["total"] for r in rows}
 
 
+# External-income reasons whose +guild legs count as pool intake
+# (proposal #611, review #1344): member deposits and dues plus
+# treasury-funded pool income (grants, subsidies, matches). Every other
+# positive guild leg is a custody move, not income - the one-time wallet
+# backfill seed, escrow returns (job refunds, disband cancels, taken
+# wages), stake winnings/refunds, bond payouts, conduit reverts and
+# retention pairs - and stays out of the intake bucket (the #1313
+# instrumentation-coupling class).
+_GUILD_INCOME_INTAKES = frozenset(
+    {
+        "guild_deposit_intake",
+        "guild_upkeep_fee_intake",
+        "guild_grant_t1_intake",
+        "guild_grant_t2_intake",
+        "guild_subsidy_intake",
+        "guild_match_intake",
+    }
+)
+
+
 def _summarize_flows(
     flows: dict[str, int], guild_flows: dict[str, int] | None = None
 ) -> dict:
@@ -564,13 +584,17 @@ def _summarize_flows(
         ),
         # Guild intake: pool-bound principal used to arrive as treasury
         # legs (guild_deposit_intake); since proposal #611 it lands in the
-        # guild wallets instead, so the bucket sums the guild-account
-        # intake slice (retention pairs excluded - they never enter the
-        # pool) beside the treasury-side deposit fee, which still parks
-        # in the treasury.
+        # guild wallets instead, so the bucket sums the allowlisted
+        # external-income slice of the guild account (review #1344:
+        # custody moves are not income) beside the treasury-side deposit
+        # fee, which still parks in the treasury.
         "guild_intake_units": (
             flows.get("guild_deposit_fee_intake", 0)
-            + sum(v for k, v in guild_flows.items() if v > 0 and k != "guild_retained")
+            + sum(
+                v
+                for k, v in guild_flows.items()
+                if v > 0 and k in _GUILD_INCOME_INTAKES
+            )
         ),
         # Guild outflows: treasury-funded pool income (grants, subsidies,
         # matches) leaves the treasury visibly now that pools hold their
@@ -1276,17 +1300,23 @@ def backfill_escrow_account(conn: sqlite3.Connection | None = None) -> dict:
 
 
 def verify_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
-    """Audit the guild wallets (proposal #611, Rule D): per guild,
+    """Audit the guild wallets (proposal #611, Rule D): per live guild,
     wallet - memo == retained, where retained is the SUM of +guild
     guild_retained legs (pool-owned withholds/fees the memo
-    extinguished but the wallet kept). Per-guild rows (never a global
-    sum) so one poisoned guild cannot mask the rest. Total function:
-    never raises - a weird ledger reports failure, it never breaks
-    /economy."""
+    extinguished but the wallet kept). Live guilds only (review #1344:
+    the disband waterfall zeroes both trails while append-only retained
+    legs persist, so auditing disbanded guilds would fail 0 - 0 == R
+    forever - dead guilds verify trivially by exclusion). Suspended
+    guilds stay in scope - their wallets are live custody. Per-guild
+    rows (never a global sum) so one poisoned guild cannot mask the
+    rest. Total function: never raises - a weird ledger reports failure,
+    it never breaks /economy."""
     try:
         with _conn() if conn is None else nullcontext(conn) as c:
             try:
-                grows = c.execute("SELECT id FROM guilds").fetchall()
+                grows = c.execute(
+                    "SELECT id FROM guilds WHERE status IN ('active', 'suspended')"
+                ).fetchall()
             except Exception:
                 return {"ok": True, "guilds": [], "checked": 0}
             from db._credits import guild_wallet_balance
@@ -1328,10 +1358,15 @@ def backfill_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
     wallet from its memo trail (-treasury / +guild paired under one tx
     per guild, reason guild_wallet_backfill so flow buckets never see
     it). Only pristine guilds seed (wallet == 0 with memo > 0); live
-    guilds already move both trails together. Idempotent via
+    guilds already move both trails together. Live guilds only
+    (active + suspended - same scope as verify_guild_wallets, review
+    #1344). Sufficiency-gated (review #1344): the seed draws the memo
+    out of the live treasury, so a treasury that cannot cover the whole
+    seed skips instead of driving itself negative - the live flag stays
+    unset and a later boot retries once funds recover. Idempotent via
     economy_meta.guild_wallet_live. Supply-neutral (custody moves,
     nothing mints) and circulating-neutral with it."""
-    from db._credits import _insert_entry, _new_tx_id
+    from db._credits import _insert_entry, _new_tx_id, treasury_balance
 
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         try:
@@ -1341,18 +1376,27 @@ def backfill_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
         except Exception:  # domain: economy-migration - no meta table yet
             live = None
         if live is not None and live[0] == "1":
-            return {"backfilled_units": 0, "guilds": 0, "already_live": True}
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": True,
+                "skipped_shortfall_units": 0,
+            }
         try:
             grows = c.execute(
-                "SELECT id FROM guilds WHERE status = 'active'"
+                "SELECT id FROM guilds WHERE status IN ('active', 'suspended')"
             ).fetchall()
         except Exception:  # domain: degrade-silently - pre-guild DB seeds nothing
-            return {"backfilled_units": 0, "guilds": 0, "already_live": False}
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": False,
+                "skipped_shortfall_units": 0,
+            }
         from db._credits import guild_wallet_balance
         from db._guilds import guild_memo_balance
 
-        total = 0
-        guilds = 0
+        pending: list[tuple[int, int]] = []
         for grow in grows:
             gid = int(grow[0])
             try:
@@ -1362,6 +1406,18 @@ def backfill_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
                 continue
             if memo <= 0 or wallet != 0:
                 continue
+            pending.append((gid, memo))
+        shortfall = sum(memo for _, memo in pending)
+        if shortfall > 0 and int(treasury_balance(c)) < shortfall:
+            return {
+                "backfilled_units": 0,
+                "guilds": 0,
+                "already_live": False,
+                "skipped_shortfall_units": shortfall,
+            }
+        total = 0
+        guilds = 0
+        for gid, memo in pending:
             tx_id = _new_tx_id(c)
             _insert_entry(
                 c,
@@ -1389,7 +1445,12 @@ def backfill_guild_wallets(conn: sqlite3.Connection | None = None) -> dict:
             "INSERT OR REPLACE INTO economy_meta (key, value) VALUES"
             " ('guild_wallet_live', '1')"
         )
-        return {"backfilled_units": total, "guilds": guilds, "already_live": False}
+        return {
+            "backfilled_units": total,
+            "guilds": guilds,
+            "already_live": False,
+            "skipped_shortfall_units": 0,
+        }
 
 
 def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
