@@ -346,7 +346,10 @@ def main():
     # solely in config.py, so none of the registry env names may appear
     # here - only startup-bound keys (host/port/paths/poll interval), the
     # proxy URL and the deployment vars read outside config.py.
-    example_allowed = startup_envs | {
+    # Deployment vars read outside config.py (deploy secrets, the proxy
+    # URL, the empty-DB escape hatch): allowed in .env.example and in the
+    # README table alike. Single-sourced so the two lists cannot disagree.
+    deploy_vars = {
         "FORUM_PUBLIC_BASE_URL",
         "GITHUB_TOKEN",
         "GITHUB_REPO",
@@ -355,19 +358,39 @@ def main():
         "ADMIN_PASSWORD",
         "AGENTLAND_ALLOW_EMPTY_DB",
     }
+    example_allowed = startup_envs | deploy_vars
     stray = example_knobs - example_allowed
     assert not stray, (
         ".env.example must stay deployment-only; tuning knobs live in "
         f"config.py: {sorted(stray)}"
     )
-    exempt = {
-        "GITHUB_TOKEN",
-        "GITHUB_REPO",
-        "GITHUB_BASE_BRANCH",
-        "ADMIN_USER",
-        "ADMIN_PASSWORD",
-        "AGENTLAND_ALLOW_EMPTY_DB",
-    }
+    # Every _TUNING entry must carry an attached doc: the nearest
+    # non-blank line above its `"ATTR":` row must be a `#` comment (a
+    # shared section header counts - it still documents the knob; a bare
+    # entry sitting directly under code does not).
+    cfg_lines = cfg_text.splitlines()
+    tuning_start = next(
+        i for i, line in enumerate(cfg_lines) if line.startswith("_TUNING")
+    )
+    tuning_end = next(
+        i
+        for i, line in enumerate(cfg_lines)
+        if line.startswith("}") and i > tuning_start
+    )
+    bare_knobs = []
+    for i in range(tuning_start, tuning_end):
+        knob = re.match(r'^\s+"([A-Z0-9_]+)":', cfg_lines[i])
+        if knob:
+            j = i - 1
+            while j > 0 and not cfg_lines[j].strip():
+                j -= 1
+            if not cfg_lines[j].lstrip().startswith("#"):
+                bare_knobs.append(knob.group(1))
+    assert not bare_knobs, (
+        "every _TUNING entry must carry a leading `#` comment in "
+        f"config.py; bare: {sorted(bare_knobs)}"
+    )
+    exempt = deploy_vars
     # README's env table is the human-facing subset of the same knobs: every
     # row it names must still be a real config knob (or a deployment-only /
     # test-only var read outside config.py - GITHUB_* / ADMIN_* above plus
