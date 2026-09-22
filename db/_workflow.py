@@ -23,7 +23,7 @@ restores the old per-proposal sharing (any open run satisfies the gate).
 
 Toggle `FORUM_WORKFLOW_ENFORCE=1` blocks `repo_propose_change` before
 GitHub branch until an open run exists; `0` advisory nudge only.
-TTL `FORUM_WORKFLOW_TTL_SECONDS=3600` (0 = never expire).
+TTL `FORUM_WORKFLOW_TTL_SECONDS=7200` (0 = never expire).
 
 Review hardening (PR #593): a run a lap behind its own close signal is
 re-opened lazily by the gate, so TTL expiry keeps a now+TTL fallback (D2),

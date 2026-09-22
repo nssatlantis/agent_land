@@ -234,8 +234,8 @@ def test_commission_escrow_and_accept_legs():
     f_before = _bal(founder["agent_id"])
     _run_cycle(worker["token"], founder["token"], job["job_id"])
     # Wage (100u) came from ledger escrow to the outside worker, plus the
-    # 5u reward leg and the 10u taker-deposit return (vacuous merge).
-    assert _bal(worker["agent_id"]) == w_before + 100 + 5 + 10, (
+    # 5u reward leg and the 5u taker-deposit return (vacuous merge).
+    assert _bal(worker["agent_id"]) == w_before + 100 + 5 + 5, (
         _bal(worker["agent_id"]),
         w_before,
     )
@@ -368,8 +368,8 @@ def test_taken_wage_to_pool_and_detach():
     m_before = _bal(mate["agent_id"])
     _run_cycle(mate["token"], outer["token"], job["job_id"])
     # Wage (80u) went poolward; executor kept the 5u reward leg plus the
-    # 10u taker-deposit return (vacuous merge).
-    assert _bal(mate["agent_id"]) == m_before + 5 + 10, (
+    # 5u taker-deposit return (vacuous merge).
+    assert _bal(mate["agent_id"]) == m_before + 5 + 5, (
         _bal(mate["agent_id"]),
         m_before,
     )

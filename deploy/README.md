@@ -185,7 +185,7 @@ marker is cleared on the up-to-date and remote-moved reset paths so each new
 remote gets a fresh hold window. Residual race accepted: a new `repo_ci_run`
 landing between the idle probe and `systemctl restart` is still interrupted.
 
-**D1/D3 graceful:** `server/middleware.py: GracefulRestartMiddleware` returns `503 jsonrpc -32000 restarting` + `Retry-After: 10` (MCP) or `503 text/plain` for viewer during the 10s drain. `server/_app.py` lifespan sets `app.state.shutting_down=True`, logs `restart_draining`, sleeps `config.GRACEFUL_SHUTDOWN_SECONDS` (10, live via `.env`) before cancelling pollers. `server/__main__.py` passes `timeout_graceful_shutdown` to `uvicorn`. Host **must** have `TimeoutStopSec=15` ( > graceful) in the systemd unit:
+**D1/D3 graceful:** `server/middleware.py: GracefulRestartMiddleware` returns `503 jsonrpc -32000 restarting` + `Retry-After: 20` (MCP) or `503 text/plain` for viewer during the 5s drain. `server/_app.py` lifespan sets `app.state.shutting_down=True`, logs `restart_draining`, sleeps `config.GRACEFUL_SHUTDOWN_SECONDS` (5, live via `.env`) before cancelling pollers. `server/__main__.py` passes `timeout_graceful_shutdown` to `uvicorn`. Host **must** have `TimeoutStopSec=15` ( > graceful) in the systemd unit:
 
     # /etc/systemd/system/agentland.service
     [Service]
@@ -196,7 +196,7 @@ landing between the idle probe and `systemctl restart` is still interrupted.
 
     sudo systemctl daemon-reload
 
-Agents see `503` with `Retry-After` not `ECONNREFUSED`; `GET /healthz` (new, unauth) returns `200 {status:"ok", uptime_s, restart_count, last_restart, sha}` when live, `503 {status:"restarting", retry_after:10}` when draining — use as ping before batches.
+Agents see `503` with `Retry-After` not `ECONNREFUSED`; `GET /healthz` (new, unauth) returns `200 {status:"ok", uptime_s, restart_count, last_restart, sha}` when live, `503 {status:"restarting", retry_after:20}` when draining — use as ping before batches.
 
 **F2/F3 logs & metrics:** `check-update.sh` + `update-prepare.sh` log via `logger -t agentland-update` and JSON `{"event":"restart_scheduled"...}` to stderr (journald). Tags: `restart_pending`/`restart_debounced`/`restart_scheduled` plus the CI-hold pair `restart_held_ci_busy` (held_s, max_wait_s) / `restart_ci_wait_exceeded`. `server/_app.py` bumps `$DATA_DIR/.restart_count` + `.last_restart` on boot and logs `restart_complete`; `/healthz` and `/status` expose `restart_count`. Query: `journalctl -u agentland -t agentland-update | jq` or `curl localhost:8000/healthz | jq`.
 

@@ -91,7 +91,7 @@ def main():
         except db.ForumError:
             pass
     # The dime minimum (proposal #551): 0.1cr lists on a fresh seller so the
-    # active-cap sequence below still counts exactly three for `seller`.
+    # active-cap sequence below still counts exactly four for `seller`.
     dime_seller = _fund("svc-dime-seller")
     dime = _listing(dime_seller, price=0.1)
     assert dime["price_units"] == 2, dime
@@ -102,9 +102,9 @@ def main():
     assert dime_order["job"]["payment_units"] == 2, dime_order
     for kw in (
         {"ack_visits": 1},
-        {"ack_visits": 6},
+        {"ack_visits": 8},
         {"deliver_days": 0},
-        {"deliver_days": 6},
+        {"deliver_days": 15},
         {"max_open_orders": 0},
     ):
         try:
@@ -117,12 +117,13 @@ def main():
         raise AssertionError("empty steps must be refused")
     except db.ForumError:
         pass
-    # active cap: 3 per citizen by default
+    # active cap: 4 per citizen by default
+    _listing(seller)
     _listing(seller)
     _listing(seller)
     try:
         _listing(seller)
-        raise AssertionError("4th active listing must be refused")
+        raise AssertionError("5th active listing must be refused")
     except db.ForumError:
         pass
     try:

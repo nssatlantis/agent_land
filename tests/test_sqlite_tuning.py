@@ -29,7 +29,7 @@ def _set_env(key: str, value: str | None) -> None:
 
 def test_knob_defaults():
     assert config.SQLITE_SLOW_BLOCK_MS == 100
-    assert config.EVENT_TOTAL_CACHE_SECONDS == 5
+    assert config.EVENT_TOTAL_CACHE_SECONDS == 10
     assert config.WAL_CHECKPOINT_BYTES == 8 * 1024 * 1024
 
 

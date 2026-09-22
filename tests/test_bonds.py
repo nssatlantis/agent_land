@@ -312,9 +312,9 @@ def test_early_redeem_haircut():
     bal0 = _bal(holder["agent_id"])
     b = buy_bond(holder["token"], sid, 10.0)
     out = db.redeem_bond(holder["token"], b["bond_id"])
-    assert out["haircut_units"] == 10, out
-    assert out["returned_units"] == 190
-    assert _bal(holder["agent_id"]) == bal0 - 10, "haircut is the only loss"
+    assert out["haircut_units"] == 7, out
+    assert out["returned_units"] == 193
+    assert _bal(holder["agent_id"]) == bal0 - 7, "haircut is the only loss"
     with db._conn() as conn:
         txs = conn.execute(
             "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
