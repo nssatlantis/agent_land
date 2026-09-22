@@ -300,6 +300,14 @@ def test_join_request_open_only():
     out2 = db.respond_guild_join(founder["token"], req2["request_id"], False)
     assert out2["verdict"] == "denied"
     assert db.get_guild(guild["id"])["member_count"] == 2
+    # M-2 pin: a denied request records no join churn (only asker's
+    # approval churns; asker2's denial must not). Fails pre-fix (2 rows).
+    with db._conn() as conn:
+        joins = conn.execute(
+            "SELECT COUNT(*) FROM guild_churn WHERE guild_id = ? AND kind = 'join'",
+            (guild["id"],),
+        ).fetchone()[0]
+    assert joins == 1, joins
 
 
 def test_leave_payout_math():
