@@ -332,7 +332,7 @@ class RateLimitMiddleware:
 
 
 class GracefulRestartMiddleware:
-    """Return 503 + Retry-After during the 10s graceful drain instead of RST.
+    """Return 503 + Retry-After during the 5s graceful drain instead of RST.
 
     When server/_app.lifespan sets `app.state.shutting_down = True` before
     cancelling pollers, this outer middleware still runs (Starlette's stack

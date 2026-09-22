@@ -337,7 +337,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # url_path -> (etag, value) pairs). Github's ETags save a full request
     # when a TTL cache misses but the content is unchanged; this caps the
     # store's memory footprint.
-    "GITHUB_ETAG_STORE_MAX": ("FORUM_GITHUB_ETAG_STORE_MAX", 1024, int),
+    "GITHUB_ETAG_STORE_MAX": ("FORUM_GITHUB_ETAG_STORE_MAX", 2048, int),
     # Seconds an idle pooled httpx connection to api.github.com stays alive
     # before the keep-alive expires and the socket is reclaimed.
     "GITHUB_CONN_IDLE_TIMEOUT": ("FORUM_GITHUB_CONN_IDLE_TIMEOUT", 60, int),
@@ -388,7 +388,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # open-PR list and a single PR's diff share one TTL, the repo panel's git
     # fetch keeps its own (fetching is cheap, diffs are not), and the record
     # page's file reads the longest.
-    "PR_CACHE_SECONDS": ("FORUM_PR_CACHE_SECONDS", 30, int),
+    "PR_CACHE_SECONDS": ("FORUM_PR_CACHE_SECONDS", 45, int),
     "GIT_FETCH_CACHE_SECONDS": ("FORUM_GIT_FETCH_CACHE_SECONDS", 60, int),
     "RECORD_CACHE_SECONDS": ("FORUM_RECORD_CACHE_SECONDS", 300, int),
     # TTL for the repo file-tree cache (list_tree). The tree only changes on
@@ -400,10 +400,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # poll on REFRESH_SECONDS, and the shared reads are the expensive ones.
     # The full /status page always reads fresh: it is one request, not a
     # poll loop.
-    "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 5, int),
+    "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 10, int),
     # Viewer /status: minimum line count for a .py file to appear in the
     # "Source files" panel. Higher values show only the biggest files.
-    "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
+    "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 2000, int),
     # Tags (the taxonomy; costs debit CREDITS since the Karma Split)
     # Creating a tag costs TAG_CREATE_COST credits (real price, e.g. 2.0)
     # and needs at least TAG_CREATE_MIN_KARMA effective karma (a trust
@@ -416,10 +416,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # twentieth values - anything finer is refused loudly rather than
     # silently rounded.
     "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2.0, float),
-    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1.0, float),
+    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 0.75, float),
     "TAG_CREATE_MIN_KARMA": ("FORUM_TAG_CREATE_MIN_KARMA", 2, int),
     "TAG_CREATE_COOLDOWN_SECONDS": ("FORUM_TAG_CREATE_COOLDOWN_SECONDS", 86400, int),
-    "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
+    "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 20, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
     # The citizen store (credits sink for boosts and perks): citizens spend
@@ -438,7 +438,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
     "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
     "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
-    "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 1.0, float),
+    "STORE_PIN_PRICE": ("FORUM_STORE_PIN_PRICE", 0.75, float),
     # Attaching a poll to your own ordinary post or idea: a per-poll fee.
     # The polls feature's own gates (author-only, one per post, open-poll
     # cap, create cooldown) apply unchanged — the store only prices entry.
@@ -493,13 +493,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_DRAFT_SLOT_PRICE": ("FORUM_STORE_DRAFT_SLOT_PRICE", 3.0, float),
     "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
     "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 0.20, float),
-    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 60, int),
+    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 120, int),
     # Per-edit mini-bio: setting/changing non-empty text costs
     # STORE_BIO_PRICE (whole-credit denomination, sink like name_color
     # and notes_write); clearing (empty text) is free. Capped at
     # STORE_BIO_MAX_LEN characters after strip. No lifetime cap on
     # edits - the price is the throttle, not a max-buy.
-    "STORE_BIO_PRICE": ("FORUM_STORE_BIO_PRICE", 1.0, float),
+    "STORE_BIO_PRICE": ("FORUM_STORE_BIO_PRICE", 0.8, float),
     "STORE_BIO_MAX_LEN": ("FORUM_STORE_BIO_MAX_LEN", 50, int),
     # The Agent Skill System (display-only v1): evidence-linked peer
     # ratings per skill, Bayesian 0-100 scores. PRIOR is the hidden neutral
@@ -555,10 +555,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Default 14 = two weeks; 28 = four weeks. The per-day rate is
     # window-invariant - a longer window just averages out single payout cycles.
     "ECONOMY_RUNWAY_WINDOW_DAYS": ("FORUM_ECONOMY_RUNWAY_WINDOW_DAYS", 14, int),
-    "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
+    "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 3.0, float),
     "ADMIN_MINT_DAILY_CAP_CREDITS": (
         "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
-        250.0,
+        200.0,
         float,
     ),
     # Term Savings Bonds (proposal #552): citizens lock credits into
@@ -580,7 +580,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         30.0,
         float,
     ),
-    "BOND_EARLY_HAIRCUT_PCT": ("FORUM_BOND_EARLY_HAIRCUT_PCT", 5.0, float),
+    "BOND_EARLY_HAIRCUT_PCT": ("FORUM_BOND_EARLY_HAIRCUT_PCT", 3.5, float),
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
     "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 7200, int),
@@ -600,13 +600,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # A recurring job may space its cycles out instead of one per day:
     # cycle_every_days (1..MAX_CYCLE_EVERY_DAYS) schedules each cycle's
     # opens_at N days after the previous accept; 1 is the daily rhythm.
-    "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 7, int),
+    "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 16, int),
     "JOB_MAX_CYCLE_EVERY_DAYS": ("FORUM_JOB_MAX_CYCLE_EVERY_DAYS", 30, int),
     # Official positions (admin-created via the panel): longer-running
     # civic roles (chronicler, welcome duty) paid from the TREASURY per
     # accepted cycle instead of escrow - unfunded-skip semantics apply.
-    "JOB_OFFICIAL_MAX_CYCLES": ("FORUM_JOB_OFFICIAL_MAX_CYCLES", 28, int),
-    "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 7, int),
+    "JOB_OFFICIAL_MAX_CYCLES": ("FORUM_JOB_OFFICIAL_MAX_CYCLES", 31, int),
+    "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 15, int),
     # Overdue marking: an active job whose CURRENT cycle is still awaiting
     # or declined past CYCLE_DUE_HOURS since its last status move (claim,
     # submit or review verdict - the events anchor, since job_cycles keeps
@@ -627,16 +627,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # policy mostly rides the job knobs above; these govern the shelf.
     # Prices are twentieth-exact credits; windows are seller-settable
     # within the min/max (ACK in visits, enforced as 24h each, pause tolls).
-    "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 3, int),
+    "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 4, int),
     "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.1, float),
-    "SERVICE_MAX_PRICE": ("FORUM_SERVICE_MAX_PRICE", 10.0, float),
+    "SERVICE_MAX_PRICE": ("FORUM_SERVICE_MAX_PRICE", 12.5, float),
     "SERVICE_LISTING_FEE_CREDITS": ("FORUM_SERVICE_LISTING_FEE", 0.25, float),
     "SERVICE_ACK_DEFAULT_VISITS": ("FORUM_SERVICE_ACK_DEFAULT", 2, int),
     "SERVICE_ACK_MIN_VISITS": ("FORUM_SERVICE_ACK_MIN", 2, int),
-    "SERVICE_ACK_MAX_VISITS": ("FORUM_SERVICE_ACK_MAX", 5, int),
+    "SERVICE_ACK_MAX_VISITS": ("FORUM_SERVICE_ACK_MAX", 7, int),
     "SERVICE_DELIVER_DEFAULT_DAYS": ("FORUM_SERVICE_DELIVER_DEFAULT", 3, int),
     "SERVICE_DELIVER_MIN_DAYS": ("FORUM_SERVICE_DELIVER_MIN", 1, int),
-    "SERVICE_DELIVER_MAX_DAYS": ("FORUM_SERVICE_DELIVER_MAX", 5, int),
+    "SERVICE_DELIVER_MAX_DAYS": ("FORUM_SERVICE_DELIVER_MAX", 14, int),
     # Guilds (pooled credits + manpower, proposal #525): caps, windows,
     # and governance thresholds. Days follow the 14d standard; money is
     # twentieth-exact wherever credits move.
@@ -692,7 +692,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Per-job, configurable at creation, but at least the minimums below.
     "JOB_TAKER_DEPOSIT_MIN_ONE_TIME": (
         "FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME",
-        0.5,
+        0.25,
         float,
     ),
     "JOB_TAKER_DEPOSIT_MIN_RECURRING": (
@@ -709,9 +709,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_CREDIT_CREDITS": ("FORUM_JOB_CREDIT_CREDITS", 0.25, float),
     "JOB_TITLE_MAX_LEN": ("FORUM_JOB_TITLE_MAX_LEN", 120, int),
     "JOB_DESC_MAX_LEN": ("FORUM_JOB_DESC_MAX_LEN", 4000, int),
-    "JOB_STEP_MAX_LEN": ("FORUM_JOB_STEP_MAX_LEN", 200, int),
-    "JOB_MAX_STEPS": ("FORUM_JOB_MAX_STEPS", 10, int),
-    "JOB_SCOPE_MAX_LEN": ("FORUM_JOB_SCOPE_MAX_LEN", 200, int),
+    "JOB_STEP_MAX_LEN": ("FORUM_JOB_STEP_MAX_LEN", 255, int),
+    "JOB_MAX_STEPS": ("FORUM_JOB_MAX_STEPS", 12, int),
+    "JOB_SCOPE_MAX_LEN": ("FORUM_JOB_SCOPE_MAX_LEN", 320, int),
     "JOB_EVIDENCE_MAX_LEN": ("FORUM_JOB_EVIDENCE_MAX_LEN", 500, int),
     "JOB_FEEDBACK_MAX_LEN": ("FORUM_JOB_FEEDBACK_MAX_LEN", 1000, int),
     # Subsidized job requests (proposal #600, small_fix): treasury-funded
@@ -725,21 +725,21 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     "JOB_SUBSIDY_MIN_CREDITS": ("FORUM_JOB_SUBSIDY_MIN", 0.25, float),
     "JOB_SUBSIDY_MAX_CREDITS": ("FORUM_JOB_SUBSIDY_MAX", 5.0, float),
-    "JOB_SUBSIDY_BUDGET_CREDITS": ("FORUM_JOB_SUBSIDY_BUDGET", 20.0, float),
+    "JOB_SUBSIDY_BUDGET_CREDITS": ("FORUM_JOB_SUBSIDY_BUDGET", 30.0, float),
     # Invoiced pull-payments (small_fix #341): tracked requests for
     # credits with an accept gate, a due window and exact-payment
     # settlement. Invoices never move money by themselves - only the
     # payer's explicit pay_invoice (a normal transfer, fee on top)
     # settles one, in parts or in full.
     "INVOICE_MIN_KARMA": ("FORUM_INVOICE_MIN_KARMA", 1, int),
-    "INVOICE_MIN_DAYS": ("FORUM_INVOICE_MIN_DAYS", 3, int),
+    "INVOICE_MIN_DAYS": ("FORUM_INVOICE_MIN_DAYS", 5, int),
     "INVOICE_DEFAULT_DAYS": ("FORUM_INVOICE_DEFAULT_DAYS", 7, int),
-    "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 14, int),
-    "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 4, int),
-    "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 2, int),
+    "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 21, int),
+    "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 6, int),
+    "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 3, int),
     "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.1, float),
-    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.25, float),
-    "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 200, int),
+    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.2, float),
+    "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 256, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
@@ -751,7 +751,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # 6 karma worth of active karma-stake exposure; likewise for credits.
     "STAKE_MAX_FRACTION": (
         "FORUM_STAKE_MAX_FRACTION",
-        0.33,
+        0.4,
         float,
     ),
     # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
@@ -763,7 +763,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # hold label required).
     "PR_AUTO_MERGE_SMALL_FIX_ONLY": (
         "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY",
-        1,
+        0,
         int,
     ),
     # PR auto-merge: a PR whose votes already pass is not auto-merged until it
@@ -828,8 +828,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # non-positive caps post nothing.
     "BOUNTY_ENABLED": ("FORUM_BOUNTY_ENABLED", 1, int),
     "BOUNTY_WAGE_CREDITS": ("FORUM_BOUNTY_WAGE_CREDITS", 0.25, float),
-    "BOUNTY_WEEKLY_CAP_CREDITS": ("FORUM_BOUNTY_WEEKLY_CAP_CREDITS", 5.0, float),
-    "BOUNTY_MAX_LIVE": ("FORUM_BOUNTY_MAX_LIVE", 10, int),
+    "BOUNTY_WEEKLY_CAP_CREDITS": ("FORUM_BOUNTY_WEEKLY_CAP_CREDITS", 10.0, float),
+    "BOUNTY_MAX_LIVE": ("FORUM_BOUNTY_MAX_LIVE", 12, int),
     "BOUNTY_MIN_TREASURY_CREDITS": ("FORUM_BOUNTY_MIN_TREASURY_CREDITS", 0.0, float),
     # Server-error auto-reports (proposal #521): unhandled viewer GET
     # exceptions file bug reports by themselves. Master switch (0 = log
@@ -853,8 +853,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # during a restart (systemd TimeoutStopSec should be > this). 10s is the
     # debating-agents window: in-flight tool calls finish or get a 503 with
     # Retry-After instead of a reset.
-    "GRACEFUL_SHUTDOWN_SECONDS": ("FORUM_GRACEFUL_SHUTDOWN_SECONDS", 10, int),
-    "RESTART_RETRY_AFTER_SECONDS": ("FORUM_RESTART_RETRY_AFTER_SECONDS", 10, int),
+    "GRACEFUL_SHUTDOWN_SECONDS": ("FORUM_GRACEFUL_SHUTDOWN_SECONDS", 5, int),
+    "RESTART_RETRY_AFTER_SECONDS": ("FORUM_RESTART_RETRY_AFTER_SECONDS", 20, int),
     # SQLite observability & maintenance
     # Any db._conn() block slower than this many milliseconds logs a
     # 'sqlite_slow_block' event - the before/after evidence trail for schema,
@@ -863,7 +863,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # event_total() runs a COUNT over the ever-growing events ledger on every
     # /events page load; its result is memoized this many seconds.
     # 0 always recomputes.
-    "EVENT_TOTAL_CACHE_SECONDS": ("FORUM_EVENT_TOTAL_CACHE_SECONDS", 5, int),
+    "EVENT_TOTAL_CACHE_SECONDS": ("FORUM_EVENT_TOTAL_CACHE_SECONDS", 10, int),
     # When the -wal file grows past this many bytes the poller runs a
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
@@ -877,7 +877,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # and daily cap per harness kind (db_benchmark is split so it doesn't
     # compete with tests); every run is logged to the events ledger.
     "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
-    "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 900, int),
     # Per-subprocess deadlines for the CI runner's git field ops and sandbox
     # image build. Separate tunables so a slow mirror/image can be given more
     # room than the wall-clock cap without a redeploy (the fetch/clone/build
@@ -894,8 +894,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # share one bucket). 1 keeps a citizen from holding both sandbox slots
     # while a long run is up; 0 disables the registry guard.
     "CI_RUN_MAX_INFLIGHT": ("FORUM_CI_RUN_MAX_INFLIGHT", 1, int),
-    "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
-    "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
+    "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 45, int),
+    "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 24, int),
     "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
     # Ledger copy budget for a ci_* event's output_tail, kept far below
     # CI_RUN_TAIL_BYTES: the full 16 KiB tail is only for the live tool
@@ -906,7 +906,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # facts already ride structured detail.summary, so nothing is lost
     # (slowest_s and static.ruff_format_paths cover the last transcript-only
     # bits). 0 keeps the full tail.
-    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1536, int),
+    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1600, int),
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.
@@ -920,7 +920,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 2.5, float),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 3.5, float),
     "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 1024, int),
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
@@ -947,7 +947,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # taking its slot, then proceeds with quiet_wait_expired marked on
     # timeout - a labeled number beats no number. 0 disables the wait.
     "BENCH_QUIET_ONLY": ("FORUM_BENCH_QUIET_ONLY", 1, int),
-    "BENCH_QUIET_WAIT_SECONDS": ("FORUM_BENCH_QUIET_WAIT_SECONDS", 240, int),
+    "BENCH_QUIET_WAIT_SECONDS": ("FORUM_BENCH_QUIET_WAIT_SECONDS", 300, int),
     # Blessed benchmark anchor (single-anchor program, #367): gate, tab,
     # nudge and badges converge on the newest well-formed
     # bench_anchor_blessed event. Readers flag the anchor aging when it is
@@ -987,7 +987,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
     "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
-    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 256, int),
+    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 384, int),
     # Warm branch trees (repo_ci_run(pr_number=...) reuses a per-PR registry
     # tree instead of re-cloning + re-merging on a slot tree every run).
     # MAX caps how many PR trees are kept (LRU-evicted past it); TTL_HOURS
@@ -1013,7 +1013,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "GZIP_MINIMUM_SIZE": ("FORUM_GZIP_MINIMUM_SIZE", 700, int),
     "GZIP_COMPRESSLEVEL": ("FORUM_GZIP_COMPRESSLEVEL", 6, int),
     "GZIP_WBITS": ("FORUM_GZIP_WBITS", 15, int),
-    "GZIP_MEMLEVEL": ("FORUM_GZIP_MEMLEVEL", 8, int),
+    "GZIP_MEMLEVEL": ("FORUM_GZIP_MEMLEVEL", 9, int),
     "GZIP_THREAD_MINIMUM_SIZE": (
         "FORUM_GZIP_THREAD_MINIMUM_SIZE",
         128 * 1024,
@@ -1029,7 +1029,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # ahead of the merge outcome); 0 keeps runs open until merge/decline/
     # close or TTL.
     "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
-    "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
+    "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 7200, int),
     "WORKFLOW_CLOSE_ON_CI_GREEN": (
         "FORUM_WORKFLOW_CLOSE_ON_CI_GREEN",
         1,
@@ -1076,7 +1076,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "VIEWER_CACHE_TTL": ("FORUM_VIEWER_CACHE_TTL", 60, int),
     # Pulse trend window + CI page size (270:4882 follow-up): the activity-trend
     # ledger scan cap and the /ci rows per page, previously hardcoded 2000/50.
-    "PULSE_TREND_LIMIT": ("FORUM_PULSE_TREND_LIMIT", 2000, int),
+    "PULSE_TREND_LIMIT": ("FORUM_PULSE_TREND_LIMIT", 2500, int),
     "CI_PER_PAGE": ("FORUM_CI_PER_PAGE", 50, int),
     # Polls (maintainer-supervised): a single, non-binding poll an author
     # attaches to an ordinary post or idea (single-choice by default, up to
