@@ -859,9 +859,7 @@ def preview_bond_yield(token: str, series_id: int, face_credits: float) -> dict:
         denom = elig_face + face
         term_days = max(1, int(s["term_days"]))
         horizon = min(7, term_days)
-        my_first = (
-            (base_pool + carry) * face // denom if denom > 0 and face > 0 else 0
-        )
+        my_first = (base_pool + carry) * face // denom if denom > 0 and face > 0 else 0
         my_day = base_pool * face // denom if denom > 0 and face > 0 else 0
         projected = my_first + (horizon - 1) * my_day
         net = projected - fee
