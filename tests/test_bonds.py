@@ -488,6 +488,17 @@ def test_preview_estimate_math_and_blockers():
     assert closed["status"] == "closed"
     out2 = preview_bond_yield(holder["token"], sid, 2.0)
     assert any("closed" in b for b in out2["blockers"]), out2
+    sid1 = bond_series_open("preview-1", 1)["series_id"]
+    out1 = preview_bond_yield(holder["token"], sid1, 2.0)
+    assert out1["horizon_days"] == 1, out1
+    assert out1["term_days"] == 1, out1
+    assert out1["projected_7d_yield_units"] <= out["projected_7d_yield_units"], (
+        out1,
+        out,
+    )
+    assert out1["projected_7d_yield_units"] == (
+        out1["pool_today_units"] + out1["carry_units"]
+    ), out1
 
 
 def test_realized_pct_on_closed_series():
