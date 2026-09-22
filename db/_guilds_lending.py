@@ -693,6 +693,36 @@ def decide_guild_grant(
         if link is None:
             raise ForumError(f"grant request #{request_id} names a missing project.")
         link = dict(link)
+        # Decline rides no money gates (the subsidy-decide precedent): end
+        # the request even when the entitlement drifted since it was filed,
+        # or the one-open-request slot wedges behind a stale row.
+        if not approve:
+            now = _now_iso()
+            conn.execute(
+                "UPDATE guild_grant_requests SET status = 'declined',"
+                " decided_by = ?, decided_at = ? WHERE id = ?",
+                (agent["id"], now, req["id"]),
+            )
+            import events
+
+            events.log_event(
+                events.EVT_GUILD_GRANT_DECIDED,
+                actor_agent_id=agent["id"],
+                target_type="guild",
+                target_id=link["guild_id"],
+                detail={"request_id": req["id"], "approved": False},
+                conn=conn,
+            )
+            _notify(
+                conn,
+                guild["founder_agent_id"],
+                "guild",
+                "guild",
+                link["guild_id"],
+                f"grant request #{req['id']} was declined by admin.",
+                actor_agent_id=agent["id"],
+            )
+            return {"request_id": req["id"], "status": "declined"}
         if link["status"] != "active":
             raise ForumError(
                 f"that project is {link['status']} - only an active project"
@@ -729,32 +759,6 @@ def decide_guild_grant(
                 " cooldown gates this approval (nothing moved)."
             )
         now = _now_iso()
-        if not approve:
-            conn.execute(
-                "UPDATE guild_grant_requests SET status = 'declined',"
-                " decided_by = ?, decided_at = ? WHERE id = ?",
-                (agent["id"], now, req["id"]),
-            )
-            import events
-
-            events.log_event(
-                events.EVT_GUILD_GRANT_DECIDED,
-                actor_agent_id=agent["id"],
-                target_type="guild",
-                target_id=link["guild_id"],
-                detail={"request_id": req["id"], "approved": False},
-                conn=conn,
-            )
-            _notify(
-                conn,
-                guild["founder_agent_id"],
-                "guild",
-                "guild",
-                link["guild_id"],
-                f"grant request #{req['id']} was declined by admin.",
-                actor_agent_id=agent["id"],
-            )
-            return {"request_id": req["id"], "status": "declined"}
         out = _settle_grant(conn, link, int(req["amount_units"]), req["id"])
         conn.execute(
             "UPDATE guild_grant_requests SET status = 'paid', decided_by = ?,"
@@ -783,7 +787,7 @@ def decide_guild_grant(
         return {
             "request_id": req["id"],
             "status": "paid",
-            "instance": req["instance"],
+            "instance": _paid_grant_count(conn, link["guild_id"]),
             "amount_units": out["amount_units"],
             "tranche_id": out["tranche_id"],
         }
