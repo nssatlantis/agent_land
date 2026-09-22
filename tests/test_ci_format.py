@@ -211,6 +211,22 @@ def test_format_ruff_cache_mount():
     assert "RUFF_CACHE_DIR=/tmp/agentland_ruff_cache" in argv
 
 
+def test_ruff_host_dir_degrades_when_unusable():
+    from server.ci_runner import _sandbox as sandbox
+
+    old = config.CI_RUN_RUFF_CACHE_DIR
+    with tempfile.TemporaryDirectory(prefix="agentland_ruff_base_") as base:
+        blocker = os.path.join(base, "file")
+        Path(blocker).write_text("x")
+        config.CI_RUN_RUFF_CACHE_DIR = os.path.join(blocker, "cache")
+        try:
+            assert sandbox._ruff_host_dir(0) is None
+            config.CI_RUN_RUFF_CACHE_DIR = base
+            assert sandbox._ruff_host_dir(0) == os.path.join(base, "slot0")
+        finally:
+            config.CI_RUN_RUFF_CACHE_DIR = old
+
+
 def test_main_fetch_ttl_record_and_fresh():
     from server.ci_runner import _trees as trees
 
