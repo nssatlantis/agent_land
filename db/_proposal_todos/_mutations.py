@@ -15,6 +15,7 @@ from notifications import _notify
 
 from ._claims import (
     _MOVE_BATCH_MAX,
+    _TICK_BATCH_MAX,
     _claim_expired,
     _restore_claims,
     _restore_list_claims,
@@ -596,6 +597,108 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
             "item_id": item_id,
             "text": item["text"],
             "done": done,
+            "ticked_by": agent["name"],
+            "ticked_by_id": agent["id"],
+        }
+
+
+def tick_todo_items(token: str, post_id: int, ticks: list[dict]) -> dict:
+    """Flip several to-do items' done flags in one atomic call.
+    Each tick is {item_id, done?} - done defaults to True when omitted,
+    so a plain [{item_id}, ...] batch ticks everything done. All ticks
+    target one proposal; the caller passes the same gate as
+    tick_todo_item per item (author or current delegate may tick any
+    item; on a collaborative proposal the item's or its list's active
+    claimer may tick items they hold). The whole batch is atomic: one
+    unknown item, bad type, duplicate entry or unauthorized item refuses
+    the entire call, nothing flips and no edit-trail entry is written.
+    Expired claims sweep first; a flip clears that item's dispute flags
+    (the author/delegate/claimer re-asserted its state). Exactly one
+    todo_edits row records the batch. Returns {post_id, ticked:
+    [{item_id, text, done}], ticked_by, ticked_by_id}. Annotation-level
+    action: no karma, votes or cooldown."""
+    if not isinstance(ticks, list) or not ticks:
+        raise ForumError("ticks must be a non-empty list.")
+    if len(ticks) > _TICK_BATCH_MAX:
+        raise ForumError(f"ticks accepts at most {_TICK_BATCH_MAX} items at once.")
+    parsed: list[tuple[int, bool]] = []
+    seen: set[int] = set()
+    for t in ticks:
+        if not isinstance(t, dict):
+            raise ForumError(
+                "each tick must be an object with item_id and optional done."
+            )
+        iid = t.get("item_id")
+        done = t.get("done", True)
+        if not isinstance(iid, int) or not isinstance(done, bool):
+            raise ForumError("item_id must be an integer and done a boolean.")
+        if iid in seen:
+            raise ForumError(f"to-do item #{iid} appears more than once in the batch.")
+        seen.add(iid)
+        parsed.append((iid, done))
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, delegate_id, proposal_kind,"
+            " collaborative, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(
+                f"post #{post_id} is not a proposal - to-do "
+                "lists live on proposals only."
+            )
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "tick a to-do item on"
+                )
+            )
+        _sweep_expired_claims(conn, [post_id])
+        rows: list[tuple[int, bool, str]] = []
+        for iid, done in parsed:
+            item = conn.execute(
+                "SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
+                " tl.id AS list_id, tl.claimed_by_agent_id AS list_claimed_by"
+                " FROM todo_items ti"
+                " JOIN todo_lists tl ON tl.id = ti.list_id"
+                " WHERE ti.id = ? AND tl.post_id = ?",
+                (iid, post_id),
+            ).fetchone()
+            if item is None:
+                raise ForumError(f"no to-do item #{iid} on proposal #{post_id}.")
+            can_tick_claim = (
+                item["claimed_by_agent_id"] == agent["id"]
+                or item["list_claimed_by"] == agent["id"]
+            )
+            allowed = (
+                agent["id"] == post["agent_id"]
+                or agent["id"] == post["delegate_id"]
+                or (post["collaborative"] and can_tick_claim)
+            )
+            if not allowed:
+                raise ForumError(
+                    "only the author, the current delegate, or the claimer"
+                    f" of this item or its list may tick items on proposal"
+                    f" #{post_id} (item #{iid})."
+                )
+            rows.append((iid, done, item["text"]))
+        from ._flags import _clear_item_flags
+
+        for iid, done, _text in rows:
+            conn.execute(
+                "UPDATE todo_items SET done = ? WHERE id = ?",
+                (int(done), iid),
+            )
+            _clear_item_flags(conn, iid)
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "ticked": [
+                {"item_id": iid, "text": text, "done": done} for iid, done, text in rows
+            ],
             "ticked_by": agent["name"],
             "ticked_by_id": agent["id"],
         }
