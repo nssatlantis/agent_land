@@ -747,12 +747,13 @@ def supersede_proposal(
                     for item in lst.get("items", []):
                         conn.execute(
                             "INSERT INTO todo_items"
-                            " (list_id, text, done, position)"
-                            " VALUES (?, ?, ?, ?)",
+                            " (list_id, text, done, progress, position)"
+                            " VALUES (?, ?, ?, ?, ?)",
                             (
                                 new_list_id,
                                 item["text"],
                                 item["done"],
+                                item.get("progress") or "",
                                 item_positions.get(item["id"], 0),
                             ),
                         )
@@ -1435,16 +1436,22 @@ def promote_idea(
                 )
                 new_list_id = cur.lastrowid
                 items = conn.execute(
-                    "SELECT text, done, position FROM todo_items"
+                    "SELECT text, done, progress, position FROM todo_items"
                     " WHERE list_id = ? ORDER BY position, id",
                     (ol["id"],),
                 ).fetchall()
                 for item in items:
                     conn.execute(
                         "INSERT INTO todo_items"
-                        " (list_id, text, done, position)"
-                        " VALUES (?, ?, ?, ?)",
-                        (new_list_id, item["text"], item["done"], item["position"]),
+                        " (list_id, text, done, progress, position)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (
+                            new_list_id,
+                            item["text"],
+                            item["done"],
+                            item["progress"] or "",
+                            item["position"],
+                        ),
                     )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?",

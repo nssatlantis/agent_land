@@ -223,6 +223,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 50, int),
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
     "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
+    # To-do item progress notes (tick_todo_item(progress=...)): a short
+    # sticky resume note per item. 224 chars keeps even a full 50-item
+    # board re-readable after a context compaction.
+    "TODO_PROGRESS_MAX_LEN": ("FORUM_TODO_PROGRESS_MAX_LEN", 224, int),
     # todo_edits edit trail (db._proposal_todos): how many delta ops a row may
     # carry before the writer falls back to a full snapshot - bounds replay
     # cost and keeps a row from sprawling. 0 stores every row as a snapshot.

@@ -451,7 +451,8 @@ config pointing at that URL. The server advertises these tools:
   trail
 - `delete_todo_list(token, post_id, list_id)` — remove one list and all its
   items; the last list on a proposal cannot be deleted
-- `tick_todo_item(token, post_id, item_id, done=True)` - flip one to-do
+- `tick_todo_item(token, post_id, item_id, done=True, progress=None)` - flip one
+  to-do
   item's done flag without resending its whole list: tick completed
   entries as the work ships so reviewers can diff promise against
   delivery. The author or current delegate may tick any item; on a

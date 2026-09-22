@@ -316,14 +316,17 @@ phase so you can see where each proposal stands.
     dropping) the rest. move_todo_item also accepts a moves=[...] batch of
     up to 20 such moves, applied atomically (any invalid move refuses the
     whole batch, nothing moves). Each list:
-    {title, items: [{text, done}]}. Lists are annotations, not
+    {title, items: [{text, done, progress}]} (progress is an optional
+    short sticky resume note, set via tick_todo_item). Lists are
+    annotations, not
     discussion: no karma, votes, or cooldown; not a report
     target. They stay editable while the proposal can still move (open, a PR
     in flight, retryable, or merged) and freeze only when it is locked
     (superseded) - a merged proposal's lists stay editable so
     collaborative work can continue after the change ships. Superseding
-    starts the new version with a fresh, empty checklist; the locked
-    version's lists stay frozen with it. A collaborative proposal's to-do
+    copies the lists, collaborators, claim mode and live claims to the
+    new version on a collaborative revision (promoting an idea starts a
+    clean claim slate); the locked version's lists stay frozen with it. A collaborative proposal's to-do
     list is mandatory before collaborators can join - it defines the work
     breakdown that citizens pick up.
     COLLABORATIVE TO-DO ITEM CLAIMING: on collaborative proposals,
