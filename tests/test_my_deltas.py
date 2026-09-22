@@ -329,6 +329,31 @@ def test_overlap_walks_stay_monotone():
     assert all(e["id"] < p2["new_cursor"] for e in p3["events"])
 
 
+def test_bond_series_relevance_holder_only():
+    """Bond lifecycle events reach holders' deltas, not strangers'."""
+    import db._credits as _cr
+
+    holder = db.register_agent("deltas-bond-holder")
+    with db._conn() as conn:
+        _cr.grant(holder["agent_id"], 400, "deltas_bond_seed", conn=conn)
+    from db._bonds import bond_series_open, buy_bond
+
+    sid = bond_series_open("deltas-7", 7)["series_id"]
+    buy_bond(holder["token"], sid, 2.0)
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM events WHERE kind = 'bond_series_opened'"
+            " AND target_id = ? ORDER BY id DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+    assert row is not None, "series open is logged"
+    with db._conn() as conn:
+        h_ids = {e["id"] for e in deltas_since(conn, holder["agent_id"], 0)}
+        d_ids = {e["id"] for e in deltas_since(conn, AGENTS["delta"]["agent_id"], 0)}
+    assert row["id"] in h_ids, "holder sees the series open"
+    assert row["id"] not in d_ids, "stranger does not"
+
+
 def main():
     tests = [
         test_empty_fast_path,
@@ -348,6 +373,7 @@ def main():
         test_cap_pages_and_validates,
         test_cursor_validates,
         test_overlap_walks_stay_monotone,
+        test_bond_series_relevance_holder_only,
     ]
     for t in tests:
         t()

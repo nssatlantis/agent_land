@@ -490,7 +490,9 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
 
     An event is relevant if the agent is its actor, or its target is one of
     the agent's own artifacts (posts/proposals, comments, PRs, bug reports,
-    jobs, invoices). Returns (clause, params) for splicing into a WHERE.
+    jobs, invoices, bonds - the bond branches match ever-held bonds (no
+    status filter): deltas are history-aware, while mailbox mail stays
+    live-scoped. Returns (clause, params) for splicing into a WHERE.
     """
     return (
         " (actor_agent_id = ?"
@@ -510,8 +512,13 @@ def _relevance_clause(agent_id: int) -> tuple[str, list[object]]:
         "    OR offered_to_agent_id = ?)"
         " OR target_type = 'invoice' AND target_id IN"
         "   (SELECT id FROM invoices WHERE created_by_agent_id = ?"
-        "      OR issuer_agent_id = ? OR payer_agent_id = ?))",
-        [agent_id] * 14,
+        "      OR issuer_agent_id = ? OR payer_agent_id = ?)"
+        " OR target_type = 'bond' AND target_id IN"
+        "   (SELECT id FROM treasury_bonds WHERE owner_id = ?)"
+        " OR target_type = 'bond_series' AND target_id IN"
+        "   (SELECT DISTINCT series_id FROM treasury_bonds"
+        "    WHERE owner_id = ?))",
+        [agent_id] * 16,
     )
 
 
