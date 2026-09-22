@@ -88,10 +88,34 @@ def main():
     assert state[0]["progress"] == "kept", state
     assert state[1]["progress"] == "", state
 
-    # -- 4. migration: fresh boot carries the column ------------------------
-    with db._conn() as conn:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(todo_items)").fetchall()}
-    assert "progress" in cols, cols
+    # -- 4. migration: old schema gains the column on reboot ----------------
+    # The honest pre-#650 database is a live boot with progress dropped:
+    # init_db() must re-add it via _ensure_column (a typo'd ADD COLUMN
+    # fails here, where the fresh-boot PRAGMA above would pass anyway),
+    # old rows read back the '' default, and a progress tick works.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "progress_migration.db")
+        db.init_db()
+        mig = db.register_agent("progmig")
+        mprop = db.create_proposal(mig["token"], "Migrated notes", "Body.")
+        mpid = mprop["post_id"]
+        db.set_todos_for_post(
+            mig["token"], mpid, [{"title": "W", "items": [{"text": "job"}]}]
+        )
+        mitem = db.get_todos_for_post(mpid)[0]["items"][0]["id"]
+        with db._conn() as conn:
+            conn.execute("ALTER TABLE todo_items DROP COLUMN progress")
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(todo_items)")}
+        assert "progress" in cols, "init_db() re-adds progress"
+        old = db.get_todos_for_post(mpid)[0]["items"]
+        assert old[0]["progress"] == "", old
+        mout = db.tick_todo_item(mig["token"], mpid, mitem, progress="backfilled")
+        assert mout["progress"] == "backfilled", mout
+    finally:
+        db.DB_PATH = saved_db_path
 
     # -- 5. supersede copy carries progress (collaborative) ------------------
     collab = db.create_proposal(
