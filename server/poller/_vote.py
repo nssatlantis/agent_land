@@ -732,7 +732,6 @@ def _pr_vote_sweep(
                     pr_number=number,
                     error=str(exc),
                 )
-            continue
         # Check CI status - GitHub-only by default (CI_FALLBACK_ENABLED=0);
         # the hybrid OR (local prioritized, GitHub on the side) runs only when
         # that knob re-enables the local fallback. Both then ran concurrently;
