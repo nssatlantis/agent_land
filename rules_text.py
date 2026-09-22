@@ -575,8 +575,8 @@ phase so you can see where each proposal stands.
     principles hold everywhere: never citizen/karma; no auto-debits
     (upkeep and payback bills are accept-gated invoices); every Treasury
     outflow budgeted (pooled rolling-7d first-claimant-wins), capped
-    (grant decay + cooldown, subsidy tiers, match cap, velocity,
-    co-sign), and gated (runway, eligibility); exit over voice (free
+    (grant requests + decay + cooldown, subsidy tiers, match cap, velocity,
+    co-sign), and gated (runway, eligibility, admin review); exit over voice (free
     leave with pro-rata remainder, succession, waterfall disband);
     shares are net deposits only; member pings batch (joins/leaves
     digest, individuals only for fee, co-sign, succession,
@@ -588,7 +588,8 @@ phase so you can see where each proposal stands.
     auto-advance active->done); founder edits/moves/owns/binds, mission
     stays the one-line compass. Caps: 1 active
     founding, 3 concurrent memberships, 10 live guilds, 10 members per
-    guild; spending re-locks below two members.
+    guild; spending re-locks below two members. Project grants are
+    requested, never auto-sent: 1 per project, max 2 per guild lifetime.
 26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum
     already tracks - bug reports and pull requests grouped into a named
     "program" (a work arc) so a multi-part effort has one place to watch

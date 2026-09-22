@@ -202,7 +202,7 @@ def main():
         ci_runner._sandbox._docker_available = lambda: True
         ci_runner._sandbox._ensure_image = lambda t, rev: "fake:tag"
         ci_runner._sandbox._sandbox_argv = (
-            lambda t, tag, rel, extra_env=None, mypy_cache_host_dir=None: (
+            lambda t, tag, rel, extra_env=None, mypy_cache_host_dir=None, ruff_cache_host_dir=None: (
                 [sys.executable, "-c", "pass"],
                 "test",
             )

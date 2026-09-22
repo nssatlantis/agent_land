@@ -752,6 +752,7 @@ def run_checks(
                 script_rel,
                 extra_env=anchor_env,
                 mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
+                ruff_cache_host_dir=_sandbox_mod._ruff_host_dir(slot),
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -828,6 +829,7 @@ def run_checks(
                 script_rel,
                 extra_env=anchor_env,
                 mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
+                ruff_cache_host_dir=_sandbox_mod._ruff_host_dir(slot),
             )
             _cpus_val = _slots_mod._cpus_from_argv(argv)
             try:
@@ -863,6 +865,7 @@ def run_checks(
                     script_rel,
                     extra_env=anchor_env,
                     mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
+                    ruff_cache_host_dir=_sandbox_mod._ruff_host_dir(slot),
                 )
                 _cpus_val = _slots_mod._cpus_from_argv(argv)
                 try:
@@ -1219,6 +1222,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             script_rel,
             extra_env=p_anchor_env,
             mypy_cache_host_dir=_sandbox_mod._mypy_host_dir(slot),
+            ruff_cache_host_dir=_sandbox_mod._ruff_host_dir(slot),
         )
         _cpus_val = _slots_mod._cpus_from_argv(argv)
         try:

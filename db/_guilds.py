@@ -539,7 +539,12 @@ def admin_unfreeze_guild(admin: str, guild_id: int) -> dict:
     upkeep) clear through their own paths and are untouched here."""
     with _conn(immediate=True) as conn:
         agent = _admin_agent(conn, admin)
-        _require_guild(conn, guild_id)
+        guild = _require_guild(conn, guild_id)
+        if guild["suspend_reason"] == "delinquent":
+            raise ForumError(
+                "that guild's freeze is sweep-owned (delinquent) - it"
+                " clears through repayment, not an admin unfreeze."
+            )
         conn.execute(
             "UPDATE guilds SET spending_suspended = 0, suspended_by = NULL,"
             " suspend_reason = '', suspended_at = NULL WHERE id = ?",
