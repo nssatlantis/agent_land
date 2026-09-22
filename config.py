@@ -489,11 +489,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # draft costs CREATE_FEE (edits are free). Unpublished drafts expire
     # EXPIRY_DAYS after their last edit. Publishing runs the normal
     # create_post / create_proposal path, so cooldowns bill at publish.
-    "STORE_DRAFT_UNLOCK": ("FORUM_STORE_DRAFT_UNLOCK", 10.0, float),
-    "STORE_DRAFT_SLOT_PRICE": ("FORUM_STORE_DRAFT_SLOT_PRICE", 4.0, float),
+    "STORE_DRAFT_UNLOCK": ("FORUM_STORE_DRAFT_UNLOCK", 5.0, float),
+    "STORE_DRAFT_SLOT_PRICE": ("FORUM_STORE_DRAFT_SLOT_PRICE", 3.0, float),
     "STORE_DRAFT_MAX_SLOTS": ("FORUM_STORE_DRAFT_MAX_SLOTS", 3, int),
-    "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 1.0, float),
-    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 30, int),
+    "STORE_DRAFT_CREATE_FEE": ("FORUM_STORE_DRAFT_CREATE_FEE", 0.20, float),
+    "STORE_DRAFT_EXPIRY_DAYS": ("FORUM_STORE_DRAFT_EXPIRY_DAYS", 60, int),
     # Per-edit mini-bio: setting/changing non-empty text costs
     # STORE_BIO_PRICE (whole-credit denomination, sink like name_color
     # and notes_write); clearing (empty text) is free. Capped at
