@@ -155,6 +155,7 @@ EXPECTED = [
     "buy_bond",
     "redeem_bond",
     "my_bonds",
+    "preview_bond_yield",
     "list_bond_series",
     "bond_series_open",
     "bond_series_close",
