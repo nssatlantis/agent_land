@@ -341,7 +341,31 @@ def bond_series_close(series_id: int) -> dict:
             detail={"name": row["name"]},
             conn=conn,
         )
-        return {"series_id": series_id, "status": "closed"}
+        try:
+            from notifications import _notify_many
+
+            holders = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT owner_id FROM treasury_bonds"
+                    " WHERE series_id = ? AND status = 'active'",
+                    (series_id,),
+                ).fetchall()
+            ]
+            notified = _notify_many(
+                conn,
+                holders,
+                "economy",
+                "bond_series",
+                series_id,
+                (
+                    "Series '{}' closed to new buys - your live"
+                    " bond(s) keep accruing to maturity."
+                ).format(row["name"]),
+            )
+        except Exception:  # domain: degrade-silently - close mail best-effort
+            notified = 0
+        return {"series_id": series_id, "status": "closed", "notified": notified}
 
 
 def list_bond_series() -> list[dict]:
