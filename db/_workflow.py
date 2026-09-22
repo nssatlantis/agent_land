@@ -935,7 +935,7 @@ def require_workflow_block(
     except Exception:  # domain: degrade-silently
         pass
     row = conn.execute(
-        "SELECT id FROM workflow_runs"
+        "SELECT id, agent_id FROM workflow_runs"
         " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'"
         + (" AND agent_id = ?" if _per_agent_enabled() else ""),
         (workflow_path, proposal_id) + ((agent_id,) if _per_agent_enabled() else ()),
