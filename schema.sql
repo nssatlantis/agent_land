@@ -2387,6 +2387,7 @@ CREATE TABLE IF NOT EXISTS design_issues (
 );
 CREATE INDEX IF NOT EXISTS idx_design_issues_design ON design_issues(design_id, state, id);
 CREATE INDEX IF NOT EXISTS idx_design_issues_feature ON design_issues(feature_id);
+CREATE INDEX IF NOT EXISTS idx_design_issues_author ON design_issues(author_id);
 CREATE TABLE IF NOT EXISTS design_questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
@@ -2398,6 +2399,7 @@ CREATE TABLE IF NOT EXISTS design_questions (
     answered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_design_questions_design ON design_questions(design_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_design_questions_asker ON design_questions(asker_id);
 CREATE TABLE IF NOT EXISTS design_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
