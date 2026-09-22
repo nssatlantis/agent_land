@@ -205,10 +205,11 @@ def main():
     saved_db_path = db.DB_PATH
     old_karma_min = os.environ.get("FORUM_JOB_CREATOR_MIN_KARMA")
     os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "1"
-    # Retuned default is 0.2 (4u): pin a multiple-of-5 fee so the /5
-    # downgrade below stays exact (same save/reload/restore as karma_min).
-    old_fee = os.environ.get("FORUM_INVOICE_CREATE_FEE_CREDITS")
-    os.environ["FORUM_INVOICE_CREATE_FEE_CREDITS"] = "0.25"
+    # Creation fee is now max(transfer fee, 0.1 floor) (#645): pin the
+    # floor to a multiple-of-5 value that dominates the tx fee so the
+    # /5 downgrade stays exact (same save/reload/restore as karma_min).
+    old_fee = os.environ.get("FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS")
+    os.environ["FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS"] = "0.25"
     import importlib as _ilm
 
     from tests._setup import config as _cfg
@@ -508,9 +509,9 @@ def main():
         else:
             os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = old_karma_min
         if old_fee is None:
-            os.environ.pop("FORUM_INVOICE_CREATE_FEE_CREDITS", None)
+            os.environ.pop("FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS", None)
         else:
-            os.environ["FORUM_INVOICE_CREATE_FEE_CREDITS"] = old_fee
+            os.environ["FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS"] = old_fee
         _ilm.reload(_cfg)
     print("  quarter->twentieth migration: ok")
 
