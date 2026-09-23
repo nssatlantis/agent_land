@@ -287,13 +287,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "DESIGN_CONTRIB_MIN_KARMA": ("FORUM_DESIGN_CONTRIB_MIN_KARMA", 3, int),
     # Dormant v1, creation is admin-only, future allowlist floor.
     "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
-    # Max design creations per admin per UTC day.
+    # Max 1 design creation per admin per 24h.
     "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
     # Hard cap features per design, accepted plus pending.
     "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),
     # Hard cap issues per design, accepted plus pending.
     "DESIGN_MAX_ISSUES": ("FORUM_DESIGN_MAX_ISSUES", 100, int),
-    # Hard cap questions per design.
+    # Hard cap questions per design, accepted plus pending.
     "DESIGN_MAX_QUESTIONS": ("FORUM_DESIGN_MAX_QUESTIONS", 100, int),
     # Max design comments per citizen per UTC day.
     "DESIGN_COMMENT_PER_DAY": ("FORUM_DESIGN_COMMENT_PER_DAY", 10, int),
