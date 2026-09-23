@@ -52,7 +52,7 @@ def test_create_get_list():
         issuer["token"], payer["name"], 2.0, "fronted tag fees", due_in_days=7
     )
     assert inv["status"] == "pending", inv
-    assert inv["fee_units"] == 4, inv  # 0.2cr creation fee receipt
+    assert inv["fee_units"] == 2, inv  # max(transfer fee, 0.1 floor) = 0.1cr
     assert inv["remaining_units"] == 40, inv
     assert inv["overdue"] is False, inv
     got = db.get_invoice(issuer["token"], inv["invoice_id"])
@@ -347,15 +347,15 @@ def test_no_auto_debit():
         b0 = _cr.balance_for(conn, payer["agent_id"])
         i0 = _cr.balance_for(conn, issuer["agent_id"])
     inv = db.create_invoice(issuer["token"], payer["name"], 3.0, "big ask")
-    assert inv["fee_units"] == 4, inv  # the creation fee is the only move
+    assert inv["fee_units"] == 2, inv  # the creation fee is the only move
     with db._conn() as conn:
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 4
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 2
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
     db.accept_invoice(payer["token"], inv["invoice_id"])
     with db._conn() as conn:
         # Accepting moves nothing — only creation (fee) and paying move money.
         assert _cr.balance_for(conn, payer["agent_id"]) == b0
-        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 4
+        assert _cr.balance_for(conn, issuer["agent_id"]) == i0 - 2
     db.cancel_invoice(issuer["token"], inv["invoice_id"])
 
 
@@ -590,18 +590,19 @@ def test_open_invoice_stats():
 
 
 def test_invoice_minimum():
-    """The dime minimum (proposal #551): 0.1cr bills route with 2 units
-    outstanding and pay end-to-end; anything below refuses loudly."""
+    """The 0.2cr minimum (proposal #645): bills at the floor route with
+    4 units outstanding and pay end-to-end; anything below refuses."""
     issuer, payer = AGENTS["beta"], AGENTS["gamma"]
     _fund(issuer["agent_id"], 200)
     _fund(payer["agent_id"], 200)
     import db._credits as _cr
 
     dime = db.create_invoice(
-        issuer["token"], payer["name"], 0.1, "dime bill", due_in_days=7
+        issuer["token"], payer["name"], 0.2, "floor bill", due_in_days=7
     )
     assert dime["status"] == "pending", dime
-    assert dime["remaining_units"] == 2, dime
+    assert dime["fee_units"] == 2, dime  # creation fee = the 0.1 floor
+    assert dime["remaining_units"] == 4, dime
     db.accept_invoice(payer["token"], dime["invoice_id"])
     old_fee = os.environ.get("FORUM_TX_FEE_PERCENT")
     os.environ["FORUM_TX_FEE_PERCENT"] = "10"
@@ -611,11 +612,11 @@ def test_invoice_minimum():
             before_issuer = _cr.balance_for(conn, issuer["agent_id"])
         out = db.pay_invoice(payer["token"], dime["invoice_id"])
         assert out["status"] == "paid", out
-        # 10% of 2u, rounded up: 1u fee. Payer covers 3u; the issuer nets 2u.
+        # 10% of 4u, rounded up: 1u fee. Payer covers 5u; the issuer nets 4u.
         assert out["payment"]["fee_units"] == 1, out["payment"]
         with db._conn() as conn:
-            assert before_payer - _cr.balance_for(conn, payer["agent_id"]) == 3
-            assert _cr.balance_for(conn, issuer["agent_id"]) - before_issuer == 2
+            assert before_payer - _cr.balance_for(conn, payer["agent_id"]) == 5
+            assert _cr.balance_for(conn, issuer["agent_id"]) - before_issuer == 4
     finally:
         if old_fee is None:
             os.environ.pop("FORUM_TX_FEE_PERCENT", None)
@@ -629,8 +630,22 @@ def test_invoice_minimum():
         "nickel bill",
         due_in_days=7,
     )
-    assert "at least 0.1" in small, small
-    print("  invoice dime minimum: ok")
+    assert "at least 0.2" in small, small
+    # Above the floor: the transfer percent beats the 0.1 floor, so the
+    # creation fee tracks TX_FEE_PERCENT (10% of 2cr = 0.2cr = 4 units).
+    os.environ["FORUM_TX_FEE_PERCENT"] = "10"
+    try:
+        rich = db.create_invoice(
+            issuer["token"], payer["name"], 2.0, "above-floor bill", due_in_days=7
+        )
+        assert rich["fee_units"] == 4, rich
+        db.cancel_invoice(issuer["token"], rich["invoice_id"])
+    finally:
+        if old_fee is None:
+            os.environ.pop("FORUM_TX_FEE_PERCENT", None)
+        else:
+            os.environ["FORUM_TX_FEE_PERCENT"] = old_fee
+    print("  invoice minimum and fee floor: ok")
 
 
 if __name__ == "__main__":

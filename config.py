@@ -757,8 +757,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 21, int),
     "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 6, int),
     "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 3, int),
-    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.1, float),
-    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.2, float),
+    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.2, float),
+    # Creation fee = the transfer fee floored at 0.1cr (proposal #645):
+    # fee = max(fee_units(amount), floor) - proportional where anti-spam
+    # wants it, never free, never more than half the 0.2cr minimum.
+    "INVOICE_CREATE_FEE_FLOOR_CREDITS": (
+        "FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS",
+        0.1,
+        float,
+    ),
     "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 256, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
