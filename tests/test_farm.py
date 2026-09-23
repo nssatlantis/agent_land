@@ -465,14 +465,12 @@ def test_bench_mode_guard():
         farm.remove_runner(row["id"])
 
 
->>>>>>> c9dedb56 (CI farm PR 3: bench remote-first routing + per-machine quiet attestation)
 def main():
     setup_module()
     test_ci_runners_migration()
     test_register_list_remove()
     test_pick_runner_healthy()
     test_pick_runner_skips_busy()
-<<<<<<< HEAD
     test_pick_runner_recovers_stale()
     test_pick_runner_marks_dead_stale()
     test_register_duplicate_refused()
