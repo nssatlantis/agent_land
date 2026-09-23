@@ -225,7 +225,7 @@ def create_tag(
     FORUM_TAG_CREATE_COST (2) credits from the creator's credit balance
     (earned minus spent - the ledger row is the only thing that moves it;
     the four earned sources are untouched). Requires at least
-    FORUM_TAG_CREATE_COST effective karma to afford the spend, one creation
+    FORUM_TAG_CREATE_MIN_KARMA effective karma to afford the spend, one creation
     per FORUM_TAG_CREATE_COOLDOWN_SECONDS (a day), a name of letters,
     digits,
     '-' or '_' (at most TAG_NAME_MAX_LEN, at least one letter or digit,
