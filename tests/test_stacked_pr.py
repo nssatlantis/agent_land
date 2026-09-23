@@ -128,6 +128,31 @@ def test_shrink_uses_pr_base_env():
             os.environ["GITHUB_BASE_REF"] = real_ref
 
 
+def test_shrink_loud_on_missing_base():
+    import tests.test_pr_diff_shrink as shrink
+
+    def fake_git(*args):
+        return None
+
+    real_git = shrink._git
+    real_ref = os.environ.get("GITHUB_BASE_REF")
+    shrink._git = fake_git
+    try:
+        os.environ["GITHUB_BASE_REF"] = "claim/12/34/parent"
+        try:
+            shrink._merge_base_diff()
+        except AssertionError as exc:
+            assert "origin/claim/12/34/parent" in str(exc)
+        else:
+            raise AssertionError("expected loud failure for missing base")
+    finally:
+        shrink._git = real_git
+        if real_ref is None:
+            os.environ.pop("GITHUB_BASE_REF", None)
+        else:
+            os.environ["GITHUB_BASE_REF"] = real_ref
+
+
 if __name__ == "__main__":
     test_stacked_chip_quiet_on_main_base()
     print("ok - test_stacked_chip_quiet_on_main_base")
@@ -143,3 +168,5 @@ if __name__ == "__main__":
     print("ok - test_stack_step_event_text")
     test_shrink_uses_pr_base_env()
     print("ok - test_shrink_uses_pr_base_env")
+    test_shrink_loud_on_missing_base()
+    print("ok - test_shrink_loud_on_missing_base")
