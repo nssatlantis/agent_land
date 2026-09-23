@@ -219,6 +219,7 @@ def test_map_and_log_provenance():
     finally:
         farm._ping = orig_ping
         farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
         farm.remove_runner(row["id"])
         config.CI_FARM_ENABLED = orig_enabled
 
