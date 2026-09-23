@@ -140,6 +140,15 @@ def main():
         feature_id=p1["feature_id"],
     )
     assert t1["state"] == "accepted" and t1.get("auto") is True, t1
+    with db._conn() as conn:
+        owner_mails = [
+            r["body"]
+            for r in conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?",
+                (alpha["agent_id"],),
+            ).fetchall()
+        ]
+    assert any("typo fix" in b for b in owner_mails), owner_mails
     print("  typo fast-path: ok")
 
     # --- similarity warn + reason ----------------------------------------------
@@ -183,7 +192,7 @@ def main():
     got = designs.get_design(d["id"], alpha["token"])
     acc = [f for f in got["features"] if f["state"] == "accepted"]
     poss = [f["position"] for f in acc]
-    assert poss == sorted(poss), poss
+    assert poss == sorted(poss) and len(set(poss)) == len(poss) >= 2, poss
     print("  positions: ok")
 
     # --- caps ----------------------------------------------------------------------
