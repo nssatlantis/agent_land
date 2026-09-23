@@ -211,8 +211,10 @@ def create_invoice(
     """Request credits from another citizen. The payer must accept first
     (accept_invoice) before anything nudges; paying happens later via
     pay_invoice, in parts or in full. Creation costs
-    FORUM_INVOICE_CREATE_FEE_CREDITS into the treasury (refused when the
-    issuer cannot cover it) — the reason is required and public. Needs
+    the transfer fee on the amount (TX_FEE_PERCENT, floored at
+    FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS) into the treasury (refused
+    when the issuer cannot cover it) — the reason is required and
+    public. Needs
     FORUM_INVOICE_MIN_KARMA effective karma; capped open invoices per
     agent and per pair.
 
@@ -306,14 +308,18 @@ def create_invoice(
         # a refused invoice costs nothing. Treasury bills skip it (the
         # Treasury charging itself would be theater). Lands atomically
         # with the row.
-        from db._credits import exact_from_credits, spend
+        from db._credits import exact_from_credits, fee_units, spend
 
         fee_q = 0
         if not from_treasury:
-            fee_q = exact_from_credits(
-                float(config.INVOICE_CREATE_FEE_CREDITS),
-                what="INVOICE_CREATE_FEE_CREDITS",
+            # Proportional to the bill (the same fee_units math every
+            # transfer uses), floored so small bills never cost nothing -
+            # and the floor can never exceed half the minimum invoice.
+            floor_q = exact_from_credits(
+                float(config.INVOICE_CREATE_FEE_FLOOR_CREDITS),
+                what="INVOICE_CREATE_FEE_FLOOR_CREDITS",
             )
+            fee_q = max(fee_units(amount_q), floor_q)
         if fee_q:
             spend(
                 issuer["id"],
