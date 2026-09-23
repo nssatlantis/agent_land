@@ -20,6 +20,7 @@ import json  # noqa: E402
 import urllib.error  # noqa: E402
 import urllib.request  # noqa: E402
 
+import ci_farm.dispatch_test as dispatch_test  # noqa: E402
 import ci_farm.runner as runner  # noqa: E402
 import server.ci_runner._runs as runs_mod  # noqa: E402
 import server.ci_runner._sandbox as sandbox_mod  # noqa: E402
@@ -61,6 +62,37 @@ def test_bootstrap_parity_pin():
     assert mods["sandbox"] is sandbox_mod
     assert mods["slots"] is slots_mod
     assert mods["trees"] is trees_mod
+
+
+def test_dispatch_parity_ignores_run_specific_summary_keys():
+    # _parse_summary (server/ci_runner/_sandbox.py) injects wall-clock
+    # keys (slowest_s, timings_median_ms, regressions) into summary that
+    # can never agree across two machines; the parity diff must not treat
+    # them as failures, while real differences (failed_files) still show.
+    used = dispatch_test._RUN_SPECIFIC_SUMMARY_KEYS
+    assert "slowest_s" in used
+    assert "timings_median_ms" in used
+    assert "regressions" in used
+    host = {
+        "summary": {
+            "passed_files": 216,
+            "failed_files": 0,
+            "slowest_s": {"tests/test_a.py": 3.1},
+        }
+    }
+    other = {
+        "summary": {
+            "passed_files": 216,
+            "failed_files": 0,
+            "slowest_s": {"tests/test_a.py": 2.7},
+        }
+    }
+    assert dispatch_test._parity_summary(
+        host["summary"]
+    ) == dispatch_test._parity_summary(other["summary"])
+    host["failed_files"] = ["tests/test_a.py"]
+    other["failed_files"] = ["tests/test_b.py"]
+    assert set(host["failed_files"]) != set(other["failed_files"])
 
 
 def test_http_health_and_auth():

@@ -30,6 +30,20 @@ python3 -m venv "$REPO_DIR/.venv"
 DATA_DIR="$REPO_DIR/ci_farm/data"
 mkdir -p "$DATA_DIR"
 
+# The bearer token is a secret: it lands in a root-only 0600 env file
+# (proposal #667 P0-2: "env file (port, token, data dir)") referenced via
+# EnvironmentFile=. A world-readable systemd unit would leak it to every
+# local user and echo it back through `systemctl show`.
+ENV_FILE=/etc/agentland-ci-farm.env
+umask 077
+cat > "$ENV_FILE" <<EOF
+CIFARM_TOKEN=$TOKEN
+CIFARM_REPO_DIR=$REPO_DIR
+AGENTLAND_DATA_DIR=$DATA_DIR
+EOF
+chmod 600 "$ENV_FILE"
+umask 022
+
 UNIT=agentland-ci-farm.service
 cat > "/etc/systemd/system/$UNIT" <<EOF
 [Unit]
@@ -38,9 +52,7 @@ After=network-online.target docker.service
 
 [Service]
 User=root
-Environment=CIFARM_TOKEN=$TOKEN
-Environment=CIFARM_REPO_DIR=$REPO_DIR
-Environment=AGENTLAND_DATA_DIR=$DATA_DIR
+EnvironmentFile=$ENV_FILE
 ExecStart=$REPO_DIR/.venv/bin/python $REPO_DIR/ci_farm/runner.py --bind $BIND --port $PORT
 Restart=on-failure
 RestartSec=30

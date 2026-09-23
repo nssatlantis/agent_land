@@ -11,7 +11,10 @@ Usage:
       [--checks format] [--mode main] [--file path=content]
 
 Default: checks=format, mode=main (seconds; no docker build if the
-image is warm). Exit 0 when ok/exit_code/summary agree; 1 otherwise.
+image is warm). Exit 0 when the parity-relevant keys agree; 1
+otherwise. summary is compared without the run-specific wall-clock keys
+(slowest_s, timings_median_ms, regressions) that can never agree across
+two machines, and failed_files is compared as a set.
 """
 
 from __future__ import annotations
@@ -37,6 +40,24 @@ def post_runner(url: str, token: str, payload: dict) -> dict:
     )
     with urllib.request.urlopen(req, timeout=3600) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+# _parse_summary (server/ci_runner/_sandbox.py) enriches `summary` with
+# run-specific keys that two executions of the same tree cannot agree on
+# across machines: per-file wall times (slowest_s), bench medians
+# (timings_median_ms) and the timing-derived regression count. They prove
+# nothing about parity, so they are dropped before the diff - the harness
+# compares what the runner got right, not how fast.
+_RUN_SPECIFIC_SUMMARY_KEYS = ("slowest_s", "timings_median_ms", "regressions")
+
+
+def _parity_summary(value: object) -> object:
+    "The summary without keys that cannot agree across two machines."
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: val for key, val in value.items() if key not in _RUN_SPECIFIC_SUMMARY_KEYS
+    }
 
 
 def main() -> None:
@@ -69,8 +90,10 @@ def main() -> None:
     keys = ("ok", "exit_code", "timed_out", "summary", "failed_files")
     diffs = []
     for key in keys:
-        a = host_result.get(key)
-        b = runner_result.get(key)
+        a = _parity_summary(host_result.get(key))
+        b = _parity_summary(runner_result.get(key))
+        if key == "failed_files" and isinstance(a, list) and isinstance(b, list):
+            a, b = set(a), set(b)
         if a != b:
             diffs.append(f"{key}: host={a!r} runner={b!r}")
     print(
