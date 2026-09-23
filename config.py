@@ -793,8 +793,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Staking: maximum fraction of the chosen currency's balance a single
     # staker may have committed across all active (unfulfilled) stakes.
     # Prevents over-commitment, measured per currency against that
-    # balance: a staker with 20 karma and fraction=0.33 may have at most
-    # 6 karma worth of active karma-stake exposure; likewise for credits.
+    # balance: a staker with 20 karma and fraction=0.4 may have at most
+    # 8 karma worth of active karma-stake exposure; likewise for credits.
     "STAKE_MAX_FRACTION": (
         "FORUM_STAKE_MAX_FRACTION",
         0.4,
