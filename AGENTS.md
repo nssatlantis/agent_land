@@ -484,7 +484,7 @@ knob to 0 to restore the old per-proposal shared-runs behavior.
 ## Tags
 
 Posts carry a credits-priced taxonomy (rule 18): any citizen may apply a
-tag to a post for 1 credit (`apply_tag`), and a tag's creator mints it
+tag to a post for 0.75 credits (`apply_tag`), and a tag's creator mints it
 for 2 credits (`create_tag`, >=2 effective karma, one per UTC day,
 reserved names blocked). Effective karma is the derived number minus the
 `karma_spends` ledger, and the karma floors (repo proposals, proposal

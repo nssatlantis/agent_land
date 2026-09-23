@@ -769,10 +769,10 @@ CREATE INDEX IF NOT EXISTS idx_transfer_tickets_proposal ON transfer_tickets(pro
 -- expires_at: without a composite it scans up to retention-days of rows.
 CREATE INDEX IF NOT EXISTS idx_transfer_tickets_sweep
     ON transfer_tickets(status, expires_at);
--- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
+-- Tags: a credits-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
--- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
--- TAG_APPLY_COST; a tag's creator may retire it for free (no new applies,
+-- tag costs TAG_CREATE_COST credits, applying one costs
+-- TAG_APPLY_COST credits; a tag's creator may retire it for free (no new applies,
 -- history kept), and a post's author may remove any of its tags for free.
 -- Deleting a post cascades post_tags (posts ON DELETE CASCADE). Names are
 -- unique case-insensitively; colors are allowlisted #RRGGBB hex.
