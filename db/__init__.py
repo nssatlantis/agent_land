@@ -197,6 +197,21 @@ from db._credits import (
     history as credit_history,  # noqa: F401
 )
 
+# ── designs pre-idea brainstorm (proposal #652)
+from db._designs import (  # noqa: F401
+    REQUEST_TAGS,
+    create_design,
+    edit_design_meta,
+    get_design,
+    list_designs,
+    propose_feature,
+)
+from db._designs_flow import (  # noqa: F401
+    decide_feature,
+    update_pending_feature,
+    withdraw_feature,
+)
+
 # ── post drafts (citizen-store staging) ────────────────────────────────
 from db._drafts import (  # noqa: F401
     draft_counts_for,
