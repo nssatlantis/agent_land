@@ -109,17 +109,40 @@ def main():
             (da["id"],),
         )
     db_ = designs.create_design(alpha["token"], "Parity admin", "Desc")
-    for target, decider in (
-        (da["id"], lambda d, f: flow.decide_feature(alpha["token"], d, f, True)),
-        (db_["id"], lambda d, f: admin.admin_decide_feature("alpha", d, f, True)),
-    ):
-        f = designs.propose_feature(beta["token"], target, "Same engine text")
-        decider(target, f["feature_id"])
-        qq = discuss.ask_question(beta["token"], target, "Same question")
-        if target == da["id"]:
-            discuss.answer_question(alpha["token"], target, qq["question_id"], "Sun.")
-        else:
-            admin.admin_answer_question("alpha", target, qq["question_id"], "Sun.")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE designs SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?",
+            (db_["id"],),
+        )
+
+    def _drive_token(did_):
+        f = designs.propose_feature(beta["token"], did_, "Same engine text")
+        flow.decide_feature(alpha["token"], did_, f["feature_id"], True)
+        f2 = designs.propose_feature(beta["token"], did_, "Second engine text")
+        flow.decide_feature(alpha["token"], did_, f2["feature_id"], True)
+        issues.move_design_item(alpha["token"], did_, "feature", f2["feature_id"], "up")
+        i = issues.propose_issue(beta["token"], did_, "Same overheat")
+        issues.decide_issue(alpha["token"], did_, i["issue_id"], True)
+        issues.resolve_issue(alpha["token"], did_, i["issue_id"])
+        qq = discuss.ask_question(beta["token"], did_, "Same question")
+        discuss.answer_question(alpha["token"], did_, qq["question_id"], "Sun.")
+        discuss.enable_comments(alpha["token"], did_)
+
+    def _drive_admin(did_):
+        f = designs.propose_feature(beta["token"], did_, "Same engine text")
+        admin.admin_decide_feature("alpha", did_, f["feature_id"], True)
+        f2 = designs.propose_feature(beta["token"], did_, "Second engine text")
+        admin.admin_decide_feature("alpha", did_, f2["feature_id"], True)
+        admin.admin_move_design_item("alpha", did_, "feature", f2["feature_id"], "up")
+        i = issues.propose_issue(beta["token"], did_, "Same overheat")
+        admin.admin_decide_issue("alpha", did_, i["issue_id"], True)
+        admin.admin_resolve_issue("alpha", did_, i["issue_id"])
+        qq = discuss.ask_question(beta["token"], did_, "Same question")
+        admin.admin_answer_question("alpha", did_, qq["question_id"], "Sun.")
+        admin.admin_enable_comments("alpha", did_)
+
+    _drive_token(da["id"])
+    _drive_admin(db_["id"])
 
     def _shape(did_):
         with db._conn() as conn:
@@ -128,14 +151,24 @@ def main():
                 " WHERE design_id = ? ORDER BY id",
                 (did_,),
             ).fetchall()
+            iss = conn.execute(
+                "SELECT state, text, position FROM design_issues"
+                " WHERE design_id = ? ORDER BY id",
+                (did_,),
+            ).fetchall()
             quests = conn.execute(
                 "SELECT state, answer FROM design_questions WHERE design_id = ?"
                 " ORDER BY id",
                 (did_,),
             ).fetchall()
+            flag = conn.execute(
+                "SELECT comments_enabled FROM designs WHERE id = ?", (did_,)
+            ).fetchone()[0]
         return (
             [tuple(r) for r in feats],
+            [tuple(r) for r in iss],
             [tuple(r) for r in quests],
+            int(flag or 0),
             _event_kinds(did_),
         )
 
