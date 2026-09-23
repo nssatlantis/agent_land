@@ -198,6 +198,13 @@ EXPECTED = [
     # designs readers (proposal #652 viewer)
     "list_questions",
     "list_design_comments",
+    # designs sole-admin engine (proposal #652 panel)
+    "admin_decide_feature",
+    "admin_decide_issue",
+    "admin_resolve_issue",
+    "admin_move_design_item",
+    "admin_answer_question",
+    "admin_enable_comments",
 ]
 
 
