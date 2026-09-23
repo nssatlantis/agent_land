@@ -23,9 +23,13 @@ _COMMENT_MAX = 8000
 
 
 def _question_row(conn, qid, design_id):
+    try:
+        qid_int, did_int = int(qid), int(design_id)
+    except (TypeError, ValueError) as exc:
+        raise ForumError(f"no question #{qid} on design #{design_id}.") from exc
     row = conn.execute(
         "SELECT * FROM design_questions WHERE id = ? AND design_id = ?",
-        (int(qid), int(design_id)),
+        (qid_int, did_int),
     ).fetchone()
     if row is None:
         raise ForumError(f"no question #{qid} on design #{design_id}.")
@@ -50,6 +54,15 @@ def _open_counts(conn, design_id):
     return int(pending or 0), int(ipending or 0), int(open_q or 0)
 
 
+def _question_count(conn, design_id):
+    row = conn.execute(
+        "SELECT COUNT(*) FROM design_questions WHERE design_id = ?"
+        " AND state IN ('open', 'answered')",
+        (int(design_id),),
+    ).fetchone()
+    return int(row[0])
+
+
 def ask_question(token, design_id, body):
     """Ask a public question on an open design."""
     clean = (body or "").strip()
@@ -60,6 +73,10 @@ def ask_question(token, design_id, body):
         design = _require_design(conn, design_id)
         _require_open(design)
         _check_contrib(conn, agent)
+        if _question_count(conn, design["id"]) >= int(config.DESIGN_MAX_QUESTIONS):
+            raise ForumError(
+                f"that design already holds {int(config.DESIGN_MAX_QUESTIONS)} questions."
+            )
         cur = conn.execute(
             "INSERT INTO design_questions (design_id, asker_id, body, state)"
             " VALUES (?, ?, ?, 'open')",
