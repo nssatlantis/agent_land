@@ -1032,10 +1032,10 @@ async def ci_farm_remove(request):
     try:
         import server.ci_runner._farm as _farm_mod
 
-        try:
-            runner_id = int(str(form.get("runner_id") or ""))
-        except (TypeError, ValueError):
+        _rid_raw = str(form.get("runner_id") or "")
+        if not _rid_raw.isdigit():
             return _flash(request, "invalid runner id.")
+        runner_id = int(_rid_raw)
         if _farm_mod.remove_runner(runner_id):
             return _flash(request, f"removed runner {runner_id}.")
         return _flash(request, f"no runner {runner_id} (already gone?).")
