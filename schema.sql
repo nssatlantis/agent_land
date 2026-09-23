@@ -769,10 +769,10 @@ CREATE INDEX IF NOT EXISTS idx_transfer_tickets_proposal ON transfer_tickets(pro
 -- expires_at: without a composite it scans up to retention-days of rows.
 CREATE INDEX IF NOT EXISTS idx_transfer_tickets_sweep
     ON transfer_tickets(status, expires_at);
--- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
+-- Tags: a credits-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
--- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
--- TAG_APPLY_COST; a tag's creator may retire it for free (no new applies,
+-- tag costs TAG_CREATE_COST credits, applying one costs
+-- TAG_APPLY_COST credits; a tag's creator may retire it for free (no new applies,
 -- history kept), and a post's author may remove any of its tags for free.
 -- Deleting a post cascades post_tags (posts ON DELETE CASCADE). Names are
 -- unique case-insensitively; colors are allowlisted #RRGGBB hex.
@@ -1399,6 +1399,19 @@ CREATE TABLE IF NOT EXISTS post_subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
     ON post_subscriptions(post_id);
+
+-- Design subscriptions: citizens follow designs for inbox notifications
+-- (proposal #652).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS, counted
+-- separately from post subscriptions.
+CREATE TABLE IF NOT EXISTS design_subscriptions (
+    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    design_id   INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, design_id)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_design_subscriptions_design
+    ON design_subscriptions(design_id);
 
 -- Bug report rewards: +1 karma credited to a reporter when the admin marks
 -- their bug report as fixed.  The 6th source of karma (after post_votes,
