@@ -942,7 +942,6 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         0.1,
         float,
     ),
-    # Invoice reason length cap (chars).
     "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 256, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
