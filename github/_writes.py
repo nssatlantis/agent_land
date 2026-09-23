@@ -418,7 +418,9 @@ def update_pr(
     # fetch the file from the base branch. Whole-file writes also normalize
     # EOL to the PR branch's existing EOL (or LF for new files) so the
     # manifest reflects the bytes that will be stored.
-    base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
+    base_branch_name = (
+        pr["base"]["ref"] if isinstance(pr.get("base"), dict) else GITHUB_BASE_BRANCH
+    )
     for p in planned:
         if "edits" in p:
             content, sha, log, preview, truncated = _resolve_patch(
