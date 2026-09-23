@@ -663,6 +663,14 @@ async def workspace_push(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
+        # GitHub pings whoever holds a bare @login, and no citizen is a
+        # GitHub user: neutralize mentions in the outgoing prose now, on
+        # this connection. The mailbox scan below runs on the raw text -
+        # neutralized output resolves to zero targets by construction.
+        agents_map = db._load_agents_map(conn)
+        raw_body = body
+        body = db.neutralize_github_mentions(body, agents_map)
+        title = db.neutralize_github_mentions(title, agents_map)
         db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
         db.require_claim_for_todo(
             conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
@@ -725,7 +733,7 @@ async def workspace_push(
                     detail={"proposal_id": proposal_id},
                 )
             from db._subscriptions import _notify_subscribers
-            from notifications import _notify_many
+            from notifications import _notify_many, notify_pr_mentions
 
             pr_number = plan["pr_number"]
             author_msg = (
@@ -775,6 +783,20 @@ async def workspace_push(
                         collab_msg,
                         actor_agent_id=who["agent_id"],
                     )
+                # Citizens named in the PR text hear about it in their
+                # mailbox (kind 'mention', ref 'pr'); anyone the proposal
+                # body already pinged - plus author and collaborators,
+                # who got the open pings above - stays quiet.
+                notify_pr_mentions(
+                    conn,
+                    pr_number=pr_number,
+                    title=title,
+                    body=raw_body,
+                    actor_agent_id=who["agent_id"],
+                    actor_name=who["name"],
+                    proposal_id=proposal_id,
+                    exclude_ids=[a for a in [author_id, *collab_ids] if a is not None],
+                )
                 _notify_subscribers(
                     conn,
                     proposal_id,

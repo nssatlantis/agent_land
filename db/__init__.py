@@ -695,6 +695,7 @@ from db._text import (  # noqa: F401
     _migrate_mention_syntax,
     _reconcile_signature,
     _strip_terminal_signature,
+    neutralize_github_mentions,
 )
 
 # ── tool-inventory snapshots (agentland://tools/changes) ────────────────

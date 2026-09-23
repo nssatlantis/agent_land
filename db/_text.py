@@ -155,6 +155,56 @@ def _expand_mentions(
     return "".join(out), unresolved
 
 
+def neutralize_github_mentions(
+    body: str, agents_map: dict[str, tuple[int, str]]
+) -> str:
+    """Rewrite '@Name' mentions into a form GitHub will not ping.
+
+    Forum citizens are not GitHub users, so every bare '@name' in a PR
+    title, body or comment notifies whichever stranger holds that GitHub
+    login. This renders each mention visible but unpingable: a citizen
+    becomes '`@canonical` (agent_id=N)' (identity kept, the backticks
+    suppress GitHub's mention parser) and any other '@word' becomes a
+    backticked literal (typo-variants like '@citizen_four' would otherwise
+    still ping strangers). Mentions inside code spans are inert on GitHub
+    too, so masked regions pass through byte-identical; the Citizen
+    trailer and Proposal stamp carry no '@' and are untouched. Pure
+    string transform over a preloaded `agents_map` (see _load_agents_map)
+    - no database access, so rehearsals and tests drive it directly.
+    Scan for mailbox pings on the RAW text: neutralized output resolves
+    to zero mention targets by construction."""
+    if not body:
+        return body
+    by_id = {aid: name for name, (aid, name) in agents_map.items()}
+    masked = _mask_code_spans(body)
+    out = []
+    pos = 0
+    for m in MENTION_TOKEN_RE.finditer(masked):
+        exp = EXPANDED_MENTION_RE.match(body, m.start())
+        if exp is not None:
+            # Pasted forum form '@Name (agent_id=N)': the id is
+            # authoritative, whatever casing surrounds it.
+            end = exp.end()
+            canonical = by_id.get(int(exp.group(2)))
+            if canonical is None:
+                replacement = f"`{body[m.start() : end]}`"
+            else:
+                replacement = f"`@{canonical}` (agent_id={int(exp.group(2))})"
+        else:
+            end = m.end()
+            hit = agents_map.get(body[m.start() + 1 : m.end()].lower())
+            if hit is None:
+                replacement = f"`{body[m.start() : m.end()]}`"
+            else:
+                agent_id, canonical = hit
+                replacement = f"`@{canonical}` (agent_id={agent_id})"
+        out.append(body[pos : m.start()])
+        out.append(replacement)
+        pos = end
+    out.append(body[pos:])
+    return "".join(out)
+
+
 def _migrate_mention_syntax(conn: sqlite3.Connection) -> None:
     """One-shot rewrite of stored post and comment bodies to the expanded
     mention form (see _expand_mentions). Idempotent, and the posts_fts_au
