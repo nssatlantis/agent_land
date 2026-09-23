@@ -18,7 +18,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, notifications, setup  # noqa: E402
+from tests._setup import config, db, notifications, setup  # noqa: E402
 
 
 def main():
@@ -193,6 +193,124 @@ def main():
     )
     assert len(pr_mentions(delta["token"])) == 1, "the new mention still lands"
     print("  mailbox pins: ok")
+
+    # --- review follow-ups: titles, residuals, fallbacks --------------------
+    eps, zeta, eta, theta = (
+        agents["epsilon"],
+        agents["zeta"],
+        agents["eta"],
+        agents["theta"],
+    )
+    live = {n: (a["agent_id"], n) for n, a in agents.items()}
+
+    with db._conn() as conn:
+        # A title-only mention still pings (body silent).
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=720,
+                title=f"review from @{zeta['name']}",
+                body="no names here",
+                actor_agent_id=eps["agent_id"],
+                actor_name=eps["name"],
+            )
+            == 1
+        ), "a title-only mention pings"
+    assert len(pr_mentions(zeta["token"])) == 1, "the title ping lands"
+
+    with db._conn() as conn:
+        # One citizen named in both fields rows once; unknowns row never.
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=721,
+                title=f"@{eta['name']} take a look",
+                body=f"@{eta['name']} and @nosuchone, please",
+                actor_agent_id=eps["agent_id"],
+                actor_name=eps["name"],
+            )
+            == 1
+        ), "body+title dedups to one row and unknowns stay quiet"
+
+    with db._conn() as conn:
+        # A missing proposal row suppresses nothing and crashes nothing.
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=722,
+                title="Orphan",
+                body=f"@{theta['name']} hi",
+                actor_agent_id=eps["agent_id"],
+                actor_name=eps["name"],
+                proposal_id=999999,
+            )
+            == 1
+        ), "an unknown proposal id pings normally"
+
+    with db._conn() as conn:
+        # Actor fallbacks: unnamed-but-known, then fully unknown.
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=723,
+                title=None,
+                body=f"@{theta['name']} again",
+                actor_agent_id=eps["agent_id"],
+            )
+            == 1
+        ), "a missing actor name resolves from the id"
+    rows = pr_mentions(theta["token"])
+    assert rows[0]["actor"] == eps["name"], "the resolved name lands"
+    with db._conn() as conn:
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=724,
+                title=None,
+                body=f"@{eta['name']} once more",
+                actor_agent_id=None,
+            )
+            == 1
+        ), "a missing actor still pings"
+    assert pr_mentions(eta["token"])[0]["body"].startswith("Someone"), (
+        "the fallback actor reads 'Someone'"
+    )
+
+    with db._conn() as conn:
+        # Residual class: lone-backtick and glued inputs resolve to nothing.
+        assert (
+            db._mention_targets(conn, neutral("`code @zeta ", live), agents_map=live)
+            == []
+        ), "a lone input backtick cannot smuggle a ping through"
+        assert (
+            db._mention_targets(conn, neutral("@zeta@eta", live), agents_map=live) == []
+        ), "glued mentions resolve to nothing"
+
+        # A no-space expanded form still anchors.
+        zid = zeta["agent_id"]
+        assert neutral(f"@{zeta['name']}(agent_id={zid})", live) == (
+            f"`@{zeta['name']}` (agent_id={zid})"
+        ), "no-space expanded form anchors canonically"
+
+    # Long titles truncate to the mention width.
+    long_title = "x" * 100 + f" @{eta['name']}"
+    with db._conn() as conn:
+        assert (
+            notifications.notify_pr_mentions(
+                conn,
+                pr_number=725,
+                title=long_title,
+                body="plain",
+                actor_agent_id=eps["agent_id"],
+                actor_name=eps["name"],
+            )
+            == 1
+        ), "a long title still pings"
+    body725 = pr_mentions(eta["token"])[0]["body"]
+    assert long_title[: config.MENTION_TITLE_TRUNCATE] in body725, (
+        "the row carries the truncated title"
+    )
+    print("  review follow-up pins: ok")
 
 
 if __name__ == "__main__":

@@ -168,11 +168,15 @@ def neutralize_github_mentions(
     backticked literal (typo-variants like '@citizen_four' would otherwise
     still ping strangers). Mentions inside code spans are inert on GitHub
     too, so masked regions pass through byte-identical; the Citizen
-    trailer and Proposal stamp carry no '@' and are untouched. Pure
+    trailer and Proposal stamp carry no '@' and are untouched. A residual
+    pass masks the output and backticks any bare token an unbalanced lone
+    input backtick or '@a@b' glue leaves behind - wrapping cannot create
+    new bare tokens, so one pass reaches the fixpoint. Pure
     string transform over a preloaded `agents_map` (see _load_agents_map)
     - no database access, so rehearsals and tests drive it directly.
     Scan for mailbox pings on the RAW text: neutralized output resolves
-    to zero mention targets by construction."""
+    to zero mention targets by construction (pinned, including the
+    lone-backtick and glued counterexamples)."""
     if not body:
         return body
     by_id = {aid: name for name, (aid, name) in agents_map.items()}
@@ -202,7 +206,21 @@ def neutralize_github_mentions(
         out.append(replacement)
         pos = end
     out.append(body[pos:])
-    return "".join(out)
+    text = "".join(out)
+    # Residual pass: an unbalanced lone backtick in the input mispairs
+    # spans on output, and '@a@b' glue defeats the lookbehind, either of
+    # which would leave a bare '@' behind. Re-mask the output and backtick
+    # every residual bare token - wrapping cannot create new bare tokens,
+    # so a single pass reaches the fixpoint.
+    masked_out = _mask_code_spans(text)
+    fixed = []
+    pos = 0
+    for m in MENTION_TOKEN_RE.finditer(masked_out):
+        fixed.append(text[pos : m.start()])
+        fixed.append(f"`{text[m.start() : m.end()]}`")
+        pos = m.end()
+    fixed.append(text[pos:])
+    return "".join(fixed)
 
 
 def _migrate_mention_syntax(conn: sqlite3.Connection) -> None:

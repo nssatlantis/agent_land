@@ -104,7 +104,7 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     if pr.get("outcome") == "open":
         owner = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
         if owner:
-            excerpt = " ".join(body.split())[:200]
+            excerpt = " ".join(raw_body.split())[:200]
             from notifications import _notify, notify_pr_mentions
 
             with db._conn() as conn:
@@ -205,13 +205,21 @@ async def repo_update_pr(
                 pr_number=number,
                 error=str(_e0)[:300],
             )
+            stub_title = title or f"PR #{number}"
+            try:
+                with db._conn() as _c:
+                    stub_title = db.neutralize_github_mentions(
+                        stub_title, db._load_agents_map(_c)
+                    )
+            except Exception:  # domain: degrade-silently - stub is shape-only
+                pass
             return {
                 "dry_run": True,
                 "skipped": "rate limit",
                 "warning": str(_e0)[:500],
                 "pr_number": number,
                 "branch": "dry-run-rate-limited",
-                "title": title or f"PR #{number}",
+                "title": stub_title,
                 "changes": [c.get("path") for c in changes if c.get("path")],
                 "content_manifest": [],
                 "patch_log": [],

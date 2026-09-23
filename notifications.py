@@ -128,7 +128,11 @@ def notify_pr_mentions(
     comment owner who got the review-comment ping), and - when the PR
     carries a proposal's body - anyone the proposal's own text already
     pinged at creation (recomputed from the stored proposal body, so a
-    pasted body never double-pings). Returns rows inserted."""
+    pasted body never double-pings). Suppression is by citizen id, not by
+    token: a citizen named anywhere in the proposal body stays quiet even
+    when the PR names them in new words. Both `body` and `title` are
+    scanned (a title-only mention still pings); each citizen rows once.
+    Returns rows inserted."""
     if not body:
         return 0
     agents_map = db._load_agents_map(conn)
@@ -145,15 +149,18 @@ def notify_pr_mentions(
                 )
             }
     excluded = set(exclude_ids) | overlap
-    targets = [
-        mid
+    targets = []
+    seen: set[int] = set()
+    for text in (body, title or ""):
         for mid, _ in db._mention_targets(
-            conn, body, actor_agent_id, *excluded, agents_map=agents_map
-        )
-    ]
+            conn, text, actor_agent_id, *excluded, agents_map=agents_map
+        ):
+            if mid not in seen:
+                seen.add(mid)
+                targets.append(mid)
     if not targets:
         return 0
-    actor = actor_name or _actor_name(conn, actor_agent_id)
+    actor = actor_name or _actor_name(conn, actor_agent_id) or "Someone"
     where = (
         f"PR #{pr_number}: {title[: config.MENTION_TITLE_TRUNCATE]}"
         if title

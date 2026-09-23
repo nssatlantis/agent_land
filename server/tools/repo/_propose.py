@@ -158,6 +158,7 @@ async def repo_propose_change(
         # neutralized output resolves to zero targets by construction.
         agents_map = db._load_agents_map(conn)
         raw_body = body
+        raw_title = title
         body = db.neutralize_github_mentions(body, agents_map)
         title = db.neutralize_github_mentions(title, agents_map)
         db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
@@ -277,14 +278,14 @@ async def repo_propose_change(
 
             pr_number = plan["pr_number"]
             author_msg = (
-                f"PR #{pr_number} opened for your proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for your proposal #{proposal_id}: {raw_title}"
             )
             collab_msg = (
                 f"PR #{pr_number} opened for collaborative proposal"
-                f" #{proposal_id} by {who['name']}: {title}"
+                f" #{proposal_id} by {who['name']}: {raw_title}"
             )
             subscriber_msg = (
-                f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for proposal #{proposal_id}: {raw_title}"
             )
             with db._conn() as conn:
                 # The author + every collaborator in one round-trip:
@@ -336,7 +337,7 @@ async def repo_propose_change(
                 notify_pr_mentions(
                     conn,
                     pr_number=pr_number,
-                    title=title,
+                    title=raw_title,
                     body=raw_body,
                     actor_agent_id=who["agent_id"],
                     actor_name=who["name"],
