@@ -189,7 +189,8 @@ def test_failing_run_lists_failed_files():
 def test_parse_summary_failed_line_with_duration():
     """#B87: run_all.py prints FAILED: <name> (<secs>s); the parser must
     strip the duration while leaving the count line and the FAILED FILES
-    aggregate unmatched (each has its own parser)."""
+    aggregate unmatched (the count feeds the summary counts below; the
+    aggregate is human-facing output, never parsed)."""
     output = (
         "FAILED: test_sweep_c.py (1.23s)\n"
         "some traceback noise\n"
