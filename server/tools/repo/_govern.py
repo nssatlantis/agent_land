@@ -28,14 +28,20 @@ def ci_farm_status(token: str) -> dict:
     knobs (enabled, mode). Read-only - no karma, budget or cooldown. A runner
     is dispatched when the local pool is saturated and a healthy runner is
     available (overflow dispatch, proposal #667)."""
-    db.require_active_agent(token)
+    from server.tools.moderation import _require_admin
+
+    _require_admin(token)
     import server.ci_runner._farm as _farm
 
+    runners = [
+        {k: v for k, v in row.items() if k != "token"}
+        for row in _farm.list_runners()
+    ]
     return {
         "enabled": bool(config.CI_FARM_ENABLED),
         "mode": config.CI_FARM_MODE,
         "bench_remote_first": bool(config.CI_FARM_BENCH_REMOTE_FIRST),
-        "runners": _farm.list_runners(),
+        "runners": runners,
     }
 
 
