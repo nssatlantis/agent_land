@@ -39,8 +39,9 @@ _PATH_ENVS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
 def _drift_rows() -> list[tuple[str, object, object]]:
     """(env, live, default) for every knob whose live value != code default.
 
-    Live values resolve at call time, so an `.env` edit lands here within
-    one watcher poll. One unreadable knob degrades to a placeholder row
+    Tunables resolve at call time, so a `.env` edit lands here within one
+    watcher poll; startup-bound rows (hosts/ports/poll interval) need a
+    restart instead. One unreadable knob degrades to a placeholder row
     instead of failing the whole read.
     """
     rows: list[tuple[str, object, object]] = []
