@@ -270,6 +270,11 @@ def tick_todo_item(
                 "pass either item_id (and done) for a single tick,"
                 " or ticks for a batch, not both."
             )
+        if done is not True:
+            raise db.ForumError(
+                "done applies to a single tick only - set done per entry"
+                " inside ticks for a batch."
+            )
         if not isinstance(ticks, list) or not ticks:
             raise db.ForumError("ticks must be a non-empty list.")
         return db.tick_todo_items(token, post_id, ticks)
