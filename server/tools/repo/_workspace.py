@@ -16,6 +16,7 @@ import config
 import db
 import github
 from github._core import _validate_path
+from github._workspaces import _transfer_file_cap_bytes
 from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
@@ -195,7 +196,7 @@ def workspace_search(
 
     Scans the claim's live worktree (dirty edits + untracked files included)
     across every UTF-8 text file regardless of extension, `.github` included.
-    `.git`, the managed manifest, symlinks, over-cap files (>1MB) and
+    `.git`, the managed manifest, symlinks, over-cap files (TRANSFER_MAX_FILE_MB) and
     non-UTF8 binaries never match. Returns `{query, matches: [{path,
     matches: [{line_number, text}]}], proposal_id, name}` with paths relative
     to the tree root, bounded to `max_results` files (each capped at 50 lines,
@@ -226,6 +227,7 @@ def workspace_search(
         per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
     except Exception:
         per_file = 50
+    cap_bytes = _transfer_file_cap_bytes()
     needle = q.lower()
     results: list[dict] = []
     skip_dirs = {".git", "__pycache__"}
@@ -243,10 +245,10 @@ def workspace_search(
                 continue
             try:
                 with open(full, "rb") as fh:
-                    raw = fh.read((1 << 20) + 1)
+                    raw = fh.read(cap_bytes + 1)
             except OSError:
                 continue
-            if len(raw) > (1 << 20):
+            if len(raw) > cap_bytes:
                 continue
             if not raw:
                 continue
@@ -290,7 +292,7 @@ def workspace_read_file(
     """Read one file from a workspace tree (text, undecodables replaced).
 
     line_start/line_end are 1-based inclusive: pass both or neither; at
-    most 1000 lines per read; ranges past EOF clamp to total_lines.
+    most REPO_READ_MAX_LINES lines per read; ranges past EOF clamp to total_lines.
     `content_sha256` is the sha256 of the stored bytes (the whole file,
     not just the page) - pass it as `expect_sha256` on writes or uploads
     to refuse a stale base.
@@ -301,8 +303,12 @@ def workspace_read_file(
         size = os.path.getsize(full)
     except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
         raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
-    if size > (1 << 20):
-        raise db.ForumError(f"{clean!r} is {size} bytes, over the 1MB read cap.")
+    cap_bytes = _transfer_file_cap_bytes()
+    if size > cap_bytes:
+        cap_mb = cap_bytes / (1 << 20)
+        raise db.ForumError(
+            f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
+        )
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
     try:
@@ -330,8 +336,12 @@ def workspace_read_file(
             raise db.ForumError("line_start is below 1.")
         if end < start:
             raise db.ForumError("line_end is below line_start.")
-        if end - start + 1 > 1000:
-            raise db.ForumError("range covers over 1000 lines.")
+        try:
+            max_lines = max(1, int(config.REPO_READ_MAX_LINES))
+        except Exception:  # domain: degrade-silently - bad knob falls back
+            max_lines = 1000
+        if end - start + 1 > max_lines:
+            raise db.ForumError(f"range covers over {max_lines} lines.")
     _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
     return {
         "path": clean,
