@@ -418,7 +418,7 @@ def run_checks_with_deadline(
                         _run_id=run_id,
                     )
                 )
-            except TypeError as exc:
+            except TypeError as exc:  # domain: degrade-silently
                 # Narrow retry: only a stale-fake signature mismatch (which
                 # names base_ref) falls back. A genuine interior TypeError
                 # re-raises with its traceback intact - retrying without the
