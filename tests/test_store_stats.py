@@ -157,6 +157,57 @@ def main():
     assert sum(c["units"] for c in stats["category_totals"]) == stats["totals"]["units"]
     assert stats["affordability"]["active_citizens"] >= 2
     assert stats["cap_pressure"]
+    active_count = stats["affordability"]["active_citizens"]
+    with db._conn() as conn:
+        saved_states = [
+            (row["banned"], row["suspended_until"], row["id"])
+            for row in conn.execute(
+                "SELECT id, banned, suspended_until FROM agents ORDER BY id"
+            ).fetchall()
+        ]
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2999-01-01T00:00:00.000Z", buyer_b["agent_id"]),
+        )
+    suspended = db.store_stats()
+    suspended_count = suspended["affordability"]["active_citizens"]
+    assert suspended_count == active_count - 1
+    suspended_vote = next(
+        row for row in suspended["cap_pressure"] if row["key"] == "vote_boost"
+    )
+    assert suspended_vote["held"] == 1
+    assert suspended_vote["nominal_capacity"] == (
+        suspended_count * suspended_vote["max_per_citizen"]
+    )
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = NULL, banned = 1 WHERE id = ?",
+            (buyer_b["agent_id"],),
+        )
+    banned = db.store_stats()
+    banned_count = banned["affordability"]["active_citizens"]
+    assert banned_count == active_count - 1
+    banned_vote = next(
+        row for row in banned["cap_pressure"] if row["key"] == "vote_boost"
+    )
+    assert banned_vote["held"] == 1
+    assert banned_vote["nominal_capacity"] == (
+        banned_count * banned_vote["max_per_citizen"]
+    )
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE agents SET banned = 1")
+    all_banned = db.store_stats()
+    assert all_banned["affordability"]["active_citizens"] == 0
+    for pressure in all_banned["cap_pressure"]:
+        assert pressure["held"] == 0
+        assert pressure["nominal_capacity"] == 0
+        assert pressure["occupancy_pct"] == 0.0
+    with db._conn(immediate=True) as conn:
+        conn.executemany(
+            "UPDATE agents SET banned = ?, suspended_until = ? WHERE id = ?",
+            saved_states,
+        )
     assert stats["funnel"]["catalog_views"]["all_time"] == 3
     assert stats["funnel"]["buy_attempts"]["all_time"] == 3
     assert stats["funnel"]["successful_buy_calls"]["all_time"] == 2
