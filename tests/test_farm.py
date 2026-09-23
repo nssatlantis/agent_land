@@ -5,6 +5,7 @@ dispatch mapping + try_dispatch eligibility gates. HTTP is mocked - no network,
 no docker.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -86,7 +87,7 @@ def test_pick_runner_skips_stale():
     with db._conn(immediate=True) as conn:
         conn.execute(
             "UPDATE ci_runners SET last_heartbeat = ? WHERE id = ?",
-            ("2020-01-01T00:00:00", row["id"]),
+            ("2020-01-01T00:00:00.000Z", row["id"]),
         )
 
     def boom(url, token):
@@ -138,6 +139,15 @@ def test_map_and_log_provenance():
         assert result["mode"] == "native"  # runner "main" maps to host "native"
         assert result["runner"] == "m"
         assert result["run_id"] == "rid-1"
+        # Verify the ledger row carries runner provenance
+        with db._conn() as conn:
+            ev = conn.execute(
+                "SELECT detail FROM events WHERE kind = 'ci_run'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert ev is not None
+        detail = json.loads(ev["detail"])
+        assert detail["runner"] == "m"
     finally:
         farm._ping = orig_ping
         farm.dispatch_to_runner = orig_disp
@@ -249,3 +259,20 @@ def test_try_dispatch_gates():
         )
     finally:
         config.CI_FARM_ENABLED = orig
+
+
+def main():
+    setup_module()
+    test_ci_runners_migration()
+    test_register_list_remove()
+    test_pick_runner_healthy()
+    test_pick_runner_skips_busy()
+    test_pick_runner_skips_stale()
+    test_map_and_log_provenance()
+    test_try_dispatch_disabled()
+    test_try_dispatch_gates()
+    print("All CI farm tests passed.")
+
+
+if __name__ == "__main__":
+    main()
