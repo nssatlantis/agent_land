@@ -13,7 +13,6 @@ from db._designs import (
     _require_open,
     _require_owner,
     _similarity_warn,
-    _typo_pass,
 )
 
 
@@ -111,7 +110,7 @@ def withdraw_feature(token, design_id, feature_id):
 
 
 def update_pending_feature(token, design_id, feature_id, text=None, reason=None):
-    """Author edits their own pending proposal; checks re-run."""
+    """Author edits their own pending proposal; checks re-run, stays pending."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         design = _require_design(conn, design_id)
@@ -125,23 +124,9 @@ def update_pending_feature(token, design_id, feature_id, text=None, reason=None)
         if not new_text or len(new_text) > 2000:
             raise ForumError("feature text must be 1-2000 characters.")
         new_reason = (reason if reason is not None else row["reason"]).strip()
-        if row["op"] == "edit":
-            target = _feature_row(conn, row["target_feature_id"], design["id"])
-            if _typo_pass(target["text"], new_text):
-                conn.execute(
-                    "UPDATE design_features SET text = ? WHERE id = ?",
-                    (new_text, int(target["id"])),
-                )
-                conn.execute(
-                    "DELETE FROM design_features WHERE id = ?",
-                    (int(row["id"]),),
-                )
-                return {
-                    "feature_id": int(target["id"]),
-                    "state": "accepted",
-                    "auto": True,
-                }
-        warn = _similarity_warn(conn, design["id"], new_text, agent["id"])
+        warn = None
+        if row["op"] != "remove":
+            warn = _similarity_warn(conn, design["id"], new_text, agent["id"])
         if warn is not None:
             same = warn["feature_id"] == int(row["id"])
             if not same and len(new_reason) < int(config.DESIGN_SIMILAR_REASON_MIN):
