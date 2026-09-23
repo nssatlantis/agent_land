@@ -427,6 +427,13 @@ def _ruff_host_dir(slot: int) -> str | None:
     d = os.path.join(str(base), f"slot{int(slot)}")
     try:
         os.makedirs(d, exist_ok=True)
+        try:
+            # The container runs as uid:gid 1000:1000 (see _sandbox_argv);
+            # a root-run server would otherwise leave root-owned slot dirs
+            # that the probe below passes but the container cannot write.
+            os.chown(d, 1000, 1000)
+        except Exception:  # domain: degrade-silently - non-root servers cannot chown; the probe decides
+            pass
         probe = os.path.join(d, ".wprobe")
         with open(probe, "w") as _fh:
             _fh.write("ok")
