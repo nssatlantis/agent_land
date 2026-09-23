@@ -96,6 +96,15 @@ EXPECTED = [
     "admin_confirm_bug",
     "admin_fix_bug",
     "admin_reopen_bug",
+    # designs (proposal #652)
+    "designs_admin_page",
+    "design_admin_detail_page",
+    "design_admin_decide_feature",
+    "design_admin_decide_issue",
+    "design_admin_resolve_issue",
+    "design_admin_move_item",
+    "design_admin_answer",
+    "design_admin_toggle_comments",
     # routes
     "ROUTES",
 ]
@@ -113,6 +122,7 @@ _IDENTITY = {
     "server.admin._economy": ["economy_adjust"],
     "server.admin._invoices": ["invoices_admin_page"],
     "server.admin._bugs": ["bugs_index", "admin_confirm_bug"],
+    "server.admin._designs": ["designs_admin_page", "design_admin_decide_feature"],
 }
 
 

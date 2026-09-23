@@ -311,6 +311,26 @@ def _untracked_paths(dest: str) -> list:
     return [p for p in res.stdout.split("\0") if p and p not in _MANAGED]
 
 
+def _changed_paths(dest: str) -> list:
+    """Paths a tree actually changed vs its HEAD: tracked edits (working
+    tree vs HEAD, staged or not) plus untracked additions. Deleted
+    tracked paths are dropped - they are absent from the walk anyway.
+
+    This is the delta set the rehearsal snapshot rides on (bug #90): a
+    claim tree cloned from an earlier base must not re-upload its stale
+    copies of untouched files - the runner refreshes onto origin/main
+    first and the overlay would flatten that fresh base back to old
+    bytes, rehearsing against a tree that never was.
+    """
+    res = _git(dest, "diff", "--name-only", "HEAD", "-z", check=False)
+    if res.returncode != 0:
+        changed: list = []
+    else:
+        changed = [p for p in res.stdout.split("\0") if p]
+    changed.extend(_untracked_paths(dest))
+    return changed
+
+
 def claim_tree_diff(
     agent_id: int, proposal_id: int, name: str, path: str | None = None
 ) -> dict:
@@ -347,7 +367,9 @@ def claim_tree_diff(
 _SNAPSHOT_MAX_MB = 32.0
 
 
-def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+def snapshot_claim_tree(
+    agent_id: int, proposal_id: int, name: str, *, delta: bool = False
+) -> dict:
     """Read one claim tree into a files-overlay ({path, content} entries).
 
     Skips .git, the managed manifest, .github (no v1 path can modify
@@ -357,10 +379,20 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     executed). Raw bytes count toward _SNAPSHOT_MAX_MB via getsize
     before the read, so the cap trips before a hostile file is
     materialized.
+
+    With delta=True only the tree's own changes ride the overlay (see
+    _changed_paths) - untouched tracked files are left out, so a stale
+    claim tree cannot flatten a freshly-refreshed rehearsal base back
+    to its old bytes (bug #90). Whole-tree stays the default: the push
+    manifest must cover every file the PR would carry.
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
+    if delta:
+        changed = set(_changed_paths(dest))
+    else:
+        changed = None
     files: list = []
     skipped_binaries = 0
     skipped_empty = 0
@@ -376,6 +408,8 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
                 continue
             if rel == ".github" or rel.startswith(".github/"):
                 skipped_protected += 1
+                continue
+            if changed is not None and rel not in changed:
                 continue
             full = os.path.join(dirpath, fn)
             if os.path.islink(full):

@@ -938,7 +938,7 @@ def guild_detail_page(request: Request) -> HTMLResponse:
         rep = 50.0
     rep_html = (
         f"<p style='color:var(--muted)' title='{esc(_rep_title(rep, g.get('reputation_parts')))}'>"
-        f"Reputation: {rep:g} / 100 (settled 40 / completion 30 / retention 20 / stability 10)</p>"
+        f"Reputation: {rep:g} / 100 (settled {config.GUILD_REP_SETTLED_W:g} / completion {config.GUILD_REP_COMPLETION_W:g} / retention {config.GUILD_REP_RETENTION_W:g} / stability {config.GUILD_REP_STABILITY_W:g})</p>"
     )
     inner = (
         head

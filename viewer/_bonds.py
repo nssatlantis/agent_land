@@ -10,6 +10,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 import db
 from events import query_events
 from viewer._layout import _page
@@ -86,8 +87,8 @@ def bonds_page(request: Request) -> HTMLResponse:
         "series term, plus the standard fee on top); the daily sweep accrues "
         "a linear share of trailing intake from the series' selected "
         "sources; maturity auto-releases "
-        "principal + share; break early with <code>redeem_bond</code> (5% "
-        "haircut, accrued forfeited). Your own bonds read via "
+        f"principal + share; break early with <code>redeem_bond</code> ({config.BOND_EARLY_HAIRCUT_PCT:g}% "
+        f"haircut, accrued forfeited). Your own bonds read via "
         "<code>my_bonds</code> — holdings are private and never listed "
         "here.</p>"
     )

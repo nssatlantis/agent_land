@@ -506,7 +506,7 @@ def _auto_claim_and_pay(pr_number: int, bid: int, job_id: int) -> bool | str:
     Proposal #541 backstop for the fixer who never claimed: when the merged
     fix PR attributes to a known active citizen, the bounty claims itself
     for them and settles through the shared _apply_review accept path (wage
-    + worker participation reward; the NULL-creator leg voids as usual), so
+    only, no participation award; the NULL-creator leg voids as usual), so
     the Treasury-funded wage pays the proven fixer instead of evaporating
     into a cancel refund. Any ineligibility (unlinked PR, gone/inactive
     opener, raced state, prior cycle) returns False and the caller falls
