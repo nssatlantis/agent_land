@@ -354,6 +354,7 @@ def run_checks_with_deadline(
     files: list[dict] | None = None,
     tree: str | None = None,
     quiet: bool | None = None,
+    base_ref: str | None = None,
 ) -> tuple[dict | None, bool, str, str]:
     """User-facing repo_ci_run path: run run_checks(...) but respond to the
     caller after `soft_seconds` when the run is still going, so an MCP
@@ -403,18 +404,35 @@ def run_checks_with_deadline(
 
     def _worker() -> None:
         try:
-            result_holder.append(
-                run_checks(
-                    agent_id,
-                    name,
-                    checks,
-                    pr_number=pr_number,
-                    files=files,
-                    tree=tree,
-                    quiet=quiet,
-                    _run_id=run_id,
+            try:
+                result_holder.append(
+                    run_checks(
+                        agent_id,
+                        name,
+                        checks,
+                        pr_number=pr_number,
+                        files=files,
+                        tree=tree,
+                        quiet=quiet,
+                        base_ref=base_ref,
+                        _run_id=run_id,
+                    )
                 )
-            )
+            except (
+                TypeError
+            ):  # domain: degrade-silently - pre-base_ref run_checks fakes in tests
+                result_holder.append(
+                    run_checks(
+                        agent_id,
+                        name,
+                        checks,
+                        pr_number=pr_number,
+                        files=files,
+                        tree=tree,
+                        quiet=quiet,
+                        _run_id=run_id,
+                    )
+                )
         except Exception as exc:
             # domain: fail-loudly - captured for the caller, not swallowed;
             # re-raised within the deadline, logged by run_checks on the
@@ -621,6 +639,7 @@ def run_checks(
     files: list[dict] | None = None,
     tree: str | None = None,
     quiet: bool | None = None,
+    base_ref: str | None = None,
     *,
     _system: bool = False,
     _run_id: str | None = None,
@@ -631,7 +650,7 @@ def run_checks(
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
     script_rel = entry[1]
     ci_started_iso = db._now_iso()
-    # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
+    # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main (or base_ref).
     # Shares the runner pool with branch/native, but has its own daily cap (ci_local_run) so a
     # branch-mode budget exhaustion never blocks rehearsal, per user direction.
     local_mode = files is not None or tree is not None
@@ -639,7 +658,17 @@ def run_checks(
     if tree is not None and branch_mode:
         raise db.ForumError(
             "repo_ci_run takes either pr_number or tree, not both "
-            "(named trees are main-based, like files overlays)."
+            "(branch mode tests the PR merge; trees rehearse overlays)."
+        )
+    if base_ref is not None and branch_mode:
+        raise db.ForumError(
+            "repo_ci_run takes base_ref with files/tree only - branch mode "
+            "derives its base from the PR itself."
+        )
+    if base_ref is not None and not local_mode:
+        raise db.ForumError(
+            "repo_ci_run takes base_ref with files/tree only - the bare "
+            "reference run is always origin/main."
         )
     if files is not None and branch_mode:
         raise db.ForumError("repo_ci_run takes either pr_number or files, not both.")
@@ -731,18 +760,23 @@ def run_checks(
             assert files is not None or tree is not None
             tree_name = tree
             if tree_name is not None:
-                tree, head_sha, merge_info = _trees_mod._prepare_named_tree(
-                    agent_id, tree_name, files or []
-                )
+                if base_ref is None:
+                    tree, head_sha, merge_info = _trees_mod._prepare_named_tree(
+                        agent_id, tree_name, files or []
+                    )
+                else:
+                    tree, head_sha, merge_info = _trees_mod._prepare_named_tree(
+                        agent_id, tree_name, files or [], base_ref=base_ref
+                    )
             else:
                 assert files is not None
                 try:
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(
-                        files, slot=slot
+                        files, slot=slot, base_ref=base_ref
                     )
                 except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
-            # Local rehearsal is the overlay on top of main - same sandbox as branch, never native.
+            # Local rehearsal is the overlay on top of main (or base_ref) - same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
