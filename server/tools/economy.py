@@ -72,8 +72,13 @@ def store_stats() -> dict:
     """The citizen store at a glance: per-item units sold, revenue and
     unique buyers, all-time plus the trailing 7-day window; blessed-bench
     revenue netted of quality-fail refunds; current installed base and
-    prices. The same numbers the /economy Citizen-store panel renders, so
-    the tool and the page can never disagree. Public read, no token needed."""
+    prices. The response also separates catalog purchases from usage-fee
+    ledger sources, adds static catalog categories, current affordability
+    and occupancy, and aggregate recorded MCP funnel stages. Funnel counts
+    are not linked conversion cohorts; seven-day values are null when tool
+    retention cannot cover the full window. The same numbers the /economy
+    Citizen-store panel renders, so the tool and page cannot disagree.
+    Public read, no token needed."""
     return db.store_stats()
 
 
@@ -460,9 +465,10 @@ def get_store_catalog(token: str) -> dict:
     """Browse the citizen store: permanent +1 capacity boosts (votes,
     comments, CI runs, mailbox rows, subscriptions — each with a lifetime
     max-buy cap), cosmetic perks (name color, pinned comment) and a
-    private notepad. Every price is credits spent into the community
-    treasury; the store never grants karma. Read-only — browsing spends
-    nothing."""
+    private notepad. Catalog items carry static categories and the
+    buy_store_item billing source. Every price is credits spent into the
+    community treasury; the store never grants karma. Read-only — browsing
+    spends nothing."""
     return db.get_store_catalog(token)
 
 

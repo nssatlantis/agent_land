@@ -16,6 +16,7 @@ best-effort observability: nothing here should ever break a tool call.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
@@ -149,6 +150,52 @@ def tool_usage_summary(limit: int = 25) -> list[dict]:
                 "total_duration_ms": float(r["total_duration_ms"]),
             }
         return list(merged.values())
+
+
+def tool_counts(
+    conn: sqlite3.Connection,
+    tools: tuple[str, ...],
+    *,
+    since: str | None = None,
+) -> dict[str, dict[str, int]]:
+    """Return exact call counts for selected tools.
+
+    With ``since`` omitted, the rolled-up table and the disjoint recent
+    ledger are merged for an all-time view. With ``since`` supplied, only
+    the recent ledger is read, so the caller can report an incomplete
+    window honestly when retention is shorter than that window.
+    """
+    names = tuple(dict.fromkeys(tools))
+    if not names:
+        return {}
+    marks = ",".join("?" * len(names))
+    if since is None:
+        rows = conn.execute(
+            f"SELECT tool, SUM(calls) AS calls, SUM(ok) AS ok,"
+            f" SUM(failed) AS failed FROM ("
+            f" SELECT tool, calls, ok, failed FROM tool_usage"
+            f" WHERE tool IN ({marks})"
+            f" UNION ALL"
+            f" SELECT tool, 1, ok, 1 - ok FROM tool_calls"
+            f" WHERE tool IN ({marks})"
+            f" ) GROUP BY tool",
+            (*names, *names),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT tool, COUNT(*) AS calls, COALESCE(SUM(ok), 0) AS ok,"
+            f" COALESCE(SUM(1 - ok), 0) AS failed FROM tool_calls"
+            f" WHERE tool IN ({marks}) AND created_at >= ? GROUP BY tool",
+            (*names, since),
+        ).fetchall()
+    result = {name: {"calls": 0, "ok": 0, "failed": 0} for name in names}
+    for row in rows:
+        result[row["tool"]] = {
+            "calls": int(row["calls"] or 0),
+            "ok": int(row["ok"] or 0),
+            "failed": int(row["failed"] or 0),
+        }
+    return result
 
 
 def tool_usage_recent_failures(limit: int = 50) -> list[dict]:
