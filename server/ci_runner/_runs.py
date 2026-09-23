@@ -783,7 +783,22 @@ def run_checks(
             farm_result = None  # domain: degrade-silently - dispatch is best-effort
         if farm_result is not None:
             shutil.rmtree(tmp_root, ignore_errors=True)
-            return farm_result
+        if farm_result is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            if farm_result.get("_retry_local"):
+                # P3-2: runner mid-run failure; try local slot once more.
+                try:
+                    slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=5)
+                except db.ForumError:  # domain: degrade-silently
+                    return {
+                        "ok": False,
+                        "run_failed": True,
+                        "reason": "runner_mid_run_failure",
+                        "checks": checks,
+                        "mode": "local" if local_mode else "native",
+                    }
+            else:
+                return farm_result
         # P1-3 fallback: one non-blocking re-acquire before raising busy
         try:
             slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
