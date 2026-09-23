@@ -336,7 +336,6 @@ def test_try_dispatch_gates():
         config.CI_FARM_ENABLED = orig
 
 
-
 def test_bench_remote_first_dispatch():
     """Bench remote-first: a healthy runner gets the bench run; the result
     carries per-machine quiet/contended and runner provenance."""
@@ -431,11 +430,19 @@ def test_bench_no_runner():
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
 
+
 def test_bench_mode_guard():
-    """Mode guard: pr_number/files/tree set -> bench dispatch returns None."""
+    """Mode guard: pr_number/files/tree/base_ref set -> bench dispatch
+    returns None (a stacked-diff bench must never measure origin/main)."""
     row = farm.register_runner("guard1", "http://x", token="t")
     orig_ping = farm._ping
     farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+
+    def _boom(runner, payload):
+        raise AssertionError("guarded bench must never reach dispatch")
+
+    farm.dispatch_to_runner = _boom
     orig_enabled = config.CI_FARM_ENABLED
     orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
     config.CI_FARM_ENABLED = True
@@ -464,8 +471,15 @@ def test_bench_mode_guard():
             )
             is None
         )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, base_ref="main"
+            )
+            is None
+        )
     finally:
         farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
         farm.remove_runner(row["id"])
