@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import urllib.request
-from datetime import datetime, timezone
 
 import config
 import db
@@ -56,7 +56,7 @@ def register_runner(name: str, url: str, token: str = "") -> dict:
             row = conn.execute(
                 "SELECT * FROM ci_runners WHERE id = ?", (cur.lastrowid,)
             ).fetchone()
-    except Exception:
+    except sqlite3.IntegrityError:
         raise ForumError(
             f"cannot register runner {name!r}: duplicate or invalid."
         ) from None
@@ -117,21 +117,18 @@ def _ping(url: str, token: str) -> dict | None:
         return None
 
 
-def _heartbeat_age_seconds(last: str | None) -> float | None:
-    if not last:
-        return None
-    try:
-        return datetime.now(timezone.utc).timestamp() - db._parse_iso(last).timestamp()
-    except Exception:
-        return None
-
-
 def pick_runner() -> dict | None:
     """Pick a healthy, available runner.
 
-    Pings each candidate live (short timeout), skips stale or busy ones, and
+    Pings each candidate live (short timeout), skips dead or busy ones, and
     stamps the heartbeat on success. Orders by last_heartbeat ASC (oldest
     first) for fairness. Returns the post-mark row dict or None.
+
+    Every candidate is pinged, including ones whose recorded heartbeat is
+    older than CI_FARM_STALE_SECONDS: skipping without a ping would brick
+    the farm after that long idle (nothing else refreshes the heartbeat -
+    no background poller exists), so a quiet hour would darken every runner
+    permanently. Only a failed ping marks a runner stale.
     """
     with db._conn() as conn:
         rows = conn.execute(
@@ -139,9 +136,6 @@ def pick_runner() -> dict | None:
             " ORDER BY last_heartbeat ASC, id ASC"
         ).fetchall()
     for row in [_row_to_dict(r) for r in rows]:
-        age = _heartbeat_age_seconds(row.get("last_heartbeat"))
-        if age is not None and age > config.CI_FARM_STALE_SECONDS:
-            continue
         ping = _ping(row["url"], row.get("token") or "")
         if ping is None:
             _mark(row["id"], "stale")
