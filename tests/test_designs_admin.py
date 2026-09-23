@@ -93,6 +93,28 @@ def main():
     q = discuss.ask_question(beta["token"], did, "What fuel?")
     a = admin.admin_answer_question("alpha", did, q["question_id"], "Sunlight.")
     assert a["state"] == "answered", a
+    # --- admin-path deltas: int-guard + subscriber-only fan-out ---------------
+    expect_error(
+        admin.admin_move_design_item,
+        "alpha",
+        did,
+        "feature",
+        "not-an-id",
+        "up",
+    )
+    db.subscribe_design(agents["gamma"]["token"], did)
+    q2 = discuss.ask_question(beta["token"], did, "Second fuel?")
+    a2 = admin.admin_answer_question("alpha", did, q2["question_id"], "Starlight.")
+    assert a2["state"] == "answered", a2
+    with db._conn() as conn:
+        gamma_sub = conn.execute(
+            "SELECT kind, ref_type, ref_id FROM notifications WHERE agent_id = ?"
+            " AND read_at IS NULL AND kind = 'subscription'",
+            (agents["gamma"]["agent_id"],),
+        ).fetchall()
+    gamma_sub = [tuple(r) for r in gamma_sub if r[1] == "design" and r[2] == did]
+    assert len(gamma_sub) == 1, gamma_sub
+    print("  admin-deltas: ok")
     _age_design(did)
     assert admin.admin_enable_comments("alpha", did)["comments_enabled"] is True
     assert (
