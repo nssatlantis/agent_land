@@ -43,6 +43,20 @@ def main():
     expect_error(admin.admin_decide_feature, "beta", did, 1, True)
     expect_error(admin.admin_decide_feature, "nobody", did, 1, True)
     expect_error(admin.admin_decide_feature, "", did, 1, True)
+    f0 = designs.propose_feature(beta["token"], did, "Gating engine block")
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = '2999-01-01T00:00:00.000Z'"
+            " WHERE name = 'alpha'"
+        )
+    expect_error(admin.admin_decide_feature, "alpha", did, f0["feature_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = NULL, banned = 1 WHERE name = 'alpha'"
+        )
+    expect_error(admin.admin_decide_feature, "alpha", did, f0["feature_id"], True)
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET banned = 0 WHERE name = 'alpha'")
     print("  gating: ok")
 
     # --- decide feature approve + reject ------------------------------------
