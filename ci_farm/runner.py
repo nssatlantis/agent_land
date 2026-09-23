@@ -50,7 +50,7 @@ _EXTRA_ENV_ALLOWLIST = frozenset(
     }
 )
 _EXTRA_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXTRA_ENV_MAX_VALUE_LEN = 256
+_EXTRA_ENV_MAX_VALUE_LEN = 8192
 
 _CHECKS_TO_SCRIPT = {
     "tests": "tests/run_ci.py",
