@@ -1,7 +1,8 @@
 """Tests for the single-anchor benchmark gate (tests/test_benchmark anchor
 loading + regression math, single-anchor program #367, step 3/5).
 
-The dispatcher injects the blessed anchor (BENCH_ANCHOR_MEDIANS JSON plus
+The dispatcher injects the blessed anchor (AGENTLAND_BENCH_ANCHOR JSON,
+falling back to the legacy BENCH_ANCHOR_MEDIANS JSON, plus
 BENCH_ANCHOR_EVENT_ID); absent or malformed payloads run timing-advisory
 (structural pins still enforced), never crash. Pure tests, no DB.
 
@@ -72,6 +73,28 @@ def test_valid_payload_loads():
         assert event == "99", "event id loads"
     finally:
         _restore_anchor_env(saved)
+
+
+def test_namespaced_key_loads_with_precedence():
+    """The farm wire key (AGENTLAND_BENCH_ANCHOR) loads, and wins when both
+    keys are set - otherwise dispatched farm benches silently run advisory
+    while the ledger claims them anchored."""
+    old_new = os.environ.get("AGENTLAND_BENCH_ANCHOR")
+    os.environ["AGENTLAND_BENCH_ANCHOR"] = json.dumps({"n": 1.0})
+    try:
+        anchor, _ = _load_anchor()
+        assert anchor == {"n": 1.0}, "namespaced key loads"
+        saved = _with_anchor_env(json.dumps({"o": 2.0}))
+        try:
+            anchor, _ = _load_anchor()
+            assert anchor == {"n": 1.0}, "namespaced key takes precedence"
+        finally:
+            _restore_anchor_env(saved)
+    finally:
+        if old_new is None:
+            os.environ.pop("AGENTLAND_BENCH_ANCHOR", None)
+        else:
+            os.environ["AGENTLAND_BENCH_ANCHOR"] = old_new
 
 
 def test_garbage_payload_fails_to_advisory():

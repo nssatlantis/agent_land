@@ -2482,3 +2482,17 @@ CREATE TABLE IF NOT EXISTS design_meta_edits (
     edited_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_design_meta_edits_design ON design_meta_edits(design_id, id);
+-- CI farm runner registry (proposal #667, PR 2): spare LAN runners that
+-- take over agent-invoked CI runs when the local pool is saturated.
+CREATE TABLE IF NOT EXISTS ci_runners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    token TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_heartbeat TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
