@@ -660,14 +660,22 @@ def workspace_rehearse(
     sandbox, same handoff shaping (budget follows the harness:
     checks="format" runs budget-free). The tree
     itself never executes; only the snapshot overlay runs. Handoff: a running answer carries run_id - resolve with repo_ci_run_status, never re-fire.
+
+    The overlay carries the tree's own delta vs its HEAD (untouched
+    tracked files are excluded - bug #90): the runner refreshes onto
+    origin/main before rehearsing, so a claim tree cloned from an
+    earlier base must not re-upload its stale copies of files it never
+    touched. The whole tree can be inspected with workspace_list_tree;
+    only the delta is rehearsed.
     """
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname)
+    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname, delta=True)
     if not snap["files"]:
         raise db.ForumError(
-            "workspace snapshot is empty - nothing to rehearse "
+            "workspace snapshot is empty - the claim tree has no changes "
+            "vs its HEAD to rehearse "
             f"(skipped binaries={snap['skipped_binaries']}, "
             f"empty={snap['skipped_empty']}, "
             f"protected={snap['skipped_protected']}, "
