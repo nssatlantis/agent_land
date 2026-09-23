@@ -1280,7 +1280,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Dispatch HTTP timeout: the socket timeout for the runner /run call.
     # Defaults to CI_RUN_TIMEOUT_SECONDS + 30 so network latency never
     # races the run itself.
-    "CI_FARM_DISPATCH_TIMEOUT": ("FORUM_CI_FARM_DISPATCH_TIMEOUT", 930, int),
+    "CI_FARM_DISPATCH_TIMEOUT": ("FORUM_CI_FARM_DISPATCH_TIMEOUT", None, int),
     # Hybrid OR gate: local branch CI may satisfy merge (0 = GitHub-only).
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     # GitHub-pending time before a local branch CI runs (fallback mode).
@@ -1595,7 +1595,13 @@ def __getattr__(name: str) -> Any:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     env_key, default, convert = spec
     raw = os.environ.get(env_key)
-    return convert(raw) if raw is not None else default
+    if raw is not None:
+        return convert(raw)
+    if default is None:
+        if name == "CI_FARM_DISPATCH_TIMEOUT":
+            return int(__getattr__("CI_RUN_TIMEOUT_SECONDS")) + 30
+        return None
+    return default
 
 
 def reload_dotenv() -> list[str]:

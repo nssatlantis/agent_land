@@ -823,6 +823,7 @@ def run_checks(
                     files=files,
                     tree=tree,
                     base_ref=base_ref,
+                    allow_remote=True,
                 )
             else:
                 farm_result = _farm_mod.try_dispatch(

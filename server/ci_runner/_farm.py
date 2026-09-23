@@ -431,6 +431,7 @@ def try_bench_dispatch(
     files: list | None = None,
     tree: str | None = None,
     base_ref: str | None = None,
+    allow_remote: bool = False,
 ) -> dict | None:
     """Bench remote-first dispatch (PR 3). Tries a healthy runner before
     local slot acquisition. Returns the full host-shaped result dict
@@ -451,7 +452,7 @@ def try_bench_dispatch(
     """
     if not config.CI_FARM_ENABLED:
         return None
-    if not config.CI_FARM_BENCH_REMOTE_FIRST:
+    if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote:
         return None
     if agent_id == 0:
         return None  # system/heartbeat benches: local only, can never bless
