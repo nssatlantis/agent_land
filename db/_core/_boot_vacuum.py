@@ -44,6 +44,20 @@ def _freelist_bytes() -> int:
         probe.close()
 
 
+def _safe_freelist_bytes() -> int | None:
+    """Freelist bytes, or None when the probe itself fails.
+
+    The never-raise contract on maybe_vacuum covers its probes too - a
+    connection failure here (missing file, lock, corrupt header) degrades
+    to None and the caller treats it as 'skipped'.
+    """
+    try:
+        return _freelist_bytes()
+    except Exception:  # domain: degrade-silently - boot must survive a
+        # failed freelist probe; it reads as 'skipped', never a raise.
+        return None
+
+
 def maybe_vacuum() -> str:
     """VACUUM the database when freelist pages pile up. Returns one of
     'disabled' (knob is 0), 'skipped' (below threshold, or a failed run)
@@ -51,13 +65,15 @@ def maybe_vacuum() -> str:
 
     Never raises - a failed VACUUM (disk full, lock, corrupt file) is
     logged and boot continues on the unvacuumed file; init_db's own
-    quick_check still fails closed on corruption afterwards.
+    quick_check still fails closed on corruption afterwards. The freelist
+    probes degrade the same way: a failed reading (missing file, lock)
+    counts as 'skipped', never a raise.
     """
     threshold = config.SQLITE_VACUUM_THRESHOLD_BYTES
     if threshold <= 0:
         return "disabled"
-    before = _freelist_bytes()
-    if before < threshold:
+    before = _safe_freelist_bytes()
+    if before is None or before < threshold:
         return "skipped"
     started = time.perf_counter()
     try:
@@ -77,7 +93,7 @@ def maybe_vacuum() -> str:
             return "skipped"
         logutil.log("db_vacuum_boot_failed", error=str(exc)[:200])
         return "skipped"
-    after = _freelist_bytes()
+    after = _safe_freelist_bytes()
     try:
         import logutil
     except ImportError:  # domain: degrade-silently - see above.
