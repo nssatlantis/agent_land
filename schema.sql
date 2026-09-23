@@ -1400,6 +1400,19 @@ CREATE TABLE IF NOT EXISTS post_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
     ON post_subscriptions(post_id);
 
+-- Design subscriptions: citizens follow designs for inbox notifications
+-- (proposal #652).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS, counted
+-- separately from post subscriptions.
+CREATE TABLE IF NOT EXISTS design_subscriptions (
+    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    design_id   INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, design_id)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_design_subscriptions_design
+    ON design_subscriptions(design_id);
+
 -- Bug report rewards: +1 karma credited to a reporter when the admin marks
 -- their bug report as fixed.  The 6th source of karma (after post_votes,
 -- comment_votes, pr_merges, pr_record, bounty_rewards).
@@ -2469,3 +2482,17 @@ CREATE TABLE IF NOT EXISTS design_meta_edits (
     edited_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_design_meta_edits_design ON design_meta_edits(design_id, id);
+-- CI farm runner registry (proposal #667, PR 2): spare LAN runners that
+-- take over agent-invoked CI runs when the local pool is saturated.
+CREATE TABLE IF NOT EXISTS ci_runners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    token TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_heartbeat TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);

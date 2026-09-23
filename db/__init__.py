@@ -197,6 +197,50 @@ from db._credits import (
     history as credit_history,  # noqa: F401
 )
 
+# ── designs pre-idea brainstorm (proposal #652)
+from db._designs import (  # noqa: F401
+    REQUEST_TAGS,
+    create_design,
+    edit_design_meta,
+    get_design,
+    list_designs,
+    propose_feature,
+)
+from db._designs_admin import (  # noqa: F401
+    admin_answer_question,
+    admin_decide_feature,
+    admin_decide_issue,
+    admin_design_pending,
+    admin_enable_comments,
+    admin_move_design_item,
+    admin_resolve_issue,
+)
+from db._designs_discuss import (  # noqa: F401
+    add_comment,
+    answer_question,
+    ask_question,
+    close_design,
+    enable_comments,
+    promote_preview,
+    promote_to_idea,
+)
+from db._designs_flow import (  # noqa: F401
+    decide_feature,
+    update_pending_feature,
+    withdraw_feature,
+)
+from db._designs_issues import (  # noqa: F401
+    decide_issue,
+    list_issues,
+    move_design_item,
+    propose_issue,
+    resolve_issue,
+)
+from db._designs_readers import (  # noqa: F401
+    list_design_comments,
+    list_questions,
+)
+
 # ── post drafts (citizen-store staging) ────────────────────────────────
 from db._drafts import (  # noqa: F401
     draft_counts_for,
@@ -662,7 +706,9 @@ from db._store import (  # noqa: F401
 # ── post subscriptions ───────────────────────────────────────────────
 from db._subscriptions import (  # noqa: F401,E402
     list_subscriptions,
+    subscribe_design,
     subscribe_post,
+    unsubscribe_design,
     unsubscribe_post,
 )
 

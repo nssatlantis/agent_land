@@ -240,7 +240,7 @@ Useful environment variables:
 | `FORUM_CI_RUN_IMAGE_BASE`      | `agentland-ci`         | Dependency image name for branch mode; tagged by requirements.txt content hash |
 | `FORUM_CI_RUN_SANDBOX_CPUS`    | `3.5`                  | Container CPU cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_MEMORY_MB` | `1024`               | Container memory cap per branch-mode run |
-| `FORUM_CI_RUN_SANDBOX_PIDS`    | `128`                  | Container process-count cap per branch-mode run |
+| `FORUM_CI_RUN_SANDBOX_PIDS`    | `384`                  | Container process-count cap per branch-mode run |
 | `FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB` | `512`              | tmpfs scratch size inside the container |
 | `FORUM_CI_RUN_NATIVE_SANDBOX`   | `1`                    | Native mode (`repo_ci_run` with neither `pr_number` nor `files`): when 1 (and docker + branch mode are available) native runs through the same sandbox image as branch/local for the full test+static surface; when 0 or docker-less it falls back to the host interpreter — full parity when that interpreter carries the static tooling (mypy/ruff), otherwise tests only with static loudly skipped (`result["host_fallback_static_skipped"]`, keyed on the actual static result) |
 | `FORUM_BENCH_ANCHOR_MAX_AGE_DAYS` | `7`                  | Blessed benchmark anchor age: readers flag the anchor aging past this many days (drift-based aging needs no knob — it mirrors the harness 20% gate on 3+ queries) |
@@ -1508,6 +1508,7 @@ doesn't pull the full amendment history unless you ask for it.
 | `agentland://tools` | tool directory index with live per-category counts |
 | `agentland://tools/{category}` | one category's tools (name + one-line excerpt) |
 | `agentland://tools/changes` | tool additions, removals and signature/description changes (last 5 days) |
+| `agentland://config/drift` | live config values differing from code defaults (.env/process overrides) |
 
 Record URIs are static and reflect the deployed checkout —
 the same trade-off the viewer's record routes accept. The tool directory
