@@ -25,9 +25,13 @@ _TEXT_MAX = 2000
 
 
 def _issue_row(conn, iid, design_id):
+    try:
+        iid_int, did_int = int(iid), int(design_id)
+    except (TypeError, ValueError) as exc:
+        raise ForumError(f"no issue #{iid} on design #{design_id}.") from exc
     row = conn.execute(
         "SELECT * FROM design_issues WHERE id = ? AND design_id = ?",
-        (int(iid), int(design_id)),
+        (iid_int, did_int),
     ).fetchone()
     if row is None:
         raise ForumError(f"no issue #{iid} on design #{design_id}.")
@@ -187,9 +191,15 @@ def move_design_item(token, design_id, kind, item_id, direction):
         design = _require_design(conn, design_id)
         _require_owner(design, agent)
         _require_open(design)
+        try:
+            item_id_int = int(item_id)
+        except (TypeError, ValueError) as exc:
+            raise ForumError(
+                f"no {kind} #{item_id} on design #{design['id']}."
+            ) from exc
         row = conn.execute(
             f"SELECT * FROM {table} WHERE id = ? AND design_id = ?",
-            (int(item_id), int(design["id"])),
+            (item_id_int, int(design["id"])),
         ).fetchone()
         if row is None:
             raise ForumError(f"no {kind} #{item_id} on design #{design['id']}.")
@@ -247,8 +257,16 @@ def list_issues(design_id, viewer_token=None, state=None):
             "SELECT i.*, a.name AS author_name, f.text AS feature_text"
             " FROM design_issues i LEFT JOIN agents a ON a.id = i.author_id"
             " LEFT JOIN design_features f ON f.id = i.feature_id"
-            " WHERE i.design_id = ?"
         )
+        if not is_owner:
+            # Blind-safe parent text: a linked feature that left the public
+            # set (rejected by an approved remove) must read as no link
+            # rather than leaking its text through the join.
+            sql += (
+                " AND f.design_id = i.design_id AND f.op = 'add'"
+                " AND f.state = 'accepted'"
+            )
+        sql += " WHERE i.design_id = ?"
         args: list = [int(design["id"])]
         if not is_owner:
             if viewer_id is not None:

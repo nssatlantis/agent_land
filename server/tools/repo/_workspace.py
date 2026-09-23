@@ -16,6 +16,7 @@ import config
 import db
 import github
 from github._core import _validate_path
+from github._workspaces import _transfer_file_cap_bytes
 from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
@@ -184,6 +185,102 @@ def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
 
 @mcp.tool()
 @_logged
+def workspace_search(
+    token: str,
+    proposal_id: int,
+    name: str,
+    query: str,
+    max_results: int | None = None,
+) -> dict:
+    """Search one workspace tree's live files for a case-insensitive substring.
+
+    Scans the claim's live worktree (dirty edits + untracked files included)
+    across every UTF-8 text file regardless of extension, `.github` included.
+    `.git`, the managed manifest, symlinks, over-cap files (TRANSFER_MAX_FILE_MB) and
+    non-UTF8 binaries never match. Returns `{query, matches: [{path,
+    matches: [{line_number, text}]}], proposal_id, name}` with paths relative
+    to the tree root, bounded to `max_results` files (each capped at 50 lines,
+    lines trimmed to 160 chars).
+    """
+    from server.repo_search import _trim_search_line
+
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    q = (query or "").strip()
+    if not q:
+        raise db.ForumError("workspace_search needs a non-empty query.")
+    if len(q) < 2:
+        raise db.ForumError(
+            "workspace_search query too short - use at least 2 characters."
+        )
+    if len(q) > config.MAX_QUERY_LENGTH:
+        raise db.ForumError(
+            "workspace_search query too long - keep it under "
+            f"{config.MAX_QUERY_LENGTH} characters."
+        )
+    if max_results is None:
+        max_results = config.REPO_SEARCH_DEFAULT_MAX_FILES
+    try:
+        cap = max(1, min(int(max_results), config.REPO_SEARCH_MAX_FILES))
+    except (TypeError, ValueError) as exc:
+        raise db.ForumError("max_results must be an integer.") from exc
+    try:
+        per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
+    except Exception:
+        per_file = 50
+    cap_bytes = _transfer_file_cap_bytes()
+    needle = q.lower()
+    results: list[dict] = []
+    skip_dirs = {".git", "__pycache__"}
+    for dirpath, dirnames, filenames in os.walk(dest, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
+        dirnames[:] = [
+            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, dest).replace(os.sep, "/")
+            if rel.split("/", 1)[0] in _MANAGED_HEADS:
+                continue
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            try:
+                with open(full, "rb") as fh:
+                    raw = fh.read(cap_bytes + 1)
+            except OSError:
+                continue
+            if len(raw) > cap_bytes:
+                continue
+            if not raw:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            hits = []
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if needle in line.lower():
+                    hits.append(
+                        {"line_number": lineno, "text": _trim_search_line(line)}
+                    )
+                    if len(hits) >= per_file:
+                        break
+            if hits:
+                results.append({"path": rel, "matches": hits})
+                if len(results) >= cap:
+                    break
+        if len(results) >= cap:
+            break
+    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    return {
+        "query": q,
+        "matches": results,
+        "proposal_id": proposal_id,
+        "name": str(record["name"]),
+    }
+
+
+@mcp.tool()
+@_logged
 def workspace_read_file(
     token: str,
     proposal_id: int,
@@ -195,7 +292,7 @@ def workspace_read_file(
     """Read one file from a workspace tree (text, undecodables replaced).
 
     line_start/line_end are 1-based inclusive: pass both or neither; at
-    most 1000 lines per read; ranges past EOF clamp to total_lines.
+    most REPO_READ_MAX_LINES lines per read; ranges past EOF clamp to total_lines.
     `content_sha256` is the sha256 of the stored bytes (the whole file,
     not just the page) - pass it as `expect_sha256` on writes or uploads
     to refuse a stale base.
@@ -206,8 +303,12 @@ def workspace_read_file(
         size = os.path.getsize(full)
     except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
         raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
-    if size > (1 << 20):
-        raise db.ForumError(f"{clean!r} is {size} bytes, over the 1MB read cap.")
+    cap_bytes = _transfer_file_cap_bytes()
+    if size > cap_bytes:
+        cap_mb = cap_bytes / (1 << 20)
+        raise db.ForumError(
+            f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
+        )
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
     try:
@@ -235,8 +336,12 @@ def workspace_read_file(
             raise db.ForumError("line_start is below 1.")
         if end < start:
             raise db.ForumError("line_end is below line_start.")
-        if end - start + 1 > 1000:
-            raise db.ForumError("range covers over 1000 lines.")
+        try:
+            max_lines = max(1, int(config.REPO_READ_MAX_LINES))
+        except Exception:  # domain: degrade-silently - bad knob falls back
+            max_lines = 1000
+        if end - start + 1 > max_lines:
+            raise db.ForumError(f"range covers over {max_lines} lines.")
     _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
     return {
         "path": clean,
@@ -555,14 +660,22 @@ def workspace_rehearse(
     sandbox, same handoff shaping (budget follows the harness:
     checks="format" runs budget-free). The tree
     itself never executes; only the snapshot overlay runs. Handoff: a running answer carries run_id - resolve with repo_ci_run_status, never re-fire.
+
+    The overlay carries the tree's own delta vs its HEAD (untouched
+    tracked files are excluded - bug #90): the runner refreshes onto
+    origin/main before rehearsing, so a claim tree cloned from an
+    earlier base must not re-upload its stale copies of files it never
+    touched. The whole tree can be inspected with workspace_list_tree;
+    only the delta is rehearsed.
     """
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname)
+    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname, delta=True)
     if not snap["files"]:
         raise db.ForumError(
-            "workspace snapshot is empty - nothing to rehearse "
+            "workspace snapshot is empty - the claim tree has no changes "
+            "vs its HEAD to rehearse "
             f"(skipped binaries={snap['skipped_binaries']}, "
             f"empty={snap['skipped_empty']}, "
             f"protected={snap['skipped_protected']}, "

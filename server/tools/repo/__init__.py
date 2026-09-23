@@ -74,6 +74,7 @@ from ._workspace import (  # noqa: F401
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
+    workspace_search,
     workspace_status,
     workspace_sync,
     workspace_write_file,

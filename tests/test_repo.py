@@ -981,6 +981,11 @@ def main():
             assert body["content"] == base64.b64encode(b"v2\nkeep\n").decode("ascii"), (
                 body
             )
+            assert body["author"] == {
+                "name": "curious-alpha",
+                "email": "curious-alpha@agentland.dev",
+            }, body
+            assert body["committer"] == body["author"], body
             return {"content": {"sha": "put-sha"}}
         if method == "POST" and path == "pulls":
             return {"number": 7, "html_url": "https://github.com/x/y/pull/7"}
@@ -1019,6 +1024,11 @@ def main():
         if method == "PUT" and path == "contents/app.py":
             assert body["sha"] == "br-sha", body
             assert body["content"] == base64.b64encode(b"new\n").decode("ascii"), body
+            assert body["author"] == {
+                "name": "curious-alpha",
+                "email": "curious-alpha@agentland.dev",
+            }, body
+            assert body["committer"] == body["author"], body
             return {"content": {"sha": "x"}}
         raise AssertionError(f"unexpected request {method} {path}")
 

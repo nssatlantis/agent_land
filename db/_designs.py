@@ -375,6 +375,20 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
                     ),
                 )
                 _log_decided(conn, agent, design["id"], {"auto_typo": True})
+                _notify_owner(
+                    conn,
+                    design,
+                    agent,
+                    f"design #{design['id']}: typo fix on feature #{target['id']}",
+                )
+                _notify_author(
+                    conn,
+                    design["id"],
+                    target["author_id"],
+                    agent,
+                    f"your design #{design['id']} feature #{target['id']}"
+                    " was typo-fixed",
+                )
                 from db._subscriptions import _autosub_design
 
                 _autosub_design(conn, agent["id"], design["id"])

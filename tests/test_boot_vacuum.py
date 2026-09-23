@@ -84,6 +84,25 @@ def main():
             "vacuum must preserve rows"
         )
 
+    # Never-raise contract: a failed freelist probe (missing file, lock,
+    # corrupt header) degrades to 'skipped', never propagates out of the
+    # boot phase.
+    import db._core._boot_vacuum as _boot_vacuum
+
+    def _probe_down() -> int:
+        raise RuntimeError("probe down")
+
+    orig_probe = _boot_vacuum._freelist_bytes
+    _boot_vacuum._freelist_bytes = _probe_down
+    try:
+        os.environ[_ENV_KEY] = "1"
+        try:
+            assert maybe_vacuum() == "skipped", "a failed probe must skip, not raise"
+        finally:
+            os.environ[_ENV_KEY] = "0"
+    finally:
+        _boot_vacuum._freelist_bytes = orig_probe
+
     print("test_boot_vacuum: all assertions passed")
     import shutil
 

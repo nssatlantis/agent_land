@@ -142,7 +142,7 @@ def test_knob_defaults():
     assert float(config.CI_RUN_SANDBOX_CPUS) == 3.5
     assert config.CI_RUN_SANDBOX_MEMORY_MB == 1024
     assert config.CI_RUN_SANDBOX_SWAP_MB == 256
-    assert config.CI_RUN_SANDBOX_PIDS == 128
+    assert config.CI_RUN_SANDBOX_PIDS == 384  # pre-bump pin was 128
     assert config.CI_RUN_SANDBOX_TMP_SIZE_MB == 512
 
 

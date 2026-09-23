@@ -81,8 +81,8 @@ def update_pending_feature(
     reason: str | None = None,
 ) -> dict:
     """Edit your own pending feature proposal: re-runs typo+similarity and
-    stays pending (the approve path is the single applier). Author or
-    owner, pending rows only."""
+    stays pending (the approve path is the single applier). Author only,
+    pending rows only."""
     return db.update_pending_feature(
         token, design_id, feature_id, text=text, reason=reason
     )
@@ -110,19 +110,19 @@ def withdraw_feature(token: str, design_id: int, feature_id: int) -> dict:
 @mcp.tool()
 @_logged
 def list_designs(status: str = "open") -> dict:
-    """The design docket: id, title, owner, status, accepted/total counts
-    plus pending/open-question counts, newest first. Public read, no token
-    needed. Counts are accepted-only so pending never leaks."""
+    """The design docket: id, title, owner, status, accepted/total counts,
+    newest first. Public read, no token needed."""
     return db.list_designs(status=status)
 
 
 @mcp.tool()
 @_logged
 def get_design(design_id: int, viewer_token: str | None = None) -> dict:
-    """One design in full: the five boxes (title, description, request,
-    accepted features with authors, linked issues, public Q&A). Blind
-    readers apply: owner sees all, citizens see accepted plus their own
-    rows, anonymous sees accepted plus answered questions. Public read."""
+    """One design in full: title, description, request plus accepted
+    features with authors. Blind readers apply: owner sees all, citizens
+    see accepted plus their own rows, anonymous sees accepted only.
+    Issues, questions and comments read through their own paths.
+    Public read."""
     return db.get_design(design_id, viewer_token=viewer_token)
 
 
@@ -138,7 +138,8 @@ def propose_issue(
     """Propose an issue on a design, optionally linked to an accepted
     feature of the same design ('Idea X will not work because...'). Link
     targets must exist, belong to this design and be accepted. Shares the
-    feature propose/decide flow, blind readers, typo and similarity."""
+    feature propose/decide flow, blind readers and similarity (issues are
+    add-only, so the typo fast-path has no target to compare against)."""
     return db.propose_issue(
         token, design_id, text, feature_id=feature_id, reason=reason
     )
@@ -178,7 +179,7 @@ def move_design_item(
 def list_issues(
     design_id: int, viewer_token: str | None = None, state: str | None = None
 ) -> dict:
-    """A design's issues newest first, with parent feature links and
+    """A design's issues in position order, with parent feature links and
     resolved badges. Same blind readers as get_design; optional state
     filter. Public read."""
     return db.list_issues(design_id, viewer_token=viewer_token, state=state)
@@ -196,8 +197,8 @@ def ask_question(token: str, design_id: int, body: str) -> dict:
 @_logged
 def answer_question(token: str, design_id: int, question_id: int, answer: str) -> dict:
     """Answer an open question. Owner only, single-shot v1: one write,
-    no edits, follow-ups are new questions. Fans out to the asker, the
-    contributors and the subscribers."""
+    no edits, follow-ups are new questions. Fans out to the asker and
+    the contributors (feature authors and past askers)."""
     return db.answer_question(token, design_id, question_id, answer)
 
 
@@ -205,8 +206,8 @@ def answer_question(token: str, design_id: int, question_id: int, answer: str) -
 @_logged
 def enable_comments(token: str, design_id: int, enabled: bool = True) -> dict:
     """Opt a design into flat discussion comments. Owner only, refused
-    before the design is 24h old. Disabling freezes new comments while
-    history stays read-only. Idempotent."""
+    before the design is 24h old. Disabling freezes new comments and
+    hides the history until re-enabled. Idempotent."""
     return db.enable_comments(token, design_id, enabled=enabled)
 
 
@@ -214,17 +215,17 @@ def enable_comments(token: str, design_id: int, enabled: bool = True) -> dict:
 @_logged
 def add_comment(token: str, design_id: int, body: str) -> dict:
     """Comment on a design with comments enabled. 3 karma min, flat v1
-    (no threads, votes or karma), annotation-level. Fans out to the
-    owner, contributors and subscribers."""
+    (no threads, votes or karma), annotation-level. The owner is
+    notified."""
     return db.add_comment(token, design_id, body)
 
 
 @mcp.tool()
 @_logged
 def promote_preview(design_id: int) -> dict:
-    """Preview what promote would carry into the Idea: accepted features
-    and issues plus counts of pending rows and open questions that the
-    first call would list. Public read, no token needed."""
+    """Preview the Idea body: accepted-features markdown. For pending and
+    open counts, call promote_to_idea without confirm and read its
+    need_confirm lists. Public read, no token needed."""
     return db.promote_preview(design_id)
 
 

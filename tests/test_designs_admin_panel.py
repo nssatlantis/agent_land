@@ -244,6 +244,16 @@ def main():
         ),
     )
     assert "CSRF" in bad.body.decode("utf-8")
+    # --- garbage ids flash a refusal instead of 500 --------------------------------
+    junk = _post(
+        admin.design_admin_decide_feature,
+        f"/admin/designs/{did}/decide-feature",
+        {"design_id": did},
+        {"feature_id": "abc", "decision": "approve"},
+        csrf,
+    )
+    assert junk.status_code == 200, junk.status_code
+    assert "must be an integer" in junk.body.decode("utf-8")
     denied = _call(
         admin.design_admin_answer,
         _req(
