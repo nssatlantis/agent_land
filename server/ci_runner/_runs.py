@@ -774,12 +774,6 @@ def run_checks(
         except db.ForumError:
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
-        events.log_event(
-            "ci_farm_fallback",
-            actor_agent_id=agent_id,
-            actor_name=name,
-            detail={"checks": checks, "reason": "runner unavailable, slot freed"},
-        )
     if is_bench:
         # Freeze this slot out of live downscales for the run's duration;
         # _deregister_active clears the flag on every exit path.
