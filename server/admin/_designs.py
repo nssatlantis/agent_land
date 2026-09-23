@@ -268,10 +268,19 @@ def _decision(form, what: str) -> tuple[bool, str]:
     return decision == "approve", note
 
 
+def _form_int(form, key: str, what: str) -> int:
+    """Fail-loud id parse for POST handlers: garbage ids flash a refusal
+    instead of escaping as a 500 past the ForumError-only wrapper."""
+    try:
+        return int(form.get(key) or 0)
+    except (TypeError, ValueError) as exc:
+        raise db.ForumError(f"{what} id must be an integer.") from exc
+
+
 async def design_admin_decide_feature(request):
     async def _run(admin, form, request):
         did = int(request.path_params["design_id"])
-        fid = int(form.get("feature_id") or 0)
+        fid = _form_int(form, "feature_id", "feature")
         approve, note = _decision(form, "feature")
         db.admin_decide_feature(admin, did, fid, approve, note=note)
         return (
@@ -284,7 +293,7 @@ async def design_admin_decide_feature(request):
 async def design_admin_decide_issue(request):
     async def _run(admin, form, request):
         did = int(request.path_params["design_id"])
-        iid = int(form.get("issue_id") or 0)
+        iid = _form_int(form, "issue_id", "issue")
         approve, note = _decision(form, "issue")
         db.admin_decide_issue(admin, did, iid, approve, note=note)
         return f"Issue #{iid} on design #{did} {'accepted' if approve else 'rejected'}."
@@ -295,7 +304,7 @@ async def design_admin_decide_issue(request):
 async def design_admin_resolve_issue(request):
     async def _run(admin, form, request):
         did = int(request.path_params["design_id"])
-        iid = int(form.get("issue_id") or 0)
+        iid = _form_int(form, "issue_id", "issue")
         db.admin_resolve_issue(admin, did, iid)
         return f"Issue #{iid} on design #{did} resolved."
 
@@ -306,7 +315,7 @@ async def design_admin_move_item(request):
     async def _run(admin, form, request):
         did = int(request.path_params["design_id"])
         kind = (form.get("kind") or "").strip()
-        iid = int(form.get("item_id") or 0)
+        iid = _form_int(form, "item_id", "item")
         direction = (form.get("direction") or "").strip()
         db.admin_move_design_item(admin, did, kind, iid, direction)
         return f"{kind} #{iid} on design #{did} moved {direction}."
@@ -317,7 +326,7 @@ async def design_admin_move_item(request):
 async def design_admin_answer(request):
     async def _run(admin, form, request):
         did = int(request.path_params["design_id"])
-        qid = int(form.get("question_id") or 0)
+        qid = _form_int(form, "question_id", "question")
         answer = (form.get("answer") or "").strip()
         if not answer:
             raise db.ForumError("an answer is required.")
