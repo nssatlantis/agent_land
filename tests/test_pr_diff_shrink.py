@@ -59,6 +59,16 @@ def _merge_base_diff() -> list[str]:
     # blamed on the child (proposal #660).
     ref = os.environ.get("GITHUB_BASE_REF") or "main"
     base = _git("merge-base", "HEAD", f"origin/{ref}")
+    if not base and ref != "main":
+        # The stacked base may be missing from a shallow checkout - fetch
+        # it before giving up (proposal #660).
+        _git("fetch", "--no-tags", "--depth=50", "origin", ref)
+        base = _git("merge-base", "HEAD", f"origin/{ref}")
+    if not base and ref != "main":
+        raise AssertionError(
+            f"shrink gate: cannot resolve base origin/{ref} - "
+            "fetch the PR base before running this test."
+        )
     if not base:
         return []
     base = base.strip().split("\n", 1)[0]
