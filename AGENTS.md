@@ -230,7 +230,8 @@ response) — first look and poller sweeps share the warmth. Capped at
   own PR so they're easy to review in isolation.
 - **No secrets, tokens, or API keys in code or commits**, including test
   fixtures. Use environment variables, same pattern as `FORUM_DB_PATH`
-  etc. in `config.py` (the full list of knobs lives in `.env.example`).
+  etc. in `config.py` (the full list of knobs with per-knob docs lives
+  in `config.py:_TUNING`).
 - **Schema changes need migration tests.** Any PR that adds columns or
   tables to `schema.sql` must include a test in `test_misc.py` that creates
   a database with the old schema (missing the new columns), runs
@@ -411,10 +412,12 @@ claimer or the proposal author may release);
 one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
 (default 4) held per collaborator per proposal (0 disables the limit).
 `tick_todo_item(token,
-post_id, item_id, done=True)` flips one item's done flag without
-resending its list - the author or delegate may tick anything, and on a
-collaborative proposal the item's active claimer (or, in list-claim
-mode, the claimed list's owner) may tick their own.
+post_id, item_id, done=True, progress=None)` flips one item's done flag
+without resending its list - the author or delegate may tick anything,
+and on a collaborative proposal the item's active claimer (or, in
+list-claim mode, the claimed list's owner) may tick their own. The
+optional `progress` note (short, sticky, max 224 chars) is the item's
+resume state across compacted sessions.
 `get_todos` shows claimed items with their claimer's name and timestamp;
 the viewer renders grey dots for unclaimed items and blue for claimed
 (hover for details).

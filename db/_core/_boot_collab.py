@@ -67,6 +67,10 @@ def run(conn) -> set:
     # ticks it done (db.bind_todo_item_to_pr). Existing databases lack it;
     # fresh ones carry it (schema.sql) and no-op here.
     _ensure_column(conn, "todo_items", "pr_number", "INTEGER")
+    # Item progress notes (tick_todo_item(progress=...)): short sticky
+    # resume text per item. Existing databases lack it; fresh ones carry
+    # it (schema.sql) and no-op here.
+    _ensure_column(conn, "todo_items", "progress", "TEXT NOT NULL DEFAULT ''")
     # Thread reopen notes: the note_comment_id pointer beside
     # verdict_comment_id (schema.sql). An existing forum.db would otherwise
     # lack the column; fresh databases already have it and this no-ops.

@@ -68,7 +68,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     list_ids = [r["id"] for r in lists]
     marks = ",".join("?" * len(lists))
     items = conn.execute(
-        f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
+        f"SELECT ti.id, ti.list_id, ti.text, ti.done, ti.progress,"
         f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number"
         f" FROM todo_items ti"
         f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
@@ -91,6 +91,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     for it in items:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
         entry["pr_number"] = it["pr_number"]
+        entry["progress"] = it["progress"] or ""
         flags = flag_map.get(it["id"], [])
         entry["flag_count"] = len(flags)
         if flags:
@@ -157,7 +158,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             continue
         item_marks = ",".join("?" * len(lists))
         items = conn.execute(
-            f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
+            f"SELECT ti.id, ti.list_id, ti.text, ti.done, ti.progress,"
             f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
             f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color"
             f" FROM todo_items ti"
@@ -177,6 +178,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         for it in items:
             entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
             entry["pr_number"] = it["pr_number"]
+            entry["progress"] = it["progress"] or ""
             flags = flag_map.get(it["id"], [])
             entry["flag_count"] = len(flags)
             if flags:
@@ -509,7 +511,7 @@ def get_todos_list(
         total = total_row["total"]
         total_done = total_row["done"]
         item_rows = conn.execute(
-            f"SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
+            f"SELECT ti.id, ti.text, ti.done, ti.progress, ti.claimed_by_agent_id,"
             f" ti.claimed_at, ti.pr_number"
             f" FROM todo_items ti"
             f" WHERE {where} ORDER BY ti.position, ti.id LIMIT ? OFFSET ?",
@@ -528,6 +530,7 @@ def get_todos_list(
     for it in item_rows:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
         entry["pr_number"] = it["pr_number"]
+        entry["progress"] = it["progress"] or ""
         flags = flag_map.get(it["id"], [])
         entry["flag_count"] = len(flags)
         if flags:
@@ -727,7 +730,7 @@ def search_todos(
             (phrase, post_id),
         ).fetchone()[0]
         hit_rows = conn.execute(
-            f"SELECT ti.id, ti.text, ti.done, ti.pr_number,"
+            f"SELECT ti.id, ti.text, ti.done, ti.pr_number, ti.progress,"
             f" ti.claimed_by_agent_id, ti.claimed_at,"
             f" a.name AS claimed_by_name, se.name_color AS claimed_by_name_color,"
             f" tl.id AS list_id,"
@@ -750,6 +753,7 @@ def search_todos(
             "done": bool(hit["done"]),
         }
         entry["pr_number"] = hit["pr_number"]
+        entry["progress"] = hit["progress"] or ""
         if mode != 1 and hit["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = hit["claimed_by_name"]
             entry["claimed_by_color"] = hit["claimed_by_name_color"]
