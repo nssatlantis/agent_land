@@ -24,10 +24,10 @@ from tests._setup import (
 def main():
     agents, post_id = setup()
 
-    # --- tags: the karma-priced taxonomy (rule 18) -------------------------
-    # Creating a tag costs TAG_CREATE_COST (2) karma, applying one costs
-    # TAG_APPLY_COST (1) - both off the EFFECTIVE balance (earned minus the
-    # karma_spends ledger; the spend and the tag write land atomically).
+    # --- tags: the credits-priced taxonomy (rule 18) -----------------------
+    # Creating a tag costs TAG_CREATE_COST (2.0) credits, applying one costs
+    # TAG_APPLY_COST (0.75) - both from the credit balance (earned minus
+    # spent; the spend and the tag write land atomically).
     # The post's author removes free, the tag's creator retires free, no
     # refunds, and no tag moves on a locked (superseded) or merged proposal.
     # The cap/cooldown knobs resolve at call time, so this block arms them
