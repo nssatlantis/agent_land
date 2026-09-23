@@ -222,7 +222,31 @@ def _map_and_log(
 ) -> dict:
     """Map the runner result to the host shape and write the ledger with runner
     provenance. Returns the result dict."""
-    result = dict(remote)
+    result: dict = {}
+    for key in (
+        "checks",
+        "mode",
+        "sandboxed",
+        "ok",
+        "timed_out",
+        "exit_code",
+        "duration_seconds",
+        "head_sha",
+        "output_tail",
+        "output_truncated",
+        "summary",
+        "failed_files",
+        "local",
+        "base_sha",
+        "pr_number",
+        "quiet",
+        "contended",
+        "bench_load",
+        "merge_conflict",
+        "conflict_files",
+    ):
+        if key in remote:
+            result[key] = remote[key]
     if result.get("mode") == "main":
         result["mode"] = "native"
     result["runner"] = runner["name"]
@@ -334,6 +358,8 @@ def try_bench_dispatch(
         return None
     if not config.CI_FARM_BENCH_REMOTE_FIRST:
         return None
+    if agent_id == 0:
+        return None  # system/heartbeat benches: local only, can never bless
     if pr_number is not None or files is not None or tree is not None:
         return None
     runner = pick_runner()
