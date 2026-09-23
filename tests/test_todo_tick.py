@@ -218,7 +218,112 @@ def main():
     assert db.proposal_todo_reminder(v2["post_id"]) is not None
     _ = locked_pid, bare
 
-    # -- 8. Review etiquette names the to-do diff ----------------------------
+    # -- 8. tick_todo_items batch: up to 7 flips in one atomic call -----
+    batch_p = db.create_proposal(author["token"], "Batch ticks", "Body.")
+    bpid = batch_p["post_id"]
+    db.set_todos_for_post(
+        author["token"],
+        bpid,
+        [
+            {
+                "title": "Chunk",
+                "items": [
+                    {"text": "t1"},
+                    {"text": "t2"},
+                    {"text": "t3"},
+                    {"text": "t4"},
+                ],
+            },
+        ],
+    )
+    bids = [it["id"] for it in db.get_todos_for_post(bpid)[0]["items"]]
+    out = db.tick_todo_items(
+        author["token"],
+        bpid,
+        [
+            {"item_id": bids[0]},
+            {"item_id": bids[1], "done": True},
+            {"item_id": bids[2], "done": False},
+        ],
+    )
+    assert out["post_id"] == bpid, out
+    assert [t["item_id"] for t in out["ticked"]] == bids[:3], out
+    assert [t["done"] for t in out["ticked"]] == [True, True, False], out
+    assert out["ticked_by"] == author["name"], out
+    bstate = db.get_todos_for_post(bpid)[0]["items"]
+    assert [i["done"] for i in bstate] == [True, True, False, False], bstate
+    print("  tick_todo_items batch flips N items with per-item done: ok")
+
+    # Batch is atomic: one unknown item refuses the whole call.
+    try:
+        db.tick_todo_items(
+            author["token"],
+            bpid,
+            [{"item_id": bids[3]}, {"item_id": 999999}],
+        )
+        raise AssertionError("batch with unknown item should fail")
+    except Exception as exc:
+        assert "no to-do item" in str(exc), exc
+    bstate2 = db.get_todos_for_post(bpid)[0]["items"]
+    assert bstate2[3]["done"] is False, "nothing flipped on refusal"
+    print("  tick_todo_items batch is atomic on unknown item: ok")
+
+    # Duplicate entry, empty list, over-cap batch and bad done all refuse.
+    try:
+        db.tick_todo_items(
+            author["token"],
+            bpid,
+            [{"item_id": bids[0]}, {"item_id": bids[0]}],
+        )
+        raise AssertionError("duplicate batch should fail")
+    except Exception as exc:
+        assert "more than once" in str(exc), exc
+    try:
+        db.tick_todo_items(author["token"], bpid, [])
+        raise AssertionError("empty batch should fail")
+    except Exception as exc:
+        assert "non-empty" in str(exc), exc
+    try:
+        db.tick_todo_items(
+            author["token"], bpid, [{"item_id": 1000 + i} for i in range(8)]
+        )
+        raise AssertionError("over-cap batch should fail")
+    except Exception as exc:
+        assert "at most 7" in str(exc), exc
+    try:
+        db.tick_todo_items(author["token"], bpid, [{"item_id": bids[0], "done": "yes"}])
+        raise AssertionError("non-bool done should fail")
+    except Exception as exc:
+        assert "boolean" in str(exc), exc
+    print("  tick_todo_items refuses dup/empty/over-cap/bad-done: ok")
+
+    # Claimer batch: own items tick, mixed batch refuses atomically.
+    cb = db.create_proposal(
+        author["token"], "Collab batch ticks", "Body.", collaborative=True
+    )
+    cbpid = cb["post_id"]
+    db.set_todos_for_post(
+        author["token"],
+        cbpid,
+        [{"title": "Split", "items": [{"text": "c1"}, {"text": "c2"}]}],
+    )
+    db.join_proposal(helper["token"], cbpid)
+    cbids = [it["id"] for it in db.get_todos_for_post(cbpid)[0]["items"]]
+    db.claim_todo_item(helper["token"], cbpid, cbids[0])
+    out = db.tick_todo_items(helper["token"], cbpid, [{"item_id": cbids[0]}])
+    assert out["ticked"][0]["done"] is True, out
+    try:
+        db.tick_todo_items(
+            helper["token"],
+            cbpid,
+            [{"item_id": cbids[0]}, {"item_id": cbids[1]}],
+        )
+        raise AssertionError("mixed claimer batch should fail")
+    except Exception as exc:
+        assert "claimer" in str(exc) or "author" in str(exc), exc
+    print("  tick_todo_items enforces per-item claim rights: ok")
+
+    # -- 9. Review etiquette names the to-do diff ----------------------------
     from db._nudges import _REVIEW_ETIQUETTE
 
     assert "to-do list" in _REVIEW_ETIQUETTE, _REVIEW_ETIQUETTE

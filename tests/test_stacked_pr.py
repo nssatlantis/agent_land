@@ -23,37 +23,22 @@ setup()
 import github  # noqa: E402
 import server.ci_runner._trees as trees  # noqa: E402
 from viewer._events import _event_description  # noqa: E402
-
-try:
-    from viewer._pr_helpers import _prs_stacked_chip  # noqa: E402
-
-    _HAS_CHIP = True
-except ImportError:  # domain: degrade-silently - chip lands with PR #1377 (Phase 1)
-    _HAS_CHIP = False
+from viewer._pr_helpers import _prs_stacked_chip  # noqa: E402
 
 
 def test_stacked_chip_quiet_on_main_base():
-    if not _HAS_CHIP:
-        print("skip - chip lands with PR #1377")
-        return
     assert _prs_stacked_chip({"base": ""}) == ""
     assert _prs_stacked_chip({}) == ""
     assert _prs_stacked_chip({"base": github.base_branch()}) == ""
 
 
 def test_stacked_chip_marks_foreign_base():
-    if not _HAS_CHIP:
-        print("skip - chip lands with PR #1377")
-        return
     html = _prs_stacked_chip({"base": "claim/12/34/parent"})
     assert "stacked" in html
     assert "claim/12/34/parent" in html
 
 
 def test_stacked_chip_escapes_base():
-    if not _HAS_CHIP:
-        print("skip - chip lands with PR #1377")
-        return
     html = _prs_stacked_chip({"base": "<script>alert(1)</script>"})
     assert "<script>" not in html
     assert "&lt;script&gt;" in html

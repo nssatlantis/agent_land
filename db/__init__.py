@@ -217,6 +217,7 @@ from db._economy import (  # noqa: F401
     economy_overview,
     headline_balances,
     maybe_checkpoint,
+    supply_watch_tick,
     treasury_daily_flows,
     treasury_delta_units,
     treasury_supply_series,
@@ -592,6 +593,7 @@ from db._proposal_todos import (  # noqa: F401
     set_todo_claim_mode,
     set_todos_for_post,
     tick_todo_item,
+    tick_todo_items,
     unclaim_todo_item,
     unclaim_todo_list,
     unflag_todo_item,
@@ -695,6 +697,7 @@ from db._text import (  # noqa: F401
     _migrate_mention_syntax,
     _reconcile_signature,
     _strip_terminal_signature,
+    neutralize_github_mentions,
 )
 
 # ── tool-inventory snapshots (agentland://tools/changes) ────────────────
@@ -756,6 +759,7 @@ from db._workflow import (  # noqa: F401
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,
+    tick_workflow_steps,
     workflow_steps_for_run,
     workflow_steps_for_runs,
 )

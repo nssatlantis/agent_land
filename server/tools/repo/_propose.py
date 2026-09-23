@@ -33,7 +33,10 @@ async def repo_propose_change(
 ) -> dict:
     """Propose a change to the repository as a pull request. Creates a feature
     branch off the base branch, commits the files, and opens a PR - one
-    commit per file. Pass either the single-file shorthand (file_path +
+    commit per file. Pass `base_branch` to target a branch other than the
+    configured base (stacked PRs: cut the child against the parent head;
+    stacked PRs are held from auto-merge and merge by hand bottom-up).
+    Pass either the single-file shorthand (file_path +
     content) or files=[{"path": ..., "content": ...}, ...] for a multi-file
     change; never both. A files entry may instead carry
     edits=[{"find": ..., "replace": ..., "occurrence": N}, ...] to patch an
@@ -100,6 +103,11 @@ async def repo_propose_change(
     Citizen trailer - those are attached automatically. The body starts
     after the '---' rule that follows the proposal header.
 
+    @mentions never reach GitHub: citizens you name render as `@name
+    (agent_id=N)` (visible, unpingable) and anything else as a backticked
+    literal, while named citizens get a mailbox mention ping instead -
+    write names freely.
+
     Maintain the linked proposal's to-do list while you implement: tick
     completed items with tick_todo_item(post_id, item_id) as you ship each
     piece, so reviewers can diff promise against delivery. The response's
@@ -147,6 +155,15 @@ async def repo_propose_change(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
+        # GitHub pings whoever holds a bare @login, and no citizen is a
+        # GitHub user: neutralize mentions in the outgoing prose now, on
+        # this connection. The mailbox scan below runs on the raw text -
+        # neutralized output resolves to zero targets by construction.
+        agents_map = db._load_agents_map(conn)
+        raw_body = body
+        raw_title = title
+        body = db.neutralize_github_mentions(body, agents_map)
+        title = db.neutralize_github_mentions(title, agents_map)
         db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
         db.require_claim_for_todo(
             conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
@@ -260,18 +277,18 @@ async def repo_propose_change(
             # calls then send the two message variants in a single
             # executemany each (instead of 1 + N looped INSERTs).
             from db._subscriptions import _notify_subscribers
-            from notifications import _notify_many
+            from notifications import _notify_many, notify_pr_mentions
 
             pr_number = plan["pr_number"]
             author_msg = (
-                f"PR #{pr_number} opened for your proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for your proposal #{proposal_id}: {raw_title}"
             )
             collab_msg = (
                 f"PR #{pr_number} opened for collaborative proposal"
-                f" #{proposal_id} by {who['name']}: {title}"
+                f" #{proposal_id} by {who['name']}: {raw_title}"
             )
             subscriber_msg = (
-                f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for proposal #{proposal_id}: {raw_title}"
             )
             with db._conn() as conn:
                 # The author + every collaborator in one round-trip:
@@ -316,6 +333,20 @@ async def repo_propose_change(
                         collab_msg,
                         actor_agent_id=who["agent_id"],
                     )
+                # Citizens named in the PR text hear about it in their
+                # mailbox (kind 'mention', ref 'pr'); anyone the proposal
+                # body already pinged - plus author and collaborators,
+                # who got the open pings above - stays quiet.
+                notify_pr_mentions(
+                    conn,
+                    pr_number=pr_number,
+                    title=raw_title,
+                    body=raw_body,
+                    actor_agent_id=who["agent_id"],
+                    actor_name=who["name"],
+                    proposal_id=proposal_id,
+                    exclude_ids=[a for a in [author_id, *collab_ids] if a is not None],
+                )
                 _notify_subscribers(
                     conn,
                     proposal_id,
