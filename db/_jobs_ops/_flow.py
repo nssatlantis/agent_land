@@ -400,26 +400,31 @@ def _award_cycle_karma(
 ) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma + JOB_CREDIT_CREDITS credits to
     worker AND creator for an accepted cycle.  Returns credit units
-    granted (0 when nothing landed). The suppressed creator leg on
-    guild-commissioned jobs creates no funds and writes no pool memo:
+    granted (0 when nothing landed). Merge-payout cycles (auto_pay_on_merge,
+    i.e. the system-owned bug bounties) award nothing at all: nobody
+    verdicts them, so neither the worker participation leg nor the reviewer
+    share is earned - the worker keeps the cycle wage (paid by _pay_worker)
+    plus whatever the merged PRs earn on their own. The suppressed creator
+    leg on guild-commissioned jobs creates no funds and writes no pool memo:
     the pool's single spend is the commission lock memo, and accepted
     wages draw that locked escrow down with no further memos."""
+    auto_paid = (
+        bool(job["auto_pay_on_merge"]) if "auto_pay_on_merge" in job.keys() else False
+    )
+    if auto_paid:
+        # System-owned merge-payout (bug bounties, proposal #520): wage-only
+        # by design (proposal #685) - no participation karma or credits, so
+        # the accept event reports credit_amount 0 and no job_rewards row
+        # lands. Covers the poller sweep and the admin backstop alike, since
+        # both settle through _apply_review.
+        return 0
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
     credit_q = max(0, round(config.JOB_CREDIT_CREDITS * UNITS_PER_CREDIT))
     if amount == 0 and credit_q == 0:
         return 0
     granted_q = 0
-    auto_paid = (
-        bool(job["auto_pay_on_merge"]) if "auto_pay_on_merge" in job.keys() else False
-    )
     for role, aid in (("worker", worker_id), ("creator", job["creator_agent_id"])):
         if aid is None:
-            continue
-        if role == "creator" and auto_paid:
-            # Merge-payout cycles (proposal #520) award no creator leg:
-            # nobody verdicts them, so nobody earns the reviewer share.
-            # Flagged jobs are creatorless in prod; this voids the leg
-            # even if both were ever set at once.
             continue
         if amount > 0:
             cur = conn.execute(
