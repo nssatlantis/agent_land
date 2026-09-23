@@ -170,6 +170,66 @@ def test_snapshot_guards():
     print("  snapshot guards (missing/cap): ok")
 
 
+def test_snapshot_delta():
+    sb = _RehearseSandbox()
+    try:
+        # a standalone bare so origin/main can advance mid-test without
+        # touching _SHARED_BARE (bug #90: a stale claim tree must not
+        # re-upload its copies of untouched files over a fresh base)
+        bare = _mk_remote(os.path.join(sb.tmp, "remote2"))
+        old_ws, old_gh = ws._repo_url, gh._repo_url
+        ws._repo_url = lambda with_token=False: bare
+        gh._repo_url = lambda with_token=False: bare
+        try:
+            tree = ws.ensure_claim_tree(11, 37, "delta")
+            # the claim tree's only real change: one untracked file
+            Path(tree["path"], "note.txt").write_text("hi\n", encoding="utf-8")
+            # origin/main advances AFTER the claim; the tree is now stale
+            adv = os.path.join(sb.tmp, "advan")
+            os.makedirs(adv)
+            _git("clone", bare, os.path.join(adv, "work"))
+            with open(os.path.join(adv, "work", "README.md"), "w") as f:
+                f.write("seed2\n")
+            _git("-C", os.path.join(adv, "work"), "add", "-A")
+            _git(
+                "-C",
+                os.path.join(adv, "work"),
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "advance",
+            )
+            _git("-C", os.path.join(adv, "work"), "push", bare, "main")
+            # delta snapshot carries only the tree's own change - the stale
+            # README.md (untouched in the tree) must NOT ride the overlay,
+            # or a rehearsal refresh would flatten the fresh base to seed
+            delta = ws.snapshot_claim_tree(11, 37, "delta", delta=True)
+            by_path = {f["path"]: f["content"] for f in delta["files"]}
+            assert by_path == {"note.txt": "hi\n"}, sorted(by_path)
+            assert delta["total_bytes"] == 3, delta
+            # a locally-changed tracked file still rides the delta
+            Path(tree["path"], "README.md").write_text("local-edit\n", encoding="utf-8")
+            delta2 = ws.snapshot_claim_tree(11, 37, "delta", delta=True)
+            by2 = {f["path"]: f["content"] for f in delta2["files"]}
+            assert by2 == {
+                "note.txt": "hi\n",
+                "README.md": "local-edit\n",
+            }, sorted(by2)
+            # whole-tree snapshot (the push-manifest contract) keeps
+            # untouched files, stale or not
+            whole = ws.snapshot_claim_tree(11, 37, "delta")
+            whole_by = {f["path"] for f in whole["files"]}
+            assert "README.md" in whole_by and "note.txt" in whole_by, sorted(whole_by)
+        finally:
+            ws._repo_url, gh._repo_url = old_ws, old_gh
+    finally:
+        sb.close()
+    print("  snapshot delta (untouched excluded, whole-tree default): ok")
+
+
 def test_tool_wiring(agents, wstools):
     import server.ci_runner as ci_runner  # noqa: E402
 
@@ -191,17 +251,17 @@ def test_tool_wiring(agents, wstools):
         wstools.workspace_write_file(tok, pid, "dev", "feat.txt", "feat\n")
         direct = wstools.workspace_rehearse(tok, pid, "dev")
         assert direct["ok"] is True, direct
-        assert direct["workspace"]["files"] >= 2, direct
+        assert direct["workspace"]["files"] == 1, direct
         assert direct["workspace"]["head_sha"], direct
         sent = {f["path"]: f["content"] for f in seen["kwargs"]["files"]}
-        assert sent["feat.txt"] == "feat\n", sorted(sent)
-        assert "README.md" in sent, sorted(sent)
+        assert sent == {"feat.txt": "feat\n"}, sorted(sent)
+        assert "README.md" not in sent, sorted(sent)
         assert ".workspace.json" not in sent, sorted(sent)
         assert seen["args"][1] == agents["alpha"]["agent_id"], seen["args"]
         seen["hand_off"] = True
         handed = wstools.workspace_rehearse(tok, pid, "dev")
         assert handed["status"] == "running" and handed["run_id"] == "run-9", handed
-        assert handed["workspace"]["files"] >= 2, handed
+        assert handed["workspace"]["files"] == 1, handed
         assert "watch_url" in handed and "note" in handed, handed
         wstools.release_workspace(tok, pid, "dev")
     finally:
@@ -230,6 +290,7 @@ def main():
     test_snapshot_roundtrip()
     test_snapshot_manifest()
     test_snapshot_guards()
+    test_snapshot_delta()
     test_tool_wiring(agents, wstools)
     test_tool_guards(agents, wstools)
     print("test_workspace_rehearse: all scenarios passed")
