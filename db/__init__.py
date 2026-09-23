@@ -211,6 +211,22 @@ from db._designs_flow import (  # noqa: F401
     update_pending_feature,
     withdraw_feature,
 )
+from db._designs_discuss import (  # noqa: F401
+    add_comment,
+    answer_question,
+    ask_question,
+    close_design,
+    enable_comments,
+    promote_preview,
+    promote_to_idea,
+)
+from db._designs_issues import (  # noqa: F401
+    decide_issue,
+    list_issues,
+    move_design_item,
+    propose_issue,
+    resolve_issue,
+)
 
 # ── post drafts (citizen-store staging) ────────────────────────────────
 from db._drafts import (  # noqa: F401
