@@ -294,6 +294,46 @@ def admin_answer_question(admin, design_id, question_id, answer):
         return {"question_id": int(row["id"]), "state": "answered"}
 
 
+def admin_design_pending(admin, design_id):
+    """Owner-view pending queues for the admin panel.
+
+    Pending rows never render on the anonymous viewer (blind safety), so
+    the panel reads them here under sole-admin authority. Reads are
+    allowed on frozen designs too (the panel then shows state without
+    forms); mutations stay open-only in their own functions.
+    """
+    with _conn() as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        feats = conn.execute(
+            "SELECT f.*, a.name AS author_name FROM design_features f"
+            " LEFT JOIN agents a ON a.id = f.author_id"
+            " WHERE f.design_id = ? AND f.state = 'pending' ORDER BY f.id",
+            (int(design["id"]),),
+        ).fetchall()
+        iss = conn.execute(
+            "SELECT i.*, a.name AS author_name, f.text AS feature_text"
+            " FROM design_issues i LEFT JOIN agents a ON a.id = i.author_id"
+            " LEFT JOIN design_features f ON f.id = i.feature_id"
+            " WHERE i.design_id = ? AND i.state = 'pending' ORDER BY i.id",
+            (int(design["id"]),),
+        ).fetchall()
+        quests = conn.execute(
+            "SELECT q.*, a.name AS asker_name FROM design_questions q"
+            " LEFT JOIN agents a ON a.id = q.asker_id"
+            " WHERE q.design_id = ? AND q.state = 'open' ORDER BY q.id",
+            (int(design["id"]),),
+        ).fetchall()
+        return {
+            "design_id": int(design["id"]),
+            "status": design["status"],
+            "pending_features": [dict(r) for r in feats],
+            "pending_issues": [dict(r) for r in iss],
+            "open_questions": [dict(r) for r in quests],
+        }
+
+
 def admin_enable_comments(admin, design_id, enabled=True):
     """Sole-admin comment toggle. Mirrors enable_comments (24h gate + event)."""
     from datetime import datetime, timezone
