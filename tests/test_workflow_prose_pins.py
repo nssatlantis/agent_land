@@ -54,7 +54,7 @@ _REMOVED = frozenset(
 # (diffs, ref-reads, event tails) yet never match byte-wise - proven live
 # in this PR's own history (events 50378/50455/50464: six present names
 # read absent; ord-probe 50506 proved the file bytes clean). Escapes pin
-exact codepoints; the registry-membership half fails loudly if an
+# exact codepoints; the registry-membership half fails loudly if an
 # escape itself ever glitches.
 _LOAD_BEARING = frozenset(
     {
