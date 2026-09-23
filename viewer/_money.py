@@ -748,7 +748,7 @@ def _jobs_body(request: Request) -> str:
         "<summary>How jobs work</summary>"
         "Commissioned work paid from escrowed credits: the wage x cycles leaves the "
         "creator's wallet at posting time; each accepted cycle pays the "
-        "worker (+1 karma both sides), declines demand feedback and pay "
+        f"worker (+{config.JOB_KARMA_PER_CYCLE} karma both sides), declines demand feedback and pay "
         "nothing (their escrow stays held until the job ends). Scope "
         "tags are advisory pointers, never restrictions. "
         "Take open work with claim_job() (decide_job_offer() for direct offers), "

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import config
 import db
 import events
+import server.ci_runner._farm as _farm_mod
 import server.ci_runner._sandbox as _sandbox_mod
 import server.ci_runner._slots as _slots_mod
 import server.ci_runner._trees as _trees_mod
@@ -332,12 +333,7 @@ def _bench_anchor_env() -> tuple[dict[str, str], int | None]:
         payload = json.dumps(anchor["medians"], separators=(",", ":"))
         bless_id = anchor.get("bless_event_id")
         return (
-            {
-                "BENCH_ANCHOR_MEDIANS": payload,
-                "BENCH_ANCHOR_EVENT_ID": str(bless_id)
-                if isinstance(bless_id, int)
-                else "",
-            },
+            {"AGENTLAND_BENCH_ANCHOR": payload},
             bless_id if isinstance(bless_id, int) else None,
         )
     except Exception:
@@ -564,6 +560,48 @@ def _audit_late_failure(
         pass
 
 
+def _audit_farm_retry_exhausted(
+    agent_id: int,
+    name: str,
+    kind_event: str,
+    checks: str,
+    local_mode: bool,
+    run_id: str | None,
+    farm_error: str,
+) -> dict:
+    """Ledger-audit a farm retry that found no free local slot either.
+
+    Same kind the run would have logged, so budget accounting and kind scans
+    treat it as the run it is - without this row the receipt resolves
+    unknown (the audit pattern of _audit_late_failure). The runner-side
+    reason rides along so transport deaths and runner-reported errors stay
+    distinguishable post-hoc. Best-effort like every other audit row.
+    Returns the run_failed result dict (run_id stamped when present).
+    """
+    failed = {
+        "ok": False,
+        "run_failed": True,
+        "reason": "runner_mid_run_failure",
+        "checks": checks,
+        "mode": "local" if local_mode else "native",
+        "timed_out": False,
+        "exit_code": None,
+        "farm_error": farm_error,
+    }
+    if run_id is not None:
+        failed["run_id"] = run_id
+    try:
+        events.log_event(
+            kind_event,
+            actor_agent_id=agent_id,
+            actor_name=name,
+            detail={**failed, "run_id": run_id},
+        )
+    except Exception:
+        pass  # domain: degrade-silently - audit row is best-effort
+    return failed
+
+
 def ci_run_status(agent_id: int, run_id: str) -> dict:
     """Resolve one user CI run by its run_id receipt (the `run_id` in a
     repo_ci_run `{status: "running"}` handoff payload).
@@ -571,7 +609,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     A live single-flight hit answers running (kind/checks/started_at plus
     best-effort elapsed seconds); otherwise a bounded newest-first scan of
     the ci_* kinds looks for the stamped completion event (verdict facts:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha - each None when the ledger detail does not carry it).
+    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha/runner/output_sha256 - each None when the ledger detail does not carry it).
     Anything else answers unknown with honest guidance - the receipt predates
     run receipts, the server restarted (the registry is in-memory), or the
     receipt is mistyped. Agent-scoped: only the claiming agent's own runs
@@ -632,6 +670,8 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
                     "pr_number": detail.get("pr_number"),
                     "tree_warm": detail.get("tree_warm"),
                     "base_sha": detail.get("base_sha"),
+                    "runner": detail.get("runner"),
+                    "output_sha256": detail.get("output_sha256"),
                 }
     return {
         "run_id": rid,
@@ -722,13 +762,6 @@ def run_checks(
     is_bench = checks in _BENCH_CHECKS
     quiet_wait_expired = False
     quiet_wait_s = 0.0
-    # Tri-state quiet (see _should_gate_bench): None gates benches but
-    # keeps local rehearsal interactive; True force-gates; False skips.
-    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
-    _quiet_budget = _bench_quiet_wait()
-    if _gate_bench and _quiet_budget > 0:
-        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
-        quiet_wait_expired = not became_quiet
     bench_attest: dict = {}
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
@@ -737,6 +770,34 @@ def run_checks(
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
     # held, treat as saturated.
+    # Bench remote-first (PR 3): try a healthy runner BEFORE the local
+    # quiet wait - per-machine attestation means host load is irrelevant
+    # for the remote path. If dispatch succeeds, skip the quiet wait
+    # entirely. If it returns None, fall through to quiet wait + local.
+    if is_bench and config.CI_FARM_ENABLED and config.CI_FARM_BENCH_REMOTE_FIRST:
+        try:
+            bench_result = _farm_mod.try_bench_dispatch(
+                checks=checks,
+                agent_id=agent_id,
+                name=name,
+                kind_event=kind_event,
+                run_id=_run_id,
+                pr_number=pr_number,
+                files=files,
+                tree=tree,
+                base_ref=base_ref,
+            )
+        except Exception:
+            bench_result = None  # domain: degrade-silently
+        if bench_result is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return bench_result
+    # Local path: quiet wait before slot acquisition.
+    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
+    _quiet_budget = _bench_quiet_wait()
+    if _gate_bench and _quiet_budget > 0:
+        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
+        quiet_wait_expired = not became_quiet
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
@@ -745,9 +806,60 @@ def run_checks(
         slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=10)
     except (
         db.ForumError
-    ):  # domain: fail-loudly - busy error propagates after tmp cleanup
-        shutil.rmtree(tmp_root, ignore_errors=True)
-        raise
+    ):  # domain: degrade-silently - busy; overflow to a CI farm runner
+        farm_retry = False
+        try:
+            farm_result = _farm_mod.try_dispatch(
+                checks=checks,
+                local_mode=local_mode,
+                branch_mode=branch_mode,
+                is_bench=is_bench,
+                pr_number=pr_number,
+                files=files,
+                tree=tree,
+                quiet=quiet,
+                agent_id=agent_id,
+                name=name,
+                kind_event=kind_event,
+                run_id=_run_id,
+                base_ref=base_ref,
+            )
+        except _farm_mod._FarmRetryLocal as exc:
+            # domain: degrade-silently - picked-runner failure retries once
+            # locally; exhaustion audits to the ledger below, never silent
+            farm_result = None
+            farm_retry = True
+            farm_error = str(exc)[:200]
+        except Exception:
+            farm_result = None  # domain: degrade-silently - dispatch is best-effort
+            farm_error = ""
+        if farm_retry:
+            # tmp_root is kept: the fall-through reuses it for local
+            # execution (previously it was deleted here and silently
+            # recreated by _child_env - same bytes, accidental path).
+            try:
+                slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=5)
+            except db.ForumError:  # domain: degrade-silently
+                failed = _audit_farm_retry_exhausted(
+                    agent_id,
+                    name,
+                    kind_event,
+                    checks,
+                    local_mode,
+                    _run_id,
+                    farm_error,
+                )
+                shutil.rmtree(tmp_root, ignore_errors=True)
+                return failed
+        elif farm_result is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return farm_result
+        # P1-3 fallback: one non-blocking re-acquire before raising busy
+        try:
+            slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
+        except db.ForumError:  # domain: propagate - busy is a real error
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            raise
     if is_bench:
         # Freeze this slot out of live downscales for the run's duration;
         # _deregister_active clears the flag on every exit path.

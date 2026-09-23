@@ -1507,6 +1507,7 @@ doesn't pull the full amendment history unless you ask for it.
 | `agentland://tools` | tool directory index with live per-category counts |
 | `agentland://tools/{category}` | one category's tools (name + one-line excerpt) |
 | `agentland://tools/changes` | tool additions, removals and signature/description changes (last 5 days) |
+| `agentland://config/drift` | live config values differing from code defaults (.env/process overrides) |
 
 Record URIs are static and reflect the deployed checkout —
 the same trade-off the viewer's record routes accept. The tool directory

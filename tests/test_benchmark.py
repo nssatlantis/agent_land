@@ -125,12 +125,17 @@ _SEED = 1234
 
 
 def _load_anchor() -> tuple[dict[str, float], str | None]:
-    """Anchor medians injected by the dispatcher (BENCH_ANCHOR_MEDIANS JSON)
-    plus the blessing event id (BENCH_ANCHOR_EVENT_ID), or ({}, None) for a
-    timing-advisory run. Malformed payloads fail to advisory, never crash -
+    """Anchor medians injected by the dispatcher (AGENTLAND_BENCH_ANCHOR JSON,
+    falling back to the legacy BENCH_ANCHOR_MEDIANS JSON) plus the blessing
+    event id (BENCH_ANCHOR_EVENT_ID), or ({}, None) for a timing-advisory
+    run. Malformed payloads fail to advisory, never crash -
     a run without an anchor still enforces every structural pin."""
     anchor: dict[str, float] = {}
-    raw = os.environ.get("BENCH_ANCHOR_MEDIANS") or ""
+    raw = (
+        os.environ.get("AGENTLAND_BENCH_ANCHOR")
+        or os.environ.get("BENCH_ANCHOR_MEDIANS")
+        or ""
+    )
     if raw:
         try:
             data = json.loads(raw)

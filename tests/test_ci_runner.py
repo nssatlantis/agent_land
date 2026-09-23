@@ -779,8 +779,7 @@ def test_bench_anchor_env_resolves_blessed_anchor():
         },
     )
     env, eid = _runs_mod._bench_anchor_env()
-    assert json.loads(env["BENCH_ANCHOR_MEDIANS"]) == {"q": 3.5}, "medians serialize"
-    assert env["BENCH_ANCHOR_EVENT_ID"] == str(eid), "event id echoes"
+    assert json.loads(env["AGENTLAND_BENCH_ANCHOR"]) == {"q": 3.5}, "medians serialize"
     assert isinstance(eid, int), "bless event id returned"
 
 

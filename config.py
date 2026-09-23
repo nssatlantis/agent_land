@@ -460,7 +460,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Hours of idleness before a workspace claim is swept.
     "WORKSPACE_CLAIM_TTL_HOURS": ("FORUM_WORKSPACE_CLAIM_TTL_HOURS", 72, int),
     # Disk cap per claimed workspace tree (MB).
-    "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 256, int),
+    "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 512, int),
     # Ticket-minted HTTP file transfers (proposal #597): the data plane
     # beside MCP. Tickets are single-use and MUST expire, so a
     # non-positive TTL falls back to the one-hour default. MAX_PATHS caps
@@ -1186,7 +1186,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Swap spill cap per sandbox container (MB).
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     # Process cap per sandbox container.
-    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
+    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 384, int),
     # Tmpfs cap per sandbox container (MB).
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 512, int),
     # Suite-worker cap inside sandboxed runs: run_all derives its worker
@@ -1260,6 +1260,23 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # same flag: with 0 no host branch-CI is enqueued on open/update and
     # post-push truth is the GitHub run (repo_pr_checks for the head SHA).
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
+    # CI farm: offload agent-invoked CI runs to a spare LAN runner when the
+    # local pool is saturated (overflow dispatch, proposal #667, PR 2).
+    # Disabled by default; mode is "overflow" (dispatch only when busy).
+    "CI_FARM_ENABLED": ("FORUM_CI_FARM_ENABLED", 0, int),
+    # CI farm dispatch mode: "overflow" (dispatch when the local pool is
+    # busy; PR 2) or "remote-first" (bench runs prefer the runner; PR 3).
+    "CI_FARM_MODE": ("FORUM_CI_FARM_MODE", "overflow", str),
+    # Seconds to wait on a runner /health or /run HTTP call before giving up.
+    "CI_FARM_HTTP_TIMEOUT": ("FORUM_CI_FARM_HTTP_TIMEOUT", 8, int),
+    # A runner whose last heartbeat is older than this is treated as stale
+    # and skipped (no live ping attempted).
+    "CI_FARM_STALE_SECONDS": ("FORUM_CI_FARM_STALE_SECONDS", 60, int),
+    # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
+    # dormant - overflow dispatch never dispatches bench runs.
+    "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
+    # P3-3: max concurrent runs per runner (capacity accounting).
+    "CI_FARM_RUNNER_MAX_ACTIVE": ("FORUM_CI_FARM_RUNNER_MAX_ACTIVE", 1, int),
     # Hybrid OR gate: local branch CI may satisfy merge (0 = GitHub-only).
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     # GitHub-pending time before a local branch CI runs (fallback mode).
@@ -1267,17 +1284,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Seconds without a ci_* run before the opener gets a rehearse hint.
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # Named rehearsal trees one citizen may hold.
-    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
+    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 4, int),
     # Hours of idleness before a named tree is swept.
     "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
     # Disk cap per named rehearsal tree (MB).
-    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 384, int),
+    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 512, int),
     # Warm branch trees (repo_ci_run(pr_number=...) reuses a per-PR registry
     # tree instead of re-cloning + re-merging on a slot tree every run).
     # MAX caps how many PR trees are kept (LRU-evicted past it); TTL_HOURS
     # reaps idle ones (also swept lazily on every branch prepare). Closed
     # PRs are evicted best-effort by the outcome poller.
-    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 8, int),
+    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 16, int),
     # Hours of idleness before a branch tree is swept.
     "CI_BRANCH_TREE_TTL_HOURS": ("FORUM_CI_BRANCH_TREE_TTL_HOURS", 24, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the
