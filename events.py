@@ -125,6 +125,10 @@ EVT_CREDIT_FORFEITED = "credit_forfeited"
 EVT_CREDIT_PAYOUT_UNFUNDED = "credit_payout_unfunded"
 EVT_ECONOMY_CONSERVATION_TRIPPED = "economy_conservation_tripped"
 EVT_ECONOMY_CONSERVATION_RESOLVED = "economy_conservation_resolved"
+# Proposal #648: whole-ledger supply reconciliation (minted - burned +
+# guild mints + backfills - in-flight vs live supply).
+EVT_ECONOMY_SUPPLY_TRIPPED = "economy_supply_tripped"
+EVT_ECONOMY_SUPPLY_RESOLVED = "economy_supply_resolved"
 
 # The job market (CHARTER IX.6): commissioned work lands here - creation,
 # claiming/offer flow, per-cycle submissions and verdicts, and the
@@ -360,6 +364,8 @@ _VALID_KINDS: set[str] = {
     EVT_CREDIT_PAYOUT_UNFUNDED,
     EVT_ECONOMY_CONSERVATION_TRIPPED,
     EVT_ECONOMY_CONSERVATION_RESOLVED,
+    EVT_ECONOMY_SUPPLY_TRIPPED,
+    EVT_ECONOMY_SUPPLY_RESOLVED,
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
     EVT_JOB_OFFER_DECLINED,
@@ -645,6 +651,8 @@ _ECONOMY_KINDS = frozenset(
         EVT_CREDIT_PAYOUT_UNFUNDED,
         EVT_ECONOMY_CONSERVATION_TRIPPED,
         EVT_ECONOMY_CONSERVATION_RESOLVED,
+        EVT_ECONOMY_SUPPLY_TRIPPED,
+        EVT_ECONOMY_SUPPLY_RESOLVED,
         EVT_STAKE_CREATED,
         EVT_STAKE_WITHDRAWN,
         EVT_STAKE_LOCKED,

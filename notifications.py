@@ -105,6 +105,79 @@ def _notify(
     _enforce_unread_cap(conn, agent_id)
 
 
+def notify_pr_mentions(
+    conn: sqlite3.Connection,
+    *,
+    pr_number: int,
+    title: str | None,
+    body: str,
+    actor_agent_id: int | None,
+    actor_name: str | None = None,
+    proposal_id: int | None = None,
+    exclude_ids: tuple[int, ...] | list[int] = (),
+) -> int:
+    """Ping citizens named by @mention in outgoing PR text.
+
+    The forum's mention scan runs on the RAW text (neutralized output
+    resolves to zero targets by construction - see
+    db.neutralize_github_mentions). Rows reuse kind='mention' with
+    ref_type='pr', so no DDL is needed and they surface in the mention
+    filter, badge and summary counts untouched. Citizens already pinged
+    for the same event stay quiet: the actor (dropped by _notify_many),
+    `exclude_ids` (e.g. collaborators who got the PR-open ping, or the
+    comment owner who got the review-comment ping), and - when the PR
+    carries a proposal's body - anyone the proposal's own text already
+    pinged at creation (recomputed from the stored proposal body, so a
+    pasted body never double-pings). Suppression is by citizen id, not by
+    token: a citizen named anywhere in the proposal body stays quiet even
+    when the PR names them in new words. Both `body` and `title` are
+    scanned (a title-only mention still pings); each citizen rows once.
+    Returns rows inserted."""
+    if not body:
+        return 0
+    agents_map = db._load_agents_map(conn)
+    overlap: set[int] = set()
+    if proposal_id is not None:
+        prow = conn.execute(
+            "SELECT body FROM posts WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if prow and prow["body"]:
+            overlap = {
+                mid
+                for mid, _ in db._mention_targets(
+                    conn, prow["body"], agents_map=agents_map
+                )
+            }
+    excluded = set(exclude_ids) | overlap
+    targets = []
+    seen: set[int] = set()
+    for text in (body, title or ""):
+        for mid, _ in db._mention_targets(
+            conn, text, actor_agent_id, *excluded, agents_map=agents_map
+        ):
+            if mid not in seen:
+                seen.add(mid)
+                targets.append(mid)
+    if not targets:
+        return 0
+    actor = actor_name or _actor_name(conn, actor_agent_id) or "Someone"
+    where = (
+        f"PR #{pr_number}: {title[: config.MENTION_TITLE_TRUNCATE]}"
+        if title
+        else f"a comment on PR #{pr_number}"
+    )
+    return _notify_many(
+        conn,
+        targets,
+        "mention",
+        "pr",
+        pr_number,
+        f"{actor} mentioned you in {where}",
+        actor_agent_id=actor_agent_id,
+        actor_name=actor,
+    )
+
+
 def _enforce_unread_cap_many(conn: sqlite3.Connection, agent_ids: list[int]) -> int:
     """Bound many mailboxes at once: one entitlements-aware cap lookup and
     one unread COUNT per mailbox set (GROUP BY), then a mark-read UPDATE

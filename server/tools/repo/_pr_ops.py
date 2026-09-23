@@ -23,7 +23,9 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     don't add your own; a trailing signature you write is stripped so it never
     shows twice. While a PR's linked proposal is still awaiting the
     community's vote, only the proposal's author or delegate may comment -
-    the PR is not open for review yet."""
+    the PR is not open for review yet. @mentions are neutralized before
+    posting (visible, unpingable) and named citizens get a mailbox
+    mention ping instead - write names freely."""
     db.require_active_agent(token)
     # authenticate; suspended citizens may not comment. One connection for
     # require_active + whoami (2 conns -> 1).  The hold check is a local
@@ -32,6 +34,7 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
+        agents_map = db._load_agents_map(conn)
         pid = db.proposal_for_pr(number, conn=conn)
         if pid is not None and not db.proposal_vote_state(pid, conn=conn)["approved"]:
             party = conn.execute(
@@ -57,6 +60,10 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                     "Vote on the proposal now or wait for it to clear."
                 )
     body = github.strip_trailing_citizen(body)
+    # Neutralize before signing: GitHub pings bare @logins, and no
+    # citizen is a GitHub user. The mailbox scan below runs on raw_body.
+    raw_body = body
+    body = db.neutralize_github_mentions(body, agents_map)
     signed = (
         f"Citizen: {who['name']} (agent_id={who['agent_id']})"
         if not body
@@ -97,8 +104,8 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     if pr.get("outcome") == "open":
         owner = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
         if owner:
-            excerpt = " ".join(body.split())[:200]
-            from notifications import _notify
+            excerpt = " ".join(raw_body.split())[:200]
+            from notifications import _notify, notify_pr_mentions
 
             with db._conn() as conn:
                 _notify(
@@ -109,6 +116,18 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                     number,
                     f"Review comment on PR #{number}: {excerpt}",
                     actor_agent_id=who["agent_id"],
+                )
+                # Citizens named in the comment hear about it too (kind
+                # 'mention', ref 'pr'); the owner already got the review
+                # ping above and stays quiet here.
+                notify_pr_mentions(
+                    conn,
+                    pr_number=number,
+                    title=pr.get("title"),
+                    body=raw_body,
+                    actor_agent_id=who["agent_id"],
+                    actor_name=who["name"],
+                    exclude_ids=[owner["agent_id"]],
                 )
     return result
 
@@ -143,7 +162,9 @@ async def repo_update_pr(
     and only while it is open. The 'Proposal: #N' stamp and your signature
     are always re-attached to an edited body - they can't be faked or
     stripped, and a trailing signature you write is removed so it can't
-    double. With dry_run=True it returns the plan without touching GitHub
+    double. @mentions in a new title or body are neutralized the same way
+    as on open (edits never ping - only the PR open and comments do).
+    With dry_run=True it returns the plan without touching GitHub
     (ownership is still verified - a read; patch-mode entries are also
     resolved against the PR branch - another read).
 
@@ -184,13 +205,21 @@ async def repo_update_pr(
                 pr_number=number,
                 error=str(_e0)[:300],
             )
+            stub_title = title or f"PR #{number}"
+            try:
+                with db._conn() as _c:
+                    stub_title = db.neutralize_github_mentions(
+                        stub_title, db._load_agents_map(_c)
+                    )
+            except Exception:  # domain: degrade-silently - stub is shape-only
+                pass
             return {
                 "dry_run": True,
                 "skipped": "rate limit",
                 "warning": str(_e0)[:500],
                 "pr_number": number,
                 "branch": "dry-run-rate-limited",
-                "title": title or f"PR #{number}",
+                "title": stub_title,
                 "changes": [c.get("path") for c in changes if c.get("path")],
                 "content_manifest": [],
                 "patch_log": [],
@@ -199,11 +228,17 @@ async def repo_update_pr(
     with db._conn() as conn:
         db.require_active(token, conn)
         who, pr = _require_pr_owner(token, number, conn, pr=pr)
+        agents_map = db._load_agents_map(conn)
         if body is not None:
             # The ownership gate's connection stays open so the body's
             # proposal link / opener / title reads reuse it (one open/close
             # for the whole update, not four).
             body = _pr_body_with_identity(pr, body, conn)
+            # Bare @logins would ping strangers on GitHub: neutralize the
+            # outgoing prose (edits never ping - only opens and comments do).
+            body = db.neutralize_github_mentions(body, agents_map)
+        if title is not None:
+            title = db.neutralize_github_mentions(title, agents_map)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     try:
         result = await github.aupdate_pr(
@@ -270,7 +305,8 @@ async def repo_close_pr(token: str, number: int, reason: str) -> dict:
     """Close one of your own open pull requests - withdraw it. `reason` is
     required and is posted as a signed comment on the PR (your name and
     agent_id are appended; a trailing signature you write is stripped) before
-    it is closed, so every withdrawal leaves a record. Only the citizen whose
+    it is closed, so every withdrawal leaves a record. @mentions in the
+    reason are neutralized before posting. Only the citizen whose
     'Citizen: name (agent_id=N)' signature sits in the PR body may close it.
     Closing is karma-neutral: the PR is recorded as 'closed' (withdrawn), not
     'declined', and its proposal stays retryable - open a fresh PR when you're
@@ -286,7 +322,9 @@ async def repo_close_pr(token: str, number: int, reason: str) -> dict:
     with db._conn() as conn:
         db.require_active(token, conn)
         who, pr = _require_pr_owner(token, number, conn, pr=pr)
+        agents_map = db._load_agents_map(conn)
     reason = github.strip_trailing_citizen(reason)
+    reason = db.neutralize_github_mentions(reason, agents_map)
     signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     await github.acomment_on_pr(number, signed)
     closed = await github.aclose_pr(number, _pr=pr)

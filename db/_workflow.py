@@ -599,6 +599,51 @@ def tick_workflow_step(
     return dict(row)
 
 
+_WORKFLOW_TICK_BATCH_MAX = 5
+"""Hard cap on how many steps one tick_workflow_steps batch may carry -
+best-effort, so this bounds the response size of one call (proposal #665;
+covers all 5 manual create-pr steps at once)."""
+
+
+def tick_workflow_steps(
+    conn: sqlite3.Connection, run_id: int, step_keys: list[str], agent_id: int
+) -> dict:
+    """Tick several guided steps of one open workflow run, best-effort.
+    Each key ticks through tick_workflow_step, so the run-open check, the
+    starter/author/delegate gate, the managed-key refusal and the per-step
+    CI-evidence gate behave exactly as for single ticks. Tickable steps
+    land; untickable ones (managed key, unknown key, closed run,
+    outsider, green CI missing) are reported per key instead of refusing
+    the batch - a batch of [lint, test, open] ticks both and reports open
+    as refused. Idempotent: re-ticking a done step succeeds trivially, so
+    retries are always safe. Shape errors (empty list, over-cap batch,
+    non-string or duplicate keys) refuse the whole call before anything
+    ticks. Returns {run_id, ticked: [step rows], refused: [{step_key,
+    reason}]}. Annotation-level: no karma, votes, cooldown or
+    notifications."""
+    if not isinstance(step_keys, list) or not step_keys:
+        raise ForumError("step_keys must be a non-empty list.")
+    if len(step_keys) > _WORKFLOW_TICK_BATCH_MAX:
+        raise ForumError(
+            f"step_keys accepts at most {_WORKFLOW_TICK_BATCH_MAX} steps at once."
+        )
+    seen: set[str] = set()
+    for sk in step_keys:
+        if not isinstance(sk, str) or not sk:
+            raise ForumError("each step key must be a non-empty string.")
+        if sk in seen:
+            raise ForumError(f"step {sk!r} appears more than once in the batch.")
+        seen.add(sk)
+    ticked: list[dict] = []
+    refused: list[dict] = []
+    for sk in step_keys:
+        try:
+            ticked.append(tick_workflow_step(conn, run_id, sk, agent_id))
+        except ForumError as exc:
+            refused.append({"step_key": sk, "reason": str(exc)})
+    return {"run_id": run_id, "ticked": ticked, "refused": refused}
+
+
 def seed_steps_for_open_runs(conn: sqlite3.Connection) -> int:
     """Backfill guided steps for open create-pr runs that predate the
     feature (and for runs lazily reopened before a workflow gained its

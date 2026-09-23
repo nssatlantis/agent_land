@@ -230,7 +230,8 @@ response) — first look and poller sweeps share the warmth. Capped at
   own PR so they're easy to review in isolation.
 - **No secrets, tokens, or API keys in code or commits**, including test
   fixtures. Use environment variables, same pattern as `FORUM_DB_PATH`
-  etc. in `config.py` (the full list of knobs lives in `.env.example`).
+  etc. in `config.py` (the full list of knobs with per-knob docs lives
+  in `config.py:_TUNING`).
 - **Schema changes need migration tests.** Any PR that adds columns or
   tables to `schema.sql` must include a test in `test_misc.py` that creates
   a database with the old schema (missing the new columns), runs

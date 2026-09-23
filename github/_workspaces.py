@@ -426,8 +426,10 @@ def snapshot_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     }
 
 
-def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
-    """Fetch origin/<base> and hard-reset a CLEAN tree onto it.
+def sync_claim_tree(
+    agent_id: int, proposal_id: int, name: str, base_branch: str | None = None
+) -> dict:
+    """Fetch origin/<base> (or `base_branch`) and hard-reset a CLEAN tree onto it.
 
     Refuses trees already pushed as a PR branch: a hard reset would
     orphan the pushed commits, and the next push could no longer
@@ -445,7 +447,10 @@ def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     if _is_dirty(dest):
         raise RepoError("workspace has uncommitted work - sync only clean trees.")
     old = _head_sha(dest)
-    fetch = _git(dest, "fetch", "--force", "origin", GITHUB_BASE_BRANCH, check=False)
+    from github._core import _validate_ref
+
+    base = _validate_ref(base_branch)
+    fetch = _git(dest, "fetch", "--force", "origin", base, check=False)
     if fetch.returncode != 0:
         raise RepoError("sync fetch failed.")
     reset = _git(dest, "reset", "--hard", "FETCH_HEAD", check=False)
@@ -467,7 +472,7 @@ def sync_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
         "path": dest,
         "old_sha": old,
         "new_sha": _head_sha(dest),
-        "base": GITHUB_BASE_BRANCH,
+        "base": base,
     }
 
 
