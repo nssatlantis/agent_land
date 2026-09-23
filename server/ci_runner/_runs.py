@@ -433,7 +433,7 @@ def run_checks_with_deadline(
                 # names base_ref) falls back. A genuine interior TypeError
                 # re-raises with its traceback intact - retrying without the
                 # base would rehearse the wrong tree and hide the bug.
-                if base_ref is None or "base_ref" not in str(exc):
+                if "base_ref" not in str(exc):
                     raise
                 result_holder.append(
                     run_checks(
