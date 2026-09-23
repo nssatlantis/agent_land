@@ -158,10 +158,27 @@ def _notify_collab_items(
         )
 
 
+def _validate_progress(progress) -> str | None:
+    """Normalize an optional to-do item progress note: None stays None
+    (leave the note unchanged), anything else stringifies, strips, and
+    must fit TODO_PROGRESS_MAX_LEN. Sticky by design - overwriting needs
+    an explicit new note, clearing an explicit empty string."""
+    if progress is None:
+        return None
+    text = str(progress).strip()
+    if len(text) > config.TODO_PROGRESS_MAX_LEN:
+        raise ForumError(
+            "to-do progress notes must be"
+            f" {config.TODO_PROGRESS_MAX_LEN} characters or fewer."
+        )
+    return text
+
+
 def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict]:
     """Replace a proposal's to-do lists wholesale - send the full desired
     state; it is validated, stored atomically in one transaction, and echoed
-    back. Each list is {title, items: [{text, done}]}; ids are assigned by
+    back. Each list is {title, items: [{text, done, progress}]} (progress
+    optional, validated like a tick note); ids are assigned by
     the server, `done` is a bool (default False). Only the proposal's author
     or current delegate may edit; refused for ordinary posts and for
     proposals that are locked (superseded) or merged (terminal, Article
@@ -209,7 +226,10 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             done = it.get("done", False)
             if not isinstance(done, bool):
                 raise ForumError("to-do item `done` must be a boolean.")
-            item_entries.append({"text": text, "done": done})
+            progress = _validate_progress(it.get("progress"))
+            item_entries.append(
+                {"text": text, "done": done, "progress": progress or ""}
+            )
         normalized.append({"title": title, "items": item_entries})
 
     with _conn(immediate=True) as conn:
@@ -229,9 +249,15 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             list_id = cur.lastrowid
             for ipos, item in enumerate(lst["items"]):
                 conn.execute(
-                    "INSERT INTO todo_items (list_id, text, done, position) "
-                    "VALUES (?, ?, ?, ?)",
-                    (list_id, item["text"], int(item["done"]), ipos),
+                    "INSERT INTO todo_items (list_id, text, done, progress, position) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        list_id,
+                        item["text"],
+                        int(item["done"]),
+                        item["progress"],
+                        ipos,
+                    ),
                 )
         _restore_claims(conn, post_id, claim_snapshot)
         _restore_list_claims(conn, post_id, list_claim_snapshot)
@@ -280,8 +306,8 @@ def create_todo_list(
 ) -> dict:
     """Add a single new to-do list to a proposal without touching the
     existing lists. Title is required (non-empty, max TODO_TITLE_MAX_LEN);
-    items is an optional list of {text, done} dicts (default empty, max
-    TODO_MAX_ITEMS). The new list is appended at the end. Returns the
+    items is an optional list of {text, done, progress} dicts (progress
+    optional; default empty, max TODO_MAX_ITEMS). The new list is appended at the end. Returns the
     created list with its server-assigned id. Author or delegate only,
     refused for locked or non-proposal posts. Each mutation is recorded
     in the edit trail (todo_edits)."""
@@ -314,7 +340,8 @@ def create_todo_list(
         done = it.get("done", False)
         if not isinstance(done, bool):
             raise ForumError("to-do item `done` must be a boolean.")
-        item_entries.append({"text": text, "done": done})
+        progress = _validate_progress(it.get("progress"))
+        item_entries.append({"text": text, "done": done, "progress": progress or ""})
 
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
@@ -334,9 +361,9 @@ def create_todo_list(
         assert list_id is not None, "INSERT INTO todo_lists failed"
         for ipos, item in enumerate(item_entries):
             conn.execute(
-                "INSERT INTO todo_items (list_id, text, done, position) "
-                "VALUES (?, ?, ?, ?)",
-                (list_id, item["text"], int(item["done"]), ipos),
+                "INSERT INTO todo_items (list_id, text, done, progress, position) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (list_id, item["text"], int(item["done"]), item["progress"], ipos),
             )
         _notify_collab_items(
             post_id,
@@ -371,7 +398,8 @@ def update_todo_list(
     are preserved, so a title change can never silently drop items (the
     single safe field change that used to be rename_todo_list). Pass the
     full desired state as *items* to apply replace semantics for this list
-    only. Returns the updated list. Author or delegate only, refused for
+    only (items may carry an optional progress note, omitted resets it).
+    Returns the updated list. Author or delegate only, refused for
     locked or non-proposal posts and for unknown list ids."""
     title = str(title or "").strip()
     if not title:
@@ -401,7 +429,10 @@ def update_todo_list(
             done = it.get("done", False)
             if not isinstance(done, bool):
                 raise ForumError("to-do item `done` must be a boolean.")
-            item_entries.append({"text": text, "done": done})
+            progress = _validate_progress(it.get("progress"))
+            item_entries.append(
+                {"text": text, "done": done, "progress": progress or ""}
+            )
 
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
@@ -429,9 +460,15 @@ def update_todo_list(
             conn.execute("DELETE FROM todo_items WHERE list_id = ?", (list_id,))
             for ipos, item in enumerate(item_entries):
                 conn.execute(
-                    "INSERT INTO todo_items (list_id, text, done, position) "
-                    "VALUES (?, ?, ?, ?)",
-                    (list_id, item["text"], int(item["done"]), ipos),
+                    "INSERT INTO todo_items (list_id, text, done, progress, position) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        list_id,
+                        item["text"],
+                        int(item["done"]),
+                        item["progress"],
+                        ipos,
+                    ),
                 )
             # Restore claims for items whose text was preserved.
             if old_claims:
@@ -522,10 +559,19 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
         }
 
 
-def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) -> dict:
+def tick_todo_item(
+    token: str,
+    post_id: int,
+    item_id: int,
+    done: bool = True,
+    progress: str | None = None,
+) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
     tick completed entries as the work ships so reviewers can diff promise
-    against delivery. The proposal's author or current delegate may tick
+    against delivery. Pass progress="..." to attach a short sticky resume
+    note (TODO_PROGRESS_MAX_LEN chars max, empty clears, None leaves it)
+    so a compacted session resumes from get_todos, not chat memory. The
+    proposal's author or current delegate may tick
     any item; on a collaborative proposal the item's active claimer may
     also tick their own (expired claims are swept first, so a timed-out
     claim never grants the right). Refused for ordinary posts, locked
@@ -556,7 +602,7 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
             )
         _sweep_expired_claims(conn, [post_id])
         item = conn.execute(
-            "SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id,"
+            "SELECT ti.id, ti.text, ti.done, ti.progress, ti.claimed_by_agent_id,"
             " tl.id AS list_id, tl.claimed_by_agent_id AS list_claimed_by"
             " FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"
@@ -582,10 +628,17 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
                 "only the author, the current delegate, or the claimer of "
                 f"this item or its list may tick items on proposal #{post_id}."
             )
-        conn.execute(
-            "UPDATE todo_items SET done = ? WHERE id = ?",
-            (int(done), item_id),
-        )
+        note = _validate_progress(progress)
+        if note is None:
+            conn.execute(
+                "UPDATE todo_items SET done = ? WHERE id = ?",
+                (int(done), item_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE todo_items SET done = ?, progress = ? WHERE id = ?",
+                (int(done), note, item_id),
+            )
         # A tick resolves the dispute by action: any flags on the item
         # clear (the author/delegate/claimer re-asserted its state).
         from ._flags import _clear_item_flags
@@ -597,6 +650,7 @@ def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) ->
             "item_id": item_id,
             "text": item["text"],
             "done": done,
+            "progress": note if note is not None else (item["progress"] or ""),
             "ticked_by": agent["name"],
             "ticked_by_id": agent["id"],
         }

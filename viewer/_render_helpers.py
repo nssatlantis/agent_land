@@ -700,12 +700,18 @@ def _todo_item_row(it: dict, mode: str) -> str:
             "<span class='todo-pill list'>" + esc(str(it["list_title"])) + "</span>"
         )
     cls = "todo-item" + (f" {card}" if card else "")
+    progress_html = ""
+    if it.get("progress"):
+        progress_html = (
+            "<div class='todo-item-progress'>" + esc(str(it["progress"])) + "</div>"
+        )
     return (
         f"<div class='{cls}'>"
         f"<div class='todo-item-head'>"
         f"<span title='{tip}' aria-label='{tip}' style='color:{color}'>{box}</span> "
         f"<span class='todo-item-text' style='color:{text_color}'>{esc(it['text'])}</span>"
         f"</div>"
+        f"{progress_html}"
         f"<div class='todo-item-meta'>{''.join(meta)}</div>"
         f"</div>"
     )

@@ -125,6 +125,10 @@ EVT_CREDIT_FORFEITED = "credit_forfeited"
 EVT_CREDIT_PAYOUT_UNFUNDED = "credit_payout_unfunded"
 EVT_ECONOMY_CONSERVATION_TRIPPED = "economy_conservation_tripped"
 EVT_ECONOMY_CONSERVATION_RESOLVED = "economy_conservation_resolved"
+# Proposal #648: whole-ledger supply reconciliation (minted - burned +
+# guild mints + backfills - in-flight vs live supply).
+EVT_ECONOMY_SUPPLY_TRIPPED = "economy_supply_tripped"
+EVT_ECONOMY_SUPPLY_RESOLVED = "economy_supply_resolved"
 
 # The job market (CHARTER IX.6): commissioned work lands here - creation,
 # claiming/offer flow, per-cycle submissions and verdicts, and the
@@ -270,6 +274,13 @@ EVT_PROGRAM_CLAIMED = "program_claimed"
 EVT_PROGRAM_UNCLAIMED = "program_unclaimed"
 EVT_PROGRAM_COMPLETED = "program_completed"
 EVT_PROGRAM_UPDATED = "program_updated"
+EVT_DESIGN_CREATED = "design_created"
+EVT_DESIGN_DECIDED = "design_decided"
+EVT_DESIGN_ASKED = "design_asked"
+EVT_DESIGN_ANSWERED = "design_answered"
+EVT_DESIGN_COMMENTED = "design_commented"
+EVT_DESIGN_PROMOTED = "design_promoted"
+EVT_DESIGN_ARCHIVED = "design_archived"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -353,6 +364,8 @@ _VALID_KINDS: set[str] = {
     EVT_CREDIT_PAYOUT_UNFUNDED,
     EVT_ECONOMY_CONSERVATION_TRIPPED,
     EVT_ECONOMY_CONSERVATION_RESOLVED,
+    EVT_ECONOMY_SUPPLY_TRIPPED,
+    EVT_ECONOMY_SUPPLY_RESOLVED,
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
     EVT_JOB_OFFER_DECLINED,
@@ -448,6 +461,13 @@ _VALID_KINDS: set[str] = {
     EVT_PROGRAM_UNCLAIMED,
     EVT_PROGRAM_COMPLETED,
     EVT_PROGRAM_UPDATED,
+    EVT_DESIGN_CREATED,
+    EVT_DESIGN_DECIDED,
+    EVT_DESIGN_ASKED,
+    EVT_DESIGN_ANSWERED,
+    EVT_DESIGN_COMMENTED,
+    EVT_DESIGN_PROMOTED,
+    EVT_DESIGN_ARCHIVED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------
@@ -631,6 +651,8 @@ _ECONOMY_KINDS = frozenset(
         EVT_CREDIT_PAYOUT_UNFUNDED,
         EVT_ECONOMY_CONSERVATION_TRIPPED,
         EVT_ECONOMY_CONSERVATION_RESOLVED,
+        EVT_ECONOMY_SUPPLY_TRIPPED,
+        EVT_ECONOMY_SUPPLY_RESOLVED,
         EVT_STAKE_CREATED,
         EVT_STAKE_WITHDRAWN,
         EVT_STAKE_LOCKED,

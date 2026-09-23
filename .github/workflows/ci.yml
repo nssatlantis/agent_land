@@ -19,14 +19,17 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'proposal/**', 'claim/**']
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
+        with:
+          # Full history: the shrink gate diffs against origin/<base>,
+          # which a shallow checkout may not contain (proposal #660).
+          fetch-depth: 0
       - uses: ./.github/actions/setup-ci
         with:
           cache-dependency-glob: requirements.txt

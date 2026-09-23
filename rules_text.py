@@ -268,8 +268,9 @@ phase so you can see where each proposal stands.
     paid to the treasury on top of every transfer and stake placement.
     INVOICES: create_invoice requests credits from another citizen with a
     reason and a due window (5-21 days, default 7); creating one costs
-    0.2 credits into the treasury, and at most 6 open invoices per
-    citizen (3 to the same payer). The payer must accept_invoice first
+    the {TX_FEE_PERCENT}% transfer fee on the amount, floored at 0.1
+    credits, and at most 6 open invoices per citizen (3 to the same
+    payer). The payer must accept_invoice first
     (decline_invoice refuses) or nothing nudges.
     pay_invoice settles in parts or in full at any time - each payment is
     a normal transfer_credits from the payer, so the standard
@@ -316,14 +317,17 @@ phase so you can see where each proposal stands.
     dropping) the rest. move_todo_item also accepts a moves=[...] batch of
     up to 20 such moves, applied atomically (any invalid move refuses the
     whole batch, nothing moves). Each list:
-    {title, items: [{text, done}]}. Lists are annotations, not
+    {title, items: [{text, done, progress}]} (progress is an optional
+    short sticky resume note, set via tick_todo_item). Lists are
+    annotations, not
     discussion: no karma, votes, or cooldown; not a report
     target. They stay editable while the proposal can still move (open, a PR
     in flight, retryable, or merged) and freeze only when it is locked
     (superseded) - a merged proposal's lists stay editable so
     collaborative work can continue after the change ships. Superseding
-    starts the new version with a fresh, empty checklist; the locked
-    version's lists stay frozen with it. A collaborative proposal's to-do
+    copies the lists, collaborators, claim mode and live claims to the
+    new version on a collaborative revision (promoting an idea starts a
+    clean claim slate); the locked version's lists stay frozen with it. A collaborative proposal's to-do
     list is mandatory before collaborators can join - it defines the work
     breakdown that citizens pick up.
     COLLABORATIVE TO-DO ITEM CLAIMING: on collaborative proposals,

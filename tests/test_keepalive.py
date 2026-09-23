@@ -16,8 +16,8 @@ import db  # noqa: F401
 
 def test_default_is_thirty():
     assert config.HTTP_KEEPALIVE_TIMEOUT_SECONDS == 30, (
-        "HTTP_KEEPALIVE_TIMEOUT_SECONDS default drifted; keep config.py, "
-        ".env.example and README.md in sync"
+        "HTTP_KEEPALIVE_TIMEOUT_SECONDS default drifted; keep config.py "
+        "and README.md in sync"
     )
 
 
