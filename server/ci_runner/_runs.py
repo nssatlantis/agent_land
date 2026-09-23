@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import config
 import db
 import events
+import server.ci_runner._farm as _farm_mod
 import server.ci_runner._sandbox as _sandbox_mod
 import server.ci_runner._slots as _slots_mod
 import server.ci_runner._trees as _trees_mod
@@ -745,7 +746,27 @@ def run_checks(
         slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=10)
     except (
         db.ForumError
-    ):  # domain: fail-loudly - busy error propagates after tmp cleanup
+    ):  # domain: degrade-silently - busy; overflow to a CI farm runner
+        try:
+            farm_result = _farm_mod.try_dispatch(
+                checks=checks,
+                local_mode=local_mode,
+                branch_mode=branch_mode,
+                is_bench=is_bench,
+                pr_number=pr_number,
+                files=files,
+                tree=tree,
+                quiet=quiet,
+                agent_id=agent_id,
+                name=name,
+                kind_event=kind_event,
+                run_id=_run_id,
+            )
+        except Exception:
+            farm_result = None  # domain: degrade-silently - dispatch is best-effort
+        if farm_result is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return farm_result
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     if is_bench:
