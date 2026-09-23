@@ -108,6 +108,9 @@ def propose_issue(token, design_id, text, feature_id=None, reason=""):
             ),
         )
         _notify_owner(conn, design, agent, f"design #{design['id']}: new issue #{iid}")
+        from db._subscriptions import _autosub_design
+
+        _autosub_design(conn, agent["id"], design["id"])
         return {"issue_id": iid, "state": "pending", "warning": warn}
 
 
