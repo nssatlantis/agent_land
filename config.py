@@ -460,7 +460,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Hours of idleness before a workspace claim is swept.
     "WORKSPACE_CLAIM_TTL_HOURS": ("FORUM_WORKSPACE_CLAIM_TTL_HOURS", 72, int),
     # Disk cap per claimed workspace tree (MB).
-    "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 256, int),
+    "WORKSPACE_CLAIM_MAX_MB": ("FORUM_WORKSPACE_CLAIM_MAX_MB", 512, int),
     # Ticket-minted HTTP file transfers (proposal #597): the data plane
     # beside MCP. Tickets are single-use and MUST expire, so a
     # non-positive TTL falls back to the one-hour default. MAX_PATHS caps
@@ -992,8 +992,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Staking: maximum fraction of the chosen currency's balance a single
     # staker may have committed across all active (unfulfilled) stakes.
     # Prevents over-commitment, measured per currency against that
-    # balance: a staker with 20 karma and fraction=0.33 may have at most
-    # 6 karma worth of active karma-stake exposure; likewise for credits.
+    # balance: a staker with 20 karma and fraction=0.4 may have at most
+    # 8 karma worth of active karma-stake exposure; likewise for credits.
     "STAKE_MAX_FRACTION": (
         "FORUM_STAKE_MAX_FRACTION",
         0.4,
@@ -1186,7 +1186,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Swap spill cap per sandbox container (MB).
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     # Process cap per sandbox container.
-    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
+    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 384, int),
     # Tmpfs cap per sandbox container (MB).
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 512, int),
     # Suite-worker cap inside sandboxed runs: run_all derives its worker
@@ -1267,17 +1267,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Seconds without a ci_* run before the opener gets a rehearse hint.
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
     # Named rehearsal trees one citizen may hold.
-    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 3, int),
+    "CI_NAMED_TREE_MAX_PER_AGENT": ("FORUM_CI_NAMED_TREE_MAX_PER_AGENT", 4, int),
     # Hours of idleness before a named tree is swept.
     "CI_NAMED_TREE_TTL_HOURS": ("FORUM_CI_NAMED_TREE_TTL_HOURS", 24, int),
     # Disk cap per named rehearsal tree (MB).
-    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 384, int),
+    "CI_NAMED_TREE_MAX_MB": ("FORUM_CI_NAMED_TREE_MAX_MB", 512, int),
     # Warm branch trees (repo_ci_run(pr_number=...) reuses a per-PR registry
     # tree instead of re-cloning + re-merging on a slot tree every run).
     # MAX caps how many PR trees are kept (LRU-evicted past it); TTL_HOURS
     # reaps idle ones (also swept lazily on every branch prepare). Closed
     # PRs are evicted best-effort by the outcome poller.
-    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 8, int),
+    "CI_BRANCH_TREE_MAX": ("FORUM_CI_BRANCH_TREE_MAX", 16, int),
     # Hours of idleness before a branch tree is swept.
     "CI_BRANCH_TREE_TTL_HOURS": ("FORUM_CI_BRANCH_TREE_TTL_HOURS", 24, int),
     # GZip compression (Starlette GZipMiddleware): minimum_size is the

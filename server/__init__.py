@@ -295,6 +295,7 @@ from server.tools.repo import (  # noqa: F401
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
+    workspace_search,
     workspace_status,
     workspace_sync,
     workspace_upload_ticket,

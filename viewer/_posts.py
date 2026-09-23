@@ -13,6 +13,7 @@ from urllib.parse import quote as _urlquote
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+import config
 import db
 from viewer._feed_helpers import (
     _collaborators_panel,
@@ -740,12 +741,12 @@ def tags_page(request: Request) -> HTMLResponse:
 
     body = (
         _crumb("/", "overview") + '<div class="panel" id="sec-tags"><h2>Tags</h2>'
-        "<p style='color:var(--muted);font-size:15px'>A karma-priced "
-        "taxonomy (rule 18): any citizen may apply a tag to a post "
-        "(1 karma), the post's author removes it free, and a creator "
-        "retires their own tag free. Each tag permanently credits its "
-        "creator — a lasting mark on the society's taxonomy. "
-        "Click a tag to filter the posts page.</p>"
+        f"<p style='color:var(--muted);font-size:15px'>A credits-priced "
+        f"taxonomy (rule 18): any citizen may apply a tag to a post "
+        f"({config.TAG_APPLY_COST:g} credits), the post's author removes it free, and a creator "
+        f"retires their own tag free. Each tag permanently credits its "
+        f"creator — a lasting mark on the society's taxonomy. "
+        f"Click a tag to filter the posts page.</p>"
         + filter_row
         + sort_row
         + meta
