@@ -173,13 +173,18 @@ def test_system_pays_worker_reporter_flat():
         out = db.auto_accept_jobs_for_merged_pr(pr)
     assert out["accepted"] == [jid], out
     assert db.get_job(jid)["status"] == "completed"
-    assert _bal(AGENTS["delta"]["agent_id"]) == before + 10, "wage 5u + reward 5u"
+    assert _bal(AGENTS["delta"]["agent_id"]) == before + 5, (
+        "wage 5u only - no participation reward"
+    )
     assert _bal(AGENTS["beta"]["agent_id"]) == rep_before, (
         "reporter earns no bounty pay"
     )
     with db._conn() as conn:
         rep_parts = db._karma_parts(conn, AGENTS["beta"]["agent_id"])
     assert rep_parts["job_rewards"] == 0, "void creator leg pays nobody"
+    with db._conn() as conn:
+        worker_parts = db._karma_parts(conn, AGENTS["delta"]["agent_id"])
+    assert worker_parts["job_rewards"] == 0, "wage-only merge-payout earns no job karma"
     print("  system_pays_worker_reporter_flat: ok")
 
 
@@ -231,8 +236,8 @@ def test_autofix_via_fix_pr():
     assert result["cancelled"] == [], result
     assert _bug_row(bid)["status"] == "fixed"
     assert _job_row(jid)["status"] == "completed"
-    assert _treasury() == t0 - 5 * posted_n - 10, (
-        "proposal #541: escrowed wage consumed, participation + fix rewards paid"
+    assert _treasury() == t0 - 5 * posted_n - 5, (
+        "escrowed wage consumed, fix reward paid (no participation)"
     )
     assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 5, (
         "autofix pays the reporter fix credit"
@@ -444,7 +449,7 @@ def _nudge_rows(agent_id, jid):
 
 def test_autoclaim_pays_forgetful_fixer():
     """Proposal #541: the fixer who never claims is auto-claimed at merge -
-    wage + participation reward, the same legs as the manual path."""
+    wage only - no participation award (proposal #685)."""
     bid = _confirm_bug()
     t0 = _treasury()
     result0 = _roomy_sweep()
@@ -465,14 +470,14 @@ def test_autoclaim_pays_forgetful_fixer():
         ).fetchone()
     assert job["status"] == "completed", job["status"]
     assert job["worker_agent_id"] == AGENTS["epsilon"]["agent_id"]
-    assert _bal(AGENTS["epsilon"]["agent_id"]) == fixer_before + 10, (
-        "wage 5u + reward 5u, same as the manual path"
+    assert _bal(AGENTS["epsilon"]["agent_id"]) == fixer_before + 5, (
+        "wage 5u only - no participation reward"
     )
     assert _bal(AGENTS["beta"]["agent_id"]) == rep_before + 5, (
         "reporter still earns the fix credit"
     )
-    assert _treasury() == t0 - 5 * posted_n - 10, (
-        "escrowed wage consumed, participation + fix rewards paid"
+    assert _treasury() == t0 - 5 * posted_n - 5, (
+        "escrowed wage consumed, fix reward paid (no participation)"
     )
     print("  autoclaim_pays_forgetful_fixer: ok")
 
