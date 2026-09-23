@@ -375,6 +375,9 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
                     ),
                 )
                 _log_decided(conn, agent, design["id"], {"auto_typo": True})
+                from db._subscriptions import _autosub_design
+
+                _autosub_design(conn, agent["id"], design["id"])
                 return {
                     "feature_id": int(target["id"]),
                     "state": "accepted",
@@ -420,6 +423,9 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
             ),
         )
         _notify_owner(conn, design, agent, f"design proposal #{fid}")
+        from db._subscriptions import _autosub_design
+
+        _autosub_design(conn, agent["id"], design["id"])
         return {"feature_id": fid, "state": "pending", "warning": warn}
 
 
