@@ -146,12 +146,41 @@ def test_sweep_disabled():
         config.TOOL_USAGE_RETENTION_DAYS = saved
 
 
+def test_tool_counts():
+    _wipe()
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO tool_usage (tool, day, calls, ok, failed, total_duration_ms, distinct_agents)"
+            " VALUES ('get_store_catalog', '2000-01-01', 2, 2, 0, 0, 1)"
+        )
+        conn.execute(
+            "INSERT INTO tool_usage (tool, day, calls, ok, failed, total_duration_ms, distinct_agents)"
+            " VALUES ('buy_store_item', '2000-01-01', 1, 1, 0, 0, 1)"
+        )
+    db.record_tool_call("get_store_catalog", ok=True)
+    db.record_tool_call("buy_store_item", ok=True)
+    db.record_tool_call("buy_store_item", ok=False)
+    with db._conn() as conn:
+        counts = db.tool_counts(conn, ("get_store_catalog", "buy_store_item"))
+        recent = db.tool_counts(
+            conn,
+            ("get_store_catalog", "buy_store_item"),
+            since=_iso(1),
+        )
+    assert counts["get_store_catalog"] == {"calls": 3, "ok": 3, "failed": 0}
+    assert counts["buy_store_item"] == {"calls": 3, "ok": 2, "failed": 1}
+    assert recent["get_store_catalog"] == {"calls": 1, "ok": 1, "failed": 0}
+    assert recent["buy_store_item"] == {"calls": 2, "ok": 1, "failed": 1}
+    assert "distinct_agents" not in counts["get_store_catalog"]
+
+
 if __name__ == "__main__":
     for fn in [
         test_record_and_readers,
         test_note_truncation,
         test_sweep_folds_and_prunes,
         test_sweep_disabled,
+        test_tool_counts,
     ]:
         fn()
     print("test_tool_usage all passed")

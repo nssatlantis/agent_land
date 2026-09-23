@@ -1438,6 +1438,112 @@ def _store_donut_html(store: dict) -> str:
     )
 
 
+def _store_funnel_html(store: dict) -> str:
+    funnel = store.get("funnel")
+    if not isinstance(funnel, dict):
+        return ""
+    stages = (
+        ("Catalog views", "catalog_views"),
+        ("Buy attempts", "buy_attempts"),
+        ("Successful calls", "successful_buy_calls"),
+        ("Refused / failed", "refused_or_failed_buy_calls"),
+    )
+    cells = []
+    for label, key in stages:
+        values = funnel.get(key)
+        if not isinstance(values, dict):
+            values = {"all_time": 0, "7d": None}
+        recent = values.get("7d")
+        recent_text = "n/a" if recent is None else str(recent)
+        cells.append(
+            f"<div style='flex:1 1 150px;min-width:150px;border:1px solid var(--line);"
+            f"border-radius:8px;padding:10px 14px'><div style='font-size:20px;"
+            f"font-weight:600'>{esc(str(values.get('all_time', 0)))}</div>"
+            f"<div style='color:var(--muted);font-size:13px'>{esc(label)}</div>"
+            f"<div style='color:var(--muted);font-size:12px'>7d {esc(recent_text)}</div></div>"
+        )
+    note = (
+        ""
+        if funnel.get("recent_7d_complete", True)
+        else "<p style='color:var(--muted);font-size:13px'>7-day telemetry is incomplete because tool-call retention is shorter than seven days.</p>"
+    )
+    return (
+        "<h3>Recorded store funnel</h3>"
+        "<p style='color:var(--muted);font-size:13px'>Aggregate MCP call stages; not a linked view-to-purchase conversion cohort.</p>"
+        "<div style='display:flex;gap:12px;flex-wrap:wrap'>"
+        + "".join(cells)
+        + "</div>"
+        + note
+    )
+
+
+def _store_breakdown_html(store: dict) -> str:
+    rows = []
+    for field, kind in (("sources", "Source"), ("category_totals", "Category")):
+        values = store.get(field)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            rows.append(
+                f"<tr><td>{esc(kind)}</td><td>{esc(str(value.get('label', '?')))}</td>"
+                f"<td style='text-align:right'>{esc(str(value.get('row_count', 0)))}</td>"
+                f"<td style='text-align:right'>{esc(str(value.get('units', 0)))}</td>"
+                f"<td style='text-align:right'>{esc(str(value.get('revenue_credits', '0')))}</td>"
+                f"<td style='text-align:right'>{esc(str(value.get('revenue_7d_credits', '0')))}</td></tr>"
+            )
+    if not rows:
+        return ""
+    return (
+        "<h3>Catalog and billing breakdown</h3>"
+        "<table><thead><tr><th>view</th><th>name</th><th style='text-align:right'>rows</th>"
+        "<th style='text-align:right'>units</th><th style='text-align:right'>revenue</th>"
+        "<th style='text-align:right'>7d revenue</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _store_pressure_html(store: dict) -> str:
+    affordability = store.get("affordability")
+    cap_pressure = store.get("cap_pressure")
+    if not isinstance(affordability, dict):
+        return ""
+    affordable_items = affordability.get("items")
+    if not isinstance(affordable_items, list):
+        return ""
+    cap_by_key = {}
+    if isinstance(cap_pressure, list):
+        for value in cap_pressure:
+            if isinstance(value, dict) and value.get("key"):
+                cap_by_key[value["key"]] = value
+    rows = []
+    for value in affordable_items:
+        if not isinstance(value, dict):
+            continue
+        key = str(value.get("key", "?"))
+        cap = cap_by_key.get(key, {})
+        rows.append(
+            f"<tr><td>{esc(key)}</td><td>{esc(str(value.get('category', '?')))}</td>"
+            f"<td style='text-align:right'>{esc(str(value.get('price_credits', '0')))}</td>"
+            f"<td style='text-align:right'>{esc(str(value.get('can_afford_citizens', 0)))}</td>"
+            f"<td style='text-align:right'>{esc(str(cap.get('held', 0)))}</td>"
+            f"<td style='text-align:right'>{esc(str(cap.get('max_per_citizen', '—')))}</td>"
+            f"<td style='text-align:right'>{esc(str(cap.get('occupancy_pct', '—')))}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<h3>Affordability and cap pressure</h3>"
+        f"<p style='color:var(--muted);font-size:13px'>Current active citizens: {esc(str(affordability.get('active_citizens', 0)))}. Affordability is balance-only; occupancy is held units against nominal per-citizen capacity.</p>"
+        "<table><thead><tr><th>item</th><th>category</th><th style='text-align:right'>price</th>"
+        "<th style='text-align:right'>can afford</th><th style='text-align:right'>held</th>"
+        "<th style='text-align:right'>max / citizen</th><th style='text-align:right'>occupancy</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
 def _economy_body(request: Request) -> str:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -2250,6 +2356,8 @@ def _economy_body(request: Request) -> str:
         _st = _store["totals"]
         _store_rows = "".join(
             f"<tr><td>{esc(_i['label'])}</td>"
+            f"<td>{esc(str(_i.get('category', '?')))}</td>"
+            f"<td>{esc(str(_i.get('source', '?')))}</td>"
             f"<td style='text-align:right'>{int(_i['units'])}</td>"
             f"<td style='text-align:right'>{esc(_i['revenue_credits'])}</td>"
             f"<td style='text-align:right'>{int(_i['buyers'])}</td>"
@@ -2258,6 +2366,9 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'>{esc(str(_i['price_credits']))}</td></tr>"
             for _i in _store["items"]
         )
+        _store_funnel = _store_funnel_html(_store)
+        _store_breakdown = _store_breakdown_html(_store)
+        _store_pressure = _store_pressure_html(_store)
         _store_html = (
             '<div class="panel"><h2>Citizen store</h2>'
             "<p style='color:var(--muted);font-size:13px'>What the store sold — "
@@ -2272,10 +2383,13 @@ def _economy_body(request: Request) -> str:
             + _card(str(_st["buyers"]), "citizens bought")
             + "</div>"
             + _store_donut_html(_store)
+            + _store_funnel
+            + _store_breakdown
+            + _store_pressure
             + "<p style='color:var(--muted);font-size:13px'>Citizens served "
             f"(ever bought): {int(_store['installed']['citizens_served'])}</p>"
-            "<table><thead><tr><th>item</th><th style='text-align:right'>sold</th>"
-            "<th style='text-align:right'>revenue</th>"
+            "<table><thead><tr><th>item</th><th>category</th><th>source</th>"
+            "<th style='text-align:right'>sold</th><th style='text-align:right'>revenue</th>"
             "<th style='text-align:right'>buyers</th>"
             "<th style='text-align:right'>7d sold</th>"
             "<th style='text-align:right'>held</th>"
@@ -2283,7 +2397,7 @@ def _economy_body(request: Request) -> str:
             + _store_rows
             + "</tbody></table></div>"
         )
-        if int(_st["units"]) == 0:
+        if int(_st["units"]) == 0 and not _store.get("funnel"):
             _store_html = (
                 '<div class="panel"><h2>Citizen store</h2>'
                 '<p style="color:var(--muted)">No store sales yet.</p></div>'

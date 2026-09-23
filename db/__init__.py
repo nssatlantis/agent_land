@@ -721,6 +721,7 @@ from db._tool_inventory import (  # noqa: F401
 # ── tool-usage observability (admin /admin/usage) ──────────────────────
 from db._tool_usage import (  # noqa: F401
     record_tool_call,
+    tool_counts,
     tool_usage_by_agent,
     tool_usage_recent_failures,
     tool_usage_summary,
