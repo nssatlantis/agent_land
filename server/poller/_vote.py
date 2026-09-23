@@ -168,7 +168,7 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
         prior = conn.execute(
             "SELECT created_at FROM notifications WHERE agent_id = ?"
             " AND kind = 'pr' AND ref_type = 'pr' AND ref_id = ?"
-            " AND body LIKE '%now conflicts with main%'"
+            " AND body LIKE '%now conflicts with %'"
             " ORDER BY id DESC LIMIT 1",
             (opener["agent_id"], pr["number"]),
         ).fetchone()
@@ -183,8 +183,8 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
             "pr",
             "pr",
             pr["number"],
-            f"PR #{pr['number']} now conflicts with main - auto-merge "
-            "skipped it this round. Rebase onto main or resolve the "
+            f"PR #{pr['number']} now conflicts with {pr.get('base') or 'main'} - auto-merge "
+            f"skipped it this round. Rebase onto {pr.get('base') or 'main'} or resolve the "
             "conflicts (repo_resolve_conflicts) and it will re-enter the "
             "merge queue.",
         )
