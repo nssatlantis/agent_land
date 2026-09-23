@@ -644,18 +644,22 @@ def _prepare_named_tree(
                 f"{(fetch.stderr or fetch.stdout).strip()[-300:]}"
             )
         main_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
+        manifest_base = (manifest or {}).get("base_ref") or github.base_branch()
         warm = (
             manifest is not None
             and manifest.get("base_sha") == main_sha
-            and (manifest.get("base_ref") or github.base_branch()) == base
+            and manifest_base == base
             and not is_new
         )
-        if (manifest or {}).get("base_ref", github.base_branch()) != base:
+        if manifest_base != base:
             # Base switch (not a base move): stored deltas belong to another
             # lineage - replaying them would corrupt the tree. Clear and go
-            # cold; the agent resends deltas against the new base.
+            # cold (stored stays empty even if the clear fails); the agent
+            # resends deltas against the new base.
             _clear_deltas(tree)
-        stored = [] if warm else _stored_deltas(tree)
+            stored = []
+        else:
+            stored = [] if warm else _stored_deltas(tree)
         if not warm:
             reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
             if reset.returncode != 0:
