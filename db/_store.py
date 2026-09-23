@@ -1439,6 +1439,26 @@ def store_stats() -> dict:
             " COALESCE(SUM(draft_slots > 0), 0) AS drafters"
             " FROM store_entitlements"
         ).fetchone()
+        active_held = conn.execute(
+            "SELECT COALESCE(SUM(se.vote_bonus), 0) AS vote_bonus,"
+            " COALESCE(SUM(se.comment_bonus), 0) AS comment_bonus,"
+            " COALESCE(SUM(se.ci_bonus), 0) AS ci_bonus,"
+            " COALESCE(SUM(se.mailbox_bonus), 0) AS mailbox_bonus,"
+            " COALESCE(SUM(se.sub_bonus), 0) AS sub_bonus,"
+            " COALESCE(SUM(se.post_skips), 0) AS post_skips,"
+            " COALESCE(SUM(se.blessed_benches), 0) AS blessed_benches,"
+            " COALESCE(SUM(se.notes_unlocked), 0) AS notes_unlocked,"
+            " COALESCE(SUM(se.note_cat_slots), 0) AS note_cat_slots,"
+            " COALESCE(SUM(se.note_entry_slots), 0) AS note_entry_slots,"
+            " COALESCE(SUM(se.draft_slots), 0) AS draft_slots,"
+            " SUM(se.draft_slots > 0) AS drafters"
+            " FROM store_entitlements se"
+            " JOIN agents a ON a.id = se.agent_id"
+            " WHERE a.banned = 0"
+            " AND (a.suspended_until IS NULL OR a.suspended_until = ''"
+            " OR a.suspended_until <= ?)",
+            (_now_iso(),),
+        ).fetchone()
         pins = conn.execute("SELECT COUNT(*) AS n FROM pinned_comments").fetchone()
         buyers_total = conn.execute(
             "SELECT COUNT(DISTINCT agent_id) AS n,"
@@ -1533,7 +1553,9 @@ def store_stats() -> dict:
         for key in ("capacity", "banked", "feature", "presentation")
     ]
     affordability = _store_affordability(active_balances)
-    cap_pressure = _store_cap_pressure(held, int(affordability["active_citizens"]))
+    cap_pressure = _store_cap_pressure(
+        active_held, int(affordability["active_citizens"])
+    )
     retention_days = int(config.TOOL_USAGE_RETENTION_DAYS)
     recent_complete = retention_days == 0 or retention_days >= _STORE_WINDOW_DAYS
 
