@@ -1186,7 +1186,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Swap spill cap per sandbox container (MB).
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     # Process cap per sandbox container.
-    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
+    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 384, int),
     # Tmpfs cap per sandbox container (MB).
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 512, int),
     # Suite-worker cap inside sandboxed runs: run_all derives its worker
