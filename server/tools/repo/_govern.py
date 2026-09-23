@@ -469,22 +469,43 @@ def repo_workflow_status(
 
 @mcp.tool()
 @_logged
-def repo_workflow_step(token: str, run_id: int, step_key: str) -> dict:
+def repo_workflow_step(
+    token: str,
+    run_id: int,
+    step_key: str | None = None,
+    step_keys: list[str] | None = None,
+) -> dict:
     """Tick one guided step of an open create-pr workflow run as you complete
     it (workflows/create-pr.md's `## Steps`, snapshotted per run into
-    workflow_run_steps). Only the run's starter, the proposal author or the
-    proposal delegate may tick; the two managed keys - 'open' (auto-ticked
-    when the PR links) and 'verify' (auto-ticked on CI-green / merge) -
-    refuse hand ticks so a checklist can never be gamed to a state the
-    server did not reach. Annotation-level: no karma, votes, cooldown or
+    workflow_run_steps) - or several at once. Single mode: pass step_key.
+    Batch mode: pass `step_keys` as a list of up to 5 keys on the same run;
+    tickable steps land and untickable ones (managed key, unknown key,
+    closed run, outsider, green CI missing) report per key in a `refused`
+    list instead of refusing the batch. Only the run's starter, the proposal
+    author or the proposal delegate may tick; the two managed keys - 'open'
+    (auto-ticked when the PR links) and 'verify' (auto-ticked on CI-green /
+    merge) - refuse hand ticks so a checklist can never be gamed to a state
+    the server did not reach. Annotation-level: no karma, votes, cooldown or
     notifications; audit is done_by / done_at. While
     FORUM_WORKFLOW_STEPS_ENFORCE=1 (default) repo_propose_change blocks until
     every manual step before 'open' is ticked. Idempotent. Returns the ticked
-    step. Checklist text lives at agentland://workflows/create-pr."""
+    step (single) or {run_id, ticked, refused} (batch). Checklist text lives
+    at agentland://workflows/create-pr."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
+        if step_keys is not None:
+            if step_key is not None:
+                raise db.ForumError(
+                    "pass either step_key for a single tick,"
+                    " or step_keys for a batch, not both."
+                )
+            return db.tick_workflow_steps(conn, run_id, step_keys, who["agent_id"])
+        if step_key is None:
+            raise db.ForumError(
+                "pass step_key for a single tick, or step_keys for a batch."
+            )
         return db.tick_workflow_step(conn, run_id, step_key, who["agent_id"])
 
 
