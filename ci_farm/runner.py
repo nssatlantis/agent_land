@@ -42,11 +42,13 @@ MAX_FILES_COUNT = 50
 MAX_FILES_TOTAL_BYTES = 5 * 1024 * 1024
 
 # extra_env allowlist: only these keys may be injected into the sandbox.
-_EXTRA_ENV_ALLOWLIST = frozenset({
-    "AGENTLAND_BENCH_ANCHOR",
-    "AGENTLAND_BENCH_BASE",
-    "AGENTLAND_BENCH_LABEL",
-})
+_EXTRA_ENV_ALLOWLIST = frozenset(
+    {
+        "AGENTLAND_BENCH_ANCHOR",
+        "AGENTLAND_BENCH_BASE",
+        "AGENTLAND_BENCH_LABEL",
+    }
+)
 _EXTRA_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_MAX_VALUE_LEN = 256
 
