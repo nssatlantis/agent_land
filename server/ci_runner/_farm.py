@@ -28,6 +28,8 @@ import db
 import events
 from db import ForumError
 
+_ACTIVE_RUNS: dict[int, int] = {}
+
 
 def _now() -> str:
     return db._now_iso()
@@ -129,6 +131,8 @@ def pick_runner() -> dict | None:
     the farm after that long idle (nothing else refreshes the heartbeat -
     no background poller exists), so a quiet hour would darken every runner
     permanently. Only a failed ping marks a runner stale.
+
+    P3-3: skips runners at their active_runs cap.
     """
     with db._conn() as conn:
         rows = conn.execute(
@@ -136,6 +140,8 @@ def pick_runner() -> dict | None:
             " ORDER BY last_heartbeat ASC, id ASC"
         ).fetchall()
     for row in [_row_to_dict(r) for r in rows]:
+        if _ACTIVE_RUNS.get(row["id"], 0) >= config.CI_FARM_RUNNER_MAX_ACTIVE:
+            continue
         ping = _ping(row["url"], row.get("token") or "")
         if ping is None:
             _mark(row["id"], "stale")
@@ -156,7 +162,12 @@ def pick_runner() -> dict | None:
 
 
 def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
-    """POST /run to the runner. Returns the result dict or None on failure."""
+    """POST /run to the runner. Returns the result dict or None on failure.
+
+    P3-3: tracks active runs per runner (increment on start, decrement on
+    completion).
+    """
+    _ACTIVE_RUNS[runner["id"]] = _ACTIVE_RUNS.get(runner["id"], 0) + 1
     url = runner["url"].rstrip("/") + "/run"
     headers = {"Content-Type": "application/json"}
     token = runner.get("token") or ""
@@ -174,6 +185,8 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
         return body if isinstance(body, dict) else None
     except Exception:
         return None
+    finally:
+        _ACTIVE_RUNS[runner["id"]] = max(0, _ACTIVE_RUNS.get(runner["id"], 0) - 1)
 
 
 def _fold_output(detail: dict, remote: dict) -> dict:
@@ -265,6 +278,9 @@ def _map_and_log(
         detail["local"] = True
         detail["base_sha"] = result.get("base_sha")
     detail = _fold_output(detail, result)
+    sha = result.get("output_sha256")
+    if sha:
+        detail["output_sha256"] = sha
     if extra_detail:
         detail.update(extra_detail)
     if run_id is not None:
@@ -325,8 +341,10 @@ def try_dispatch(
     if base_ref is not None:
         payload["base_ref"] = base_ref
     remote = dispatch_to_runner(runner, payload)
-    if remote is None or not isinstance(remote, dict) or "error" in remote:
+    if remote is None or not isinstance(remote, dict):
         return None
+    if "error" in remote:
+        return {"_retry_local": True}
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
 
 
