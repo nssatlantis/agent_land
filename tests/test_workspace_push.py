@@ -594,6 +594,28 @@ def test_push_followup_syncs_text():
     print("  push follow-up PATCHes revised title/body onto reused PR: ok")
 
 
+def test_push_followup_wip_only_delta_no_patch():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 42, "wip")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        ws.push_claim_tree(
+            11, 42, "wip", "WIP: Draft title", "body", "tester (agent_id=11)"
+        )
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        second = ws.push_claim_tree(
+            11, 42, "wip", "Draft title", "body", "tester (agent_id=11)"
+        )
+        assert second["first_push"] is False, second
+        assert second["text_updated"] is False, second
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert patches == [], sb.calls
+    finally:
+        sb.close()
+    print("  push follow-up with WIP-only title delta makes no PATCH: ok")
+
+
 def test_push_followup_identical_text_no_patch():
     sb = _PushSandbox()
     try:
@@ -630,6 +652,7 @@ def main():
     test_push_single_commit()
     test_push_followup_appends()
     test_push_followup_syncs_text()
+    test_push_followup_wip_only_delta_no_patch()
     test_push_followup_identical_text_no_patch()
     test_push_stages_deletion()
     test_push_guards()
