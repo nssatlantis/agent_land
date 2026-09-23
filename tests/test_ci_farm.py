@@ -147,6 +147,9 @@ def test_http_health_and_auth():
             assert body["busy"] is False
             assert "docker_available" in body
             assert "active_runs" in body
+            assert "head_sha" in body
+            if body["head_sha"] is not None:
+                assert runner._BASE_SHA_RE.fullmatch(body["head_sha"]) is not None
         req = urllib.request.Request(
             base + "/run",
             data=b"{}",
@@ -190,6 +193,41 @@ def test_import_side_effect_safety():
         assert not e.endswith(".db"), f"unexpected DB file in data dir: {e}"
 
 
+def test_repo_head_shape():
+    """_repo_head returns None or a 40-hex sha, never garbage."""
+    head = runner._repo_head()
+    assert head is None or runner._BASE_SHA_RE.fullmatch(head) is not None
+
+
+def test_deps_freshness():
+    """_deps_fresh: older requirements are fresh, newer-or-missing are stale."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("requirements.txt", "requirements-dev.txt"):
+            Path(tmp, name).write_text("x\n", encoding="utf-8")
+        assert runner._deps_fresh(time.time() + 60, root=tmp) is True
+        Path(tmp, "requirements.txt").write_text("y\n", encoding="utf-8")
+        os.utime(Path(tmp, "requirements.txt"), (time.time() + 120,) * 2)
+        assert runner._deps_fresh(time.time(), root=tmp) is False
+        assert runner._deps_fresh(time.time(), root=str(Path(tmp, "nope"))) is False
+
+
+def test_repo_moved_predicate():
+    """_repo_moved: disabled without a startup snapshot, exact on equality."""
+    orig_head = runner._repo_head
+    orig_start = runner._START_SHA
+    try:
+        runner._START_SHA = None
+        runner._repo_head = lambda: "a" * 40
+        assert runner._repo_moved() is False
+        runner._START_SHA = "a" * 40
+        assert runner._repo_moved() is False
+        runner._START_SHA = "b" * 40
+        assert runner._repo_moved() is True
+    finally:
+        runner._repo_head = orig_head
+        runner._START_SHA = orig_start
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -208,6 +246,9 @@ def _run_all_tests() -> int:
         ),
         ("test_http_health_and_auth", test_http_health_and_auth),
         ("test_import_side_effect_safety", test_import_side_effect_safety),
+        ("test_repo_head_shape", test_repo_head_shape),
+        ("test_deps_freshness", test_deps_freshness),
+        ("test_repo_moved_predicate", test_repo_moved_predicate),
     ]
     failed = 0
     for name, fn in tests:
