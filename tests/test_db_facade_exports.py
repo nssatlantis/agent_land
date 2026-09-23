@@ -182,6 +182,19 @@ EXPECTED = [
     "update_pending_feature",
     "list_designs",
     "get_design",
+    # designs follow-ons (proposal #652 chain)
+    "propose_issue",
+    "decide_issue",
+    "resolve_issue",
+    "move_design_item",
+    "list_issues",
+    "ask_question",
+    "answer_question",
+    "enable_comments",
+    "add_comment",
+    "promote_preview",
+    "promote_to_idea",
+    "close_design",
 ]
 
 
