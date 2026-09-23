@@ -18,6 +18,7 @@ branch (pr_number) and named-tree runs are host-local and never dispatched.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.request
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from datetime import datetime, timezone
 import config
 import db
 import events
+from db import ForumError
 
 
 def _now() -> str:
@@ -41,16 +43,23 @@ def _row_to_dict(row) -> dict:
 def register_runner(name: str, url: str, token: str = "") -> dict:
     """Insert a runner row (status unknown until its first ping). Returns the row."""
     now = _now()
-    with db._conn(immediate=True) as conn:
-        cur = conn.execute(
-            "INSERT INTO ci_runners"
-            " (name, url, token, status, last_heartbeat, created_at, updated_at)"
-            " VALUES (?, ?, ?, 'unknown', NULL, ?, ?)",
-            (name, url, token, now, now),
-        )
-        row = conn.execute(
-            "SELECT * FROM ci_runners WHERE id = ?", (cur.lastrowid,)
-        ).fetchone()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
+    try:
+        with db._conn(immediate=True) as conn:
+            cur = conn.execute(
+                "INSERT INTO ci_runners"
+                " (name, url, token, token_hash, status, last_heartbeat,"
+                " created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, 'unknown', NULL, ?, ?)",
+                (name, url, token, token_hash, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM ci_runners WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+    except Exception:
+        raise ForumError(
+            f"cannot register runner {name!r}: duplicate or invalid."
+        ) from None
     return _row_to_dict(row)
 
 
@@ -114,7 +123,7 @@ def _heartbeat_age_seconds(last: str | None) -> float | None:
     try:
         return (
             datetime.now(timezone.utc).timestamp()
-            - datetime.fromisoformat(last).timestamp()
+            - db._parse_iso(last).timestamp()
         )
     except Exception:
         return None
@@ -124,11 +133,15 @@ def pick_runner() -> dict | None:
     """Pick a healthy, available runner.
 
     Pings each candidate live (short timeout), skips stale or busy ones, and
-    stamps the heartbeat on success. Returns the row dict or None.
+    stamps the heartbeat on success. Orders by last_heartbeat ASC (oldest
+    first) for fairness. Returns the post-mark row dict or None.
     """
-    for row in list_runners():
-        if row.get("status") == "removed":
-            continue
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ci_runners WHERE status != 'removed'"
+            " ORDER BY last_heartbeat ASC, id ASC"
+        ).fetchall()
+    for row in [_row_to_dict(r) for r in rows]:
         age = _heartbeat_age_seconds(row.get("last_heartbeat"))
         if age is not None and age > config.CI_FARM_STALE_SECONDS:
             continue
@@ -140,7 +153,11 @@ def pick_runner() -> dict | None:
             _mark(row["id"], "busy", heartbeat=True)
             continue
         _mark(row["id"], "healthy", heartbeat=True)
-        return row
+        with db._conn() as conn:
+            fresh = conn.execute(
+                "SELECT * FROM ci_runners WHERE id = ?", (row["id"],)
+            ).fetchone()
+        return _row_to_dict(fresh)
     return None
 
 
@@ -150,13 +167,14 @@ def pick_runner() -> dict | None:
 def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     """POST /run to the runner. Returns the result dict or None on failure."""
     url = runner["url"].rstrip("/") + "/run"
+    headers = {"Content-Type": "application/json"}
+    token = runner.get("token") or ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {runner.get('token') or ''}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -168,17 +186,36 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
 
 
 def _fold_output(detail: dict, remote: dict) -> dict:
-    """Fold the runner's summary/output_tail/failed_files into the ledger detail."""
+    """Fold the runner's summary/output_tail/failed_files into the ledger detail.
+
+    Byte-caps the tail, sets output_truncated, and carries all red-condition
+    fields (timed_out, exit_code, merge_conflict, conflict_files, pr_number,
+    quiet, contended).
+    """
     summary = remote.get("summary")
     if isinstance(summary, dict):
         detail["summary"] = summary
     tail = remote.get("output_tail")
-    if tail and not remote.get("ok"):
+    red = (
+        not remote.get("ok")
+        or remote.get("timed_out")
+        or (remote.get("exit_code") not in (None, 0))
+        or remote.get("merge_conflict")
+    )
+    if tail and red:
         cap = int(config.CI_RUN_EVENT_TAIL_BYTES)
-        detail["output_tail"] = tail[-cap:]
+        raw = tail.encode("utf-8")
+        if len(raw) > cap:
+            detail["output_tail"] = raw[-cap:].decode("utf-8", errors="replace")
+            detail["output_truncated"] = True
+        else:
+            detail["output_tail"] = tail
     failed = remote.get("failed_files")
     if failed:
         detail["failed_files"] = failed
+    for key in ("merge_conflict", "conflict_files", "pr_number", "quiet", "contended"):
+        if key in remote:
+            detail[key] = remote[key]
     return detail
 
 
@@ -237,6 +274,7 @@ def try_dispatch(
     files: list | None,
     tree: str | None,
     quiet: bool | None,
+    base_ref: str | None,
     agent_id: int,
     name: str,
     kind_event: str,
@@ -253,7 +291,9 @@ def try_dispatch(
     """
     if not config.CI_FARM_ENABLED:
         return None
-    if is_bench or branch_mode or tree is not None:
+    if is_bench or pr_number is not None or tree is not None:
+        return None
+    if local_mode and files is None:
         return None
     runner = pick_runner()
     if runner is None:
@@ -262,6 +302,10 @@ def try_dispatch(
     payload: dict = {"checks": checks, "mode": mode}
     if local_mode:
         payload["files"] = files
+    if quiet is not None:
+        payload["quiet"] = quiet
+    if base_ref is not None:
+        payload["base_ref"] = base_ref
     remote = dispatch_to_runner(runner, payload)
     if remote is None or not isinstance(remote, dict) or "error" in remote:
         return None
