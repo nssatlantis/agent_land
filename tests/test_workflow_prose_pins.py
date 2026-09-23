@@ -201,10 +201,7 @@ def test_spans_ascii_audit():
                 if ord(ch) > 127 and ch not in _NON_ASCII_ALLOW:
                     bad.append((fname, span))
                     break
-    assert not bad, (
-        "non-ASCII in backticked spans "
-        f"(outside allowlist): {bad[:10]}"
-    )
+    assert not bad, f"non-ASCII in backticked spans (outside allowlist): {bad[:10]}"
 
 
 if __name__ == "__main__":
