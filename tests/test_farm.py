@@ -448,7 +448,11 @@ def test_bench_mode_guard():
         )
         assert (
             farm.try_bench_dispatch(
-                "db_benchmark", 1, "t", "ci_db_bench_run", None,
+                "db_benchmark",
+                1,
+                "t",
+                "ci_db_bench_run",
+                None,
                 files=[{"path": "a", "content": "b"}],
             )
             is None
