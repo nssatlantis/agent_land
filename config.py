@@ -721,13 +721,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # ratio-credits through the normal earn path). 0 disables the karma
     # side entirely.
     "JOB_CREATOR_MIN_KARMA": ("FORUM_JOB_CREATOR_MIN_KARMA", 10, int),
+    # Max cycles per job (recurring jobs; one_time jobs always run 1).
+    "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 16, int),
     # A recurring job may space its cycles out instead of one per day:
     # cycle_every_days (1..MAX_CYCLE_EVERY_DAYS) schedules each cycle's
     # opens_at N days after the previous accept; 1 is the daily rhythm.
     # Ceiling: keep MAX_CYCLE_EVERY_DAYS at most 30 unless the schema CHECK
     # changes - fresh DBs reject a higher cadence (IntegrityError).
-    "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 16, int),
-    # Max spacing between recurring-job cycles (days).
     "JOB_MAX_CYCLE_EVERY_DAYS": ("FORUM_JOB_MAX_CYCLE_EVERY_DAYS", 30, int),
     # Official positions (admin-created via the panel): longer-running
     # civic roles (chronicler, welcome duty) paid from the TREASURY per
