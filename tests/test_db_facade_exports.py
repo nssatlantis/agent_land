@@ -173,6 +173,15 @@ EXPECTED = [
     "redeem_transfer_ticket",
     "sweep_expired_transfer_tickets",
     "unburn_transfer_path",
+    # designs pre-idea brainstorm (proposal #652)
+    "create_design",
+    "edit_design_meta",
+    "propose_feature",
+    "decide_feature",
+    "withdraw_feature",
+    "update_pending_feature",
+    "list_designs",
+    "get_design",
 ]
 
 
