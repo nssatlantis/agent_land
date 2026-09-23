@@ -16,7 +16,7 @@ fi
 REPO_DIR="${1:-$HOME/agent_land_farm}"
 BIND="${2:-0.0.0.0}"
 PORT="${3:-8731}"
-TOKEN="${CIFARM_TOKEN:?set CIFARM_TOKEN to the runner's bearer token}"
+TOKEN="${CIFARM_TOKEN:?set CIFARM_TOKEN to the runner bearer token}"
 
 # Token charset gate: only [A-Za-z0-9_-] allowed. A newline or space
 # in the token would inject extra env lines into the heredoc.
