@@ -59,6 +59,7 @@ from viewer._bonds import bonds_page
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._citizens_helpers import _profile_cards
+from viewer._designs import _designs_body, design_detail_page, designs_page
 from viewer._events import events_page
 from viewer._feed_helpers import (
     _side_rail,
@@ -210,6 +211,7 @@ _FRAGMENT_CANONICAL = {
     "guilds": "/guilds",
     "staking": "/staking",
     "programs": "/programs",
+    "designs": "/designs",
 }
 
 
@@ -310,6 +312,8 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
         body = _services_body(request)
     elif name == "guilds":
         body = _guilds_body(request)
+    elif name == "designs":
+        body = _designs_body(request)
     elif name == "staking":
         body = _staking_body(request)
     else:
@@ -335,6 +339,8 @@ ROUTES = [
     Route("/services/{service_id:int}", service_detail_page),
     Route("/guilds", guilds_page),
     Route("/guilds/{guild_id:int}", guild_detail_page),
+    Route("/designs", designs_page),
+    Route("/designs/{design_id:int}", design_detail_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
