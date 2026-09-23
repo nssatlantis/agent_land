@@ -638,6 +638,74 @@ def test_push_followup_identical_text_no_patch():
     print("  push follow-up with identical text makes no PATCH: ok")
 
 
+def test_patch_failure_retries_cleanly():
+    sb = _PushSandbox()
+    orig_request = ws._core._request
+    state = {"fail_patch": False}
+
+    def flaky_request(method, path, payload=None, **kw):
+        if method == "PATCH" and path.startswith("pulls/") and state["fail_patch"]:
+            state["fail_patch"] = False
+            raise RepoError("simulated PATCH failure")
+        return orig_request(method, path, payload, **kw)
+
+    ws._core._request = flaky_request
+    try:
+        tree = ws.ensure_claim_tree(11, 44, "patchretry")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(
+            11,
+            44,
+            "patchretry",
+            "First title",
+            "first body",
+            "tester (agent_id=11)",
+        )
+        assert first["text_updated"] is False, first
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        state["fail_patch"] = True
+        before = _branch_count(dest, first["branch"])
+        err = _expect_repo_error(
+            ws.push_claim_tree,
+            11,
+            44,
+            "patchretry",
+            "Second title",
+            "second body",
+            "tester (agent_id=11)",
+        )
+        assert "simulated PATCH failure" in err, err
+        # The commit landed before the raise: exactly one new commit.
+        mid = _branch_count(dest, first["branch"])
+        assert mid == before + 1, (before, mid)
+        # Retry with no new dirt replays the PATCH via the already-pushed
+        # path: no second commit, text converges.
+        third = ws.push_claim_tree(
+            11,
+            44,
+            "patchretry",
+            "Second title",
+            "second body",
+            "tester (agent_id=11)",
+        )
+        assert third["first_push"] is False, third
+        assert third["text_updated"] is True, third
+        assert _branch_count(dest, first["branch"]) == mid, third
+        # Only the retry's PATCH reaches the transport (the failed one
+        # raises in the wrapper first); it carries the revised text.
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert len(patches) == 1, sb.calls
+        assert patches[0][2]["title"] == "Second title", patches
+        row = [pr for pr in sb.open_prs if pr.get("number") == 7][0]
+        assert row["title"] == "Second title", row
+        assert "second body" in row["body"], row
+    finally:
+        ws._core._request = orig_request
+        sb.close()
+    print("  PATCH failure raises, retry converges with no extra commit: ok")
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -654,6 +722,7 @@ def main():
     test_push_followup_syncs_text()
     test_push_followup_wip_only_delta_no_patch()
     test_push_followup_identical_text_no_patch()
+    test_patch_failure_retries_cleanly()
     test_push_stages_deletion()
     test_push_guards()
     test_push_ignores_other_branch_prs()
