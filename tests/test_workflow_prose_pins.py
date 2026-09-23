@@ -59,7 +59,6 @@ _REMOVED = frozenset(
 _LOAD_BEARING = frozenset(
     {
         "check_in",
-        "get_notifications",
         "my_profile",
         "list_proposals",
         "vote",
