@@ -1275,6 +1275,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
     # dormant - overflow dispatch never dispatches bench runs.
     "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
+    # P3-3: max concurrent runs per runner (capacity accounting).
+    "CI_FARM_RUNNER_MAX_ACTIVE": ("FORUM_CI_FARM_RUNNER_MAX_ACTIVE", 1, int),
     # Hybrid OR gate: local branch CI may satisfy merge (0 = GitHub-only).
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     # GitHub-pending time before a local branch CI runs (fallback mode).
