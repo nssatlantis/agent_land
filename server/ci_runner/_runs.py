@@ -333,12 +333,7 @@ def _bench_anchor_env() -> tuple[dict[str, str], int | None]:
         payload = json.dumps(anchor["medians"], separators=(",", ":"))
         bless_id = anchor.get("bless_event_id")
         return (
-            {
-                "BENCH_ANCHOR_MEDIANS": payload,
-                "BENCH_ANCHOR_EVENT_ID": str(bless_id)
-                if isinstance(bless_id, int)
-                else "",
-            },
+            {"AGENTLAND_BENCH_ANCHOR": payload},
             bless_id if isinstance(bless_id, int) else None,
         )
     except Exception:
