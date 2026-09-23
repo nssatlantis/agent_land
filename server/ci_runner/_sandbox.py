@@ -91,7 +91,9 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     # failed_files entries are copy-pasteable paths from the repo root.
     # The count line ("FAILED: 12 of 212 test files") and "FAILED FILES:"
     # list never match: no " (" after the name, and a space - not a colon
-    # - right after FAILED respectively (both have their own parsers).
+    # - right after FAILED respectively. The count line feeds the summary
+    # counts below (its own parser); the "FAILED FILES:" aggregate is
+    # human-facing output and is intentionally never parsed.
     # Regression #B87: the old ^FAILED: (\S+)$ could not cross the space
     # before "(", so every red run reported failed_files: null.
     raw = re.findall(r"^FAILED: (\S+?)(?:\s+\(|$)", output, re.M)
