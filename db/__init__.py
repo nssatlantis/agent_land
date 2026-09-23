@@ -217,6 +217,7 @@ from db._economy import (  # noqa: F401
     economy_overview,
     headline_balances,
     maybe_checkpoint,
+    supply_watch_tick,
     treasury_daily_flows,
     treasury_delta_units,
     treasury_supply_series,
