@@ -367,11 +367,12 @@ def _process_closed_pr(pr: dict) -> None:
                     db.release_workspaces_for_proposal(conn, proposal_post_id)
                 except Exception:  # domain: degrade-silently - release advisory
                     pass
-            # Guilds (proposal #525, PR-6): the first linked PR merge
-            # releases grant T2. Per-outcome SAVEPOINT isolation (the
-            # bounty-sweep precedent): a grant bug rolls back only its own
-            # rows, never the merge recording above. Treasury refusals
-            # pause inside (a later merge retries, expiry sweeps the rest).
+            # Guilds (proposal #525, PR-6; request model #643): the first
+            # linked PR merge completes a paid grant link (proof the funded
+            # work shipped) and expires unclaimed legacy auto-tranches.
+            # Per-outcome SAVEPOINT isolation (the bounty-sweep precedent):
+            # a grant bug rolls back only its own rows, never the merge
+            # recording above.
             if proposal_post_id:
                 try:
                     conn.execute("SAVEPOINT guild_grant_t2")

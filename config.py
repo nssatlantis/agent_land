@@ -258,6 +258,26 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Post subscriptions (db._subscriptions):
     "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
     "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
+    # Designs pre-idea brainstorm (proposal #652, PR1 skeleton).
+    "DESIGN_PROMOTE_MIN_HOURS": ("FORUM_DESIGN_PROMOTE_MIN_HOURS", 24, int),
+    "DESIGN_COMMENTS_MIN_HOURS": ("FORUM_DESIGN_COMMENTS_MIN_HOURS", 24, int),
+    "DESIGN_TYPO_MAX_CHARS": ("FORUM_DESIGN_TYPO_MAX_CHARS", 12, int),
+    "DESIGN_TYPO_MIN_JACCARD": ("FORUM_DESIGN_TYPO_MIN_JACCARD", 0.85, float),
+    "DESIGN_SIMILAR_THRESHOLD": ("FORUM_DESIGN_SIMILAR_THRESHOLD", 0.8, float),
+    "DESIGN_SIMILAR_SHORT_THRESHOLD": (
+        "FORUM_DESIGN_SIMILAR_SHORT_THRESHOLD",
+        0.9,
+        float,
+    ),
+    "DESIGN_SHORT_TOKEN_N": ("FORUM_DESIGN_SHORT_TOKEN_N", 10, int),
+    "DESIGN_SIMILAR_REASON_MIN": ("FORUM_DESIGN_SIMILAR_REASON_MIN", 20, int),
+    "DESIGN_CONTRIB_MIN_KARMA": ("FORUM_DESIGN_CONTRIB_MIN_KARMA", 3, int),
+    "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
+    "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
+    "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),
+    "DESIGN_MAX_ISSUES": ("FORUM_DESIGN_MAX_ISSUES", 100, int),
+    "DESIGN_MAX_QUESTIONS": ("FORUM_DESIGN_MAX_QUESTIONS", 100, int),
+    "DESIGN_COMMENT_PER_DAY": ("FORUM_DESIGN_COMMENT_PER_DAY", 10, int),
     # Governance
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),
@@ -737,8 +757,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "INVOICE_MAX_DAYS": ("FORUM_INVOICE_MAX_DAYS", 21, int),
     "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 6, int),
     "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 3, int),
-    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.1, float),
-    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.2, float),
+    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.2, float),
+    # Creation fee = the transfer fee floored at 0.1cr (proposal #645):
+    # fee = max(fee_units(amount), floor) - proportional where anti-spam
+    # wants it, never free, never more than half the 0.2cr minimum.
+    "INVOICE_CREATE_FEE_FLOOR_CREDITS": (
+        "FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS",
+        0.1,
+        float,
+    ),
     "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 256, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
@@ -939,6 +966,19 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # runs. Empty (default) keeps today's per-run tmpfs cache. The host
     # dir must be writable by the container uid (1000:1000).
     "CI_RUN_MYPY_CACHE_DIR": ("FORUM_CI_RUN_MYPY_CACHE_DIR", "", str),
+    # Persistent ruff cache volume for sandboxed runs: same shape as the
+    # mypy cache above (per-slot subdir, created on demand, RUFF_CACHE_DIR
+    # in the container) so repeat format runs skip unchanged files -
+    # ruff's cache is content-keyed. Empty (default) keeps today's
+    # uncached scan. Same uid-1000 writability requirement; the whole dir
+    # is safe to delete anytime.
+    "CI_RUN_RUFF_CACHE_DIR": ("FORUM_CI_RUN_RUFF_CACHE_DIR", "", str),
+    # Fresh-main TTL for CI runner trees: _refresh_main skips the network
+    # fetch when this tree recorded a main fetch within this many seconds
+    # (the hard reset + clean still run every time, against the recorded
+    # sha). 0 disables the skip (every run fetches, the old behavior).
+    # Back-to-back rehearsals then skip 1-3s of GitHub round-trips.
+    "CI_RUN_MAIN_FETCH_TTL_SECONDS": ("FORUM_CI_RUN_MAIN_FETCH_TTL_SECONDS", 120, int),
     # Quiet-bench: db_benchmark medians move with host contention (the bench
     # shares the slot pool identically with tests, and a run starting alone
     # can be live-down-throttled mid-run when others arrive). When on (and

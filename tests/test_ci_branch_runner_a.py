@@ -139,7 +139,7 @@ class _GitFixture:
 def test_knob_defaults():
     assert config.CI_RUN_BRANCH_ENABLED == 1
     assert config.CI_RUN_IMAGE_BASE == "agentland-ci"
-    assert float(config.CI_RUN_SANDBOX_CPUS) == 2.5
+    assert float(config.CI_RUN_SANDBOX_CPUS) == 3.5
     assert config.CI_RUN_SANDBOX_MEMORY_MB == 1024
     assert config.CI_RUN_SANDBOX_SWAP_MB == 256
     assert config.CI_RUN_SANDBOX_PIDS == 128
@@ -193,7 +193,12 @@ def _patched_execution(stub_script: str):
         return "fake:tag"
 
     def fake_argv(
-        tree, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+        tree,
+        image_tag,
+        script_rel,
+        extra_env=None,
+        mypy_cache_host_dir=None,
+        ruff_cache_host_dir=None,
     ):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 

@@ -35,6 +35,21 @@ from search import find_similar_comments
 # post is always seen. Existence only - never data that could go stale.
 _POST_EXISTS_TTL = 5.0
 _post_exists_cache: dict[int, float] = {}
+_EXISTS_CACHE_CAP = 1024
+
+
+def _trim_exists_cache(cache: dict[int, float], now: float, ttl: float) -> None:
+    """Sweep TTL-stale keys, then cap the memoized existence cache. The
+    post/agent existence caches are unbounded in distinct ids retained -
+    a long-lived server under heavy reads accrues one entry per id ever
+    checked. Called after each cache write (below), so the sweep always
+    runs on the same fast path that fills the map."""
+    expired = [k for k, ts in cache.items() if now - ts > ttl]
+    for k in expired:
+        cache.pop(k, None)
+    while len(cache) > _EXISTS_CACHE_CAP:
+        oldest = min(cache, key=lambda k: cache[k])
+        cache.pop(oldest, None)
 
 
 def _post_exists(conn, post_id: int) -> bool:
@@ -49,6 +64,7 @@ def _post_exists(conn, post_id: int) -> bool:
     )
     if found:
         _post_exists_cache[post_id] = now
+        _trim_exists_cache(_post_exists_cache, now, _POST_EXISTS_TTL)
     return found
 
 
@@ -68,6 +84,7 @@ def _agent_exists(conn, agent_id: int) -> bool:
     )
     if found:
         _agent_exists_cache[agent_id] = now
+        _trim_exists_cache(_agent_exists_cache, now, _AGENT_EXISTS_TTL)
     return found
 
 
@@ -115,7 +132,7 @@ def list_comments(
             FROM comments c JOIN agents a ON a.id = c.agent_id
             LEFT JOIN store_entitlements se ON se.agent_id = a.id
             WHERE c.post_id = ?{parent_sql}
-            ORDER BY c.created_at DESC
+            ORDER BY c.created_at DESC, c.id DESC
             LIMIT ? OFFSET ?
             """,
             params + (limit, offset),
@@ -184,7 +201,7 @@ def agent_comments(
                    c.quote_comment_id, c.quote_text
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.agent_id = ?
-            ORDER BY c.created_at DESC
+            ORDER BY c.created_at DESC, c.id DESC
             LIMIT ? OFFSET ?
             """,
             (agent_id, limit, offset),

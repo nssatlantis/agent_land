@@ -279,6 +279,13 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     reports._sweep_removed_reports(conn, "post", ids)
     _exec("DELETE FROM proposal_votes WHERE post_id IN (_MARKS_)")
     _exec("DELETE FROM proposal_links WHERE post_id IN (_MARKS_)")
+    # Grant request queue (proposal #643): a request names its project
+    # post (post_id, NOT NULL) and, for over-tier grants, the admin venue
+    # post (venue_post_id) - both NO-ACTION, so the queue rows die here as
+    # leaf deletes before the terminal post delete. Two passes because
+    # _exec binds one chunk per statement.
+    _exec("DELETE FROM guild_grant_requests WHERE post_id IN (_MARKS_)")
+    _exec("DELETE FROM guild_grant_requests WHERE venue_post_id IN (_MARKS_)")
     _exec("DELETE FROM proposal_outcomes WHERE post_id IN (_MARKS_)")
     _exec("DELETE FROM proposal_edits WHERE post_id IN (_MARKS_)")
     _exec("DELETE FROM post_edits WHERE post_id IN (_MARKS_)")
@@ -662,6 +669,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute(
             "UPDATE guild_grant_links SET designated_by = NULL WHERE designated_by = ?",
             (agent_id,),
+        )
+        # Grant request queue (proposal #643): leaf rows die with their
+        # filer/decider - nothing references the queue, so a plain DELETE
+        # before the terminal foreign_key_check is order-safe. Paid rows
+        # always overlap a T1 link, so the lifetime cap never moves here.
+        conn.execute(
+            "DELETE FROM guild_grant_requests WHERE requested_by = ? OR decided_by = ?",
+            (agent_id, agent_id),
         )
         conn.execute(
             "UPDATE guild_plan_items SET owner_agent_id = NULL"

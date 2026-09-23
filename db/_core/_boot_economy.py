@@ -320,9 +320,19 @@ def run(conn) -> None:
     # First boot with the bank account: repair pre-cutover
     # single-sided escrow debits (deferred import - db._economy reads
     # db._core, so a top-level import would cycle).
-    from db._economy import backfill_escrow_account, backfill_guild_wallets
+    from db._economy import (
+        backfill_escrow_account,
+        backfill_guild_wallets,
+        backfill_stake_escrow,
+    )
 
     backfill_escrow_account(conn)
+    # Proposal #644: escrow legs for pre-pairing admin stake locks
+    # (idempotent, supply-repairing; pre-stake DBs backfill nothing).
+    try:
+        backfill_stake_escrow(conn)
+    except Exception:  # domain: degrade-silently - boot never breaks on stakes
+        pass
     # Proposal #611: seed pre-wallet guild wallets from their memo
     # trails (idempotent, supply-neutral; pre-guild DBs seed nothing).
     try:

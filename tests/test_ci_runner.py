@@ -104,13 +104,13 @@ def _canned_proc(out: bytes, returncode: int):
 
 def test_knob_defaults():
     assert config.CI_RUN_ENABLED == 1
-    assert config.CI_RUN_TIMEOUT_SECONDS == 600
+    assert config.CI_RUN_TIMEOUT_SECONDS == 900
     assert config.CI_RUN_RESPOND_SECONDS == 50
     assert config.CI_RUN_MAX_INFLIGHT == 1
-    assert config.CI_RUN_COOLDOWN_SECONDS == 60
-    assert config.CI_RUN_DAILY_CAP == 10
+    assert config.CI_RUN_COOLDOWN_SECONDS == 45
+    assert config.CI_RUN_DAILY_CAP == 24
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
-    assert config.CI_RUN_EVENT_TAIL_BYTES == 1536
+    assert config.CI_RUN_EVENT_TAIL_BYTES == 1600
 
 
 def test_unknown_checks_rejected():
@@ -912,7 +912,7 @@ def test_parse_summary_db_benchmark_errors_surfaced():
 
 def test_bench_quiet_knob_defaults():
     assert config.BENCH_QUIET_ONLY == 1
-    assert config.BENCH_QUIET_WAIT_SECONDS == 240
+    assert config.BENCH_QUIET_WAIT_SECONDS == 300
 
 
 def test_is_pool_quiet_tracks_slots():
@@ -1341,7 +1341,12 @@ def test_native_sandbox_routes_through_docker():
     )
 
     def _fake_native_argv(
-        tree_, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+        tree_,
+        image_tag,
+        script_rel,
+        extra_env=None,
+        mypy_cache_host_dir=None,
+        ruff_cache_host_dir=None,
     ):
         return (
             [sys.executable, "-c", "print('ok')"],

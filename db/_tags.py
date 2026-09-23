@@ -367,9 +367,9 @@ def update_tag(token: str, tag_name: str, description: str | None = None) -> dic
 
 def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
     """Apply an existing tag to a post - anyone may, for
-    FORUM_TAG_APPLY_COST (1) credit from the applier's credit balance;
+    FORUM_TAG_APPLY_COST (0.75) credit from the applier's credit balance;
     the spend and the post_tags row land atomically. At most
-    FORUM_TAG_APPLY_DAILY_CAP (15) applications per UTC day and at most
+    FORUM_TAG_APPLY_DAILY_CAP (20) applications per UTC day and at most
     TAG_MAX_PER_POST (5) tags per post, and no tag moves on a locked
     (superseded) or merged proposal - frozen records, annotations
     included. Retired tags refuse new applications but keep their

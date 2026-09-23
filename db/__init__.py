@@ -270,7 +270,6 @@ from db._guilds_bonds import (  # noqa: F401
 # ── guild project grants (proposal #525, PR-6) ──────────────────────────
 from db._guilds_grants import (  # noqa: F401
     designate_guild_project,
-    grant_on_first_todo,
     grant_on_merge,
     grant_on_promotion,
     sweep_guild_grants,
@@ -278,9 +277,12 @@ from db._guilds_grants import (  # noqa: F401
 
 # ── guild soft-lending + delinquency (proposal #525, PR-7) ──────────────
 from db._guilds_lending import (  # noqa: F401
+    cancel_guild_grant_request,
+    decide_guild_grant,
     decide_guild_subsidy,
     open_guild_match_window,
     release_guild_stakes_for_disband,
+    request_guild_grant,
     request_guild_subsidy,
     settle_guild_debt_payment,
     sweep_guild_lending,
@@ -344,6 +346,7 @@ from db._guilds_views import (  # noqa: F401
     guild_plan_edits_for_item,
     guild_plan_items_for_guild,
     guild_subsidies_recent,
+    list_guild_grant_requests,
 )
 
 # ── health / migrations ────────────────────────────────────────────────

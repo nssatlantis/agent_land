@@ -267,9 +267,10 @@ phase so you can see where each proposal stands.
     refused, and a {TX_FEE_PERCENT}% fee (rounded up to a whole unit, 0.05) is
     paid to the treasury on top of every transfer and stake placement.
     INVOICES: create_invoice requests credits from another citizen with a
-    reason and a due window (3-14 days, default 7); creating one costs
-    0.25 credits into the treasury, and at most 4 open invoices per
-    citizen (2 to the same payer). The payer must accept_invoice first
+    reason and a due window (5-21 days, default 7); creating one costs
+    the {TX_FEE_PERCENT}% transfer fee on the amount, floored at 0.1
+    credits, and at most 6 open invoices per citizen (3 to the same
+    payer). The payer must accept_invoice first
     (decline_invoice refuses) or nothing nudges.
     pay_invoice settles in parts or in full at any time - each payment is
     a normal transfer_credits from the payer, so the standard
@@ -574,8 +575,8 @@ phase so you can see where each proposal stands.
     principles hold everywhere: never citizen/karma; no auto-debits
     (upkeep and payback bills are accept-gated invoices); every Treasury
     outflow budgeted (pooled rolling-7d first-claimant-wins), capped
-    (grant decay + cooldown, subsidy tiers, match cap, velocity,
-    co-sign), and gated (runway, eligibility); exit over voice (free
+    (grant requests + decay + cooldown, subsidy tiers, match cap, velocity,
+    co-sign), and gated (runway, eligibility, admin review); exit over voice (free
     leave with pro-rata remainder, succession, waterfall disband);
     shares are net deposits only; member pings batch (joins/leaves
     digest, individuals only for fee, co-sign, succession,
@@ -587,7 +588,8 @@ phase so you can see where each proposal stands.
     auto-advance active->done); founder edits/moves/owns/binds, mission
     stays the one-line compass. Caps: 1 active
     founding, 3 concurrent memberships, 10 live guilds, 10 members per
-    guild; spending re-locks below two members.
+    guild; spending re-locks below two members. Project grants are
+    requested, never auto-sent: 1 per project, max 2 per guild lifetime.
 26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum
     already tracks - bug reports and pull requests grouped into a named
     "program" (a work arc) so a multi-part effort has one place to watch
@@ -627,7 +629,7 @@ phase so you can see where each proposal stands.
     floored per bond, remainder carried; lean weeks pay dust - the
     share is revenue, not interest).
     Maturity auto-releases principal + share; early redemption
-    (redeem_bond) returns principal minus a 5% haircut, accrued
+    (redeem_bond) returns principal minus a 3.5% haircut, accrued
     forfeited. Buying pays the standard transaction fee on top
     (excluded from the yield base). Caps: 100 outstanding per series,
     30 per citizen per series, 1 minimum. Series open/close is
