@@ -1,13 +1,16 @@
 """Smoke tests for the CI farm runner (proposal #667, PR 1).
 
-Import safety, token check, checks map, the parity pin (the runner
-delegates to the host's exact modules), and the HTTP surface (health
-+ 401 auth). No docker, no network beyond 127.0.0.1.
+Import safety, token check, checks map (cross-module pin against host
+_CHECKS), the parity pin (the runner delegates to the host's exact
+modules), and the HTTP surface (health + 401 auth). No docker, no
+network beyond 127.0.0.1.
 """
 
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_ci_farm_"))
@@ -29,12 +32,17 @@ import server.ci_runner._trees as trees_mod  # noqa: E402
 
 
 def test_runner_version_and_checks_map():
+    """Cross-module pin: the runner's _CHECKS_TO_SCRIPT must match the
+    host's _CHECKS script paths exactly. A mismatch here means the farm
+    runs a different harness than the host attests."""
     assert isinstance(runner.RUNNER_VERSION, int)
-    assert runner._CHECKS_TO_SCRIPT["tests"] == "tests/run_all.py"
-    assert runner._CHECKS_TO_SCRIPT["static"] == "tests/run_static.py"
-    assert runner._CHECKS_TO_SCRIPT["format"] == "tests/run_format.py"
-    assert runner._CHECKS_TO_SCRIPT["db_benchmark"] == "tests/test_benchmark.py"
-    assert runner._CHECKS_TO_SCRIPT["db_bench"] == "tests/test_benchmark.py"
+    host_checks = runs_mod._CHECKS
+    for key, (_kind, script) in host_checks.items():
+        assert runner._CHECKS_TO_SCRIPT.get(key) == script, (
+            f"runner._CHECKS_TO_SCRIPT[{key!r}] = "
+            f"{runner._CHECKS_TO_SCRIPT.get(key)!r}, "
+            f"host _CHECKS[{key!r}] script = {script!r}"
+        )
 
 
 def test_token_check():
@@ -97,6 +105,9 @@ def test_dispatch_parity_ignores_run_specific_summary_keys():
 
 def test_http_health_and_auth():
     farm = runner.FarmRunner("127.0.0.1", 0, token="farm-test-token")
+    t = threading.Thread(target=farm.serve_forever, daemon=True)
+    t.start()
+    time.sleep(0.2)
     try:
         base = f"http://127.0.0.1:{farm.port}"
         with urllib.request.urlopen(base + "/health") as resp:
@@ -117,3 +128,48 @@ def test_http_health_and_auth():
             assert err.code == 401
     finally:
         farm.shutdown()
+        t.join(timeout=5)
+
+
+def test_import_side_effect_safety():
+    """P0-4 pin: importing ci_farm.runner must not create files, write
+    to the DB, or open network connections beyond the data dir. The
+    data dir is the only allowed filesystem side effect."""
+    dd = Path(os.environ["AGENTLAND_DATA_DIR"])
+    entries = set(os.listdir(dd))
+    for e in entries:
+        assert not e.endswith(".db"), f"unexpected DB file in data dir: {e}"
+
+
+def _run_all_tests() -> int:
+    """Run all test functions, print PASS/FAIL per test, return exit code."""
+    tests = [
+        ("test_runner_version_and_checks_map", test_runner_version_and_checks_map),
+        ("test_token_check", test_token_check),
+        ("test_run_job_rejects_unknown_checks", test_run_job_rejects_unknown_checks),
+        ("test_run_job_rejects_unknown_mode", test_run_job_rejects_unknown_mode),
+        ("test_bootstrap_parity_pin", test_bootstrap_parity_pin),
+        (
+            "test_dispatch_parity_ignores_run_specific_summary_keys",
+            test_dispatch_parity_ignores_run_specific_summary_keys,
+        ),
+        ("test_http_health_and_auth", test_http_health_and_auth),
+        ("test_import_side_effect_safety", test_import_side_effect_safety),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"PASS {name}")
+        except Exception as exc:
+            failed += 1
+            print(f"FAIL {name}: {exc}")
+    if failed:
+        print(f"{failed}/{len(tests)} tests FAILED")
+        return 1
+    print(f"{len(tests)}/{len(tests)} tests passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_run_all_tests())
