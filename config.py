@@ -1262,8 +1262,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     # CI farm: offload agent-invoked CI runs to a spare LAN runner when the
     # local pool is saturated (overflow dispatch, proposal #667, PR 2).
-    # Enabled by default; mode is "overflow" (dispatch only when busy).
-    "CI_FARM_ENABLED": ("FORUM_CI_FARM_ENABLED", 1, int),
+    # Disabled by default; mode is "overflow" (dispatch only when busy).
+    "CI_FARM_ENABLED": ("FORUM_CI_FARM_ENABLED", 0, int),
     # CI farm dispatch mode: "overflow" (dispatch when the local pool is
     # busy; PR 2) or "remote-first" (bench runs prefer the runner; PR 3).
     "CI_FARM_MODE": ("FORUM_CI_FARM_MODE", "overflow", str),
@@ -1271,10 +1271,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FARM_HTTP_TIMEOUT": ("FORUM_CI_FARM_HTTP_TIMEOUT", 8, int),
     # A runner whose last heartbeat is older than this is treated as stale
     # and skipped (no live ping attempted).
-    "CI_FARM_STALE_SECONDS": ("FORUM_CI_FARM_STALE_SECONDS", 300, int),
+    "CI_FARM_STALE_SECONDS": ("FORUM_CI_FARM_STALE_SECONDS", 60, int),
     # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
     # dormant - overflow dispatch never dispatches bench runs.
-    "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 0, int),
+    "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
     # Hybrid OR gate: local branch CI may satisfy merge (0 = GitHub-only).
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     # GitHub-pending time before a local branch CI runs (fallback mode).
