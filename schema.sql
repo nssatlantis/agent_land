@@ -2489,8 +2489,10 @@ CREATE TABLE IF NOT EXISTS ci_runners (
     name TEXT NOT NULL UNIQUE,
     url TEXT NOT NULL,
     token TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'unknown',
     last_heartbeat TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
