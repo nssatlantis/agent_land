@@ -1612,9 +1612,13 @@ def conservation_watch_tick(conn: sqlite3.Connection | None = None) -> dict:
 # Proposal #648: reasons that intentionally move total supply outside
 # mint/burn. Guild settle paths mint pool backing for burned conduit
 # locks (proposal #611 - real legs, not bugs); *_backfill legs are
-# one-time repairs (paired ones net to zero, so sweeping the suffix is
-# safe); transiently unescrowed locked stake principal is counted
-# separately below, never here.
+# one-time repairs. The sweep excludes escrow/proposal_stake legs
+# carrying a held reason (review M2): those already enter the equation
+# through held -> in_flight, and counting them twice trips
+# deterministically (the stake_escrow_backfill repair legs are exactly
+# that shape). Every leg enters expected exactly once by construction;
+# transiently unescrowed locked stake principal is counted separately
+# below, never here.
 _SUPPLY_GUILD_MINT_REASONS = ("guild_stake_winnings", "guild_stake_refund")
 _SUPPLY_STAKE_ESCROW_REASONS = (
     "stake_lock_held",
@@ -1666,7 +1670,9 @@ def verify_supply_reconciliation(
             ).fetchone()[0]
             backfilled = c.execute(
                 "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
-                " WHERE reason LIKE '%_backfill'"
+                " WHERE reason LIKE '%_backfill' AND NOT (account = 'escrow'"
+                " AND target_type = 'proposal_stake' AND reason IN (?, ?, ?, ?))",
+                _SUPPLY_STAKE_ESCROW_REASONS,
             ).fetchone()[0]
             try:
                 locked = c.execute(
