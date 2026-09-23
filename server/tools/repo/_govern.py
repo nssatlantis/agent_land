@@ -30,6 +30,7 @@ def repo_ci_run(
     tree: str | None = None,
     tree_forget: bool = False,
     quiet: bool | None = None,
+    base_ref: str | None = None,
 ) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout. HANDOFF FIRST: a run still going returns running plus run_id - keep it, resolve with repo_ci_run_status, never re-fire.
@@ -76,7 +77,10 @@ def repo_ci_run(
     ran) and `delta_count`. Names are 1-40 chars of letters/digits/'-'/'_';
     you may hold FORUM_CI_NAMED_TREE_MAX_PER_AGENT trees (TTL-idle-swept,
     size-capped). Runs on a tree draw on the same `ci_local_run` budget.
-    `tree` and `pr_number` are mutually exclusive. Release a tree with
+    `tree` and `pr_number` are mutually exclusive. Pass `base_ref`
+    (branch, tag or sha) with `files` or `tree` to rehearse against a
+    non-main base (stacked diffs); branch mode derives its base from the
+    PR itself. Release a tree with
     `tree_forget=True` (with `tree`; takes no `files`, consumes no budget).
 
     Without `pr_number` and without `files`: runs the chosen harness on
@@ -103,7 +107,7 @@ def repo_ci_run(
     SHA): branch mode is fallback-only for pending/unknown/conflict triage.
 
     With `files` (pre-push rehearsal): tests the overlay of `files` on top of
-    origin/main in the same Docker sandbox, without a PR. Each entry is
+    origin/main (or `base_ref`) in the same Docker sandbox, without a PR. Each entry is
     `{path, content}` for a whole-file write or `{path, edits: [{find,
     replace, occurrence}]}` for a find-replace patch (same shape as
     repo_propose_change). Use this to verify a diff before you push - it
@@ -148,7 +152,7 @@ def repo_ci_run(
     if pr_number is not None and tree is not None:
         raise db.ForumError(
             "repo_ci_run: pr_number and tree are mutually exclusive "
-            "(named trees are main-based, like files overlays)."
+            "(branch mode tests the PR merge; trees rehearse overlays)."
         )
     import server.ci_runner as ci_runner
 
@@ -183,6 +187,10 @@ def repo_ci_run(
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        base_ref = _validate_ref(base_ref)
     result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
@@ -192,6 +200,7 @@ def repo_ci_run(
         files=normalized_files,
         tree=tree,
         quiet=quiet,
+        base_ref=base_ref,
     )
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off

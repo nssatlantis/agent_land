@@ -860,7 +860,9 @@ def apply_merge_resolutions(
             _git(repo_dir, "add", r["file"])
         # Commit the merge under the resolving citizen's identity (the
         # trailer records the same attribution in the message).
-        commit_msg = f"Merge main into {head} — resolve conflicts\n\nCitizen: {citizen}"
+        commit_msg = (
+            f"Merge {base} into {head} — resolve conflicts\n\nCitizen: {citizen}"
+        )
         _git(
             repo_dir,
             "-c",
@@ -885,6 +887,6 @@ def apply_merge_resolutions(
             "commit_sha": commit_sha,
             "files_resolved": sorted(provided),
             "message": (
-                f"Merged main into {head} with {len(provided)} file(s) resolved."
+                f"Merged {base} into {head} with {len(provided)} file(s) resolved."
             ),
         }
