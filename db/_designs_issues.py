@@ -133,7 +133,7 @@ def decide_issue(token, design_id, issue_id, approve, note=""):
         state = "accepted" if approve else "rejected"
         conn.execute(
             "UPDATE design_issues SET state = ?, decided_at = ?"
-            + " decided_by = ? WHERE id = ?",
+            ", decided_by = ? WHERE id = ?",
             (state, now, agent["id"], int(row["id"])),
         )
         _log_decided(
@@ -163,7 +163,7 @@ def resolve_issue(token, design_id, issue_id, note=""):
         now = _now_iso()
         conn.execute(
             "UPDATE design_issues SET state = 'resolved', resolved_at = ?"
-            + " resolved_by = ? WHERE id = ?",
+            ", resolved_by = ? WHERE id = ?",
             (now, agent["id"], int(row["id"])),
         )
         _log_decided(
