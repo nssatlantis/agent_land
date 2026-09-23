@@ -312,6 +312,10 @@ def try_bench_dispatch(
     name: str,
     kind_event: str,
     run_id: str | None,
+    pr_number: int | None = None,
+    files: list | None = None,
+    tree: str | None = None,
+    base_ref: str | None = None,
 ) -> dict | None:
     """Bench remote-first dispatch (PR 3). Tries a healthy runner before
     local slot acquisition. Returns the full host-shaped result dict
@@ -320,38 +324,47 @@ def try_bench_dispatch(
 
     Per-machine quiet attestation: the runner reports its own quiet/contended
     state; host load is irrelevant. Anchor env is resolved server-side and
-    passed in the payload.
+    passed in the payload as extra_env (the runner's wire key).
+
+    Mode guard: bench only runs on origin/main reference. If pr_number,
+    files, tree, or base_ref are set, this is not a reference bench and
+    dispatch returns None (local fallback).
     """
     if not config.CI_FARM_ENABLED:
         return None
     if not config.CI_FARM_BENCH_REMOTE_FIRST:
         return None
+    if pr_number is not None or files is not None or tree is not None:
+        return None
     runner = pick_runner()
     if runner is None:
         return None
-    # Resolve anchor env server-side (blessed anchor resolution stays here).
+    # Resolve anchor env server-side via the shared helper (deferred import
+    # to avoid circular dependency with _runs).
     anchor_env: dict[str, str] = {}
+    bless_id: int | None = None
     try:
-        anchor = events.bench_anchor_for()
-        if anchor and anchor.get("medians"):
-            medians_json = json.dumps(anchor["medians"], separators=(",", ":"))
-            bless_id = anchor.get("bless_event_id")
-            anchor_env = {
-                "BENCH_ANCHOR_MEDIANS": medians_json,
-                "BENCH_ANCHOR_EVENT_ID": str(bless_id)
-                if isinstance(bless_id, int)
-                else "",
-            }
+        from server.ci_runner._runs import _bench_anchor_env
+
+        anchor_env, bless_id = _bench_anchor_env()
     except Exception:
         pass  # domain: degrade-silently - uninjected runs go advisory
-    payload: dict = {"checks": checks, "mode": "main", "anchor_env": anchor_env}
+    # Wire key is extra_env (the runner's _run_job reads payload["extra_env"]).
+    # Env key must be in the runner's _EXTRA_ENV_ALLOWLIST.
+    # NOTE: AGENTLAND_BENCH_ANCHOR value cap is 256 chars (PR 1 runner);
+    # non-trivial medians tables may exceed this - PR 1 follow-up.
+    payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
     if remote is None or not isinstance(remote, dict) or "error" in remote:
         return None
     extra: dict = {}
-    for key in ("quiet", "contended", "bench_load", "anchor_event_id"):
+    for key in ("quiet", "contended", "bench_load"):
         if key in remote:
             extra[key] = remote[key]
+    # Stamp anchor_event_id server-side from the blessed anchor (not from
+    # the runner echo, which is absent until attestation lands).
+    if bless_id is not None:
+        extra["anchor_event_id"] = bless_id
     return _map_and_log(
         remote,
         checks,
