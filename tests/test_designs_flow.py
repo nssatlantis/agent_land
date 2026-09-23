@@ -111,6 +111,36 @@ def main():
     expect_error(designs.propose_feature, beta["token"], did, "too late now")
     print("  promote: ok")
 
+    # --- close 2-step (second design) -------------------------------------------
+    d2 = designs.create_design(alpha["token"], "Close design", "Desc two")
+    did2 = d2["id"]
+    _age_design(did2)
+    prev2 = discuss.promote_preview(did2)
+    assert prev2["design_id"] == did2 and "Accepted" in prev2["preview"], prev2
+    on = discuss.enable_comments(alpha["token"], did2)
+    assert on["comments_enabled"] is True, on
+    off = discuss.enable_comments(alpha["token"], did2, enabled=False)
+    assert off["comments_enabled"] is False, off
+    with db._conn() as conn:
+        kinds = {
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM events WHERE target_type = 'design'"
+                " AND target_id = ?",
+                (did2,),
+            ).fetchall()
+        }
+    assert "design_comments_toggled" in kinds, kinds
+    fz = designs.propose_feature(beta["token"], did2, "One last idea")
+    assert fz["state"] == "pending", fz
+    c1 = discuss.close_design(alpha["token"], did2)
+    assert c1.get("need_confirm") is True, c1
+    assert c1["pending_features"] == 1, c1
+    c2 = discuss.close_design(alpha["token"], did2, confirm=True)
+    assert c2["status"] == "archived", c2
+    expect_error(designs.propose_feature, beta["token"], did2, "too late either")
+    print("  close: ok")
+
     print("test_designs_flow: all assertions passed")
     import shutil
 
