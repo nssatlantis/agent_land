@@ -560,6 +560,48 @@ def _audit_late_failure(
         pass
 
 
+def _audit_farm_retry_exhausted(
+    agent_id: int,
+    name: str,
+    kind_event: str,
+    checks: str,
+    local_mode: bool,
+    run_id: str | None,
+    farm_error: str,
+) -> dict:
+    """Ledger-audit a farm retry that found no free local slot either.
+
+    Same kind the run would have logged, so budget accounting and kind scans
+    treat it as the run it is - without this row the receipt resolves
+    unknown (the audit pattern of _audit_late_failure). The runner-side
+    reason rides along so transport deaths and runner-reported errors stay
+    distinguishable post-hoc. Best-effort like every other audit row.
+    Returns the run_failed result dict (run_id stamped when present).
+    """
+    failed = {
+        "ok": False,
+        "run_failed": True,
+        "reason": "runner_mid_run_failure",
+        "checks": checks,
+        "mode": "local" if local_mode else "native",
+        "timed_out": False,
+        "exit_code": None,
+        "farm_error": farm_error,
+    }
+    if run_id is not None:
+        failed["run_id"] = run_id
+    try:
+        events.log_event(
+            kind_event,
+            actor_agent_id=agent_id,
+            actor_name=name,
+            detail={**failed, "run_id": run_id},
+        )
+    except Exception:
+        pass  # domain: degrade-silently - audit row is best-effort
+    return failed
+
+
 def ci_run_status(agent_id: int, run_id: str) -> dict:
     """Resolve one user CI run by its run_id receipt (the `run_id` in a
     repo_ci_run `{status: "running"}` handoff payload).
@@ -567,7 +609,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     A live single-flight hit answers running (kind/checks/started_at plus
     best-effort elapsed seconds); otherwise a bounded newest-first scan of
     the ci_* kinds looks for the stamped completion event (verdict facts:
-    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha - each None when the ledger detail does not carry it).
+    event_id, ok, timed_out, exit_code, duration, run_failed flag, summary, plus head_sha/failed_files/pr_number/tree_warm/base_sha/runner/output_sha256 - each None when the ledger detail does not carry it).
     Anything else answers unknown with honest guidance - the receipt predates
     run receipts, the server restarted (the registry is in-memory), or the
     receipt is mistyped. Agent-scoped: only the claiming agent's own runs
@@ -628,6 +670,8 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
                     "pr_number": detail.get("pr_number"),
                     "tree_warm": detail.get("tree_warm"),
                     "base_sha": detail.get("base_sha"),
+                    "runner": detail.get("runner"),
+                    "output_sha256": detail.get("output_sha256"),
                 }
     return {
         "run_id": rid,
@@ -763,6 +807,7 @@ def run_checks(
     except (
         db.ForumError
     ):  # domain: degrade-silently - busy; overflow to a CI farm runner
+        farm_retry = False
         try:
             farm_result = _farm_mod.try_dispatch(
                 checks=checks,
@@ -779,26 +824,36 @@ def run_checks(
                 run_id=_run_id,
                 base_ref=base_ref,
             )
+        except _farm_mod._FarmRetryLocal as exc:
+            # domain: degrade-silently - picked-runner failure retries once
+            # locally; exhaustion audits to the ledger below, never silent
+            farm_result = None
+            farm_retry = True
+            farm_error = str(exc)[:200]
         except Exception:
             farm_result = None  # domain: degrade-silently - dispatch is best-effort
-        if farm_result is not None:
+            farm_error = ""
+        if farm_retry:
+            # tmp_root is kept: the fall-through reuses it for local
+            # execution (previously it was deleted here and silently
+            # recreated by _child_env - same bytes, accidental path).
+            try:
+                slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=5)
+            except db.ForumError:  # domain: degrade-silently
+                failed = _audit_farm_retry_exhausted(
+                    agent_id,
+                    name,
+                    kind_event,
+                    checks,
+                    local_mode,
+                    _run_id,
+                    farm_error,
+                )
+                shutil.rmtree(tmp_root, ignore_errors=True)
+                return failed
+        elif farm_result is not None:
             shutil.rmtree(tmp_root, ignore_errors=True)
-        if farm_result is not None:
-            shutil.rmtree(tmp_root, ignore_errors=True)
-            if farm_result.get("_retry_local"):
-                # P3-2: runner mid-run failure; try local slot once more.
-                try:
-                    slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=5)
-                except db.ForumError:  # domain: degrade-silently
-                    return {
-                        "ok": False,
-                        "run_failed": True,
-                        "reason": "runner_mid_run_failure",
-                        "checks": checks,
-                        "mode": "local" if local_mode else "native",
-                    }
-            else:
-                return farm_result
+            return farm_result
         # P1-3 fallback: one non-blocking re-acquire before raising busy
         try:
             slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
