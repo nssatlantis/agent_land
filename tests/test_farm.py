@@ -382,7 +382,7 @@ def test_bench_remote_first_dispatch():
             "bench_busy_start": 1,
             "bench_host_cpus": 4,
         }
-        assert "anchor_env" in captured_payload
+        assert "extra_env" in captured_payload
     finally:
         farm._ping = orig_ping
         farm.dispatch_to_runner = orig_disp
@@ -418,23 +418,61 @@ def test_bench_no_runner():
     orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
     config.CI_FARM_ENABLED = True
     config.CI_FARM_BENCH_REMOTE_FIRST = 1
-    for r in farm.list_runners():
-        farm.remove_runner(r["id"])
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": False, "busy": True}
     try:
         assert (
             farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
             is None
         )
     finally:
+        farm._ping = orig_ping
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
 
+def test_bench_mode_guard():
+    """Mode guard: pr_number/files/tree set -> bench dispatch returns None."""
+    row = farm.register_runner("guard1", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    try:
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, pr_number=42
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, files=[{"path": "a", "content": "b"}]
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, tree="mytree"
+            )
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+>>>>>>> c9dedb56 (CI farm PR 3: bench remote-first routing + per-machine quiet attestation)
 def main():
     setup_module()
     test_ci_runners_migration()
     test_register_list_remove()
     test_pick_runner_healthy()
     test_pick_runner_skips_busy()
+<<<<<<< HEAD
     test_pick_runner_recovers_stale()
     test_pick_runner_marks_dead_stale()
     test_register_duplicate_refused()
@@ -445,6 +483,7 @@ def main():
     test_bench_remote_first_dispatch()
     test_bench_disabled()
     test_bench_no_runner()
+    test_bench_mode_guard()
     print("All CI farm tests passed.")
 
 
