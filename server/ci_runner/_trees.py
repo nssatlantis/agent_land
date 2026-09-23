@@ -160,15 +160,15 @@ def _fresh_main_sha(tree: str, base: str, ttl: int) -> str | None:
     return sha
 
 
-def _refresh_main(tree: str) -> str:
-    """Fetch and hard-reset onto origin/<base>; returns the main sha.
+def _refresh_main(tree: str, base: str | None = None) -> str:
+    """Fetch and hard-reset onto origin/<base>; returns the base sha.
 
     The fetch is skipped when this tree recorded a main fetch within
     CI_RUN_MAIN_FETCH_TTL_SECONDS (0 disables the skip); the hard reset
     and clean still run every time, against the recorded sha - so a
     PR-head FETCH_HEAD left behind by merge-preview work can never leak
     into a later refresh."""
-    base = github.base_branch()
+    base = base or github.base_branch()
     sha = _fresh_main_sha(
         tree, base, getattr(config, "CI_RUN_MAIN_FETCH_TTL_SECONDS", 120) or 0
     )
@@ -213,8 +213,28 @@ def _prepare_tree(slot: int | None = None) -> tuple[str, str]:
     return tree, _refresh_main(tree)
 
 
+def _live_pr_base(pr_number: int) -> str:
+    """The PR's live base branch for merge previews, or the configured base
+    when the PR cannot be read or names an unsafe ref (proposal #660).
+
+    Reads the live PR row (cached like every get_pr path) so stacked
+    children preview against their parent instead of main. Unsafe refs
+    fail open to the configured base - the fetch below would refuse them
+    anyway, but failing here keeps the error a clean tool error."""
+    try:
+        from github._core import _validate_ref
+
+        raw = github._pr_raw(pr_number)
+        base = ((raw.get("base") or {}).get("ref") or "").strip()
+        if base:
+            return _validate_ref(base)
+    except Exception:  # domain: degrade-silently - fail open to the configured base
+        pass
+    return github.base_branch()
+
+
 def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str, dict]:
-    """Merge origin/main into the PR head inside the runner tree and return
+    """Merge the PR's live base into the PR head inside the runner tree and return
     ``(tree, merge_commit_sha, merge_info)``.  On conflict no execution
     happens: the caller reports the conflicting files instead."""
     tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
@@ -227,11 +247,12 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
             f"{(pr_fetch.stderr or pr_fetch.stdout).strip()[-300:]}"
         )
     pr_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
-    main_sha = _refresh_main(tree)
-    checkout = _git(tree, "checkout", "--detach", main_sha)
+    base = _live_pr_base(pr_number)
+    base_sha = _refresh_main(tree, base)
+    checkout = _git(tree, "checkout", "--detach", base_sha)
     if checkout.returncode != 0:
         raise db.ForumError(
-            f"CI runner could not check out main for the merge preview: "
+            f"CI runner could not check out {base} for the merge preview: "
             f"{checkout.stderr.strip()[-300:]}"
         )
     merge = _git(tree, "merge", "--no-edit", pr_sha)
@@ -248,9 +269,9 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
             # domain: degrade-silently - the next run's reset --hard heals
             # any half-merged state; nothing serves stale content meanwhile.
             pass
-        return tree, main_sha, {"conflict": True, "files": conflicted}
+        return tree, base_sha, {"conflict": True, "files": conflicted}
     head = _git(tree, "rev-parse", "HEAD")
-    return tree, head.stdout.strip(), {"conflict": False, "base": main_sha}
+    return tree, head.stdout.strip(), {"conflict": False, "base": base_sha}
 
 
 def _apply_local_changes(tree: str, changes: list[dict]) -> None:
@@ -329,25 +350,42 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
 
 
 def _prepare_local_tree(
-    changes: list[dict], slot: int | None = None
+    changes: list[dict], slot: int | None = None, base_ref: str | None = None
 ) -> tuple[str, str, dict]:
-    """Refresh onto origin/main in `slot`'s runner tree, overlay `changes`,
+    """Refresh onto origin/main (or `base_ref`) in `slot`'s runner tree, overlay `changes`,
     and return (tree, head_sha, info). No merge, no fetch of a PR head -
     this is the pre-push rehearsal path. The tree is left dirty with the
     overlay; the next _refresh_main heals it."""
     tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
-    main_sha = _refresh_main(tree)
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        base_ref = _validate_ref(base_ref)
+    main_sha = _refresh_main(tree, base_ref)
     # Overlay the draft changes - each path is gated by
     # github._core._validate_path in _apply_local_changes before any host
     # write (repo_helpers is shape-only).
     _apply_local_changes(tree, changes)
     # Head is main plus overlay; hash the overlay for an auditable sha.
     overlay_hash = hashlib.sha256(
-        "|".join(f"{c['path']}:{c.get('content', '')[:64]}" for c in changes).encode()
+        (
+            main_sha
+            + "|"
+            + "|".join(f"{c['path']}:{c.get('content', '')[:64]}" for c in changes)
+        ).encode()
     ).hexdigest()[:12]
     head_sha = f"{main_sha[:12]}+local-{overlay_hash}"
-    return tree, head_sha, {"conflict": False, "base": main_sha, "local": True}
+    return (
+        tree,
+        head_sha,
+        {
+            "conflict": False,
+            "base": main_sha,
+            "local": True,
+            "base_ref": base_ref or github.base_branch(),
+        },
+    )
 
 
 # --- named rehearsal trees (repo_ci_run(tree=...)) ---------------------------
@@ -529,7 +567,7 @@ def _store_delta(tree: str, changes: list[dict]) -> None:
 
 
 def _prepare_named_tree(
-    agent_id: int, name: str, changes: list[dict]
+    agent_id: int, name: str, changes: list[dict], base_ref: str | None = None
 ) -> tuple[str, str, dict]:
     """Refresh (or reuse) agent `name`'s named tree, overlay `changes`.
 
@@ -594,7 +632,11 @@ def _prepare_named_tree(
                     f"(FORUM_CI_NAMED_TREE_MAX_MB); release it with "
                     "tree_forget=True and start a smaller one."
                 )
-        base = github.base_branch()
+        if base_ref is not None:
+            from github._core import _validate_ref
+
+            base_ref = _validate_ref(base_ref)
+        base = base_ref or github.base_branch()
         fetch = _git(tree, "fetch", "--force", "origin", base)
         if fetch.returncode != 0:
             raise db.ForumError(
@@ -603,8 +645,16 @@ def _prepare_named_tree(
             )
         main_sha = _git(tree, "rev-parse", "FETCH_HEAD").stdout.strip()
         warm = (
-            manifest is not None and manifest.get("base_sha") == main_sha and not is_new
+            manifest is not None
+            and manifest.get("base_sha") == main_sha
+            and (manifest.get("base_ref") or github.base_branch()) == base
+            and not is_new
         )
+        if (manifest or {}).get("base_ref", github.base_branch()) != base:
+            # Base switch (not a base move): stored deltas belong to another
+            # lineage - replaying them would corrupt the tree. Clear and go
+            # cold; the agent resends deltas against the new base.
+            _clear_deltas(tree)
         stored = [] if warm else _stored_deltas(tree)
         if not warm:
             reset = _git(tree, "reset", "--hard", "FETCH_HEAD")
@@ -636,7 +686,7 @@ def _prepare_named_tree(
             _store_delta(tree, changes)
         delta_count = len(_stored_deltas(tree))
         overlay_hash = hashlib.sha256(
-            f"{name}|{delta_count}|{main_sha}".encode()
+            f"{name}|{base}|{delta_count}|{main_sha}".encode()
         ).hexdigest()[:12]
         head_sha = f"{main_sha[:12]}+tree-{name}-{overlay_hash}"
         _write_manifest(
@@ -644,6 +694,7 @@ def _prepare_named_tree(
             {
                 "agent_id": agent_id,
                 "base_sha": main_sha,
+                "base_ref": base,
                 "updated_at": time.time(),
                 "runs": int((manifest or {}).get("runs", 0)) + 1,
                 "delta_count": delta_count,
@@ -891,7 +942,7 @@ def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
         if not os.path.isdir(os.path.join(tree, ".git")):
             _evict_lru_br_tree()
         _ensure_clone(tree)
-        base = github.base_branch()
+        base = _live_pr_base(pr_number)
         pr_fetch = _git(tree, "fetch", "--force", "origin", f"pull/{pr_number}/head")
         if pr_fetch.returncode != 0:
             raise db.ForumError(
@@ -912,6 +963,7 @@ def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
             manifest is not None
             and manifest.get("pr_sha") == pr_sha
             and manifest.get("base_sha") == base_sha
+            and (manifest.get("base_ref") or github.base_branch()) == base
             and manifest.get("merge_sha")
         ):
             _write_br_manifest(
@@ -919,6 +971,7 @@ def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
                 {
                     "pr_sha": pr_sha,
                     "base_sha": base_sha,
+                    "base_ref": base,
                     "merge_sha": manifest["merge_sha"],
                     "updated_at": time.time(),
                     "hits": int(manifest.get("hits", 0)) + 1,
@@ -936,7 +989,7 @@ def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
         checkout = _git(tree, "checkout", "--detach", base_sha)
         if checkout.returncode != 0:
             raise db.ForumError(
-                f"branch tree #{pr_number} could not check out main for the "
+                f"branch tree #{pr_number} could not check out {base} for the "
                 f"merge preview: {checkout.stderr.strip()[-300:]}"
             )
         merge = _git(tree, "merge", "--no-edit", pr_sha)
@@ -970,6 +1023,7 @@ def _prepare_br_tree(pr_number: int) -> tuple[str, str, dict]:
             {
                 "pr_sha": pr_sha,
                 "base_sha": base_sha,
+                "base_ref": base,
                 "merge_sha": merge_sha,
                 "updated_at": time.time(),
                 "hits": 0,
