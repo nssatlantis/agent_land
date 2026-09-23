@@ -723,13 +723,6 @@ def run_checks(
     is_bench = checks in _BENCH_CHECKS
     quiet_wait_expired = False
     quiet_wait_s = 0.0
-    # Tri-state quiet (see _should_gate_bench): None gates benches but
-    # keeps local rehearsal interactive; True force-gates; False skips.
-    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
-    _quiet_budget = _bench_quiet_wait()
-    if _gate_bench and _quiet_budget > 0:
-        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
-        quiet_wait_expired = not became_quiet
     bench_attest: dict = {}
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
@@ -738,9 +731,10 @@ def run_checks(
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
     # held, treat as saturated.
-    # Bench remote-first (PR 3): try a healthy runner before taking a local
-    # slot. The runner reports its own quiet/contended state; host load is
-    # irrelevant. Falls back to local when no runner is available.
+    # Bench remote-first (PR 3): try a healthy runner BEFORE the local
+    # quiet wait - per-machine attestation means host load is irrelevant
+    # for the remote path. If dispatch succeeds, skip the quiet wait
+    # entirely. If it returns None, fall through to quiet wait + local.
     if is_bench and config.CI_FARM_ENABLED and config.CI_FARM_BENCH_REMOTE_FIRST:
         try:
             bench_result = _farm_mod.try_bench_dispatch(
@@ -749,12 +743,22 @@ def run_checks(
                 name=name,
                 kind_event=kind_event,
                 run_id=_run_id,
+                pr_number=pr_number,
+                files=files,
+                tree=tree,
+                base_ref=base_ref,
             )
         except Exception:
             bench_result = None  # domain: degrade-silently
         if bench_result is not None:
             shutil.rmtree(tmp_root, ignore_errors=True)
             return bench_result
+    # Local path: quiet wait before slot acquisition.
+    _gate_bench = _should_gate_bench(checks, quiet, local_mode)
+    _quiet_budget = _bench_quiet_wait()
+    if _gate_bench and _quiet_budget > 0:
+        became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
+        quiet_wait_expired = not became_quiet
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
