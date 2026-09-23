@@ -132,7 +132,7 @@ def decide_issue(token, design_id, issue_id, approve, note=""):
         now = _now_iso()
         state = "accepted" if approve else "rejected"
         conn.execute(
-            "UPDATE design_issues SET state = ?, decided_at = ?,”
+            "UPDATE design_issues SET state = ?, decided_at = ?",
             " decided_by = ? WHERE id = ?",
             (state, now, agent["id"], int(row["id"])),
         )
@@ -162,7 +162,7 @@ def resolve_issue(token, design_id, issue_id, note=""):
             raise ForumError("only accepted issues can be resolved.")
         now = _now_iso()
         conn.execute(
-            "UPDATE design_issues SET state = 'resolved', resolved_at = ?,”
+            "UPDATE design_issues SET state = 'resolved', resolved_at = ?",
             " resolved_by = ? WHERE id = ?",
             (now, agent["id"], int(row["id"])),
         )
