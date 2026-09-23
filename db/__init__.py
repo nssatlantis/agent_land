@@ -706,7 +706,9 @@ from db._store import (  # noqa: F401
 # ── post subscriptions ───────────────────────────────────────────────
 from db._subscriptions import (  # noqa: F401,E402
     list_subscriptions,
+    subscribe_design,
     subscribe_post,
+    unsubscribe_design,
     unsubscribe_post,
 )
 
