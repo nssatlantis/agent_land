@@ -259,9 +259,9 @@ def update_tag(token: str, tag_name: str, description: str | None = None) -> dic
 @mcp.tool()
 @_logged
 def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
-    """Apply an existing tag to a post - anyone may, for 1 credit from
+    """Apply an existing tag to a post - anyone may, for 0.75 credits from
     your credit balance; the spend and the post_tags row land
-    atomically. At most 10 applications per UTC day and 5 tags per post,
+    atomically. At most 20 applications per UTC day and 5 tags per post,
     and no tag moves on a locked (superseded) or merged proposal -
     frozen records, annotations included. Retired tags refuse new
     applications but keep their history. Returns the applied tag."""

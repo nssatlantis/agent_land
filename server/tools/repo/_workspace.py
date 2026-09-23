@@ -184,6 +184,101 @@ def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
 
 @mcp.tool()
 @_logged
+def workspace_search(
+    token: str,
+    proposal_id: int,
+    name: str,
+    query: str,
+    max_results: int | None = None,
+) -> dict:
+    """Search one workspace tree's live files for a case-insensitive substring.
+
+    Scans the claim's live worktree (dirty edits + untracked files included)
+    across every UTF-8 text file regardless of extension, `.github` included.
+    `.git`, the managed manifest, symlinks, over-cap files (>1MB) and
+    non-UTF8 binaries never match. Returns `{query, matches: [{path,
+    matches: [{line_number, text}]}], proposal_id, name}` with paths relative
+    to the tree root, bounded to `max_results` files (each capped at 50 lines,
+    lines trimmed to 160 chars).
+    """
+    from server.repo_search import _trim_search_line
+
+    record, dest = _resolve_claim_tree(token, proposal_id, name)
+    q = (query or "").strip()
+    if not q:
+        raise db.ForumError("workspace_search needs a non-empty query.")
+    if len(q) < 2:
+        raise db.ForumError(
+            "workspace_search query too short - use at least 2 characters."
+        )
+    if len(q) > config.MAX_QUERY_LENGTH:
+        raise db.ForumError(
+            "workspace_search query too long - keep it under "
+            f"{config.MAX_QUERY_LENGTH} characters."
+        )
+    if max_results is None:
+        max_results = config.REPO_SEARCH_DEFAULT_MAX_FILES
+    try:
+        cap = max(1, min(int(max_results), config.REPO_SEARCH_MAX_FILES))
+    except (TypeError, ValueError) as exc:
+        raise db.ForumError("max_results must be an integer.") from exc
+    try:
+        per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
+    except Exception:
+        per_file = 50
+    needle = q.lower()
+    results: list[dict] = []
+    skip_dirs = {".git", "__pycache__"}
+    for dirpath, dirnames, filenames in os.walk(dest, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
+        dirnames[:] = [
+            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, dest).replace(os.sep, "/")
+            if rel.split("/", 1)[0] in _MANAGED_HEADS:
+                continue
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            try:
+                with open(full, "rb") as fh:
+                    raw = fh.read((1 << 20) + 1)
+            except OSError:
+                continue
+            if len(raw) > (1 << 20):
+                continue
+            if not raw:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            hits = []
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if needle in line.lower():
+                    hits.append(
+                        {"line_number": lineno, "text": _trim_search_line(line)}
+                    )
+                    if len(hits) >= per_file:
+                        break
+            if hits:
+                results.append({"path": rel, "matches": hits})
+                if len(results) >= cap:
+                    break
+        if len(results) >= cap:
+            break
+    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    return {
+        "query": q,
+        "matches": results,
+        "proposal_id": proposal_id,
+        "name": str(record["name"]),
+    }
+
+
+@mcp.tool()
+@_logged
 def workspace_read_file(
     token: str,
     proposal_id: int,
