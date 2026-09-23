@@ -227,6 +227,10 @@ from db._designs_issues import (  # noqa: F401
     propose_issue,
     resolve_issue,
 )
+from db._designs_readers import (  # noqa: F401
+    list_design_comments,
+    list_questions,
+)
 
 # ── post drafts (citizen-store staging) ────────────────────────────────
 from db._drafts import (  # noqa: F401
