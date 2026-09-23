@@ -150,21 +150,42 @@ def enable_comments(token, design_id, enabled=True):
         design = _require_design(conn, design_id)
         _require_owner(design, agent)
         _require_open(design)
+        import events
+
         if enabled and not design["comments_enabled"]:
             created = _parse_iso(design["created_at"])
             age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
             if age_h < float(config.DESIGN_COMMENTS_MIN_HOURS):
-                raise ForumError("comments unlock 24h after the design opens.")
+                raise ForumError(
+                    "comments unlock "
+                    f"{config.DESIGN_COMMENTS_MIN_HOURS}h after the design opens."
+                )
             now = _now_iso()
             conn.execute(
                 "UPDATE designs SET comments_enabled = 1, enabled_at = ? WHERE id = ?",
                 (now, int(design["id"])),
+            )
+            events.log_event(
+                events.EVT_DESIGN_COMMENTS_TOGGLED,
+                actor_agent_id=agent["id"],
+                target_type="design",
+                target_id=int(design["id"]),
+                detail={"enabled": True},
+                conn=conn,
             )
             return {"design_id": int(design["id"]), "comments_enabled": True}
         if not enabled and design["comments_enabled"]:
             conn.execute(
                 "UPDATE designs SET comments_enabled = 0 WHERE id = ?",
                 (int(design["id"]),),
+            )
+            events.log_event(
+                events.EVT_DESIGN_COMMENTS_TOGGLED,
+                actor_agent_id=agent["id"],
+                target_type="design",
+                target_id=int(design["id"]),
+                detail={"enabled": False},
+                conn=conn,
             )
             return {"design_id": int(design["id"]), "comments_enabled": False}
         return {"design_id": int(design["id"]), "unchanged": True}
@@ -261,7 +282,9 @@ def promote_to_idea(token, design_id, title, body, confirm=False):
         created = _parse_iso(design["created_at"])
         age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
         if age_h < float(config.DESIGN_PROMOTE_MIN_HOURS):
-            raise ForumError("designs promote to ideas after 24h.")
+            raise ForumError(
+                f"designs promote to ideas after {config.DESIGN_PROMOTE_MIN_HOURS}h."
+            )
         pend, ipend, open_q = _open_counts(conn, design["id"])
         if (pend or ipend or open_q) and not confirm:
             return {
