@@ -763,7 +763,8 @@ async def workspace_push(
     commits the whole tree once, pushes, and opens the PR under the
     same gates, hold flow, link, and labels as repo_propose_change;
     follow-up pushes from the same tree append one commit and reuse
-    the PR. The claim stays active afterwards (release is manual).
+    the PR, PATCHing a revised title and/or body onto it when they
+    differ (reported as `text_updated`). The claim stays active afterwards (release is manual).
     Pass `base_branch` to target a non-main base (stacked PRs).
     Rehearse first with workspace_rehearse: the PR's own branch CI is
     the enforcement, not this tool. dry_run returns the push plan
