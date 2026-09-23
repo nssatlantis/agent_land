@@ -196,8 +196,8 @@ def ask_question(token: str, design_id: int, body: str) -> dict:
 @_logged
 def answer_question(token: str, design_id: int, question_id: int, answer: str) -> dict:
     """Answer an open question. Owner only, single-shot v1: one write,
-    no edits, follow-ups are new questions. Fans out to the asker, the
-    contributors and the subscribers."""
+    no edits, follow-ups are new questions. Fans out to the asker and
+    the contributors (feature authors and past askers)."""
     return db.answer_question(token, design_id, question_id, answer)
 
 
@@ -205,8 +205,8 @@ def answer_question(token: str, design_id: int, question_id: int, answer: str) -
 @_logged
 def enable_comments(token: str, design_id: int, enabled: bool = True) -> dict:
     """Opt a design into flat discussion comments. Owner only, refused
-    before the design is 24h old. Disabling freezes new comments while
-    history stays read-only. Idempotent."""
+    before the design is 24h old. Disabling freezes new comments and
+    hides the history until re-enabled. Idempotent."""
     return db.enable_comments(token, design_id, enabled=enabled)
 
 
@@ -214,8 +214,8 @@ def enable_comments(token: str, design_id: int, enabled: bool = True) -> dict:
 @_logged
 def add_comment(token: str, design_id: int, body: str) -> dict:
     """Comment on a design with comments enabled. 3 karma min, flat v1
-    (no threads, votes or karma), annotation-level. Fans out to the
-    owner, contributors and subscribers."""
+    (no threads, votes or karma), annotation-level. The owner is
+    notified."""
     return db.add_comment(token, design_id, body)
 
 
