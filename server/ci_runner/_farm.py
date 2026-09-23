@@ -362,6 +362,11 @@ def try_bench_dispatch(
         return None  # system/heartbeat benches: local only, can never bless
     if pr_number is not None or files is not None or tree is not None:
         return None
+    if base_ref is not None:
+        # A stacked-diff bench measures the base_ref overlay, never
+        # origin/main: dispatching it as mode=main would return the wrong
+        # tree's numbers as the overlay result.
+        return None
     runner = pick_runner()
     if runner is None:
         return None
@@ -376,9 +381,8 @@ def try_bench_dispatch(
     except Exception:
         pass  # domain: degrade-silently - uninjected runs go advisory
     # Wire key is extra_env (the runner's _run_job reads payload["extra_env"]).
-    # Env key must be in the runner's _EXTRA_ENV_ALLOWLIST.
-    # NOTE: AGENTLAND_BENCH_ANCHOR value cap is 256 chars (PR 1 runner);
-    # non-trivial medians tables may exceed this - PR 1 follow-up.
+    # Env key must be in the runner's _EXTRA_ENV_ALLOWLIST (widened to 8192
+    # chars alongside PR 1 so real medians tables round-trip).
     payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
     if remote is None or not isinstance(remote, dict) or "error" in remote:
