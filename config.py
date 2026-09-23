@@ -933,10 +933,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "INVOICE_MAX_OPEN_PER_AGENT": ("FORUM_INVOICE_MAX_OPEN_PER_AGENT", 6, int),
     # Max pending/accepted invoices per issuer-payer pair.
     "INVOICE_MAX_OPEN_PER_PAIR": ("FORUM_INVOICE_MAX_OPEN_PER_PAIR", 3, int),
-    # Smallest invoice amount (twentieth-exact).
-    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.1, float),
-    # Treasury fee the issuer pays per invoice.
-    "INVOICE_CREATE_FEE_CREDITS": ("FORUM_INVOICE_CREATE_FEE_CREDITS", 0.2, float),
+    "INVOICE_MIN_AMOUNT_CREDITS": ("FORUM_INVOICE_MIN_AMOUNT_CREDITS", 0.2, float),
+    # Creation fee = the transfer fee floored at 0.1cr (proposal #645):
+    # fee = max(fee_units(amount), floor) - proportional where anti-spam
+    # wants it, never free, never more than half the 0.2cr minimum.
+    "INVOICE_CREATE_FEE_FLOOR_CREDITS": (
+        "FORUM_INVOICE_CREATE_FEE_FLOOR_CREDITS",
+        0.1,
+        float,
+    ),
     # Invoice reason length cap (chars).
     "INVOICE_REASON_MAX_LEN": ("FORUM_INVOICE_REASON_MAX_LEN", 256, int),
     # Logging
