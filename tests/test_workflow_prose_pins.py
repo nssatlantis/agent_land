@@ -117,7 +117,9 @@ _LOAD_BEARING = frozenset(
 )
 
 # Non-ASCII allowlist for backticked spans (codepoints, never literals):
-# prose punctuation that legitimately lives inside backticks.
+# prose punctuation that legitimately lives inside backticks - each entry
+# earned by a live firing, never preemptively (repro-ci 2-sigma bench gate
+# and tunable-change 750-thrash pins tripped the first green run).
 _NON_ASCII_ALLOW = frozenset(
     {
         "\u2014",
@@ -126,6 +128,8 @@ _NON_ASCII_ALLOW = frozenset(
         "\u2265",
         "\u2026",
         "\u00d7",
+        "\u03c3",
+        "\u2194",
     }
 )
 
