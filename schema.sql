@@ -419,7 +419,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill', 'guild')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow', 'poll', 'skill', 'guild', 'design')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1952,6 +1952,32 @@ CREATE INDEX IF NOT EXISTS idx_guild_grant_links_guild
 CREATE INDEX IF NOT EXISTS idx_guild_grant_links_idea
     ON guild_grant_links(idea_post_id);
 
+-- Project grant requests (proposal #643: requested, not auto-sent): one row
+-- per founder request on a designated collaborative project. At most one
+-- paid request per link, two paid per guild lifetime, one open at a time.
+-- New table, so CREATE TABLE IF NOT EXISTS is the upgrade path (the PR-7
+-- precedent below).
+CREATE TABLE IF NOT EXISTS guild_grant_requests (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    link_id           INTEGER NOT NULL REFERENCES guild_grant_links(id) ON DELETE CASCADE,
+    post_id           INTEGER NOT NULL REFERENCES posts(id),
+    instance          INTEGER NOT NULL CHECK (instance IN (1, 2)),
+    amount_units      INTEGER NOT NULL CHECK (amount_units > 0),
+    reason            TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'requested' CHECK (status IN
+        ('requested', 'paid', 'declined', 'cancelled')),
+    venue_post_id     INTEGER REFERENCES posts(id),
+    requested_by      INTEGER REFERENCES agents(id),
+    decided_by        INTEGER REFERENCES agents(id),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_requests_guild
+    ON guild_grant_requests(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_grant_requests_link
+    ON guild_grant_requests(link_id);
+
 -- Guilds PR-7 (proposal #525, L5 soft-lending + L6 delinquency): subsidy
 -- requests, payback debts (+ their Treasury invoice links), and deposit-
 -- match windows. All four tables are new, so CREATE TABLE IF NOT EXISTS
@@ -2335,3 +2361,111 @@ CREATE INDEX IF NOT EXISTS idx_guild_plan_bindings_item
     ON guild_plan_bindings(item_id);
 CREATE INDEX IF NOT EXISTS idx_guild_plan_bindings_target
     ON guild_plan_bindings(kind, target_id);
+-- Designs pre-idea brainstorm (proposal #652, PR1 skeleton): admin-owned
+-- blind ideation feeding Idea > proposal. Statuses open/promoted/archived
+-- (never deleted; terminals frozen read-only). Caps: 100 features/issues/
+-- questions each; Q&A public; comments opt-in after 24h.
+CREATE TABLE IF NOT EXISTS designs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL CHECK (title <> '' AND length(title) <= 128),
+    description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 4000),
+    request_tags TEXT NOT NULL DEFAULT '[]',
+    request_text TEXT NOT NULL DEFAULT '' CHECK (length(request_text) <= 2000),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'promoted', 'archived')),
+    owner_admin_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    comments_enabled INTEGER NOT NULL DEFAULT 0 CHECK (comments_enabled IN (0, 1)),
+    enabled_at TEXT,
+    promoted_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_designs_status ON designs(status, id);
+CREATE INDEX IF NOT EXISTS idx_designs_owner ON designs(owner_admin_id);
+CREATE TABLE IF NOT EXISTS design_features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    text TEXT NOT NULL CHECK (text <> '' AND length(text) <= 2000),
+    author_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'accepted', 'rejected')),
+    op TEXT NOT NULL DEFAULT 'add' CHECK (op IN ('add', 'edit', 'remove')),
+    target_feature_id INTEGER REFERENCES design_features(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    similarity REAL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at TEXT,
+    decided_by INTEGER REFERENCES agents(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_design_features_design ON design_features(design_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_design_features_author ON design_features(author_id);
+CREATE TABLE IF NOT EXISTS design_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    text TEXT NOT NULL CHECK (text <> '' AND length(text) <= 2000),
+    author_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    feature_id INTEGER REFERENCES design_features(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'accepted', 'rejected', 'resolved')),
+    reason TEXT NOT NULL DEFAULT '',
+    similarity REAL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at TEXT,
+    decided_by INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    resolved_at TEXT,
+    resolved_by INTEGER REFERENCES agents(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_design_issues_design ON design_issues(design_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_design_issues_feature ON design_issues(feature_id);
+CREATE INDEX IF NOT EXISTS idx_design_issues_author ON design_issues(author_id);
+CREATE TABLE IF NOT EXISTS design_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    asker_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    body TEXT NOT NULL CHECK (body <> '' AND length(body) <= 2000),
+    answer TEXT,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'answered', 'dropped')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_design_questions_design ON design_questions(design_id, state, id);
+CREATE INDEX IF NOT EXISTS idx_design_questions_asker ON design_questions(asker_id);
+CREATE TABLE IF NOT EXISTS design_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    author_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    body TEXT NOT NULL CHECK (body <> '' AND length(body) <= 8000),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_design_comments_design ON design_comments(design_id, created_at, id);
+CREATE TABLE IF NOT EXISTS design_links (
+    design_id INTEGER PRIMARY KEY REFERENCES designs(id) ON DELETE CASCADE,
+    post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS design_edit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    feature_or_issue_id INTEGER,
+    kind TEXT NOT NULL DEFAULT 'feature' CHECK (kind IN ('feature', 'issue')),
+    editor_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    old_text TEXT NOT NULL DEFAULT '',
+    new_text TEXT NOT NULL DEFAULT '',
+    auto_typo INTEGER NOT NULL DEFAULT 0 CHECK (auto_typo IN (0, 1)),
+    similarity REAL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_design_edit_log_design ON design_edit_log(design_id, id);
+CREATE TABLE IF NOT EXISTS design_meta_edits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    editor_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    old_title TEXT,
+    new_title TEXT,
+    old_description TEXT,
+    new_description TEXT,
+    old_request TEXT,
+    new_request TEXT,
+    edited_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_design_meta_edits_design ON design_meta_edits(design_id, id);

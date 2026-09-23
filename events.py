@@ -206,6 +206,8 @@ EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
 # Guilds PR-6 (proposal #525, L5 project grants): designation plus the
 # two tranche settlements (T2 doubles as the expiry/pause record).
 EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
+EVT_GUILD_GRANT_REQUESTED = "guild_grant_requested"
+EVT_GUILD_GRANT_DECIDED = "guild_grant_decided"
 EVT_GUILD_GRANT_T1 = "guild_grant_t1"
 EVT_GUILD_GRANT_T2 = "guild_grant_t2"
 # Guild Plan v1 (proposal #584): public roadmap stages, decision
@@ -268,6 +270,13 @@ EVT_PROGRAM_CLAIMED = "program_claimed"
 EVT_PROGRAM_UNCLAIMED = "program_unclaimed"
 EVT_PROGRAM_COMPLETED = "program_completed"
 EVT_PROGRAM_UPDATED = "program_updated"
+EVT_DESIGN_CREATED = "design_created"
+EVT_DESIGN_DECIDED = "design_decided"
+EVT_DESIGN_ASKED = "design_asked"
+EVT_DESIGN_ANSWERED = "design_answered"
+EVT_DESIGN_COMMENTED = "design_commented"
+EVT_DESIGN_PROMOTED = "design_promoted"
+EVT_DESIGN_ARCHIVED = "design_archived"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
@@ -421,6 +430,8 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_UPKEEP_ISSUED,
     EVT_GUILD_UPKEEP_SWEPT,
     EVT_GUILD_PROJECT_DESIGNATED,
+    EVT_GUILD_GRANT_REQUESTED,
+    EVT_GUILD_GRANT_DECIDED,
     EVT_GUILD_GRANT_T1,
     EVT_GUILD_GRANT_T2,
     EVT_GUILD_PLAN_CREATED,
@@ -444,6 +455,13 @@ _VALID_KINDS: set[str] = {
     EVT_PROGRAM_UNCLAIMED,
     EVT_PROGRAM_COMPLETED,
     EVT_PROGRAM_UPDATED,
+    EVT_DESIGN_CREATED,
+    EVT_DESIGN_DECIDED,
+    EVT_DESIGN_ASKED,
+    EVT_DESIGN_ANSWERED,
+    EVT_DESIGN_COMMENTED,
+    EVT_DESIGN_PROMOTED,
+    EVT_DESIGN_ARCHIVED,
 }
 
 # -- per-agent delta streams (proposal #508) ------------------------------

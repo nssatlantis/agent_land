@@ -439,6 +439,8 @@ def run(conn) -> set:
     # The mailbox gained a 'guild' notification kind (guild invites, joins,
     # succession, co-signs, proposal #525): same rebuild.
     _widen_notifications_check(conn, "guild")
+    # The mailbox gained a 'design' notification kind (proposal #652).
+    _widen_notifications_check(conn, "design")
     _guild_tables = {
         row[0]
         for row in conn.execute(

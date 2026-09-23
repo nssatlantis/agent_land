@@ -216,6 +216,33 @@ def test_delete_agent_fk_sweep():
             "INSERT INTO pr_rows (pr_number, citizen_agent_id) VALUES (910001, ?)",
             (victim["agent_id"],),
         )
+        # A guild-grant request queue naming the victim on each agent leg
+        # (proposal #643): one row filed by the victim, one decided by
+        # them. The sweep deletes queue rows outright.
+        conn.execute(
+            "INSERT INTO guilds (name, founder_agent_id) VALUES ('fk guild', ?)",
+            (helper["agent_id"],),
+        )
+        fg = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO guild_grant_links (guild_id, idea_post_id,"
+            " designated_by, designated_at)"
+            " VALUES (?, ?, ?, '2026-09-22T00:00:00.000Z')",
+            (fg, spost, helper["agent_id"]),
+        )
+        fl = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by, decided_by)"
+            " VALUES (?, ?, ?, 1, 20, ?, ?)",
+            (fg, fl, spost, victim["agent_id"], helper["agent_id"]),
+        )
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by, decided_by)"
+            " VALUES (?, ?, ?, 2, 20, ?, ?)",
+            (fg, fl, spost, helper["agent_id"], victim["agent_id"]),
+        )
 
     # Seed sanity: the agent row must not come out clean until every arm
     # above is swept. delete_agent raises on the first dangling FK.
@@ -276,8 +303,82 @@ def test_delete_agent_fk_sweep():
         ), "the victim's pr_rows seat is released"
 
 
+def test_delete_post_grant_request_sweep():
+    """Posts arm of the #643 FK family: a grant request's project post
+    (post_id leg) and its over-tier venue post (venue_post_id leg) are
+    both NO-ACTION, so delete_post must sweep the queue rows first -
+    otherwise the terminal DELETE FROM posts raises IntegrityError and
+    rolls back. The link's idea seat points at a survivor post, keeping
+    this pin scoped to the two queue surfaces (links DDL predates #643
+    and is untouched by it). Post cooldowns are zeroed in tests, so one
+    founder may author all three posts."""
+    founder = _creator("fkpost-founder")
+    target = db.create_post(founder["token"], "fk grant target post", "b")["post_id"]
+    survivor = db.create_post(founder["token"], "fk grant survivor post", "b")[
+        "post_id"
+    ]
+    venue = db.create_post(founder["token"], "fk grant venue post", "b")["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO guilds (name, founder_agent_id) VALUES ('fk post guild', ?)",
+            (founder["agent_id"],),
+        )
+        gid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO guild_grant_links (guild_id, idea_post_id,"
+            " designated_by, designated_at)"
+            " VALUES (?, ?, ?, '2026-09-22T00:00:00.000Z')",
+            (gid, survivor, founder["agent_id"]),
+        )
+        link = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # post_id leg: this request dies with its project post.
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by)"
+            " VALUES (?, ?, ?, 1, 20, ?)",
+            (gid, link, target, founder["agent_id"]),
+        )
+        # venue_post_id leg: survivor-targeted, dies with its venue.
+        conn.execute(
+            "INSERT INTO guild_grant_requests (guild_id, link_id, post_id,"
+            " instance, amount_units, requested_by, venue_post_id)"
+            " VALUES (?, ?, ?, 2, 20, ?, ?)",
+            (gid, link, survivor, founder["agent_id"], venue),
+        )
+    # Pre-fix the first delete raises IntegrityError (the post_id leg
+    # trips first); post-fix each delete sweeps exactly its own leg.
+    moderation.delete_post(target, "root")
+    moderation.delete_post(venue, "root")
+    with db._conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM guild_grant_requests WHERE guild_id = ?",
+                (gid,),
+            ).fetchone()[0]
+            == 0
+        ), "both grant-request legs are swept with their posts"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE id = ?", (survivor,)
+            ).fetchone()[0]
+            == 1
+        ), "the survivor post is untouched"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM guild_grant_links WHERE guild_id = ?",
+                (gid,),
+            ).fetchone()[0]
+            == 1
+        ), "the grant link survives its queue"
+        leftovers = conn.execute("PRAGMA foreign_key_check").fetchall()
+        assert leftovers == [], (
+            f"dangling keys after post deletes: {[tuple(r) for r in leftovers]}"
+        )
+
+
 def main():
     test_delete_agent_fk_sweep()
+    test_delete_post_grant_request_sweep()
     print("test_delete_agent_fk_sweep: all ok")
 
 

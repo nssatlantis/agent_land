@@ -193,7 +193,12 @@ def _patched_execution(stub_script: str):
         return "fake:tag"
 
     def fake_argv(
-        tree, image_tag, script_rel, extra_env=None, mypy_cache_host_dir=None
+        tree,
+        image_tag,
+        script_rel,
+        extra_env=None,
+        mypy_cache_host_dir=None,
+        ruff_cache_host_dir=None,
     ):
         return [sys.executable, "-c", stub_script], "agentland-ci-test"
 

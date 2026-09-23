@@ -86,9 +86,15 @@ def _parse_static_summary(output: str) -> dict | None:
 
 
 def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
-    # run_all.py prints bare basenames ("FAILED: test_x.py"); prefix them
-    # so failed_files entries are copy-pasteable paths from the repo root.
-    raw = re.findall(r"^FAILED: (\S+)$", output, re.M)
+    # run_all.py prints "FAILED: <basename> (<secs>s)" per failure (run_all
+    # :237); strip the duration - bare names still match - and prefix so
+    # failed_files entries are copy-pasteable paths from the repo root.
+    # The count line ("FAILED: 12 of 212 test files") and "FAILED FILES:"
+    # list never match: no " (" after the name, and a space - not a colon
+    # - right after FAILED respectively (both have their own parsers).
+    # Regression #B87: the old ^FAILED: (\S+)$ could not cross the space
+    # before "(", so every red run reported failed_files: null.
+    raw = re.findall(r"^FAILED: (\S+?)(?:\s+\(|$)", output, re.M)
     failed_files = [
         name if "/" in name or not name.endswith(".py") else "tests/" + name
         for name in raw
@@ -413,12 +419,30 @@ def _mypy_host_dir(slot: int) -> str | None:
     return d
 
 
+def _ruff_host_dir(slot: int) -> str | None:
+    """Per-slot persistent ruff cache dir on the host, or None."""
+    base = getattr(config, "CI_RUN_RUFF_CACHE_DIR", "") or ""
+    if not base:
+        return None
+    d = os.path.join(str(base), f"slot{int(slot)}")
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".wprobe")
+        with open(probe, "w") as _fh:
+            _fh.write("ok")
+        os.remove(probe)
+    except Exception:
+        return None  # domain: degrade-silently - uncached scan instead
+    return d
+
+
 def _sandbox_argv(
     tree: str,
     image_tag: str,
     script_rel: str,
     extra_env: dict[str, str] | None = None,
     mypy_cache_host_dir: str | None = None,
+    ruff_cache_host_dir: str | None = None,
 ) -> tuple[list[str], str]:
     """Build the docker run argv for one sandboxed suite execution.
     Returns (argv, container_name) - the name lets the timeout path stop
@@ -426,8 +450,9 @@ def _sandbox_argv(
     extra_env appends --env K=V pairs (bench anchor injection); empty by
     default so non-bench callers pass nothing. mypy_cache_host_dir mounts
     a persistent per-slot mypy cache volume when configured (None keeps
-    the per-run tmpfs cache); mounts ride before the image tag so the
-    argv tail never moves."""
+    the per-run tmpfs cache); ruff_cache_host_dir does the same for ruff's
+    content-keyed cache (None keeps the uncached scan); mounts ride before
+    the image tag so the argv tail never moves."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
     # Busy-aware: ceil (2.5) alone, host/busy when contended - live-throttled via docker update
     try:
@@ -493,6 +518,13 @@ def _sandbox_argv(
             f"{mypy_cache_host_dir}:/tmp/agentland_mypy_cache:rw",
             "--env",
             "AGENTLAND_MYPY_CACHE_DIR=/tmp/agentland_mypy_cache",
+        ]
+    if ruff_cache_host_dir:
+        argv += [
+            "--volume",
+            f"{ruff_cache_host_dir}:/tmp/agentland_ruff_cache:rw",
+            "--env",
+            "RUFF_CACHE_DIR=/tmp/agentland_ruff_cache",
         ]
     argv += [
         "--volume",
