@@ -283,8 +283,7 @@ def promote_to_idea(token, design_id, title, body, confirm=False):
             raise ForumError(f"design #{did} is frozen.")
         now = _now_iso()
         conn.execute(
-            "UPDATE designs SET status = 'promoted', promoted_post_id = ?",
-            " closed_at = ? WHERE id = ?",
+            "UPDATE designs SET status='promoted',promoted_post_id=?,closed_at=? WHERE id = ?",
             (int(idea["post_id"]), now, int(design["id"])),
         )
         conn.execute(
