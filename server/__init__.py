@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import db  # noqa: F401
 import github  # noqa: F401
+import server.config_drift  # noqa: F401
 
 # PR view helpers (no @mcp, but shared by repo tools)
 import server.pr_views  # noqa: F401
