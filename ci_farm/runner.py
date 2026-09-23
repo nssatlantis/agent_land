@@ -40,6 +40,7 @@ RUNNER_VERSION = 1
 MAX_BODY_BYTES = 10 * 1024 * 1024
 MAX_FILES_COUNT = 50
 MAX_FILES_TOTAL_BYTES = 5 * 1024 * 1024
+_BASE_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 # extra_env allowlist: only these keys may be injected into the sandbox.
 _EXTRA_ENV_ALLOWLIST = frozenset(
@@ -182,15 +183,25 @@ def _run_job(payload: dict) -> dict:
     mode = str(payload.get("mode", "main"))
     base_sha = payload.get("base_sha")
     if base_sha is not None:
-        if not isinstance(base_sha, str) or len(base_sha) != 40:
+        if not isinstance(base_sha, str) or _BASE_SHA_RE.fullmatch(base_sha) is None:
             return {"ok": False, "error": "base_sha must be a 40-char hex string"}
-    extra_env = _validate_extra_env(payload.get("extra_env"))
+    try:
+        extra_env = _validate_extra_env(payload.get("extra_env"))
+    except ValueError as exc:
+        return {"ok": False, "error": f"invalid extra_env: {exc}"}
 
     data_dir = _data_dir()
     tmp_root = tempfile.mkdtemp(prefix="agentland_farm_", dir=data_dir)
     try:
         if mode == "local":
-            files = _validate_files(payload.get("files"))
+            if payload.get("base_sha") is not None:
+                # A pinned base is main-mode only: silently overwriting it
+                # with latest-main would measure the wrong tree.
+                return {"ok": False, "error": "base_sha is main-mode only"}
+            try:
+                files = _validate_files(payload.get("files"))
+            except ValueError as exc:
+                return {"ok": False, "error": f"invalid files: {exc}"}
             tree, head_sha, merge_info = trees._prepare_local_tree(files, slot=0)
             sandboxed = True
             image_tag = sandbox._ensure_image(tree, merge_info["base"])
@@ -335,6 +346,9 @@ class FarmHandler(BaseHTTPRequestHandler):
         try:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
+                if length < 0:
+                    self._json(400, {"error": "bad json body"})
+                    return
                 if length > MAX_BODY_BYTES:
                     self._json(413, {"error": "body exceeds 10 MB limit"})
                     return
