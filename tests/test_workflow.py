@@ -56,6 +56,7 @@ from db._workflow import (  # noqa: E402
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,
+    tick_workflow_steps,
     workflow_steps_for_run,
 )
 from tests._setup import db, setup  # noqa: E402
@@ -141,6 +142,62 @@ def test_batch_rows_and_pagination(agents):
         assert db.list_workflow_runs(conn, limit=0) == page1, "limit clamps to >= 1"
         assert db.list_workflow_runs(conn, offset=10**9) == []
     print("  batch rows equivalence + list pagination: ok")
+
+
+def test_tick_workflow_steps_batch(agents):
+    """tick_workflow_steps ticks up to 5 steps best-effort: tickable steps
+    land, managed/unknown keys report per-key refused; empty/over-cap/dup
+    shape errors refuse the whole call."""
+    beta = agents["beta"]
+    pid = db.create_proposal(beta["token"], "T25 tick batch", "t25 body")["post_id"]
+    with db._conn() as conn:
+        rid = int(_open_run(conn, pid)["id"])
+        out = tick_workflow_steps(
+            conn, rid, ["update-local", "validate-manifest"], beta["agent_id"]
+        )
+        assert out["run_id"] == rid, out
+        assert [t["step_key"] for t in out["ticked"]] == [
+            "update-local",
+            "validate-manifest",
+        ], out
+        assert out["refused"] == [], out
+        assert all(t["done"] == 1 for t in out["ticked"]), out
+        # re-tick is idempotent success, not a refusal
+        out2 = tick_workflow_steps(conn, rid, ["update-local"], beta["agent_id"])
+        assert [t["step_key"] for t in out2["ticked"]] == ["update-local"]
+        assert out2["refused"] == []
+        # best-effort mix: good lands, managed + unknown report refused
+        out3 = tick_workflow_steps(
+            conn, rid, ["lint", "open", "nope"], beta["agent_id"]
+        )
+        assert [t["step_key"] for t in out3["ticked"]] == ["lint"], out3
+        reasons = {r["step_key"]: r["reason"] for r in out3["refused"]}
+        assert set(reasons) == {"open", "nope"}, reasons
+        assert "auto-managed" in reasons["open"], reasons
+        assert "no step" in reasons["nope"], reasons
+        lint_row = next(
+            s for s in workflow_steps_for_run(conn, rid) if s["step_key"] == "lint"
+        )
+        assert lint_row["done"] == 1, "the good tick persisted"
+        # shape errors refuse the whole call before anything ticks
+        for bad, msg in (
+            ([], "non-empty"),
+            (["lint", "lint"], "more than once"),
+            (["a", "b", "c", "d", "e", "f"], "at most 5"),
+            (["lint", 42], "non-empty string"),
+        ):
+            try:
+                tick_workflow_steps(conn, rid, bad, beta["agent_id"])
+                raise AssertionError(f"batch {bad!r} should fail")
+            except db.ForumError as exc:
+                assert msg in str(exc), (bad, str(exc))
+        # outsider batch: every key refused, nothing lands
+        out4 = tick_workflow_steps(
+            conn, rid, ["test", "not-gutted"], agents["delta"]["agent_id"]
+        )
+        assert out4["ticked"] == [] and len(out4["refused"]) == 2, out4
+        assert all("starter" in r["reason"] for r in out4["refused"]), out4
+    print("  steps: batch best-effort ticks ok")
 
 
 def test_reconcile_batch(agents):
@@ -1448,6 +1505,7 @@ def main():
 
     # run last: it leaves own runs behind, which would perturb the earlier
     # global run-ledger/sweep assertions if it ran up front.
+    test_tick_workflow_steps_batch(agents)
     test_batch_rows_and_pagination(agents)
     test_per_agent_ownership(agents)
     test_reconcile_batch(agents)

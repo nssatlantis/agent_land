@@ -376,10 +376,16 @@ def _maybe_checkpoint_economy() -> None:
     have elapsed since the last one (0 disables). Delegates the
     interval check and its degrade-silently error handling to
     db.maybe_checkpoint(). Also ticks the conservation watch (edge-
-    triggered escrow audit events, loud but never load-bearing)."""
+    triggered escrow audit events, loud but never load-bearing) and the
+    supply watch (edge-triggered whole-ledger reconciliation events,
+    proposal #648 - same loud/never-load-bearing contract)."""
     db.maybe_checkpoint()
     try:
         db.conservation_watch_tick()
+    except Exception:  # domain: degrade-silently - watch never breaks a poll tick
+        pass
+    try:
+        db.supply_watch_tick()
     except Exception:  # domain: degrade-silently - watch never breaks a poll tick
         pass
 
