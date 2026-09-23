@@ -9,10 +9,13 @@ Registry: a small ci_runners table (name, url, token, status, last_heartbeat).
 Health: live ping in pick_runner (no background poller - small-fix surface).
 Dispatch: try_dispatch() is called from run_checks when slot acquisition is
 busy; it returns the full host-shaped result dict (ledger written with runner
-provenance) or None when dispatch is not eligible / no runner is available -
-the caller then raises the busy error.
+provenance), raises _FarmRetryLocal when a picked runner fails (the caller
+retries once locally), or returns None when dispatch is not eligible / no
+runner is available - the caller then raises the busy error. try_bench_dispatch
+keeps the older None-on-error contract (silent local fallback); the two lanes
+are documented, not unified.
 
-PR 2 scope: overflow for native + local runs only. Bench remote-first is PR 3;
+PR 2 scope: overflow for native + local modes only. Bench remote-first is PR 3;
 branch (pr_number) and named-tree runs are host-local and never dispatched.
 """
 
@@ -20,7 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
+import threading
 import urllib.request
 
 import config
@@ -29,6 +34,20 @@ import events
 from db import ForumError
 
 _ACTIVE_RUNS: dict[int, int] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class _FarmRetryLocal(Exception):
+    """try_dispatch raises this when a picked runner fails (transport failure,
+    unreadable reply, or runner-reported error with no result shape).
+
+    Out-of-band by design: a result dict must always be a real CI result, so
+    any present-or-future caller can treat a returned dict as success-shaped
+    (the deferred P3-4 poller path must catch this too). Carries the
+    runner-side reason for the audit row.
+    """
 
 
 def _now() -> str:
@@ -69,7 +88,11 @@ def remove_runner(runner_id: int) -> bool:
     """Delete a runner row. Returns True if a row was deleted."""
     with db._conn(immediate=True) as conn:
         cur = conn.execute("DELETE FROM ci_runners WHERE id = ?", (runner_id,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        with _ACTIVE_LOCK:
+            _ACTIVE_RUNS.pop(runner_id, None)
+    return deleted
 
 
 def list_runners() -> list:
@@ -119,12 +142,26 @@ def _ping(url: str, token: str) -> dict | None:
         return None
 
 
+def _release(runner_id: int) -> None:
+    """Release one reserved active-run slot, never retaining a negative count."""
+    with _ACTIVE_LOCK:
+        left = _ACTIVE_RUNS.get(runner_id, 0) - 1
+        if left <= 0:
+            _ACTIVE_RUNS.pop(runner_id, None)
+        else:
+            _ACTIVE_RUNS[runner_id] = left
+
+
 def pick_runner() -> dict | None:
-    """Pick a healthy, available runner.
+    """Pick a healthy, available runner and reserve one active-run slot.
 
     Pings each candidate live (short timeout), skips dead or busy ones, and
     stamps the heartbeat on success. Orders by last_heartbeat ASC (oldest
-    first) for fairness. Returns the post-mark row dict or None.
+    first) for fairness. The cap check and the reservation happen
+    atomically under _ACTIVE_LOCK, so two concurrent overflows cannot
+    double-book a single-flight runner. The reservation releases in
+    dispatch_to_runner's finally (and remove_runner drops it); callers that
+    pick without dispatching (tests) must call _release().
 
     Every candidate is pinged, including ones whose recorded heartbeat is
     older than CI_FARM_STALE_SECONDS: skipping without a ping would brick
@@ -133,7 +170,14 @@ def pick_runner() -> dict | None:
     permanently. Only a failed ping marks a runner stale.
 
     P3-3: skips runners at their active_runs cap.
+
+    Returns the post-mark row dict or None.
     """
+    if config.CI_FARM_RUNNER_MAX_ACTIVE <= 0:
+        # Explicitly disabled: a non-positive cap admits nothing. Previously
+        # this fell out of the >= comparison silently - same behavior, said
+        # out loud so a zero knob reads as off, not broken.
+        return None
     with db._conn() as conn:
         rows = conn.execute(
             "SELECT * FROM ci_runners WHERE status != 'removed'"
@@ -149,6 +193,10 @@ def pick_runner() -> dict | None:
         if ping.get("busy"):
             _mark(row["id"], "busy", heartbeat=True)
             continue
+        with _ACTIVE_LOCK:
+            if _ACTIVE_RUNS.get(row["id"], 0) >= config.CI_FARM_RUNNER_MAX_ACTIVE:
+                continue
+            _ACTIVE_RUNS[row["id"]] = _ACTIVE_RUNS.get(row["id"], 0) + 1
         _mark(row["id"], "healthy", heartbeat=True)
         with db._conn() as conn:
             fresh = conn.execute(
@@ -164,11 +212,14 @@ def pick_runner() -> dict | None:
 def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
     """POST /run to the runner. Returns the result dict or None on failure.
 
-    P3-3: tracks active runs per runner (increment on start, decrement on
-    completion).
+    The active-run slot was reserved by pick_runner; it releases here in the
+    finally via _release(). A runner dict without an id or url fails closed
+    (None) instead of raising KeyError out of the degrade-silently contract.
     """
-    _ACTIVE_RUNS[runner["id"]] = _ACTIVE_RUNS.get(runner["id"], 0) + 1
-    url = runner["url"].rstrip("/") + "/run"
+    rid = runner.get("id")
+    url = (runner.get("url") or "").rstrip("/") + "/run"
+    if rid is None or not runner.get("url"):
+        return None
     headers = {"Content-Type": "application/json"}
     token = runner.get("token") or ""
     if token:
@@ -184,9 +235,11 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
             body = json.loads(resp.read().decode("utf-8"))
         return body if isinstance(body, dict) else None
     except Exception:
+        # domain: degrade-silently - transport failure reads as no result;
+        # try_dispatch turns a picked-but-failed dispatch into a local retry
         return None
     finally:
-        _ACTIVE_RUNS[runner["id"]] = max(0, _ACTIVE_RUNS.get(runner["id"], 0) - 1)
+        _release(rid)
 
 
 def _fold_output(detail: dict, remote: dict) -> dict:
@@ -278,11 +331,21 @@ def _map_and_log(
         detail["local"] = True
         detail["base_sha"] = result.get("base_sha")
     detail = _fold_output(detail, result)
-    sha = result.get("output_sha256")
-    if sha:
-        detail["output_sha256"] = sha
     if extra_detail:
         detail.update(extra_detail)
+    sha = remote.get("output_sha256")
+    if isinstance(sha, str) and _SHA256_RE.fullmatch(sha):
+        # Audit-only carriage, written after the extra_detail merge so a
+        # runner echo can never be clobbered by (or clobber) bench keys, and
+        # written explicitly into both detail and result (the known-keys loop
+        # above allowlists result keys, so only an explicit write rides it):
+        # no retained tail exists to re-verify against (green runs keep no
+        # tail by design) and the runner-side producer ships separately, so
+        # a hash here is a correlation key, not proof. Anything else
+        # (including the "deadbeef" placeholder shape) is dropped from both
+        # ledger and result so a lying runner's hash is never laundered.
+        detail["output_sha256"] = sha
+        result["output_sha256"] = sha
     if run_id is not None:
         detail["run_id"] = run_id
         result["run_id"] = run_id
@@ -316,8 +379,10 @@ def try_dispatch(
 ) -> dict | None:
     """Overflow dispatch entry point (called from run_checks when the local
     pool is busy). Returns the full host-shaped result dict (ledger written
-    with runner provenance) or None when dispatch is not eligible / no runner
-    is available - the caller then raises the busy error.
+    with runner provenance), raises _FarmRetryLocal when a picked runner
+    fails (the caller retries once locally), or returns None when dispatch
+    is not eligible / no runner is available - the caller then raises the
+    busy error.
 
     PR 2 scope: overflow for native + local modes only. Bench remote-first is
     PR 3; branch (pr_number) and named-tree runs are host-local and never
@@ -341,10 +406,16 @@ def try_dispatch(
     if base_ref is not None:
         payload["base_ref"] = base_ref
     remote = dispatch_to_runner(runner, payload)
-    if remote is None or not isinstance(remote, dict):
-        return None
-    if "error" in remote:
-        return {"_retry_local": True}
+    if not isinstance(remote, dict):
+        # Transport failure or unreadable body AFTER a runner was picked: the
+        # run may or may not have executed remotely, so retry once locally
+        # instead of reporting busy (P3-2).
+        raise _FarmRetryLocal("runner reply unreadable")
+    if "error" in remote and "ok" not in remote:
+        # Runner-reported failure with no result shape (mid-run death): retry
+        # once locally. Replies carrying "ok" (even ok False, even with
+        # warning extras) are real results and map normally.
+        raise _FarmRetryLocal(str(remote.get("error"))[:200])
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
 
 
@@ -371,6 +442,10 @@ def try_bench_dispatch(
     Mode guard: bench only runs on origin/main reference. If pr_number,
     files, tree, or base_ref are set, this is not a reference bench and
     dispatch returns None (local fallback).
+
+    Keeps the older None-on-error contract (silent local fallback): a runner
+    error here never raises _FarmRetryLocal, unlike try_dispatch. Deliberate
+    divergence, not drift - the bench lane has no retry of its own yet.
     """
     if not config.CI_FARM_ENABLED:
         return None
