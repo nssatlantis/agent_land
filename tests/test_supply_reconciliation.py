@@ -93,9 +93,11 @@ def test_in_flight_wallet_lock_does_not_trip():
     assert _supply() == s0
 
 
-def test_legacy_admin_lock_reconciles_via_in_flight():
-    # The #644 incident shape: a treasury-only admin lock (no escrow
-    # leg) reconciles through in_flight, not as a trip.
+def test_paired_admin_lock_reconciles_quiet():
+    # Post-#644 the engine escrow-pairs admin locks (treasury -X /
+    # escrow +X under one tx): locked == held, in_flight stays 0 and
+    # supply never moves. The engine drives this shape now, so the
+    # pin drives the engine (review L1).
     pid = db.create_proposal(AGENTS["beta"]["token"], "Recon Admin", "Body")["post_id"]
     db.admin_stake("admin", pid, per_pr=0.25, max_prs=1, currency="credits")
     s0 = _supply()
@@ -103,10 +105,56 @@ def test_legacy_admin_lock_reconciles_via_in_flight():
     assert locked == 1, locked
     r = _recon()
     assert r["ok"] is True, r
-    assert r["in_flight_units"] == 5, r
-    assert r["supply_units"] == s0 - 5, r
+    assert r["in_flight_units"] == 0, r
+    assert r["supply_units"] == s0, r
     refunded = db.refund_stake_locks(None, 973002)
     assert refunded == 1, refunded
+    r2 = _recon()
+    assert r2["ok"] is True, r2
+    assert r2["in_flight_units"] == 0, r2
+    assert _supply() == s0
+
+
+def test_legacy_admin_lock_reconciles_via_in_flight():
+    # The #644 incident shape, hand-crafted: a treasury-only admin
+    # lock (the single-sided debit the pre-#644 engine wrote, no
+    # escrow leg). The engine no longer produces this shape, so the
+    # fixture writes the pre-#644 bytes directly: a locked
+    # stake_locks row plus its lone treasury debit.
+    pid = db.create_proposal(AGENTS["beta"]["token"], "Recon Legacy", "Body")["post_id"]
+    db.admin_stake("admin", pid, per_pr=0.25, max_prs=1, currency="credits")
+    with db._conn() as conn:
+        sid = conn.execute(
+            "SELECT id FROM proposal_stakes WHERE proposal_id = ?",
+            (pid,),
+        ).fetchone()["id"]
+    s0 = _supply()
+    with db._conn(immediate=True) as c:
+        c.execute(
+            "INSERT INTO stake_locks (stake_id, pr_number, agent_id,"
+            " amount, status) VALUES (?, 973003, ?, 5, 'locked')",
+            (sid, AGENTS["gamma"]["agent_id"]),
+        )
+        c.execute(
+            "INSERT INTO credit_entries (agent_id, account, delta_units,"
+            " reason, target_type, target_id, tx_id)"
+            " VALUES (NULL, 'treasury', -5, 'stake_lock',"
+            " 'proposal_stake', ?, NULL)",
+            (sid,),
+        )
+    try:
+        r = _recon()
+        assert r["ok"] is True, r
+        assert r["in_flight_units"] == 5, r
+        assert r["supply_units"] == s0 - 5, r
+    finally:
+        with db._conn(immediate=True) as c:
+            c.execute("DELETE FROM stake_locks WHERE stake_id = ?", (sid,))
+            c.execute(
+                "DELETE FROM credit_entries WHERE target_type = 'proposal_stake'"
+                " AND target_id = ? AND reason = 'stake_lock'",
+                (sid,),
+            )
     assert _recon()["ok"] is True
     assert _supply() == s0
 
@@ -131,6 +179,38 @@ def test_backfill_term_counted():
     finally:
         with db._conn(immediate=True) as c:
             c.execute("DELETE FROM credit_entries WHERE reason = 'sr_probe_backfill'")
+    assert _recon()["ok"] is True
+
+
+def test_backfill_held_overlap_counts_once():
+    # Review M2: a stake_escrow_backfill escrow leg (the #644 repair
+    # shape) must enter expected exactly once - through held, never
+    # through the backfill sweep. Fail-before: without the NOT IN
+    # guard the sweep counts it again and ok trips with diff -9.
+    s0 = _supply()
+    b0 = _recon()["backfilled_units"]
+    with db._conn(immediate=True) as c:
+        tx = c.execute(
+            "SELECT COALESCE(MAX(tx_id), 0) + 1 FROM credit_entries"
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO credit_entries (agent_id, account, delta_units,"
+            " reason, target_type, target_id, tx_id)"
+            " VALUES (NULL, 'escrow', 9, 'stake_escrow_backfill',"
+            " 'proposal_stake', 424242, ?)",
+            (tx,),
+        )
+    try:
+        r = _recon()
+        assert r["ok"] is True, r
+        assert r["backfilled_units"] == b0, r
+        assert r["supply_units"] == s0 + 9, r
+    finally:
+        with db._conn(immediate=True) as c:
+            c.execute(
+                "DELETE FROM credit_entries WHERE reason = 'stake_escrow_backfill'"
+                " AND target_id = 424242"
+            )
     assert _recon()["ok"] is True
 
 
