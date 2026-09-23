@@ -195,6 +195,9 @@ EXPECTED = [
     "promote_preview",
     "promote_to_idea",
     "close_design",
+    # designs readers (proposal #652 viewer)
+    "list_questions",
+    "list_design_comments",
 ]
 
 
