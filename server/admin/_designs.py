@@ -203,6 +203,8 @@ async def design_admin_detail_page(request: Request) -> HTMLResponse:
         return _admin_page(request, "admin — designs", "<p>No such design.</p>")
     csrf = _csrf_field(request)
     frozen = pend["status"] != "open"
+    # Frozen renders banner + status only: promote/close sweep every pending
+    # row, so the queues are empty by construction - state without forms.
     head = (
         f"<p class='meta'>status {esc(pend['status'])} &middot; "
         f"<a href='/designs/{design_id}'>public page</a></p>"
