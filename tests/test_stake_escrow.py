@@ -142,11 +142,26 @@ def test_dupe_lock_reverts_paired():
     pid = _pid_of(sid)
     db.lock_stakes_for_pr(None, pid, 97203, AGENTS["gamma"]["agent_id"])
     s1, t1, e1 = _supply(), _treasury(), _escrow()
+
+    def _stake_legs() -> int:
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM credit_entries"
+                " WHERE target_type = 'proposal_stake' AND target_id = ?",
+                (sid,),
+            ).fetchone()[0]
+
+    legs_after_first = _stake_legs()
     locked2 = db.lock_stakes_for_pr(None, pid, 97203, AGENTS["gamma"]["agent_id"])
     assert locked2 == 0, locked2
     assert _supply() == s1, "dupe revert never moves supply"
     assert _treasury() == t1, "dupe revert nets zero on treasury"
     assert _escrow() == e1, "dupe revert nets zero on escrow"
+    # The poller calls this fallback on every closed-PR sweep; a dupe must
+    # not mint fresh stake_lock/stake_refund legs each time (ledger flood
+    # on stake #6 / proposal #639 when its merged PRs stayed in the
+    # closed-PR window - issue report).
+    assert _stake_legs() == legs_after_first, "re-lock writes zero new legs"
     with db._conn() as conn:
         bare = conn.execute(
             "SELECT COUNT(*) FROM credit_entries"
