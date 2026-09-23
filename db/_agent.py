@@ -300,6 +300,21 @@ def _daily_resets_at() -> str:
     return (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
 
 
+def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) -> int:
+    used = conn.execute(
+        "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
+        (agent_id, midnight),
+    ).fetchone()[0]
+    try:
+        used += conn.execute(
+            "SELECT COUNT(*) FROM bug_remarks WHERE agent_id = ? AND created_at >= ?",
+            (agent_id, midnight),
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        pass
+    return int(used)
+
+
 def _daily_caps_for(
     conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
 ) -> dict:
@@ -316,10 +331,7 @@ def _daily_caps_for(
         ent = _entitlements(conn, agent_id)
     comment_cap = effective_comment_cap(agent_id, conn=conn, ent=ent)
     if comment_cap > 0:
-        used = conn.execute(
-            "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
-            (agent_id, midnight),
-        ).fetchone()[0]
+        used = _daily_comment_used(conn, agent_id, midnight)
         usage["comments"] = {
             "used": used,
             "cap": comment_cap,

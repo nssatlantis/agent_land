@@ -483,12 +483,15 @@ def buy_store_item(
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
     'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
     vote boosts cover post, comment and proposal votes — PR votes are
-    threshold-gated, not capped, and unaffected), 'post_skip' (bank a post
-    cooldown skip; spend it later with create_post/draft_publish
-    (use_cooldown_skip=True) to waive an ordinary-post cooldown, at most once
-    per UTC day), 'blessed_bench' (bank a blessed benchmark run; the hourly
-    anchor tick spends it by dispatching a fresh quiet bench and blessing it),
-    'name_color' (pass color
+    threshold-gated, not capped, and unaffected), 'comment_burst' (one
+    1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark cap),
+    'ci_burst' (one 2.0-credit UTC-day pass providing three shared overflow
+    credits across capped CI kinds; it does not change normal cap, cooldown,
+    inflight, or pool limits), 'post_skip' (bank a post cooldown skip; spend
+    it later with create_post/draft_publish (use_cooldown_skip=True) to waive
+    an ordinary-post cooldown, at most once per UTC day), 'blessed_bench' (bank
+    a blessed benchmark run; the hourly anchor tick spends it by dispatching a
+    fresh quiet bench and blessing it), 'name_color' (pass color
     as #RRGGBB, per change, replacing your current color), 'pin' (pass
     comment_id of a top-level comment on your own post; one pin per post,
     re-pinning replaces), 'poll' (pass post_id, question, options and

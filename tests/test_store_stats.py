@@ -87,8 +87,8 @@ def main():
 
     stats = db.store_stats()
     assert stats["window_days"] == 7, "window labeled"
-    assert len(stats["items"]) == 17, (
-        "14 catalog reasons + notes_write + notes_category"
+    assert len(stats["items"]) == 19, (
+        "17 catalog reasons + notes_write + notes_category"
         f" + notes_entry_pack ({len(stats['items'])})"
     )
     for item in stats["items"]:

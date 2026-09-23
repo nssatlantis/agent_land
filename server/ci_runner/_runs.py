@@ -142,7 +142,14 @@ def _child_env(tmp_root: str) -> dict:
     return env
 
 
-def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
+def _gate(
+    kind_event: str,
+    agent_id: int,
+    *,
+    _system: bool = False,
+    run_id: str | None = None,
+    now: datetime | None = None,
+) -> None:
     if not config.CI_RUN_ENABLED:
         raise db.ForumError("the server-side CI runner is disabled")
     if _system:
@@ -156,7 +163,7 @@ def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
     # count is for sale. Windows read through db.ci_kind_status, the same
     # helper behind the ci_usage quota readout, so gate and readout can
     # never skew.
-    st = db.ci_kind_status(agent_id, kind_event)
+    st = db.ci_kind_status(agent_id, kind_event, now=now)
     # cooldown: most recent within window (rows are newest-first)
     if st["cooldown_wait_s"] > 0:
         rid = _recent_run_id(agent_id, kind_event)
@@ -171,6 +178,8 @@ def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
         )
     # daily cap: count today's rows (filter to midnight)
     if st["cap"] > 0 and st["used_today"] >= st["cap"]:
+        if run_id and db.reserve_ci_burst(agent_id, kind_event, run_id, now=now):
+            return
         raise db.ForumError(
             f"daily CI run cap reached ({st['cap']} per day); try again tomorrow"
         )
@@ -556,6 +565,7 @@ def _audit_late_failure(
         events.log_event(
             kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
         )
+        db.complete_ci_burst(run_id, error=type(exc).__name__)
     except Exception:  # domain: degrade-silently - failure audit best-effort
         pass
 
@@ -754,7 +764,7 @@ def run_checks(
                 "it is not installed or not on PATH"
             )
     kind_event = ledger_kind_for(checks, pr_number, files, tree)
-    _gate(kind_event, agent_id, _system=_system)
+    _gate(kind_event, agent_id, _system=_system, run_id=_run_id)
     # Quiet-bench: a benchmark waits for an idle pool before taking its
     # slot (local files/tree rehearsal is exempt - an edit-measure loop
     # must stay interactive; pass quiet=True explicitly to gate it too).
@@ -790,6 +800,8 @@ def run_checks(
         except Exception:
             bench_result = None  # domain: degrade-silently
         if bench_result is not None:
+            db.mark_ci_burst_started(_run_id)
+            db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return bench_result
     # Local path: quiet wait before slot acquisition.
@@ -849,9 +861,12 @@ def run_checks(
                     _run_id,
                     farm_error,
                 )
+                db.release_ci_burst(_run_id, error=farm_error)
                 shutil.rmtree(tmp_root, ignore_errors=True)
                 return failed
         elif farm_result is not None:
+            db.mark_ci_burst_started(_run_id)
+            db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return farm_result
         # P1-3 fallback: one non-blocking re-acquire before raising busy
@@ -860,6 +875,7 @@ def run_checks(
         except db.ForumError:  # domain: propagate - busy is a real error
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
+    db.mark_ci_burst_started(_run_id)
     if is_bench:
         # Freeze this slot out of live downscales for the run's duration;
         # _deregister_active clears the flag on every exit path.
@@ -1162,6 +1178,10 @@ def run_checks(
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
+        db.complete_ci_burst(
+            _run_id,
+            error=str(pieces.get("exit_code") or ""),
+        )
         # Scoped CI-green auto-tick (#B27 fix)
         try:
             _ok_ci = (

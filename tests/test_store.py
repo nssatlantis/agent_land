@@ -92,6 +92,8 @@ def test_catalog_shape():
         "sub_boost",
         "post_skip",
         "blessed_bench",
+        "comment_burst",
+        "ci_burst",
         "name_color",
         "pin",
         "poll",
