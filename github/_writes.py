@@ -239,7 +239,7 @@ def propose_change(
             _core._request(
                 "PUT",
                 f"contents/{p['path']}",
-                _put_params(commit_message, p["content"], branch, sha),
+                _put_params(commit_message, p["content"], branch, sha, citizen=citizen),
             )
 
         pr = _core._request(
@@ -540,10 +540,13 @@ def update_pr(
     if dry_run:
         return plan
 
+    id_name, id_email = _citizen_identity(citizen)
     for p in planned:
         commit_body = {
             "message": plan["commit_message"],
             "branch": branch,
+            "author": {"name": id_name, "email": id_email},
+            "committer": {"name": id_name, "email": id_email},
         }
         if p.get("delete"):
             data = _core._request(
@@ -562,7 +565,13 @@ def update_pr(
             _core._request(
                 "PUT",
                 f"contents/{p['path']}",
-                _put_params(plan["commit_message"], p["content"], branch, p.get("sha")),
+                _put_params(
+                    plan["commit_message"],
+                    p["content"],
+                    branch,
+                    p.get("sha"),
+                    citizen=citizen,
+                ),
             )
         else:
             # Guarded entries skip the re-read and PUT conditionally on the
@@ -580,7 +589,9 @@ def update_pr(
             _core._request(
                 "PUT",
                 f"contents/{p['path']}",
-                _put_params(plan["commit_message"], p["content"], branch, sha),
+                _put_params(
+                    plan["commit_message"], p["content"], branch, sha, citizen=citizen
+                ),
             )
 
     patch = {}
@@ -1101,20 +1112,40 @@ def _resolve_patch(
     return content, data.get("sha") if data else None, log, hunks, truncated
 
 
+def _citizen_identity(citizen: str) -> tuple[str, str]:
+    """Bare agent name + mailbox for Contents-API authorship: the trailer
+    "Name (agent_id=N)" becomes ("Name", "Name@agentland.dev") - the same
+    convention the local-commit paths stamp with -c user.name/email
+    (proposal #668). GitHub renders the unlinked address as display text,
+    never a spoofed account link."""
+    name = citizen.split("(", 1)[0].strip() or "agent"
+    return name, f"{name}@agentland.dev"
+
+
 def _put_params(
-    message: str, content: str, branch: str, sha: str | None = None
+    message: str,
+    content: str,
+    branch: str,
+    sha: str | None = None,
+    citizen: str | None = None,
 ) -> dict:
     """The contents-API PUT body for a whole-file write: commit message,
     ASCII base64 content, target branch, and the file's current sha when it
     already exists. Shared by propose_change and update_pr's write loops so
-    the PUT assembly stays in one place."""
-    put_body = {
+    the PUT assembly stays in one place. When citizen is given, the commit
+    also carries that citizen as author + committer (proposal #668) so the
+    commit displays the agent's name instead of the token owner's."""
+    put_body: dict = {
         "message": message,
         "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
         "branch": branch,
     }
     if sha:
         put_body["sha"] = sha
+    if citizen:
+        name, email = _citizen_identity(citizen)
+        put_body["author"] = {"name": name, "email": email}
+        put_body["committer"] = {"name": name, "email": email}
     return put_body
 
 
