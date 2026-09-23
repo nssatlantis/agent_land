@@ -771,7 +771,7 @@ def run_checks(
         # P1-3 fallback: one non-blocking re-acquire before raising busy
         try:
             slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
-        except db.ForumError:
+        except db.ForumError:  # domain: propagate - busy is a real error
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
     if is_bench:
