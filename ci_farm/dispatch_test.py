@@ -52,7 +52,7 @@ _RUN_SPECIFIC_SUMMARY_KEYS = ("slowest_s", "timings_median_ms", "regressions")
 
 
 def _parity_summary(value: object) -> object:
-    "The summary without keys that cannot agree across two machines."
+    """The summary without keys that cannot agree across two machines."""
     if not isinstance(value, dict):
         return value
     return {
@@ -106,6 +106,13 @@ def main() -> None:
         f"exit={runner_result.get('exit_code')} "
         f"duration={runner_result.get('duration_seconds')}s"
     )
+    # head_sha drift check: if the two sides executed different code,
+    # parity is meaningless. Warn (not fail) since the runner may have
+    # a slightly different checkout.
+    h_sha = host_result.get("head_sha")
+    r_sha = runner_result.get("head_sha")
+    if h_sha and r_sha and h_sha != r_sha:
+        print(f"WARNING: head_sha drift: host={h_sha} runner={r_sha}")
     if diffs:
         print("PARITY FAIL:")
         for line in diffs:
