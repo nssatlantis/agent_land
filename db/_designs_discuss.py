@@ -17,6 +17,7 @@ from db._designs import (
     _require_open,
     _require_owner,
 )
+from db._designs_cores import _core_answer_question, _core_enable_comments
 
 _Q_BODY_MAX = 2000
 _COMMENT_MAX = 8000
@@ -103,122 +104,17 @@ def ask_question(token, design_id, body):
 
 
 def answer_question(token, design_id, question_id, answer):
-    """Owner-only single-shot public answer with fan-out."""
-    clean = (answer or "").strip()
-    if not clean or len(clean) > _Q_BODY_MAX:
-        raise ForumError(f"answer must be 1-{_Q_BODY_MAX} characters.")
+    """Owner-only single-shot public answer (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        row = _question_row(conn, question_id, design["id"])
-        if row["state"] != "open":
-            raise ForumError("that question is already answered.")
-        now = _now_iso()
-        conn.execute(
-            "UPDATE design_questions SET answer = ?, state = 'answered',"
-            " answered_at = ? WHERE id = ?",
-            (clean, now, int(row["id"])),
-        )
-        import events
-
-        events.log_event(
-            events.EVT_DESIGN_ANSWERED,
-            actor_agent_id=agent["id"],
-            target_type="design",
-            target_id=int(design["id"]),
-            detail={"question_id": int(row["id"])},
-            conn=conn,
-        )
-        seen = set()
-        for r in conn.execute(
-            "SELECT DISTINCT author_id FROM design_features WHERE design_id = ?"
-            " AND author_id IS NOT NULL",
-            (int(design["id"]),),
-        ).fetchall():
-            seen.add(int(r["author_id"]))
-        for r in conn.execute(
-            "SELECT DISTINCT asker_id FROM design_questions WHERE design_id = ?"
-            " AND asker_id IS NOT NULL",
-            (int(design["id"]),),
-        ).fetchall():
-            seen.add(int(r["asker_id"]))
-        from notifications import _notify_many
-
-        _notify_many(
-            conn,
-            sorted(seen),
-            "design",
-            "design",
-            int(design["id"]),
-            f"design #{design['id']}: question #{row['id']} answered",
-            actor_agent_id=agent["id"],
-            actor_name=agent["name"],
-        )
-        from db._subscriptions import _notify_design_subscribers
-
-        _notify_design_subscribers(
-            conn,
-            int(design["id"]),
-            f"design #{design['id']}: question #{row['id']} answered",
-            actor_agent_id=agent["id"],
-            exclude_agent_ids=set(seen),
-            actor_name=agent["name"],
-        )
-        return {"question_id": int(row["id"]), "state": "answered"}
+        return _core_answer_question(conn, agent, design_id, question_id, answer)
 
 
 def enable_comments(token, design_id, enabled=True):
-    """Owner-only comment toggle; enabling needs 24h age. Disabling anytime."""
-    from datetime import datetime, timezone
-
-    from db._core import _parse_iso
-
+    """Owner-only comment toggle (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        import events
-
-        if enabled and not design["comments_enabled"]:
-            created = _parse_iso(design["created_at"])
-            age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
-            if age_h < float(config.DESIGN_COMMENTS_MIN_HOURS):
-                raise ForumError(
-                    "comments unlock "
-                    f"{config.DESIGN_COMMENTS_MIN_HOURS}h after the design opens."
-                )
-            now = _now_iso()
-            conn.execute(
-                "UPDATE designs SET comments_enabled = 1, enabled_at = ? WHERE id = ?",
-                (now, int(design["id"])),
-            )
-            events.log_event(
-                events.EVT_DESIGN_COMMENTS_TOGGLED,
-                actor_agent_id=agent["id"],
-                target_type="design",
-                target_id=int(design["id"]),
-                detail={"enabled": True},
-                conn=conn,
-            )
-            return {"design_id": int(design["id"]), "comments_enabled": True}
-        if not enabled and design["comments_enabled"]:
-            conn.execute(
-                "UPDATE designs SET comments_enabled = 0 WHERE id = ?",
-                (int(design["id"]),),
-            )
-            events.log_event(
-                events.EVT_DESIGN_COMMENTS_TOGGLED,
-                actor_agent_id=agent["id"],
-                target_type="design",
-                target_id=int(design["id"]),
-                detail={"enabled": False},
-                conn=conn,
-            )
-            return {"design_id": int(design["id"]), "comments_enabled": False}
-        return {"design_id": int(design["id"]), "unchanged": True}
+        return _core_enable_comments(conn, agent, design_id, enabled)
 
 
 def add_comment(token, design_id, body):
