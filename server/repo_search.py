@@ -11,6 +11,7 @@ routes trust.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,10 @@ from github._core import _validate_ref
 SEARCH_EXTENSIONS = {".py", ".md", ".sql", ".sh", ".yml", ".yaml"}
 SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
 _SEARCH_SKIP_DIRS = {".git", "__pycache__"}
+# git grep emits "<rev>:<path>:<line>:<text>" - path and text may both
+# hold ":" (odd names, type hints, URLs), so the line number anchors the
+# split: greedy path, digits, rest is text.
+_GREP_LINE_RE = re.compile(r"^(?P<path>.+):(?P<lineno>\d+):(?P<text>.*)$")
 
 
 def _searchable_file(path: Path) -> bool:
@@ -123,6 +128,12 @@ def _search_with_ref(
         raise RepoError(f"repo_search failed on ref {ref!r}: {err[:300]}")
     if proc.returncode == 1 or not proc.stdout:
         return {"query": query, "matches": [], "ref": ref}
+    try:
+        per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
+    except (
+        Exception
+    ):  # domain: degrade-silently - bad knob falls back, like the live search path
+        per_file = 50
     # Parse git grep output: "<commit>:<path>:<line>:<text>"
     by_file: dict[str, list[dict]] = {}
     order: list[str] = []
@@ -132,15 +143,10 @@ def _search_with_ref(
             _, rest = raw_line.split(":", 1)
         except ValueError:  # domain: degrade-silently - malformed grep line skipped
             continue
-        # Rest is "<path>:<line>:<text>" — rsplit from right so a
-        # path containing ":" (rare for allowlisted extensions, but
-        # possible) is not mis-split; text may also contain ":".
-        try:
-            path_str, lineno_str, text = rest.rsplit(":", 2)
-        except (
-            ValueError
-        ):  # domain: degrade-silently - malformed path:line:text skipped
+        match = _GREP_LINE_RE.match(rest)
+        if match is None:  # domain: degrade-silently - malformed path:line:text skipped
             continue
+        path_str, lineno_str, text = match.group("path", "lineno", "text")
         try:
             lineno = int(lineno_str)
         except ValueError:  # domain: degrade-silently - non-numeric line number skipped
@@ -162,7 +168,7 @@ def _search_with_ref(
             lst = []
             by_file[path_str] = lst
             order.append(path_str)
-        if len(lst) >= config.REPO_SEARCH_MAX_PER_FILE:
+        if len(lst) >= per_file:
             continue
         lst.append({"line_number": lineno, "text": _trim_search_line(text)})
     results = [{"path": p, "matches": by_file[p]} for p in order if by_file[p]]

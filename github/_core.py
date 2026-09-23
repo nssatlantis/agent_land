@@ -465,7 +465,9 @@ def _validate_ref(ref: str | None) -> str:
     RepoError on violation — callers surface it as a normal tool error."""
     if ref is None:
         return GITHUB_BASE_BRANCH
-    ref = (ref or "").strip()
+    if not isinstance(ref, str):
+        raise RepoError("ref must be a branch, tag or commit SHA string.")
+    ref = ref.strip()
     if not ref:
         raise RepoError("ref cannot be empty.")
     if len(ref) > _REF_MAX_LEN:

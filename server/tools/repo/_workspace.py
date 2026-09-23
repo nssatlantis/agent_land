@@ -235,7 +235,7 @@ def workspace_search(
         raise db.ForumError("max_results must be an integer.") from exc
     try:
         per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
-    except Exception:
+    except Exception:  # domain: degrade-silently - bad knob falls back to 50
         per_file = 50
     cap_bytes = _transfer_file_cap_bytes()
     if ref is not None:

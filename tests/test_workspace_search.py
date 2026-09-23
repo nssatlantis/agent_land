@@ -228,7 +228,8 @@ def test_search_at_ref(agents, wstools):
         aid = agents["alpha"]["agent_id"]
         dest = ws._claim_dir(aid, pid, "dev")
         w(tok, pid, "dev", "notes/todo.txt", "frozenmarker one\n")
-        _git("-C", dest, "add", "notes/todo.txt")
+        w(tok, pid, "dev", "notes/typed.txt", "frozenmarker: typed details\n")
+        _git("-C", dest, "add", "notes/todo.txt", "notes/typed.txt")
         _git(
             "-C",
             dest,
@@ -249,10 +250,37 @@ def test_search_at_ref(agents, wstools):
         assert old, "need the frozen commit sha"
         w(tok, pid, "dev", "notes/todo.txt", "livemarker two\n")
         at_ref = s(tok, pid, "dev", "frozenmarker", ref=old)
-        # .txt is outside repo_search's allowlist: this hit proves the
+        # .txt is outside repo_search's allowlist: these hits prove the
         # ref path keeps the workspace file universe, not the allowlist.
-        assert [m["path"] for m in at_ref["matches"]] == ["notes/todo.txt"], at_ref
+        assert {m["path"] for m in at_ref["matches"]} == {
+            "notes/todo.txt",
+            "notes/typed.txt",
+        }, at_ref
         assert at_ref["ref"] == old, at_ref
+        # Colon-bearing match lines must survive the grep parse (rsplit
+        # silently dropped them: lineno parsed as text).
+        typed = s(tok, pid, "dev", "typed details", ref=old)
+        assert [m["path"] for m in typed["matches"]] == ["notes/typed.txt"], typed
+        assert typed["matches"][0]["matches"][0]["line_number"] == 1, typed
+        # Search-side origin/ fallback: publish, drop local, resolve remote.
+        _git("-C", dest, "branch", "search-pin", old)
+        _git("-C", dest, "push", "origin", "search-pin")
+        _git("-C", dest, "branch", "-D", "search-pin")
+        via_origin = s(tok, pid, "dev", "frozenmarker", ref="search-pin")
+        assert {m["path"] for m in via_origin["matches"]} == {
+            "notes/todo.txt",
+            "notes/typed.txt",
+        }, via_origin
+        # A poisoned per-file knob must degrade (live-path parity), not 500.
+        os.environ["FORUM_REPO_SEARCH_MAX_PER_FILE"] = "garbage"
+        try:
+            poisoned = s(tok, pid, "dev", "frozenmarker", ref=old)
+            assert {m["path"] for m in poisoned["matches"]} == {
+                "notes/todo.txt",
+                "notes/typed.txt",
+            }, poisoned
+        finally:
+            del os.environ["FORUM_REPO_SEARCH_MAX_PER_FILE"]
         assert s(tok, pid, "dev", "livemarker", ref=old)["matches"] == [], at_ref
         live = s(tok, pid, "dev", "livemarker")
         assert [m["path"] for m in live["matches"]] == ["notes/todo.txt"], live
@@ -262,6 +290,9 @@ def test_search_at_ref(agents, wstools):
         )
         assert "invalid ref" in _expect_tool_error(
             s, tok, pid, "dev", "frozenmarker", ref="bad..ref"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            s, tok, pid, "dev", "frozenmarker", ref="a~1"
         )
         beta = agents["beta"]["token"]
         assert "no active workspace" in _expect_tool_error(

@@ -275,7 +275,15 @@ def test_read_at_ref(agents, wstools):
         dest = ws._claim_dir(aid, pid, "dev")
         w(tok, pid, "dev", "frozen.txt", "committed one\ncommitted two\n")
         w(tok, pid, "dev", "sub/f.txt", "inner\n")
-        _git("-C", dest, "add", "frozen.txt", "sub/f.txt")
+        Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00binary\n")
+        Path(dest, "bigref.txt").write_text("z" * ((1 << 20) + 1), encoding="utf-8")
+        extras = ["blob.bin", "bigref.txt"]
+        try:
+            os.symlink("frozen.txt", os.path.join(dest, "linkref.txt"))
+            extras.append("linkref.txt")
+        except (OSError, NotImplementedError):
+            pass
+        _git("-C", dest, "add", "frozen.txt", "sub/f.txt", *extras)
         _git(
             "-C",
             dest,
@@ -333,6 +341,29 @@ def test_read_at_ref(agents, wstools):
         )
         assert "is a directory" in _expect_tool_error(
             r, tok, pid, "dev", "sub", ref=old
+        )
+        # Binary at ref decodes with replacement (proves the bytes path -
+        # text-mode git would raise before returning).
+        at_bin = r(tok, pid, "dev", "blob.bin", ref=old)
+        assert "binary" in at_bin["content"], at_bin
+        assert "over the" in _expect_tool_error(
+            r, tok, pid, "dev", "bigref.txt", ref=old
+        )
+        if "linkref.txt" in extras:
+            # Unreachable via the MCP tool (live symlink components
+            # refuse first), so pinned at the engine: the link blob reads
+            # as its target text.
+            link_raw, link_ref = ws.read_file_at_ref(dest, "linkref.txt", old)
+            assert link_raw == b"frozen.txt", link_raw
+            assert link_ref == old, link_ref
+        assert "must be a" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref=123
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="@{head}"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="-lead"
         )
         beta = agents["beta"]["token"]
         assert "no active workspace" in _expect_tool_error(

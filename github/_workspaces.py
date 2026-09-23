@@ -566,21 +566,23 @@ def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
 
     No checkout, no worktree touch: dirty edits are invisible here by
     design, so a fix trail can be audited against the branch itself.
-    The blob is located via `ls-tree` (pathspec-safe - a `:` in the
-    name can never split a `rev:path` arg) and materialized with
-    `cat-file -p` over the bytes path, so binaries read like the live
-    path does (decoded with replacement downstream). The transfer cap
-    is enforced from the `ls-tree --long` size before any byte moves.
-    Symlink blobs read as their target text (the committed bytes);
-    directories, submodules and missing paths refuse.
+    The blob is located via `ls-tree -z` (NUL-split, unquoted: a quote,
+    backslash or newline in the name can never break the parse - and a
+    `:` in the name can never split a `rev:path` arg, since no such arg
+    is built) and materialized with `cat-file -p` over the bytes path, so
+    binaries read like the live path does (decoded with replacement
+    downstream). The transfer cap is enforced from the `ls-tree --long`
+    size before any byte moves. Symlink blobs read as their target text
+    (the committed bytes); directories, submodules and missing paths
+    refuse.
     """
     validated, commit = _resolve_tree_commit(dest, ref)
-    listed = _git(dest, "ls-tree", "--long", commit, "--", clean, check=False)
+    listed = _git(dest, "ls-tree", "--long", "-z", commit, "--", clean, check=False)
     if listed.returncode != 0:
         raise RepoError(f"could not list {clean!r} at ref {validated!r}.")
     entry: list[str] | None = None
-    for line in listed.stdout.splitlines():
-        meta, _, name = line.partition("\t")
+    for record in listed.stdout.split("\0"):
+        meta, _, name = record.partition("\t")
         if name == clean:
             entry = meta.split()
             break
