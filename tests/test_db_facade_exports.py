@@ -206,6 +206,9 @@ EXPECTED = [
     "admin_answer_question",
     "admin_enable_comments",
     "admin_design_pending",
+    # designs subscriptions (proposal #652 follow-ups)
+    "subscribe_design",
+    "unsubscribe_design",
 ]
 
 
