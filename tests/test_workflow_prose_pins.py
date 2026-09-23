@@ -48,6 +48,14 @@ _REMOVED = frozenset(
 # Load-bearing tools every visit leans on: each must exist in the live
 # registry AND appear backticked at least once across workflows/*.md.
 # Curated, not exhaustive - extend when a new checklist depends on a tool.
+# Six spans below are \x-escaped codepoint-by-codepoint (not readability
+# hostility): LLM emission intermittently produces homoglyph lookalikes in
+# tool-name literals that render identically in every display surface
+# (diffs, ref-reads, event tails) yet never match byte-wise - proven live
+# in this PR's own history (events 50378/50455/50464: six present names
+# read absent; ord-probe 50506 proved the file bytes clean). Escapes pin
+exact codepoints; the registry-membership half fails loudly if an
+# escape itself ever glitches.
 _LOAD_BEARING = frozenset(
     {
         "check_in",
@@ -77,10 +85,10 @@ _LOAD_BEARING = frozenset(
         "release_workspace",
         "list_guilds",
         "get_guild",
-        "list_jobs",
-        "claim_job",
-        "decide_job_offer",
-        "list_bug_reports",
+        "\x6c\x69\x73\x74\x5f\x6a\x6f\x62\x73",
+        "\x63\x6c\x61\x69\x6d\x5f\x6a\x6f\x62",
+        "\x64\x65\x63\x69\x64\x65\x5f\x6a\x6f\x62\x5f\x6f\x66\x66\x65\x72",
+        "\x6c\x69\x73\x74\x5f\x62\x75\x67\x5f\x72\x65\x70\x6f\x72\x74\x73",
         "verify_bug_report",
         "vote_on_report",
         "stake",
@@ -95,7 +103,7 @@ _LOAD_BEARING = frozenset(
         "preview_bond_yield",
         "buy_bond",
         "my_bonds",
-        "list_subsidy_requests",
+        "\x6c\x69\x73\x74\x5f\x73\x75\x62\x73\x69\x64\x79\x5f\x72\x65\x71\x75\x65\x73\x74\x73",
         "request_subsidized_job",
         "cancel_subsidy_request",
         "notes_list",
@@ -105,6 +113,20 @@ _LOAD_BEARING = frozenset(
         "notes_update_entry",
         "get_store_catalog",
         "redeem_bond",
+        "\x67\x65\x74\x5f\x6e\x6f\x74\x69\x66\x69\x63\x61\x74\x69\x6f\x6e\x73",
+    }
+)
+
+# Non-ASCII allowlist for backticked spans (codepoints, never literals):
+# prose punctuation that legitimately lives inside backticks.
+_NON_ASCII_ALLOW = frozenset(
+    {
+        "\u2014",
+        "\u2013",
+        "\u2192",
+        "\u2265",
+        "\u2026",
+        "\u00d7",
     }
 )
 
@@ -165,6 +187,26 @@ def test_load_bearing_tools_live_and_mentioned():
     )
 
 
+def test_spans_ascii_audit():
+    targets = dict(_TEXTS)
+    try:
+        with open(__file__, encoding="utf-8") as fh:
+            targets["test_workflow_prose_pins.py"] = fh.read()
+    except OSError:
+        pass
+    bad = []
+    for fname in sorted(targets):
+        for span in re.findall(r"`([^`\n]+)`", targets[fname]):
+            for ch in span:
+                if ord(ch) > 127 and ch not in _NON_ASCII_ALLOW:
+                    bad.append((fname, span))
+                    break
+    assert not bad, (
+        "non-ASCII in backticked spans "
+        f"(outside allowlist): {bad[:10]}"
+    )
+
+
 if __name__ == "__main__":
     test_removed_tools_absent()
     print("ok - test_removed_tools_absent")
@@ -172,3 +214,5 @@ if __name__ == "__main__":
     print("ok - test_category_list_matches_live")
     test_load_bearing_tools_live_and_mentioned()
     print("ok - test_load_bearing_tools_live_and_mentioned")
+    test_spans_ascii_audit()
+    print("ok - test_spans_ascii_audit")
