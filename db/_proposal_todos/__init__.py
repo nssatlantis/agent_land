@@ -10,6 +10,7 @@ keep working unchanged.
 
 from ._claims import (  # noqa: F401
     _MOVE_BATCH_MAX,
+    _TICK_BATCH_MAX,
     _claim_expired,
     _restore_claims,
     _restore_list_claims,
@@ -64,6 +65,7 @@ from ._mutations import (  # noqa: F401
     move_todo_items,
     set_todos_for_post,
     tick_todo_item,
+    tick_todo_items,
     update_todo_item,
     update_todo_list,
 )
