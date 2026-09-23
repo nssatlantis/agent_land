@@ -82,24 +82,89 @@ def test_pick_runner_skips_busy():
         farm.remove_runner(row["id"])
 
 
-def test_pick_runner_skips_stale():
-    row = farm.register_runner("s", "http://x", token="t")
+def test_pick_runner_recovers_stale():
+    """A recorded-stale runner is still pinged; a healthy ping recovers it
+    (fresh heartbeat, picked). Skipping without ping would brick the farm
+    after STALE_SECONDS of idleness - nothing else refreshes heartbeats."""
+    row = farm.register_runner("rec", "http://x", token="t")
     with db._conn(immediate=True) as conn:
         conn.execute(
             "UPDATE ci_runners SET last_heartbeat = ? WHERE id = ?",
             ("2020-01-01T00:00:00.000Z", row["id"]),
         )
-
-    def boom(url, token):
-        raise AssertionError("a stale runner must not be pinged")
-
     orig = farm._ping
-    farm._ping = boom
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
     try:
-        assert farm.pick_runner() is None
+        picked = farm.pick_runner()
+        assert picked is not None and picked["id"] == row["id"]
+        fresh = _find(farm.list_runners(), row["id"])
+        assert fresh["status"] == "healthy"
+        assert fresh["last_heartbeat"] != "2020-01-01T00:00:00.000Z"
     finally:
         farm._ping = orig
         farm.remove_runner(row["id"])
+
+
+def test_pick_runner_marks_dead_stale():
+    """A recorded-stale runner whose ping fails is marked stale and skipped."""
+    row = farm.register_runner("dead", "http://x", token="t")
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE ci_runners SET last_heartbeat = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", row["id"]),
+        )
+    orig = farm._ping
+    farm._ping = lambda url, token: None
+    try:
+        assert farm.pick_runner() is None
+        assert _find(farm.list_runners(), row["id"])["status"] == "stale"
+    finally:
+        farm._ping = orig
+        farm.remove_runner(row["id"])
+
+
+def test_register_duplicate_refused():
+    """A duplicate runner name fails closed (ForumError), and a real DB
+    error is not masked as a duplicate."""
+    row = farm.register_runner("dup", "http://x", token="t")
+    try:
+        try:
+            farm.register_runner("dup", "http://y", token="t")
+        except db.ForumError:
+            pass
+        else:
+            raise AssertionError("duplicate name must raise ForumError")
+    finally:
+        farm.remove_runner(row["id"])
+
+
+def test_farm_status_admin_and_strip():
+    """ci_farm_status refuses non-admin callers and never exposes the
+    runner bearer token or its hash."""
+    from server.tools.repo._govern import ci_farm_status
+
+    admin = db.register_agent("farm-admin")
+    other = db.register_agent("farm-other")
+    orig_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = "farm-admin"
+    row = farm.register_runner("st", "http://x", token="secret-t")
+    try:
+        try:
+            ci_farm_status(other["token"])
+        except Exception as exc:
+            assert "Admin privileges required" in str(exc)
+        else:
+            raise AssertionError("non-admin must be refused")
+        status = ci_farm_status(admin["token"])
+        assert status["runners"], "registry must list the runner"
+        for r in status["runners"]:
+            assert "token" not in r and "token_hash" not in r
+    finally:
+        farm.remove_runner(row["id"])
+        if orig_admin is None:
+            os.environ.pop("ADMIN_USER", None)
+        else:
+            os.environ["ADMIN_USER"] = orig_admin
 
 
 def test_map_and_log_provenance():
@@ -276,7 +341,10 @@ def main():
     test_register_list_remove()
     test_pick_runner_healthy()
     test_pick_runner_skips_busy()
-    test_pick_runner_skips_stale()
+    test_pick_runner_recovers_stale()
+    test_pick_runner_marks_dead_stale()
+    test_register_duplicate_refused()
+    test_farm_status_admin_and_strip()
     test_map_and_log_provenance()
     test_try_dispatch_disabled()
     test_try_dispatch_gates()
