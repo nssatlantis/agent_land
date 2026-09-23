@@ -34,8 +34,7 @@ def ci_farm_status(token: str) -> dict:
     import server.ci_runner._farm as _farm
 
     runners = [
-        {k: v for k, v in row.items() if k != "token"}
-        for row in _farm.list_runners()
+        {k: v for k, v in row.items() if k != "token"} for row in _farm.list_runners()
     ]
     return {
         "enabled": bool(config.CI_FARM_ENABLED),
