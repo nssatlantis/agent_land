@@ -418,9 +418,13 @@ def run_checks_with_deadline(
                         _run_id=run_id,
                     )
                 )
-            except (
-                TypeError
-            ):  # domain: degrade-silently - pre-base_ref run_checks fakes in tests
+            except TypeError as exc:
+                # Narrow retry: only a stale-fake signature mismatch (which
+                # names base_ref) falls back. A genuine interior TypeError
+                # re-raises with its traceback intact - retrying without the
+                # base would rehearse the wrong tree and hide the bug.
+                if base_ref is None or "base_ref" not in str(exc):
+                    raise
                 result_holder.append(
                     run_checks(
                         agent_id,
