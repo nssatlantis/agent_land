@@ -210,6 +210,7 @@ from db._designs_admin import (  # noqa: F401
     admin_answer_question,
     admin_decide_feature,
     admin_decide_issue,
+    admin_design_pending,
     admin_enable_comments,
     admin_move_design_item,
     admin_resolve_issue,
