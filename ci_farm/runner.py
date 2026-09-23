@@ -25,7 +25,9 @@ import argparse
 import hmac
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -33,10 +35,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUNNER_VERSION = 1
 
+# Body cap: 10 MB max request body (prevents OOM/disk-fill from a
+# token holder). Files in local mode are additionally capped.
+MAX_BODY_BYTES = 10 * 1024 * 1024
+MAX_FILES_COUNT = 50
+MAX_FILES_TOTAL_BYTES = 5 * 1024 * 1024
+
+# extra_env allowlist: only these keys may be injected into the sandbox.
+_EXTRA_ENV_ALLOWLIST = frozenset({
+    "AGENTLAND_BENCH_ANCHOR",
+    "AGENTLAND_BENCH_BASE",
+    "AGENTLAND_BENCH_LABEL",
+})
+_EXTRA_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXTRA_ENV_MAX_VALUE_LEN = 256
+
 _CHECKS_TO_SCRIPT = {
-    "tests": "tests/run_all.py",
+    "tests": "tests/run_ci.py",
     "static": "tests/run_static.py",
     "format": "tests/run_format.py",
+    "benchmarks": "tests/benchmark_github.py",
     "db_benchmark": "tests/test_benchmark.py",
     "db_bench": "tests/test_benchmark.py",
 }
@@ -49,6 +67,16 @@ def _repo_root() -> str:
     if env:
         return env
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data_dir() -> str:
+    dd = os.environ.get("AGENTLAND_DATA_DIR")
+    if not dd:
+        root = _repo_root()
+        dd = os.path.join(root, "ci_farm", "data")
+        os.makedirs(dd, exist_ok=True)
+        os.environ["AGENTLAND_DATA_DIR"] = dd
+    return dd
 
 
 def _bootstrap() -> dict:
@@ -64,11 +92,7 @@ def _bootstrap() -> dict:
     root = _repo_root()
     if root not in sys.path:
         sys.path.insert(0, root)
-    data_dir = os.environ.get("AGENTLAND_DATA_DIR")
-    if not data_dir:
-        data_dir = os.path.join(root, "ci_farm", "data")
-        os.makedirs(data_dir, exist_ok=True)
-        os.environ["AGENTLAND_DATA_DIR"] = data_dir
+    _data_dir()
     import config
     import server.ci_runner._runs as runs
     import server.ci_runner._sandbox as sandbox
@@ -91,6 +115,51 @@ def _check_token(token: str, expected: str) -> bool:
     return hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))
 
 
+def _validate_extra_env(extra_env: object) -> dict[str, str] | None:
+    """Validate and sanitize the extra_env dict. Returns None if absent,
+    a clean dict if valid, raises ValueError if invalid."""
+    if extra_env is None:
+        return None
+    if not isinstance(extra_env, dict):
+        raise ValueError("extra_env must be a dict or absent")
+    clean: dict[str, str] = {}
+    for k, v in extra_env.items():
+        if not isinstance(k, str) or not _EXTRA_ENV_KEY_RE.match(k):
+            raise ValueError(f"extra_env key {k!r} is not a valid identifier")
+        if k not in _EXTRA_ENV_ALLOWLIST:
+            raise ValueError(f"extra_env key {k!r} is not in the allowlist")
+        if not isinstance(v, str):
+            raise ValueError(f"extra_env value for {k!r} must be a string")
+        if len(v) > _EXTRA_ENV_MAX_VALUE_LEN:
+            raise ValueError(
+                f"extra_env value for {k!r} exceeds {_EXTRA_ENV_MAX_VALUE_LEN} chars"
+            )
+        clean[k] = v
+    return clean
+
+
+def _validate_files(files: object) -> list[dict]:
+    """Validate the files list for local mode. Raises ValueError if invalid."""
+    if not isinstance(files, list) or not files:
+        raise ValueError("files must be a non-empty list")
+    if len(files) > MAX_FILES_COUNT:
+        raise ValueError(f"files exceeds max count {MAX_FILES_COUNT}")
+    total = 0
+    for i, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            raise ValueError(f"files[{i}] must be a dict")
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"files[{i}].path must be a non-empty string")
+        content = entry.get("content", "")
+        if not isinstance(content, str):
+            raise ValueError(f"files[{i}].content must be a string")
+        total += len(content.encode("utf-8"))
+        if total > MAX_FILES_TOTAL_BYTES:
+            raise ValueError(f"files total bytes exceeds {MAX_FILES_TOTAL_BYTES}")
+    return files
+
+
 def _run_job(payload: dict) -> dict:
     """Run one CI job exactly the way the host would.
 
@@ -109,19 +178,17 @@ def _run_job(payload: dict) -> dict:
     if script_rel is None:
         return {"ok": False, "error": f"unknown checks: {checks}"}
     mode = str(payload.get("mode", "main"))
-    extra_env = payload.get("extra_env")
-    if not isinstance(extra_env, dict):
-        extra_env = None
+    base_sha = payload.get("base_sha")
+    if base_sha is not None:
+        if not isinstance(base_sha, str) or len(base_sha) != 40:
+            return {"ok": False, "error": "base_sha must be a 40-char hex string"}
+    extra_env = _validate_extra_env(payload.get("extra_env"))
 
-    tmp_root = tempfile.mkdtemp(prefix="agentland_farm_")
+    data_dir = _data_dir()
+    tmp_root = tempfile.mkdtemp(prefix="agentland_farm_", dir=data_dir)
     try:
         if mode == "local":
-            files = payload.get("files")
-            if not isinstance(files, list) or not files:
-                return {
-                    "ok": False,
-                    "error": "mode=local requires a non-empty files list",
-                }
+            files = _validate_files(payload.get("files"))
             tree, head_sha, merge_info = trees._prepare_local_tree(files, slot=0)
             sandboxed = True
             image_tag = sandbox._ensure_image(tree, merge_info["base"])
@@ -138,6 +205,20 @@ def _run_job(payload: dict) -> dict:
             base_sha = merge_info.get("base") or head_sha
         elif mode == "main":
             tree, head_sha = trees._prepare_tree(slot=0)
+            if base_sha is not None:
+                check = subprocess.run(
+                    ["git", "-C", tree, "cat-file", "-e", base_sha],
+                    capture_output=True,
+                )
+                if check.returncode != 0:
+                    return {"ok": False, "error": f"base_sha {base_sha} not found"}
+                reset = subprocess.run(
+                    ["git", "-C", tree, "reset", "--hard", base_sha],
+                    capture_output=True,
+                )
+                if reset.returncode != 0:
+                    return {"ok": False, "error": f"could not reset to {base_sha}"}
+                head_sha = base_sha
             sandboxed = bool(
                 config.CI_RUN_NATIVE_SANDBOX
                 and config.CI_RUN_BRANCH_ENABLED
@@ -158,7 +239,6 @@ def _run_job(payload: dict) -> dict:
                 argv = [sys.executable, script_rel]
                 container_name = None
             env = runs._child_env(tmp_root)
-            base_sha = None
         else:
             return {"ok": False, "error": f"unknown mode: {mode}"}
 
@@ -180,6 +260,8 @@ def _run_job(payload: dict) -> dict:
             result["base_sha"] = base_sha
             result["merge_conflict"] = False
             result["local"] = True
+        if base_sha is not None:
+            result["executed_base_sha"] = base_sha
         result.update(pieces)
         if mode == "main" and checks == "tests":
             static_result = (
@@ -214,12 +296,20 @@ class FarmHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
+            docker_ok = False
+            try:
+                mods = _bootstrap()
+                docker_ok = mods["sandbox"]._docker_available()
+            except Exception:
+                pass
             self._json(
                 200,
                 {
                     "ok": True,
                     "version": RUNNER_VERSION,
                     "busy": self.lock.locked(),
+                    "docker_available": docker_ok,
+                    "active_runs": 1 if self.lock.locked() else 0,
                 },
             )
         else:
@@ -235,22 +325,29 @@ class FarmHandler(BaseHTTPRequestHandler):
         ):
             self._json(401, {"error": "unauthorized"})
             return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception:
-            self._json(400, {"error": "bad json body"})
-            return
-        if not isinstance(payload, dict):
-            self._json(400, {"error": "body must be a JSON object"})
-            return
+        # Acquire the lock BEFORE reading the body: a busy runner
+        # rejects immediately without consuming the upload.
         if not self.lock.acquire(blocking=False):
             self._json(409, {"error": "runner busy; retry later"})
             return
         try:
-            self._json(200, _run_job(payload))
-        except Exception as exc:
-            self._json(500, {"error": str(exc)})
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > MAX_BODY_BYTES:
+                    self._json(413, {"error": "body exceeds 10 MB limit"})
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except Exception:
+                self._json(400, {"error": "bad json body"})
+                return
+            if not isinstance(payload, dict):
+                self._json(400, {"error": "body must be a JSON object"})
+                return
+            try:
+                self._json(200, _run_job(payload))
+            except Exception as exc:
+                sys.stderr.write(f"ci_farm runner error: {exc}\n")
+                self._json(500, {"error": "internal runner error"})
         finally:
             self.lock.release()
 
@@ -271,6 +368,7 @@ class FarmRunner:
 
     def shutdown(self) -> None:
         self.server.shutdown()
+        self.server.server_close()
 
 
 def main() -> None:
