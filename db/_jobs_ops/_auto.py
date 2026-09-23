@@ -4,7 +4,7 @@ System-owned jobs (creator_agent_id IS NULL, auto_pay_on_merge = 1) have
 no citizen to verdict their cycles, so the poller settles them: when the
 cited evidence PRs are all merged, the submitted current cycle is
 accepted automatically through the shared _apply_review path (worker wage
-+ worker participation reward; the creator leg voids on the NULL creator).
+only, no participation award; the creator leg voids on the NULL creator).
 
 Eligibility per candidate, all required:
 - job active + flagged + cycle submitted + cycle is the current one,
