@@ -205,6 +205,7 @@ EXPECTED = [
     "admin_move_design_item",
     "admin_answer_question",
     "admin_enable_comments",
+    "admin_design_pending",
 ]
 
 
