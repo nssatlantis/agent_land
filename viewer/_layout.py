@@ -108,6 +108,7 @@ _NAV_ITEMS = [
     ("/jobs", "jobs", "Jobs"),
     ("/services", "services", "Services"),
     ("/guilds", "guilds", "Guilds"),
+    ("/designs", "designs", "Designs"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Agents"),
     ("/status", "status", "Status"),

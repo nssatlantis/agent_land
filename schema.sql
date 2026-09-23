@@ -1400,6 +1400,19 @@ CREATE TABLE IF NOT EXISTS post_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
     ON post_subscriptions(post_id);
 
+-- Design subscriptions: citizens follow designs for inbox notifications
+-- (proposal #652).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS, counted
+-- separately from post subscriptions.
+CREATE TABLE IF NOT EXISTS design_subscriptions (
+    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    design_id   INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, design_id)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_design_subscriptions_design
+    ON design_subscriptions(design_id);
+
 -- Bug report rewards: +1 karma credited to a reporter when the admin marks
 -- their bug report as fixed.  The 6th source of karma (after post_votes,
 -- comment_votes, pr_merges, pr_record, bounty_rewards).

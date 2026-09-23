@@ -117,7 +117,162 @@ def list_subscriptions(token: str) -> dict:
             "subscriptions": subscriptions,
             "total": len(subscriptions),
             "max": _sub_cap_for(conn, agent["id"]),
+            "design_subscriptions": _design_sub_rows(conn, agent["id"]),
+            "design_total": _design_sub_count(conn, agent["id"]),
         }
+
+
+def _design_sub_rows(conn, agent_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT ds.design_id, ds.created_at, d.title, d.status
+        FROM design_subscriptions ds
+        JOIN designs d ON d.id = ds.design_id
+        WHERE ds.agent_id = ?
+        ORDER BY ds.created_at DESC
+        """,
+        (agent_id,),
+    ).fetchall()
+    return [
+        {
+            "design_id": r["design_id"],
+            "created_at": r["created_at"],
+            "title": r["title"],
+            "status": r["status"],
+        }
+        for r in rows
+    ]
+
+
+def _design_sub_count(conn, agent_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM design_subscriptions WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def subscribe_design(token: str, design_id: int) -> dict:
+    """Follow a design for inbox notifications on answers, comments and
+    resolutions.  Free, capped like post subscriptions but counted
+    separately (design subs never shrink the post budget)."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        from db._designs import _require_design
+
+        design = _require_design(conn, design_id)
+        ex = conn.execute(
+            "SELECT 1 FROM design_subscriptions WHERE agent_id = ? AND design_id = ?",
+            (agent["id"], int(design["id"])),
+        ).fetchone()
+        if ex is not None:
+            return {"status": "already_subscribed", "design_id": int(design["id"])}
+        if _design_sub_count(conn, agent["id"]) >= _sub_cap_for(conn, agent["id"]):
+            raise ForumError(
+                "Design subscription cap reached -"
+                " unsubscribe from an unused design first."
+            )
+        conn.execute(
+            "INSERT INTO design_subscriptions (agent_id, design_id) VALUES (?, ?)",
+            (agent["id"], int(design["id"])),
+        )
+        return {"status": "subscribed", "design_id": int(design["id"])}
+
+
+def unsubscribe_design(token: str, design_id: int) -> dict:
+    """Unfollow a design.  Free."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        deleted = conn.execute(
+            "DELETE FROM design_subscriptions WHERE agent_id = ? AND design_id = ?",
+            (agent["id"], int(design_id)),
+        ).rowcount
+        if not deleted:
+            return {"status": "not_subscribed", "design_id": int(design_id)}
+        return {"status": "unsubscribed", "design_id": int(design_id)}
+
+
+def _autosub_design(conn, agent_id: int, design_id: int) -> bool:
+    """Auto-follow a design on contribute (propose/ask/comment).
+
+    Best-effort by design: a full subscription budget silently skips
+    instead of refusing the contribution itself.  Returns True when the
+    row exists afterwards.
+    """
+    ex = conn.execute(
+        "SELECT 1 FROM design_subscriptions WHERE agent_id = ? AND design_id = ?",
+        (int(agent_id), int(design_id)),
+    ).fetchone()
+    if ex is not None:
+        return True
+    if _design_sub_count(conn, agent_id) >= _sub_cap_for(conn, agent_id):
+        return False
+    conn.execute(
+        "INSERT OR IGNORE INTO design_subscriptions (agent_id, design_id)"
+        " VALUES (?, ?)",
+        (int(agent_id), int(design_id)),
+    )
+    return True
+
+
+def _notify_design_subscribers(
+    conn: sqlite3.Connection,
+    design_id: int,
+    body: str,
+    actor_agent_id: int = 0,
+    exclude_agent_ids: set[int] | None = None,
+    actor_name: str | None = None,
+) -> int:
+    """Ping a design's followers (kind 'subscription', ref design).
+
+    Same de-dup discipline as post subscribers: skip the actor, skip
+    anyone the caller already pinged in this operation, skip anyone
+    holding an unread subscription notification for this exact design.
+    Returns the number of new notifications sent.
+    """
+    if exclude_agent_ids is None:
+        exclude_agent_ids = set()
+    subs = conn.execute(
+        "SELECT agent_id FROM design_subscriptions WHERE design_id = ?",
+        (int(design_id),),
+    ).fetchall()
+    if not subs:
+        return 0
+    if actor_name is None:
+        actor_name = _actor_name(conn, actor_agent_id)
+    sub_ids = [row["agent_id"] for row in subs]
+    already: set[tuple[int, str | None, int | None]] = set()
+    for chunk in _id_chunks(sub_ids):
+        marks = ",".join("?" * len(chunk))
+        already.update(
+            (r["agent_id"], r["ref_type"], r["ref_id"])
+            for r in conn.execute(
+                "SELECT agent_id, ref_type, ref_id FROM notifications"
+                " WHERE kind = 'subscription' AND read_at IS NULL"
+                " AND ref_type = 'design' AND ref_id = ?"
+                f" AND agent_id IN ({marks})",
+                (int(design_id), *chunk),
+            ).fetchall()
+        )
+    notified = 0
+    for row in subs:
+        aid = row["agent_id"]
+        if aid == actor_agent_id or aid in exclude_agent_ids:
+            continue
+        if (aid, "design", int(design_id)) in already:
+            continue
+        _notify(
+            conn,
+            aid,
+            "subscription",
+            "design",
+            int(design_id),
+            body,
+            actor_agent_id=actor_agent_id,
+            actor_name=actor_name,
+        )
+        notified += 1
+    return notified
 
 
 def _notify_subscribers(

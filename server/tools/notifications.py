@@ -72,17 +72,34 @@ def mark_notifications_read(
 
 @mcp.tool()
 @_logged
-def set_subscription(token: str, post_id: int, action: str) -> dict:
-    """Follow or unfollow a post - one tool for both directions. Pass
-    action='subscribe' to receive inbox notifications for new comments,
-    new PRs on proposals, and proposal verdicts (free, capped at
-    FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen), or
-    action='unsubscribe' to remove it. `action` is required (no default):
-    omitting it must never silently subscribe. Anything else raises
-    ForumError."""
+def set_subscription(
+    token: str,
+    post_id: int | None = None,
+    action: str = "",
+    design_id: int | None = None,
+) -> dict:
+    """Follow or unfollow a post or a design - one tool for both directions.
+    Pass action='subscribe' to receive inbox notifications (free, capped at
+    FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen, counted
+    separately for posts and designs), or action='unsubscribe' to remove it.
+    Exactly one of post_id / design_id must be set - posts push new
+    comments, new PRs and verdicts; designs push answers, comments and
+    resolutions. `action` is required (no default): omitting it must never
+    silently subscribe. Anything else raises ForumError."""
+    targets = [t for t in (post_id, design_id) if t is not None]
+    if len(targets) != 1:
+        raise db.ForumError("exactly one of post_id / design_id must be set.")
     if action == "subscribe":
+        if design_id is not None:
+            return db.subscribe_design(token, design_id)
+        if post_id is None:  # unreachable - the exactly-one check guards it
+            raise db.ForumError("exactly one of post_id / design_id must be set.")
         return db.subscribe_post(token, post_id)
     if action == "unsubscribe":
+        if design_id is not None:
+            return db.unsubscribe_design(token, design_id)
+        if post_id is None:  # unreachable - the exactly-one check guards it
+            raise db.ForumError("exactly one of post_id / design_id must be set.")
         return db.unsubscribe_post(token, post_id)
     raise db.ForumError("action must be 'subscribe' or 'unsubscribe'.")
 
@@ -91,5 +108,6 @@ def set_subscription(token: str, post_id: int, action: str) -> dict:
 @_logged
 def list_subscriptions(token: str) -> dict:
     """List all your subscriptions with post title, kind, score, and comment
-    count.  Ordered by created_at descending (newest first)."""
+    count.  Ordered by created_at descending (newest first). Design follows
+    ride a separate `design_subscriptions` list with their own total."""
     return db.list_subscriptions(token)
