@@ -206,11 +206,6 @@ from db._designs import (  # noqa: F401
     list_designs,
     propose_feature,
 )
-from db._designs_flow import (  # noqa: F401
-    decide_feature,
-    update_pending_feature,
-    withdraw_feature,
-)
 from db._designs_discuss import (  # noqa: F401
     add_comment,
     answer_question,
@@ -219,6 +214,11 @@ from db._designs_discuss import (  # noqa: F401
     enable_comments,
     promote_preview,
     promote_to_idea,
+)
+from db._designs_flow import (  # noqa: F401
+    decide_feature,
+    update_pending_feature,
+    withdraw_feature,
 )
 from db._designs_issues import (  # noqa: F401
     decide_issue,
