@@ -218,6 +218,7 @@ def _map_and_log(
     kind_event: str,
     run_id: str | None,
     runner: dict,
+    extra_detail: dict | None = None,
 ) -> dict:
     """Map the runner result to the host shape and write the ledger with runner
     provenance. Returns the result dict."""
@@ -240,6 +241,8 @@ def _map_and_log(
         detail["local"] = True
         detail["base_sha"] = result.get("base_sha")
     detail = _fold_output(detail, result)
+    if extra_detail:
+        detail.update(extra_detail)
     if run_id is not None:
         detail["run_id"] = run_id
         result["run_id"] = run_id
@@ -301,3 +304,61 @@ def try_dispatch(
     if remote is None or not isinstance(remote, dict) or "error" in remote:
         return None
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
+
+
+def try_bench_dispatch(
+    checks: str,
+    agent_id: int,
+    name: str,
+    kind_event: str,
+    run_id: str | None,
+) -> dict | None:
+    """Bench remote-first dispatch (PR 3). Tries a healthy runner before
+    local slot acquisition. Returns the full host-shaped result dict
+    (ledger written with runner provenance) or None when dispatch is not
+    eligible / no runner is available - the caller then falls back to local.
+
+    Per-machine quiet attestation: the runner reports its own quiet/contended
+    state; host load is irrelevant. Anchor env is resolved server-side and
+    passed in the payload.
+    """
+    if not config.CI_FARM_ENABLED:
+        return None
+    if not config.CI_FARM_BENCH_REMOTE_FIRST:
+        return None
+    runner = pick_runner()
+    if runner is None:
+        return None
+    # Resolve anchor env server-side (blessed anchor resolution stays here).
+    anchor_env: dict[str, str] = {}
+    try:
+        anchor = events.bench_anchor_for()
+        if anchor and anchor.get("medians"):
+            medians_json = json.dumps(anchor["medians"], separators=(",", ":"))
+            bless_id = anchor.get("bless_event_id")
+            anchor_env = {
+                "BENCH_ANCHOR_MEDIANS": medians_json,
+                "BENCH_ANCHOR_EVENT_ID": str(bless_id)
+                if isinstance(bless_id, int)
+                else "",
+            }
+    except Exception:
+        pass  # domain: degrade-silently - uninjected runs go advisory
+    payload: dict = {"checks": checks, "mode": "main", "anchor_env": anchor_env}
+    remote = dispatch_to_runner(runner, payload)
+    if remote is None or not isinstance(remote, dict) or "error" in remote:
+        return None
+    extra: dict = {}
+    for key in ("quiet", "contended", "bench_load", "anchor_event_id"):
+        if key in remote:
+            extra[key] = remote[key]
+    return _map_and_log(
+        remote,
+        checks,
+        agent_id,
+        name,
+        kind_event,
+        run_id,
+        runner,
+        extra_detail=extra,
+    )
