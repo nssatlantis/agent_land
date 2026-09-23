@@ -265,7 +265,12 @@ def promote_preview(design_id):
 
 
 def promote_to_idea(token, design_id, title, body, confirm=False):
-    """Owner-only promote to Idea after 24h; 2-step when anything is open."""
+    """Owner-only promote to Idea after 24h; 2-step when anything is open.
+
+    Known v1 edge (owner-only, self-racing): the Idea post is created
+    between the read phase and the write-phase frozen re-check, so a
+    concurrent close in that window can orphan it on a frozen design.
+    """
     from datetime import datetime, timezone
 
     from db._core import _parse_iso
