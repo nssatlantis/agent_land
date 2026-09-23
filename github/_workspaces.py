@@ -531,18 +531,46 @@ def _find_open_claim_pr(branch: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _strip_wip_prefix(text: str) -> str:
+    """Compare titles modulo the proposal-hold 'WIP: ' prefix: the poller
+    strips it on hold-lift while a later push may still carry it, and that
+    prefix-only delta must not count as a revised title (post-green review
+    on #1409 - the re-add window is cosmetic-only and self-healing, but
+    there is no reason to ever write it)."""
+    s = text or ""
+    return s[4:].lstrip() if s.upper().startswith("WIP:") else s
+
+
 def _open_or_reuse_claim_pr(
     branch: str, base: str, title: str, body: str, prior: dict | None
-) -> tuple[dict, bool]:
-    """Open the PR for one pushed branch, or reuse its open one."""
+) -> tuple[dict, bool, bool]:
+    """Open the PR for one pushed branch, or reuse its open one.
+
+    Returns (pr, first_push, text_updated). On reuse, a revised title
+    and/or body is PATCHed onto the live PR when it differs from what
+    the PR currently carries - a follow-up push must never silently drop
+    the caller's prose. Identical text makes no request. A PATCH failure
+    raises: the commit already landed, and the retry replays this exact
+    comparison idempotently (the already-pushed path re-enters here).
+    """
     if prior is not None:
         _core._invalidate_pr(int(prior["number"]))
-        return prior, False
+        patch: dict = {}
+        if _strip_wip_prefix(prior.get("title") or "") != _strip_wip_prefix(title):
+            patch["title"] = title
+        if (prior.get("body") or "") != body:
+            patch["body"] = body
+        if patch:
+            _core._request("PATCH", f"pulls/{prior['number']}", patch)
+            _core._invalidate_pr(int(prior["number"]))
+            prior = dict(prior)
+            prior.update(patch)
+        return prior, False, bool(patch)
     pr = _core._request(
         "POST", "pulls", {"title": title, "head": branch, "base": base, "body": body}
     )
     _core._open_prs_cache._store.pop("open_prs", None)
-    return pr, True
+    return pr, True, False
 
 
 def _transfer_file_cap_bytes() -> int:
@@ -754,7 +782,9 @@ def push_claim_tree(
     (deletions and renames included via -A), commits once (``title`` +
     Citizen trailer), pushes with a plain push (never force), and opens
     the PR. Follow-up pushes from the same tree append one new commit
-    on the same branch and reuse its open PR. A tree whose branch
+    on the same branch and reuse its open PR, PATCHing a revised title
+    and/or body onto the live PR when they differ (reported as
+    ``text_updated``; identical text makes no request). A tree whose branch
     already has an open PR from an earlier life is refused with the
     way out (push follow-ups from the owning tree, update the PR, or
     use a new workspace name). The claim stays active afterwards -
@@ -816,13 +846,16 @@ def push_claim_tree(
         # manifest landed while the PR POST failed): the tree already
         # holds exactly the pushed state, so finish opening its PR
         # instead of demanding new dirt or stacking a junk commit.
-        pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
+        pr, first, text_updated = _open_or_reuse_claim_pr(
+            branch, base, title, pr_body, prior
+        )
         plan.update(
             {
                 "pr_number": pr["number"],
                 "html_url": pr.get("html_url"),
                 "commit_sha": commit_sha,
                 "first_push": first,
+                "text_updated": text_updated,
             }
         )
         return plan
@@ -884,13 +917,16 @@ def push_claim_tree(
         }
     )
     _write_manifest(dest, manifest)
-    pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
+    pr, first, text_updated = _open_or_reuse_claim_pr(
+        branch, base, title, pr_body, prior
+    )
     plan.update(
         {
             "pr_number": pr["number"],
             "html_url": pr.get("html_url"),
             "commit_sha": commit_sha,
             "first_push": first,
+            "text_updated": text_updated,
         }
     )
     return plan

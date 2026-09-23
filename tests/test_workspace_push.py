@@ -90,9 +90,18 @@ class _PushSandbox:
                 "number": 7,
                 "html_url": "http://example/pr/7",
                 "branch": (payload or {}).get("head"),
+                "title": (payload or {}).get("title"),
+                "body": (payload or {}).get("body"),
             }
             self.open_prs.append(pr)
             return pr
+        if method == "PATCH" and path.startswith("pulls/"):
+            number = int(path.split("/", 1)[1])
+            for pr in self.open_prs:
+                if pr.get("number") == number:
+                    pr.update(payload or {})
+                    return pr
+            raise RepoError(f"no such PR in fake transport: {path}")
         return {}
 
     def close(self):
@@ -550,6 +559,153 @@ def test_push_manifest_and_expect_shas():
     )
 
 
+def test_push_followup_syncs_text():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 40, "words")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(
+            11, 40, "words", "First title", "first body", "tester (agent_id=11)"
+        )
+        assert first["text_updated"] is False, first
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        second = ws.push_claim_tree(
+            11,
+            40,
+            "words",
+            "Second title",
+            "second body",
+            "tester (agent_id=11)",
+        )
+        assert second["pr_number"] == 7, second
+        assert second["first_push"] is False, second
+        assert second["text_updated"] is True, second
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert len(patches) == 1, sb.calls
+        assert patches[0][1] == "pulls/7", patches
+        assert patches[0][2]["title"] == "Second title", patches
+        assert "second body" in patches[0][2]["body"], patches
+        assert "Citizen: tester (agent_id=11)" in patches[0][2]["body"], patches
+        row = [pr for pr in sb.open_prs if pr.get("number") == 7][0]
+        assert row["title"] == "Second title", row
+    finally:
+        sb.close()
+    print("  push follow-up PATCHes revised title/body onto reused PR: ok")
+
+
+def test_push_followup_wip_only_delta_no_patch():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 42, "wip")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        ws.push_claim_tree(
+            11, 42, "wip", "WIP: Draft title", "body", "tester (agent_id=11)"
+        )
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        second = ws.push_claim_tree(
+            11, 42, "wip", "Draft title", "body", "tester (agent_id=11)"
+        )
+        assert second["first_push"] is False, second
+        assert second["text_updated"] is False, second
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert patches == [], sb.calls
+    finally:
+        sb.close()
+    print("  push follow-up with WIP-only title delta makes no PATCH: ok")
+
+
+def test_push_followup_identical_text_no_patch():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 41, "same")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        ws.push_claim_tree(
+            11, 41, "same", "Same title", "same body", "tester (agent_id=11)"
+        )
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        second = ws.push_claim_tree(
+            11, 41, "same", "Same title", "same body", "tester (agent_id=11)"
+        )
+        assert second["first_push"] is False, second
+        assert second["text_updated"] is False, second
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert patches == [], sb.calls
+    finally:
+        sb.close()
+    print("  push follow-up with identical text makes no PATCH: ok")
+
+
+def test_patch_failure_retries_cleanly():
+    sb = _PushSandbox()
+    orig_request = ws._core._request
+    state = {"fail_patch": False}
+
+    def flaky_request(method, path, payload=None, **kw):
+        if method == "PATCH" and path.startswith("pulls/") and state["fail_patch"]:
+            state["fail_patch"] = False
+            raise RepoError("simulated PATCH failure")
+        return orig_request(method, path, payload, **kw)
+
+    ws._core._request = flaky_request
+    try:
+        tree = ws.ensure_claim_tree(11, 44, "patchretry")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(
+            11,
+            44,
+            "patchretry",
+            "First title",
+            "first body",
+            "tester (agent_id=11)",
+        )
+        assert first["text_updated"] is False, first
+        Path(dest, "two.txt").write_text("two\n", encoding="utf-8")
+        state["fail_patch"] = True
+        before = _branch_count(dest, first["branch"])
+        err = _expect_repo_error(
+            ws.push_claim_tree,
+            11,
+            44,
+            "patchretry",
+            "Second title",
+            "second body",
+            "tester (agent_id=11)",
+        )
+        assert "simulated PATCH failure" in err, err
+        # The commit landed before the raise: exactly one new commit.
+        mid = _branch_count(dest, first["branch"])
+        assert mid == before + 1, (before, mid)
+        # Retry with no new dirt replays the PATCH via the already-pushed
+        # path: no second commit, text converges.
+        third = ws.push_claim_tree(
+            11,
+            44,
+            "patchretry",
+            "Second title",
+            "second body",
+            "tester (agent_id=11)",
+        )
+        assert third["first_push"] is False, third
+        assert third["text_updated"] is True, third
+        assert _branch_count(dest, first["branch"]) == mid, third
+        # Only the retry's PATCH reaches the transport (the failed one
+        # raises in the wrapper first); it carries the revised text.
+        patches = [c for c in sb.calls if c[0] == "PATCH"]
+        assert len(patches) == 1, sb.calls
+        assert patches[0][2]["title"] == "Second title", patches
+        row = [pr for pr in sb.open_prs if pr.get("number") == 7][0]
+        assert row["title"] == "Second title", row
+        assert "second body" in row["body"], row
+    finally:
+        ws._core._request = orig_request
+        sb.close()
+    print("  PATCH failure raises, retry converges with no extra commit: ok")
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -563,6 +719,10 @@ def main():
     agents, _post_id = setup()
     test_push_single_commit()
     test_push_followup_appends()
+    test_push_followup_syncs_text()
+    test_push_followup_wip_only_delta_no_patch()
+    test_push_followup_identical_text_no_patch()
+    test_patch_failure_retries_cleanly()
     test_push_stages_deletion()
     test_push_guards()
     test_push_ignores_other_branch_prs()
