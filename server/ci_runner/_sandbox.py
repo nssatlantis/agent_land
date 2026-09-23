@@ -86,9 +86,17 @@ def _parse_static_summary(output: str) -> dict | None:
 
 
 def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
-    # run_all.py prints bare basenames ("FAILED: test_x.py"); prefix them
-    # so failed_files entries are copy-pasteable paths from the repo root.
-    raw = re.findall(r"^FAILED: (\S+)$", output, re.M)
+    # run_all.py prints "FAILED: <basename> (<secs>s)" per failure (run_all
+    # :237); strip the duration - bare names still match - and prefix so
+    # failed_files entries are copy-pasteable paths from the repo root.
+    # The count line ("FAILED: 12 of 212 test files") and "FAILED FILES:"
+    # list never match: no " (" after the name, and a space - not a colon
+    # - right after FAILED respectively. The count line feeds the summary
+    # counts below (its own parser); the "FAILED FILES:" aggregate is
+    # human-facing output and is intentionally never parsed.
+    # Regression #B87: the old ^FAILED: (\S+)$ could not cross the space
+    # before "(", so every red run reported failed_files: null.
+    raw = re.findall(r"^FAILED: (\S+?)(?:\s+\(|$)", output, re.M)
     failed_files = [
         name if "/" in name or not name.endswith(".py") else "tests/" + name
         for name in raw
@@ -421,6 +429,13 @@ def _ruff_host_dir(slot: int) -> str | None:
     d = os.path.join(str(base), f"slot{int(slot)}")
     try:
         os.makedirs(d, exist_ok=True)
+        try:
+            # The container runs as uid:gid 1000:1000 (see _sandbox_argv);
+            # a root-run server would otherwise leave root-owned slot dirs
+            # that the probe below passes but the container cannot write.
+            os.chown(d, 1000, 1000)
+        except Exception:  # domain: degrade-silently - non-root servers cannot chown; the probe decides
+            pass
         probe = os.path.join(d, ".wprobe")
         with open(probe, "w") as _fh:
             _fh.write("ok")

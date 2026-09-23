@@ -577,6 +577,10 @@ CREATE TABLE IF NOT EXISTS todo_items (
     -- re-linkable). External PR number, deliberately no FK - mirrors
     -- proposal_links.pr_number.
     pr_number INTEGER,
+    -- Item progress note (tick_todo_item(progress=...)): a short sticky
+    -- resume note, empty by default. Surfaced by every board reader and
+    -- carried by the supersede/promote copies; never FTS-indexed.
+    progress TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

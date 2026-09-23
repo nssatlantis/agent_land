@@ -165,8 +165,13 @@ def test_success_run_parses_summary_and_logs_event():
 
 def test_failing_run_lists_failed_files():
     stub = _StubTree("tests", "# canned child (see _CannedProc)")
+    # Duration suffix exactly as run_all.py:237 prints it - the old bare
+    # form is what let the #B87 parser regression ship green.
     _canned = _canned_proc(
-        b"FAILED: test_bad.py\nsome traceback noise\nFAILED: 1 of 5 test files\n", 1
+        b"FAILED: test_bad.py (1.23s)\n"
+        b"some traceback noise\n"
+        b"FAILED: 1 of 5 test files\n",
+        1,
     )
     _canned.start()
     try:
@@ -179,6 +184,26 @@ def test_failing_run_lists_failed_files():
     finally:
         _canned.stop()
         stub.cleanup()
+
+
+def test_parse_summary_failed_line_with_duration():
+    """#B87: run_all.py prints FAILED: <name> (<secs>s); the parser must
+    strip the duration while leaving the count line and the FAILED FILES
+    aggregate unmatched (the count feeds the summary counts below; the
+    aggregate is human-facing output, never parsed)."""
+    output = (
+        "FAILED: test_sweep_c.py (1.23s)\n"
+        "some traceback noise\n"
+        "FAILED: test_ci_runner.py (0.05s)\n"
+        "FAILED FILES: test_sweep_c.py, test_ci_runner.py\n"
+        "FAILED: 2 of 212 test files\n"
+    )
+    summary, failed = ci_runner._parse_summary(output)
+    assert failed == ["tests/test_ci_runner.py", "tests/test_sweep_c.py"], failed
+    assert summary == {"passed_files": 210, "failed_files": 2}, summary
+    # legacy bare-name lines (no duration) still extract
+    _, bare = ci_runner._parse_summary("FAILED: test_bare.py\n")
+    assert bare == ["tests/test_bare.py"], bare
 
 
 def test_timeout_kills_and_reports():
@@ -1820,6 +1845,7 @@ def main():
     test_busy_lock_refuses()
     test_success_run_parses_summary_and_logs_event()
     test_failing_run_lists_failed_files()
+    test_parse_summary_failed_line_with_duration()
     test_parse_summary_db_benchmark_median_parsed()
     test_parse_summary_db_benchmark_errors_surfaced()
     test_bench_quiet_knob_defaults()

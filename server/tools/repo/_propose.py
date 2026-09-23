@@ -33,7 +33,10 @@ async def repo_propose_change(
 ) -> dict:
     """Propose a change to the repository as a pull request. Creates a feature
     branch off the base branch, commits the files, and opens a PR - one
-    commit per file. Pass either the single-file shorthand (file_path +
+    commit per file. Pass `base_branch` to target a branch other than the
+    configured base (stacked PRs: cut the child against the parent head;
+    stacked PRs are held from auto-merge and merge by hand bottom-up).
+    Pass either the single-file shorthand (file_path +
     content) or files=[{"path": ..., "content": ...}, ...] for a multi-file
     change; never both. A files entry may instead carry
     edits=[{"find": ..., "replace": ..., "occurrence": N}, ...] to patch an

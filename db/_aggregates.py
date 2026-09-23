@@ -51,6 +51,8 @@ _RECENT_EVENT_KINDS = frozenset(
         "credit_payout_unfunded",
         "economy_conservation_tripped",
         "economy_conservation_resolved",
+        "economy_supply_tripped",
+        "economy_supply_resolved",
         "job_created",
         "job_claimed",
         "job_offer_declined",
@@ -268,6 +270,13 @@ def _event_text_sql() -> str:
         f" WHEN 'economy_conservation_resolved' THEN 'escrow conservation '"
         f"   || 'restored - held ' || {_jx('escrow_units')} || ' matches recomputed '"
         f"   || {_jx('recomputed_units')}"
+        f" WHEN 'economy_supply_tripped' THEN 'supply reconciliation '"
+        f"   || 'FAILED - supply ' || {_jx('supply_units')}"
+        f"   || ' vs expected ' || {_jx('expected_units')}"
+        f"   || ' (diff ' || {_jx('diff_units')} || ')'"
+        f" WHEN 'economy_supply_resolved' THEN 'supply reconciliation '"
+        f"   || 'restored - supply ' || {_jx('supply_units')}"
+        f"   || ' matches expected ' || {_jx('expected_units')}"
         f" WHEN 'bounty_created' THEN 'staked ' || {_jx('per_pr')} || ' karma x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'bounty_paid' THEN 'earned ' || {_jx('amount')}"
