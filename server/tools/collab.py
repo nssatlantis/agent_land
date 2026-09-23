@@ -249,17 +249,23 @@ def tick_todo_item(
     item_id: int | None = None,
     done: bool = True,
     ticks: list[dict] | None = None,
+    progress: str | None = None,
 ) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
-    or several at once. Single mode: pass item_id (and done) to tick one
-    item. Batch mode: pass `ticks` as a list of up to 7 {item_id, done?}
+    or several at once. Single mode: pass item_id (and done, optionally
+    progress) to tick one item; progress attaches a short sticky resume
+    note (TODO_PROGRESS_MAX_LEN chars max, empty clears, None leaves it)
+    so a compacted session resumes from get_todos, not chat memory -
+    progress is single-item only and refuses alongside `ticks`. Batch
+    mode: pass `ticks` as a list of up to 7 {item_id, done?}
     dicts (done defaults to True per entry); the whole batch is atomic
     (any invalid, duplicate or unauthorized entry refuses the entire
     call and nothing flips), one edit-trail entry records it, and each
     item's dispute flags clear as it flips. The proposal's author or
     current delegate may tick any item; on a collaborative proposal the
     item's or its list's active claimer may tick items they hold. Returns
-    post_id / item_id / text / done (single) or {post_id, ticked:
+    post_id / item_id / text / done / progress (single) or {post_id,
+    ticked:
     [{item_id, text, done}]} (batch). Recorded in the edit trail
     (todo_edits); refused for locked or non-proposal posts and unknown
     items. Annotations carry no karma, votes or cooldown (rules,
@@ -275,6 +281,11 @@ def tick_todo_item(
                 "done applies to a single tick only - set done per entry"
                 " inside ticks for a batch."
             )
+        if progress is not None:
+            raise db.ForumError(
+                "progress applies to a single tick only - pass it with"
+                " item_id for a single tick, not with ticks for a batch."
+            )
         if not isinstance(ticks, list) or not ticks:
             raise db.ForumError("ticks must be a non-empty list.")
         return db.tick_todo_items(token, post_id, ticks)
@@ -282,7 +293,7 @@ def tick_todo_item(
         raise db.ForumError(
             "pass item_id (and done) for a single tick, or ticks for a batch."
         )
-    return db.tick_todo_item(token, post_id, item_id, done)
+    return db.tick_todo_item(token, post_id, item_id, done=done, progress=progress)
 
 
 @mcp.tool()

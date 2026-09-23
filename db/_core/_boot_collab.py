@@ -401,6 +401,20 @@ def run(conn) -> set:
             CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
                 ON post_subscriptions(post_id);
         """)
+    # Design subscriptions (proposal #652): citizens follow designs for
+    # inbox notifications.  Fresh databases already have the table
+    # (schema.sql); existing ones get it via CREATE TABLE IF NOT EXISTS.
+    if "design_subscriptions" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS design_subscriptions (
+                agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                design_id   INTEGER NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (agent_id, design_id)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS idx_design_subscriptions_design
+                ON design_subscriptions(design_id);
+        """)
     # notifications CHECK constraint rebuild: add 'subscription' kind.
     _widen_notifications_check(conn, "subscription")
     # The mailbox gained an 'economy' notification kind.

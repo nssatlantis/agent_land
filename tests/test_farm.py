@@ -1,0 +1,831 @@
+"""Tests for the CI farm registry + overflow dispatch (proposal #667, PR 2).
+
+Registry CRUD, the live-ping pick_runner gating (stale/busy/healthy), and the
+dispatch mapping + try_dispatch eligibility gates. HTTP is mocked - no network,
+no docker.
+"""
+
+import json
+import os
+import sys
+import tempfile
+import threading
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_farm_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config  # noqa: E402
+import db  # noqa: E402
+import events  # noqa: E402
+import server.ci_runner._farm as farm  # noqa: E402
+
+
+def setup_module():
+    db.init_db()
+
+
+def test_ci_runners_migration():
+    # A pre-farm database lacks the ci_runners table. init_db() re-runs
+    # schema.sql, so CREATE TABLE IF NOT EXISTS must create it.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS ci_runners")
+    db.init_db()
+    with db._conn() as conn:
+        tables = {
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert "ci_runners" in tables, "ci_runners table missing after migration"
+
+
+def test_register_list_remove():
+    row = farm.register_runner("farm1", "http://127.0.0.1:8731", token="t")
+    assert row["name"] == "farm1"
+    assert row["status"] == "unknown"
+    assert any(r["id"] == row["id"] for r in farm.list_runners())
+    assert farm.remove_runner(row["id"]) is True
+    assert farm.remove_runner(row["id"]) is False  # already gone
+    assert all(r["id"] != row["id"] for r in farm.list_runners())
+
+
+def _find(rows, runner_id):
+    return next(r for r in rows if r["id"] == runner_id)
+
+
+def test_pick_runner_healthy():
+    row = farm.register_runner("h", "http://x", token="t")
+    orig = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    try:
+        picked = farm.pick_runner()
+        assert picked is not None and picked["id"] == row["id"]
+        fresh = _find(farm.list_runners(), row["id"])
+        assert fresh["status"] == "healthy"
+        assert fresh["last_heartbeat"]
+    finally:
+        farm._ping = orig
+        farm.remove_runner(row["id"])
+
+
+def test_pick_runner_skips_busy():
+    row = farm.register_runner("b", "http://x", token="t")
+    orig = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": True}
+    try:
+        assert farm.pick_runner() is None
+    finally:
+        farm._ping = orig
+        farm.remove_runner(row["id"])
+
+
+def test_pick_runner_recovers_stale():
+    """A recorded-stale runner is still pinged; a healthy ping recovers it
+    (fresh heartbeat, picked). Skipping without ping would brick the farm
+    after STALE_SECONDS of idleness - nothing else refreshes heartbeats."""
+    row = farm.register_runner("rec", "http://x", token="t")
+    with db._conn(immediate=True) as conn:
+        # Z-shaped storage timestamp: fromisoformat chokes on the trailing Z,
+        # so the old age parser never skipped (every stale runner got pinged).
+        conn.execute(
+            "UPDATE ci_runners SET last_heartbeat = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", row["id"]),
+        )
+    orig = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    try:
+        picked = farm.pick_runner()
+        assert picked is not None and picked["id"] == row["id"]
+        fresh = _find(farm.list_runners(), row["id"])
+        assert fresh["status"] == "healthy"
+        assert fresh["last_heartbeat"] != "2020-01-01T00:00:00.000Z"
+    finally:
+        farm._ping = orig
+        farm.remove_runner(row["id"])
+
+
+def test_pick_runner_marks_dead_stale():
+    """A recorded-stale runner whose ping fails is marked stale and skipped."""
+    row = farm.register_runner("dead", "http://x", token="t")
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE ci_runners SET last_heartbeat = ? WHERE id = ?",
+            ("2020-01-01T00:00:00.000Z", row["id"]),
+        )
+    orig = farm._ping
+    farm._ping = lambda url, token: None
+    try:
+        assert farm.pick_runner() is None
+        assert _find(farm.list_runners(), row["id"])["status"] == "stale"
+    finally:
+        farm._ping = orig
+        farm.remove_runner(row["id"])
+
+
+def test_register_duplicate_refused():
+    """A duplicate runner name fails closed (ForumError), and a real DB
+    error is not masked as a duplicate."""
+    row = farm.register_runner("dup", "http://x", token="t")
+    try:
+        try:
+            farm.register_runner("dup", "http://y", token="t")
+        except db.ForumError:
+            pass
+        else:
+            raise AssertionError("duplicate name must raise ForumError")
+    finally:
+        farm.remove_runner(row["id"])
+
+
+def test_farm_status_admin_and_strip():
+    """ci_farm_status refuses non-admin callers and never exposes the
+    runner bearer token or its hash."""
+    from server.tools.repo._govern import ci_farm_status
+
+    admin = db.register_agent("farm-admin")
+    other = db.register_agent("farm-other")
+    orig_admin = os.environ.get("ADMIN_USER")
+    os.environ["ADMIN_USER"] = "farm-admin"
+    row = farm.register_runner("st", "http://x", token="secret-t")
+    try:
+        try:
+            ci_farm_status(other["token"])
+        except Exception as exc:
+            assert "Admin privileges required" in str(exc)
+        else:
+            raise AssertionError("non-admin must be refused")
+        status = ci_farm_status(admin["token"])
+        assert status["runners"], "registry must list the runner"
+        for r in status["runners"]:
+            assert "token" not in r and "token_hash" not in r
+    finally:
+        farm.remove_runner(row["id"])
+        if orig_admin is None:
+            os.environ.pop("ADMIN_USER", None)
+        else:
+            os.environ["ADMIN_USER"] = orig_admin
+
+
+def test_map_and_log_provenance():
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    row = farm.register_runner("m", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_disp = farm.dispatch_to_runner
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    remote = {
+        "checks": "tests",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 12.5,
+        "head_sha": "abc123",
+        "output_tail": "all green",
+        "summary": {"tests_run": True},
+    }
+    farm.dispatch_to_runner = lambda runner, payload: remote
+    try:
+        result = farm.try_dispatch(
+            checks="tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="tester",
+            kind_event="ci_run",
+            run_id="rid-1",
+        )
+        assert result is not None
+        assert result["mode"] == "native"  # runner "main" maps to host "native"
+        assert result["runner"] == "m"
+        assert result["run_id"] == "rid-1"
+        # Verify the ledger row carries runner provenance
+        with db._conn() as conn:
+            ev = conn.execute(
+                "SELECT detail FROM events WHERE kind = 'ci_run'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert ev is not None
+        detail = json.loads(ev["detail"])
+        assert detail["runner"] == "m"
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        farm.remove_runner(row["id"])
+        config.CI_FARM_ENABLED = orig_enabled
+
+
+def test_try_dispatch_disabled():
+    orig = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = False
+    try:
+        assert (
+            farm.try_dispatch(
+                "tests",
+                False,
+                False,
+                False,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1,
+                "t",
+                "ci_run",
+                None,
+            )
+            is None
+        )
+    finally:
+        config.CI_FARM_ENABLED = orig
+
+
+def test_try_dispatch_gates():
+    orig = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    try:
+        # bench is never dispatched in PR 2 (remote-first is PR 3)
+        assert (
+            farm.try_dispatch(
+                "db_benchmark",
+                False,
+                False,
+                True,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1,
+                "t",
+                "ci_run",
+                None,
+            )
+            is None
+        )
+        # branch (pr_number) runs are host-local
+        assert (
+            farm.try_dispatch(
+                "tests",
+                False,
+                True,
+                False,
+                5,
+                None,
+                None,
+                None,
+                None,
+                1,
+                "t",
+                "ci_run",
+                None,
+            )
+            is None
+        )
+        # named-tree runs are host-local
+        assert (
+            farm.try_dispatch(
+                "tests",
+                True,
+                False,
+                False,
+                None,
+                None,
+                "warm",
+                None,
+                None,
+                1,
+                "t",
+                "ci_run",
+                None,
+            )
+            is None
+        )
+        # no runner registered -> nothing to dispatch to
+        for r in farm.list_runners():
+            farm.remove_runner(r["id"])
+        assert (
+            farm.try_dispatch(
+                "tests",
+                False,
+                False,
+                False,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1,
+                "t",
+                "ci_run",
+                None,
+            )
+            is None
+        )
+    finally:
+        config.CI_FARM_ENABLED = orig
+
+
+def test_bench_remote_first_dispatch():
+    """Bench remote-first: a healthy runner gets the bench run; the result
+    carries per-machine quiet/contended and runner provenance."""
+    row = farm.register_runner("bench1", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_disp = farm.dispatch_to_runner
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    remote = {
+        "checks": "db_benchmark",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 45.2,
+        "head_sha": "abc123",
+        "output_tail": "bench complete",
+        "summary": {"tests_run": False},
+        "quiet": True,
+        "contended": False,
+        "bench_load": {"bench_busy_start": 1, "bench_host_cpus": 4},
+    }
+    captured_payload: dict = {}
+
+    def _capture(runner, payload):
+        captured_payload.update(payload)
+        return remote
+
+    farm.dispatch_to_runner = _capture
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    try:
+        result = farm.try_bench_dispatch(
+            "db_benchmark", 1, "tester", "ci_db_bench_run", "rid-b1"
+        )
+        assert result is not None
+        assert result["mode"] == "native"
+        assert result["runner"] == "bench1"
+        assert result["quiet"] is True
+        assert result["contended"] is False
+        assert result["bench_load"] == {
+            "bench_busy_start": 1,
+            "bench_host_cpus": 4,
+        }
+        assert "extra_env" in captured_payload
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+def test_bench_disabled():
+    """CI_FARM_BENCH_REMOTE_FIRST=0: bench dispatch is off, returns None."""
+    row = farm.register_runner("b2", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 0
+    try:
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+def test_bench_no_runner():
+    """No healthy runner available: bench dispatch returns None (fallback)."""
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": False, "busy": True}
+    try:
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+
+
+def test_bench_mode_guard():
+    """Mode guard: pr_number/files/tree/base_ref set -> bench dispatch
+    returns None (a stacked-diff bench must never measure origin/main)."""
+    row = farm.register_runner("guard1", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+
+    def _boom(runner, payload):
+        raise AssertionError("guarded bench must never reach dispatch")
+
+    farm.dispatch_to_runner = _boom
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    try:
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, pr_number=42
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark",
+                1,
+                "t",
+                "ci_db_bench_run",
+                None,
+                files=[{"path": "a", "content": "b"}],
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, tree="mytree"
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 1, "t", "ci_db_bench_run", None, base_ref="main"
+            )
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+def test_output_sha256_in_ledger():
+    """P3-1: a well-formed output_sha256 rides the ledger detail; garbage
+    ("deadbeef") is dropped from both ledger and result."""
+    row = farm.register_runner("sha", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_disp = farm.dispatch_to_runner
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    good = "ab" * 32
+
+    def _remote(sha):
+        return {
+            "checks": "tests",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 10.0,
+            "head_sha": "abc123",
+            "output_tail": "all green",
+            "summary": {"tests_run": True},
+            "output_sha256": sha,
+        }
+
+    def _ledger_sha(run_id):
+        rows = events.query_events(agent_id=1, kind="ci_run", limit=50)
+        for r in rows:
+            detail = r.get("detail") or {}
+            if detail.get("run_id") == run_id:
+                return detail.get("output_sha256")
+        return None
+
+    try:
+        farm.dispatch_to_runner = lambda runner, payload: _remote(good)
+        result = farm.try_dispatch(
+            checks="tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="tester",
+            kind_event="ci_run",
+            run_id="rid-sha-good",
+        )
+        assert result is not None
+        assert result.get("output_sha256") == good
+        assert _ledger_sha("rid-sha-good") == good
+        # The mocked dispatch never releases the pick reservation (the real
+        # dispatch_to_runner does so in its finally) - release by hand so the
+        # second dispatch below can pick the same runner.
+        farm._release(row["id"])
+        farm.dispatch_to_runner = lambda runner, payload: _remote("deadbeef")
+        result = farm.try_dispatch(
+            checks="tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="tester",
+            kind_event="ci_run",
+            run_id="rid-sha-bad",
+        )
+        assert result is not None
+        assert "output_sha256" not in result
+        assert _ledger_sha("rid-sha-bad") is None
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        farm.remove_runner(row["id"])
+
+
+def test_retry_local_signal():
+    """P3-2: a picked-runner failure raises _FarmRetryLocal (out-of-band);
+    replies carrying ok map normally even with warning extras."""
+    row = farm.register_runner("retry", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_disp = farm.dispatch_to_runner
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+
+    def _call(remote):
+        farm.dispatch_to_runner = lambda runner, payload: remote
+        return farm.try_dispatch(
+            checks="tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="tester",
+            kind_event="ci_run",
+            run_id=None,
+        )
+
+    try:
+        # Runner-reported error with no result shape -> retry signal.
+        farm.dispatch_to_runner = lambda runner, payload: {"error": "mid-run crash"}
+        try:
+            farm.try_dispatch(
+                checks="tests",
+                local_mode=False,
+                branch_mode=False,
+                is_bench=False,
+                pr_number=None,
+                files=None,
+                tree=None,
+                quiet=None,
+                base_ref=None,
+                agent_id=1,
+                name="tester",
+                kind_event="ci_run",
+                run_id=None,
+            )
+        except farm._FarmRetryLocal:
+            pass
+        else:
+            raise AssertionError("expected _FarmRetryLocal for error-only reply")
+        # The mocked dispatch never releases the pick reservation (the real
+        # one does so in its finally) - release by hand between dispatches.
+        farm._release(row["id"])
+        # Transport failure (None) after pick -> retry signal, never busy.
+        farm.dispatch_to_runner = lambda runner, payload: None
+        try:
+            farm.try_dispatch(
+                checks="tests",
+                local_mode=False,
+                branch_mode=False,
+                is_bench=False,
+                pr_number=None,
+                files=None,
+                tree=None,
+                quiet=None,
+                base_ref=None,
+                agent_id=1,
+                name="tester",
+                kind_event="ci_run",
+                run_id=None,
+            )
+        except farm._FarmRetryLocal:
+            pass
+        else:
+            raise AssertionError("expected _FarmRetryLocal for transport failure")
+        farm._release(row["id"])
+        # A reply carrying ok is a real result even with warning extras.
+        result = _call({"ok": False, "exit_code": 1, "warnings": ["slow fs"]})
+        assert result is not None and result.get("ok") is False
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        farm.remove_runner(row["id"])
+
+
+def test_capacity_enforced():
+    """P3-3: pick reserves one slot; a runner at cap is skipped; remove
+    drops the reservation; a non-positive cap admits nothing."""
+    row = farm.register_runner("cap", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_cap = config.CI_FARM_RUNNER_MAX_ACTIVE
+    config.CI_FARM_RUNNER_MAX_ACTIVE = 1
+    try:
+        farm._ACTIVE_RUNS[row["id"]] = 1
+        assert farm.pick_runner() is None
+        farm._ACTIVE_RUNS.clear()
+        picked = farm.pick_runner()
+        assert picked is not None and picked["id"] == row["id"]
+        assert farm._ACTIVE_RUNS.get(row["id"]) == 1  # reservation held
+        farm._release(row["id"])
+        assert farm.pick_runner() is not None  # released: pickable again
+        farm._release(row["id"])
+        assert farm.remove_runner(row["id"]) is True
+        assert farm._ACTIVE_RUNS.get(row["id"]) is None  # remove drops it
+        config.CI_FARM_RUNNER_MAX_ACTIVE = 0
+        row2 = farm.register_runner("cap0", "http://x", token="t")
+        try:
+            assert farm.pick_runner() is None
+        finally:
+            farm.remove_runner(row2["id"])
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_RUNNER_MAX_ACTIVE = orig_cap
+        farm._ACTIVE_RUNS.clear()
+        farm.remove_runner(row["id"])
+
+
+class _StubResp:
+    """Minimal urlopen stub: context manager yielding canned JSON bytes."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_dispatch_accounting_releases():
+    """dispatch releases the pick reservation on success and on transport
+    failure (no leak, no negative retention)."""
+    import urllib.request
+
+    row = farm.register_runner("acct", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_open = urllib.request.urlopen
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_cap = config.CI_FARM_RUNNER_MAX_ACTIVE
+    config.CI_FARM_RUNNER_MAX_ACTIVE = 1
+    try:
+        picked = farm.pick_runner()
+        assert picked is not None
+        assert farm._ACTIVE_RUNS.get(row["id"]) == 1
+        urllib.request.urlopen = lambda req, timeout=None: _StubResp(
+            json.dumps({"ok": True}).encode("utf-8")
+        )
+        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) == {"ok": True}
+        assert farm._ACTIVE_RUNS.get(row["id"]) is None
+        picked = farm.pick_runner()
+        assert picked is not None
+
+        def _boom(req, timeout=None):
+            raise ConnectionError("runner died mid-run")
+
+        urllib.request.urlopen = _boom
+        assert farm.dispatch_to_runner(picked, {"checks": "tests"}) is None
+        assert farm._ACTIVE_RUNS.get(row["id"]) is None
+    finally:
+        urllib.request.urlopen = orig_open
+        farm._ping = orig_ping
+        config.CI_FARM_RUNNER_MAX_ACTIVE = orig_cap
+        farm._ACTIVE_RUNS.clear()
+        farm.remove_runner(row["id"])
+
+
+def test_concurrent_pick_single_slot():
+    """Two concurrent picks on a cap-1 runner: exactly one reserves."""
+    row = farm.register_runner("conc", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_cap = config.CI_FARM_RUNNER_MAX_ACTIVE
+    config.CI_FARM_RUNNER_MAX_ACTIVE = 1
+    got = []
+    try:
+
+        def _pick():
+            r = farm.pick_runner()
+            got.append(r["id"] if r else None)
+
+        threads = [threading.Thread(target=_pick) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert got.count(None) == 1
+        assert [g for g in got if g is not None] == [row["id"]]
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_RUNNER_MAX_ACTIVE = orig_cap
+        farm._ACTIVE_RUNS.clear()
+        farm.remove_runner(row["id"])
+
+
+def main():
+    setup_module()
+    test_ci_runners_migration()
+    test_register_list_remove()
+    test_pick_runner_healthy()
+    test_pick_runner_skips_busy()
+    test_pick_runner_recovers_stale()
+    test_pick_runner_marks_dead_stale()
+    test_register_duplicate_refused()
+    test_farm_status_admin_and_strip()
+    test_map_and_log_provenance()
+    test_try_dispatch_disabled()
+    test_try_dispatch_gates()
+    test_bench_remote_first_dispatch()
+    test_bench_disabled()
+    test_bench_no_runner()
+    test_bench_mode_guard()
+    test_output_sha256_in_ledger()
+    test_retry_local_signal()
+    test_capacity_enforced()
+    test_dispatch_accounting_releases()
+    test_concurrent_pick_single_slot()
+    test_farm_retry_exhaustion_audited()
+    print("All CI farm tests passed.")
+    print("All CI farm tests passed.")
+
+
+def test_farm_retry_exhaustion_audited():
+    """The exhaustion helper returns full keys and writes the same-kind
+    ledger row carrying the runner-side reason (fail-before: no helper,
+    no row, bare dict)."""
+    from server.ci_runner import _runs as runs_mod
+
+    failed = runs_mod._audit_farm_retry_exhausted(
+        1,
+        "tester",
+        "ci_run",
+        "tests",
+        False,
+        "rid-exhaust",
+        "boom",
+    )
+    assert failed["ok"] is False and failed["run_failed"] is True
+    assert failed["reason"] == "runner_mid_run_failure"
+    assert failed["run_id"] == "rid-exhaust"
+    assert failed["farm_error"] == "boom"
+    assert failed["timed_out"] is False and failed["exit_code"] is None
+    rows = events.query_events(agent_id=1, kind="ci_run", limit=50)
+    match = [r for r in rows if (r.get("detail") or {}).get("run_id") == "rid-exhaust"]
+    assert match, "exhaustion must write a ledger row"
+    assert match[0]["detail"]["farm_error"] == "boom"
+
+
+if __name__ == "__main__":
+    main()

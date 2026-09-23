@@ -13,6 +13,7 @@ from ._govern import (  # noqa: F401
     _MANAGED_WORKFLOW_KEYS,
     _ci_watch_url_for,
     assign_proposal,
+    ci_farm_status,
     claim_proposal,
     repo_ci_run,
     repo_ci_run_status,
