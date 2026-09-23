@@ -761,14 +761,25 @@ def run_checks(
                 name=name,
                 kind_event=kind_event,
                 run_id=_run_id,
+                base_ref=base_ref,
             )
         except Exception:
             farm_result = None  # domain: degrade-silently - dispatch is best-effort
         if farm_result is not None:
             shutil.rmtree(tmp_root, ignore_errors=True)
             return farm_result
-        shutil.rmtree(tmp_root, ignore_errors=True)
-        raise
+        # P1-3 fallback: one non-blocking re-acquire before raising busy
+        try:
+            slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
+        except db.ForumError:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            raise
+        events.log_event(
+            "ci_farm_fallback",
+            actor_agent_id=agent_id,
+            actor_name=name,
+            detail={"checks": checks, "reason": "runner unavailable, slot freed"},
+        )
     if is_bench:
         # Freeze this slot out of live downscales for the run's duration;
         # _deregister_active clears the flag on every exit path.
