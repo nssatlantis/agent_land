@@ -103,6 +103,8 @@ def test_pick_runner_skips_stale():
 
 
 def test_map_and_log_provenance():
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
     row = farm.register_runner("m", "http://x", token="t")
     orig_ping = farm._ping
     orig_disp = farm.dispatch_to_runner
@@ -153,6 +155,7 @@ def test_map_and_log_provenance():
         farm._ping = orig_ping
         farm.dispatch_to_runner = orig_disp
         farm.remove_runner(row["id"])
+        config.CI_FARM_ENABLED = orig_enabled
 
 
 def test_try_dispatch_disabled():
