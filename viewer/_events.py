@@ -367,6 +367,8 @@ def _event_description(e: dict) -> str:
     if k == "pr_updated":
         return f'{actor} updated PR <a href="/prs/{d.get("pr_number", tid)}">#{d.get("pr_number", tid)}</a>'
     if k == "pr_merged":
+        if d.get("main_merge") is False:
+            return f"PR #{d.get('pr_number', tid)} merged into {esc(d.get('base', '?'))} (stack step)"
         return f"PR #{d.get('pr_number', tid)} merged"
     if k == "pr_declined":
         return f"PR #{d.get('pr_number', tid)} declined"
