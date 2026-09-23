@@ -373,6 +373,16 @@ def run_checks_with_deadline(
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     kind = ledger_kind_for(checks, pr_number, files, tree)
     run_id = uuid.uuid4().hex
+    if base_ref is not None and pr_number is not None:
+        raise db.ForumError(
+            "repo_ci_run takes base_ref with files/tree only - branch mode "
+            "derives its base from the PR itself."
+        )
+    if base_ref is not None and files is None and tree is None:
+        raise db.ForumError(
+            "repo_ci_run takes base_ref with files/tree only - the bare "
+            "reference run is always origin/main."
+        )
     _inflight_claim(agent_id, kind, checks, started_at, run_id)
     result_holder: list[dict] = []
     exc_holder: list[BaseException] = []
