@@ -97,8 +97,14 @@ _LOAD_BEARING = frozenset(
         "my_bonds",
         "list_subsidy_requests",
         "request_subsidized_job",
+        "cancel_subsidy_request",
         "notes_list",
         "notes_create_entry",
+        "notes_create_category",
+        "notes_read_entry",
+        "notes_update_entry",
+        "get_store_catalog",
+        "redeem_bond",
     }
 )
 
