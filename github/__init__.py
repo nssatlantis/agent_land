@@ -158,6 +158,7 @@ from ._workspaces import (  # noqa: F401
     claim_tree_status,
     ensure_claim_tree,
     push_claim_tree,
+    read_file_at_ref,
     read_transfer_bytes,
     retire_claim_tree,
     snapshot_claim_tree,

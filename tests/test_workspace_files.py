@@ -4,7 +4,9 @@ Covers the seven workspace_* MCP tools against a claimed tree on a
 local bare remote (no network): write/read roundtrip with ranges,
 list without .git, status/diff pins, delete semantics, sync
 fast-forward plus dirty-refusal, both-clocks touch, per-write budget,
-path guards (.git/manifest/traversal/protected), and owner isolation.
+path guards (.git/manifest/traversal/protected), owner isolation, and
+ref reads (committed bytes at branch/tag/sha with dirt invisible,
+unknown/invalid-ref and dir/missing pins).
 """
 
 import os
@@ -263,6 +265,92 @@ def test_sync_and_clocks_and_budget(agents, wstools):
     print("  sync + both clocks + budget: ok")
 
 
+def test_read_at_ref(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Ref Shop")
+        w = wstools.workspace_write_file
+        r = wstools.workspace_read_file
+        aid = agents["alpha"]["agent_id"]
+        dest = ws._claim_dir(aid, pid, "dev")
+        w(tok, pid, "dev", "frozen.txt", "committed one\ncommitted two\n")
+        w(tok, pid, "dev", "sub/f.txt", "inner\n")
+        _git("-C", dest, "add", "frozen.txt", "sub/f.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "freeze",
+        )
+        old = subprocess.run(
+            ["git", "-C", dest, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert old, "need the frozen commit sha"
+        _git("-C", dest, "branch", "frozen-ref-pin", old)
+        w(tok, pid, "dev", "frozen.txt", "dirty one\ndirty two\n")
+        at_sha = r(tok, pid, "dev", "frozen.txt", ref=old)
+        assert at_sha["content"] == "committed one\ncommitted two", at_sha
+        assert at_sha["ref"] == old, at_sha
+        live = r(tok, pid, "dev", "frozen.txt")
+        assert live["content"] == "dirty one\ndirty two", live
+        assert "ref" not in live, live
+        at_branch = r(tok, pid, "dev", "frozen.txt", ref="frozen-ref-pin")
+        assert at_branch["content"] == at_sha["content"], at_branch
+        assert at_branch["ref"] == "frozen-ref-pin", at_branch
+        page = r(
+            tok,
+            pid,
+            "dev",
+            "frozen.txt",
+            line_start=2,
+            line_end=2,
+            ref=old,
+        )
+        assert page["content"] == "committed two", page
+        assert page["content_sha256"] == at_sha["content_sha256"], page
+        # origin/ fallback: publish the branch, drop the local one, so
+        # only origin/frozen-ref-pin resolves.
+        _git("-C", dest, "push", "origin", "frozen-ref-pin")
+        _git("-C", dest, "branch", "-D", "frozen-ref-pin")
+        via_origin = r(tok, pid, "dev", "frozen.txt", ref="frozen-ref-pin")
+        assert via_origin["content"] == at_sha["content"], via_origin
+        assert "unknown ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="no-such-branch-xyz"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="bad..ref"
+        )
+        assert "no file at" in _expect_tool_error(
+            r, tok, pid, "dev", "ghost.txt", ref=old
+        )
+        assert "is a directory" in _expect_tool_error(
+            r, tok, pid, "dev", "sub", ref=old
+        )
+        beta = agents["beta"]["token"]
+        assert "no active workspace" in _expect_tool_error(
+            r, beta, pid, "dev", "frozen.txt", ref=old
+        )
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+        r(tok, pid, "dev", "frozen.txt", ref=old)
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  ref reads (committed vs dirty): ok")
+
+
 def test_owner_isolation(agents, wstools):
     sb = _FilesSandbox()
     try:
@@ -500,6 +588,7 @@ def main():
     test_delete_semantics(agents, wstools)
     test_sync_and_clocks_and_budget(agents, wstools)
     test_workspace_edits(agents, wstools)
+    test_read_at_ref(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 

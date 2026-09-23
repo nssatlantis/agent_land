@@ -4,7 +4,9 @@ Pins workspace_search against a claimed tree on a local bare remote
 (no network): live dirty + untracked coverage across every UTF-8 text
 file (.txt included, .github included), skips (.git, manifest, symlink,
 binary, empty, over-cap), caps (max_results, per-file, trim),
-validation, owner isolation and both-clocks touch.
+validation, owner isolation and both-clocks touch, plus ref search
+(committed tree at branch/tag/sha with dirt invisible, unknown/invalid
+refs) over the same file universe (a .txt hit proves no allowlist).
 """
 
 import os
@@ -217,6 +219,67 @@ def test_search_owner_and_clocks(agents, wstools):
     print("  owner isolation + both clocks: ok")
 
 
+def test_search_at_ref(agents, wstools):
+    sb = _SearchSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Ref Search Shop")
+        s = wstools.workspace_search
+        w = wstools.workspace_write_file
+        aid = agents["alpha"]["agent_id"]
+        dest = ws._claim_dir(aid, pid, "dev")
+        w(tok, pid, "dev", "notes/todo.txt", "frozenmarker one\n")
+        _git("-C", dest, "add", "notes/todo.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "freeze",
+        )
+        old = subprocess.run(
+            ["git", "-C", dest, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert old, "need the frozen commit sha"
+        w(tok, pid, "dev", "notes/todo.txt", "livemarker two\n")
+        at_ref = s(tok, pid, "dev", "frozenmarker", ref=old)
+        # .txt is outside repo_search's allowlist: this hit proves the
+        # ref path keeps the workspace file universe, not the allowlist.
+        assert [m["path"] for m in at_ref["matches"]] == ["notes/todo.txt"], at_ref
+        assert at_ref["ref"] == old, at_ref
+        assert s(tok, pid, "dev", "livemarker", ref=old)["matches"] == [], at_ref
+        live = s(tok, pid, "dev", "livemarker")
+        assert [m["path"] for m in live["matches"]] == ["notes/todo.txt"], live
+        assert "ref" not in live, live
+        assert "unknown ref" in _expect_tool_error(
+            s, tok, pid, "dev", "frozenmarker", ref="no-such-branch-xyz"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            s, tok, pid, "dev", "frozenmarker", ref="bad..ref"
+        )
+        beta = agents["beta"]["token"]
+        assert "no active workspace" in _expect_tool_error(
+            s, beta, pid, "dev", "frozenmarker", ref=old
+        )
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+        s(tok, pid, "dev", "frozenmarker", ref=old)
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  ref search (committed vs dirty): ok")
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
@@ -224,6 +287,7 @@ def main():
     test_search_live_and_all_text(agents, wstools)
     test_search_skips(agents, wstools)
     test_search_caps_and_validation(agents, wstools)
+    test_search_at_ref(agents, wstools)
     test_search_owner_and_clocks(agents, wstools)
     print("test_workspace_search: all scenarios passed")
 

@@ -39,9 +39,12 @@ def _trim_search_line(line: str) -> str:
     return line[: config.REPO_SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
 
 
-def _resolve_ref_commit(ref: str) -> str:
+def _resolve_ref_commit(ref: str, repo_dir: str | None = None) -> str:
     """Resolve ref to a commit SHA via local git. Tries `ref` then `origin/<ref>`."""
-    repo_dir = str(Path(db.REPO_DIR).resolve())
+    if repo_dir is None:
+        repo_dir = str(Path(db.REPO_DIR).resolve())
+    else:
+        repo_dir = str(Path(repo_dir).resolve())
     for candidate in (ref, f"origin/{ref}"):
         try:
             proc = subprocess.run(
@@ -68,11 +71,26 @@ def _resolve_ref_commit(ref: str) -> str:
     )
 
 
-def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
-    """Search the committed tree at `ref` via `git grep` — no checkout, no API."""
+def _search_with_ref(
+    query: str,
+    max_results: int,
+    ref: str,
+    repo_dir: str | None = None,
+    allowlist: bool = True,
+) -> dict:
+    """Search the committed tree at `ref` via `git grep` — no checkout, no API.
+
+    `repo_dir` roots the search (defaults to the server checkout, so
+    `repo_search` is unaffected); `allowlist=False` searches every
+    tracked blob regardless of extension (the workspace file universe),
+    while True keeps the record/code allowlist.
+    """
     ref = _validate_ref(ref)
-    commit = _resolve_ref_commit(ref)
-    repo_dir = str(Path(db.REPO_DIR).resolve())
+    commit = _resolve_ref_commit(ref, repo_dir)
+    if repo_dir is None:
+        repo_dir = str(Path(db.REPO_DIR).resolve())
+    else:
+        repo_dir = str(Path(repo_dir).resolve())
     # Fixed-string, case-insensitive, no binary, line numbers.
     # `git grep -n -i -F -I` at a rev outputs "<rev>:<path>:<line>:<text>".
     try:
@@ -127,13 +145,15 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
             lineno = int(lineno_str)
         except ValueError:  # domain: degrade-silently - non-numeric line number skipped
             continue
-        # Allowlist — same as walk path.
-        p = Path(path_str)
-        if (
-            p.name not in SEARCH_SPECIAL_FILES
-            and p.suffix.lower() not in SEARCH_EXTENSIONS
-        ):
-            continue
+        # Allowlist — same as walk path (skipped for workspace
+        # file-universe searches, where every tracked blob is fair game).
+        if allowlist:
+            p = Path(path_str)
+            if (
+                p.name not in SEARCH_SPECIAL_FILES
+                and p.suffix.lower() not in SEARCH_EXTENSIONS
+            ):
+                continue
         # Per-file cap
         lst = by_file.get(path_str)
         if lst is None:

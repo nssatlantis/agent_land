@@ -24,10 +24,17 @@ import time
 import config
 
 from . import _core
-from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._core import (
+    GITHUB_BASE_BRANCH,
+    GITHUB_REPO,
+    RepoError,
+    _validate_path,
+    _validate_ref,
+)
 from ._eol import _normalize_eol, _target_eol_for_text
 from ._gitops import (
     _git,
+    _git_bytes,
     _push_auth,
     _push_ref,
     _repo_url,
@@ -529,6 +536,77 @@ def _find_open_claim_pr(branch: str) -> dict | None:
     owner = GITHUB_REPO.split("/")[0]
     rows = _core._request("GET", f"pulls?head={owner}:{branch}&state=open")
     return rows[0] if rows else None
+
+
+def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
+    """Validate `ref` and resolve it to a commit SHA inside one tree.
+
+    Tries the ref as given, then under `origin/` (a branch fetched by
+    an earlier sync but never checked out locally). Returns
+    (validated_ref, commit_sha). Unknown refs fail loudly naming the
+    ref - syncing (`workspace_sync`, which fetches origin/<base>) is
+    the way new refs arrive; reads never fetch.
+    """
+    validated = _validate_ref(ref)
+    for candidate in (validated, f"origin/{validated}"):
+        res = _git(
+            dest, "rev-parse", "--verify", f"{candidate}^{{commit}}", check=False
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return validated, res.stdout.strip()
+    raise RepoError(
+        f"unknown ref {validated!r} - no such branch, tag or commit in "
+        "this workspace tree; sync it first (`workspace_sync`) to fetch "
+        "origin refs."
+    )
+
+
+def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
+    """Committed bytes of one tree-relative path at `ref` (plus the ref).
+
+    No checkout, no worktree touch: dirty edits are invisible here by
+    design, so a fix trail can be audited against the branch itself.
+    The blob is located via `ls-tree` (pathspec-safe - a `:` in the
+    name can never split a `rev:path` arg) and materialized with
+    `cat-file -p` over the bytes path, so binaries read like the live
+    path does (decoded with replacement downstream). The transfer cap
+    is enforced from the `ls-tree --long` size before any byte moves.
+    Symlink blobs read as their target text (the committed bytes);
+    directories, submodules and missing paths refuse.
+    """
+    validated, commit = _resolve_tree_commit(dest, ref)
+    listed = _git(dest, "ls-tree", "--long", commit, "--", clean, check=False)
+    if listed.returncode != 0:
+        raise RepoError(f"could not list {clean!r} at ref {validated!r}.")
+    entry: list[str] | None = None
+    for line in listed.stdout.splitlines():
+        meta, _, name = line.partition("\t")
+        if name == clean:
+            entry = meta.split()
+            break
+    if entry is None or len(entry) < 4 or entry[1] != "blob":
+        if entry is not None and len(entry) >= 2 and entry[1] == "tree":
+            raise RepoError(f"path {clean!r} is a directory at ref {validated!r}.")
+        if entry is not None and len(entry) >= 2 and entry[1] == "commit":
+            raise RepoError(
+                f"path {clean!r} is a submodule at ref {validated!r} - its "
+                "content lives in another repository."
+            )
+        raise RepoError(f"no file at {clean!r} in the tree at ref {validated!r}.")
+    try:
+        size = int(entry[3])
+    except ValueError:  # domain: degrade-silently - bad size reads over-cap
+        size = _transfer_file_cap_bytes() + 1
+    cap = _transfer_file_cap_bytes()
+    if size > cap:
+        raise RepoError(
+            f"{clean!r} is {size} bytes at ref {validated!r}, over the "
+            f"{cap / (1 << 20):g}MB read cap."
+        )
+    blob = _git_bytes(dest, "cat-file", "-p", entry[2], check=False)
+    if blob.returncode != 0:
+        raise RepoError(f"could not read {clean!r} at ref {validated!r}.")
+    return blob.stdout, validated
 
 
 def _open_or_reuse_claim_pr(
