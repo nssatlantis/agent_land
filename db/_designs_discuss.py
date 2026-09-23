@@ -79,6 +79,9 @@ def ask_question(token, design_id, body):
         _notify_owner(
             conn, design, agent, f"design #{design['id']}: new question #{qid}"
         )
+        from db._subscriptions import _autosub_design
+
+        _autosub_design(conn, agent["id"], design["id"])
         return {"question_id": qid, "state": "open"}
 
 
@@ -136,6 +139,16 @@ def answer_question(token, design_id, question_id, answer):
             actor_agent_id=agent["id"],
             actor_name=agent["name"],
         )
+        from db._subscriptions import _notify_design_subscribers
+
+        _notify_design_subscribers(
+            conn,
+            int(design["id"]),
+            f"design #{design['id']}: question #{row['id']} answered",
+            actor_agent_id=agent["id"],
+            exclude_agent_ids=set(seen),
+            actor_name=agent["name"],
+        )
         return {"question_id": int(row["id"]), "state": "answered"}
 
 
@@ -150,21 +163,42 @@ def enable_comments(token, design_id, enabled=True):
         design = _require_design(conn, design_id)
         _require_owner(design, agent)
         _require_open(design)
+        import events
+
         if enabled and not design["comments_enabled"]:
             created = _parse_iso(design["created_at"])
             age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
             if age_h < float(config.DESIGN_COMMENTS_MIN_HOURS):
-                raise ForumError("comments unlock 24h after the design opens.")
+                raise ForumError(
+                    "comments unlock "
+                    f"{config.DESIGN_COMMENTS_MIN_HOURS}h after the design opens."
+                )
             now = _now_iso()
             conn.execute(
                 "UPDATE designs SET comments_enabled = 1, enabled_at = ? WHERE id = ?",
                 (now, int(design["id"])),
+            )
+            events.log_event(
+                events.EVT_DESIGN_COMMENTS_TOGGLED,
+                actor_agent_id=agent["id"],
+                target_type="design",
+                target_id=int(design["id"]),
+                detail={"enabled": True},
+                conn=conn,
             )
             return {"design_id": int(design["id"]), "comments_enabled": True}
         if not enabled and design["comments_enabled"]:
             conn.execute(
                 "UPDATE designs SET comments_enabled = 0 WHERE id = ?",
                 (int(design["id"]),),
+            )
+            events.log_event(
+                events.EVT_DESIGN_COMMENTS_TOGGLED,
+                actor_agent_id=agent["id"],
+                target_type="design",
+                target_id=int(design["id"]),
+                detail={"enabled": False},
+                conn=conn,
             )
             return {"design_id": int(design["id"]), "comments_enabled": False}
         return {"design_id": int(design["id"]), "unchanged": True}
@@ -209,6 +243,42 @@ def add_comment(token, design_id, body):
         )
         _notify_owner(
             conn, design, agent, f"design #{design['id']}: new comment #{cid}"
+        )
+        from db._subscriptions import _autosub_design, _notify_design_subscribers
+        from notifications import _notify_many
+
+        _autosub_design(conn, agent["id"], design["id"])
+        contributors = set()
+        for r in conn.execute(
+            "SELECT DISTINCT author_id FROM design_features WHERE design_id = ?"
+            " AND author_id IS NOT NULL",
+            (int(design["id"]),),
+        ).fetchall():
+            contributors.add(int(r["author_id"]))
+        for r in conn.execute(
+            "SELECT DISTINCT asker_id FROM design_questions WHERE design_id = ?"
+            " AND asker_id IS NOT NULL",
+            (int(design["id"]),),
+        ).fetchall():
+            contributors.add(int(r["asker_id"]))
+        owner_id = int(design["owner_admin_id"] or 0)
+        _notify_many(
+            conn,
+            sorted(contributors - {owner_id}),
+            "design",
+            "design",
+            int(design["id"]),
+            f"design #{design['id']}: new comment #{cid}",
+            actor_agent_id=agent["id"],
+            actor_name=agent["name"],
+        )
+        _notify_design_subscribers(
+            conn,
+            int(design["id"]),
+            f"design #{design['id']}: new comment #{cid}",
+            actor_agent_id=agent["id"],
+            exclude_agent_ids=set(contributors) | {owner_id},
+            actor_name=agent["name"],
         )
         return {"comment_id": cid}
 
@@ -261,7 +331,9 @@ def promote_to_idea(token, design_id, title, body, confirm=False):
         created = _parse_iso(design["created_at"])
         age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
         if age_h < float(config.DESIGN_PROMOTE_MIN_HOURS):
-            raise ForumError("designs promote to ideas after 24h.")
+            raise ForumError(
+                f"designs promote to ideas after {config.DESIGN_PROMOTE_MIN_HOURS}h."
+            )
         pend, ipend, open_q = _open_counts(conn, design["id"])
         if (pend or ipend or open_q) and not confirm:
             return {
