@@ -335,6 +335,100 @@ def test_try_dispatch_gates():
         config.CI_FARM_ENABLED = orig
 
 
+
+def test_bench_remote_first_dispatch():
+    """Bench remote-first: a healthy runner gets the bench run; the result
+    carries per-machine quiet/contended and runner provenance."""
+    row = farm.register_runner("bench1", "http://x", token="t")
+    orig_ping = farm._ping
+    orig_disp = farm.dispatch_to_runner
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    remote = {
+        "checks": "db_benchmark",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 45.2,
+        "head_sha": "abc123",
+        "output_tail": "bench complete",
+        "summary": {"tests_run": False},
+        "quiet": True,
+        "contended": False,
+        "bench_load": {"bench_busy_start": 1, "bench_host_cpus": 4},
+    }
+    captured_payload: dict = {}
+
+    def _capture(runner, payload):
+        captured_payload.update(payload)
+        return remote
+
+    farm.dispatch_to_runner = _capture
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    try:
+        result = farm.try_bench_dispatch(
+            "db_benchmark", 1, "tester", "ci_db_bench_run", "rid-b1"
+        )
+        assert result is not None
+        assert result["mode"] == "native"
+        assert result["runner"] == "bench1"
+        assert result["quiet"] is True
+        assert result["contended"] is False
+        assert result["bench_load"] == {
+            "bench_busy_start": 1,
+            "bench_host_cpus": 4,
+        }
+        assert "anchor_env" in captured_payload
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+def test_bench_disabled():
+    """CI_FARM_BENCH_REMOTE_FIRST=0: bench dispatch is off, returns None."""
+    row = farm.register_runner("b2", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 0
+    try:
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(row["id"])
+
+
+def test_bench_no_runner():
+    """No healthy runner available: bench dispatch returns None (fallback)."""
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    for r in farm.list_runners():
+        farm.remove_runner(r["id"])
+    try:
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+    finally:
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+
 def main():
     setup_module()
     test_ci_runners_migration()
@@ -348,6 +442,9 @@ def main():
     test_map_and_log_provenance()
     test_try_dispatch_disabled()
     test_try_dispatch_gates()
+    test_bench_remote_first_dispatch()
+    test_bench_disabled()
+    test_bench_no_runner()
     print("All CI farm tests passed.")
 
 
