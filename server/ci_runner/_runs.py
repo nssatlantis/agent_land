@@ -738,6 +738,23 @@ def run_checks(
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
     # held, treat as saturated.
+    # Bench remote-first (PR 3): try a healthy runner before taking a local
+    # slot. The runner reports its own quiet/contended state; host load is
+    # irrelevant. Falls back to local when no runner is available.
+    if is_bench and config.CI_FARM_ENABLED and config.CI_FARM_BENCH_REMOTE_FIRST:
+        try:
+            bench_result = _farm_mod.try_bench_dispatch(
+                checks=checks,
+                agent_id=agent_id,
+                name=name,
+                kind_event=kind_event,
+                run_id=_run_id,
+            )
+        except Exception:
+            bench_result = None  # domain: degrade-silently
+        if bench_result is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return bench_result
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
