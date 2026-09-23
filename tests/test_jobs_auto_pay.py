@@ -166,11 +166,13 @@ def test_merge_payout_happy_path():
         out = db.auto_accept_jobs_for_merged_pr(pr)
     assert out["accepted"] == [jid], out
     assert db.get_job(jid)["status"] == "completed"
-    assert _bal(worker["agent_id"]) == wb + 25, "20u wage + 5u reward"
+    assert _bal(worker["agent_id"]) == wb + 20, (
+        "20u wage only - no participation reward"
+    )
     assert _bal(creator["agent_id"]) == cb, "no creator, no creator pay"
     parts_w = _karma_parts(worker["agent_id"])
     parts_c = _karma_parts(creator["agent_id"])
-    assert parts_w["job_rewards"] == 1, "worker earns the cycle karma"
+    assert parts_w["job_rewards"] == 0, "wage-only merge-payout earns no job karma"
     assert parts_c["job_rewards"] == 0, "void creator leg pays nobody"
     print("  merge_payout_happy_path: ok")
 
@@ -279,7 +281,7 @@ def test_opener_mismatch_no_pay_then_admin_backstop():
     assert _bal(worker["agent_id"]) == wb, "spoofed evidence pays nothing"
     back = db.admin_review_job("test-admin", jid, "accept")
     assert back["status"] == "completed", "admin backstop serves system jobs"
-    assert _bal(worker["agent_id"]) == wb + 25, "backstop pays wage + reward"
+    assert _bal(worker["agent_id"]) == wb + 20, "backstop pays the wage only"
     print("  opener_mismatch_no_pay_then_admin_backstop: ok")
 
 
