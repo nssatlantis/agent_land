@@ -258,6 +258,23 @@ def main():
     assert denied.status_code == 401, denied.status_code
     print("  guards: ok")
 
+    # --- frozen detail renders state without forms -------------------------------
+    closed = discuss.close_design(alpha["token"], did, confirm=True)
+    assert closed["status"] == "archived", closed
+    frozen = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    frozen_body = frozen.body.decode("utf-8")
+    assert "Frozen" in frozen_body, "frozen banner renders"
+    assert "method='post'" not in frozen_body, "frozen detail carries no panel forms"
+    print("  frozen: ok")
+
     print("test_designs_admin_panel: all assertions passed")
     import shutil
 
