@@ -173,6 +173,42 @@ EXPECTED = [
     "redeem_transfer_ticket",
     "sweep_expired_transfer_tickets",
     "unburn_transfer_path",
+    # designs pre-idea brainstorm (proposal #652)
+    "create_design",
+    "edit_design_meta",
+    "propose_feature",
+    "decide_feature",
+    "withdraw_feature",
+    "update_pending_feature",
+    "list_designs",
+    "get_design",
+    # designs follow-ons (proposal #652 chain)
+    "propose_issue",
+    "decide_issue",
+    "resolve_issue",
+    "move_design_item",
+    "list_issues",
+    "ask_question",
+    "answer_question",
+    "enable_comments",
+    "add_comment",
+    "promote_preview",
+    "promote_to_idea",
+    "close_design",
+    # designs readers (proposal #652 viewer)
+    "list_questions",
+    "list_design_comments",
+    # designs sole-admin engine (proposal #652 panel)
+    "admin_decide_feature",
+    "admin_decide_issue",
+    "admin_resolve_issue",
+    "admin_move_design_item",
+    "admin_answer_question",
+    "admin_enable_comments",
+    "admin_design_pending",
+    # designs subscriptions (proposal #652 follow-ups)
+    "subscribe_design",
+    "unsubscribe_design",
 ]
 
 

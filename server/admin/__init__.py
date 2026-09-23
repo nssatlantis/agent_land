@@ -71,6 +71,16 @@ from server.admin._ci import (  # noqa: F401  # noqa: F401
     ci_prune_images,
     ci_restart_ticker,
 )
+from server.admin._designs import (  # noqa: F401
+    design_admin_answer,
+    design_admin_decide_feature,
+    design_admin_decide_issue,
+    design_admin_detail_page,
+    design_admin_move_item,
+    design_admin_resolve_issue,
+    design_admin_toggle_comments,
+    designs_admin_page,
+)
 
 # Import render helpers that admin_page composes (re-exported for completeness)
 from server.admin._economy import (  # noqa: F401
@@ -208,6 +218,38 @@ ROUTES = [
         methods=["POST"],
     ),
     Route("/admin/invoices", invoices_admin_page),
+    Route("/admin/designs", designs_admin_page),
+    Route("/admin/designs/{design_id:int}", design_admin_detail_page),
+    Route(
+        "/admin/designs/{design_id:int}/decide-feature",
+        design_admin_decide_feature,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/decide-issue",
+        design_admin_decide_issue,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/resolve-issue",
+        design_admin_resolve_issue,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/move-item",
+        design_admin_move_item,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/answer",
+        design_admin_answer,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/toggle-comments",
+        design_admin_toggle_comments,
+        methods=["POST"],
+    ),
 ]
 
 __all__ = [
@@ -267,6 +309,14 @@ __all__ = [
     "guild_release_member",
     "guild_chat_delete",
     "guild_disband",
+    "designs_admin_page",
+    "design_admin_detail_page",
+    "design_admin_decide_feature",
+    "design_admin_decide_issue",
+    "design_admin_resolve_issue",
+    "design_admin_move_item",
+    "design_admin_answer",
+    "design_admin_toggle_comments",
     "bugs_index",
     "bug_detail",
     "admin_confirm_bug",
