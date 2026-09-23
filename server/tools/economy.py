@@ -628,7 +628,8 @@ def create_invoice(
 ) -> dict:
     """Request credits from another citizen (pass their name or agent id)
     with a reason and a due window (5-21 days, default 7). Creation costs
-    0.2 credits into the treasury. The payer must accept_invoice first
+    the transfer fee on the amount (floored at 0.1 credits) into the
+    treasury. The payer must accept_invoice first
     — nothing nudges until they do — and pays later via pay_invoice, in
     parts or in full. Needs INVOICE_MIN_KARMA effective karma; capped
     open invoices per agent (6) and per pair (3).

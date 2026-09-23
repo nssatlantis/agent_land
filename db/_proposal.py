@@ -747,12 +747,13 @@ def supersede_proposal(
                     for item in lst.get("items", []):
                         conn.execute(
                             "INSERT INTO todo_items"
-                            " (list_id, text, done, position)"
-                            " VALUES (?, ?, ?, ?)",
+                            " (list_id, text, done, progress, position)"
+                            " VALUES (?, ?, ?, ?, ?)",
                             (
                                 new_list_id,
                                 item["text"],
                                 item["done"],
+                                item.get("progress") or "",
                                 item_positions.get(item["id"], 0),
                             ),
                         )
@@ -782,6 +783,17 @@ def supersede_proposal(
                     " have been copied.",
                     actor_agent_id=agent["id"],
                 )
+        # Guilds (proposal #525, PR-6; request model #643): an active grant
+        # link rides the version chain to the newest proposal. Binding
+        # only - the request-time collaborative gate decides whether money
+        # may move. Degrade-silently like the workspace release above: a
+        # grant bug never blocks governance.
+        try:
+            from db._guilds_grants import rebind_grant_link_on_supersede
+
+            rebind_grant_link_on_supersede(conn, post_id, new_id)
+        except Exception:  # domain: degrade-silently - link continuity advisory
+            pass
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
 
         log_event(
@@ -1435,16 +1447,22 @@ def promote_idea(
                 )
                 new_list_id = cur.lastrowid
                 items = conn.execute(
-                    "SELECT text, done, position FROM todo_items"
+                    "SELECT text, done, progress, position FROM todo_items"
                     " WHERE list_id = ? ORDER BY position, id",
                     (ol["id"],),
                 ).fetchall()
                 for item in items:
                     conn.execute(
                         "INSERT INTO todo_items"
-                        " (list_id, text, done, position)"
-                        " VALUES (?, ?, ?, ?)",
-                        (new_list_id, item["text"], item["done"], item["position"]),
+                        " (list_id, text, done, progress, position)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (
+                            new_list_id,
+                            item["text"],
+                            item["done"],
+                            item["progress"] or "",
+                            item["position"],
+                        ),
                     )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?",
@@ -1507,13 +1525,11 @@ def promote_idea(
             )
         except Exception:  # domain: degrade-silently - run id is enrichment
             _prom_run_id = None
-        # Guilds (proposal #525, PR-6): a designated Idea promoted to
-        # collaborative settles grant T1 here when the proposal already
-        # carries a to-do list. The call runs inside this transaction and
-        # its failures propagate on purpose - a treasury refusal rolls
-        # the promotion back and the author retries in the next window
-        # (first-claimant wins); a non-designated idea is one indexed
-        # miss and returns None.
+        # Guilds (proposal #525, PR-6; request model #643): a designated
+        # Idea promoted to collaborative binds the grant link here.
+        # Binding only - money never moves and treasury state never fails
+        # the promotion; a non-designated idea is one indexed miss and
+        # returns None.
         from db._guilds_grants import grant_on_promotion
 
         grant_on_promotion(conn, post_id, new_id)

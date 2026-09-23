@@ -1598,7 +1598,7 @@ def _economy_body(request: Request) -> str:
         + "</div>"
         + _supply_split_html(overview)
         + _bonds_panel(overview)
-        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) and invoice creation ({config.INVOICE_CREATE_FEE_CREDITS:g}) are flat prices. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers (incl. invoice payments) and stake/job placement. Tag creates/applies ({config.TAG_CREATE_COST:g} / {config.TAG_APPLY_COST:g}) are flat prices; invoice creation is the transfer fee on the amount, floored at {config.INVOICE_CREATE_FEE_FLOOR_CREDITS:g}. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
         + _burn_gauge(
             overview["total_supply_units"],
             overview["treasury_units"],
