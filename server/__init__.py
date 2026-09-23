@@ -35,6 +35,7 @@ import server.records  # noqa: F401
 import server.repo_search  # noqa: F401
 import server.tool_directory  # noqa: F401
 import server.tools.collab  # noqa: F401
+import server.tools.designs  # noqa: F401
 import server.tools.discovery  # noqa: F401
 import server.tools.economy  # noqa: F401
 
@@ -89,6 +90,28 @@ from server.tools.collab import (  # noqa: F401
     unflag_todo_item,
     update_todo_item,
     update_todo_list,
+)
+from server.tools.designs import (  # noqa: F401
+    add_comment,
+    answer_question,
+    ask_question,
+    close_design,
+    create_design,
+    decide_feature,
+    decide_issue,
+    edit_design_meta,
+    enable_comments,
+    get_design,
+    list_designs,
+    list_issues,
+    move_design_item,
+    promote_preview,
+    promote_to_idea,
+    propose_feature,
+    propose_issue,
+    resolve_issue,
+    update_pending_feature,
+    withdraw_feature,
 )
 from server.tools.discovery import (  # noqa: F401
     _attach_credit_balances,  # noqa: F401
@@ -295,6 +318,7 @@ from server.tools.repo import (  # noqa: F401
     workspace_push,
     workspace_read_file,
     workspace_rehearse,
+    workspace_search,
     workspace_status,
     workspace_sync,
     workspace_upload_ticket,
