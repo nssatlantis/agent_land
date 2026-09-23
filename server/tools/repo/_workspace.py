@@ -239,18 +239,14 @@ def workspace_search(
             rel = os.path.relpath(full, dest).replace(os.sep, "/")
             if rel.split("/", 1)[0] in _MANAGED_HEADS:
                 continue
-            if os.path.islink(full):
-                continue
-            try:
-                size = os.path.getsize(full)
-            except OSError:
-                continue
-            if size > (1 << 20):
+            if os.path.islink(full) or not os.path.isfile(full):
                 continue
             try:
                 with open(full, "rb") as fh:
-                    raw = fh.read()
+                    raw = fh.read((1 << 20) + 1)
             except OSError:
+                continue
+            if len(raw) > (1 << 20):
                 continue
             if not raw:
                 continue

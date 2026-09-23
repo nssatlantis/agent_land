@@ -145,6 +145,10 @@ def test_search_skips(agents, wstools):
             )
         except (OSError, NotImplementedError):
             pass
+        try:
+            os.mkfifo(os.path.join(dest, "fifo"))
+        except (OSError, NotImplementedError, AttributeError):
+            pass
         got = s(tok, pid, "dev", marker)
         paths = [m["path"] for m in got["matches"]]
         assert paths == ["live.txt"], got
