@@ -22,6 +22,12 @@ from notifications import _notify
 _MOVE_BATCH_MAX = 20
 
 
+# Hard cap on how many items a single tick_todo_items batch may flip at
+# once - the whole batch is atomic, so this bounds the blast radius of one
+# call (proposal #661; requested batch window is 3-7 ticks).
+_TICK_BATCH_MAX = 7
+
+
 def _claim_expired(claimed_at: str | None) -> bool:
     """True when a to-do claim has sat past config.CLAIM_TIMEOUT_SECONDS.
 

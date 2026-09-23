@@ -462,6 +462,27 @@ def _prs_hold_chip(r: dict, state: str, pid_map: dict[int, int] | None = None) -
     )
 
 
+def _prs_stacked_chip(r: dict) -> str:
+    """A 'stacked' chip for a PR targeting any base other than the
+    configured one (proposal #660) - pure display off the row's own
+    base field, so it never costs a query. Quiet when the base is
+    empty or the configured base, and on any hiccup (the row already
+    shows head-arrow-base text without the chip)."""
+    try:
+        base = (r.get("base") or "").strip()
+        if not base or base == github.base_branch():
+            return ""
+    except Exception:
+        # domain: degrade-silently - the index must render even if the
+        #   configured-base read hiccups; the branches line still shows.
+        return ""
+    return (
+        ' <span style="color:var(--accent);font-size:12px;'
+        "border:1px solid var(--accent);border-radius:8px;"
+        f'padding:0 6px">stacked &rarr; {esc(base)}</span>'
+    )
+
+
 def _prs_rows_html(
     state: str,
     rows: list[dict] | None,
@@ -599,7 +620,7 @@ def _prs_rows_html(
             f"<td>{_prs_citizen_cell(r)}</td>"
             f"<td>{votes_cell}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
-            f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state, _pid_map)}</td>"
+            f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state, _pid_map)}{_prs_stacked_chip(r)}</td>"
             f"<td>{ci_html}</td>"
             "</tr>"
         )

@@ -519,8 +519,10 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
 
 @mcp.tool()
 @_logged
-def workspace_sync(token: str, proposal_id: int, name: str) -> dict:
-    """Fast-forward a CLEAN workspace tree onto origin/<base>.
+def workspace_sync(
+    token: str, proposal_id: int, name: str, base_branch: str | None = None
+) -> dict:
+    """Fast-forward a CLEAN workspace tree onto origin/<base> (or `base_branch`).
 
     Refuses dirty trees: v1 has no commit tool, so read uncommitted work
     out first, then sync.
@@ -528,7 +530,9 @@ def workspace_sync(token: str, proposal_id: int, name: str) -> dict:
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    synced = github.sync_claim_tree(agent_id, proposal_id, cname)
+    synced = github.sync_claim_tree(
+        agent_id, proposal_id, cname, base_branch=base_branch
+    )
     _touch_clocks(agent_id, proposal_id, cname)
     return synced
 
@@ -541,11 +545,13 @@ def workspace_rehearse(
     name: str,
     checks: str = "tests",
     quiet: bool | None = None,
+    base_ref: str | None = None,
 ) -> dict:
     """Run the CI suite against a claim tree's snapshot (read-only).
 
     Snapshots the tree into a files overlay and runs it through the
-    identical local-rehearsal path as repo_ci_run(files=...) — same
+    identical local-rehearsal path as repo_ci_run(files=...) (pass
+    `base_ref` to rehearse against a non-main base) — same
     sandbox, same handoff shaping (budget follows the harness:
     checks="format" runs budget-free). The tree
     itself never executes; only the snapshot overlay runs. Handoff: a running answer carries run_id - resolve with repo_ci_run_status, never re-fire.
@@ -570,6 +576,10 @@ def workspace_rehearse(
     normalized = _changes_for_repo_propose(None, None, snap["files"])
     for entry in normalized:
         _validate_path(entry["path"])
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        base_ref = _validate_ref(base_ref)
     result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
@@ -577,6 +587,7 @@ def workspace_rehearse(
         checks,
         files=normalized,
         quiet=quiet,
+        base_ref=base_ref,
     )
     summary = {
         "head_sha": snap["head_sha"],
@@ -627,6 +638,7 @@ async def workspace_push(
     labels: list[str] | None = None,
     dry_run: bool = False,
     expect_shas: dict[str, str] | None = None,
+    base_branch: str | None = None,
 ) -> dict:
     """Push one workspace tree as a single-commit pull request.
 
@@ -639,6 +651,7 @@ async def workspace_push(
     same gates, hold flow, link, and labels as repo_propose_change;
     follow-up pushes from the same tree append one commit and reuse
     the PR. The claim stays active afterwards (release is manual).
+    Pass `base_branch` to target a non-main base (stacked PRs).
     Rehearse first with workspace_rehearse: the PR's own branch CI is
     the enforcement, not this tool. dry_run returns the push plan
     without mutating git or GitHub.
@@ -663,6 +676,15 @@ async def workspace_push(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
+        # GitHub pings whoever holds a bare @login, and no citizen is a
+        # GitHub user: neutralize mentions in the outgoing prose now, on
+        # this connection. The mailbox scan below runs on the raw text -
+        # neutralized output resolves to zero targets by construction.
+        agents_map = db._load_agents_map(conn)
+        raw_body = body
+        raw_title = title
+        body = db.neutralize_github_mentions(body, agents_map)
+        title = db.neutralize_github_mentions(title, agents_map)
         db.require_todo_binding_for_pr(conn, proposal_id, todo_item_id)
         db.require_claim_for_todo(
             conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
@@ -678,6 +700,7 @@ async def workspace_push(
         citizen,
         dry_run=dry_run,
         expect_shas=expect_shas,
+        base_branch=base_branch,
     )
     _touch_clocks(agent_id, proposal_id, cname)
     proposal_link_error = None
@@ -725,18 +748,18 @@ async def workspace_push(
                     detail={"proposal_id": proposal_id},
                 )
             from db._subscriptions import _notify_subscribers
-            from notifications import _notify_many
+            from notifications import _notify_many, notify_pr_mentions
 
             pr_number = plan["pr_number"]
             author_msg = (
-                f"PR #{pr_number} opened for your proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for your proposal #{proposal_id}: {raw_title}"
             )
             collab_msg = (
                 f"PR #{pr_number} opened for collaborative proposal"
-                f" #{proposal_id} by {who['name']}: {title}"
+                f" #{proposal_id} by {who['name']}: {raw_title}"
             )
             subscriber_msg = (
-                f"PR #{pr_number} opened for proposal #{proposal_id}: {title}"
+                f"PR #{pr_number} opened for proposal #{proposal_id}: {raw_title}"
             )
             with db._conn() as conn:
                 tagged_rows = conn.execute(
@@ -775,6 +798,20 @@ async def workspace_push(
                         collab_msg,
                         actor_agent_id=who["agent_id"],
                     )
+                # Citizens named in the PR text hear about it in their
+                # mailbox (kind 'mention', ref 'pr'); anyone the proposal
+                # body already pinged - plus author and collaborators,
+                # who got the open pings above - stays quiet.
+                notify_pr_mentions(
+                    conn,
+                    pr_number=pr_number,
+                    title=raw_title,
+                    body=raw_body,
+                    actor_agent_id=who["agent_id"],
+                    actor_name=who["name"],
+                    proposal_id=proposal_id,
+                    exclude_ids=[a for a in [author_id, *collab_ids] if a is not None],
+                )
                 _notify_subscribers(
                     conn,
                     proposal_id,

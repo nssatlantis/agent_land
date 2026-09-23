@@ -11,7 +11,7 @@ CI stayed green. Detected only by human eyes.
 How it works
 ------------
 Runs natively in CI against the current checkout. It diffs the working tree
-against its merge-base with origin/main (i.e. the PR's own changes) using
+against its merge-base with the PR base (GITHUB_BASE_REF, default origin/main) using
 `git diff --find-renames -M --numstat`, then for every tracked source file
 (.py / .sql / .md) that lost lines:
   * a rename is EXEMPT (git -M detected the content moved),
@@ -53,7 +53,22 @@ def _git(*args: str) -> str | None:
 
 
 def _merge_base_diff() -> list[str]:
-    base = _git("merge-base", "HEAD", "origin/main")
+    # The PR base rides GITHUB_BASE_REF in CI (Actions sets it on
+    # pull_request runs); local runs fall back to origin/main. A stacked
+    # child diffs against its parent, so the parent's deletions are never
+    # blamed on the child (proposal #660).
+    ref = os.environ.get("GITHUB_BASE_REF") or "main"
+    base = _git("merge-base", "HEAD", f"origin/{ref}")
+    if not base and ref != "main":
+        # The stacked base may be missing from a shallow checkout - fetch
+        # it before giving up (proposal #660).
+        _git("fetch", "--no-tags", "--depth=50", "origin", ref)
+        base = _git("merge-base", "HEAD", f"origin/{ref}")
+    if not base and ref != "main":
+        raise AssertionError(
+            f"shrink gate: cannot resolve base origin/{ref} - "
+            "fetch the PR base before running this test."
+        )
     if not base:
         return []
     base = base.strip().split("\n", 1)[0]

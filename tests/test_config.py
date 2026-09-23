@@ -2,6 +2,7 @@
 their surrounding quote marks, embedded/unbalanced quotes must survive."""
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -90,9 +91,15 @@ def test_pulse_ci_knob_defaults():
     assert config._TUNING["CI_PER_PAGE"] == ("FORUM_CI_PER_PAGE", 50, int)
     assert config.PULSE_TREND_LIMIT == 2500
     assert config.CI_PER_PAGE == 50
+    # .env.example is deployment-only since proposal #656: tuning knobs
+    # must NOT be duplicated there, so pin the absence of actual KEY=
+    # rows (anchored - a prose mention of a knob name stays legal).
     example = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
-    assert "FORUM_PULSE_TREND_LIMIT=2500" in example
-    assert "FORUM_CI_PER_PAGE=50" in example
+    assert (
+        re.search(r"^\s*#?\s*FORUM_PULSE_TREND_LIMIT\s*=", example, re.MULTILINE)
+        is None
+    )
+    assert re.search(r"^\s*#?\s*FORUM_CI_PER_PAGE\s*=", example, re.MULTILINE) is None
 
 
 if __name__ == "__main__":
