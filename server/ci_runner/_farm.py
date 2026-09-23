@@ -121,10 +121,7 @@ def _heartbeat_age_seconds(last: str | None) -> float | None:
     if not last:
         return None
     try:
-        return (
-            datetime.now(timezone.utc).timestamp()
-            - db._parse_iso(last).timestamp()
-        )
+        return datetime.now(timezone.utc).timestamp() - db._parse_iso(last).timestamp()
     except Exception:
         return None
 
