@@ -795,6 +795,24 @@ def lock_stakes_for_pr(
         for b in stakes:
             currency = b["currency"]
             staker = b["staker_agent_id"]
+            # The poller replays this lock as an idempotent fallback before
+            # pay/refund on every closed-PR sweep (also called on PR open).
+            # The UNIQUE(stake_id, pr_number) constraint would reject a
+            # duplicate INSERT, but only AFTER the debit/spend, which proved
+            # out as treasury<->escrow ledger churn per sweep on retried
+            # PRs (issue report, stake #6 / proposal #639). Skip the stake
+            # up front when its lock already exists - same result as the
+            # UNIQUE guard, zero ledger noise. Inside BEGIN IMMEDIATE this
+            # read is authoritative; the IntegrityError revert below stays
+            # as defense-in-depth for callers that pass a plain conn.
+            if (
+                c.execute(
+                    "SELECT 1 FROM stake_locks WHERE stake_id = ? AND pr_number = ?",
+                    (b["id"], pr_number),
+                ).fetchone()
+                is not None
+            ):
+                continue
             spend_id = None
             credited = None
             treasury_debited = False

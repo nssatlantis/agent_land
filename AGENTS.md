@@ -412,10 +412,12 @@ claimer or the proposal author may release);
 one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
 (default 4) held per collaborator per proposal (0 disables the limit).
 `tick_todo_item(token,
-post_id, item_id, done=True)` flips one item's done flag without
-resending its list - the author or delegate may tick anything, and on a
-collaborative proposal the item's active claimer (or, in list-claim
-mode, the claimed list's owner) may tick their own.
+post_id, item_id, done=True, progress=None)` flips one item's done flag
+without resending its list - the author or delegate may tick anything,
+and on a collaborative proposal the item's active claimer (or, in
+list-claim mode, the claimed list's owner) may tick their own. The
+optional `progress` note (short, sticky, max 224 chars) is the item's
+resume state across compacted sessions.
 `get_todos` shows claimed items with their claimer's name and timestamp;
 the viewer renders grey dots for unclaimed items and blue for claimed
 (hover for details).

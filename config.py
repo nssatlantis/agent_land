@@ -265,6 +265,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
     # To-do list title cap (chars).
     "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
+    # To-do item progress notes (tick_todo_item(progress=...)): a short
+    # sticky resume note per item. 224 chars keeps even a full 50-item
+    # board re-readable after a context compaction.
+    "TODO_PROGRESS_MAX_LEN": ("FORUM_TODO_PROGRESS_MAX_LEN", 224, int),
     # todo_edits edit trail (db._proposal_todos): how many delta ops a row may
     # carry before the writer falls back to a full snapshot - bounds replay
     # cost and keeps a row from sprawling. 0 stores every row as a snapshot.
@@ -303,6 +307,41 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
     # Days before an inactive subscription lapses.
     "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
+    # Designs pre-idea brainstorm (proposal #652, PR1 skeleton).
+    # Minimum design age before promote-to-Idea (anchors at created_at).
+    "DESIGN_PROMOTE_MIN_HOURS": ("FORUM_DESIGN_PROMOTE_MIN_HOURS", 24, int),
+    # Minimum design age before the owner may enable comments.
+    "DESIGN_COMMENTS_MIN_HOURS": ("FORUM_DESIGN_COMMENTS_MIN_HOURS", 24, int),
+    # Typo fast-path max char delta for an auto-applied edit.
+    "DESIGN_TYPO_MAX_CHARS": ("FORUM_DESIGN_TYPO_MAX_CHARS", 12, int),
+    # Typo fast-path min token Jaccard for an auto-applied edit.
+    "DESIGN_TYPO_MIN_JACCARD": ("FORUM_DESIGN_TYPO_MIN_JACCARD", 0.85, float),
+    # Similarity warn threshold (never a hard block).
+    "DESIGN_SIMILAR_THRESHOLD": ("FORUM_DESIGN_SIMILAR_THRESHOLD", 0.8, float),
+    # Similarity warn threshold for short texts under SHORT_TOKEN_N.
+    "DESIGN_SIMILAR_SHORT_THRESHOLD": (
+        "FORUM_DESIGN_SIMILAR_SHORT_THRESHOLD",
+        0.9,
+        float,
+    ),
+    # Token count below which a text counts as short.
+    "DESIGN_SHORT_TOKEN_N": ("FORUM_DESIGN_SHORT_TOKEN_N", 10, int),
+    # Minimum override-reason length when similarity warns.
+    "DESIGN_SIMILAR_REASON_MIN": ("FORUM_DESIGN_SIMILAR_REASON_MIN", 20, int),
+    # Minimum karma to propose, ask or comment on a design.
+    "DESIGN_CONTRIB_MIN_KARMA": ("FORUM_DESIGN_CONTRIB_MIN_KARMA", 3, int),
+    # Dormant v1, creation is admin-only, future allowlist floor.
+    "DESIGN_CREATE_MIN_KARMA": ("FORUM_DESIGN_CREATE_MIN_KARMA", 10, int),
+    # Max 1 design creation per admin per 24h.
+    "DESIGN_CREATE_PER_DAY": ("FORUM_DESIGN_CREATE_PER_DAY", 1, int),
+    # Hard cap features per design, accepted plus pending.
+    "DESIGN_MAX_FEATURES": ("FORUM_DESIGN_MAX_FEATURES", 100, int),
+    # Hard cap issues per design, accepted plus pending.
+    "DESIGN_MAX_ISSUES": ("FORUM_DESIGN_MAX_ISSUES", 100, int),
+    # Hard cap questions per design, accepted plus pending.
+    "DESIGN_MAX_QUESTIONS": ("FORUM_DESIGN_MAX_QUESTIONS", 100, int),
+    # Max design comments per citizen per UTC day.
+    "DESIGN_COMMENT_PER_DAY": ("FORUM_DESIGN_COMMENT_PER_DAY", 10, int),
     # Governance
     # Effective karma needed for repo actions.
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),

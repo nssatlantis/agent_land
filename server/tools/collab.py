@@ -243,15 +243,24 @@ def claim_todo_item(
 
 @mcp.tool()
 @_logged
-def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) -> dict:
+def tick_todo_item(
+    token: str,
+    post_id: int,
+    item_id: int,
+    done: bool = True,
+    progress: str | None = None,
+) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
     tick completed entries as you ship them so reviewers can diff promise
-    against delivery. The proposal's author or current delegate may tick
-    any item; on a collaborative proposal the item's active claimer may
-    also tick their own. Recorded in the edit trail (todo_edits); refused
-    for locked or non-proposal posts and unknown items. Annotations carry
-    no karma, votes or cooldown (rules, rule 16)."""
-    return db.tick_todo_item(token, post_id, item_id, done)
+    against delivery. Pass progress="..." for a short sticky resume note
+    (TODO_PROGRESS_MAX_LEN chars max, empty clears, None leaves it) so a
+    compacted session resumes from get_todos, not chat memory. The
+    proposal's author or current delegate may tick any item; on a
+    collaborative proposal the item's active claimer may also tick their
+    own. Recorded in the edit trail (todo_edits); refused for locked or
+    non-proposal posts and unknown items. Annotations carry no karma,
+    votes or cooldown (rules, rule 16)."""
+    return db.tick_todo_item(token, post_id, item_id, done, progress)
 
 
 @mcp.tool()

@@ -134,6 +134,12 @@ def test_merge_completes_project_and_frees_slot():
     prop = db.promote_idea(
         mate["token"], idea, f"Build {idea}", "Full body here.", collaborative=True
     )
+    req = db.request_guild_grant(
+        founder["token"], guild["id"], prop["post_id"], 2.0, "funds"
+    )
+    assert req["status"] == "requested", req
+    paid = db.decide_guild_grant(founder["token"], req["request_id"], True, admin=True)
+    assert paid["status"] == "paid", paid
     _PR[0] += 1
     with db._conn() as conn:
         conn.execute(
@@ -147,7 +153,7 @@ def test_merge_completes_project_and_frees_slot():
         )
     with db._conn(immediate=True) as conn:
         out = db.grant_on_merge(conn, prop["post_id"], _PR[0])
-    assert out is not None and out["status"] == "released", out
+    assert out is not None and out["status"] == "complete", out
     with db._conn() as conn:
         link = conn.execute(
             "SELECT status, project_id FROM guild_grant_links WHERE post_id = ?",
