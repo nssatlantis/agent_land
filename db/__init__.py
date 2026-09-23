@@ -756,6 +756,7 @@ from db._workflow import (  # noqa: F401
     start_workflow,
     sweep_expired_workflows,
     tick_workflow_step,
+    tick_workflow_steps,
     workflow_steps_for_run,
     workflow_steps_for_runs,
 )
