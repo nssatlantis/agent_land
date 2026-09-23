@@ -107,9 +107,13 @@ def _similarity_warn(conn, design_id, text, viewer_id):
 
 
 def _feature_row(conn, fid, design_id):
+    try:
+        fid_int, did_int = int(fid), int(design_id)
+    except (TypeError, ValueError) as exc:
+        raise ForumError(f"no feature #{fid} on design #{design_id}.") from exc
     row = conn.execute(
         "SELECT * FROM design_features WHERE id = ? AND design_id = ?",
-        (int(fid), int(design_id)),
+        (fid_int, did_int),
     ).fetchone()
     if row is None:
         raise ForumError(f"no feature #{fid} on design #{design_id}.")
@@ -249,6 +253,8 @@ def edit_design_meta(
         _require_owner(design, agent)
         _require_open(design)
         updates, trail = {}, {}
+        req_text_old = req_text_new = req_tags_old = req_tags_new = None
+        req_text_hit = req_tags_hit = False
         if title is not None:
             c = (title or "").strip()
             if not c or len(c) > _TITLE_MAX:
@@ -271,8 +277,11 @@ def edit_design_meta(
                 raise ForumError("request text too long.")
             if c != (design["request_text"] or ""):
                 updates["request_text"] = c
-                trail["old_request"] = design["request_text"]
-                trail["new_request"] = c
+                req_text_old, req_text_new, req_text_hit = (
+                    design["request_text"],
+                    c,
+                    True,
+                )
         if request_tags is not None:
             tl = list(request_tags)
             for t in tl:
@@ -280,8 +289,11 @@ def edit_design_meta(
                     raise ForumError(f"bad request tag {t!r}.")
             if json.dumps(tl) != (design["request_tags"] or "[]"):
                 updates["request_tags"] = json.dumps(tl)
-                trail["old_request"] = design["request_tags"]
-                trail["new_request"] = json.dumps(tl)
+                req_tags_old, req_tags_new, req_tags_hit = (
+                    design["request_tags"],
+                    json.dumps(tl),
+                    True,
+                )
         if not updates:
             return {"design_id": int(design["id"]), "unchanged": True}
         updates["updated_at"] = _now_iso()
@@ -290,26 +302,36 @@ def edit_design_meta(
             f"UPDATE designs SET {sets} WHERE id = ?",
             (*updates.values(), int(design["id"])),
         )
-        conn.execute(
-            "INSERT INTO design_meta_edits (design_id, editor_id, old_title,"
-            " new_title, old_description, new_description, old_request,"
-            " new_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                int(design["id"]),
-                agent["id"],
-                trail.get("old_title"),
-                trail.get("new_title"),
-                trail.get("old_description"),
-                trail.get("new_description"),
-                trail.get("old_request"),
-                trail.get("new_request"),
-            ),
-        )
+        main = [
+            trail.get("old_title"),
+            trail.get("new_title"),
+            trail.get("old_description"),
+            trail.get("new_description"),
+        ]
+        trail_rows = []
+        if req_text_hit and req_tags_hit:
+            trail_rows.append([*main, req_text_old, req_text_new])
+            trail_rows.append([None, None, None, None, req_tags_old, req_tags_new])
+        elif req_text_hit:
+            trail_rows.append([*main, req_text_old, req_text_new])
+        elif req_tags_hit:
+            trail_rows.append([*main, req_tags_old, req_tags_new])
+        else:
+            trail_rows.append([*main, None, None])
+        for trail_row in trail_rows:
+            conn.execute(
+                "INSERT INTO design_meta_edits (design_id, editor_id, old_title,"
+                " new_title, old_description, new_description, old_request,"
+                " new_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (int(design["id"]), agent["id"], *trail_row),
+            )
         return {"design_id": int(design["id"]), "updated": sorted(updates)}
 
 
 def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""):
-    """Propose a feature add/edit/remove; typo edits auto-apply."""
+    """Propose a feature add/edit/remove; typo-similar edits auto-apply to
+    the live target (the returned state names the op outcome; the trail
+    lands in design_edit_log plus an event)."""
     if op not in ("add", "edit", "remove"):
         raise ForumError("op must be add, edit or remove.")
     clean = (text or "").strip()
@@ -321,7 +343,9 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
         _require_open(design)
         _check_contrib(conn, agent)
         if _feature_count(conn, design["id"]) >= int(config.DESIGN_MAX_FEATURES):
-            raise ForumError("that design already holds 100 features.")
+            raise ForumError(
+                f"that design already holds {int(config.DESIGN_MAX_FEATURES)} features."
+            )
         target = None
         if op in ("edit", "remove"):
             if feature_id is None:
@@ -421,14 +445,20 @@ def list_designs(status="open"):
                 " WHERE d.status = ? ORDER BY d.id DESC LIMIT ?",
                 (status, limit),
             ).fetchall()
+        if status == "all":
+            total = conn.execute("SELECT COUNT(*) FROM designs").fetchone()[0]
+        else:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM designs WHERE status = ?", (status,)
+            ).fetchone()[0]
         if not rows:
-            return {"designs": [], "total": 0}
+            return {"designs": [], "total": int(total or 0)}
         ids = [r["id"] for r in rows]
         marks = ",".join("?" * len(ids))
         counts, totals = {}, {}
         base = (
             "SELECT design_id, COUNT(*) AS n FROM design_features"
-            f" WHERE design_id IN ({marks})"
+            f" WHERE design_id IN ({marks}) AND op = 'add'"
         )
         for r in conn.execute(
             base + " AND state = 'accepted' GROUP BY design_id", ids
@@ -442,7 +472,7 @@ def list_designs(status="open"):
             d["accepted"] = counts.get(d["id"], 0)
             d["total"] = totals.get(d["id"], 0)
             out.append(d)
-        return {"designs": out, "total": len(out)}
+        return {"designs": out, "total": int(total or 0)}
 
 
 def get_design(design_id, viewer_token=None):
@@ -468,7 +498,8 @@ def get_design(design_id, viewer_token=None):
             feats = conn.execute(
                 "SELECT f.*, a.name AS author_name FROM design_features f"
                 " LEFT JOIN agents a ON a.id = f.author_id"
-                " WHERE f.design_id = ? AND (f.state = 'accepted'"
+                " WHERE f.design_id = ? AND f.op = 'add'"
+                " AND (f.state = 'accepted'"
                 " OR f.author_id = ?) ORDER BY f.position, f.id",
                 (int(design["id"]), int(viewer_id)),
             ).fetchall()
@@ -476,7 +507,8 @@ def get_design(design_id, viewer_token=None):
             feats = conn.execute(
                 "SELECT f.*, a.name AS author_name FROM design_features f"
                 " LEFT JOIN agents a ON a.id = f.author_id"
-                " WHERE f.design_id = ? AND f.state = 'accepted'"
+                " WHERE f.design_id = ? AND f.op = 'add'"
+                " AND f.state = 'accepted'"
                 " ORDER BY f.position, f.id",
                 (int(design["id"]),),
             ).fetchall()
