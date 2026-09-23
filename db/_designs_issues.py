@@ -9,16 +9,18 @@ no auto-resolve in v1.
 from __future__ import annotations
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _require_active_agent
 from db._designs import (
     _check_contrib,
-    _log_decided,
-    _notify_author,
     _notify_owner,
     _require_design,
     _require_open,
-    _require_owner,
     _similarity_warn,
+)
+from db._designs_cores import (
+    _core_decide_issue,
+    _core_move_item,
+    _core_resolve_issue,
 )
 
 _TEXT_MAX = 2000
@@ -127,111 +129,24 @@ def _next_issue_position(conn, design_id):
 
 
 def decide_issue(token, design_id, issue_id, approve, note=""):
-    """Owner-only decide on a pending issue."""
+    """Owner-only decide on a pending issue (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        row = _issue_row(conn, issue_id, design["id"])
-        if row["state"] != "pending":
-            raise ForumError("only pending issues can be decided.")
-        now = _now_iso()
-        state = "accepted" if approve else "rejected"
-        conn.execute(
-            "UPDATE design_issues SET state = ?, decided_at = ?"
-            ", decided_by = ? WHERE id = ?",
-            (state, now, agent["id"], int(row["id"])),
-        )
-        _log_decided(
-            conn, agent, design["id"], {"issue_id": int(row["id"]), "ok": bool(approve)}
-        )
-        verb = "accepted" if approve else "declined"
-        _notify_author(
-            conn,
-            design["id"],
-            row["author_id"],
-            agent,
-            f"your design #{design['id']} issue #{row['id']} was {verb}",
-        )
-        return {"issue_id": int(row["id"]), "approved": bool(approve)}
+        return _core_decide_issue(conn, agent, design_id, issue_id, approve, note)
 
 
 def resolve_issue(token, design_id, issue_id, note=""):
-    """Owner-only resolve of an accepted issue. No auto-resolve in v1."""
+    """Owner-only resolve of an accepted issue (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        row = _issue_row(conn, issue_id, design["id"])
-        if row["state"] != "accepted":
-            raise ForumError("only accepted issues can be resolved.")
-        now = _now_iso()
-        conn.execute(
-            "UPDATE design_issues SET state = 'resolved', resolved_at = ?"
-            ", resolved_by = ? WHERE id = ?",
-            (now, agent["id"], int(row["id"])),
-        )
-        _log_decided(
-            conn, agent, design["id"], {"issue_id": int(row["id"]), "resolved": True}
-        )
-        return {"issue_id": int(row["id"]), "resolved": True}
+        return _core_resolve_issue(conn, agent, design_id, issue_id, note)
 
 
 def move_design_item(token, design_id, kind, item_id, direction):
-    """Owner-only reorder of an accepted feature/issue (position swap)."""
-    if kind not in ("feature", "issue"):
-        raise ForumError("kind must be feature or issue.")
-    if direction not in ("up", "down"):
-        raise ForumError("direction must be up or down.")
-    table = "design_features" if kind == "feature" else "design_issues"
+    """Owner-only reorder of an accepted feature/issue (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        try:
-            item_id_int = int(item_id)
-        except (TypeError, ValueError) as exc:
-            raise ForumError(
-                f"no {kind} #{item_id} on design #{design['id']}."
-            ) from exc
-        row = conn.execute(
-            f"SELECT * FROM {table} WHERE id = ? AND design_id = ?",
-            (item_id_int, int(design["id"])),
-        ).fetchone()
-        if row is None:
-            raise ForumError(f"no {kind} #{item_id} on design #{design['id']}.")
-        row = dict(row)
-        if row["state"] != "accepted":
-            raise ForumError("only accepted items can be reordered.")
-        if direction == "up":
-            other = conn.execute(
-                f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
-                " AND (position < ? OR (position = ? AND id < ?))"
-                " ORDER BY position DESC, id DESC LIMIT 1",
-                (int(design["id"]), row["position"], row["position"], int(row["id"])),
-            ).fetchone()
-        else:
-            other = conn.execute(
-                f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
-                " AND (position > ? OR (position = ? AND id > ?))"
-                " ORDER BY position ASC, id ASC LIMIT 1",
-                (int(design["id"]), row["position"], row["position"], int(row["id"])),
-            ).fetchone()
-        if other is None:
-            return {"item_id": int(row["id"]), "moved": False}
-        other = dict(other)
-        conn.execute(
-            f"UPDATE {table} SET position = ? WHERE id = ?",
-            (other["position"], int(row["id"])),
-        )
-        conn.execute(
-            f"UPDATE {table} SET position = ? WHERE id = ?",
-            (row["position"], int(other["id"])),
-        )
-        return {"item_id": int(row["id"]), "moved": True}
+        return _core_move_item(conn, agent, design_id, kind, item_id, direction)
 
 
 def list_issues(design_id, viewer_token=None, state=None):

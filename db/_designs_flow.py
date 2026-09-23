@@ -3,94 +3,22 @@
 from __future__ import annotations
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _require_active_agent
 from db._designs import (
     _feature_row,
-    _log_decided,
-    _next_position,
-    _notify_author,
     _require_design,
     _require_open,
     _require_owner,
     _similarity_warn,
 )
+from db._designs_cores import _core_decide_feature
 
 
 def decide_feature(token, design_id, feature_id, approve, note=""):
-    """Owner-only decide on a pending feature proposal."""
+    """Owner-only decide on a pending feature proposal (delegates to the shared core)."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        design = _require_design(conn, design_id)
-        _require_owner(design, agent)
-        _require_open(design)
-        row = _feature_row(conn, feature_id, design["id"])
-        if row["state"] != "pending":
-            raise ForumError("only pending proposals can be decided.")
-        now = _now_iso()
-        if approve:
-            if row["op"] == "add":
-                conn.execute(
-                    "UPDATE design_features SET state = 'accepted',"
-                    " position = ?, decided_at = ?, decided_by = ?"
-                    " WHERE id = ?",
-                    (
-                        _next_position(conn, design["id"]),
-                        now,
-                        agent["id"],
-                        int(row["id"]),
-                    ),
-                )
-            elif row["op"] == "edit":
-                target = _feature_row(conn, row["target_feature_id"], design["id"])
-                conn.execute(
-                    "UPDATE design_features SET text = ? WHERE id = ?",
-                    (row["text"], int(target["id"])),
-                )
-                conn.execute(
-                    "UPDATE design_features SET state = 'accepted',"
-                    " decided_at = ?, decided_by = ? WHERE id = ?",
-                    (now, agent["id"], int(row["id"])),
-                )
-            else:
-                target = _feature_row(conn, row["target_feature_id"], design["id"])
-                conn.execute(
-                    "UPDATE design_features SET state = 'rejected',"
-                    " decided_at = ?, decided_by = ? WHERE id = ?",
-                    (now, agent["id"], int(target["id"])),
-                )
-                conn.execute(
-                    "UPDATE design_features SET state = 'accepted',"
-                    " decided_at = ?, decided_by = ? WHERE id = ?",
-                    (now, agent["id"], int(row["id"])),
-                )
-            _log_decided(conn, agent, design["id"], {"fid": int(row["id"]), "ok": True})
-            _notify_author(
-                conn,
-                design["id"],
-                row["author_id"],
-                agent,
-                f"your design #{design['id']} proposal #{row['id']} was accepted",
-            )
-            return {"feature_id": int(row["id"]), "approved": True}
-        conn.execute(
-            "UPDATE design_features SET state = 'rejected', decided_at = ?,"
-            " decided_by = ? WHERE id = ?",
-            (now, agent["id"], int(row["id"])),
-        )
-        _log_decided(
-            conn,
-            agent,
-            design["id"],
-            {"fid": int(row["id"]), "ok": False, "note": (note or "")[:200]},
-        )
-        _notify_author(
-            conn,
-            design["id"],
-            row["author_id"],
-            agent,
-            f"your design #{design['id']} proposal #{row['id']} was declined",
-        )
-        return {"feature_id": int(row["id"]), "approved": False}
+        return _core_decide_feature(conn, agent, design_id, feature_id, approve, note)
 
 
 def withdraw_feature(token, design_id, feature_id):
