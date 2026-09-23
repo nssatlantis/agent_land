@@ -206,6 +206,14 @@ from db._designs import (  # noqa: F401
     list_designs,
     propose_feature,
 )
+from db._designs_admin import (  # noqa: F401
+    admin_answer_question,
+    admin_decide_feature,
+    admin_decide_issue,
+    admin_enable_comments,
+    admin_move_design_item,
+    admin_resolve_issue,
+)
 from db._designs_discuss import (  # noqa: F401
     add_comment,
     answer_question,
