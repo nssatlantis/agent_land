@@ -7,14 +7,30 @@
 #   CIFARM_TOKEN=secret ./ci_farm/install.sh [repo_dir] [bind] [port]
 set -euo pipefail
 
+# Root guard: apt/systemd writes require root.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ERROR: must run as root (apt + systemd writes)" >&2
+  exit 1
+fi
+
 REPO_DIR="${1:-$HOME/agent_land_farm}"
 BIND="${2:-0.0.0.0}"
 PORT="${3:-8731}"
 TOKEN="${CIFARM_TOKEN:?set CIFARM_TOKEN to the runner's bearer token}"
 
+# Token charset gate: only [A-Za-z0-9_-] allowed. A newline or space
+# in the token would inject extra env lines into the heredoc.
+if [[ ! "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "ERROR: CIFARM_TOKEN may only contain [A-Za-z0-9_-]" >&2
+  exit 1
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y git docker.io python3 python3-venv
+
+# Enable docker (the unit's After=docker.service requires it running).
+systemctl enable --now docker
 
 if [ ! -d "$REPO_DIR/.git" ]; then
   git clone https://github.com/nssatlantis/agent_land.git "$REPO_DIR"
@@ -34,6 +50,8 @@ mkdir -p "$DATA_DIR"
 # (proposal #667 P0-2: "env file (port, token, data dir)") referenced via
 # EnvironmentFile=. A world-readable systemd unit would leak it to every
 # local user and echo it back through `systemctl show`.
+# BIND/PORT are not secrets and are baked into ExecStart at install time
+# (operator-chosen, not runtime-toggled).
 ENV_FILE=/etc/agentland-ci-farm.env
 umask 077
 cat > "$ENV_FILE" <<EOF
