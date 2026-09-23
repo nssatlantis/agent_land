@@ -30,18 +30,6 @@ def _age_design(did):
         )
 
 
-def _event_kinds(did):
-    with db._conn() as conn:
-        return sorted(
-            r["kind"]
-            for r in conn.execute(
-                "SELECT kind FROM events WHERE target_type = 'design'"
-                " AND target_id = ?",
-                (did,),
-            ).fetchall()
-        )
-
-
 def main():
     agents, _post_id = setup()
     os.environ["ADMIN_USER"] = "alpha"
@@ -127,6 +115,7 @@ def main():
         qq = discuss.ask_question(beta["token"], did_, "Same question")
         discuss.answer_question(alpha["token"], did_, qq["question_id"], "Sun.")
         discuss.enable_comments(alpha["token"], did_)
+        discuss.enable_comments(alpha["token"], did_, enabled=False)
 
     def _drive_admin(did_):
         f = designs.propose_feature(beta["token"], did_, "Same engine text")
@@ -140,20 +129,41 @@ def main():
         qq = discuss.ask_question(beta["token"], did_, "Same question")
         admin.admin_answer_question("alpha", did_, qq["question_id"], "Sun.")
         admin.admin_enable_comments("alpha", did_)
+        admin.admin_enable_comments("alpha", did_, enabled=False)
 
     _drive_token(da["id"])
     _drive_admin(db_["id"])
 
+    _DETAIL_DROP = ("title", "fid")
+
+    def _norm_detail(raw):
+        import json
+
+        try:
+            detail = json.loads(raw or "{}")
+        except ValueError:
+            return ("<unparseable>",)
+        return tuple(
+            sorted(
+                (k, v)
+                for k, v in detail.items()
+                if not k.endswith("_id") and k not in _DETAIL_DROP
+            )
+        )
+
     def _shape(did_):
         with db._conn() as conn:
             feats = conn.execute(
-                "SELECT state, text, position FROM design_features"
-                " WHERE design_id = ? ORDER BY id",
+                "SELECT state, text, position, decided_by,"
+                " decided_at IS NOT NULL AS decided"
+                " FROM design_features WHERE design_id = ? ORDER BY id",
                 (did_,),
             ).fetchall()
             iss = conn.execute(
-                "SELECT state, text, position FROM design_issues"
-                " WHERE design_id = ? ORDER BY id",
+                "SELECT state, text, position, decided_by,"
+                " decided_at IS NOT NULL AS decided,"
+                " resolved_by, resolved_at IS NOT NULL AS resolved"
+                " FROM design_issues WHERE design_id = ? ORDER BY id",
                 (did_,),
             ).fetchall()
             quests = conn.execute(
@@ -164,12 +174,24 @@ def main():
             flag = conn.execute(
                 "SELECT comments_enabled FROM designs WHERE id = ?", (did_,)
             ).fetchone()[0]
+            evts = conn.execute(
+                "SELECT kind, detail FROM events WHERE target_type = 'design'"
+                " AND target_id = ? ORDER BY id",
+                (did_,),
+            ).fetchall()
+            mails = conn.execute(
+                "SELECT kind, COUNT(*) AS n FROM notifications"
+                " WHERE ref_type = 'design' AND ref_id = ? GROUP BY kind",
+                (did_,),
+            ).fetchall()
         return (
             [tuple(r) for r in feats],
             [tuple(r) for r in iss],
             [tuple(r) for r in quests],
             int(flag or 0),
-            _event_kinds(did_),
+            sorted(r["kind"] for r in evts),
+            sorted((r["kind"], _norm_detail(r["detail"])) for r in evts),
+            sorted((r["kind"], r["n"]) for r in mails),
         )
 
     assert _shape(da["id"]) == _shape(db_["id"]), (
