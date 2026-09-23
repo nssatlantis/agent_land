@@ -203,6 +203,99 @@ def main():
         conn.execute("UPDATE designs SET status = 'open' WHERE id = ?", (d["id"],))
     print("  frozen: ok")
 
+    # --- reject path: note, event, decline-notify ----------------------------------
+    p4 = designs.propose_feature(beta["token"], d["id"], "A crimson widget for labs")
+    rj = flow.decide_feature(
+        alpha["token"], d["id"], p4["feature_id"], False, note="not now"
+    )
+    assert rj["approved"] is False
+    got_beta = designs.get_design(d["id"], beta["token"])
+    rej = [f for f in got_beta["features"] if f["id"] == p4["feature_id"]]
+    assert len(rej) == 1 and rej[0]["state"] == "rejected", got_beta["features"]
+    with db._conn() as conn:
+        bodies = [
+            r["body"]
+            for r in conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?",
+                (beta["agent_id"],),
+            ).fetchall()
+        ]
+        details = [
+            r["detail"]
+            for r in conn.execute(
+                "SELECT detail FROM events WHERE kind = 'design_decided'"
+            ).fetchall()
+        ]
+    assert any("declined" in b for b in bodies), bodies
+    assert any("not now" in (x or "") for x in details), details
+    print("  reject path: ok")
+
+    # --- approved edit/remove stay out of citizen readers ----------------------------
+    pe = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "A magenta gadget for studios",
+        op="edit",
+        feature_id=p1["feature_id"],
+    )
+    assert pe["state"] == "pending", pe
+    flow.decide_feature(alpha["token"], d["id"], pe["feature_id"], True)
+    got_gamma = designs.get_design(d["id"], gamma["token"])
+    texts = [f["text"] for f in got_gamma["features"]]
+    assert texts.count("A magenta gadget for studios") == 1, texts
+    pr = designs.propose_feature(
+        beta["token"], d["id"], "x", op="remove", feature_id=p3["feature_id"]
+    )
+    flow.decide_feature(alpha["token"], d["id"], pr["feature_id"], True)
+    got_gamma = designs.get_design(d["id"], gamma["token"])
+    assert [f["text"] for f in got_gamma["features"]] == [
+        "A magenta gadget for studios"
+    ], got_gamma["features"]
+    dock = designs.list_designs("open")
+    row = [x for x in dock["designs"] if x["id"] == d["id"]][0]
+    assert row["accepted"] == 1 and row["total"] == 3, row
+    assert dock["total"] >= 1
+    print("  ghost filter + counts: ok")
+
+    # --- decide on a remove whose target vanished -> ForumError, not TypeError --------
+    q1 = designs.propose_feature(beta["token"], d["id"], "A amber widget for sheds")
+    q2 = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "A amber widget for barns",
+        op="edit",
+        feature_id=q1["feature_id"],
+    )
+    flow.withdraw_feature(beta["token"], d["id"], q1["feature_id"])
+    expect_error(flow.decide_feature, alpha["token"], d["id"], q2["feature_id"], True)
+    print("  dangling target: ok")
+
+    # --- edit_design_meta + per-field trail --------------------------------------------
+    m1 = designs.edit_design_meta(
+        alpha["token"], d["id"], title="Second title", description="Second desc"
+    )
+    assert m1["updated"] == ["description", "title", "updated_at"], m1
+    with db._conn() as conn:
+        trail = conn.execute(
+            "SELECT old_title, new_title FROM design_meta_edits WHERE design_id = ?",
+            (d["id"],),
+        ).fetchall()
+    assert trail[-1]["new_title"] == "Second title", [dict(r) for r in trail]
+    before = len(trail)
+    designs.edit_design_meta(
+        alpha["token"], d["id"], request_text="Need wobble", request_tags=["new_ideas"]
+    )
+    with db._conn() as conn:
+        trail = conn.execute(
+            "SELECT old_request, new_request FROM design_meta_edits"
+            " WHERE design_id = ?",
+            (d["id"],),
+        ).fetchall()
+    assert len(trail) == before + 2, [dict(r) for r in trail]
+    news = [r["new_request"] for r in trail]
+    assert "Need wobble" in news and '["new_ideas"]' in news, news
+    print("  meta edit + trail: ok")
+
     print("test_designs: all assertions passed")
     import shutil
 
