@@ -379,7 +379,7 @@ def main():
     )
     bare_knobs = []
     for i in range(tuning_start, tuning_end):
-        knob = re.match(r'^\s+"([A-Z0-9_]+)":', cfg_lines[i])
+        knob = re.match(r'^\s+"([A-Z0-9_]+)":\s*\(', cfg_lines[i])
         if knob:
             j = i - 1
             while j > 0 and not cfg_lines[j].strip():
