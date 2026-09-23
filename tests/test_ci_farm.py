@@ -43,6 +43,11 @@ def test_runner_version_and_checks_map():
             f"{runner._CHECKS_TO_SCRIPT.get(key)!r}, "
             f"host _CHECKS[{key!r}] script = {script!r}"
         )
+    # Bidirectional: a runner-only extra key would silently widen the
+    # contract without failing this pin.
+    assert set(runner._CHECKS_TO_SCRIPT) == set(host_checks), (
+        f"runner-only checks keys: {set(runner._CHECKS_TO_SCRIPT) - set(host_checks)}"
+    )
 
 
 def test_token_check():
@@ -62,6 +67,30 @@ def test_run_job_rejects_unknown_mode():
     result = runner._run_job({"checks": "tests", "mode": "weird"})
     assert result["ok"] is False
     assert "unknown mode" in result["error"]
+
+
+def test_run_job_rejects_bad_payload_shapes():
+    """Validator failures are client errors (ok False), never 500s: bad
+    extra_env, bad files, non-hex base_sha, and base_sha in local mode."""
+    bad_env = runner._run_job(
+        {"checks": "tests", "mode": "main", "extra_env": {"NOPE": "x"}}
+    )
+    assert bad_env["ok"] is False and "extra_env" in bad_env["error"]
+    bad_files = runner._run_job(
+        {"checks": "tests", "mode": "local", "files": "not-a-list"}
+    )
+    assert bad_files["ok"] is False and "files" in bad_files["error"]
+    bad_sha = runner._run_job({"checks": "tests", "mode": "main", "base_sha": "z" * 40})
+    assert bad_sha["ok"] is False and "base_sha" in bad_sha["error"]
+    misplaced_sha = runner._run_job(
+        {
+            "checks": "tests",
+            "mode": "local",
+            "base_sha": "a" * 40,
+            "files": [{"path": "a", "content": "b"}],
+        }
+    )
+    assert misplaced_sha["ok"] is False and "main-mode" in misplaced_sha["error"]
 
 
 def test_bootstrap_parity_pin():
@@ -115,6 +144,9 @@ def test_http_health_and_auth():
             body = json.loads(resp.read())
             assert body["ok"] is True
             assert body["version"] == runner.RUNNER_VERSION
+            assert body["busy"] is False
+            assert "docker_available" in body
+            assert "active_runs" in body
         req = urllib.request.Request(
             base + "/run",
             data=b"{}",
@@ -126,6 +158,23 @@ def test_http_health_and_auth():
             raise AssertionError("expected 401 for bad token")
         except urllib.error.HTTPError as err:
             assert err.code == 401
+        # A negative Content-Length must not bypass the body cap: it is a
+        # malformed request (400), never an unbounded read.
+        import socket
+
+        raw = socket.create_connection(("127.0.0.1", farm.port), timeout=5)
+        try:
+            raw.sendall(
+                b"POST /run HTTP/1.1\r\nHost: x\r\n"
+                b"Authorization: Bearer farm-test-token\r\n"
+                b"Content-Length: -1\r\n\r\n"
+            )
+            status = raw.recv(12)
+            assert status.startswith(b"HTTP/1.0 400") or status.startswith(
+                b"HTTP/1.1 400"
+            ), status
+        finally:
+            raw.close()
     finally:
         farm.shutdown()
         t.join(timeout=5)
@@ -148,6 +197,10 @@ def _run_all_tests() -> int:
         ("test_token_check", test_token_check),
         ("test_run_job_rejects_unknown_checks", test_run_job_rejects_unknown_checks),
         ("test_run_job_rejects_unknown_mode", test_run_job_rejects_unknown_mode),
+        (
+            "test_run_job_rejects_bad_payload_shapes",
+            test_run_job_rejects_bad_payload_shapes,
+        ),
         ("test_bootstrap_parity_pin", test_bootstrap_parity_pin),
         (
             "test_dispatch_parity_ignores_run_specific_summary_keys",
