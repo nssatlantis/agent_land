@@ -19,6 +19,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import db._workspace_claims as claim_db  # noqa: E402
 import github._gitops as gh  # noqa: E402
 import github._workspaces as ws  # noqa: E402
 import server._transfer as transfer  # noqa: E402
@@ -109,6 +110,89 @@ def test_stale_release_cas(agents):
     assert "changed" in expect_error(db.release_workspace, tok, pid, "dev", old["id"])
     assert db.get_workspace(tok, pid, "dev")["id"] == fresh["id"]
     db.release_workspace(tok, pid, "dev", claim_id=fresh["id"])
+
+
+def test_lifecycle_reclaim_reuses_path_lock(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["alpha"]["token"]
+        pid = db.create_proposal(tok, "Lifecycle Path Lock", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        old_id = int(claimed["claim"]["id"])
+        result = []
+
+        @claim_db._with_workspace_claim_locks
+        def lifecycle(token, post_id):
+            current = db.get_workspace(token, post_id, "dev")
+            db.release_workspace(token, post_id, "dev", claim_id=current["id"])
+            replacement = db.claim_workspace(token, post_id, "dev")
+            assert replacement["id"] != old_id, (old_id, replacement)
+            ws.ensure_claim_tree(
+                int(replacement["agent_id"]),
+                post_id,
+                str(replacement["name"]),
+                claim_id=int(replacement["id"]),
+            )
+            with db._conn() as conn:
+                result.append(
+                    claim_db.release_workspaces_for_proposal(conn, post_id)
+                )
+
+        worker = threading.Thread(target=lambda: lifecycle(tok, pid), daemon=True)
+        worker.start()
+        worker.join(2)
+        assert not worker.is_alive(), "lifecycle path lock recursively deadlocked"
+        assert result == [1], result
+        assert "no active workspace" in expect_error(
+            db.get_workspace, tok, pid, "dev"
+        )
+    finally:
+        sb.close()
+
+
+def test_fetch_ticket_mint_rechecks_claim(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["beta"]["token"]
+        pid = db.create_proposal(tok, "Mint ABA", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "mint")
+        old_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        lock_factory = workspace_tools.workspace_lock
+        acquire_attempted = threading.Event()
+        outcome = []
+
+        @contextmanager
+        def observed_lock(path, *, allow_missing=False):
+            acquire_attempted.set()
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        def mint():
+            try:
+                ticket_tools.workspace_fetch_ticket(
+                    tok, pid, "mint", ["README.md"]
+                )
+            except BaseException as exc:
+                outcome.append(exc)
+
+        with lock_factory(dest):
+            with patch.object(workspace_tools, "workspace_lock", observed_lock):
+                worker = threading.Thread(target=mint)
+                worker.start()
+                assert acquire_attempted.wait(1)
+                _replacement, marker = _replace_claim_under_lock(
+                    tok, pid, "mint", dest, old_id
+                )
+        worker.join(2)
+        assert not worker.is_alive(), "queued ticket mint did not finish"
+        assert len(outcome) == 1, outcome
+        assert isinstance(outcome[0], db.ForumError), outcome
+        assert "changed while waiting for its lock" in str(outcome[0]), outcome
+        assert marker.read_text(encoding="utf-8") == "replacement\n"
+        workspace_tools.release_workspace(tok, pid, "mint")
+    finally:
+        sb.close()
 
 
 def test_read_ticket_reclaim_aba(agents):
@@ -437,6 +521,8 @@ def test_queued_sync_mutator_rechecks_claim(agents):
 def main():
     agents, _post_id = setup()
     test_stale_release_cas(agents)
+    test_lifecycle_reclaim_reuses_path_lock(agents)
+    test_fetch_ticket_mint_rechecks_claim(agents)
     test_read_ticket_reclaim_aba(agents)
     test_sweeper_rechecks_live_and_idle_state()
     test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents)
