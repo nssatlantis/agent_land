@@ -420,9 +420,7 @@ def release_workspaces_for_proposal(conn: sqlite3.Connection, post_id: int) -> i
         " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
         (int(post_id),),
     ).fetchall()
-    held: set[tuple[int, int, int, str]] = getattr(
-        _LIFECYCLE_LOCKS, "keys", set()
-    )
+    held: set[tuple[int, int, int, str]] = getattr(_LIFECYCLE_LOCKS, "keys", set())
     released = 0
     for row in rows:
         if _claim_key(row) in held:
