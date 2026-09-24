@@ -997,8 +997,8 @@ async def workspace_push(
     The first push creates branch claim/<agent>/<proposal>/<name>,
     commits the whole tree once, pushes, and opens the PR under the
     same gates, hold flow, link, and labels as repo_propose_change;
-    follow-up pushes from the same tree append one commit and reuse
-    the PR, PATCHing a revised title and/or body onto it when they
+    follow-up pushes from the same tree append one commit and reuse the
+    PR, PATCHing a revised title and/or body onto it when they
     differ (reported as `text_updated`). The claim stays active afterwards (release is manual).
     Pass `base_branch` to target a non-main base (stacked PRs).
     Rehearse first with workspace_rehearse: the PR's own branch CI is
@@ -1104,8 +1104,8 @@ async def workspace_push(
                 f"PR #{pr_number} opened for your proposal #{proposal_id}: {raw_title}"
             )
             collab_msg = (
-                f"PR #{pr_number} opened for collaborative proposal"
-                f" #{proposal_id} by {who['name']}: {raw_title}"
+                f"PR #{pr_number} opened for collaborative proposal "
+                f"#{proposal_id} by {who['name']}: {raw_title}"
             )
             subscriber_msg = (
                 f"PR #{pr_number} opened for proposal #{proposal_id}: {raw_title}"
