@@ -7,7 +7,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -193,11 +195,134 @@ def test_sweeper_rechecks_live_and_idle_state():
         sb.close()
 
 
+def _replace_claim_under_lock(token, proposal_id, name, dest, claim_id):
+    released = db.release_workspace(token, proposal_id, name, claim_id=claim_id)
+    assert released["status"] == "released", released
+    assert ws._retire_claim_tree_locked(dest), dest
+    replacement = db.claim_workspace(token, proposal_id, name)
+    assert replacement["id"] != claim_id, (claim_id, replacement)
+    ws.ensure_claim_tree(
+        int(replacement["agent_id"]), proposal_id, str(replacement["name"])
+    )
+    marker = Path(dest, "replacement.txt")
+    marker.write_text("replacement\n", encoding="utf-8")
+    return replacement, marker
+
+
+def test_queued_async_mutator_rechecks_claim(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["alpha"]["token"]
+        pid = db.create_proposal(tok, "Queued Async ABA", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claim_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        lock_factory = workspace_tools.workspace_lock
+        acquire_attempted = threading.Event()
+        invoked = threading.Event()
+
+        async def stale_write(token, proposal_id, name):
+            invoked.set()
+            await asyncio.to_thread(
+                Path(dest, "stale.txt").write_text,
+                "stale\n",
+                encoding="utf-8",
+            )
+
+        serialized = workspace_tools._workspace_serialized(stale_write)
+
+        @contextmanager
+        def observed_lock(path, *, allow_missing=False):
+            acquire_attempted.set()
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        async def run_reclaim():
+            with lock_factory(dest):
+                with patch.object(workspace_tools, "workspace_lock", observed_lock):
+                    task = asyncio.create_task(serialized(tok, pid, "dev"))
+                    assert await asyncio.to_thread(acquire_attempted.wait, 1)
+                    _replacement, marker = _replace_claim_under_lock(
+                        tok, pid, "dev", dest, claim_id
+                    )
+            try:
+                await task
+            except db.ForumError as exc:
+                error = str(exc)
+            else:
+                raise AssertionError(
+                    "queued async mutator ran on the replacement claim"
+                )
+            assert "changed while waiting for its lock" in error, error
+            assert not invoked.is_set()
+            assert marker.read_text(encoding="utf-8") == "replacement\n"
+            assert not Path(dest, "stale.txt").exists()
+
+        asyncio.run(run_reclaim())
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+
+
+def test_queued_sync_mutator_rechecks_claim(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["beta"]["token"]
+        pid = db.create_proposal(tok, "Queued Sync ABA", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        claim_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        lock_factory = workspace_tools.workspace_lock
+        acquire_attempted = threading.Event()
+        invoked = threading.Event()
+        outcome = []
+
+        def stale_write(token, proposal_id, name):
+            invoked.set()
+            Path(dest, "stale.txt").write_text("stale\n", encoding="utf-8")
+
+        serialized = workspace_tools._workspace_serialized(stale_write)
+
+        @contextmanager
+        def observed_lock(path, *, allow_missing=False):
+            acquire_attempted.set()
+            with lock_factory(path, allow_missing=allow_missing):
+                yield
+
+        def invoke():
+            try:
+                serialized(tok, pid, "dev")
+            except BaseException as exc:
+                outcome.append(exc)
+
+        with lock_factory(dest):
+            with patch.object(workspace_tools, "workspace_lock", observed_lock):
+                worker = threading.Thread(target=invoke)
+                worker.start()
+                assert acquire_attempted.wait(1)
+                _replacement, marker = _replace_claim_under_lock(
+                    tok, pid, "dev", dest, claim_id
+                )
+        worker.join(2)
+        assert not worker.is_alive(), "queued sync mutator did not finish"
+        assert len(outcome) == 1, outcome
+        assert isinstance(outcome[0], db.ForumError), outcome
+        assert "changed while waiting for its lock" in str(outcome[0]), outcome
+        assert not invoked.is_set()
+        assert marker.read_text(encoding="utf-8") == "replacement\n"
+        assert not Path(dest, "stale.txt").exists()
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+
+
 def main():
     agents, _post_id = setup()
     test_stale_release_cas(agents)
     test_read_ticket_reclaim_aba(agents)
     test_sweeper_rechecks_live_and_idle_state()
+    test_queued_async_mutator_rechecks_claim(agents)
+    test_queued_sync_mutator_rechecks_claim(agents)
     print("test_workspace_aba: all scenarios passed")
 
 
