@@ -97,11 +97,13 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     record = db.claim_workspace(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     name = str(record["name"])
+    dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
-        tree = github.ensure_claim_tree(agent_id, proposal_id, name)
+        with workspace_lock(dest, allow_missing=True):
+            tree = github.ensure_claim_tree(agent_id, proposal_id, name)
     except Exception:
         try:
-            db.release_workspace(token, proposal_id, name)
+            db.release_workspace(token, proposal_id, name, claim_id=record["id"])
         except (
             Exception
         ):  # domain: degrade-silently - compensation best-effort; tree error answers
@@ -132,7 +134,9 @@ def release_workspace(token: str, proposal_id: int, name: str) -> dict:
     )
     dest = str(info["path"])
     with workspace_lock(dest, allow_missing=True):
-        record = db.release_workspace(token, proposal_id, name)
+        record = db.release_workspace(
+            token, proposal_id, name, claim_id=int(record["id"])
+        )
         try:
             _retire_claim_tree_locked(dest)
         except (
@@ -275,8 +279,8 @@ def workspace_search(
     `ref` (optional) searches the committed tree at that git ref (branch,
     tag or commit SHA, resolved inside the claim tree) via `git grep`
     instead of the live worktree - dirty edits and untracked files are
-    invisible there by design, so a branch can be audited before it is
-    pushed. The response echoes the ref it searched (the winning `origin/`
+    invisible there by design, so a branch can be audited before merge.
+    The response echoes the ref it searched (the winning `origin/`
     candidate when fallback resolves, so provenance is auditable).
     Unknown refs refuse;
     sync the tree first (`workspace_sync`, which fetches origin refs) so
@@ -799,6 +803,7 @@ def workspace_write_file(
         incoming = len(new_bytes) / (1024 * 1024)
         github.check_claim_budget(agent_id, incoming_mb=incoming)
         try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="") as fh_w:
                 fh_w.write(new_text)
         except OSError as exc:
