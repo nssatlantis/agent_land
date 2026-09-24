@@ -313,14 +313,13 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
 def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
     """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
     dest = _claim_dir(agent_id, proposal_id, name)
-    with workspace_lock(dest, allow_missing=True):
-        manifest = _read_manifest(dest)
-        if manifest is None or not os.path.isdir(dest):
-            return False
-        manifest["updated_at"] = time.time()
-        manifest["head_sha"] = _head_sha(dest)
-        _write_manifest(dest, manifest)
-        return True
+    manifest = _read_manifest(dest)
+    if manifest is None or not os.path.isdir(dest):
+        return False
+    manifest["updated_at"] = time.time()
+    manifest["head_sha"] = _head_sha(dest)
+    _write_manifest(dest, manifest)
+    return True
 
 
 def claim_tree_status(agent_id: int, proposal_id: int, name: str) -> dict:
