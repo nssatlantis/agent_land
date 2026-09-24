@@ -242,6 +242,18 @@ def main():
         csrf,
     )
     assert "moved" in r.body.decode("utf-8")
+    movedet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    movedbody = movedet.body.decode("utf-8")
+    assert "<td>moved</td>" in movedbody
+    assert "down 0->1" in movedbody
     r = _post(
         admin.design_admin_toggle_comments,
         f"/admin/designs/{did}/toggle-comments",
