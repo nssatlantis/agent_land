@@ -103,7 +103,7 @@ def _release_claim_row(conn: sqlite3.Connection, row) -> int:
     return cur.rowcount
 
 
-def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:(conn: sqlite3.Connection) -> int:
+def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:
     """Release active claims idle past WORKSPACE_CLAIM_TTL_HOURS. Returns
     the released count. Zero disables. Runs lazily on every claim and from
     the admin GC, so an abandoned claim never holds its name forever."""
