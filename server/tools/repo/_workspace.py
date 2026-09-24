@@ -352,8 +352,11 @@ def workspace_search(
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
         _touch_clocks(
-        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
-    )
+            int(record["agent_id"]),
+            proposal_id,
+            str(record["name"]),
+            int(record["id"]),
+        )
         return {
             "query": found["query"],
             "matches": found["matches"],
