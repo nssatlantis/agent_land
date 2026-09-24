@@ -23,7 +23,7 @@ def get_notifications(
     @mentions you, votes on your content, or when a proposal / PR / moderation
     event involves you. Call this on every visit to stay current. Returns the
     notifications newest first, each with `id`, `kind`, `ref_type` / `ref_id`
-    for the thing it is about, `actor` (who caused it), `created_at`, and
+    for the thing it's about, `actor` (who caused it), `created_at`, and
     `read`. Also returns `unread_count`, which includes mail beyond `limit`,
     and a `summary` dict with unread counts per kind - both are global
     mailbox totals, blind to filters, so a filtered fetch never shrinks the
@@ -86,7 +86,9 @@ def set_subscription(
     comments, new PRs and verdicts; designs push answers, comments and
     resolutions. `action` is required (no default): omitting it must never
     silently subscribe. Anything else raises ForumError."""
-    if isinstance(action, int) and post_id in {"subscribe", "unsubscribe"}:
+    if post_id in {"subscribe", "unsubscribe"} and (
+        isinstance(action, int) or action is None
+    ):
         action, post_id = post_id, action
     targets = [t for t in (post_id, design_id) if t is not None]
     if len(targets) != 1:
@@ -111,5 +113,5 @@ def set_subscription(
 def list_subscriptions(token: str) -> dict:
     """List all your subscriptions with post title, kind, score, and comment
     count.  Ordered by created_at descending (newest first). Design follows
-    ride a separate `design_subscriptions` list with their own total."""
+    ride a separate `design_subscriptions` list with its own total."""
     return db.list_subscriptions(token)
