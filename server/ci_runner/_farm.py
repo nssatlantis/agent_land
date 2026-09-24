@@ -37,6 +37,7 @@ _ACTIVE_RUNS: dict[int, int] = {}
 _ACTIVE_LOCK = threading.Lock()
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class _FarmRetryLocal(Exception):
@@ -306,6 +307,8 @@ def _map_and_log(
         "failed_files",
         "local",
         "base_sha",
+        "base_ref",
+        "executed_base_sha",
         "pr_number",
         "quiet",
         "contended",
@@ -331,7 +334,9 @@ def _map_and_log(
     }
     if result.get("local"):
         detail["local"] = True
-        detail["base_sha"] = result.get("base_sha")
+        for key in ("base_ref", "base_sha", "executed_base_sha"):
+            if result.get(key) is not None:
+                detail[key] = result[key]
     detail = _fold_output(detail, result)
     if extra_detail:
         detail.update(extra_detail)
@@ -413,11 +418,29 @@ def try_dispatch(
         # run may or may not have executed remotely, so retry once locally
         # instead of reporting busy (P3-2).
         raise _FarmRetryLocal("runner reply unreadable")
-    if "error" in remote and "ok" not in remote:
-        # Runner-reported failure with no result shape (mid-run death): retry
-        # once locally. Replies carrying "ok" (even ok False, even with
-        # warning extras) are real results and map normally.
+    if "error" in remote and not any(
+        key in remote for key in ("exit_code", "summary", "head_sha", "base_sha")
+    ):
+        # Validation and compatibility failures are not completed CI runs;
+        # retry once against the host instead of turning them into red results.
         raise _FarmRetryLocal(str(remote.get("error"))[:200])
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        try:
+            expected_ref = _validate_ref(base_ref)
+        except Exception as exc:
+            raise _FarmRetryLocal("invalid base_ref") from exc
+        if remote.get("base_ref") != expected_ref:
+            raise _FarmRetryLocal("runner base_ref mismatch")
+        executed_base = remote.get("executed_base_sha")
+        result_base = remote.get("base_sha")
+        if (
+            not isinstance(executed_base, str)
+            or _COMMIT_RE.fullmatch(executed_base) is None
+            or result_base != executed_base
+        ):
+            raise _FarmRetryLocal("runner base metadata missing or inconsistent")
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
 
 

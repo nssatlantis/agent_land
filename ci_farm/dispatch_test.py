@@ -72,7 +72,10 @@ def main() -> None:
         default=[],
         help="path=content (repeatable; local mode only)",
     )
+    parser.add_argument("--base-ref", help="local-mode rehearsal base ref")
     args = parser.parse_args()
+    if args.base_ref is not None and args.mode != "local":
+        raise SystemExit("--base-ref is local-mode only")
 
     payload: dict = {"checks": args.checks, "mode": args.mode}
     if args.mode == "local":
@@ -83,11 +86,24 @@ def main() -> None:
                 raise SystemExit("--file expects path=content")
             files.append({"path": path, "content": content})
         payload["files"] = files
+    if args.base_ref is not None:
+        payload["base_ref"] = args.base_ref
 
     host_result = runner._run_job(payload)
     runner_result = post_runner(args.url, args.token, payload)
 
-    keys = ("ok", "exit_code", "timed_out", "summary", "failed_files")
+    keys = (
+        "ok",
+        "exit_code",
+        "timed_out",
+        "summary",
+        "failed_files",
+        "error",
+        "base_ref",
+        "base_sha",
+        "executed_base_sha",
+        "local",
+    )
     diffs = []
     for key in keys:
         a = _parity_summary(host_result.get(key))
@@ -112,7 +128,11 @@ def main() -> None:
     h_sha = host_result.get("head_sha")
     r_sha = runner_result.get("head_sha")
     if h_sha and r_sha and h_sha != r_sha:
-        print(f"WARNING: head_sha drift: host={h_sha} runner={r_sha}")
+        drift = f"head_sha drift: host={h_sha} runner={r_sha}"
+        if args.base_ref is not None:
+            diffs.append(drift)
+        else:
+            print(f"WARNING: {drift}")
     if diffs:
         print("PARITY FAIL:")
         for line in diffs:
