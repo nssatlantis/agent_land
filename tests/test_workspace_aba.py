@@ -209,6 +209,124 @@ def _replace_claim_under_lock(token, proposal_id, name, dest, claim_id):
     return replacement, marker
 
 
+def test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["alpha"]["token"]
+        pid = db.create_proposal(tok, "Lifecycle Mutator", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        old_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        lock_factory = workspace_tools.workspace_lock
+        entered = threading.Event()
+        proceed = threading.Event()
+        active_result = []
+        release_result = []
+        release_done = threading.Event()
+
+        @contextmanager
+        def observed_lock(path, *, allow_missing=False):
+            with lock_factory(path, allow_missing=allow_missing):
+                entered.set()
+                assert proceed.wait(5)
+                yield
+
+        def active_mutator():
+            try:
+                active_result.append(
+                    workspace_tools.workspace_write_file(
+                        tok, pid, "dev", "stale.txt", content="old\n"
+                    )
+                )
+            except BaseException as exc:
+                active_result.append(exc)
+
+        def lifecycle_release():
+            with db._conn() as conn:
+                release_result.append(db.release_workspaces_for_proposal(conn, pid))
+            release_done.set()
+
+        with patch.object(workspace_tools, "workspace_lock", observed_lock):
+            worker = threading.Thread(target=active_mutator)
+            worker.start()
+            assert entered.wait(2)
+            releaser = threading.Thread(target=lifecycle_release)
+            releaser.start()
+            assert not release_done.wait(0.2)
+            proceed.set()
+            worker.join(5)
+            releaser.join(5)
+        assert not worker.is_alive()
+        assert not releaser.is_alive()
+        assert not isinstance(active_result[0], BaseException), active_result
+        assert release_result == [1], release_result
+        replacement = workspace_tools.claim_workspace(tok, pid, "dev")
+        assert int(replacement["claim"]["id"]) != old_id
+        assert not Path(dest, "stale.txt").exists()
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+
+
+def test_lifecycle_release_waits_for_active_transfer_and_reclaims(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["beta"]["token"]
+        pid = db.create_proposal(tok, "Lifecycle Transfer", "body")["post_id"]
+        claimed = workspace_tools.claim_workspace(tok, pid, "dev")
+        old_id = int(claimed["claim"]["id"])
+        dest = str(claimed["tree"]["path"])
+        entered = threading.Event()
+        proceed = threading.Event()
+        transfer_result = []
+        release_result = []
+        release_done = threading.Event()
+
+        def hold_transfer():
+            entered.set()
+            assert proceed.wait(5)
+
+        def active_transfer():
+            try:
+                transfer_result.append(
+                    ws.apply_transfer_bytes(
+                        int(claimed["claim"]["agent_id"]),
+                        pid,
+                        "dev",
+                        "transfer.txt",
+                        b"old\n",
+                        claim_validator=hold_transfer,
+                    )
+                )
+            except BaseException as exc:
+                transfer_result.append(exc)
+
+        def lifecycle_release():
+            with db._conn() as conn:
+                release_result.append(db.release_workspaces_for_proposal(conn, pid))
+            release_done.set()
+
+        worker = threading.Thread(target=active_transfer)
+        worker.start()
+        assert entered.wait(2)
+        releaser = threading.Thread(target=lifecycle_release)
+        releaser.start()
+        assert not release_done.wait(0.2)
+        proceed.set()
+        worker.join(5)
+        releaser.join(5)
+        assert not worker.is_alive()
+        assert not releaser.is_alive()
+        assert not isinstance(transfer_result[0], BaseException), transfer_result
+        assert release_result == [1], release_result
+        replacement = workspace_tools.claim_workspace(tok, pid, "dev")
+        assert int(replacement["claim"]["id"]) != old_id
+        assert not Path(dest, "transfer.txt").exists()
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+
+
 def test_queued_async_mutator_rechecks_claim(agents):
     sb = _Sandbox()
     try:
