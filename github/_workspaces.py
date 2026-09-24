@@ -538,6 +538,16 @@ def _find_open_claim_pr(branch: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _strip_wip_prefix(text: str) -> str:
+    """Compare titles modulo the proposal-hold 'WIP: ' prefix: the poller
+    strips it on hold-lift while a later push may still carry it, and that
+    prefix-only delta must not count as a revised title (post-green review
+    on #1409 - the re-add window is cosmetic-only and self-healing, but
+    there is no reason to ever write it)."""
+    s = text or ""
+    return s[4:].lstrip() if s.upper().startswith("WIP:") else s
+
+
 def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
     """Validate `ref` and resolve it to a commit SHA inside one tree.
 
