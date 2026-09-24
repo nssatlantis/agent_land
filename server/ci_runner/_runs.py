@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from functools import wraps
 
 import config
 import db
@@ -695,6 +696,20 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     }
 
 
+def _cleanup_ci_burst_on_exit(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        run_id = kwargs.get("_run_id")
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if run_id:
+                db.release_ci_burst(run_id, error="run_exit")
+
+    return wrapped
+
+
+@_cleanup_ci_burst_on_exit
 def run_checks(
     agent_id: int,
     name: str,
@@ -765,6 +780,8 @@ def run_checks(
             )
     kind_event = ledger_kind_for(checks, pr_number, files, tree)
     _gate(kind_event, agent_id, _system=_system, run_id=_run_id)
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     # Quiet-bench: a benchmark waits for an idle pool before taking its
     # slot (local files/tree rehearsal is exempt - an edit-measure loop
     # must stay interactive; pass quiet=True explicitly to gate it too).
@@ -813,6 +830,8 @@ def run_checks(
     if _gate_bench and _quiet_budget > 0:
         became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
         quiet_wait_expired = not became_quiet
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
         db.release_ci_burst(_run_id, error="legacy_lock_busy")
         shutil.rmtree(tmp_root, ignore_errors=True)
@@ -918,6 +937,8 @@ def run_checks(
         # host path); the bless event id rides the ledger detail for audit.
         # Empty when none is blessed - the harness then runs advisory.
         anchor_env, anchor_event_id = _bench_anchor_env()
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     try:
         if local_mode:
             assert files is not None or tree is not None
@@ -944,6 +965,8 @@ def run_checks(
             # Local rehearsal is the overlay on top of main (or base_ref) - same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
+            if _run_id:
+                db.heartbeat_ci_burst(_run_id)
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
                 tree,
@@ -1022,6 +1045,8 @@ def run_checks(
                 return payload
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
+            if _run_id:
+                db.heartbeat_ci_burst(_run_id)
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
                 tree,
@@ -1058,6 +1083,8 @@ def run_checks(
             )
             if sandboxed:
                 image_tag = _sandbox_mod._ensure_image(tree, head_sha)
+                if _run_id:
+                    db.heartbeat_ci_burst(_run_id)
                 _sandbox_mod._ensure_tree_traversable(tree, head_sha)
                 argv, container_name = _sandbox_mod._sandbox_argv(
                     tree,
@@ -1082,15 +1109,22 @@ def run_checks(
             env.update(anchor_env)
         if db.mark_ci_burst_started(_run_id):
             burst_started = True
-        pieces = _sandbox_mod._execute(
-            argv,
-            tree,
-            config.CI_RUN_TIMEOUT_SECONDS,
-            config.CI_RUN_TAIL_BYTES,
-            config.CI_RUN_MAX_RETAINED_BYTES,
-            env=env,
-            container_name=container_name,
-        )
+        execution_ok = False
+        try:
+            pieces = _sandbox_mod._execute(
+                argv,
+                tree,
+                config.CI_RUN_TIMEOUT_SECONDS,
+                config.CI_RUN_TAIL_BYTES,
+                config.CI_RUN_MAX_RETAINED_BYTES,
+                env=env,
+                container_name=container_name,
+            )
+            execution_ok = True
+        finally:
+            if _run_id and not execution_ok:
+                db.release_ci_burst(_run_id, error="execute_failed")
+                burst_completed = True
         if local_mode:
             mode = "local"
         elif branch_mode:
