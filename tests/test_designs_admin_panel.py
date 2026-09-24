@@ -268,7 +268,14 @@ def main():
     assert f"/admin/designs/{sysdid}/close" in sysbody
     assert "Author content directly" in sysbody
     route_paths = {route.path for route in admin.ROUTES}
-    for suffix in ("feature/edit", "feature/remove", "issue/edit", "issue/remove"):
+    for suffix in (
+        "feature/create",
+        "feature/edit",
+        "feature/remove",
+        "issue/create",
+        "issue/edit",
+        "issue/remove",
+    ):
         assert f"/admin/designs/{{design_id:int}}/{suffix}" in route_paths
     r = _post(
         admin.design_admin_create_feature,
@@ -304,7 +311,14 @@ def main():
         ),
     )
     sysbody_after = sysdet_after.body.decode("utf-8")
-    for suffix in ("feature/edit", "feature/remove", "issue/edit", "issue/remove"):
+    for suffix in (
+        "feature/create",
+        "feature/edit",
+        "feature/remove",
+        "issue/create",
+        "issue/edit",
+        "issue/remove",
+    ):
         assert f"/admin/designs/{sysdid}/{suffix}" in sysbody_after
     with db._conn() as conn:
         direct_iid = int(
@@ -331,6 +345,14 @@ def main():
     )
     assert "updated" in r.body.decode("utf-8")
     r = _post(
+        admin.design_admin_remove_issue,
+        f"/admin/designs/{sysdid}/issue/remove",
+        {"design_id": sysdid},
+        {"issue_id": str(direct_iid)},
+        csrf,
+    )
+    assert "removed" in r.body.decode("utf-8")
+    r = _post(
         admin.design_admin_remove_feature,
         f"/admin/designs/{sysdid}/feature/remove",
         {"design_id": sysdid},
@@ -344,7 +366,7 @@ def main():
         {"design_id": sysdid},
         {
             "title": "Panel system design v2",
-            "description": "Made by panel",
+            "description": "Made by panel v2",
             "request_text": "Wanted: quiet",
             "tag_new_ideas": "on",
             "tag_improvements": "on",
@@ -352,6 +374,16 @@ def main():
         csrf,
     )
     assert "updated" in r.body.decode("utf-8")
+    metadet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "Made by panel v2" in metadet.body.decode("utf-8")
     designs.propose_feature(beta["token"], sysdid, "Panel pending widget")
     r = _post(
         admin.design_admin_close_design,
