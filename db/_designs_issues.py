@@ -199,8 +199,10 @@ def list_issues(design_id, viewer_token=None, state=None):
         issues = []
         for row in rows:
             item = dict(row)
-            if not is_owner and item.get("feature_id") is not None and not item.get(
-                "feature_text"
+            if (
+                not is_owner
+                and item.get("feature_id") is not None
+                and not item.get("feature_text")
             ):
                 item["feature_id"] = None
             issues.append(item)
