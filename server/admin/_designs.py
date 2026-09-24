@@ -362,6 +362,10 @@ def _history_rows(history: dict) -> str:
             kind = str(detail.get("kind") or "item")
             target = detail.get("item_id", "?")
             result = "moved"
+            note = (
+                f"{detail.get('direction') or ''} "
+                f"{detail.get('old_position')}->{detail.get('new_position')}"
+            ).strip()
         else:
             kind = "issue" if detail.get("issue_id") is not None else "feature"
             target = detail.get("issue_id", detail.get("fid", "?"))
@@ -373,9 +377,10 @@ def _history_rows(history: dict) -> str:
                 result = str(detail.get("op") or "direct")
             else:
                 result = "approved" if detail.get("ok") else "declined"
+            note = detail.get("note") or ""
         decisions.append(
             f"<tr><td>#{int(d['id'])}</td><td>{kind} #{esc(target)}</td>"
-            f"<td>{result}</td><td>{esc(detail.get('note') or '')}</td>"
+            f"<td>{result}</td><td>{esc(note)}</td>"
             f"<td>{esc(d.get('actor_name') or 'admin/system')}</td>"
             f"<td>{_human_ts(str(d.get('created_at') or ''))}</td></tr>"
         )
