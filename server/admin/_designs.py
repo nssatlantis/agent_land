@@ -34,7 +34,7 @@ from server.admin._auth import (
     _denied,
     _flash,
 )
-from viewer._utils import esc
+from viewer._utils import _human_ts, esc
 
 
 def _docket_rows() -> list[dict]:
@@ -68,12 +68,12 @@ async def designs_admin_page(request: Request) -> HTMLResponse:
         table = "<p style='color:var(--muted)'>No designs on record.</p>"
     body = (
         _admin_nav()
-        + '<div class="panel"><h2>Designs — admin</h2>'
+        + '<div class="panel"><h2>Designs ??? admin</h2>'
         + _create_form(request)
         + table
         + "</div>"
     )
-    return _admin_page(request, "admin — designs", body)
+    return _admin_page(request, "admin ??? designs", body)
 
 
 def _tag_boxes(selected: set) -> str:
@@ -111,12 +111,20 @@ def _pending_feature_rows(did: int, pending: list[dict], csrf: str) -> str:
             continue
         op = esc(f.get("op") or "?")
         target = (
-            f" on #{int(f['target_feature_id'])}" if f.get("target_feature_id") else ""
+            f"<br><small>target: {esc(f.get('target_text') or '')}"
+            f" (#{int(f['target_feature_id'])})</small>"
+            if f.get("target_feature_id")
+            else ""
+        )
+        context = (
+            f"<br><small>reason: {esc(f.get('reason') or '')}"
+            f" &middot; similarity: {esc(f.get('similarity') or '')}</small>"
         )
         bits.append(
-            f"<tr><td>{esc(f.get('text') or '')}</td>"
-            f"<td>{op}{target}</td>"
-            f"<td>{esc(f.get('author_name') or '?')}</td>"
+            f"<tr><td>{esc(f.get('text') or '')}{target}{context}</td>"
+            f"<td>{op}</td>"
+            f"<td>{esc(f.get('author_name') or 'admin/system')}"
+            f"<br><small>{_human_ts(str(f.get('created_at') or ''))}</small></td>"
             f"<td><form method='post' action='/admin/designs/{did}/decide-feature'>"
             f"{csrf}<input type='hidden' name='feature_id' value='{int(f['id'])}'/>"
             "<select name='decision'><option value='approve'>approve</option>"
@@ -126,8 +134,8 @@ def _pending_feature_rows(did: int, pending: list[dict], csrf: str) -> str:
         )
     inner = "".join(bits)
     return (
-        f"<h3>Pending features</h3><table><tr><th>text</th><th>op</th>"
-        f"<th>author</th><th>decide</th></tr>{inner}</table>"
+        f"<h3>Pending features</h3><table><tr><th>text/context</th><th>op</th>"
+        f"<th>author/created</th><th>decide</th></tr>{inner}</table>"
         if inner
         else "<h3>Pending features</h3><p style='color:var(--muted)'>None.</p>"
     )
@@ -138,10 +146,20 @@ def _pending_issue_rows(did: int, pending: list[dict], csrf: str) -> str:
     for i in pending:
         if not isinstance(i, dict):
             continue
-        link = f" on #{int(i['feature_id'])}" if i.get("feature_id") else ""
+        link = (
+            f"<br><small>feature: {esc(i.get('feature_text') or '')}"
+            f" (#{int(i['feature_id'])})</small>"
+            if i.get("feature_id")
+            else ""
+        )
+        context = (
+            f"<br><small>reason: {esc(i.get('reason') or '')}"
+            f" &middot; similarity: {esc(i.get('similarity') or '')}</small>"
+        )
         bits.append(
-            f"<tr><td>{esc(i.get('text') or '')}{link}</td>"
-            f"<td>{esc(i.get('author_name') or '?')}</td>"
+            f"<tr><td>{esc(i.get('text') or '')}{link}{context}</td>"
+            f"<td>{esc(i.get('author_name') or 'admin/system')}"
+            f"<br><small>{_human_ts(str(i.get('created_at') or ''))}</small></td>"
             f"<td><form method='post' action='/admin/designs/{did}/decide-issue'>"
             f"{csrf}<input type='hidden' name='issue_id' value='{int(i['id'])}'/>"
             "<select name='decision'><option value='approve'>approve</option>"
@@ -151,8 +169,8 @@ def _pending_issue_rows(did: int, pending: list[dict], csrf: str) -> str:
         )
     inner = "".join(bits)
     return (
-        f"<h3>Pending issues</h3><table><tr><th>text</th>"
-        f"<th>author</th><th>decide</th></tr>{inner}</table>"
+        f"<h3>Pending issues</h3><table><tr><th>text/context</th>"
+        f"<th>author/created</th><th>decide</th></tr>{inner}</table>"
         if inner
         else "<h3>Pending issues</h3><p style='color:var(--muted)'>None.</p>"
     )
@@ -181,45 +199,204 @@ def _open_question_rows(did: int, open_q: list[dict], csrf: str) -> str:
     )
 
 
-def _accepted_rows(did: int, d: dict, csrf: str) -> str:
-    try:
-        issues = db.list_issues(did)["issues"]
-    except Exception:  # domain: degrade-silently - read failed, empty section
-        issues = []
-    feats = [f for f in (d.get("features") or []) if isinstance(f, dict)]
-    bits = []
-    for f in feats:
+def _owner_label(d: dict) -> str:
+    if d.get("owner_admin_id") is None:
+        return "system / admin panel"
+    return str(d.get("owner_name") or "?")
+
+
+def _feature_options(features: list[dict], selected=None) -> str:
+    bits = ["<option value=''>design-level</option>"]
+    for f in features:
+        if f.get("state") != "accepted" or f.get("op") != "add":
+            continue
+        mark = " selected" if str(selected or "") == str(f.get("id")) else ""
         bits.append(
-            f"<tr><td>feature: {esc(f.get('text') or '')}</td>"
+            f"<option value='{int(f['id'])}'{mark}>#{int(f['id'])} "
+            f"{esc(f.get('text') or '')}</option>"
+        )
+    return "".join(bits)
+
+
+def _accepted_rows(did: int, history: dict, csrf: str) -> str:
+    features = [
+        f
+        for f in history.get("features", [])
+        if f.get("state") == "accepted" and f.get("op") == "add"
+    ]
+    issues = [i for i in history.get("issues", []) if i.get("state") == "accepted"]
+    bits = []
+    for f in features:
+        fid = int(f["id"])
+        bits.append(
+            f"<tr><td>feature: {esc(f.get('text') or '')}"
+            f"<br><small>{esc(f.get('author_name') or 'admin/system')}"
+            f" &middot; {_human_ts(str(f.get('created_at') or ''))}</small></td>"
+            f"<td><form method='post' action='/admin/designs/{did}/edit-feature'>"
+            f"{csrf}<input type='hidden' name='feature_id' value='{fid}'/>"
+            f"<textarea name='text' rows='3' cols='36' maxlength='2000'>"
+            f"{esc(f.get('text') or '')}</textarea> <button type='submit'>save</button>"
+            "</form>"
+            f"<form method='post' action='/admin/designs/{did}/remove-feature'>"
+            f"{csrf}<input type='hidden' name='feature_id' value='{fid}'/>"
+            " <button type='submit'>remove</button></form></td>"
             f"<td><form method='post' action='/admin/designs/{did}/move-item'>"
             f"{csrf}<input type='hidden' name='kind' value='feature'/>"
-            f"<input type='hidden' name='item_id' value='{int(f['id'])}'/>"
+            f"<input type='hidden' name='item_id' value='{fid}'/>"
             "<select name='direction'><option value='up'>up</option>"
             "<option value='down'>down</option></select>"
-            " <button type='submit'>move</button></form></td><td></td></tr>"
+            " <button type='submit'>move</button></form></td></tr>"
         )
     for i in issues:
-        if not isinstance(i, dict) or i.get("state") != "accepted":
-            continue
+        iid = int(i["id"])
+        feature_link = f" on #{int(i['feature_id'])}" if i.get("feature_id") else ""
         bits.append(
-            f"<tr><td>issue: {esc(i.get('text') or '')}</td>"
+            f"<tr><td>issue: {esc(i.get('text') or '')}{feature_link}"
+            f"<br><small>{esc(i.get('author_name') or 'admin/system')}"
+            f" &middot; {_human_ts(str(i.get('created_at') or ''))}</small></td>"
+            f"<td><form method='post' action='/admin/designs/{did}/edit-issue'>"
+            f"{csrf}<input type='hidden' name='issue_id' value='{iid}'/>"
+            f"<textarea name='text' rows='3' cols='30' maxlength='2000'>"
+            f"{esc(i.get('text') or '')}</textarea>"
+            f"<select name='feature_id'>{_feature_options(features, i.get('feature_id'))}"
+            f"</select> <button type='submit'>save</button></form>"
+            f"<form method='post' action='/admin/designs/{did}/remove-issue'>"
+            f"{csrf}<input type='hidden' name='issue_id' value='{iid}'/>"
+            " <button type='submit'>remove</button></form></td>"
             f"<td><form method='post' action='/admin/designs/{did}/move-item'>"
             f"{csrf}<input type='hidden' name='kind' value='issue'/>"
-            f"<input type='hidden' name='item_id' value='{int(i['id'])}'/>"
+            f"<input type='hidden' name='item_id' value='{iid}'/>"
             "<select name='direction'><option value='up'>up</option>"
             "<option value='down'>down</option></select>"
-            " <button type='submit'>move</button></form></td>"
-            f"<td><form method='post' action='/admin/designs/{did}/resolve-issue'>"
-            f"{csrf}<input type='hidden' name='issue_id' value='{int(i['id'])}'/>"
+            " <button type='submit'>move</button></form>"
+            f"<form method='post' action='/admin/designs/{did}/resolve-issue'>"
+            f"{csrf}<input type='hidden' name='issue_id' value='{iid}'/>"
             " <button type='submit'>resolve</button></form></td></tr>"
         )
     inner = "".join(bits)
     return (
-        f"<h3>Accepted (move / resolve)</h3><table><tr><th>item</th>"
-        f"<th>move</th><th>resolve</th></tr>{inner}</table>"
+        "<h3>Accepted authored content</h3>"
+        "<table><tr><th>item/context</th><th>edit/remove</th><th>move/resolve</th></tr>"
+        f"{inner}</table>"
         if inner
-        else "<h3>Accepted (move / resolve)</h3>"
+        else "<h3>Accepted authored content</h3>"
         "<p style='color:var(--muted)'>Nothing accepted yet.</p>"
+    )
+
+
+def _content_forms(did: int, history: dict, csrf: str) -> str:
+    features = [
+        f
+        for f in history.get("features", [])
+        if f.get("state") == "accepted" and f.get("op") == "add"
+    ]
+    return (
+        "<h3>Author content directly</h3>"
+        f"<form method='post' action='/admin/designs/{did}/feature/create'>"
+        f"{csrf}<label>Feature<textarea name='text' rows='3' cols='60'"
+        " maxlength='2000' required></textarea></label> "
+        "<button type='submit'>add accepted feature</button></form>"
+        f"<form method='post' action='/admin/designs/{did}/issue/create'>"
+        f"{csrf}<label>Issue<textarea name='text' rows='3' cols='60'"
+        " maxlength='2000' required></textarea></label>"
+        f"<label>Link feature<select name='feature_id'>"
+        f"{_feature_options(features)}</select></label> "
+        "<button type='submit'>add accepted issue</button></form>"
+    )
+
+
+def _history_table(title: str, headers: str, rows: list[str]) -> str:
+    if not rows:
+        return f"<h4>{esc(title)}</h4><p style='color:var(--muted)'>None.</p>"
+    return (
+        f"<h4>{esc(title)}</h4><table><tr>{headers}</tr>" + "".join(rows) + "</table>"
+    )
+
+
+def _history_rows(history: dict) -> str:
+    features = []
+    for f in history.get("features", []):
+        target = (
+            f" -> #{int(f['target_feature_id'])}" if f.get("target_feature_id") else ""
+        )
+        features.append(
+            f"<tr><td>#{int(f['id'])} {esc(f.get('op') or '')}</td>"
+            f"<td>{esc(f.get('state') or '')}</td><td>{esc(f.get('text') or '')}{target}</td>"
+            f"<td>{esc(f.get('author_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(f.get('created_at') or ''))}</td></tr>"
+        )
+    issues = []
+    for i in history.get("issues", []):
+        issues.append(
+            f"<tr><td>#{int(i['id'])}</td><td>{esc(i.get('state') or '')}</td>"
+            f"<td>{esc(i.get('text') or '')}</td>"
+            f"<td>{esc(i.get('feature_text') or '')}</td>"
+            f"<td>{esc(i.get('author_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(i.get('created_at') or ''))}</td></tr>"
+        )
+    questions = []
+    for q in history.get("questions", []):
+        questions.append(
+            f"<tr><td>#{int(q['id'])}</td><td>{esc(q.get('state') or '')}</td>"
+            f"<td>{esc(q.get('body') or '')}</td><td>{esc(q.get('answer') or '')}</td>"
+            f"<td>{esc(q.get('asker_name') or '?')}</td></tr>"
+        )
+    comments = []
+    for c in history.get("comments", []):
+        comments.append(
+            f"<tr><td>#{int(c['id'])}</td><td>{esc(c.get('body') or '')}</td>"
+            f"<td>{esc(c.get('author_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(c.get('created_at') or ''))}</td></tr>"
+        )
+    meta = []
+    for m in history.get("meta_edits", []):
+        meta.append(
+            f"<tr><td>#{int(m['id'])}</td>"
+            f"<td>{esc(m.get('old_title') or '')} -> {esc(m.get('new_title') or '')}</td>"
+            f"<td>{esc(m.get('old_request') or '')} -> {esc(m.get('new_request') or '')}</td>"
+            f"<td>{esc(m.get('editor_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(m.get('edited_at') or ''))}</td></tr>"
+        )
+    edits = []
+    for e in history.get("edit_logs", []):
+        edits.append(
+            f"<tr><td>#{int(e['id'])}</td><td>{esc(e.get('kind') or '')}</td>"
+            f"<td>{esc(e.get('old_text') or '')} -> {esc(e.get('new_text') or '')}</td>"
+            f"<td>{esc(e.get('editor_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(e.get('created_at') or ''))}</td></tr>"
+        )
+    return (
+        "<h3>Content and audit history</h3>"
+        + _history_table(
+            "Features",
+            "<th>id/op</th><th>state</th><th>text</th><th>author</th><th>created</th>",
+            features,
+        )
+        + _history_table(
+            "Issues",
+            "<th>id</th><th>state</th><th>text</th><th>feature</th><th>author</th><th>created</th>",
+            issues,
+        )
+        + _history_table(
+            "Questions",
+            "<th>id</th><th>state</th><th>question</th><th>answer</th><th>asker</th>",
+            questions,
+        )
+        + _history_table(
+            "Comments",
+            "<th>id</th><th>body</th><th>author</th><th>created</th>",
+            comments,
+        )
+        + _history_table(
+            "Meta edits",
+            "<th>id</th><th>title</th><th>request</th><th>editor</th><th>edited</th>",
+            meta,
+        )
+        + _history_table(
+            "Edit log",
+            "<th>id</th><th>kind</th><th>old -&gt; new</th><th>editor</th><th>created</th>",
+            edits,
+        )
     )
 
 
@@ -245,11 +422,34 @@ def _meta_form(did: int, d: dict, csrf: str) -> str:
     )
 
 
-def _close_form(did: int, csrf: str) -> str:
+def _close_form(did: int, history: dict, csrf: str) -> str:
+    pending = [f for f in history.get("features", []) if f.get("state") == "pending"]
+    issues = [i for i in history.get("issues", []) if i.get("state") == "pending"]
+    questions = [q for q in history.get("questions", []) if q.get("state") == "open"]
+    preview = (
+        "".join(
+            f"<li>feature #{int(f['id'])}: {esc(f.get('text') or '')}</li>"
+            for f in pending
+        )
+        + "".join(
+            f"<li>issue #{int(i['id'])}: {esc(i.get('text') or '')}</li>"
+            for i in issues
+        )
+        + "".join(
+            f"<li>question #{int(q['id'])}: {esc(q.get('body') or '')}</li>"
+            for q in questions
+        )
+    )
+    detail = (
+        f"<details><summary>Rows dropped on confirm ({len(pending) + len(issues) + len(questions)})</summary>"
+        f"<ul>{preview}</ul></details>"
+        if preview
+        else "<p>No pending rows or open questions.</p>"
+    )
     return (
         "<h3>Archive (2-step)</h3>"
         f"<form method='post' action='/admin/designs/{did}/close'>"
-        f"{csrf}"
+        f"{csrf}{detail}"
         "<label><input type='checkbox' name='confirm'/> confirm - drop pending"
         " features/issues and open questions, freeze read-only</label>"
         " <button type='submit'>archive</button></form>"
@@ -257,63 +457,68 @@ def _close_form(did: int, csrf: str) -> str:
 
 
 async def design_admin_detail_page(request: Request) -> HTMLResponse:
-    """One design for the maintainer: pending queues with decide/answer
-    affordances, accepted move/resolve and the comments toggle."""
+    """One design for the maintainer with authoring and read-only history."""
     if not _authorized(request):
         return _denied()
     try:
         design_id = int(request.path_params["design_id"])
     except (KeyError, TypeError, ValueError):
-        return _admin_page(request, "admin — designs", "<p>No such design.</p>")
+        return _admin_page(request, "admin ??? designs", "<p>No such design.</p>")
     try:
         admin = _admin_user(request)
-        pend = db.admin_design_pending(admin, design_id)
-        d = db.get_design(design_id)
+        history = db.admin_design_history(admin, design_id)
     except Exception:  # domain: degrade-silently - unknown id degrades to 404 text
-        return _admin_page(request, "admin — designs", "<p>No such design.</p>")
+        return _admin_page(request, "admin ??? designs", "<p>No such design.</p>")
+    d = history["design"]
     csrf = _csrf_field(request)
-    frozen = pend["status"] != "open"
-    # Frozen renders banner + status only: promote/close sweep every pending
-    # row, so the queues are empty by construction - state without forms.
+    frozen = d.get("status") != "open"
     head = (
-        f"<p class='meta'>status {esc(pend['status'])} &middot; "
+        f"<p class='meta'>status {esc(d.get('status') or '?')} &middot; "
+        f"owner {esc(_owner_label(d))} &middot; "
         f"<a href='/designs/{design_id}'>public page</a></p>"
-        + ("<p><b>Frozen</b> - read-only, no forms.</p>" if frozen else "")
+        + ("<p><b>Frozen</b> - read-only history, no forms.</p>" if frozen else "")
     )
     if frozen:
         body = (
             _admin_nav()
-            + f"<div class='panel'><h2>{esc(d.get('title') or '?')} — admin</h2>"
+            + f"<div class='panel'><h2>{esc(d.get('title') or '?')} ??? admin</h2>"
             + head
+            + _history_rows(history)
             + "</div>"
         )
-        return _admin_page(request, f"admin — design {design_id}", body)
-    try:
-        comments = db.list_design_comments(design_id)
-        comments_on = bool(comments["comments_enabled"])
-    except Exception:  # domain: degrade-silently - toggle degrades to off
-        comments_on = False
+        return _admin_page(request, f"admin ??? design {design_id}", body)
+    pending_features = [
+        f for f in history.get("features", []) if f.get("state") == "pending"
+    ]
+    pending_issues = [
+        i for i in history.get("issues", []) if i.get("state") == "pending"
+    ]
+    open_questions = [
+        q for q in history.get("questions", []) if q.get("state") == "open"
+    ]
     toggle = (
         f"<h3>Comments</h3><form method='post'"
         f" action='/admin/designs/{design_id}/toggle-comments'>{csrf}"
         "<label><input type='checkbox' name='enabled'"
-        f"{' checked' if comments_on else ''}/> enabled (needs 24h age)</label>"
+        f"{' checked' if history['comments_enabled'] else ''}/> enabled (needs 24h age)</label>"
         " <button type='submit'>apply</button></form>"
     )
     body = (
         _admin_nav()
-        + f"<div class='panel'><h2>{esc(d.get('title') or '?')} — admin</h2>"
+        + f"<div class='panel'><h2>{esc(d.get('title') or '?')} ??? admin</h2>"
         + head
         + _meta_form(design_id, d, csrf)
-        + _pending_feature_rows(design_id, pend["pending_features"], csrf)
-        + _pending_issue_rows(design_id, pend["pending_issues"], csrf)
-        + _open_question_rows(design_id, pend["open_questions"], csrf)
-        + _accepted_rows(design_id, d, csrf)
+        + _content_forms(design_id, history, csrf)
+        + _pending_feature_rows(design_id, pending_features, csrf)
+        + _pending_issue_rows(design_id, pending_issues, csrf)
+        + _open_question_rows(design_id, open_questions, csrf)
+        + _accepted_rows(design_id, history, csrf)
         + toggle
-        + _close_form(design_id, csrf)
+        + _history_rows(history)
+        + _close_form(design_id, history, csrf)
         + "</div>"
     )
-    return _admin_page(request, f"admin — design {design_id}", body)
+    return _admin_page(request, f"admin ??? design {design_id}", body)
 
 
 async def _design_action(request, fn):
@@ -414,6 +619,70 @@ async def design_admin_toggle_comments(request):
         enabled = bool(form.get("enabled"))
         db.admin_enable_comments(admin, did, enabled=enabled)
         return f"Comments on design #{did} {'enabled' if enabled else 'disabled'}."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_create_feature(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        text = (form.get("text") or "").strip()
+        result = db.admin_create_feature(admin, did, text)
+        return f"Feature #{result['feature_id']} added and accepted."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_edit_feature(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        fid = _form_int(form, "feature_id", "feature")
+        text = (form.get("text") or "").strip()
+        db.admin_edit_feature(admin, did, fid, text)
+        return f"Feature #{fid} updated."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_remove_feature(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        fid = _form_int(form, "feature_id", "feature")
+        db.admin_remove_feature(admin, did, fid)
+        return f"Feature #{fid} removed."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_create_issue(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        text = (form.get("text") or "").strip()
+        feature_id = (form.get("feature_id") or "").strip() or None
+        result = db.admin_create_issue(admin, did, text, feature_id=feature_id)
+        return f"Issue #{result['issue_id']} added and accepted."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_edit_issue(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        iid = _form_int(form, "issue_id", "issue")
+        text = (form.get("text") or "").strip()
+        feature_id = (form.get("feature_id") or "").strip() or None
+        db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id)
+        return f"Issue #{iid} updated."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_remove_issue(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        iid = _form_int(form, "issue_id", "issue")
+        db.admin_remove_issue(admin, did, iid)
+        return f"Issue #{iid} removed."
 
     return await _design_action(request, _run)
 
