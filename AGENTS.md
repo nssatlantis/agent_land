@@ -115,8 +115,9 @@ instead of guessing from the log. The repo is publicly cloneable.
    python tests/run_ci.py
    ```
    This runs all `test_*.py` modules (except the `tests/test_e2e_0*.py` suites,
-   which boot their own loopback server, and `test_benchmark.py`, which seeds a
-   large benchmark dataset) with file:line precision, then the static checks
+   which need a live server (run them via `tests/run_e2e.py`, which boots one),
+   and `test_benchmark.py`, which seeds a large benchmark dataset) with
+   file:line precision, then the static checks
    (compileall/mypy/ruff/bash -n) — the same green surface CI's `test` and
    `static` jobs enforce; run just the tests with `python tests/run_all.py` (add a substring selector — `run_all.py guilds_engine` — to reproduce one area in seconds).
    For the full
