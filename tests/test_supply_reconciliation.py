@@ -6,6 +6,7 @@ stake #6's treasury-only lock pair (the 0.5-credit dip) - the class
 checkpoints cannot see and the escrow audit does not cover."""
 
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -47,7 +48,165 @@ def test_fresh_db_reconciles():
     assert r["diff_units"] == 0, r
     assert r["supply_units"] == r["expected_units"], r
     assert r["supply_units"] > 0, "the fixture holds value"
+    assert r["legacy_baseline_units"] == 0, r
+    assert r["legacy_signature_ok"] is True, r
     assert r["in_flight_units"] == 0, r
+
+
+def _legacy_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE economy_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE credit_entries (
+            id INTEGER PRIMARY KEY,
+            agent_id INTEGER,
+            account TEXT NOT NULL,
+            delta_units INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            target_type TEXT,
+            target_id INTEGER,
+            tx_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE proposal_stakes (
+            id INTEGER PRIMARY KEY,
+            currency TEXT NOT NULL
+        );
+        CREATE TABLE stake_locks (
+            stake_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            amount INTEGER NOT NULL
+        );
+        """
+    )
+    return conn
+
+
+def _seed_legacy_rows(conn: sqlite3.Connection) -> None:
+    rows = (
+        (42, "agent", -5, "job_escrow", "job", 1, None),
+        (65, "agent", 5, "official_job_wage", "job", 2, None),
+        (92, "agent", 5, "official_job_wage", "job", 2, None),
+        (107, "agent", 5, "job_payout", "job", 1, None),
+        (108, "treasury", -5, "payout_source", "job", 1, None),
+        (109, "agent", 5, "job_reward", "job", 1, None),
+        (110, "treasury", -5, "payout_source", "job", 1, None),
+        (111, "agent", 5, "job_reward", "job", 1, None),
+        (216, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (217, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (218, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (219, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (220, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (221, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (222, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (223, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+        (224, "agent", 10, "stake_paid", "proposal_stake", 4, None),
+        (530, "agent", 5, "official_job_wage", "job", 2, None),
+        (1165, "treasury", -20, "job_escrow_treasury", "job", 2, None),
+    )
+    conn.executemany(
+        "INSERT INTO credit_entries"
+        " (id, account, delta_units, reason, target_type, target_id, tx_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+
+def test_legacy_baseline_exact_idempotent_and_future_safe():
+    conn = _legacy_conn()
+    try:
+        _seed_legacy_rows(conn)
+        first = db._economy.backfill_legacy_supply_baseline(conn)
+        assert first == {
+            "baseline_units": 45,
+            "signature_rows": 19,
+            "already_set": False,
+        }, first
+        again = db._economy.backfill_legacy_supply_baseline(conn)
+        assert again == {
+            "baseline_units": 45,
+            "signature_rows": 19,
+            "already_set": True,
+        }, again
+        conn.executemany(
+            "INSERT INTO credit_entries"
+            " (id, account, delta_units, reason, target_type, tx_id)"
+            " VALUES (?, 'agent', ?, 'paired_current', 'test', 7)",
+            ((1179, 50), (1180, -50)),
+        )
+        reconciled = db._economy.verify_supply_reconciliation(conn)
+        assert reconciled["ok"] is True, reconciled
+        assert reconciled["legacy_baseline_units"] == 45, reconciled
+        assert reconciled["legacy_signature_ok"] is True, reconciled
+        conn.execute("UPDATE credit_entries SET reason = 'tampered' WHERE id = 42")
+        tampered = db._economy.verify_supply_reconciliation(conn)
+        assert tampered["ok"] is False, tampered
+        assert tampered["legacy_signature_ok"] is False, tampered
+        try:
+            db._economy.backfill_legacy_supply_baseline(conn)
+        except db.ForumError as exc:
+            assert "no longer matches" in str(exc)
+        else:
+            raise AssertionError("marker drift must fail on the next boot")
+        conn.execute("UPDATE credit_entries SET reason = 'job_escrow' WHERE id = 42")
+        conn.execute(
+            "INSERT INTO credit_entries"
+            " (id, account, delta_units, reason, target_type, tx_id)"
+            " VALUES (2000, 'treasury', 1, 'future_unknown', 'test', 8)"
+        )
+        anomaly = db._economy.verify_supply_reconciliation(conn)
+        assert anomaly["ok"] is False, anomaly
+        assert anomaly["diff_units"] == 1, anomaly
+    finally:
+        conn.close()
+
+
+def test_legacy_baseline_refuses_partial_signature():
+    conn = _legacy_conn()
+    try:
+        conn.execute(
+            "INSERT INTO credit_entries"
+            " (id, account, delta_units, reason, target_type, tx_id)"
+            " VALUES (42, 'agent', -5, 'job_escrow', 'job', NULL)"
+        )
+        try:
+            db._economy.backfill_legacy_supply_baseline(conn)
+        except db.ForumError as exc:
+            assert "signature mismatch" in str(exc)
+        else:
+            raise AssertionError("partial legacy signature must fail loudly")
+        marker = conn.execute(
+            "SELECT value FROM economy_meta WHERE key = 'legacy_supply_baseline_units'"
+        ).fetchone()
+        assert marker is None
+    finally:
+        conn.close()
+
+
+def test_legacy_baseline_zero_marker_survives_later_id_collision():
+    conn = _legacy_conn()
+    try:
+        conn.execute(
+            "INSERT INTO economy_meta"
+            " (key, value) VALUES ('legacy_supply_baseline_units', '0')"
+        )
+        conn.execute(
+            "INSERT INTO credit_entries"
+            " (id, account, delta_units, reason, target_type, tx_id)"
+            " VALUES (42, 'agent', -5, 'later_test_row', 'test', NULL)"
+        )
+        result = db._economy.backfill_legacy_supply_baseline(conn)
+        assert result == {
+            "baseline_units": 0,
+            "signature_rows": 1,
+            "already_set": True,
+        }, result
+    finally:
+        conn.close()
 
 
 def test_single_sided_mint_trips_with_exact_diff():

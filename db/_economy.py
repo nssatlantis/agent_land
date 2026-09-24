@@ -1626,6 +1626,103 @@ _SUPPLY_STAKE_ESCROW_REASONS = (
     "stake_refund_release",
     "stake_escrow_backfill",
 )
+_LEGACY_SUPPLY_BASELINE_ROWS = (
+    (42, "agent", -5, "job_escrow", "job", 1, None),
+    (65, "agent", 5, "official_job_wage", "job", 2, None),
+    (92, "agent", 5, "official_job_wage", "job", 2, None),
+    (107, "agent", 5, "job_payout", "job", 1, None),
+    (108, "treasury", -5, "payout_source", "job", 1, None),
+    (109, "agent", 5, "job_reward", "job", 1, None),
+    (110, "treasury", -5, "payout_source", "job", 1, None),
+    (111, "agent", 5, "job_reward", "job", 1, None),
+    (216, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (217, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (218, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (219, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (220, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (221, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (222, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (223, "agent", 5, "stake_paid", "proposal_stake", 3, None),
+    (224, "agent", 10, "stake_paid", "proposal_stake", 4, None),
+    (530, "agent", 5, "official_job_wage", "job", 2, None),
+    (1165, "treasury", -20, "job_escrow_treasury", "job", 2, None),
+)
+_LEGACY_SUPPLY_BASELINE_META_KEY = "legacy_supply_baseline_units"
+
+
+def _legacy_supply_signature(
+    conn: sqlite3.Connection,
+) -> tuple[tuple[object, ...], ...]:
+    ids = tuple(row[0] for row in _LEGACY_SUPPLY_BASELINE_ROWS)
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT id, account, delta_units, reason, target_type, target_id, tx_id"
+        f" FROM credit_entries WHERE id IN ({placeholders}) ORDER BY id",
+        ids,
+    ).fetchall()
+    return tuple(tuple(row) for row in rows)
+
+
+def _legacy_supply_baseline_from_signature(
+    signature: tuple[tuple[object, ...], ...],
+) -> tuple[int, bool]:
+    if not signature:
+        return 0, True
+    if signature == _LEGACY_SUPPLY_BASELINE_ROWS:
+        return sum(int(row[2]) for row in signature), True
+    return 0, False
+
+
+def backfill_legacy_supply_baseline(
+    conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Seed the exact pre-cutover supply baseline without rewriting history."""
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS economy_meta"
+            " (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        signature = _legacy_supply_signature(c)
+        derived, valid = _legacy_supply_baseline_from_signature(signature)
+        existing = c.execute(
+            "SELECT value FROM economy_meta WHERE key = ?",
+            (_LEGACY_SUPPLY_BASELINE_META_KEY,),
+        ).fetchone()
+        if existing is not None:
+            try:
+                baseline = int(existing[0])
+            except (TypeError, ValueError) as exc:
+                raise ForumError(
+                    "economy_meta legacy supply baseline is not an integer"
+                ) from exc
+            if baseline == 0 and not valid:
+                return {
+                    "baseline_units": baseline,
+                    "signature_rows": len(signature),
+                    "already_set": True,
+                }
+            if not valid or baseline != derived:
+                raise ForumError(
+                    "legacy supply baseline no longer matches its exact row signature"
+                )
+            return {
+                "baseline_units": baseline,
+                "signature_rows": len(signature),
+                "already_set": True,
+            }
+        if not valid:
+            raise ForumError(
+                "pre-cutover credit signature mismatch; refusing to seed a supply baseline"
+            )
+        c.execute(
+            "INSERT INTO economy_meta (key, value) VALUES (?, ?)",
+            (_LEGACY_SUPPLY_BASELINE_META_KEY, str(derived)),
+        )
+        return {
+            "baseline_units": derived,
+            "signature_rows": len(signature),
+            "already_set": False,
+        }
 
 
 def verify_supply_reconciliation(
@@ -1633,9 +1730,10 @@ def verify_supply_reconciliation(
 ) -> dict:
     """Whole-ledger supply invariant (proposal #648): total supply must
     equal genesis+mints, minus burns, plus documented guild mints and
-    backfill repairs, minus transiently unescrowed locked stake
-    principal (wallet locks dip supply until pay/refund; post-#644 admin
-    locks are escrow-paired and net to zero here). A mismatch means a
+    backfill repairs, plus the exact pre-cutover baseline, minus
+    transiently unescrowed locked stake principal (wallet locks dip supply
+    until pay/refund; post-#644 admin locks are escrow-paired and net to zero
+    here). A mismatch means a
     single-sided ledger bug exactly like stake #6's treasury-only lock
     pair - the checkpoints cannot see that class (they attest
     history-untampered, not write-balanced) and the escrow audit only
@@ -1689,17 +1787,29 @@ def verify_supply_reconciliation(
                 ).fetchone()[0]
             except Exception:  # domain: degrade-silently - pre-stake DB holds nothing
                 locked, held = 0, 0
+            legacy_row = c.execute(
+                "SELECT value FROM economy_meta WHERE key = ?",
+                (_LEGACY_SUPPLY_BASELINE_META_KEY,),
+            ).fetchone()
+            legacy_baseline = int(legacy_row[0]) if legacy_row is not None else 0
+            signature = _legacy_supply_signature(c)
+            derived, signature_valid = _legacy_supply_baseline_from_signature(signature)
+            signature_ok = (legacy_baseline == 0 and not signature_valid) or (
+                signature_valid and legacy_baseline == derived
+            )
+            baseline_for_expected = legacy_baseline if signature_ok else 0
             in_flight = int(locked) - int(held)
             expected = (
                 int(minted)
                 + int(burned)
                 + int(guild_minted)
                 + int(backfilled)
+                + baseline_for_expected
                 - in_flight
             )
             diff = int(supply) - expected
             return {
-                "ok": diff == 0,
+                "ok": diff == 0 and signature_ok,
                 "supply_units": int(supply),
                 "expected_units": expected,
                 "diff_units": diff,
@@ -1707,6 +1817,9 @@ def verify_supply_reconciliation(
                 "burned_units": int(burned),
                 "guild_minted_units": int(guild_minted),
                 "backfilled_units": int(backfilled),
+                "legacy_baseline_units": legacy_baseline,
+                "legacy_signature_ok": signature_ok,
+                "legacy_signature_rows": len(signature),
                 "in_flight_units": in_flight,
             }
     except Exception as exc:  # domain: degrade-silently - audit never breaks callers
@@ -1720,6 +1833,9 @@ def verify_supply_reconciliation(
             "burned_units": 0,
             "guild_minted_units": 0,
             "backfilled_units": 0,
+            "legacy_baseline_units": 0,
+            "legacy_signature_ok": False,
+            "legacy_signature_rows": 0,
             "in_flight_units": 0,
         }
 
