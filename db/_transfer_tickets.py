@@ -254,11 +254,7 @@ def _validate_ticket_use(
         " AND status = 'active'",
         (row["agent_id"], row["proposal_id"], row["claim_name"]),
     ).fetchone()
-    if (
-        claim is None
-        or row["claim_id"] is None
-        or claim["id"] != row["claim_id"]
-    ):
+    if claim is None or row["claim_id"] is None or claim["id"] != row["claim_id"]:
         raise _fail(
             404,
             "workspace for this ticket is gone - release it and"
