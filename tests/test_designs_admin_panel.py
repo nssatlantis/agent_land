@@ -287,6 +287,7 @@ def main():
     assert f"/admin/designs/{sysdid}/edit-meta" in sysbody
     assert f"/admin/designs/{sysdid}/close" in sysbody
     assert "Author content directly" in sysbody
+    assert "preview_feature_ids" in sysbody
     route_paths = {route.path for route in admin.ROUTES}
     for suffix in (
         "feature/create",
@@ -425,11 +426,42 @@ def main():
         csrf,
     )
     assert "tick confirm" in r.body.decode("utf-8")
+    designs.propose_feature(beta["token"], sysdid, "Panel drift row")
     r = _post(
         admin.design_admin_close_design,
         f"/admin/designs/{sysdid}/close",
         {"design_id": sysdid},
         {"confirm": "on"},
+        csrf,
+    )
+    assert "preview changed" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {},
+        csrf,
+    )
+    assert "tick confirm" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        preview_feature_ids = ",".join(
+            str(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ? AND state = 'pending'"
+                " ORDER BY id",
+                (sysdid,),
+            ).fetchall()
+        )
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {
+            "confirm": "on",
+            "preview_feature_ids": preview_feature_ids,
+            "preview_issue_ids": "",
+            "preview_question_ids": "",
+        },
         csrf,
     )
     assert "archived" in r.body.decode("utf-8")
