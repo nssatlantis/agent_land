@@ -797,6 +797,8 @@ def main():
     test_dispatch_accounting_releases()
     test_concurrent_pick_single_slot()
     test_farm_retry_exhaustion_audited()
+    test_bench_allow_remote_bypasses_preference()
+    test_dispatch_timeout_derives_from_run_timeout()
     print("All CI farm tests passed.")
     print("All CI farm tests passed.")
 
