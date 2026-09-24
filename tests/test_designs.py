@@ -296,7 +296,7 @@ def main():
             "UPDATE design_features SET position = 1 WHERE id = ?",
             (p1["feature_id"],),
         )
-    moved = flow.move_design_item(
+    moved = db.move_design_item(
         alpha["token"], d["id"], "feature", p1["feature_id"], "up"
     )
     assert moved["moved"] is False, moved
