@@ -849,6 +849,53 @@ def test_failed_apply_unburns_path(agents):
     good = _run(TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"fixed\n")))
     assert good.status_code == 200, (good.status_code, good.body)
     assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "fixed"
+    retry_ticket = TT.workspace_upload_ticket(tok, pid, 'unburn', ['u.txt'])
+    apply_entered = threading.Event()
+    apply_release = threading.Event()
+    unburned = threading.Event()
+    unburn_calls = []
+
+    def failed_apply(*args, **kwargs):
+        apply_entered.set()
+        if not apply_release.wait(5):
+            raise AssertionError('failed apply was not released')
+        raise TR.RepoError('injected async apply failure')
+
+    def observed_unburn(raw_ticket, path):
+        unburn_calls.append((raw_ticket, path))
+        result = db.unburn_transfer_path(raw_ticket, path)
+        unburned.set()
+        return result
+
+    async def run_cancelled_apply():
+        upload = asyncio.create_task(
+            TR.transfer_upload(
+                _req('POST', retry_ticket['ticket'], 'u.txt', body=b'retry\n')
+            )
+        )
+        assert await asyncio.to_thread(apply_entered.wait, 1)
+        upload.cancel()
+        try:
+            await upload
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError('cancelled upload did not stay cancelled')
+        apply_release.set()
+        assert await asyncio.to_thread(unburned.wait, 1)
+
+    with patch.object(ws, 'apply_transfer_bytes', failed_apply), patch.object(
+        db, 'unburn_transfer_path', observed_unburn
+    ):
+        asyncio.run(run_cancelled_apply())
+    assert unburn_calls == [(retry_ticket['ticket'], 'u.txt')], unburn_calls
+    recovered = _run(
+        TR.transfer_upload(
+            _req('POST', retry_ticket['ticket'], 'u.txt', body=b'retry\n')
+        )
+    )
+    assert recovered.status_code == 200, (recovered.status_code, recovered.body)
+    assert WT.workspace_read_file(tok, pid, 'unburn', 'u.txt')['content'] == 'retry'
     print("  failed apply unburns its path (same-ticket retry): ok")
 
 
