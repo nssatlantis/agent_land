@@ -50,8 +50,12 @@ def _can_create_design(agent):
 
 
 def _require_owner(design, agent):
-    if int(design["owner_admin_id"] or 0) != int(agent["id"]):
-        raise ForumError("only the design's owner may do that.")
+    if design["owner_admin_id"] is None:
+        if isinstance(agent, dict) and agent.get("_panel"):
+            return
+    elif agent["id"] is not None and int(design["owner_admin_id"]) == int(agent["id"]):
+        return
+    raise ForumError("only the design's owner may do that.")
 
 
 def _require_open(design):
@@ -148,6 +152,8 @@ def _feature_count(conn, design_id):
 def _notify_owner(conn, design, agent, msg):
     from notifications import _notify
 
+    if design["owner_admin_id"] is None:
+        return  # system-owned: the panel is the owner; nothing to ping.
     _notify(
         conn,
         int(design["owner_admin_id"]),

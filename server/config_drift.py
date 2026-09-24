@@ -50,7 +50,7 @@ def _drift_rows() -> list[tuple[str, object, object]]:
             continue
         spec = config._TUNING.get(attr)
         if spec is not None:
-            default = spec[1]
+            default = config._effective_default(attr)
         elif env in _STARTUP_DEFAULTS:
             default = _STARTUP_DEFAULTS[env]
         else:
