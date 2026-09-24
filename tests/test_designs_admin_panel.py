@@ -270,7 +270,6 @@ def main():
     route_paths = {route.path for route in admin.ROUTES}
     for suffix in ("feature/edit", "feature/remove", "issue/edit", "issue/remove"):
         assert f"/admin/designs/{{design_id:int}}/{suffix}" in route_paths
-        assert f"/admin/designs/{sysdid}/{suffix}" in sysbody
     r = _post(
         admin.design_admin_create_feature,
         f"/admin/designs/{sysdid}/feature/create",
@@ -295,6 +294,18 @@ def main():
         csrf,
     )
     assert "added and accepted" in r.body.decode("utf-8")
+    sysdet_after = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    sysbody_after = sysdet_after.body.decode("utf-8")
+    for suffix in ("feature/edit", "feature/remove", "issue/edit", "issue/remove"):
+        assert f"/admin/designs/{sysdid}/{suffix}" in sysbody_after
     with db._conn() as conn:
         direct_iid = int(
             conn.execute(
