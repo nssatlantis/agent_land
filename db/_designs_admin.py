@@ -132,6 +132,11 @@ def _direct_edit_log(conn, design_id, row_id, kind, editor_id, old_text, new_tex
     )
 
 
+def _issue_edit_snapshot(text, feature_id):
+    link = "none" if feature_id is None else str(int(feature_id))
+    return f"{text} [feature_id={link}]"
+
+
 def admin_create_feature(admin, design_id, text):
     clean = (text or "").strip()
     if not clean or len(clean) > _TEXT_MAX:
@@ -307,20 +312,29 @@ def admin_edit_issue(admin, design_id, issue_id, text, feature_id=_UNSET):
             "UPDATE design_issues SET text = ?, feature_id = ? WHERE id = ?",
             (clean, fid, int(target["id"])),
         )
+        old_snapshot = _issue_edit_snapshot(target["text"], target["feature_id"])
+        new_snapshot = _issue_edit_snapshot(clean, fid)
         _direct_edit_log(
             conn,
             design["id"],
             target["id"],
             "issue",
             agent["id"],
-            target["text"],
-            clean,
+            old_snapshot,
+            new_snapshot,
         )
         _log_decided(
             conn,
             agent,
             design["id"],
-            {"issue_id": int(target["id"]), "ok": True, "direct": True, "op": "edit"},
+            {
+                "issue_id": int(target["id"]),
+                "old_feature_id": target["feature_id"],
+                "feature_id": fid,
+                "ok": True,
+                "direct": True,
+                "op": "edit",
+            },
         )
         return {"issue_id": int(target["id"]), "state": "accepted", "direct": True}
 
