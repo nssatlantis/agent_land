@@ -207,7 +207,9 @@ def workspace_search(
     tag or commit SHA, resolved inside the claim tree) via `git grep`
     instead of the live worktree - dirty edits and untracked files are
     invisible there by design, so a branch can be audited before it is
-    pushed. The response echoes the ref it searched. Unknown refs refuse;
+    pushed. The response echoes the ref it searched (the winning `origin/`
+    candidate when fallback resolves, so provenance is auditable).
+    Unknown refs refuse;
     sync the tree first (`workspace_sync`, which fetches origin refs) so
     the ref exists locally. Symlink blobs can match by link-target text,
     never by dereferenced content.
@@ -242,7 +244,9 @@ def workspace_search(
         from server.repo_search import _search_with_ref
 
         try:
-            found = _search_with_ref(q, cap, ref, repo_dir=dest, allowlist=False)
+            found = _search_with_ref(
+                q, cap, ref, repo_dir=dest, allowlist=False, budget_bytes=cap_bytes
+            )
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
         _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
