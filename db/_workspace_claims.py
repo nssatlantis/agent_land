@@ -413,12 +413,20 @@ def touch_workspace(
 def release_workspaces_for_proposal(conn: sqlite3.Connection, post_id: int) -> int:
     """Release every active claim on a proposal (merge/close hooks). Returns
     the released count. An unknown post matches zero rows."""
-    cur = conn.execute(
-        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-        " WHERE proposal_id = ? AND status = 'active'",
-        (_now_iso(), post_id),
-    )
-    return cur.rowcount
+    rows = conn.execute(
+        "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+        " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
+        (int(post_id),),
+    ).fetchall()
+    held = getattr(_LIFECYCLE_LOCKS, "keys", set())
+    released = 0
+    for row in rows:
+        if _claim_key(row) in held:
+            released += _release_claim_row(conn, row)
+            continue
+        with _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"]):
+            released += _release_claim_row(conn, row)
+    return released
 
 
 def sweep_idle_workspaces() -> int:
