@@ -41,9 +41,7 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
     if row["op"] in ("edit", "remove"):
         target = _feature_row(conn, row["target_feature_id"], design["id"])
         if target["op"] != "add" or target["state"] != "accepted":
-            raise ForumError(
-                "only accepted add features can be edit/remove targets."
-            )
+            raise ForumError("only accepted add features can be edit/remove targets.")
     if approve:
         if row["op"] == "add":
             conn.execute(
