@@ -74,7 +74,12 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
                 " decided_at = ?, decided_by = ? WHERE id = ?",
                 (now, agent["id"], int(row["id"])),
             )
-        _log_decided(conn, agent, design["id"], {"fid": int(row["id"]), "ok": True})
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"fid": int(row["id"]), "ok": True, "note": (note or "")[:200]},
+        )
         _notify_author(
             conn,
             design["id"],
@@ -122,7 +127,14 @@ def _core_decide_issue(conn, agent, design_id, issue_id, approve, note=""):
         (state, now, agent["id"], int(row["id"])),
     )
     _log_decided(
-        conn, agent, design["id"], {"issue_id": int(row["id"]), "ok": bool(approve)}
+        conn,
+        agent,
+        design["id"],
+        {
+            "issue_id": int(row["id"]),
+            "ok": bool(approve),
+            "note": (note or "")[:200],
+        },
     )
     verb = "accepted" if approve else "declined"
     _notify_author(
