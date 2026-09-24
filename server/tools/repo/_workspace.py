@@ -30,12 +30,30 @@ from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
 
 
+def _revalidate_serialized_claim(
+    token: str, proposal_id: int, name: str, initial_claim_id: int
+) -> None:
+    try:
+        current, _dest = _resolve_claim_tree(token, proposal_id, name)
+    except db.ForumError:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        ) from None
+    if int(current["id"]) != initial_claim_id:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        )
+
+
 def _workspace_serialized(func):
     if inspect.iscoroutinefunction(func):
 
         @wraps(func)
         async def async_wrapper(token, proposal_id, name, *args, **kwargs):
-            _record, dest = _resolve_claim_tree(token, proposal_id, name)
+            record, dest = _resolve_claim_tree(token, proposal_id, name)
+            claim_id = int(record["id"])
             lock = workspace_lock(dest)
             acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
             try:
@@ -50,6 +68,11 @@ def _workspace_serialized(func):
                     lock.__exit__(None, None, None)
 
                 acquire.add_done_callback(release_after_acquire)
+                raise
+            try:
+                _revalidate_serialized_claim(token, proposal_id, name, claim_id)
+            except BaseException:
+                lock.__exit__(None, None, None)
                 raise
             operation = asyncio.create_task(
                 func(token, proposal_id, name, *args, **kwargs)
@@ -78,8 +101,10 @@ def _workspace_serialized(func):
 
     @wraps(func)
     def sync_wrapper(token, proposal_id, name, *args, **kwargs):
-        _record, dest = _resolve_claim_tree(token, proposal_id, name)
+        record, dest = _resolve_claim_tree(token, proposal_id, name)
+        claim_id = int(record["id"])
         with workspace_lock(dest):
+            _revalidate_serialized_claim(token, proposal_id, name, claim_id)
             return func(token, proposal_id, name, *args, **kwargs)
 
     return sync_wrapper
