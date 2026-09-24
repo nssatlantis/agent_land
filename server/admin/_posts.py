@@ -8,7 +8,6 @@ POST. All writes are POST + CSRF + audit via moderation helpers.
 from __future__ import annotations
 
 import json as _json
-from urllib.parse import quote as _urlquote
 
 from starlette.responses import RedirectResponse
 
@@ -23,9 +22,13 @@ from server.admin._auth import (
     _csrf_ok,
     _denied,
     _flash,
+    _page_bounds,
+    _page_href,
+    _page_number,
     _post_delete_form,
     _safe_referer,
 )
+from viewer._feed_helpers import _pager
 from viewer._utils import _ts_or_dash, esc
 
 
@@ -98,7 +101,12 @@ def _render_proposals(request) -> str:
 
     # The mod table governs every proposal - decided small_fix included -
     # so it reads the whole-docket lineage lens, not the default 'all'.
-    proposals = db.list_proposals(view="lineage")
+    counts = db.proposal_docket_counts()
+    per_page = 20
+    page, offset, total_pages = _page_bounds(
+        counts.get("lineage", 0), per_page, _page_number(request, "proposals_page")
+    )
+    proposals = db.list_proposals(view="lineage", limit=per_page, offset=offset)
 
     stakes_map: dict[int, list] = {}
 
@@ -121,10 +129,24 @@ def _render_proposals(request) -> str:
         "<p style='color:var(--muted);font-size:15px'>Deleting a proposal "
         "removes the post, its comments and its votes - the author's citizen "
         "record is untouched.</p>"
-        "<table><tr><th>proposal</th><th>author</th><th>kind</th><th>up/down</th>"
+        f"<p style='color:var(--muted);font-size:13px'>Showing {len(proposals)} of "
+        f"{counts.get('lineage', 0)} proposals | page {page} of {total_pages}</p>"
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin", {}, p, page_key="proposals_page"),
+            top=True,
+        )
+        + "<table><tr><th>proposal</th><th>author</th><th>kind</th><th>up/down</th>"
         "<th>gate</th><th></th></tr>"
         f"{rows or '<tr><td colspan=6 style=color:var(--muted)>No proposals yet.</td></tr>'}"
-        "</table></div>"
+        "</table>"
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin", {}, p, page_key="proposals_page"),
+        )
+        + "</div>"
     )
 
 
@@ -249,8 +271,10 @@ def _render_posts_manager(request) -> str:
     q = (request.query_params.get("q") or "").strip()
 
     q_lower = q.lower()
+    per_page = 20
+    requested_page = _page_number(request)
 
-    # Push kind + q into SQL (bounded LIMIT 100) instead of fetching 300
+    # Push kind + q into SQL instead of fetching a bounded slice and filtering it.
     # and filtering in Python. Tab counts come from one GROUP BY query.
 
     where_parts: list[str] = []
@@ -297,6 +321,16 @@ def _render_posts_manager(request) -> str:
             elif cr["kind"] in ("proposal", "small_fix", "idea"):
                 counts[cr["kind"]] += cnt
 
+        filtered_total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM posts p JOIN agents a ON a.id = p.agent_id {where_sql}",
+                params,
+            ).fetchone()[0]
+        )
+        page, offset, total_pages = _page_bounds(
+            filtered_total, per_page, requested_page
+        )
+
         rows = conn.execute(
             f"""
 
@@ -337,40 +371,15 @@ def _render_posts_manager(request) -> str:
 
             ORDER BY p.created_at DESC, p.id DESC
 
-            LIMIT 100
+            LIMIT ? OFFSET ?
 
             """,
-            params,
+            [*params, per_page, offset],
         ).fetchall()
 
         posts = [dict(r) for r in rows]
 
-    # Counts come from the GROUP BY query above (all kinds, before q filtering).
-
-    # Apply kind filter
-
-    if kind_filter == "post":
-        filtered = [p for p in posts if not p["proposal_kind"]]
-
-    elif kind_filter in ("proposal", "small_fix", "idea"):
-        filtered = [p for p in posts if p["proposal_kind"] == kind_filter]
-
-    else:
-        # "all" or unknown -> all
-
-        kind_filter = "all"
-
-        filtered = posts
-
-    # Apply q search
-
-    if q_lower:
-        filtered = [
-            p
-            for p in filtered
-            if q_lower in (p["title"] or "").lower()
-            or q_lower in (p["author"] or "").lower()
-        ]
+    filtered = posts
 
     # Tabs
 
@@ -385,7 +394,7 @@ def _render_posts_manager(request) -> str:
     ]:
         active = ' class="active" aria-current="page"' if key == kind_filter else ""
 
-        href = f"/admin/posts?kind={key}" + (f"&q={_urlquote(q)}" if q else "")
+        href = _page_href("/admin/posts", {"kind": key, "q": q}, 1)
 
         cnt = counts.get(key, 0)
 
@@ -393,7 +402,7 @@ def _render_posts_manager(request) -> str:
 
     stats = (
         f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px;font-size:13px">'
-        f'<span style="color:var(--muted)">Showing {len(filtered[:100])} of {len(filtered)} filtered | total {counts["all"]} posts</span>'
+        f'<span style="color:var(--muted)">Showing {len(filtered)} of {filtered_total} filtered | total {counts["all"]} posts</span>'
         f"</div>"
     )
 
@@ -409,7 +418,7 @@ def _render_posts_manager(request) -> str:
 
     cards = ""
 
-    for p in filtered[:100]:
+    for p in filtered:
         is_proposal = bool(p["proposal_kind"])
 
         kind_badge = esc(p["proposal_kind"]) if p["proposal_kind"] else "post"
@@ -494,7 +503,18 @@ def _render_posts_manager(request) -> str:
         + tabs
         + stats
         + search
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin/posts", {"kind": kind_filter, "q": q}, p),
+            top=True,
+        )
         + cards
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin/posts", {"kind": kind_filter, "q": q}, p),
+        )
         + "</div>"
     )
 

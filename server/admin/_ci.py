@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+from starlette.responses import RedirectResponse
+
 import config
 from server.admin._auth import (
     _admin_nav,
@@ -455,6 +457,21 @@ def _render_ci_dashboard(request) -> str:
     ws = snap.get("ws", {})
 
     ticker = snap.get("ticker", {})
+    _qp = getattr(request, "query_params", {})
+    _notice_map = {
+        "registered": "runner registered.",
+        "removed": "runner removed.",
+        "already-gone": "runner was already gone.",
+        "missing": "name, url and token are all required.",
+        "bad-url": "url must start with http:// or https://.",
+        "register-error": "runner registration failed; check the fields and try again.",
+        "remove-error": "runner removal failed; try again.",
+        "csrf": "CSRF token missing or invalid - refresh and retry.",
+    }
+    farm_notice = _notice_map.get(str(_qp.get("farm_notice") or ""))
+    farm_notice_html = (
+        f'<p style="color:var(--accent)">{esc(farm_notice)}</p>' if farm_notice else ""
+    )
 
     # Helpers
 
@@ -466,15 +483,15 @@ def _render_ci_dashboard(request) -> str:
 
     def _slot_row(s: dict) -> str:
 
-        held = _badge(s["held"], "busy" if s["held"] else "free")
-
-        extra = ""
+        held = _badge(s["held"], "held" if s["held"] else "free token")
 
         if "age" in s:
             fetch_in = s.get("fetch_in", -1)
             fetch_cell = f"<td>{fetch_in}s</td>" if fetch_in >= 0 else "<td>-</td>"
             extra = (
-                f"<td>{s['age']}s</td><td>{'dirty' if s['dirty'] else 'clean'}</td>"
+                f"<td>{'yes' if s.get('exists') else 'no'}</td>"
+                f"<td>{s['age']}s</td>"
+                f"<td>{'needs scrub' if s['dirty'] else 'clean'}</td>"
                 f"<td>{esc(str(s.get('size', '?')))}</td>" + fetch_cell
             )
 
@@ -499,8 +516,9 @@ def _render_ci_dashboard(request) -> str:
 
     ws_html = (
         '<div class="panel"><h2>Git Workspace Pool (persistent host git)</h2>'
-        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} | desired {ws.get("desired", "?")} | avail {ws.get("avail", "?")} | busy {ws.get("busy", "?")} | fetch_ttl {esc(str(ws.get("fetch_ttl", "?")))}s | lock_timeout {esc(str(ws.get("lock_timeout", "?")))}s</p>'
-        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>age</th><th>dirty</th><th>size</th><th>fetch in</th></tr>'
+        f'<p style="color:var(--muted)">mode {esc(ws.get("mode", "?"))} | desired {ws.get("desired", "?")} | free tokens {ws.get("avail", "?")} | held tokens {ws.get("busy", "?")} | fetch_ttl {esc(str(ws.get("fetch_ttl", "?")))}s | lock_timeout {esc(str(ws.get("lock_timeout", "?")))}s</p>'
+        f'<p style="color:var(--muted)">free means an in-process persistent slot token is available; temp fallbacks can still be active. Process stats: acquires {esc(str((ws.get("stats") or {}).get("acquires", 0)))} | full fetches {esc(str((ws.get("stats") or {}).get("full_fetches", 0)))} | fetch skips {esc(str((ws.get("stats") or {}).get("fetch_skips", 0)))} | temp fallbacks {esc(str((ws.get("stats") or {}).get("temp_fallbacks", 0)))} | saturations {esc(str((ws.get("stats") or {}).get("saturations", 0)))} | fresh clones {esc(str((ws.get("stats") or {}).get("fresh_clones", 0)))} (since process start).</p>'
+        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + token state</th><th>git</th><th>since last fetch</th><th>scrub</th><th>size incl .git</th><th>TTL before next acquire refetch</th></tr>'
         + "".join(_slot_row(s) for s in ws.get("slots", []))
         + "</table></div>"
         + (
@@ -728,12 +746,12 @@ def _render_ci_dashboard(request) -> str:
     # NOTE: the bearer token is write-only - registered once below, never
     # rendered back (not even hashed).
     farm_html = (
-        '<div class="panel"><h2>CI Farm Runners (LAN overflow)</h2>'
+        '<div class="panel" id="farm-runners"><h2>CI Farm Runners (LAN overflow)</h2>'
         '<p style="color:var(--muted)">Dispatch requires CI_FARM_ENABLED=1 '
         "(server env + restart). Register a runner, then install it with the SAME "
         "bearer token: <code>CIFARM_TOKEN=&lt;token&gt; ci_farm/install.sh</code>.</p>"
         '<div class="table-wrap"><table><tr><th>name</th><th>url</th>'
-        "<th>status</th><th>heartbeat</th><th></th></tr>"
+        "<th>status</th><th>last probe</th><th></th></tr>"
         + (_farm_trs or "<tr><td colspan=5>no runners registered</td></tr>")
         + "</table></div>"
         + (
@@ -741,7 +759,8 @@ def _render_ci_dashboard(request) -> str:
             if _farm_error
             else ""
         )
-        + f'<form method="post" action="/admin/ci/farm-register">{_csrf_field(request)}'
+        + farm_notice_html
+        + f'<form id="farm-register-form" method="post" action="/admin/ci/farm-register">{_csrf_field(request)}'
         '<input name="name" placeholder="name" required> '
         '<input name="url" placeholder="http://host:8731" required size="24"> '
         '<input name="token" type="password" placeholder="bearer token" required autocomplete="new-password"> '
@@ -752,7 +771,7 @@ def _render_ci_dashboard(request) -> str:
 
     refresh = 5 if (pending or inflight) else 10
 
-    refresh_html = f'<p style="color:var(--muted)">auto-refresh {refresh}s | <a href="/admin/ci">refresh now</a></p><script>setTimeout(()=>location.reload(),{refresh * 1000})</script>'
+    refresh_html = f"""<p style="color:var(--muted)">auto-refresh {refresh}s (paused while the runner form is focused or dirty) | <a href="/admin/ci">refresh now</a></p><script>(function(){{const f=document.getElementById("farm-register-form");function tick(){{setTimeout(()=>{{const active=f&&(document.activeElement===f||f.contains(document.activeElement));const dirty=f&&Array.from(f.querySelectorAll("input")).some(x=>x.type!=="hidden"&&x.value.trim());if(!active&&!dirty){{location.reload();}}else{{tick();}}}},{refresh * 1000});}}tick();}})();</script>"""
 
     return (
         "<h1>CI / Workspaces</h1>"
@@ -992,6 +1011,12 @@ async def ci_gc_workspaces(request):
         return _flash(request, f"gc failed: {exc}")
 
 
+def _farm_redirect(code: str) -> RedirectResponse:
+    return RedirectResponse(
+        f"/admin/ci?farm_notice={code}#farm-runners", status_code=303
+    )
+
+
 async def ci_farm_register(request):
 
     if not _authorized(request):
@@ -1000,7 +1025,7 @@ async def ci_farm_register(request):
     form = await request.form()
 
     if not _csrf_ok(request, form):
-        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+        return _farm_redirect("csrf")
 
     try:
         import server.ci_runner._farm as _farm_mod
@@ -1009,14 +1034,14 @@ async def ci_farm_register(request):
         url = str(form.get("url") or "").strip().rstrip("/")
         token = str(form.get("token") or "")
         if not name or not url or not token:
-            return _flash(request, "name, url and token are all required.")
+            return _farm_redirect("missing")
         if not (url.startswith("http://") or url.startswith("https://")):
-            return _flash(request, "url must start with http:// or https://.")
-        row = _farm_mod.register_runner(name, url, token=token)
-        return _flash(request, f"registered runner {row['name']} (id {row['id']}).")
+            return _farm_redirect("bad-url")
+        _farm_mod.register_runner(name, url, token=token)
+        return _farm_redirect("registered")
 
-    except Exception as exc:  # domain: degrade-silently
-        return _flash(request, f"register failed: {exc}")
+    except Exception:  # domain:degrade-silently - redirect with a generic notice
+        return _farm_redirect("register-error")
 
 
 async def ci_farm_remove(request):
@@ -1027,18 +1052,18 @@ async def ci_farm_remove(request):
     form = await request.form()
 
     if not _csrf_ok(request, form):
-        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+        return _farm_redirect("csrf")
 
     try:
         import server.ci_runner._farm as _farm_mod
 
         _rid_raw = str(form.get("runner_id") or "")
         if not _rid_raw.isdigit():
-            return _flash(request, "invalid runner id.")
+            return _farm_redirect("remove-error")
         runner_id = int(_rid_raw)
         if _farm_mod.remove_runner(runner_id):
-            return _flash(request, f"removed runner {runner_id}.")
-        return _flash(request, f"no runner {runner_id} (already gone?).")
+            return _farm_redirect("removed")
+        return _farm_redirect("already-gone")
 
-    except Exception as exc:  # domain: degrade-silently
-        return _flash(request, f"remove failed: {exc}")
+    except Exception:  # domain:degrade-silently - redirect with a generic notice
+        return _farm_redirect("remove-error")

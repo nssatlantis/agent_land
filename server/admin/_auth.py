@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import os
 import secrets
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from starlette.responses import HTMLResponse, RedirectResponse
 
@@ -145,6 +145,30 @@ def _flash(request, text: str) -> HTMLResponse:
     return _admin_page(
         request, "admin", f'<p style="color:var(--muted)">{esc(text)}</p>'
     )
+
+
+def _page_number(request, key: str = "page") -> int:
+    try:
+        return max(1, int(request.query_params.get(key, "1")))
+    except (
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):  # domain:degrade-silently - malformed page input falls back to page one
+        return 1
+
+
+def _page_bounds(total: int, per_page: int, page: int) -> tuple[int, int, int]:
+    total_pages = max(1, (max(0, int(total)) + per_page - 1) // per_page)
+    page = min(max(1, int(page)), total_pages)
+    return page, (page - 1) * per_page, total_pages
+
+
+def _page_href(path: str, params: dict, page: int, *, page_key: str = "page") -> str:
+    query = {str(k): str(v) for k, v in params.items() if v not in (None, "")}
+    if page > 1:
+        query[page_key] = str(page)
+    return f"{path}?{urlencode(query)}" if query else path
 
 
 def _safe_referer(request, fallback: str) -> str:
