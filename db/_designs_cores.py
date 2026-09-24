@@ -164,7 +164,14 @@ def _core_resolve_issue(conn, agent, design_id, issue_id, note=""):
         (now, agent["id"], int(row["id"])),
     )
     _log_decided(
-        conn, agent, design["id"], {"issue_id": int(row["id"]), "resolved": True}
+        conn,
+        agent,
+        design["id"],
+        {
+            "issue_id": int(row["id"]),
+            "resolved": True,
+            "note": (note or "")[:200],
+        },
     )
     return {"issue_id": int(row["id"]), "resolved": True}
 
