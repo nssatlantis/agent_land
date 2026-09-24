@@ -421,7 +421,9 @@ def admin_design_history(admin, design_id):
             (int(design["id"]),),
         ).fetchall()
         decisions = conn.execute(
-            "SELECT e.*, COALESCE(e.actor_name, a.name) AS actor_name FROM events e"
+            "SELECT e.id, e.kind, e.category, e.actor_agent_id,"
+            " COALESCE(e.actor_name, a.name) AS actor_name, e.target_type,"
+            " e.target_id, e.detail, e.created_at FROM events e"
             " LEFT JOIN agents a ON a.id = e.actor_agent_id"
             " WHERE e.kind = 'design_decided' AND e.target_type = 'design'"
             " AND e.target_id = ? ORDER BY e.id",
@@ -684,7 +686,25 @@ def admin_edit_design_meta(
         return {"design_id": int(design["id"]), "updated": sorted(updates)}
 
 
-def admin_close_design(admin, design_id, confirm=False):
+def _preview_ids(value):
+    if value is None:
+        return None
+    try:
+        return tuple(
+            int(part.strip()) for part in str(value).split(",") if part.strip()
+        )
+    except (TypeError, ValueError) as exc:
+        raise ForumError("invalid archive preview.") from exc
+
+
+def admin_close_design(
+    admin,
+    design_id,
+    confirm=False,
+    preview_feature_ids=None,
+    preview_issue_ids=None,
+    preview_question_ids=None,
+):
     """Sole-admin archive of a system-owned design (panel authority).
 
     Mirrors close_design: same 2-step confirm (pending features/issues and
@@ -698,38 +718,50 @@ def admin_close_design(admin, design_id, confirm=False):
         _require_owner(design, agent)
         _require_open(design)
         pend, ipend, open_q = _open_counts(conn, design["id"])
+        feature_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND state = 'pending' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
+        issue_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND state = 'pending' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
+        question_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_questions WHERE design_id = ?"
+                " AND state = 'open' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
         if (pend or ipend or open_q) and not confirm:
             return {
                 "need_confirm": True,
                 "pending_features": pend,
                 "pending_issues": ipend,
                 "open_questions": open_q,
-                "pending_feature_ids": [
-                    int(r["id"])
-                    for r in conn.execute(
-                        "SELECT id FROM design_features WHERE design_id = ?"
-                        " AND state = 'pending' ORDER BY id",
-                        (int(design["id"]),),
-                    ).fetchall()
-                ],
-                "pending_issue_ids": [
-                    int(r["id"])
-                    for r in conn.execute(
-                        "SELECT id FROM design_issues WHERE design_id = ?"
-                        " AND state = 'pending' ORDER BY id",
-                        (int(design["id"]),),
-                    ).fetchall()
-                ],
-                "open_question_ids": [
-                    int(r["id"])
-                    for r in conn.execute(
-                        "SELECT id FROM design_questions WHERE design_id = ?"
-                        " AND state = 'open' ORDER BY id",
-                        (int(design["id"]),),
-                    ).fetchall()
-                ],
+                "pending_feature_ids": feature_ids,
+                "pending_issue_ids": issue_ids,
+                "open_question_ids": question_ids,
                 "hint": "re-run with confirm=True to drop them and archive",
             }
+        if confirm and (pend or ipend or open_q):
+            expected = (
+                _preview_ids(preview_feature_ids),
+                _preview_ids(preview_issue_ids),
+                _preview_ids(preview_question_ids),
+            )
+            current = (tuple(feature_ids), tuple(issue_ids), tuple(question_ids))
+            if expected != current:
+                raise ForumError("archive preview changed; re-preview before confirming.")
         now = _now_iso()
         conn.execute(
             "UPDATE designs SET status = 'archived', closed_at = ? WHERE id = ?",
