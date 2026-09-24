@@ -384,7 +384,11 @@ def get_workspace_for_release(token: str, proposal_id: int, name: str) -> dict:
 
 
 def touch_workspace(
-    conn: sqlite3.Connection, agent_id: int, proposal_id: int, name: str
+    conn: sqlite3.Connection,
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    claim_id: int | None = None,
 ) -> None:
     """Bump a claim's updated_at after file ops, so idle sweeps measure
     real use. Owner-only like get_workspace; raises when nothing is held."""
