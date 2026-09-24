@@ -501,7 +501,12 @@ def workspace_read_file(
             max_lines = 1000
         if end - start + 1 > max_lines:
             raise db.ForumError(f"range covers over {max_lines} lines.")
-    _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
+    _touch_clocks(
+            int(_record["agent_id"]),
+            proposal_id,
+            str(_record["name"]),
+            int(_record["id"]),
+        )
     out = {
         "path": clean,
         "content": "\n".join(lines[start - 1 : end]),
