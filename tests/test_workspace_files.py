@@ -1112,6 +1112,7 @@ def test_workspace_serialized_cancellation(agents, wstools):
             blocked_entered = asyncio.Event()
             finally_ran = False
             active = 0
+            operation_release = asyncio.Event()
 
             async def operation(token, proposal_id, name, value):
                 nonlocal active, finally_ran
@@ -1119,7 +1120,7 @@ def test_workspace_serialized_cancellation(agents, wstools):
                 try:
                     if value == 1:
                         entered.set()
-                        await asyncio.Future()
+                        await operation_release.wait()
                     elif value == 3:
                         blocked_entered.set()
                         await asyncio.sleep(0)
@@ -1141,8 +1142,13 @@ def test_workspace_serialized_cancellation(agents, wstools):
                 pass
             else:
                 raise AssertionError("serialized operation was not cancelled")
+            assert finally_ran is False
+            assert active == 1
+            operation_release.set()
+            assert await asyncio.wait_for(serialized(tok, pid, "dev", 4), 2) == 4
             assert finally_ran is True
             assert active == 0
+
             dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
             lock_factory = wstools.workspace_lock
             real_lock = lock_factory(dest)
@@ -1205,6 +1211,74 @@ def test_workspace_serialized_cancellation(agents, wstools):
     print("  workspace async cancellation: ok")
 
 
+def test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Cancelled Worker Shop")
+
+        async def run_cancelled_worker():
+            worker_started = threading.Event()
+            worker_release = threading.Event()
+
+            async def operation(token, proposal_id, name, value):
+                def worker():
+                    worker_started.set()
+                    if not worker_release.wait(5):
+                        raise AssertionError("cancelled worker was not released")
+                    return value
+
+                return await asyncio.to_thread(worker)
+
+            serialized = wstools._workspace_serialized(operation)
+            first = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            assert await asyncio.to_thread(worker_started.wait, 1)
+            first.cancel()
+            try:
+                await first
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("serialized operation was not cancelled")
+            second = asyncio.create_task(serialized(tok, pid, "dev", 2))
+            done, _ = await asyncio.wait({second}, timeout=0.05)
+            assert not done, "cancelled worker released the lock too early"
+            worker_release.set()
+            assert await asyncio.wait_for(second, 2) == 2
+
+        asyncio.run(run_cancelled_worker())
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace cancellation holds lock through worker: ok")
+
+
+def test_release_author_and_missing_tree(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        alpha = agents["alpha"]
+        beta = agents["beta"]
+        pid = db.create_proposal(
+            alpha["token"], "Author Release Shop", "body", collaborative=True
+        )["post_id"]
+        db.create_todo_list(alpha["token"], pid, "Work", [])
+        db.join_proposal(beta["token"], pid)
+        claimed = wstools.claim_workspace(beta["token"], pid, "dev")
+        dest = str(claimed["tree"]["path"])
+        released = wstools.release_workspace(alpha["token"], pid, "dev")
+        assert released["status"] == "released", released
+        assert not os.path.isdir(dest), dest
+
+        pid2 = db.create_proposal(alpha["token"], "Missing Tree Shop", "body")["post_id"]
+        claimed2 = wstools.claim_workspace(alpha["token"], pid2, "dev")
+        dest2 = str(claimed2["tree"]["path"])
+        shutil.rmtree(dest2)
+        released2 = wstools.release_workspace(alpha["token"], pid2, "dev")
+        assert released2["status"] == "released", released2
+    finally:
+        sb.close()
+    print("  author release + missing-tree release: ok")
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
@@ -1219,6 +1293,8 @@ def main():
     test_workspace_reset(agents, wstools)
     test_workspace_serialized_async(agents, wstools)
     test_workspace_serialized_cancellation(agents, wstools)
+    test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools)
+    test_release_author_and_missing_tree(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
