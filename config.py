@@ -41,7 +41,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger("agentland.config")
 
@@ -1614,7 +1614,7 @@ def _effective_default(name: str) -> object:
     _, default, convert = spec
     if default is None:
         if name == "CI_FARM_DISPATCH_TIMEOUT":
-            return int(_effective_default("CI_RUN_TIMEOUT_SECONDS")) + 30
+            return int(cast(int, _effective_default("CI_RUN_TIMEOUT_SECONDS"))) + 30
         return None
     return default
 
