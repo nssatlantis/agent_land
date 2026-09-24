@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 import config
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
