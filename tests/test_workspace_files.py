@@ -1143,7 +1143,7 @@ def test_workspace_serialized_cancellation(agents, wstools):
                 raise AssertionError("serialized operation was not cancelled")
             assert finally_ran is True
             assert active == 0
-            dest = ws._claim_dir(agents['alpha']['agent_id'], pid, 'dev')
+            dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
             real_lock = wstools.workspace_lock(dest)
             holder_entered = threading.Event()
             holder_release = threading.Event()
@@ -1165,13 +1165,13 @@ def test_workspace_serialized_cancellation(agents, wstools):
                 with real_lock:
                     holder_entered.set()
                     if not holder_release.wait(5):
-                        raise AssertionError('workspace lock holder was not released')
+                        raise AssertionError("workspace lock holder was not released")
 
             holder = threading.Thread(target=hold_lock)
-            with patch.object(wstools, 'workspace_lock', observed_lock):
+            with patch.object(wstools, "workspace_lock", observed_lock):
                 holder.start()
                 try:
-                    blocked = asyncio.create_task(serialized(tok, pid, 'dev', 3))
+                    blocked = asyncio.create_task(serialized(tok, pid, "dev", 3))
                     assert await asyncio.to_thread(holder_entered.wait, 1)
                     assert await asyncio.to_thread(acquire_attempted.wait, 1)
                     blocked.cancel()
@@ -1183,15 +1183,15 @@ def test_workspace_serialized_cancellation(agents, wstools):
                     except asyncio.CancelledError:
                         pass
                     else:
-                        raise AssertionError('blocked acquisition was not cancelled')
+                        raise AssertionError("blocked acquisition was not cancelled")
                     assert not blocked_entered.is_set()
-                    assert await asyncio.wait_for(
-                        serialized(tok, pid, 'dev', 4), 2
-                    ) == 4
+                    assert (
+                        await asyncio.wait_for(serialized(tok, pid, "dev", 4), 2) == 4
+                    )
                 finally:
                     holder_release.set()
                     await asyncio.to_thread(holder.join, 5)
-            assert not holder.is_alive(), 'workspace lock holder did not finish'
+            assert not holder.is_alive(), "workspace lock holder did not finish"
             assert await serialized(tok, pid, "dev", 2) == 2
 
         asyncio.run(run_cancellation())
