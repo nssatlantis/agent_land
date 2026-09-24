@@ -524,8 +524,8 @@ def get_design(design_id, viewer_token=None):
             feats = conn.execute(
                 "SELECT f.*, a.name AS author_name FROM design_features f"
                 " LEFT JOIN agents a ON a.id = f.author_id"
-                " WHERE f.design_id = ? AND f.op = 'add'"
-                " AND (f.state = 'accepted'"
+                " WHERE f.design_id = ?"
+                " AND ((f.op = 'add' AND f.state = 'accepted')"
                 " OR f.author_id = ?) ORDER BY f.position, f.id",
                 (int(design["id"]), int(viewer_id)),
             ).fetchall()
