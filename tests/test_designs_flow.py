@@ -52,7 +52,7 @@ def main():
     i2 = issues.propose_issue(
         gamma["token"], did, "Green engine will not idle", feature_id=f1["feature_id"]
     )
-    design_level = issues.propose_issue(alpha["token"], did, "Design-level issue")
+    design_level = issues.propose_issue(beta["token"], did, "Design-level issue")
     issues.decide_issue(alpha["token"], did, design_level["issue_id"], True)
     got = issues.list_issues(did, alpha["token"])
     assert len(got["issues"]) == 3, got["issues"]
