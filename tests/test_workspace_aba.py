@@ -153,7 +153,8 @@ def test_sweeper_rechecks_live_and_idle_state():
 
         idle = os.path.join(root, "touched")
         os.makedirs(idle)
-        Path(idle, ".workspace.json").write_text(
+        manifest_path = Path(idle, ".workspace.json")
+        manifest_path.write_text(
             json.dumps(
                 {
                     "agent_id": 7,
@@ -167,15 +168,17 @@ def test_sweeper_rechecks_live_and_idle_state():
         original_read = ws._read_manifest
         reads = 0
 
-        def reread(path):
+        def refreshed_before_read(path):
             nonlocal reads
-            manifest = original_read(path)
-            if path == idle:
-                reads += 1
-                manifest["updated_at"] = time.time()
-            return manifest
+            if path != idle:
+                return original_read(path)
+            reads += 1
+            manifest = original_read(path) or {}
+            manifest["updated_at"] = time.time()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            return original_read(path)
 
-        with patch.object(ws, "_read_manifest", reread):
+        with patch.object(ws, "_read_manifest", refreshed_before_read):
             assert ws.sweep_idle_claim_trees() == 0
         assert reads == 1, reads
         assert os.path.isdir(idle), idle
