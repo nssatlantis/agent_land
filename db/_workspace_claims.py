@@ -401,9 +401,12 @@ def touch_workspace(
         raise ForumError(
             f"no active workspace '{name}' of yours for proposal #{proposal_id}."
         )
+    if claim_id is not None and int(row["id"]) != int(claim_id):
+        raise ForumError("workspace claim changed - touch it again.")
     conn.execute(
-        "UPDATE workspace_claims SET updated_at = ? WHERE id = ?",
-        (_now_iso(), row["id"]),
+        "UPDATE workspace_claims SET updated_at = ?"
+        " WHERE id = ? AND status = 'active' AND agent_id = ?",
+        (_now_iso(), row["id"], int(agent_id)),
     )
 
 
