@@ -73,9 +73,7 @@ def _workspace_claim_locks(post_id: int | None):
                 _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"])
             )
             locked.add(_claim_key(row))
-        previous: set[tuple[int, int, str]] = getattr(
-            _LIFECYCLE_LOCKS, "keys", set()
-        )
+        previous: set[tuple[int, int, str]] = getattr(_LIFECYCLE_LOCKS, "keys", set())
         _LIFECYCLE_LOCKS.keys = locked
         try:
             yield
