@@ -360,7 +360,9 @@ def _history_rows(history: dict) -> str:
             detail = {}
         kind = "issue" if detail.get("issue_id") is not None else "feature"
         target = detail.get("issue_id", detail.get("fid", "?"))
-        if detail.get("resolved"):
+        if detail.get("auto_typo"):
+            result = "typo-fixed"
+        elif detail.get("resolved"):
             result = "resolved"
         elif detail.get("direct"):
             result = str(detail.get("op") or "direct")
