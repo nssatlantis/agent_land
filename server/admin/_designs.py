@@ -360,7 +360,12 @@ def _history_rows(history: dict) -> str:
             detail = {}
         kind = "issue" if detail.get("issue_id") is not None else "feature"
         target = detail.get("issue_id", detail.get("fid", "?"))
-        result = "approved" if detail.get("ok") else "declined"
+        if detail.get("resolved"):
+            result = "resolved"
+        elif detail.get("direct"):
+            result = str(detail.get("op") or "direct")
+        else:
+            result = "approved" if detail.get("ok") else "declined"
         decisions.append(
             f"<tr><td>#{int(d['id'])}</td><td>{kind} #{esc(target)}</td>"
             f"<td>{result}</td><td>{esc(detail.get('note') or '')}</td>"
