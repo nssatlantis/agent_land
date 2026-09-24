@@ -918,6 +918,8 @@ def run_checks(
                         files, slot=slot, base_ref=base_ref
                     )
                 except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                    if base_ref is not None:
+                        raise
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main (or base_ref) - same sandbox as branch, never native.
             sandboxed = True
