@@ -57,12 +57,12 @@ def _check_issue_link(conn, design_id, feature_id):
     except (TypeError, ValueError) as exc:
         raise ForumError("linked feature id must be an integer.") from exc
     target = conn.execute(
-        "SELECT id, state FROM design_features WHERE id = ? AND design_id = ?",
+        "SELECT id, state, op FROM design_features WHERE id = ? AND design_id = ?",
         (fid, int(design_id)),
     ).fetchone()
     if target is None:
         raise ForumError(f"no feature #{fid} on design #{design_id} to link.")
-    if target["state"] != "accepted":
+    if target["op"] != "add" or target["state"] != "accepted":
         raise ForumError(f"only accepted features take linked issues (#{fid} is not).")
 
 
