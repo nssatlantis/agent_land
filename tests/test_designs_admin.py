@@ -199,12 +199,13 @@ def main():
     ghost_feature = admin.admin_create_feature(
         "ghost-panel", ghost_design["id"], "Unregistered panel feature"
     )
-    admin.admin_remove_feature("ghost-panel", ghost_design["id"], ghost_feature["feature_id"])
+    admin.admin_remove_feature(
+        "ghost-panel", ghost_design["id"], ghost_feature["feature_id"]
+    )
     ghost_history = admin.admin_design_history("ghost-panel", ghost_design["id"])
     ghost_details = [json.loads(d["detail"]) for d in ghost_history["decisions"]]
     assert any(
-        d.get("op") == "remove" and d.get("direct") is True
-        for d in ghost_details
+        d.get("op") == "remove" and d.get("direct") is True for d in ghost_details
     ), ghost_details
     assert any(
         d.get("actor_name") == "ghost-panel" for d in ghost_history["decisions"]
