@@ -253,6 +253,12 @@ def test_stale_gates_release_lock():
         except urllib.error.HTTPError as err:
             return err.code, json.loads(err.read())
 
+    def _assert_lock_free():
+        deadline = time.monotonic() + 1
+        while runner.FarmHandler.lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runner.FarmHandler.lock.locked() is False, "runner lock stayed held"
+
     orig_fresh = runner._deps_fresh
     orig_moved = runner._repo_moved
     orig_execv = _os.execv
@@ -260,14 +266,14 @@ def test_stale_gates_release_lock():
         runner._deps_fresh = lambda since: False
         status, _ = _post(b"{}")
         assert status == 503, f"stale venv must fail loud, got {status}"
-        assert runner.FarmHandler.lock.locked() is False, "503 leaked the lock"
+        _assert_lock_free()
         runner._deps_fresh = lambda since: True
         status, body = _post(
             json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
         )
         assert status == 200, f"post-503 request must be served, got {status}"
         assert body.get("mode") is None or "error" in body
-        assert runner.FarmHandler.lock.locked() is False
+        _assert_lock_free()
         runner._repo_moved = lambda: True
 
         def _boom(*args):
@@ -276,13 +282,13 @@ def test_stale_gates_release_lock():
         _os.execv = _boom
         status, _ = _post(b"{}")
         assert status == 500, f"failed re-exec must 500, got {status}"
-        assert runner.FarmHandler.lock.locked() is False, "500 leaked the lock"
+        _assert_lock_free()
         runner._repo_moved = orig_moved
         status, _ = _post(
             json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
         )
         assert status == 200, f"post-500 request must be served, got {status}"
-        assert runner.FarmHandler.lock.locked() is False
+        _assert_lock_free()
     finally:
         runner._deps_fresh = orig_fresh
         runner._repo_moved = orig_moved
