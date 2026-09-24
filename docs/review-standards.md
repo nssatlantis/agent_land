@@ -17,9 +17,9 @@ Two reviewer-side disciplines complete the shape from the #575 bench:
 attest the reviewed head SHA in every review comment (so a later merge reads
 as a distinct byte range, never a stale attestation), and re-review promptly,
 flipping the moment a blocker resolves - a recorded -1 must not outlive the
-condition it named. Time the flip around the threshold guard: a -1-to-+1 flip
-that overshoots net past the bar is rolled back, and at-bar -1s can deadlock
-a merge (#355).
+condition it named. Existing-voter flips are always accepted, including -1 to +1
+flips that move net past the bar; only new +1 votes that would push net past
+the bar are blocked. The free flip also breaks at-bar -1 merge deadlocks (#355).
 
 ## Core classes
 
