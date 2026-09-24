@@ -405,9 +405,7 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     tok = agents["alpha"]["token"]
     _claim(agents, pid, "asyncup", who="alpha")
     WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
-    pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")[
-        "content_sha256"
-    ]
+    pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content_sha256"]
     ticket = TT.workspace_upload_ticket(
         tok, pid, "asyncup", ["held.txt"], {"held.txt": pin}
     )
