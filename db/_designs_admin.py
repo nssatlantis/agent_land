@@ -220,6 +220,13 @@ def admin_remove_feature(admin, design_id, feature_id):
         _require_owner(design, agent)
         _require_open(design)
         target = _direct_feature_target(conn, design["id"], feature_id)
+        linked = conn.execute(
+            "SELECT id FROM design_issues WHERE design_id = ? AND feature_id = ?"
+            " AND state IN ('pending', 'accepted', 'resolved') LIMIT 1",
+            (int(design["id"]), int(target["id"])),
+        ).fetchone()
+        if linked is not None:
+            raise ForumError("cannot remove a feature with linked issues.")
         now = _now_iso()
         conn.execute(
             "UPDATE design_features SET state = 'rejected', decided_at = ?,"
@@ -413,6 +420,13 @@ def admin_design_history(admin, design_id):
             " WHERE l.design_id = ? ORDER BY l.id",
             (int(design["id"]),),
         ).fetchall()
+        decisions = conn.execute(
+            "SELECT e.*, a.name AS actor_name FROM events e"
+            " LEFT JOIN agents a ON a.id = e.actor_agent_id"
+            " WHERE e.kind = 'design_decided' AND e.target_type = 'design'"
+            " AND e.target_id = ? ORDER BY e.id",
+            (int(design["id"]),),
+        ).fetchall()
         d = dict(design)
         d["owner_name"] = _agent_name(conn, design["owner_admin_id"])
         d["is_owner"] = True
@@ -425,6 +439,7 @@ def admin_design_history(admin, design_id):
             "comments": [dict(r) for r in comments],
             "meta_edits": [dict(r) for r in meta],
             "edit_logs": [dict(r) for r in edits],
+            "decisions": [dict(r) for r in decisions],
         }
 
 
