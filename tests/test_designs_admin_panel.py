@@ -266,6 +266,63 @@ def main():
     sysbody = sysdet.body.decode("utf-8")
     assert f"/admin/designs/{sysdid}/edit-meta" in sysbody
     assert f"/admin/designs/{sysdid}/close" in sysbody
+    assert "Author content directly" in sysbody
+    r = _post(
+        admin.design_admin_create_feature,
+        f"/admin/designs/{sysdid}/feature/create",
+        {"design_id": sysdid},
+        {"text": "Panel authored feature"},
+        csrf,
+    )
+    assert "added and accepted" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        direct_fid = int(
+            conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Panel authored feature"),
+            ).fetchone()[0]
+        )
+    r = _post(
+        admin.design_admin_create_issue,
+        f"/admin/designs/{sysdid}/issue/create",
+        {"design_id": sysdid},
+        {"text": "Panel authored issue", "feature_id": str(direct_fid)},
+        csrf,
+    )
+    assert "added and accepted" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        direct_iid = int(
+            conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Panel authored issue"),
+            ).fetchone()[0]
+        )
+    r = _post(
+        admin.design_admin_edit_feature,
+        f"/admin/designs/{sysdid}/feature/edit",
+        {"design_id": sysdid},
+        {"feature_id": str(direct_fid), "text": "Panel authored feature v2"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {"issue_id": str(direct_iid), "text": "Panel authored issue v2"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_remove_feature,
+        f"/admin/designs/{sysdid}/feature/remove",
+        {"design_id": sysdid},
+        {"feature_id": str(direct_fid)},
+        csrf,
+    )
+    assert "removed" in r.body.decode("utf-8")
     r = _post(
         admin.design_admin_edit_design_meta,
         f"/admin/designs/{sysdid}/edit-meta",
