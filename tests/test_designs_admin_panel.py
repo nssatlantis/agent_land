@@ -267,6 +267,10 @@ def main():
     assert f"/admin/designs/{sysdid}/edit-meta" in sysbody
     assert f"/admin/designs/{sysdid}/close" in sysbody
     assert "Author content directly" in sysbody
+    route_paths = {route.path for route in admin.ROUTES}
+    for suffix in ("feature/edit", "feature/remove", "issue/edit", "issue/remove"):
+        assert f"/admin/designs/{{design_id:int}}/{suffix}" in route_paths
+        assert f"/admin/designs/{sysdid}/{suffix}" in sysbody
     r = _post(
         admin.design_admin_create_feature,
         f"/admin/designs/{sysdid}/feature/create",
