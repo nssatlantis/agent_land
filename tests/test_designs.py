@@ -187,6 +187,33 @@ def main():
     )
     print("  remove/withdraw/update-pending: ok")
 
+    own_edit = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "A deliberately distinct revision for the studio tool",
+        op="edit",
+        feature_id=p1["feature_id"],
+    )
+    own_remove = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "x",
+        op="remove",
+        feature_id=p3["feature_id"],
+    )
+    got_beta = designs.get_design(d["id"], beta["token"])
+    assert any(
+        f["id"] == own_edit["feature_id"] and f["state"] == "pending"
+        for f in got_beta["features"]
+    ), got_beta["features"]
+    assert any(
+        f["id"] == own_remove["feature_id"] and f["state"] == "pending"
+        for f in got_beta["features"]
+    ), got_beta["features"]
+    flow.withdraw_feature(beta["token"], d["id"], own_edit["feature_id"])
+    flow.withdraw_feature(beta["token"], d["id"], own_remove["feature_id"])
+    print("  own pending edit/remove visibility: ok")
+
     # --- positions ---------------------------------------------------------------
     flow.decide_feature(alpha["token"], d["id"], p3["feature_id"], True)
     got = designs.get_design(d["id"], alpha["token"])
