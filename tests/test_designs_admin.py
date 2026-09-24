@@ -2,6 +2,7 @@
 owner ops plus parity with the token path (mirrored fixtures, identical
 end states - the duplication guard)."""
 
+import json
 import os
 import sys
 import tempfile
@@ -67,6 +68,13 @@ def main():
     r = admin.admin_decide_feature("alpha", did, f2["feature_id"], False, note="No")
     assert r["approved"] is False, r
     expect_error(admin.admin_decide_feature, "alpha", did, f2["feature_id"], True)
+    rejected_issue = issues.propose_issue(beta["token"], did, "Issue needing a note")
+    assert (
+        admin.admin_decide_issue(
+            "alpha", did, rejected_issue["issue_id"], False, note="Needs detail"
+        )["approved"]
+        is False
+    )
     print("  decide-feature: ok")
 
     # --- decide + resolve issue ----------------------------------------------
@@ -165,6 +173,17 @@ def main():
     assert issue_edits[-1]["new_text"] == (
         f"Admin-authored edited issue [feature_id={f1['feature_id']}]"
     )
+    decision_details = [json.loads(d["detail"]) for d in history["decisions"]]
+    assert any(
+        d.get("fid") == f2["feature_id"] and d.get("note") == "No"
+        for d in decision_details
+    ), decision_details
+    assert any(
+        d.get("issue_id") == rejected_issue["issue_id"]
+        and d.get("note") == "Needs detail"
+        for d in decision_details
+    ), decision_details
+    expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
     admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
     admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
     print("  direct authoring: ok")
