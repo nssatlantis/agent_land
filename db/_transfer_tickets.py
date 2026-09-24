@@ -179,7 +179,7 @@ def mint_transfer_ticket(
         agent = _require_active_agent(conn, token)
         _sweep_expired_tickets(conn)
         claim = conn.execute(
-            "SELECT id, agent_id, created_at FROM workspace_claims"
+            "SELECT id, agent_id FROM workspace_claims"
             " WHERE proposal_id = ? AND name = ? AND status = 'active'",
             (proposal_id, name),
         ).fetchone()
@@ -192,7 +192,7 @@ def mint_transfer_ticket(
         try:
             conn.execute(
                 "INSERT INTO transfer_tickets"
-                " (agent_id, proposal_id, claim_name, claim_created_at, scope,"
+                " (agent_id, proposal_id, claim_name, claim_id, scope,"
                 " paths_json, expect_shas_json, ticket_hash, status,"
                 " used_paths_json, created_at, expires_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unused', '[]', ?, ?)",
@@ -200,7 +200,7 @@ def mint_transfer_ticket(
                     agent["id"],
                     proposal_id,
                     name,
-                    claim["created_at"],
+                    claim["id"],
                     scope,
                     json.dumps(clean_paths),
                     json.dumps(pins) if pins is not None else None,
@@ -249,15 +249,15 @@ def _validate_ticket_use(
     if path not in t["paths"]:
         raise _fail(400, f"path {path!r} is not covered by this ticket.")
     claim = conn.execute(
-        "SELECT id, created_at FROM workspace_claims"
+        "SELECT id FROM workspace_claims"
         " WHERE agent_id = ? AND proposal_id = ? AND name = ?"
         " AND status = 'active'",
         (row["agent_id"], row["proposal_id"], row["claim_name"]),
     ).fetchone()
     if (
         claim is None
-        or row["claim_created_at"] is None
-        or claim["created_at"] != row["claim_created_at"]
+        or row["claim_id"] is None
+        or claim["id"] != row["claim_id"]
     ):
         raise _fail(
             404,
