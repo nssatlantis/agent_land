@@ -761,7 +761,9 @@ def admin_close_design(
             )
             current = (tuple(feature_ids), tuple(issue_ids), tuple(question_ids))
             if expected != current:
-                raise ForumError("archive preview changed; re-preview before confirming.")
+                raise ForumError(
+                    "archive preview changed; re-preview before confirming."
+                )
         now = _now_iso()
         conn.execute(
             "UPDATE designs SET status = 'archived', closed_at = ? WHERE id = ?",
