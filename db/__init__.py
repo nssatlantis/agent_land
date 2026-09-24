@@ -699,6 +699,7 @@ from db._store import (  # noqa: F401
     effective_unread_cap,
     effective_vote_cap,
     get_store_catalog,
+    heartbeat_ci_burst,
     mark_ci_burst_started,
     name_color_for,
     name_colors_for,
