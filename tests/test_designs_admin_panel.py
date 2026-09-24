@@ -234,6 +234,15 @@ def main():
         ),
     )
     assert "<td>resolved</td>" in resolveddet.body.decode("utf-8")
+    f3 = designs.propose_feature(beta["token"], did, "Panel second accepted feature")
+    r = _post(
+        admin.design_admin_decide_feature,
+        f"/admin/designs/{did}/decide-feature",
+        {"design_id": did},
+        {"feature_id": str(f3["feature_id"]), "decision": "approve"},
+        csrf,
+    )
+    assert "accepted" in r.body.decode("utf-8")
     r = _post(
         admin.design_admin_move_item,
         f"/admin/designs/{did}/move-item",
