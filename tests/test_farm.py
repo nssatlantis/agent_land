@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import threading
+import urllib.request
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_farm_"))
