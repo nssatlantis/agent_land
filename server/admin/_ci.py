@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 
 import config
 from server.admin._auth import (
@@ -946,7 +947,7 @@ async def ci_gc_workspaces(request):
         # against empty (which would retire every held tree).
         swept_claims = 0
         live_claims = None
-        live_claims_reader = None
+        live_claims_reader: Callable[[], set] | None = None
         try:
             import db as _ws_db
 
