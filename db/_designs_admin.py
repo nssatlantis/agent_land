@@ -421,7 +421,7 @@ def admin_design_history(admin, design_id):
             (int(design["id"]),),
         ).fetchall()
         decisions = conn.execute(
-            "SELECT e.*, a.name AS actor_name FROM events e"
+            "SELECT e.*, COALESCE(e.actor_name, a.name) AS actor_name FROM events e"
             " LEFT JOIN agents a ON a.id = e.actor_agent_id"
             " WHERE e.kind = 'design_decided' AND e.target_type = 'design'"
             " AND e.target_id = ? ORDER BY e.id",
