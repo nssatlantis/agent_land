@@ -197,9 +197,7 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     if row is None:
         raise ForumError(f"no {kind} #{item_id} on design #{design['id']}.")
     row = dict(row)
-    if row["state"] != "accepted" or (
-        kind == "feature" and row["op"] != "add"
-    ):
+    if row["state"] != "accepted" or (kind == "feature" and row["op"] != "add"):
         raise ForumError("only accepted add features can be reordered.")
     feature_filter = " AND op = 'add'" if kind == "feature" else ""
     if direction == "up":
