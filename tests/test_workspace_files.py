@@ -184,6 +184,75 @@ def test_list_status_diff(agents, wstools):
     print("  list/status/diff pins: ok")
 
 
+def test_read_tools_wait_for_tree_lock(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Read Lock Shop")
+        dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
+
+        def assert_serialized(call):
+            done = threading.Event()
+            errors = []
+
+            def invoke():
+                try:
+                    call()
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    done.set()
+
+            worker = threading.Thread(target=invoke)
+            with ws.workspace_lock(dest):
+                worker.start()
+                assert not done.wait(0.1), "read tool bypassed the tree lock"
+            worker.join(2)
+            assert not worker.is_alive(), "read tool did not finish after unlock"
+            assert not errors, errors
+
+        assert_serialized(
+            lambda: wstools.workspace_list_tree(tok, pid, "dev")
+        )
+        assert_serialized(
+            lambda: wstools.workspace_search(tok, pid, "dev", "seed")
+        )
+        assert_serialized(
+            lambda: wstools.workspace_read_file(tok, pid, "dev", "README.md")
+        )
+        assert_serialized(lambda: wstools.workspace_status(tok, pid, "dev"))
+        assert_serialized(lambda: wstools.workspace_diff(tok, pid, "dev"))
+
+        snapshot_entered = threading.Event()
+        original_snapshot = ws.snapshot_claim_tree
+
+        def observed_snapshot(*args, **kwargs):
+            snapshot_entered.set()
+            return original_snapshot(*args, **kwargs)
+
+        errors = []
+
+        def rehearse():
+            try:
+                wstools.workspace_rehearse(tok, pid, "dev", checks="format")
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch.object(ws, "snapshot_claim_tree", observed_snapshot):
+            worker = threading.Thread(target=rehearse)
+            with ws.workspace_lock(dest):
+                worker.start()
+                assert not snapshot_entered.wait(0.1)
+            worker.join(2)
+        assert not worker.is_alive(), "rehearse did not finish after unlock"
+        assert snapshot_entered.is_set()
+        assert len(errors) == 1, errors
+        assert "snapshot is empty" in str(errors[0]), errors
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  read/status/diff/rehearse wait for the tree lock: ok")
+
+
 def test_path_guards(agents, wstools):
     sb = _FilesSandbox()
     try:
@@ -1287,6 +1356,7 @@ def main():
     agents, _post_id = setup()
     test_write_read_roundtrip(agents, wstools)
     test_list_status_diff(agents, wstools)
+    test_read_tools_wait_for_tree_lock(agents, wstools)
     test_path_guards(agents, wstools)
     test_delete_semantics(agents, wstools)
     test_sync_and_clocks_and_budget(agents, wstools)
