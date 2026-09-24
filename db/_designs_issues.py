@@ -168,11 +168,17 @@ def list_issues(design_id, viewer_token=None, state=None):
                 is_owner = int(design["owner_admin_id"] or 0) == int(viewer_id)
             except ForumError:
                 viewer_id, is_owner = None, False
+        feature_text_sql = (
+            "f.text"
+            if is_owner
+            else (
+                "CASE WHEN i.feature_id IS NULL OR (f.design_id = i.design_id"
+                " AND f.op = 'add' AND f.state = 'accepted')"
+                " THEN f.text ELSE NULL END"
+            )
+        )
         sql = (
-            "SELECT i.*, a.name AS author_name,"
-            " CASE WHEN i.feature_id IS NULL OR (f.design_id = i.design_id"
-            " AND f.op = 'add' AND f.state = 'accepted')"
-            " THEN f.text ELSE NULL END AS feature_text"
+            f"SELECT i.*, a.name AS author_name, {feature_text_sql} AS feature_text"
             " FROM design_issues i LEFT JOIN agents a ON a.id = i.author_id"
             " LEFT JOIN design_features f ON f.id = i.feature_id"
         )
