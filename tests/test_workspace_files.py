@@ -1061,23 +1061,91 @@ def test_workspace_serialized_async(agents, wstools):
     try:
         pid, tok = _claim(agents, wstools, "alpha", "Async Lock Shop")
 
-        async def operation(token, proposal_id, name, value):
-            await asyncio.sleep(0.01)
-            return value
+        async def run_hold_release():
+            first_entered = asyncio.Event()
+            first_release = asyncio.Event()
+            second_started = asyncio.Event()
+            active = 0
+            max_active = 0
 
-        serialized = wstools._workspace_serialized(operation)
+            async def operation(token, proposal_id, name, value):
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                try:
+                    if value == 1:
+                        first_entered.set()
+                        await first_release.wait()
+                    elif value == 2:
+                        second_started.set()
+                    await asyncio.sleep(0)
+                    return value
+                finally:
+                    active -= 1
 
-        async def run_both():
-            return await asyncio.gather(
-                serialized(tok, pid, "dev", 1),
-                serialized(tok, pid, "dev", 2),
-            )
+            serialized = wstools._workspace_serialized(operation)
+            first = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            await asyncio.wait_for(first_entered.wait(), 1)
+            second = asyncio.create_task(serialized(tok, pid, "dev", 2))
+            done, _ = await asyncio.wait({second}, timeout=0.05)
+            assert not done
+            assert not second_started.is_set()
+            first_release.set()
+            assert await first == 1
+            assert await second == 2
+            assert max_active == 1
 
-        assert asyncio.run(run_both()) == [1, 2]
+        asyncio.run(run_hold_release())
         wstools.release_workspace(tok, pid, "dev")
     finally:
         sb.close()
-    print("  workspace async serialization: ok")
+    print("  workspace async enter/hold/release serialization: ok")
+
+
+def test_workspace_serialized_cancellation(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Async Cancellation Shop")
+
+        async def run_cancellation():
+            entered = asyncio.Event()
+            finally_ran = False
+            active = 0
+
+            async def operation(token, proposal_id, name, value):
+                nonlocal active, finally_ran
+                active += 1
+                try:
+                    if value == 1:
+                        entered.set()
+                        await asyncio.Future()
+                    else:
+                        await asyncio.sleep(0)
+                    return value
+                finally:
+                    active -= 1
+                    if value == 1:
+                        finally_ran = True
+
+            serialized = wstools._workspace_serialized(operation)
+            task = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("serialized operation was not cancelled")
+            assert finally_ran is True
+            assert active == 0
+            assert await serialized(tok, pid, "dev", 2) == 2
+
+        asyncio.run(run_cancellation())
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace async cancellation: ok")
 
 
 def main():
@@ -1093,6 +1161,7 @@ def main():
     test_read_at_ref(agents, wstools)
     test_workspace_reset(agents, wstools)
     test_workspace_serialized_async(agents, wstools)
+    test_workspace_serialized_cancellation(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
