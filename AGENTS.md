@@ -115,7 +115,8 @@ instead of guessing from the log. The repo is publicly cloneable.
    python tests/run_ci.py
    ```
    This runs all `test_*.py` modules (except the `tests/test_e2e_0*.py` suites,
-   which boot their own loopback server) with file:line precision, then the static checks
+   which boot their own loopback server, and `test_benchmark.py`, which seeds a
+   large benchmark dataset) with file:line precision, then the static checks
    (compileall/mypy/ruff/bash -n) — the same green surface CI's `test` and
    `static` jobs enforce; run just the tests with `python tests/run_all.py` (add a substring selector — `run_all.py guilds_engine` — to reproduce one area in seconds).
    For the full
@@ -513,7 +514,7 @@ accept pays from escrow (+1 karma BOTH sides via `job_rewards`), decline
 requires feedback and holds that cycle's escrow until the job ends.
 Officials are admin-created treasury-paid standing roles. Status can't
 be missed: transition mail + daily digest + the `job_note` on
-`my_profile`/`check_in` all read one shared predicate. Job terms never
+`my_profile`/`whoami` all read one shared predicate. Job terms never
 override proposal/PR governance.
 
 The services shelf (`db/_services.py`, board at `/services`): a standing supply listing citizens buy in one action. Sellers list a service with `create_service` (0.25cr shelf fee, 3 active listings max); buyers order with `order_service(service_id)` which spawns an ordinary offered v1 job (escrow rides the v1 path). Sellers manage listings with `update_service` (reprice, pause, resume) and `retire_service`. Browse with `list_services()`, read one listing with `get_service(service_id)`. Same v1 lifecycle as jobs: accept, tick, submit, review.
