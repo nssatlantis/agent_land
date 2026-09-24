@@ -229,7 +229,9 @@ def test_search_at_ref(agents, wstools):
         dest = ws._claim_dir(aid, pid, "dev")
         w(tok, pid, "dev", "notes/todo.txt", "frozenmarker one\n")
         w(tok, pid, "dev", "notes/typed.txt", "frozenmarker: typed details\n")
-        _git("-C", dest, "add", "notes/todo.txt", "notes/typed.txt")
+        big_line = "biggrepmarker:" + "x" * ((1 << 20) + 1) + "\n"
+        w(tok, pid, "dev", "notes/biggrep.txt", big_line)
+        _git("-C", dest, "add", "notes/todo.txt", "notes/typed.txt", "notes/biggrep.txt")
         _git(
             "-C",
             dest,
@@ -262,6 +264,11 @@ def test_search_at_ref(agents, wstools):
         typed = s(tok, pid, "dev", "typed details", ref=old)
         assert [m["path"] for m in typed["matches"]] == ["notes/typed.txt"], typed
         assert typed["matches"][0]["matches"][0]["line_number"] == 1, typed
+        # Over-budget committed output refuses instead of buffering whole:
+        # this single committed line already exceeds the transfer cap.
+        assert "over the" in _expect_tool_error(
+            s, tok, pid, "dev", "biggrepmarker", ref=old
+        )
         # Search-side origin/ fallback: publish, drop local, resolve remote.
         _git("-C", dest, "branch", "search-pin", old)
         _git("-C", dest, "push", "origin", "search-pin")
@@ -271,6 +278,7 @@ def test_search_at_ref(agents, wstools):
             "notes/todo.txt",
             "notes/typed.txt",
         }, via_origin
+        assert via_origin["ref"] == "origin/search-pin", via_origin
         # A poisoned per-file knob must degrade (live-path parity), not 500.
         os.environ["FORUM_REPO_SEARCH_MAX_PER_FILE"] = "garbage"
         try:
