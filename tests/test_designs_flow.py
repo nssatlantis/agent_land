@@ -62,7 +62,9 @@ def main():
     assert len(blind["issues"]) == 2, blind["issues"]
     assert blind["issues"][1]["id"] == design_level["issue_id"]
     public = issues.list_issues(did)
-    public_design_level = [i for i in public["issues"] if i["id"] == design_level["issue_id"]]
+    public_design_level = [
+        i for i in public["issues"] if i["id"] == design_level["issue_id"]
+    ]
     assert len(public_design_level) == 1, public["issues"]
     assert public_design_level[0]["feature_id"] is None, public_design_level
     assert blind["issues"][0]["author_name"] == "gamma"
