@@ -261,7 +261,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     if manifest is not None and not _manifest_owner_matches(
         manifest, agent_id, proposal_id, clean_name
     ):
-        _retire_claim_tree(dest)
+        _retire_claim_tree_locked(dest)
         manifest = None
     if manifest is None and not _has_git(dest):
         check_claim_budget(agent_id)
@@ -313,13 +313,14 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
 def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
     """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
     dest = _claim_dir(agent_id, proposal_id, name)
-    manifest = _read_manifest(dest)
-    if manifest is None or not os.path.isdir(dest):
-        return False
-    manifest["updated_at"] = time.time()
-    manifest["head_sha"] = _head_sha(dest)
-    _write_manifest(dest, manifest)
-    return True
+    with workspace_lock(dest, allow_missing=True):
+        manifest = _read_manifest(dest)
+        if manifest is None or not os.path.isdir(dest):
+            return False
+        manifest["updated_at"] = time.time()
+        manifest["head_sha"] = _head_sha(dest)
+        _write_manifest(dest, manifest)
+        return True
 
 
 def claim_tree_status(agent_id: int, proposal_id: int, name: str) -> dict:
@@ -829,7 +830,8 @@ def _refuse_symlink_components(dest: str, clean: str) -> None:
     containment alone resolves an intra-tree `evil -> .git/hooks/x` link
     to an inside-dest path, so name checks pass while reads/writes land
     in .git internals. Walk every component lexically - islink needs no
-    target to exist, so dangling links refuse too."""
+    target to exist, so dangling links refuse too.
+    """
     cur = dest
     for part in clean.split("/"):
         cur = os.path.join(cur, part)
@@ -869,12 +871,24 @@ def _guard_transfer_path(dest: str, path: str) -> tuple[str, str]:
 
 
 def read_transfer_bytes(
-    agent_id: int, proposal_id: int, name: str, path: str
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    path: str,
+    *,
+    claim_validator: Callable[[], None] | None = None,
 ) -> tuple[str, bytes]:
     """Raw bytes of one tree file for ticket download (binary-safe: the
     data plane never decodes). Over-cap files refuse before reading."""
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
+    with workspace_lock(dest):
+        if claim_validator is not None:
+            claim_validator()
+        return _read_transfer_bytes(clean_name, dest, path)
+
+
+def _read_transfer_bytes(clean_name: str, dest: str, path: str) -> tuple[str, bytes]:
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     clean, full = _guard_transfer_path(dest, path)
@@ -1021,8 +1035,8 @@ def _check_expect_shas(manifest: list, expect_shas: dict) -> None:
         if got != want:
             raise RepoError(
                 f"sha mismatch for {path!r}: expected "
-                f"{str(want)[:12]}..., snapshot {got[:12]}... - rehearse "
-                "again and retry."
+                f"{str(want)[:12]}..., snapshot {got[:12]}... - rehearse"
+                " again and retry."
             )
 
 
@@ -1260,26 +1274,31 @@ def sweep_idle_claim_trees() -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
-                manifest = _read_manifest(dest)
                 try:
-                    idle = now - float((manifest or {}).get("updated_at", 0))
-                except (
-                    TypeError,
-                    ValueError,
-                ):  # domain: degrade-silently - bad stamp sweeps nothing
+                    with workspace_lock(dest, allow_missing=True):
+                        manifest = _read_manifest(dest)
+                        try:
+                            idle = now - float((manifest or {}).get("updated_at", 0))
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):  # domain: degrade-silently - bad stamp sweeps nothing
+                            continue
+                        if idle > ttl and _retire_claim_tree_locked(dest):
+                            swept += 1
+                except (OSError, RepoError):  # domain: degrade-silently - sweep one tree
                     continue
-                if idle > ttl and _retire_claim_tree(dest):
-                    swept += 1
     return swept
 
 
-def sweep_released_claim_trees(live: set) -> int:
+def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
     """Retire claim trees whose record is gone (merge/close release records).
 
     `live` holds (agent_id, proposal_id, name) triples with an active
-    record; anything else on disk retires. Manifest-less dirs are left
-    for the idle sweep - without a manifest there is no owner to judge,
-    and a foreign manifest rebuilds on next claim instead.
+    record; anything else on disk retires. A callable is re-read under each
+    tree lock. Manifest-less dirs are left for the idle sweep - without a
+    manifest there is no owner to judge, and a foreign manifest rebuilds
+    on next claim instead.
     """
     try:
         root = _claims_root()
@@ -1318,19 +1337,26 @@ def sweep_released_claim_trees(live: set) -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
-                manifest = _read_manifest(dest)
-                if manifest is None:
-                    continue
                 try:
-                    key = (
-                        int(manifest.get("agent_id", -1)),
-                        int(manifest.get("proposal_id", -1)),
-                        str(manifest.get("name", "")),
-                    )
-                except (TypeError, ValueError):  # domain: degrade-silently - no owner
+                    with workspace_lock(dest, allow_missing=True):
+                        manifest = _read_manifest(dest)
+                        if manifest is None:
+                            continue
+                        try:
+                            key = (
+                                int(manifest.get("agent_id", -1)),
+                                int(manifest.get("proposal_id", -1)),
+                                str(manifest.get("name", "")),
+                            )
+                        except (TypeError, ValueError):  # domain: degrade-silently - no owner
+                            continue
+                        if key != (agent_id, proposal_id, claim):
+                            continue
+                        current_live = live() if callable(live) else live
+                        if current_live is None:
+                            continue
+                        if key not in current_live and _retire_claim_tree_locked(dest):
+                            swept += 1
+                except (OSError, RepoError):  # domain: degrade-silently - sweep one tree
                     continue
-                if key != (agent_id, proposal_id, claim):
-                    continue
-                if key not in live and _retire_claim_tree(dest):
-                    swept += 1
     return swept
