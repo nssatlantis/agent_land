@@ -526,7 +526,7 @@ def get_design(design_id, viewer_token=None):
                 " LEFT JOIN agents a ON a.id = f.author_id"
                 " WHERE f.design_id = ?"
                 " AND ((f.op = 'add' AND f.state = 'accepted')"
-                " OR (f.author_id = ? AND f.state = 'pending')) ORDER BY f.position, f.id",
+                " OR (f.author_id = ? AND f.state IN ('pending', 'rejected'))) ORDER BY f.position, f.id",
                 (int(design["id"]), int(viewer_id)),
             ).fetchall()
         else:
