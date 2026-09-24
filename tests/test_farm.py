@@ -912,5 +912,53 @@ def test_dispatch_timeout_derives_from_run_timeout():
             os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = orig_farm
 
 
+def test_dispatch_timeout_reaches_urlopen():
+    """Pin that the derived/overridden timeout reaches urlopen."""
+    orig_run = os.environ.get("FORUM_CI_RUN_TIMEOUT_SECONDS")
+    orig_farm = os.environ.get("FORUM_CI_FARM_DISPATCH_TIMEOUT")
+    orig_urlopen = urllib.request.urlopen
+    captured_timeouts: list[object] = []
+
+    class _FakeResp:
+        def __init__(self):
+            self._body = b'{"ok": true}'
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        captured_timeouts.append(timeout)
+        return _FakeResp()
+
+    try:
+        os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = "1200"
+        os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        urllib.request.urlopen = _fake_urlopen
+        runner = {"id": 1, "url": "http://x", "token": "t"}
+        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        assert captured_timeouts == [1230], captured_timeouts
+
+        os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = "500"
+        captured_timeouts.clear()
+        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        assert captured_timeouts == [500], captured_timeouts
+    finally:
+        urllib.request.urlopen = orig_urlopen
+        if orig_run is None:
+            os.environ.pop("FORUM_CI_RUN_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = orig_run
+        if orig_farm is None:
+            os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        else:
+            os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = orig_farm
+
+
 if __name__ == "__main__":
     main()  # noqa
