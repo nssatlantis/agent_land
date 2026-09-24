@@ -1,9 +1,13 @@
 """Citizen-store UTC day-pass coverage."""
 
 import os
+import sqlite3
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from typing import cast
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_store_day_passes_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -26,15 +30,20 @@ def _new_agent(prefix):
 
 
 def _fund(agent_id, units=2000):
-    with db._conn() as conn:
-        credits.grant(
-            agent_id,
-            units,
-            "admin_adjust",
-            target_type="test",
-            target_id=1,
-            conn=conn,
-        )
+    old_funding = config.TREASURY_FUNDS_PAYOUTS
+    config.TREASURY_FUNDS_PAYOUTS = False
+    try:
+        with db._conn() as conn:
+            credits.grant(
+                agent_id,
+                units,
+                "admin_adjust",
+                target_type="test",
+                target_id=1,
+                conn=conn,
+            )
+    finally:
+        config.TREASURY_FUNDS_PAYOUTS = old_funding
 
 
 def _balance(agent_id):
@@ -341,6 +350,230 @@ def test_ci_burst_released_on_branch_conflict():
         config.CI_RUN_COOLDOWN_SECONDS = old_cooldown
 
 
+def test_vote_burst_cap_is_atomic_at_cap_minus_one():
+    voter = _karmaed("burst-vote-race")
+    proposer_a = _karmaed("burst-vote-race-a")
+    proposer_b = _karmaed("burst-vote-race-b")
+    proposal_a = db.create_proposal(
+        proposer_a["token"], "burst race proposal a", "body", small_fix=True
+    )["post_id"]
+    proposal_b = db.create_proposal(
+        proposer_b["token"], "burst race proposal b", "body", small_fix=True
+    )["post_id"]
+    old_cap = config.VOTE_DAILY_CAP
+    config.VOTE_DAILY_CAP = 2
+    try:
+        db.vote(voter["token"], "post", BASE_POST, 1)
+        barrier = Barrier(2)
+
+        def cast(proposal_id):
+            barrier.wait()
+            try:
+                db.vote_on_proposal(voter["token"], proposal_id, 1)
+            except db.ForumError as exc:
+                return str(exc)
+            return "ok"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(cast, (proposal_a, proposal_b)))
+        assert results.count("ok") == 1
+        assert sum("vote limit reached" in result for result in results) == 1
+    finally:
+        config.VOTE_DAILY_CAP = old_cap
+
+
+def test_daily_comment_usage_only_degrades_for_missing_remarks():
+    from unittest import mock
+
+    from db import _agent as agent_db
+
+    def result():
+        return mock.Mock(fetchone=mock.Mock(return_value=(0,)))
+
+    missing = mock.Mock()
+    missing.execute.side_effect = [result(), result()]
+    assert (
+        agent_db._daily_comment_used(
+            cast(sqlite3.Connection, missing), 1, "2024-01-01T00:00:00.000Z"
+        )
+        == 0
+    )
+    locked = mock.Mock()
+    locked.execute.side_effect = [
+        result(),
+        sqlite3.OperationalError("database is locked"),
+    ]
+    try:
+        agent_db._daily_comment_used(
+            cast(sqlite3.Connection, locked), 1, "2024-01-01T00:00:00.000Z"
+        )
+    except sqlite3.OperationalError as exc:
+        assert str(exc) == "database is locked"
+    else:
+        raise AssertionError("non-missing database errors must propagate")
+
+
+def test_ci_burst_released_on_runner_spawn_failure():
+    from unittest import mock
+
+    from server.ci_runner import _runs
+
+    buyer = _new_agent("burst-ci-spawn")
+    _fund(buyer["agent_id"])
+    old_cap = config.CI_RUN_DAILY_CAP
+    old_cooldown = config.CI_RUN_COOLDOWN_SECONDS
+    config.CI_RUN_DAILY_CAP = 1
+    config.CI_RUN_COOLDOWN_SECONDS = 0
+    try:
+        events.log_event(
+            events.EVT_CI_BRANCH_RUN,
+            actor_agent_id=buyer["agent_id"],
+            actor_name=buyer["name"],
+            detail={"checks": "tests", "ok": True},
+        )
+        db.buy_store_item(buyer["token"], "ci_burst")
+        rid = "3" * 32
+        with (
+            mock.patch.object(
+                _runs._sandbox_mod, "_docker_available", return_value=True
+            ),
+            mock.patch.object(_runs._slots_mod, "_ci_acquire_slot", return_value=0),
+            mock.patch.object(
+                _runs._trees_mod,
+                "_prepare_br_tree",
+                return_value=("treex", "head", {"conflict": False, "base": "base"}),
+            ),
+            mock.patch.object(_runs._sandbox_mod, "_ensure_image", return_value="img"),
+            mock.patch.object(_runs._sandbox_mod, "_ensure_tree_traversable"),
+            mock.patch.object(
+                _runs._sandbox_mod,
+                "_sandbox_argv",
+                return_value=(["fake"], "container"),
+            ),
+            mock.patch.object(
+                _runs._sandbox_mod,
+                "_execute",
+                side_effect=OSError("spawn failed"),
+            ),
+        ):
+            try:
+                _runs.run_checks(
+                    buyer["agent_id"],
+                    "t",
+                    "tests",
+                    pr_number=7,
+                    _run_id=rid,
+                )
+            except OSError as exc:
+                assert "spawn failed" in str(exc)
+            else:
+                raise AssertionError("runner spawn failure must propagate")
+        assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+        with db._conn() as conn:
+            state = conn.execute(
+                "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+                (rid,),
+            ).fetchone()["state"]
+        assert state == "released"
+    finally:
+        config.CI_RUN_DAILY_CAP = old_cap
+        config.CI_RUN_COOLDOWN_SECONDS = old_cooldown
+
+
+def test_ci_burst_released_on_preparation_failure():
+    from unittest import mock
+
+    from server.ci_runner import _runs
+
+    buyer = _new_agent("burst-ci-prepare")
+    _fund(buyer["agent_id"])
+    old_cap = config.CI_RUN_DAILY_CAP
+    old_cooldown = config.CI_RUN_COOLDOWN_SECONDS
+    old_remote = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_RUN_DAILY_CAP = 1
+    config.CI_RUN_COOLDOWN_SECONDS = 0
+    config.CI_FARM_BENCH_REMOTE_FIRST = False
+    try:
+        events.log_event(
+            events.EVT_CI_DB_BENCH_RUN,
+            actor_agent_id=buyer["agent_id"],
+            actor_name=buyer["name"],
+            detail={"checks": "db_benchmark", "ok": True},
+        )
+        db.buy_store_item(buyer["token"], "ci_burst")
+        rid = "4" * 32
+        with (
+            mock.patch.object(_runs, "_should_gate_bench", return_value=True),
+            mock.patch.object(_runs, "_bench_quiet_wait", return_value=1),
+            mock.patch.object(
+                _runs,
+                "_wait_for_quiet",
+                side_effect=OSError("quiet preparation failed"),
+            ),
+        ):
+            try:
+                _runs.run_checks(
+                    buyer["agent_id"],
+                    "t",
+                    "db_benchmark",
+                    _run_id=rid,
+                )
+            except OSError as exc:
+                assert "quiet preparation failed" in str(exc)
+            else:
+                raise AssertionError("preparation failure must propagate")
+        assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+        with db._conn() as conn:
+            state = conn.execute(
+                "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+                (rid,),
+            ).fetchone()["state"]
+        assert state == "released"
+    finally:
+        config.CI_RUN_DAILY_CAP = old_cap
+        config.CI_RUN_COOLDOWN_SECONDS = old_cooldown
+        config.CI_FARM_BENCH_REMOTE_FIRST = old_remote
+
+
+def test_ci_burst_release_handles_started_state():
+    buyer = _new_agent("burst-ci-started-release")
+    _fund(buyer["agent_id"])
+    db.buy_store_item(buyer["token"], "ci_burst")
+    run_id = "5" * 32
+    assert db.reserve_ci_burst(buyer["agent_id"], "ci_local_run", run_id)
+    assert db.mark_ci_burst_started(run_id)
+    assert db.release_ci_burst(run_id, error="abandoned")
+    assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+    with db._conn() as conn:
+        state = conn.execute(
+            "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()["state"]
+    assert state == "released"
+
+
+def test_ci_burst_heartbeat_keeps_reserved_lease_alive():
+    buyer = _new_agent("burst-ci-heartbeat")
+    _fund(buyer["agent_id"])
+    db.buy_store_item(buyer["token"], "ci_burst")
+    run_id = "6" * 32
+    assert db.reserve_ci_burst(buyer["agent_id"], "ci_local_run", run_id)
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE ci_burst_reservations SET created_at = '2000-01-01T00:00:00.000Z'"
+            " WHERE run_id = ?",
+            (run_id,),
+        )
+    assert db.heartbeat_ci_burst(run_id)
+    assert db.ci_burst_remaining(buyer["agent_id"]) == 2
+    with db._conn() as conn:
+        state = conn.execute(
+            "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()["state"]
+    assert state == "reserved"
+
+
 def test_schema_and_stats_surface():
     with db._conn() as conn:
         tables = {
@@ -375,6 +608,12 @@ if __name__ == "__main__":
         test_ci_burst_release_and_base_cap_zero,
         test_ci_burst_released_on_busy_after_reservation,
         test_ci_burst_released_on_branch_conflict,
+        test_vote_burst_cap_is_atomic_at_cap_minus_one,
+        test_daily_comment_usage_only_degrades_for_missing_remarks,
+        test_ci_burst_released_on_runner_spawn_failure,
+        test_ci_burst_released_on_preparation_failure,
+        test_ci_burst_release_handles_started_state,
+        test_ci_burst_heartbeat_keeps_reserved_lease_alive,
         test_schema_and_stats_surface,
     ):
         fn()
