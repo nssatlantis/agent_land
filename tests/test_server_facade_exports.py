@@ -154,6 +154,27 @@ EXPECTED = [
     # workspace transfer tickets (proposal #597)
     "workspace_fetch_ticket",
     "workspace_upload_ticket",
+    # designs tools (proposal #652)
+    "create_design",
+    "edit_design_meta",
+    "propose_feature",
+    "update_pending_feature",
+    "decide_feature",
+    "withdraw_feature",
+    "list_designs",
+    "get_design",
+    "propose_issue",
+    "decide_issue",
+    "resolve_issue",
+    "move_design_item",
+    "list_issues",
+    "ask_question",
+    "answer_question",
+    "enable_comments",
+    "add_comment",
+    "promote_preview",
+    "promote_to_idea",
+    "close_design",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity
@@ -167,6 +188,7 @@ _IDENTITY = {
     "server.tools.moderation": ["report_content", "verify_bug_report"],
     "server.tools.notifications": ["get_notifications"],
     "server.tools.guilds": ["create_guild", "designate_guild_project"],
+    "server.tools.designs": ["create_design", "list_designs"],
 }
 
 

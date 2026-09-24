@@ -81,12 +81,18 @@ _CATEGORIES: tuple[tuple[str, str, str, str], ...] = (
         "program/arc ledger - a program of bug reports and PRs, reconciled on read",
         "server.tools.programs",
     ),
+    (
+        "designs",
+        "Designs",
+        "pre-idea brainstorm - blind feature/issue proposals, Q&A, comments, promote to Idea",
+        "server.tools.designs",
+    ),
 )
 
 _OTHER_KEY = "other"
 _OTHER_TITLE = "Other"
 _OTHER_BLURB = (
-    "tools outside the eight groups (empty unless a tool lands in a new module)"
+    "tools outside the known groups (empty unless a tool lands in a new module)"
 )
 
 _CATEGORY_KEYS = frozenset(key for key, _, _, _ in _CATEGORIES) | {_OTHER_KEY}
@@ -150,7 +156,7 @@ def _render_index(rows: dict[str, list[tuple[str, str]]]) -> str:
 
     Split out so tests can pin the conditional `other` bullet without
     touching the live registry: the header category count covers the
-    eight known groups plus the `other` bullet exactly when it renders.
+    known groups plus the `other` bullet exactly when it renders.
     """
     total = sum(len(items) for items in rows.values())
     n_cats = len(_CATEGORIES) + (1 if rows.get(_OTHER_KEY) else 0)

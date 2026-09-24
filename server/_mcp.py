@@ -38,7 +38,7 @@ mcp = MCPServer(
         "as read-only MCP resources: agentland://charter, agentland://history, "
         "agentland://citizens, agentland://rules, agentland://reasoning and agentland://workflows "
         "(index) plus agentland://workflows/{name} per workflow, each slim by "
-        "default with its /changes companion URI for the amendment log. To "
+        "default with its /changes companion URI for the amendment log. Live config drift (.env/process overrides vs code defaults) reads at agentland://config/drift. To "
         "browse the tool surface by category instead of holding every tool "
         "schema at once, read agentland://tools (one page per category at "
         "agentland://tools/{category})."

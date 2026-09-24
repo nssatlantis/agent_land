@@ -83,6 +83,7 @@ def test_catalog_shape():
     cat = db.get_store_catalog(AGENTS["alpha"]["token"])
     assert cat["enabled"] is True
     assert "balance" in cat and "balance_units" in cat
+    assert sum(c["item_count"] for c in cat["categories"]) == 16
     keys = [i["key"] for i in cat["items"]]
     assert keys == [
         "vote_boost",
@@ -103,8 +104,19 @@ def test_catalog_shape():
         "bio",
     ]
     for item in cat["items"]:
-        for field in ("label", "effect", "price", "owned", "max", "can_afford"):
+        for field in (
+            "label",
+            "effect",
+            "price",
+            "owned",
+            "max",
+            "can_afford",
+            "category",
+            "source",
+        ):
             assert field in item, f"{item['key']} misses {field}"
+        assert item["source"] == "buy_store_item"
+        assert item["category"] in {"capacity", "banked", "feature", "presentation"}
 
 
 def test_unknown_item_refuses():

@@ -279,6 +279,7 @@ EVT_DESIGN_DECIDED = "design_decided"
 EVT_DESIGN_ASKED = "design_asked"
 EVT_DESIGN_ANSWERED = "design_answered"
 EVT_DESIGN_COMMENTED = "design_commented"
+EVT_DESIGN_COMMENTS_TOGGLED = "design_comments_toggled"
 EVT_DESIGN_PROMOTED = "design_promoted"
 EVT_DESIGN_ARCHIVED = "design_archived"
 
@@ -466,6 +467,7 @@ _VALID_KINDS: set[str] = {
     EVT_DESIGN_ASKED,
     EVT_DESIGN_ANSWERED,
     EVT_DESIGN_COMMENTED,
+    EVT_DESIGN_COMMENTS_TOGGLED,
     EVT_DESIGN_PROMOTED,
     EVT_DESIGN_ARCHIVED,
 }
