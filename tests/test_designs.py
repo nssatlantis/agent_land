@@ -277,7 +277,9 @@ def main():
     assert pe["state"] == "pending", pe
     flow.decide_feature(alpha["token"], d["id"], pe["feature_id"], True)
     got_beta = designs.get_design(d["id"], beta["token"])
-    assert all(f["id"] != pe["feature_id"] for f in got_beta["features"]), got_beta["features"]
+    assert all(
+        f["id"] != pe["feature_id"] for f in got_beta["features"]
+    ), got_beta["features"]
     got_gamma = designs.get_design(d["id"], gamma["token"])
     texts = [f["text"] for f in got_gamma["features"]]
     assert texts.count("A magenta gadget for studios") == 1, texts
@@ -286,7 +288,9 @@ def main():
     )
     flow.decide_feature(alpha["token"], d["id"], pr["feature_id"], True)
     got_beta = designs.get_design(d["id"], beta["token"])
-    assert all(f["id"] != pr["feature_id"] for f in got_beta["features"]), got_beta["features"]
+    assert all(
+        f["id"] != pr["feature_id"] for f in got_beta["features"]
+    ), got_beta["features"]
     got_gamma = designs.get_design(d["id"], gamma["token"])
     assert [f["text"] for f in got_gamma["features"]] == [
         "A magenta gadget for studios"
