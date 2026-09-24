@@ -5,7 +5,7 @@ If server/admin/__init__.py is ever committed with its re-export surface deleted
 and schema.sql in PR #423, +3/-933), this test fails immediately and locally
 instead of waiting for admin routes to 404 at runtime.
 
-server/admin.py was split into the server/admin/ package (3,718 lines → 9
+server/admin.py was split into the server/admin/ package (3,718 lines ??? 9
 leaves + facade), following the viewer/ and github/ pattern (PR #434). Like
 db and server/__init__.py, server/admin/__init__.py is a facade that
 re-exports the public API, so it needs the same ratchet as PR #431/#437.
@@ -105,6 +105,12 @@ EXPECTED = [
     "design_admin_move_item",
     "design_admin_answer",
     "design_admin_toggle_comments",
+    "design_admin_create_feature",
+    "design_admin_edit_feature",
+    "design_admin_remove_feature",
+    "design_admin_create_issue",
+    "design_admin_edit_issue",
+    "design_admin_remove_issue",
     # designs panel-system ops (proposal #694)
     "design_admin_create_design",
     "design_admin_edit_design_meta",
@@ -149,7 +155,7 @@ def _re_exported_names(source: str) -> set:
             item = item.split("#")[0].strip()
             if item and item.isidentifier():
                 names.add(item)
-    # Also handle single-import lines without parens — already covered, but add bare import check for ROUTES
+    # Also handle single-import lines without parens ??? already covered, but add bare import check for ROUTES
     if "ROUTES" in source:
         names.add("ROUTES")
     return names
