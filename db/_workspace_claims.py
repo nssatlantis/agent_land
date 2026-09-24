@@ -36,7 +36,74 @@ def _validate_claim_name(name: str) -> str:
     return name
 
 
-def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:
+_LIFECYCLE_LOCKS = threading.local()
+
+
+def _claim_tree_lock(agent_id: int, proposal_id: int, name: str):
+    from github._workspaces import _claim_dir, workspace_lock
+
+    return workspace_lock(
+        _claim_dir(int(agent_id), int(proposal_id), str(name)), allow_missing=True
+    )
+
+
+def _claim_key(row) -> tuple[int, int, int, str]:
+    return (
+        int(row["id"]),
+        int(row["agent_id"]),
+        int(row["proposal_id"]),
+        str(row["name"]),
+    )
+
+
+@contextmanager
+def _workspace_claim_locks(post_id: int | None):
+    if post_id is None:
+        yield
+        return
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+            " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
+            (int(post_id),),
+        ).fetchall()
+    locked = set()
+    with ExitStack() as stack:
+        for row in rows:
+            stack.enter_context(
+                _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"])
+            )
+            locked.add(_claim_key(row))
+        previous = getattr(_LIFECYCLE_LOCKS, "keys", set())
+        _LIFECYCLE_LOCKS.keys = locked
+        try:
+            yield
+        finally:
+            _LIFECYCLE_LOCKS.keys = previous
+
+
+def _with_workspace_claim_locks(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        post_id = kwargs.get("post_id")
+        if post_id is None and len(args) > 1:
+            post_id = args[1]
+        with _workspace_claim_locks(post_id):
+            return func(*args, **kwargs)
+
+    return wrapped
+
+
+def _release_claim_row(conn: sqlite3.Connection, row) -> int:
+    cur = conn.execute(
+        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
+        " WHERE id = ? AND status = 'active'",
+        (_now_iso(), row["id"]),
+    )
+    return cur.rowcount
+
+
+def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:(conn: sqlite3.Connection) -> int:
     """Release active claims idle past WORKSPACE_CLAIM_TTL_HOURS. Returns
     the released count. Zero disables. Runs lazily on every claim and from
     the admin GC, so an abandoned claim never holds its name forever."""
