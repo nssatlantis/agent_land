@@ -439,6 +439,8 @@ def main():
     test_stale_release_cas(agents)
     test_read_ticket_reclaim_aba(agents)
     test_sweeper_rechecks_live_and_idle_state()
+    test_lifecycle_release_waits_for_active_mutator_and_reclaims(agents)
+    test_lifecycle_release_waits_for_active_transfer_and_reclaims(agents)
     test_queued_async_mutator_rechecks_claim(agents)
     test_queued_sync_mutator_rechecks_claim(agents)
     print("test_workspace_aba: all scenarios passed")
