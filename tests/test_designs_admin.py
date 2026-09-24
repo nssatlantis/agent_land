@@ -174,6 +174,12 @@ def main():
         stale_edit["feature_id"],
         True,
     )
+    assert (
+        flow.decide_feature(
+            alpha["token"], did, stale_edit["feature_id"], False
+        )["approved"]
+        is False
+    )
     resolved_parent = admin.admin_create_feature(
         "alpha", did, "Feature with a resolved linked issue"
     )
