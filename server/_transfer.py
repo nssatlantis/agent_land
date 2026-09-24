@@ -188,17 +188,40 @@ async def transfer_upload(request: Request) -> JSONResponse:
         pin = (t.get("expect_shas") or {}).get(fpath)
     except Exception:  # domain: degrade-silently - corrupt pins read as unpinned
         pin = None
-    apply = asyncio.create_task(
-        asyncio.to_thread(
-            _ws.apply_transfer_bytes,
-            int(t["agent_id"]),
-            int(t["proposal_id"]),
-            str(t["claim_name"]),
-            fpath,
-            bytes(body),
-            expect_sha256=pin,
-        )
-    )
+    unburned = False
+
+    def unburn_path() -> None:
+        nonlocal unburned
+        if unburned:
+            return
+        unburned = True
+        try:
+            db.unburn_transfer_path(ticket, fpath)
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "transfer unburn failed for %s (proposal %s)",
+                fpath,
+                t.get("proposal_id"),
+                exc_info=True,
+            )
+
+    def apply_upload() -> dict:
+        try:
+            return _ws.apply_transfer_bytes(
+                int(t["agent_id"]),
+                int(t["proposal_id"]),
+                str(t["claim_name"]),
+                fpath,
+                bytes(body),
+                expect_sha256=pin,
+            )
+        except RepoError:
+            unburn_path()
+            raise
+
+    apply = asyncio.create_task(asyncio.to_thread(apply_upload))
 
     def unburn_apply_failure(done: asyncio.Task[dict]) -> None:
         if done.cancelled():
@@ -206,17 +229,7 @@ async def transfer_upload(request: Request) -> JSONResponse:
         try:
             done.result()
         except RepoError:
-            try:
-                db.unburn_transfer_path(ticket, fpath)
-            except Exception:
-                import logging as _logging
-
-                _logging.getLogger(__name__).warning(
-                    "transfer unburn failed for %s (proposal %s)",
-                    fpath,
-                    t.get("proposal_id"),
-                    exc_info=True,
-                )
+            unburn_path()
         except Exception:
             pass
 
