@@ -725,7 +725,7 @@ def test_dispatch_accounting_releases():
         picked = farm.pick_runner()
         assert picked is not None
         assert farm._ACTIVE_RUNS.get(row["id"]) == 1
-        urllib.request.urlopen = lambda req, timeout=None: _StubResp(
+        urllib.request.urlopen = lambda req, timeout=None: _StubResp(  # type: ignore[assignment]
             json.dumps({"ok": True}).encode("utf-8")
         )
         assert farm.dispatch_to_runner(picked, {"checks": "tests"}) == {"ok": True}
@@ -736,7 +736,7 @@ def test_dispatch_accounting_releases():
         def _boom(req, timeout=None):
             raise ConnectionError("runner died mid-run")
 
-        urllib.request.urlopen = _boom
+        urllib.request.urlopen = _boom  # type: ignore[assignment]
         assert farm.dispatch_to_runner(picked, {"checks": "tests"}) is None
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
     finally:
@@ -939,7 +939,7 @@ def test_dispatch_timeout_reaches_urlopen():
     try:
         os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = "1200"
         os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
-        urllib.request.urlopen = _fake_urlopen
+        urllib.request.urlopen = _fake_urlopen  # type: ignore[assignment]
         runner = {"id": 1, "url": "http://x", "token": "t"}
         farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
         assert captured_timeouts == [1230], captured_timeouts
@@ -982,7 +982,7 @@ def test_run_checks_bench_overflow_passes_allow_remote():
         }
 
     try:
-        farm.try_bench_dispatch = _capture
+        farm.try_bench_dispatch = _capture  # type: ignore[assignment]
         import server.ci_runner._runs as runs_mod
         orig_acquire = runs_mod._slots_mod._ci_acquire_slot
         orig_bench_first = config.CI_FARM_BENCH_REMOTE_FIRST
