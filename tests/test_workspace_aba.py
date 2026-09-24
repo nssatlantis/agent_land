@@ -112,6 +112,45 @@ def test_stale_release_cas(agents):
     db.release_workspace(tok, pid, "dev", claim_id=fresh["id"])
 
 
+def test_claim_workspace_rechecks_after_lock(agents):
+    sb = _Sandbox()
+    try:
+        tok = agents["alpha"]["token"]
+        pid = db.create_proposal(tok, "Claim ABA", "body")["post_id"]
+        replacement = {}
+        lock_factory = workspace_tools.workspace_lock
+
+        @contextmanager
+        def raced_lock(path, *, allow_missing=False):
+            with lock_factory(path, allow_missing=allow_missing):
+                current = db.get_workspace(tok, pid, "dev")
+                db.release_workspace(tok, pid, "dev", claim_id=current["id"])
+                replacement["claim"] = db.claim_workspace(tok, pid, "dev")
+                yield
+
+        outcome = []
+
+        def claim():
+            try:
+                outcome.append(workspace_tools.claim_workspace(tok, pid, "dev"))
+            except BaseException as exc:
+                outcome.append(exc)
+
+        with patch.object(workspace_tools, "workspace_lock", raced_lock):
+            worker = threading.Thread(target=claim)
+            worker.start()
+            worker.join(2)
+        assert not worker.is_alive(), "claim did not finish"
+        assert len(outcome) == 1, outcome
+        assert isinstance(outcome[0], db.ForumError), outcome
+        assert "changed while waiting" in str(outcome[0]), outcome
+        current = db.get_workspace(tok, pid, "dev")
+        assert current["id"] == replacement["claim"]["id"], (current, replacement)
+        workspace_tools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+
+
 def test_lifecycle_reclaim_reuses_path_lock(agents):
     sb = _Sandbox()
     try:
@@ -515,6 +554,7 @@ def test_queued_sync_mutator_rechecks_claim(agents):
 def main():
     agents, _post_id = setup()
     test_stale_release_cas(agents)
+    test_claim_workspace_rechecks_after_lock(agents)
     test_lifecycle_reclaim_reuses_path_lock(agents)
     test_fetch_ticket_mint_rechecks_claim(agents)
     test_read_ticket_reclaim_aba(agents)
