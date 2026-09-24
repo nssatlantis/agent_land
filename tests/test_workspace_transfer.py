@@ -854,6 +854,7 @@ def test_failed_apply_unburns_path(agents):
     apply_release = threading.Event()
     unburned = threading.Event()
     unburn_calls = []
+    original_unburn = db.unburn_transfer_path
 
     def failed_apply(*args, **kwargs):
         apply_entered.set()
@@ -863,7 +864,7 @@ def test_failed_apply_unburns_path(agents):
 
     def observed_unburn(raw_ticket, path):
         unburn_calls.append((raw_ticket, path))
-        result = db.unburn_transfer_path(raw_ticket, path)
+        result = original_unburn(raw_ticket, path)
         unburned.set()
         return result
 
