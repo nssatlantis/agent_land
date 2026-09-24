@@ -371,11 +371,86 @@ def claim_tree_diff(
     return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
+def _canonical_base_ref(ref: str) -> str:
+    """Collapse a ref spelling onto the short name the guard and the CI
+    fetch both resolve: `refs/heads/x` -> `x`, `refs/tags/x` -> `x`,
+    `refs/remotes/origin/x` -> `x`, `origin/x` -> `x`, recursively (a
+    nested `origin/refs/heads/x` collapses to `x` too); anything else
+    (short names, raw shas) returns unchanged. Idempotent."""
+    while True:
+        for prefix in ("refs/heads/", "refs/tags/", "refs/remotes/origin/", "origin/"):
+            if ref.startswith(prefix):
+                ref = ref[len(prefix) :]
+                break
+        else:
+            return ref
+
+
+def _stacked_layers(dest: str, base: str | None = None) -> int:
+    """Commits on the tree's HEAD not reachable from its own base ref.
+
+    The base defaults to the repo base branch; `workspace_rehearse`
+    threads its validated `base_ref` through, so a stacked rehearsal
+    against a non-main base compares against that base (its layers ARE
+    the ancestor), not origin/main. A claim tree's remote refs never
+    auto-advance (reads never fetch and v1 has no commit tool), so HEAD
+    sits ahead of the base ref exactly when a push - or a manual commit
+    - added layers to the tree. A delta-vs-HEAD snapshot then drops
+    those layers, rehearsing a phantom tree missing the early layers
+    (bug #97). A merely-stale tree (the remote advanced after the claim)
+    is NOT flagged: both refs still sit at the clone sha, so the delta
+    stays honest.
+
+    The base spelling is canonicalized first (a full `refs/heads/x`
+    spelling used to build a never-existing `origin/refs/heads/x`, which
+    degrades to 0 - the silent bypass). The claimed base must then
+    resolve to a real ref of this tree; an unresolvable base (a raw sha,
+    or a branch/tag the tree never fetched) FAILS CLOSED with RepoError
+    instead of returning the flat 0.
+    """
+    canonical = _canonical_base_ref(base or GITHUB_BASE_BRANCH)
+    ref = None
+    for candidate in (f"origin/{canonical}", f"refs/tags/{canonical}"):
+        ok = _git(
+            dest,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{candidate}^{{commit}}",
+            check=False,
+        )
+        if ok.returncode == 0:
+            ref = candidate
+            break
+    if ref is None:
+        if base is None:
+            return 0
+        raise RepoError(
+            f"cannot resolve rehearsal base {base!r} to a ref of this "
+            "claim tree - the tree holds no origin/<name> or refs/tags/"
+            "<name> to compare the stacked guard against (bug #97). "
+            "Fetch the base into the tree first, or use its branch/tag "
+            "name."
+        )
+    res = _git(dest, "rev-list", "--count", f"{ref}..HEAD", check=False)
+    if res.returncode != 0:
+        return 0
+    try:
+        return int(res.stdout.strip() or "0")
+    except ValueError:  # domain: degrade-silently - unparsable count, assume flat
+        return 0
+
+
 _SNAPSHOT_MAX_MB = 32.0
 
 
 def snapshot_claim_tree(
-    agent_id: int, proposal_id: int, name: str, *, delta: bool = False
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    *,
+    delta: bool = False,
+    base: str | None = None,
 ) -> dict:
     """Read one claim tree into a files-overlay ({path, content} entries).
 
@@ -390,14 +465,31 @@ def snapshot_claim_tree(
     With delta=True only the tree's own changes ride the overlay (see
     _changed_paths) - untouched tracked files are left out, so a stale
     claim tree cannot flatten a freshly-refreshed rehearsal base back
-    to its old bytes (bug #90). Whole-tree stays the default: the push
-    manifest must cover every file the PR would carry.
+    to its old bytes (bug #90). A tree whose HEAD carries pushed layers
+    is refused outright (bug #97): the delta would drop them and
+    rehearse a phantom tree (the stacked-refusal base defaults to
+    origin/main; a rehearsal `base` compares against its own ancestor,
+    so a valid stacked tree against a non-main base is not flagged).
+    Whole-tree stays the default: the push manifest must cover every
+    file the PR would carry.
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     if delta:
         changed = set(_changed_paths(dest))
+        base_name = _canonical_base_ref(base or GITHUB_BASE_BRANCH)
+        extra = _stacked_layers(dest, base_name)
+        if extra:
+            raise RepoError(
+                f"workspace HEAD is {extra} commit(s) ahead of "
+                f"origin/{base_name} - the tree's pushed layers "
+                "live in HEAD, which a delta-vs-HEAD snapshot drops, so "
+                "rehearsing would build a phantom tree without them "
+                "(bug #97). Release this claim (release_workspace) and "
+                "claim a fresh tree for stacked work, or rehearse once the "
+                "earlier layers land on the base."
+            )
     else:
         changed = None
     files: list = []
