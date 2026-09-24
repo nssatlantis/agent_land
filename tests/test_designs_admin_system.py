@@ -161,9 +161,7 @@ def main():
         "preview_issue_ids": ",".join(str(v) for v in second["pending_issue_ids"]),
         "preview_question_ids": ",".join(str(v) for v in second["open_question_ids"]),
     }
-    done = admin.admin_close_design(
-        "panel-admin", did, confirm=True, **second_preview
-    )
+    done = admin.admin_close_design("panel-admin", did, confirm=True, **second_preview)
     assert done["status"] == "archived", done
     expect_error(admin.admin_decide_feature, "panel-admin", did, f2["feature_id"], True)
     closed = designs.get_design(did)
