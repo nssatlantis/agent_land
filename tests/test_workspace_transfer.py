@@ -505,7 +505,12 @@ def test_release_kills_ticket(agents):
     db.release_workspace(tok, pid, "rel")
     resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
     assert resp.status_code == 404, (resp.status_code, resp.body)
-    print("  released claim kills tickets: ok")
+    time.sleep(0.001)
+    _claim(agents, pid, "rel", who="epsilon")
+    resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    assert resp.status_code == 404, (resp.status_code, resp.body)
+    db.release_workspace(tok, pid, "rel")
+    print("  released claim kills tickets, including after reclaim: ok")
 
 
 def test_p2_write_upgrades(agents):
