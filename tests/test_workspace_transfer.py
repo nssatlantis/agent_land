@@ -401,7 +401,7 @@ def test_http_upload_apply(agents):
 
 
 def test_http_upload_lock_wait_keeps_event_loop_live(agents):
-    pid = _prop(agents, "alpha", title="Async Upload Xfer")
+    pid = _prop(agents, "beta", title="Async Upload Xfer")
     tok = agents["alpha"]["token"]
     _claim(agents, pid, "asyncup", who="alpha")
     WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
