@@ -173,6 +173,14 @@ def main():
         reason="gamma needs a blue variant for cold climates, distinct scope",
     )
     assert p2["state"] == "pending" and p2["warning"] is not None, p2
+    rejected = designs.propose_feature(gamma["token"], d["id"], "Rejected duplicate")
+    flow.decide_feature(alpha["token"], d["id"], rejected["feature_id"], False)
+    expect_error(
+        designs.propose_feature,
+        gamma["token"],
+        d["id"],
+        "Rejected duplicate",
+    )
     print("  similarity warn: ok")
 
     # --- remove-own / withdraw / update-pending ----------------------------------
