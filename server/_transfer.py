@@ -69,16 +69,26 @@ def _repo_fail(exc: RepoError) -> JSONResponse:
     return _fail(400, msg)
 
 
-def _touch_best_effort(agent_id: int, proposal_id: int, name: str) -> None:
+def _touch_best_effort(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> None:
     """Advance both idle clocks after a transfer use (best-effort: the
     bytes already moved, enrichment must not fail the response)."""
     try:
         with db._conn() as conn:
-            db.touch_workspace(conn, int(agent_id), int(proposal_id), str(name))
+            db.touch_workspace(
+                conn,
+                int(agent_id),
+                int(proposal_id),
+                str(name),
+                claim_id=claim_id,
+            )
     except Exception:  # domain: degrade-silently - record touch is enrichment
         pass
     try:
-        github.touch_claim_tree(int(agent_id), int(proposal_id), str(name))
+        github.touch_claim_tree(
+            int(agent_id), int(proposal_id), str(name), claim_id=claim_id
+        )
     except Exception:  # domain: degrade-silently - manifest touch is enrichment
         pass
 
@@ -148,7 +158,12 @@ async def transfer_download(request: Request) -> Response:
     etag = sha
     # Touch on validation, not on bytes moved: a 304 is still live use
     # of the claim, and a claim revalidated forever must never sweep.
-    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
+    _touch_best_effort(
+        int(t["agent_id"]),
+        int(t["proposal_id"]),
+        str(t["claim_name"]),
+        t.get("claim_id"),
+    )
     if request.headers.get("if-none-match", "").strip(' "') == etag:
         return Response(status_code=304)
     filename = _safe_download_filename(clean)
@@ -295,7 +310,12 @@ async def transfer_upload(request: Request) -> JSONResponse:
         return _repo_fail(exc)
     # Touch on validation, not on bytes moved: a quiet no-op upload is
     # still live use of the claim.
-    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
+    _touch_best_effort(
+        int(t["agent_id"]),
+        int(t["proposal_id"]),
+        str(t["claim_name"]),
+        t.get("claim_id"),
+    )
     return JSONResponse(receipt)
 
 
