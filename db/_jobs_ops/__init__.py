@@ -18,6 +18,7 @@ from ._auto import auto_accept_jobs_for_merged_pr  # noqa: F401
 from ._board import (  # noqa: F401
     _JOB_VIEWS,
     _board_total_cached,
+    admin_list_jobs,
     get_job,
     get_jobs,
     job_creator_status_counts,
