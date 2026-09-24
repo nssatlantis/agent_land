@@ -30,6 +30,7 @@ proposal-sized migration, tracked as the follow-up.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -442,6 +443,7 @@ def admin_design_history(admin, design_id):
             "meta_edits": [dict(r) for r in meta],
             "edit_logs": [dict(r) for r in edits],
             "decisions": [dict(r) for r in decisions],
+            "preview_digest": _preview_digest(conn, design["id"]),
         }
 
 
@@ -697,6 +699,32 @@ def _preview_ids(value):
         raise ForumError("invalid archive preview.") from exc
 
 
+def _preview_digest(conn, design_id):
+    payload = []
+    for row in conn.execute(
+        "SELECT id, text, reason, op, target_feature_id FROM design_features"
+        " WHERE design_id = ? AND state = 'pending' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("feature", dict(row)))
+    for row in conn.execute(
+        "SELECT id, text, feature_id, reason FROM design_issues"
+        " WHERE design_id = ? AND state = 'pending' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("issue", dict(row)))
+    for row in conn.execute(
+        "SELECT id, body FROM design_questions"
+        " WHERE design_id = ? AND state = 'open' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("question", dict(row)))
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def admin_close_design(
     admin,
     design_id,
@@ -704,6 +732,7 @@ def admin_close_design(
     preview_feature_ids=None,
     preview_issue_ids=None,
     preview_question_ids=None,
+    preview_digest=None,
 ):
     """Sole-admin archive of a system-owned design (panel authority).
 
@@ -742,6 +771,7 @@ def admin_close_design(
                 (int(design["id"]),),
             ).fetchall()
         ]
+        current_digest = _preview_digest(conn, design["id"])
         if (pend or ipend or open_q) and not confirm:
             return {
                 "need_confirm": True,
@@ -751,6 +781,7 @@ def admin_close_design(
                 "pending_feature_ids": feature_ids,
                 "pending_issue_ids": issue_ids,
                 "open_question_ids": question_ids,
+                "preview_digest": current_digest,
                 "hint": "re-run with confirm=True to drop them and archive",
             }
         if confirm and (pend or ipend or open_q):
@@ -760,7 +791,7 @@ def admin_close_design(
                 _preview_ids(preview_question_ids),
             )
             current = (tuple(feature_ids), tuple(issue_ids), tuple(question_ids))
-            if expected != current:
+            if expected != current or preview_digest != current_digest:
                 raise ForumError(
                     "archive preview changed; re-preview before confirming."
                 )
