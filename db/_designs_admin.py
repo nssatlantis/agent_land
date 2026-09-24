@@ -222,7 +222,7 @@ def admin_remove_feature(admin, design_id, feature_id):
         target = _direct_feature_target(conn, design["id"], feature_id)
         linked = conn.execute(
             "SELECT id FROM design_issues WHERE design_id = ? AND feature_id = ?"
-            " AND state IN ('pending', 'accepted', 'resolved') LIMIT 1",
+            " AND state IN ('pending', 'accepted') LIMIT 1",
             (int(design["id"]), int(target["id"])),
         ).fetchone()
         if linked is not None:
