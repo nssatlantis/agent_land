@@ -28,6 +28,7 @@ from db._proposal_status import (
     _proposal_vote_threshold,
 )
 from db._proposal_todos import _todos_for_post
+from db._workspace_claims import _with_workspace_claim_locks
 from db._text import (
     _ensure_signature,
     _expand_mentions,
@@ -488,6 +489,7 @@ def edit_proposal(
         }
 
 
+@_with_workspace_claim_locks
 def supersede_proposal(
     token: str,
     post_id: int,
