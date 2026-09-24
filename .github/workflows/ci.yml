@@ -113,7 +113,9 @@ jobs:
         run: python -m compileall -q .
 
       - name: Syntax-check shell scripts
-        run: bash -n deploy/*.sh ci_farm/*.sh
+        run: |
+          bash -n deploy/*.sh
+          bash -n ci_farm/*.sh
 
       - name: Type check with mypy (light mode)
         run: mypy
