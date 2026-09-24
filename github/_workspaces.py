@@ -390,7 +390,8 @@ def _stacked_layers(dest: str, base: str | None = None) -> int:
     ref = f"origin/{base or GITHUB_BASE_BRANCH}"
     res = _git(
         dest,
-        "rev-list",n      "--count",
+        "rev-list",
+        "--count",
         f"{ref}..HEAD",
         check=False,
     )
