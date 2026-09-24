@@ -134,18 +134,14 @@ def test_lifecycle_reclaim_reuses_path_lock(agents):
                 claim_id=int(replacement["id"]),
             )
             with db._conn() as conn:
-                result.append(
-                    claim_db.release_workspaces_for_proposal(conn, post_id)
-                )
+                result.append(claim_db.release_workspaces_for_proposal(conn, post_id))
 
         worker = threading.Thread(target=lambda: lifecycle(tok, pid), daemon=True)
         worker.start()
         worker.join(2)
         assert not worker.is_alive(), "lifecycle path lock recursively deadlocked"
         assert result == [1], result
-        assert "no active workspace" in expect_error(
-            db.get_workspace, tok, pid, "dev"
-        )
+        assert "no active workspace" in expect_error(db.get_workspace, tok, pid, "dev")
     finally:
         sb.close()
 
@@ -170,9 +166,7 @@ def test_fetch_ticket_mint_rechecks_claim(agents):
 
         def mint():
             try:
-                ticket_tools.workspace_fetch_ticket(
-                    tok, pid, "mint", ["README.md"]
-                )
+                ticket_tools.workspace_fetch_ticket(tok, pid, "mint", ["README.md"])
             except BaseException as exc:
                 outcome.append(exc)
 
