@@ -74,7 +74,9 @@ def _workspace_claim_locks(post_id: int | None):
                 _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"])
             )
             locked.add(_claim_key(row))
-        previous = getattr(_LIFECYCLE_LOCKS, "keys", set())
+        previous: set[tuple[int, int, int, str]] = getattr(
+            _LIFECYCLE_LOCKS, "keys", set()
+        )
         _LIFECYCLE_LOCKS.keys = locked
         try:
             yield
@@ -418,7 +420,9 @@ def release_workspaces_for_proposal(conn: sqlite3.Connection, post_id: int) -> i
         " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
         (int(post_id),),
     ).fetchall()
-    held = getattr(_LIFECYCLE_LOCKS, "keys", set())
+    held: set[tuple[int, int, int, str]] = getattr(
+        _LIFECYCLE_LOCKS, "keys", set()
+    )
     released = 0
     for row in rows:
         if _claim_key(row) in held:
