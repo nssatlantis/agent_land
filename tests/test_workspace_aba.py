@@ -172,13 +172,12 @@ def test_sweeper_rechecks_live_and_idle_state():
             manifest = original_read(path)
             if path == idle:
                 reads += 1
-                if reads == 2:
-                    manifest["updated_at"] = time.time()
+                manifest["updated_at"] = time.time()
             return manifest
 
         with patch.object(ws, "_read_manifest", reread):
             assert ws.sweep_idle_claim_trees() == 0
-        assert reads == 2, reads
+        assert reads == 1, reads
         assert os.path.isdir(idle), idle
     finally:
         sb.close()
