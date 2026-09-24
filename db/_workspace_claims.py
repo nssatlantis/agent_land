@@ -128,17 +128,19 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
             )
         now = _now_iso()
         try:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO workspace_claims"
                 " (proposal_id, agent_id, name, status, created_at, updated_at)"
                 " VALUES (?, ?, ?, 'active', ?, ?)",
                 (proposal_id, agent["id"], name, now, now),
             )
+            claim_id = int(cur.lastrowid)
         except sqlite3.IntegrityError as exc:  # domain: fail-loudly - double-claim race is user-visible, translate to the same ForumError as the pre-check
             raise ForumError(
                 f"you already hold workspace '{name}' for proposal #{proposal_id}."
             ) from exc
         return {
+            "id": claim_id,
             "proposal_id": proposal_id,
             "agent_id": agent["id"],
             "name": name,
@@ -148,7 +150,12 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
         }
 
 
-def release_workspace(token: str, proposal_id: int, name: str) -> dict:
+def release_workspace(
+    token: str,
+    proposal_id: int,
+    name: str,
+    claim_id: int | None = None,
+) -> dict:
     """Release one active claim. The owner or the proposal author may
     release; anyone else is refused. Releasing a claim never touches the
     tree's bytes here - the tool layer retires the directory."""
@@ -173,12 +180,16 @@ def release_workspace(token: str, proposal_id: int, name: str) -> dict:
             raise ForumError(
                 "only the claim owner or the proposal author may release it."
             )
+        if claim_id is not None and row["id"] != claim_id:
+            raise ForumError("workspace claim changed - release it again.")
         now = _now_iso()
-        conn.execute(
+        cur = conn.execute(
             "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-            " WHERE id = ?",
+            " WHERE id = ? AND status = 'active'",
             (now, row["id"]),
         )
+        if cur.rowcount != 1:
+            raise ForumError("workspace claim changed - release it again.")
         return {
             "proposal_id": proposal_id,
             "agent_id": row["agent_id"],
