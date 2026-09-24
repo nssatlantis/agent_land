@@ -371,22 +371,27 @@ def claim_tree_diff(
     return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
-def _stacked_layers(dest: str) -> int:
+def _stacked_layers(dest: str, base: str | None = None) -> int:
     """Commits on the tree's HEAD not reachable from its own origin/<base>.
 
-    A claim tree's remote refs never auto-advance (reads never fetch and
-    v1 has no commit tool), so HEAD sits ahead of origin/<base> exactly
-    when a push - or a manual commit - added layers to the tree. A
-    delta-vs-HEAD snapshot then drops those layers, rehearsing a phantom
-    tree missing the early layers (bug #97). A merely-stale tree (the
-    remote advanced after the claim) is NOT flagged: both refs still sit
-    at the clone sha, so the delta stays honest.
+    The base defaults to the repo base branch; `workspace_rehearse`
+    threads its validated `base_ref` through, so a stacked rehearsal
+    against a non-main base compares against that base (its layers ARE
+    the ancestor), not origin/main. A claim tree's remote refs never
+    auto-advance (reads never fetch and v1 has no commit tool), so HEAD
+    sits ahead of origin/<base> exactly when a push - or a manual commit
+    - added layers to the tree. A delta-vs-HEAD snapshot then drops
+    those layers, rehearsing a phantom tree missing the early layers
+    (bug #97). A merely-stale tree (the remote advanced after the claim)
+    is NOT flagged: both refs still sit at the clone sha, so the delta
+    stays honest. A base with no matching local origin/ ref (for example
+    a raw sha) degrades to the pre-guard behavior.
     """
+    ref = f"origin/{base or GITHUB_BASE_BRANCH}"
     res = _git(
         dest,
-        "rev-list",
-        "--count",
-        f"origin/{GITHUB_BASE_BRANCH}..HEAD",
+        "rev-list",n      "--count",
+        f"{ref}..HEAD",
         check=False,
     )
     if res.returncode != 0:
@@ -401,7 +406,12 @@ _SNAPSHOT_MAX_MB = 32.0
 
 
 def snapshot_claim_tree(
-    agent_id: int, proposal_id: int, name: str, *, delta: bool = False
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    *,
+    delta: bool = False,
+    base: str | None = None,
 ) -> dict:
     """Read one claim tree into a files-overlay ({path, content} entries).
 
@@ -418,19 +428,23 @@ def snapshot_claim_tree(
     claim tree cannot flatten a freshly-refreshed rehearsal base back
     to its old bytes (bug #90). A tree whose HEAD carries pushed layers
     is refused outright (bug #97): the delta would drop them and
-    rehearse a phantom tree. Whole-tree stays the default: the push
-    manifest must cover every file the PR would carry.
+    rehearse a phantom tree (the stacked-refusal base defaults to
+    origin/main; a rehearsal `base` compares against its own ancestor,
+    so a valid stacked tree against a non-main base is not flagged).
+    Whole-tree stays the default: the push manifest must cover every
+    file the PR would carry.
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     if delta:
         changed = set(_changed_paths(dest))
-        extra = _stacked_layers(dest)
+        base_name = base or GITHUB_BASE_BRANCH
+        extra = _stacked_layers(dest, base_name)
         if extra:
             raise RepoError(
                 f"workspace HEAD is {extra} commit(s) ahead of "
-                f"origin/{GITHUB_BASE_BRANCH} - the tree's pushed layers "
+                f"origin/{base_name} - the tree's pushed layers "
                 "live in HEAD, which a delta-vs-HEAD snapshot drops, so "
                 "rehearsing would build a phantom tree without them "
                 "(bug #97). Release this claim (release_workspace) and "
