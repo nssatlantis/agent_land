@@ -191,6 +191,7 @@ def workspace_search(
     name: str,
     query: str,
     max_results: int | None = None,
+    ref: str | None = None,
 ) -> dict:
     """Search one workspace tree's live files for a case-insensitive substring.
 
@@ -201,6 +202,17 @@ def workspace_search(
     matches: [{line_number, text}]}], proposal_id, name}` with paths relative
     to the tree root, bounded to `max_results` files (each capped at 50 lines,
     lines trimmed to 160 chars).
+
+    `ref` (optional) searches the committed tree at that git ref (branch,
+    tag or commit SHA, resolved inside the claim tree) via `git grep`
+    instead of the live worktree - dirty edits and untracked files are
+    invisible there by design, so a branch can be audited before it is
+    pushed. The response echoes the ref it searched (the winning `origin/`
+    candidate when fallback resolves, so provenance is auditable).
+    Unknown refs refuse;
+    sync the tree first (`workspace_sync`, which fetches origin refs) so
+    the ref exists locally. Symlink blobs can match by link-target text,
+    never by dereferenced content.
     """
     from server.repo_search import _trim_search_line
 
@@ -225,9 +237,26 @@ def workspace_search(
         raise db.ForumError("max_results must be an integer.") from exc
     try:
         per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
-    except Exception:
+    except Exception:  # domain: degrade-silently - bad knob falls back to 50
         per_file = 50
     cap_bytes = _transfer_file_cap_bytes()
+    if ref is not None:
+        from server.repo_search import _search_with_ref
+
+        try:
+            found = _search_with_ref(
+                q, cap, ref, repo_dir=dest, allowlist=False, budget_bytes=cap_bytes
+            )
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+        return {
+            "query": found["query"],
+            "matches": found["matches"],
+            "proposal_id": proposal_id,
+            "name": str(record["name"]),
+            "ref": found["ref"],
+        }
     needle = q.lower()
     results: list[dict] = []
     skip_dirs = {".git", "__pycache__"}
@@ -288,6 +317,7 @@ def workspace_read_file(
     path: str,
     line_start: int | None = None,
     line_end: int | None = None,
+    ref: str | None = None,
 ) -> dict:
     """Read one file from a workspace tree (text, undecodables replaced).
 
@@ -296,26 +326,45 @@ def workspace_read_file(
     `content_sha256` is the sha256 of the stored bytes (the whole file,
     not just the page) - pass it as `expect_sha256` on writes or uploads
     to refuse a stale base.
+
+    `ref` (optional) reads the file's committed bytes at that git ref
+    (branch, tag or commit SHA, resolved inside the claim tree) instead
+    of the live worktree - dirty edits are invisible there by design, so
+    a fix trail can be verified on the branch itself. The response echoes
+    the ref it read. Unknown refs refuse; sync the tree first
+    (`workspace_sync`, which fetches origin refs) so the ref exists
+    locally.
     """
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
     clean, full = _guard_tree_path(dest, path, write=False)
-    try:
-        size = os.path.getsize(full)
-    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
-        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
-    cap_bytes = _transfer_file_cap_bytes()
-    if size > cap_bytes:
-        cap_mb = cap_bytes / (1 << 20)
-        raise db.ForumError(
-            f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
-        )
+    validated_ref: str | None = None
+    if ref is not None:
+        try:
+            raw, validated_ref = github.read_file_at_ref(dest, clean, ref)
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+    else:
+        try:
+            size = os.path.getsize(full)
+        except (
+            OSError
+        ) as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+        cap_bytes = _transfer_file_cap_bytes()
+        if size > cap_bytes:
+            cap_mb = cap_bytes / (1 << 20)
+            raise db.ForumError(
+                f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
+            )
+        try:
+            with open(full, "rb") as fh:
+                raw = fh.read()
+        except (
+            OSError
+        ) as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
-    try:
-        with open(full, "rb") as fh:
-            raw = fh.read()
-    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
-        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
     import hashlib as _hashlib
 
     stored_sha = _hashlib.sha256(raw).hexdigest()
@@ -343,7 +392,7 @@ def workspace_read_file(
         if end - start + 1 > max_lines:
             raise db.ForumError(f"range covers over {max_lines} lines.")
     _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
-    return {
+    out = {
         "path": clean,
         "content": "\n".join(lines[start - 1 : end]),
         "total_lines": total,
@@ -351,6 +400,9 @@ def workspace_read_file(
         "line_end": min(end, total),
         "content_sha256": stored_sha,
     }
+    if validated_ref is not None:
+        out["ref"] = validated_ref
+    return out
 
 
 @mcp.tool()

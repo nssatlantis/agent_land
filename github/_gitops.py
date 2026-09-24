@@ -136,6 +136,39 @@ def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedP
         raise RepoError("git is not installed or not in PATH") from None
 
 
+def _git_bytes(
+    repo_dir: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess:
+    """`_git` without text decoding: the raw-bytes path for blob reads.
+
+    `text=True` would raise `UnicodeDecodeError` on a binary blob before
+    returning, so committed-binary reads need their own runner. Same env,
+    redaction and timeout as `_git`.
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=repo_dir,
+            capture_output=True,
+            text=False,
+            timeout=120,
+            env=env,
+        )
+        if check and result.returncode != 0:
+            msg = _redact_token(
+                f"git {' '.join(args)} failed:\n"
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
+            raise RepoError(msg)
+        return result
+    except subprocess.TimeoutExpired as e:  # domain: fail-loudly - hung git surfaces
+        msg = _redact_token(f"git {' '.join(args)} timed out")
+        raise RepoError(msg) from e
+    except FileNotFoundError:  # domain: fail-loudly - no git surfaces
+        raise RepoError("git is not installed or not in PATH") from None
+
+
 # --- persistent git workspace pool (merge-conflict family) -----------------
 # Three flows pay a full network clone per call today. The pool keeps
 # FORUM_GIT_WORKSPACE_POOL warm clones alive between calls: acquire a slot,
