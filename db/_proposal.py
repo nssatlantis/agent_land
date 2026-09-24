@@ -28,7 +28,6 @@ from db._proposal_status import (
     _proposal_vote_threshold,
 )
 from db._proposal_todos import _todos_for_post
-from db._workspace_claims import _with_workspace_claim_locks
 from db._text import (
     _ensure_signature,
     _expand_mentions,
@@ -39,6 +38,7 @@ from db._text import (
     _reconcile_signature,
     _strip_terminal_signature,
 )
+from db._workspace_claims import _with_workspace_claim_locks
 from notifications import _notify
 from search import _normalized_title, find_matching_tags, find_similar_posts
 
