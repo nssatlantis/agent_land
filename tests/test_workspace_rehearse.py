@@ -230,6 +230,35 @@ def test_snapshot_delta():
     print("  snapshot delta (untouched excluded, whole-tree default): ok")
 
 
+def test_snapshot_delta_stacked_refuses():
+    sb = _RehearseSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 41, "stacked")
+        Path(tree["path"], "r1.py").write_text("x = 1\n", encoding="utf-8")
+        _git("add", "-A", cwd=tree["path"])
+        _git(
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "round-1",
+            cwd=tree["path"],
+        )
+        # a stacked tree carries round-1 as a commit in HEAD, so the
+        # delta snapshot would rehearse a phantom tree (bug #97)
+        err = _expect_repo_error(ws.snapshot_claim_tree, 11, 41, "stacked", delta=True)
+        assert "phantom" in err and "origin/" in err, err
+        # the whole-tree snapshot (push-manifest contract) is unaffected
+        whole = ws.snapshot_claim_tree(11, 41, "stacked")
+        by_path = {f["path"]: f["content"] for f in whole["files"]}
+        assert by_path["r1.py"] == "x = 1\n", sorted(by_path)
+    finally:
+        sb.close()
+    print("  snapshot delta stacked refusal (phantom tree guard): ok")
+
+
 def test_tool_wiring(agents, wstools):
     import server.ci_runner as ci_runner  # noqa: E402
 
