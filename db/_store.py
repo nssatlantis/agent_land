@@ -922,10 +922,6 @@ def get_store_catalog(token: str) -> dict:
                 "current": ent["bio"],
             }
         )
-        for catalog_item in items:
-            if catalog_item["key"] in _DAY_PASS_ITEMS:
-                catalog_item["category"] = "capacity"
-                catalog_item["source"] = "buy_store_item"
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
