@@ -915,8 +915,9 @@ def workspace_rehearse(
     cname = str(record["name"])
     if base_ref is not None:
         from github._core import _validate_ref
+        from github._workspaces import _canonical_base_ref
 
-        base_ref = _validate_ref(base_ref)
+        base_ref = _canonical_base_ref(_validate_ref(base_ref))
     snap = github.snapshot_claim_tree(
         agent_id, proposal_id, cname, delta=True, base=base_ref
     )

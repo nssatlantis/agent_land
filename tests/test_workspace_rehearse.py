@@ -309,6 +309,103 @@ def test_snapshot_delta_stacked_nonmain_base():
     print("  snapshot delta stacked base-aware (non-main base honored): ok")
 
 
+def test_snapshot_delta_stacked_full_ref_bases():
+    sb = _RehearseSandbox()
+    try:
+        bare = _mk_remote(os.path.join(sb.tmp, "remote4"))
+        old_ws, old_gh = ws._repo_url, gh._repo_url
+        ws._repo_url = lambda with_token=False: bare
+        gh._repo_url = lambda with_token=False: bare
+        try:
+            tree = ws.ensure_claim_tree(11, 44, "stacked-fullref")
+            Path(tree["path"], "r1.py").write_bytes(b"x = 1\n")
+            _git("add", "-A", cwd=tree["path"])
+            _git(
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "round-1",
+                cwd=tree["path"],
+            )
+            # round-1 lands on the base branch; the tree HEAD then sits
+            # AHEAD of it after round-2 commits - a stacked tree whose
+            # delta must refuse whatever the base spelling (a full ref
+            # used to build origin/refs/heads/x, which never exists, and
+            # silently passed - bug #97)
+            _git("push", bare, "HEAD:refs/heads/feature-x", cwd=tree["path"])
+            _git("fetch", "origin", "feature-x", cwd=tree["path"])
+            Path(tree["path"], "r2.py").write_bytes(b"y = 2\n")
+            _git("add", "-A", cwd=tree["path"])
+            _git(
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "round-2",
+                cwd=tree["path"],
+            )
+            for base in (
+                "feature-x",
+                "refs/heads/feature-x",
+                "refs/remotes/origin/feature-x",
+                "origin/feature-x",
+            ):
+                err = _expect_repo_error(
+                    ws.snapshot_claim_tree,
+                    11,
+                    44,
+                    "stacked-fullref",
+                    delta=True,
+                    base=base,
+                )
+                assert "phantom" in err, (base, err)
+            # whole-tree snapshot stays unaffected
+            whole = ws.snapshot_claim_tree(11, 44, "stacked-fullref")
+            by_path = {f["path"]: f["content"] for f in whole["files"]}
+            assert by_path["r1.py"] == "x = 1\n", sorted(by_path)
+            assert by_path["r2.py"] == "y = 2\n", sorted(by_path)
+        finally:
+            ws._repo_url, gh._repo_url = old_ws, old_gh
+    finally:
+        sb.close()
+    print("  snapshot delta stacked refusal honors full-ref base spellings: ok")
+
+
+def test_snapshot_delta_stacked_fails_closed_unresolvable_base():
+    sb = _RehearseSandbox()
+    try:
+        ws.ensure_claim_tree(11, 45, "stacked-noref")
+        # a base this tree cannot resolve (raw sha, unknown branch/tag)
+        # fails closed with RepoError - never the old flat 0 that let a
+        # phantom delta through
+        for base in (
+            "deadbeef" * 5,
+            "no-such-branch",
+            "refs/heads/no-such",
+            "refs/tags/v9",
+        ):
+            err = _expect_repo_error(
+                ws.snapshot_claim_tree,
+                11,
+                45,
+                "stacked-noref",
+                delta=True,
+                base=base,
+            )
+            assert "cannot resolve rehearsal base" in err, (base, err)
+        # the default base is the repo base branch and always resolves
+        delta = ws.snapshot_claim_tree(11, 45, "stacked-noref", delta=True)
+        assert delta["files"] == [], delta["files"]
+    finally:
+        sb.close()
+    print("  snapshot delta unresolvable base fails closed (no flat-0 pass): ok")
+
+
 def test_tool_wiring(agents, wstools):
     import server.ci_runner as ci_runner  # noqa: E402
 
@@ -349,6 +446,45 @@ def test_tool_wiring(agents, wstools):
     print("  tool wiring (direct + handed-off): ok")
 
 
+def test_tool_base_ref_canonicalized(agents, wstools):
+    import server.ci_runner as ci_runner  # noqa: E402
+
+    sb = _RehearseSandbox()
+    orig = ci_runner.run_checks_with_deadline
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen["kwargs"] = kwargs
+        result = {"ok": True, "checks": kwargs.get("checks", args[3])}
+        return result, False, None, None
+
+    ci_runner.run_checks_with_deadline = fake_run
+    try:
+        pid, tok = _claim(agents, wstools, "gamma", "Rehearse Canon")
+        wstools.workspace_write_file(tok, pid, "dev", "feat.txt", "feat\n")
+        # a full-ref spelling must be canonicalized once, at the tool
+        # boundary, so the snapshot guard and the runner see the SAME
+        # short name (bug #97)
+        for spelling in ("refs/heads/main", "origin/main", "main"):
+            seen.clear()
+            direct = wstools.workspace_rehearse(tok, pid, "dev", base_ref=spelling)
+            assert direct["ok"] is True, (spelling, direct)
+            assert seen["kwargs"]["base_ref"] == "main", (spelling, seen["kwargs"])
+        # an unresolvable base fails closed at the snapshot, never reaches
+        # the runner, and never degrades to a silent rehearsal
+        seen.clear()
+        err = _expect_tool_error(
+            wstools.workspace_rehearse, tok, pid, "dev", base_ref="no-such-branch"
+        )
+        assert "cannot resolve rehearsal base" in err, err
+        assert not seen, seen
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        ci_runner.run_checks_with_deadline = orig
+        sb.close()
+    print("  tool base_ref canonicalized once + unresolvable fails closed: ok")
+
+
 def test_tool_guards(agents, wstools):
     sb = _RehearseSandbox()
     try:
@@ -372,7 +508,10 @@ def main():
     test_snapshot_delta()
     test_snapshot_delta_stacked_refuses()
     test_snapshot_delta_stacked_nonmain_base()
+    test_snapshot_delta_stacked_full_ref_bases()
+    test_snapshot_delta_stacked_fails_closed_unresolvable_base()
     test_tool_wiring(agents, wstools)
+    test_tool_base_ref_canonicalized(agents, wstools)
     test_tool_guards(agents, wstools)
     print("test_workspace_rehearse: all scenarios passed")
 
