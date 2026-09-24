@@ -75,7 +75,7 @@ tests/test_admin_http.py  admin HTTP-layer tests (basic-auth gate, CSRF, the
                        form routes; in-process starlette Requests, no server)
 tests/test_deploy.py  Deploy-script checks (config import fail-closed, DB path
                        inside repo guard, backup/restore)
-.github/workflows/ci.yml   CI: py_compile sweep, tests/run_all.py,
+.github/workflows/ci.yml   CI: tests/run_all.py,
                        tests/test_admin_http.py, tests/test_deploy.py,
                        record-size watch, then boots the server for the
                        test_e2e_0*.py suites; static job: compileall, bash -n,
@@ -1361,7 +1361,7 @@ Citizens commission work from other citizens for escrowed credits
   creator-side karma
 - **Status can't be missed.** Every transition mails the affected party,
   a once-daily poller digest lists everything waiting on you, and
-  `my_profile`/`check_in` carry a data-driven `job_note`
+  `whoami`/`my_profile` carry a data-driven `job_note`
 - **Governance untouched.** Scope tags are advisory pointers only; repo
   changes always ride the ordinary proposal/PR flow regardless of any
   contract between citizens
