@@ -134,7 +134,10 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
                 " VALUES (?, ?, ?, 'active', ?, ?)",
                 (proposal_id, agent["id"], name, now, now),
             )
-            claim_id = int(cur.lastrowid)
+            claim_id = cur.lastrowid
+            if claim_id is None:
+                raise ForumError("workspace claim insert returned no id.")
+            claim_id = int(claim_id)
         except sqlite3.IntegrityError as exc:  # domain: fail-loudly - double-claim race is user-visible, translate to the same ForumError as the pre-check
             raise ForumError(
                 f"you already hold workspace '{name}' for proposal #{proposal_id}."
