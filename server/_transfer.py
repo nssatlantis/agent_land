@@ -56,7 +56,11 @@ def _repo_fail(exc: RepoError) -> JSONResponse:
     everything else is a bad request."""
     msg = str(exc) or type(exc).__name__
     lowered = msg.lower()
-    if "no workspace tree held" in lowered or "no file at" in lowered:
+    if (
+        "no workspace tree held" in lowered
+        or "no file at" in lowered
+        or "workspace for this ticket is gone" in lowered
+    ):
         return _fail(404, msg)
     if "stale base" in lowered or "already uploaded" in lowered:
         return _fail(409, msg)
@@ -188,6 +192,29 @@ async def transfer_upload(request: Request) -> JSONResponse:
         pin = (t.get("expect_shas") or {}).get(fpath)
     except Exception:  # domain: degrade-silently - corrupt pins read as unpinned
         pin = None
+
+    def validate_claim() -> None:
+        try:
+            claim_id = int(t.get("claim_id"))
+        except (TypeError, ValueError, OverflowError):
+            claim_id = -1
+        with db._conn() as conn:
+            claim = conn.execute(
+                "SELECT id FROM workspace_claims"
+                " WHERE id = ? AND agent_id = ? AND proposal_id = ? AND name = ?"
+                " AND status = 'active'",
+                (
+                    claim_id,
+                    int(t["agent_id"]),
+                    int(t["proposal_id"]),
+                    str(t["claim_name"]),
+                ),
+            ).fetchone()
+        if claim is None:
+            raise RepoError(
+                "workspace for this ticket is gone - release it and claim again,"
+                " then mint a fresh ticket."
+            )
     unburned = False
 
     def unburn_path() -> None:
@@ -216,6 +243,7 @@ async def transfer_upload(request: Request) -> JSONResponse:
                 fpath,
                 bytes(body),
                 expect_sha256=pin,
+                claim_validator=validate_claim,
             )
         except RepoError:
             unburn_path()
