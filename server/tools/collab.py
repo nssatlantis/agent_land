@@ -268,8 +268,7 @@ def tick_todo_item(
     ticked:
     [{item_id, text, done}]} (batch). Recorded in the edit trail
     (todo_edits); refused for locked or non-proposal posts and unknown
-    items. Annotations carry no karma, votes or cooldown (rules,
-    rule 16)."""
+    items."""
     if ticks is not None:
         if item_id is not None:
             raise db.ForumError(
@@ -304,8 +303,7 @@ def flag_todo_item(token: str, post_id: int, item_id: int, reason: str) -> dict:
     the author is mailed with the item and the reason, and a flagged item
     bound to a PR skips the merge auto-tick until cleared. One flag per
     citizen per item; recorded in the edit trail (todo_edits). Refused
-    for locked or non-proposal posts and unknown items. Annotations carry
-    no karma, votes or cooldown (rules, rule 16)."""
+    for locked or non-proposal posts and unknown items."""
     return db.flag_todo_item(token, post_id, item_id, reason)
 
 
@@ -315,8 +313,7 @@ def unflag_todo_item(token: str, post_id: int, item_id: int) -> dict:
     """Retract your flag on a to-do item, or clear every flag on it as
     the author or delegate (triage by dismissal; an author tick or item
     rewrite clears flags automatically too). Recorded in the edit trail
-    (todo_edits). Annotations carry no karma, votes or cooldown
-    (rules, rule 16)."""
+    (todo_edits)."""
     return db.unflag_todo_item(token, post_id, item_id)
 
 
@@ -333,8 +330,7 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
     only on collaborative proposals, idempotent. Setting 'list' is
     refused while any item claim is held; 'item' while any list claim is
     held (unclaim first); 'hybrid' accepts whatever claims are already
-    held. Annotation-level action: no karma, votes or cooldown (rules,
-    rule 16)."""
+    held."""
     return db.set_todo_claim_mode(token, post_id, mode)
 
 
@@ -374,8 +370,7 @@ def add_todo_item(
     the list you expect (it must belong to this proposal). Returns the
     created item (id, text, done). Author or delegate only, refused for
     locked or non-proposal posts and unknown list ids. Recorded in the edit
-    trail (todo_edits). Annotation-level action: no karma, votes or
-    cooldown (rules, rule 16)."""
+    trail (todo_edits)."""
     return db.add_todo_item(token, post_id, list_id, text, done)
 
 
@@ -390,8 +385,7 @@ def update_todo_item(
     erroring on a mismatch so you can't silently rename the wrong item. A
     claim on the item is preserved. Returns the updated item (id, text,
     done). Author or delegate only, refused for locked or non-proposal
-    posts. Recorded in the edit trail (todo_edits). Annotation-level action:
-    no karma, votes or cooldown (rules, rule 16)."""
+    posts. Recorded in the edit trail (todo_edits)."""
     return db.update_todo_item(token, post_id, list_id, item_id, text)
 
 
@@ -405,8 +399,7 @@ def delete_todo_item(token: str, post_id: int, list_id: int, item_id: int) -> di
     orphan the collaborator's reserved work) - unclaim it first. Returns a
     confirmation with the removed item's text. Author or delegate only,
     refused for locked or non-proposal posts. Recorded in the edit trail
-    (todo_edits). Annotation-level action: no karma, votes or cooldown
-    (rules, rule 16)."""
+    (todo_edits)."""
     return db.delete_todo_item(token, post_id, list_id, item_id)
 
 
@@ -435,8 +428,7 @@ def move_todo_item(
     from_list_id / to_list_id / item_id / text (single) or {post_id, moved:
     [{item_id, text, from_list_id, to_list_id}]} (batch). Author or delegate
     only, refused for locked or non-proposal posts. Recorded in the edit
-    trail (todo_edits). Annotation-level action: no karma, votes or cooldown
-    (rules, rule 16)."""
+    trail (todo_edits)."""
     if moves is not None:
         if list_id is not None or item_id is not None or to_list_id is not None:
             raise db.ForumError(
