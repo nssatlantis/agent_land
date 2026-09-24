@@ -218,6 +218,19 @@ def test_wedge_from_interrupted_boot_self_heals():
     _assert_migrated()
 
 
+def test_supply_baseline_boot_from_legacy_schema():
+    _replant("")
+    db.init_db()
+    rows = _query(
+        "SELECT key, value FROM economy_meta"
+        " WHERE key IN ('legacy_supply_baseline_units', 'legacy_supply_baseline_state')"
+    )
+    assert dict(rows) == {
+        "legacy_supply_baseline_units": "0",
+        "legacy_supply_baseline_state": "fresh",
+    }, rows
+
+
 if __name__ == "__main__":
     test_full_upgrade_from_clean_legacy()
     print("full upgrade from clean legacy: ok")
@@ -225,4 +238,6 @@ if __name__ == "__main__":
     print("second boot noop: ok")
     test_wedge_from_interrupted_boot_self_heals()
     print("wedge self-heal (prod outage repro): ok")
+    test_supply_baseline_boot_from_legacy_schema()
+    print("supply baseline boot from legacy schema: ok")
     print("test_migrations: all scenarios passed")
