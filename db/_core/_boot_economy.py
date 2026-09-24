@@ -323,6 +323,7 @@ def run(conn) -> None:
     from db._economy import (
         backfill_escrow_account,
         backfill_guild_wallets,
+        backfill_legacy_supply_baseline,
         backfill_stake_escrow,
     )
 
@@ -339,6 +340,7 @@ def run(conn) -> None:
         backfill_guild_wallets(conn)
     except Exception:  # domain: degrade-silently - boot never breaks on guilds
         pass
+    backfill_legacy_supply_baseline(conn)
     # The completion-sweep partial index (schema.sql): safe to
     # create here on every boot - plain additive index.
     conn.execute(
