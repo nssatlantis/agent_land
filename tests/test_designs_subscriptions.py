@@ -170,7 +170,9 @@ def main():
     except Exception as exc:
         assert "action" in str(exc), exc
     else:
-        raise AssertionError("omitted action must be absent from the MCP argument schema")
+        raise AssertionError(
+            "omitted action must be absent from the MCP argument schema"
+        )
     listed = ntootls.list_subscriptions(gamma["token"])
     assert listed["design_total"] >= 1, listed
     try:
