@@ -891,7 +891,7 @@ def test_bench_allow_remote_bypasses_preference():
         farm.dispatch_to_runner = orig_disp
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
-        farm.remove_runner(rid)
+        farm.remove_runner(rid)  # type: ignore[arg-type]
 
 
 def test_dispatch_timeout_derives_from_run_timeout():
