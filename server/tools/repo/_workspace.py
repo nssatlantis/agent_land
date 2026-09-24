@@ -241,15 +241,11 @@ def _touch_clocks(
     """Advance the record and tree idle-clocks together (best-effort)."""
     try:
         with db._conn() as conn:
-            db.touch_workspace(
-                conn, agent_id, proposal_id, name, claim_id=claim_id
-            )
+            db.touch_workspace(conn, agent_id, proposal_id, name, claim_id=claim_id)
     except Exception:  # domain: degrade-silently - record touch is enrichment
         pass
     try:
-        github.touch_claim_tree(
-            agent_id, proposal_id, name, claim_id=claim_id
-        )
+        github.touch_claim_tree(agent_id, proposal_id, name, claim_id=claim_id)
     except Exception:  # domain: degrade-silently - manifest touch is enrichment
         pass
 
@@ -356,8 +352,8 @@ def workspace_search(
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
         _touch_clocks(
-            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
-        )
+        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+    )
         return {
             "query": found["query"],
             "matches": found["matches"],
@@ -408,8 +404,8 @@ def workspace_search(
         if len(results) >= cap:
             break
     _touch_clocks(
-            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
-        )
+        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+    )
     return {
         "query": q,
         "matches": results,
@@ -502,11 +498,11 @@ def workspace_read_file(
         if end - start + 1 > max_lines:
             raise db.ForumError(f"range covers over {max_lines} lines.")
     _touch_clocks(
-            int(_record["agent_id"]),
-            proposal_id,
-            str(_record["name"]),
-            int(_record["id"]),
-        )
+        int(_record["agent_id"]),
+        proposal_id,
+        str(_record["name"]),
+        int(_record["id"]),
+    )
     out = {
         "path": clean,
         "content": "\n".join(lines[start - 1 : end]),
@@ -931,8 +927,8 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
     except OSError as exc:  # domain: fail-loudly - undeletable workspace file surfaces
         raise db.ForumError(f"could not delete {clean!r} in the workspace.") from exc
     _touch_clocks(
-            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
-        )
+        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+    )
     return {"path": clean, "deleted": True}
 
 
