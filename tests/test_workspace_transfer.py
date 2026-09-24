@@ -877,6 +877,8 @@ def test_transfer_touch_runs_under_tree_lock(agents):
 
     def assert_touch_under_lock(response_factory, mode):
         acquired = threading.Event()
+        contenders = []
+        blocked_results = []
 
         def observed_touch(*args, **kwargs):
             modes.append(mode)
@@ -886,17 +888,19 @@ def test_transfer_touch_runs_under_tree_lock(agents):
                     acquired.set()
 
             contender = threading.Thread(target=contend)
+            contenders.append(contender)
             contender.start()
             try:
-                blocked = not acquired.wait(0.2)
+                blocked_results.append(not acquired.wait(0.2))
             finally:
                 original_touch(*args, **kwargs)
-                contender.join(2)
-            assert blocked, f"{mode} touch ran after releasing the tree lock"
-            assert not contender.is_alive(), "lock contender did not finish"
 
         with patch.object(TR, "_touch_best_effort", observed_touch):
             response = response_factory()
+        for contender in contenders:
+            contender.join(2)
+        assert blocked_results == [True], blocked_results
+        assert all(not contender.is_alive() for contender in contenders)
         return response
 
     read_ticket = TT.workspace_fetch_ticket(tok, pid, "lockedtouch", ["s.txt"])
