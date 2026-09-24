@@ -105,6 +105,10 @@ EXPECTED = [
     "design_admin_move_item",
     "design_admin_answer",
     "design_admin_toggle_comments",
+    # designs panel-system ops (proposal #694)
+    "design_admin_create_design",
+    "design_admin_edit_design_meta",
+    "design_admin_close_design",
     # routes
     "ROUTES",
 ]

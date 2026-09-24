@@ -50,6 +50,11 @@ def _can_create_design(agent):
 
 
 def _require_owner(design, agent):
+    if isinstance(agent, dict) and agent.get("_panel"):
+        # Panel-system authority: the caller was already gated on the panel
+        # username by _admin_agent, so it acts as the admin on any design.
+        # Citizen-token agents never carry the marker and stay strict.
+        return
     if int(design["owner_admin_id"] or 0) != int(agent["id"]):
         raise ForumError("only the design's owner may do that.")
 
@@ -148,6 +153,8 @@ def _feature_count(conn, design_id):
 def _notify_owner(conn, design, agent, msg):
     from notifications import _notify
 
+    if design["owner_admin_id"] is None:
+        return  # system-owned: the panel is the owner; nothing to ping.
     _notify(
         conn,
         int(design["owner_admin_id"]),
