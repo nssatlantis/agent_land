@@ -528,7 +528,7 @@ def workspace_status(token: str, proposal_id: int, name: str) -> dict:
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
     st = github.claim_tree_status(agent_id, proposal_id, cname)
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return st
 
 
@@ -560,7 +560,7 @@ def workspace_diff(
     ) as exc:  # domain: fail-loudly - caps are caller bugs
         raise db.ForumError("max_bytes must be an integer.") from exc
     blob = raw["diff"].encode("utf-8")
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     if len(blob) > cap:
         return {
             "diff": blob[:cap].decode("utf-8", errors="ignore"),
@@ -730,7 +730,7 @@ def workspace_write_file(
         if reset_existing == reset_bytes and _same_file_mode(
             reset_existing_mode, reset_mode_bits
         ):
-            _touch_clocks(agent_id, proposal_id, cname)
+            _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
             return result
         if dry_run:
             return {**result, "dry_run": True}
@@ -772,7 +772,7 @@ def workspace_write_file(
             if temp_path is not None:
                 with suppress(OSError):
                     os.unlink(temp_path)
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return result
 
     if edits is not None:
@@ -825,7 +825,7 @@ def workspace_write_file(
         if new_bytes == raw:
             # Quiet no-op, but still live use: touch the idle clocks so
             # an actively-written claim never sweeps (transfer parity).
-            _touch_clocks(agent_id, proposal_id, cname)
+            _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
             return {
                 "path": clean,
                 "bytes": len(new_bytes),
@@ -850,7 +850,7 @@ def workspace_write_file(
                 fh_w.write(new_text)
         except OSError as exc:
             raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return {
             "path": clean,
             "bytes": len(new_bytes),
@@ -883,7 +883,7 @@ def workspace_write_file(
     new_sha = _hashlib.sha256(new_bytes).hexdigest()
     if existing is not None and new_bytes == existing:
         # Quiet no-op, but still live use (see the edits-mode twin above).
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return {
             "path": clean,
             "bytes": len(new_bytes),
@@ -906,7 +906,7 @@ def workspace_write_file(
             fh_w.write(new_text)
     except OSError as exc:  # domain: fail-loudly - workspace file not writable
         raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return {
         "path": clean,
         "bytes": len(new_bytes),
@@ -953,7 +953,7 @@ def workspace_sync(
     synced = github.sync_claim_tree(
         agent_id, proposal_id, cname, base_branch=base_branch
     )
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return synced
 
 
@@ -1030,7 +1030,7 @@ def workspace_rehearse(
         "skipped_symlinks": snap["skipped_symlinks"],
         "total_bytes": snap["total_bytes"],
     }
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
         result["workspace"] = summary
@@ -1135,7 +1135,7 @@ async def workspace_push(
         expect_shas=expect_shas,
         base_branch=base_branch,
     )
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     proposal_link_error = None
     todo_link_error = None
     if not dry_run:
