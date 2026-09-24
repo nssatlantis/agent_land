@@ -101,7 +101,8 @@ def _similarity_warn(conn, design_id, text, viewer_id):
     rows = conn.execute(
         "SELECT id, text FROM design_features WHERE design_id = ?"
         " AND op = 'add'"
-        " AND (state = 'accepted' OR (author_id = ? AND state = 'pending'))",
+        " AND (state = 'accepted'"
+        " OR (author_id = ? AND state IN ('pending', 'rejected')))",
         (int(design_id), int(viewer_id)),
     ).fetchall()
     for r in rows:
