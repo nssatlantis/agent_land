@@ -188,8 +188,8 @@ async def transfer_upload(request: Request) -> JSONResponse:
         pin = (t.get("expect_shas") or {}).get(fpath)
     except Exception:  # domain: degrade-silently - corrupt pins read as unpinned
         pin = None
-    try:
-        receipt = await asyncio.to_thread(
+    apply = asyncio.create_task(
+        asyncio.to_thread(
             _ws.apply_transfer_bytes,
             int(t["agent_id"]),
             int(t["proposal_id"]),
@@ -198,25 +198,32 @@ async def transfer_upload(request: Request) -> JSONResponse:
             bytes(body),
             expect_sha256=pin,
         )
-    except RepoError as exc:
-        # A failed apply unburns its path: the redeem serialized
-        # concurrents, so at most this holder ever proceeds - refunding
-        # cannot re-arm a second writer. Fixable failures (bad bytes,
-        # moved budget) retry on the same ticket; only a stale pin needs
-        # a fresh mint, since the ticket's pin is immutable.
-        try:
-            db.unburn_transfer_path(ticket, fpath)
-        except (
-            Exception
-        ) as _ue:  # domain: degrade-silently - the burn stands; original error answers
-            import logging as _logging
+    )
 
-            _logging.getLogger(__name__).warning(
-                "transfer unburn failed for %s (proposal %s)",
-                fpath,
-                t.get("proposal_id"),
-                exc_info=True,
-            )
+    def unburn_apply_failure(done: asyncio.Task[dict]) -> None:
+        if done.cancelled():
+            return
+        try:
+            done.result()
+        except RepoError:
+            try:
+                db.unburn_transfer_path(ticket, fpath)
+            except Exception:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "transfer unburn failed for %s (proposal %s)",
+                    fpath,
+                    t.get("proposal_id"),
+                    exc_info=True,
+                )
+        except Exception:
+            pass
+
+    apply.add_done_callback(unburn_apply_failure)
+    try:
+        receipt = await asyncio.shield(apply)
+    except RepoError as exc:
         return _repo_fail(exc)
     # Touch on validation, not on bytes moved: a quiet no-op upload is
     # still live use of the claim.
