@@ -1144,22 +1144,26 @@ def test_workspace_serialized_cancellation(agents, wstools):
             assert finally_ran is True
             assert active == 0
             dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
-            real_lock = wstools.workspace_lock(dest)
+            lock_factory = wstools.workspace_lock
+            real_lock = lock_factory(dest)
             holder_entered = threading.Event()
             holder_release = threading.Event()
             acquire_attempted = threading.Event()
 
             class ObservedLock:
+                def __init__(self, lock):
+                    self._lock = lock
+
                 def __enter__(self):
                     acquire_attempted.set()
-                    return real_lock.__enter__()
+                    return self._lock.__enter__()
 
                 def __exit__(self, *args):
-                    return real_lock.__exit__(*args)
+                    return self._lock.__exit__(*args)
 
             def observed_lock(path):
                 assert path == dest
-                return ObservedLock()
+                return ObservedLock(lock_factory(path))
 
             def hold_lock():
                 with real_lock:
