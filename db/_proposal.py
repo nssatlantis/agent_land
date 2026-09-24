@@ -856,7 +856,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         raise ForumError("value must be 1 (approve) or -1 (oppose).")
     from db._agent import _daily_resets_at, _daily_votes_used
 
-    with _conn() as conn:
+    with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id, collaborative"
