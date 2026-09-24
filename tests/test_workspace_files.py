@@ -457,6 +457,12 @@ def test_read_at_ref(agents, wstools):
 def test_workspace_reset(agents, wstools):
     sb = _FilesSandbox()
     try:
+        with patch.object(wstools.os, "name", "nt"):
+            assert wstools._same_file_mode(0o644, 0o664)
+            assert not wstools._same_file_mode(0o644, 0o466)
+        with patch.object(wstools.os, "name", "posix"):
+            assert wstools._same_file_mode(0o644, 0o644)
+            assert not wstools._same_file_mode(0o644, 0o664)
         pid, tok = _claim(agents, wstools, "alpha", "Reset Shop")
         w = wstools.workspace_write_file
         r = wstools.workspace_read_file
