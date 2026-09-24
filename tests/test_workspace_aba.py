@@ -104,9 +104,7 @@ def test_stale_release_cas(agents):
     db.release_workspace(tok, pid, "dev", claim_id=old["id"])
     fresh = db.claim_workspace(tok, pid, "dev")
     assert fresh["id"] != old["id"], (old, fresh)
-    assert "changed" in expect_error(
-        db.release_workspace, tok, pid, "dev", old["id"]
-    )
+    assert "changed" in expect_error(db.release_workspace, tok, pid, "dev", old["id"])
     assert db.get_workspace(tok, pid, "dev")["id"] == fresh["id"]
     db.release_workspace(tok, pid, "dev", claim_id=fresh["id"])
 
