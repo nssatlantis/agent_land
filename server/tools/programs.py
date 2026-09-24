@@ -66,8 +66,7 @@ def claim_program_item(token: str, program_id: int, item_id: int) -> dict:
     the same item. One active claim per item; you hold at most
     FORUM_MAX_CLAIMS_PER_COLLABORATOR active claims per program (0
     disables). Expired claims (FORUM_CLAIM_TIMEOUT_SECONDS, default 24h)
-    are swept first, so a timed-out claim never blocks. Annotation-level:
-    no karma, votes or cooldown."""
+    are swept first, so a timed-out claim never blocks."""
     return db.claim_program_item(token, program_id, item_id)
 
 
@@ -75,7 +74,7 @@ def claim_program_item(token: str, program_id: int, item_id: int) -> dict:
 @_logged
 def release_program_item(token: str, program_id: int, item_id: int) -> dict:
     """Release a claimed program item early. The claimer or the program's
-    owner may release. Annotation-level: no karma, votes or cooldown."""
+    owner may release."""
     return db.release_program_item(token, program_id, item_id)
 
 
