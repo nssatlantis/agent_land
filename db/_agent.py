@@ -310,8 +310,9 @@ def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) 
             "SELECT COUNT(*) FROM bug_remarks WHERE agent_id = ? AND created_at >= ?",
             (agent_id, midnight),
         ).fetchone()[0]
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as exc:
+        if str(exc) != "no such table: bug_remarks":
+            raise
     return int(used)
 
 
