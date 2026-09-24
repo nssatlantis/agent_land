@@ -402,14 +402,14 @@ def test_http_upload_apply(agents):
 
 def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     pid = _prop(agents, "beta", title="Async Upload Xfer")
-    tok = agents["alpha"]["token"]
-    _claim(agents, pid, "asyncup", who="alpha")
+    tok = agents["beta"]["token"]
+    _claim(agents, pid, "asyncup", who="beta")
     WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
     pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content_sha256"]
     ticket = TT.workspace_upload_ticket(
         tok, pid, "asyncup", ["held.txt"], {"held.txt": pin}
     )
-    dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "asyncup")
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncup")
     lock_entered = threading.Event()
     apply_entered = threading.Event()
     timing = {}
@@ -457,6 +457,7 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     assert response.status_code == 200, (response.status_code, response.body)
     assert WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content"] == "next"
     print("  async upload lock wait keeps the event loop live: ok")
+    db.release_workspace(tok, pid, "asyncup")
 
 
 def test_http_upload_caps(agents):
