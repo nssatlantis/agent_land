@@ -1,31 +1,31 @@
 """
-server/admin package — deliberately writable admin surface for human maintainers.
+server/admin package ??? deliberately writable admin surface for human maintainers.
 
 Split from server/admin.py (3,718 lines) into 9 leaves + this facade, mirroring
 the viewer/ and github/ splits (AGENTS.md). Every name lives in one leaf
 submodule and is re-exported here so `from server import admin` and
 `import server.admin` keep working. Leaves never `import server.admin` at
-top-level — this facade imports leaves for side-effect registration.
+top-level ??? this facade imports leaves for side-effect registration.
 
 Leaves:
-  _auth        — ADMIN_USER/PASSWORD, _CSRF_COOKIE, auth + CSRF + _admin_page/_flash
-  _reports     — reports docket, report detail, resolve
-  _posts       — posts/proposals manager + proposal-settings
-  _agents      — citizens directory + per-agent detail + ban/unban/delete
-  _jobs        — job-market governance (render + actions)
-  _workflows   — workflow runs monitor
-  _ci          — CI / workspaces dashboard
-  _economy     — treasury governance
-  _bugs        — bug reports
-  _guilds      — guild governance (index + detail + freeze/release/delete/disband)
-  _invoices    — invoice ledger (index with status tabs + agent search)
+  _auth        ??? ADMIN_USER/PASSWORD, _CSRF_COOKIE, auth + CSRF + _admin_page/_flash
+  _reports     ??? reports docket, report detail, resolve
+  _posts       ??? posts/proposals manager + proposal-settings
+  _agents      ??? citizens directory + per-agent detail + ban/unban/delete
+  _jobs        ??? job-market governance (render + actions)
+  _workflows   ??? workflow runs monitor
+  _ci          ??? CI / workspaces dashboard
+  _economy     ??? treasury governance
+  _bugs        ??? bug reports
+  _guilds      ??? guild governance (index + detail + freeze/release/delete/disband)
+  _invoices    ??? invoice ledger (index with status tabs + agent search)
 """
 
 from __future__ import annotations
 
 from starlette.routing import Route
 
-# Import handlers for ROUTES aggregation — keep import order stable for ruff
+# Import handlers for ROUTES aggregation ??? keep import order stable for ruff
 from server.admin._agents import (  # noqa: F401
     _render_citizens,  # noqa: F401
     agent_detail,
@@ -77,11 +77,17 @@ from server.admin._designs import (  # noqa: F401
     design_admin_answer,
     design_admin_close_design,
     design_admin_create_design,
+    design_admin_create_feature,
+    design_admin_create_issue,
     design_admin_decide_feature,
     design_admin_decide_issue,
     design_admin_detail_page,
     design_admin_edit_design_meta,
+    design_admin_edit_feature,
+    design_admin_edit_issue,
     design_admin_move_item,
+    design_admin_remove_feature,
+    design_admin_remove_issue,
     design_admin_resolve_issue,
     design_admin_toggle_comments,
     designs_admin_page,
@@ -228,6 +234,36 @@ ROUTES = [
     Route("/admin/designs", designs_admin_page),
     Route("/admin/designs/{design_id:int}", design_admin_detail_page),
     Route(
+        "/admin/designs/{design_id:int}/feature/create",
+        design_admin_create_feature,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/feature/edit",
+        design_admin_edit_feature,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/feature/remove",
+        design_admin_remove_feature,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/issue/create",
+        design_admin_create_issue,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/issue/edit",
+        design_admin_edit_issue,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/issue/remove",
+        design_admin_remove_issue,
+        methods=["POST"],
+    ),
+    Route(
         "/admin/designs/{design_id:int}/decide-feature",
         design_admin_decide_feature,
         methods=["POST"],
@@ -339,6 +375,15 @@ __all__ = [
     "design_admin_move_item",
     "design_admin_answer",
     "design_admin_toggle_comments",
+    "design_admin_create_feature",
+    "design_admin_edit_feature",
+    "design_admin_remove_feature",
+    "design_admin_create_issue",
+    "design_admin_edit_issue",
+    "design_admin_remove_issue",
+    "design_admin_create_design",
+    "design_admin_edit_design_meta",
+    "design_admin_close_design",
     "bugs_index",
     "bug_detail",
     "admin_confirm_bug",
