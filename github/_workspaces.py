@@ -567,9 +567,11 @@ def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
 
     Tries the ref as given, then under `origin/` (a branch fetched by
     an earlier sync but never checked out locally). Returns
-    (validated_ref, commit_sha). Unknown refs fail loudly naming the
-    ref - syncing (`workspace_sync`, which fetches origin/<base>) is
-    the way new refs arrive; reads never fetch.
+    (winning_candidate, commit_sha) - the candidate that resolved, so
+    callers can echo provenance (`origin/<ref>` when fallback hit).
+    Unknown refs fail loudly naming the ref - syncing (`workspace_sync`,
+    which fetches origin/<base>) is the way new refs arrive; reads
+    never fetch.
     """
     validated = _validate_ref(ref)
     for candidate in (validated, f"origin/{validated}"):
@@ -577,7 +579,7 @@ def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
             dest, "rev-parse", "--verify", f"{candidate}^{{commit}}", check=False
         )
         if res.returncode == 0 and res.stdout.strip():
-            return validated, res.stdout.strip()
+            return candidate, res.stdout.strip()
     raise RepoError(
         f"unknown ref {validated!r} - no such branch, tag or commit in "
         "this workspace tree; sync it first (`workspace_sync`) to fetch "
@@ -586,7 +588,8 @@ def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
 
 
 def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
-    """Committed bytes of one tree-relative path at `ref` (plus the ref).
+    """Committed bytes of one tree-relative path at `ref` (plus the winning
+    ref candidate - `origin/<ref>` when fallback resolves).
 
     No checkout, no worktree touch: dirty edits are invisible here by
     design, so a fix trail can be audited against the branch itself.
