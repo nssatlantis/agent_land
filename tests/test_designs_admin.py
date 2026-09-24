@@ -123,6 +123,41 @@ def main():
     )
     print("  move/answer/toggle: ok")
 
+    # --- direct admin authoring ----------------------------------------------
+    direct_feature = admin.admin_create_feature(
+        "alpha", did, "Admin-authored accepted feature"
+    )
+    assert direct_feature["state"] == "accepted", direct_feature
+    admin.admin_edit_feature(
+        "alpha", did, direct_feature["feature_id"], "Admin-authored edited feature"
+    )
+    direct_issue = admin.admin_create_issue(
+        "alpha",
+        did,
+        "Admin-authored accepted issue",
+        feature_id=direct_feature["feature_id"],
+    )
+    assert direct_issue["state"] == "accepted", direct_issue
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        direct_issue["issue_id"],
+        "Admin-authored edited issue",
+        feature_id=None,
+    )
+    history = admin.admin_design_history("alpha", did)
+    assert any(
+        f["id"] == direct_feature["feature_id"] and f["state"] == "accepted"
+        for f in history["features"]
+    ), history
+    assert any(
+        i["id"] == direct_issue["issue_id"] and i["state"] == "accepted"
+        for i in history["issues"]
+    ), history
+    admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
+    admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
+    print("  direct authoring: ok")
+
     # --- parity: mirrored fixtures, identical end states -----------------------
     with db._conn() as conn:
         conn.execute("UPDATE designs SET created_at = '2020-01-01T00:00:00.000Z'")
