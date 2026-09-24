@@ -210,12 +210,8 @@ def test_read_tools_wait_for_tree_lock(agents, wstools):
             assert not worker.is_alive(), "read tool did not finish after unlock"
             assert not errors, errors
 
-        assert_serialized(
-            lambda: wstools.workspace_list_tree(tok, pid, "dev")
-        )
-        assert_serialized(
-            lambda: wstools.workspace_search(tok, pid, "dev", "seed")
-        )
+        assert_serialized(lambda: wstools.workspace_list_tree(tok, pid, "dev"))
+        assert_serialized(lambda: wstools.workspace_search(tok, pid, "dev", "seed"))
         assert_serialized(
             lambda: wstools.workspace_read_file(tok, pid, "dev", "README.md")
         )
