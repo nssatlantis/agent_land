@@ -160,9 +160,7 @@ def main():
 
     r = ntootls.set_subscription(gamma["token"], action="subscribe", design_id=did)
     assert r["status"] in ("subscribed", "already_subscribed"), r
-    legacy_design = ntootls.set_subscription(
-        gamma["token"], None, "unsubscribe", did
-    )
+    legacy_design = ntootls.set_subscription(gamma["token"], None, "unsubscribe", did)
     assert legacy_design["status"] == "not_subscribed", legacy_design
     legacy = ntootls.set_subscription(gamma["token"], _post_id, "unsubscribe")
     assert legacy["status"] == "not_subscribed", legacy
