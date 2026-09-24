@@ -115,7 +115,7 @@ def _search_with_ref(
         budget_bytes = _transfer_file_cap_bytes()
     try:
         budget = int(budget_bytes)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # domain: degrade-silently - bad budget takes 1MB
         budget = 1 << 20
     if budget <= 0:
         budget = 1 << 20
@@ -176,7 +176,7 @@ def _search_with_ref(
                 raise RepoError("repo_search timed out while searching the branch.")
             try:
                 item = pieces.get(timeout=wait)
-            except queue.Empty:
+            except queue.Empty:  # domain: fail-loudly - silent grep trips deadline
                 raise RepoError(
                     "repo_search timed out while searching the branch."
                 ) from None
@@ -198,14 +198,14 @@ def _search_with_ref(
         proc.wait()
         try:
             err_text = (err.read() or b"").decode("utf-8", errors="replace")
-        except OSError:
+        except OSError:  # domain: degrade-silently - unreadable stderr, empty detail
             err_text = ""
         out.close()
         err.close()
         try:
             while True:
                 pieces.get_nowait()
-        except queue.Empty:
+        except queue.Empty:  # domain: degrade-silently - empty queue means drained
             pass
         reader.join(timeout=5)
     if proc.returncode not in (0, 1):
