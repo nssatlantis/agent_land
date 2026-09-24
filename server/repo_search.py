@@ -11,8 +11,11 @@ routes trust.
 from __future__ import annotations
 
 import os
+import queue
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import config
@@ -44,8 +47,12 @@ def _trim_search_line(line: str) -> str:
     return line[: config.REPO_SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
 
 
-def _resolve_ref_commit(ref: str, repo_dir: str | None = None) -> str:
-    """Resolve ref to a commit SHA via local git. Tries `ref` then `origin/<ref>`."""
+def _resolve_ref_commit(ref: str, repo_dir: str | None = None) -> tuple[str, str]:
+    """Resolve ref to (winning candidate, commit SHA) via local git.
+
+    Tries `ref` then `origin/<ref>`; the winning candidate is returned so
+    callers can echo provenance (`origin/<ref>` when fallback resolved).
+    """
     if repo_dir is None:
         repo_dir = str(Path(db.REPO_DIR).resolve())
     else:
@@ -70,7 +77,7 @@ def _resolve_ref_commit(ref: str, repo_dir: str | None = None) -> str:
         if proc.returncode == 0:
             sha = proc.stdout.strip()
             if sha:
-                return sha
+                return candidate, sha
     raise RepoError(
         f"unknown ref {ref!r} - no such branch, tag or commit in the local checkout."
     )
@@ -82,24 +89,40 @@ def _search_with_ref(
     ref: str,
     repo_dir: str | None = None,
     allowlist: bool = True,
+    budget_bytes: int | None = None,
 ) -> dict:
     """Search the committed tree at `ref` via `git grep` — no checkout, no API.
 
     `repo_dir` roots the search (defaults to the server checkout, so
     `repo_search` is unaffected); `allowlist=False` searches every
     tracked blob regardless of extension (the workspace file universe),
-    while True keeps the record/code allowlist.
+    while True keeps the record/code allowlist. `budget_bytes` caps the
+    raw grep output held before parsing (defaults to the transfer cap):
+    response caps bound the reply, but only this budget bounds the
+    subprocess — an over-budget match refuses instead of bloating the
+    worker. The winning ref candidate rides `ref` in the reply
+    (`origin/<ref>` when fallback resolved, so provenance is auditable).
     """
     ref = _validate_ref(ref)
-    commit = _resolve_ref_commit(ref, repo_dir)
+    resolved, commit = _resolve_ref_commit(ref, repo_dir)
     if repo_dir is None:
         repo_dir = str(Path(db.REPO_DIR).resolve())
     else:
         repo_dir = str(Path(repo_dir).resolve())
+    if budget_bytes is None:
+        from github._workspaces import _transfer_file_cap_bytes
+
+        budget_bytes = _transfer_file_cap_bytes()
+    try:
+        budget = int(budget_bytes)
+    except (TypeError, ValueError):
+        budget = 1 << 20
+    if budget <= 0:
+        budget = 1 << 20
     # Fixed-string, case-insensitive, no binary, line numbers.
     # `git grep -n -i -F -I` at a rev outputs "<rev>:<path>:<line>:<text>".
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [
                 "git",
                 "-C",
@@ -114,20 +137,80 @@ def _search_with_ref(
                 commit,
                 "--",
             ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    except (
-        subprocess.TimeoutExpired
-    ):  # domain: fail-loudly - grep timeout must surface to caller
-        raise RepoError("repo_search timed out while searching the branch.") from None
+    except FileNotFoundError:  # domain: fail-loudly - no git surfaces
+        raise RepoError("git is not installed or not in PATH") from None
+    except OSError as exc:  # domain: fail-loudly - unspawnable git surfaces
+        raise RepoError(f"repo_search could not start git grep: {exc}") from None
+    assert proc.stdout is not None and proc.stderr is not None
+    # Bounded queue: backpressure into git's pipe, so the held output can
+    # never exceed the budget plus a few chunks no matter how the reader
+    # thread races ahead; the finally-block drains it before reaping.
+    pieces: queue.Queue = queue.Queue(maxsize=8)
+
+    def _drain() -> None:
+        try:
+            while True:
+                part = proc.stdout.read(65536)
+                if not part:
+                    break
+                pieces.put(part)
+        except Exception as exc:  # domain: fail-loudly - reader errors surface
+            pieces.put(exc)
+        finally:
+            pieces.put(None)
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + 30
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            wait = deadline - time.monotonic()
+            if wait <= 0:
+                raise RepoError("repo_search timed out while searching the branch.")
+            try:
+                item = pieces.get(timeout=wait)
+            except queue.Empty:
+                raise RepoError(
+                    "repo_search timed out while searching the branch."
+                ) from None
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise RepoError(f"repo_search failed on ref {ref!r}: {item}") from None
+            total += len(item)
+            if total > budget:
+                raise RepoError(
+                    f"search at ref {resolved!r} produced over the "
+                    f"{budget / (1 << 20):g}MB output cap - narrow the query."
+                )
+            chunks.append(item)
+        text_out = b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        try:
+            err_text = (proc.stderr.read() or b"").decode("utf-8", errors="replace")
+        except OSError:
+            err_text = ""
+        proc.stdout.close()
+        proc.stderr.close()
+        try:
+            while True:
+                pieces.get_nowait()
+        except queue.Empty:
+            pass
+        reader.join(timeout=5)
     if proc.returncode not in (0, 1):
         # 1 = no matches (not an error), 128 = rev not found, else error
-        err = (proc.stderr or proc.stdout).strip()
-        raise RepoError(f"repo_search failed on ref {ref!r}: {err[:300]}")
-    if proc.returncode == 1 or not proc.stdout:
-        return {"query": query, "matches": [], "ref": ref}
+        raise RepoError(f"repo_search failed on ref {ref!r}: {err_text.strip()[:300]}")
+    if proc.returncode == 1 or not text_out:
+        return {"query": query, "matches": [], "ref": resolved}
     try:
         per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
     except (
@@ -137,7 +220,7 @@ def _search_with_ref(
     # Parse git grep output: "<commit>:<path>:<line>:<text>"
     by_file: dict[str, list[dict]] = {}
     order: list[str] = []
-    for raw_line in proc.stdout.splitlines():
+    for raw_line in text_out.splitlines():
         # Split rev prefix off: first colon separates rev from path.
         try:
             _, rest = raw_line.split(":", 1)
