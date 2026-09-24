@@ -828,4 +828,4 @@ def test_farm_retry_exhaustion_audited():
 
 
 if __name__ == "__main__":
-    main()
+    main()  # noqa
