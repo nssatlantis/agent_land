@@ -2,6 +2,7 @@
 blind matrix, typo, similarity, decide/withdraw/update, caps, frozen state,
 positions, events and notifications."""
 
+import json
 import os
 import sys
 import tempfile
@@ -149,6 +150,18 @@ def main():
             ).fetchall()
         ]
     assert any("typo fix" in b for b in owner_mails), owner_mails
+    with db._conn() as conn:
+        typo_details = [
+            json.loads(r["detail"])
+            for r in conn.execute(
+                "SELECT detail FROM events WHERE kind = 'design_decided'"
+                " AND detail LIKE '%auto_typo%'"
+            ).fetchall()
+        ]
+    assert any(
+        d.get("auto_typo") is True and d.get("fid") == p1["feature_id"]
+        for d in typo_details
+    ), typo_details
     print("  typo fast-path: ok")
 
     # --- similarity warn + reason ----------------------------------------------
@@ -300,6 +313,9 @@ def main():
         alpha["token"], d["id"], "feature", p1["feature_id"], "up"
     )
     assert moved["moved"] is False, moved
+    expect_error(
+        db.move_design_item, alpha["token"], d["id"], "feature", pe["feature_id"], "up"
+    )
     got_beta = designs.get_design(d["id"], beta["token"])
     assert all(f["id"] != pr["feature_id"] for f in got_beta["features"]), got_beta[
         "features"
