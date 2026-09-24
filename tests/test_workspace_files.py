@@ -6,7 +6,9 @@ list without .git, status/diff pins, delete semantics, sync
 fast-forward plus dirty-refusal, both-clocks touch, per-write budget,
 path guards (.git/manifest/traversal/protected), owner isolation, and
 ref reads (committed bytes at branch/tag/sha with dirt invisible,
-unknown/invalid-ref and dir/missing pins).
+unknown/invalid-ref and dir/missing pins), and guarded per-file reset
+from HEAD or a named ref including dry-run, stale, missing-live-file,
+untracked, binary, empty, and mode-validation edges.
 """
 
 import os
@@ -383,6 +385,150 @@ def test_read_at_ref(agents, wstools):
     print("  ref reads (committed vs dirty): ok")
 
 
+def test_workspace_reset(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Reset Shop")
+        w = wstools.workspace_write_file
+        r = wstools.workspace_read_file
+        aid = agents["alpha"]["agent_id"]
+        dest = ws._claim_dir(aid, pid, "dev")
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+
+        w(tok, pid, "dev", "README.md", "dirty one\n")
+        first_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+        assert "stale base" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_sha256=first_sha,
+        )
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+
+        current_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        preview = w(
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_sha256=current_sha,
+            dry_run=True,
+        )
+        assert preview["reset"] is True and preview["ref"] == "HEAD", preview
+        assert preview["changed"] is True and preview["dry_run"] is True, preview
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+
+        restored = w(tok, pid, "dev", "README.md", reset=True)
+        assert restored["reset"] is True and restored["ref"] == "HEAD", restored
+        assert restored["changed"] is True and restored["bytes"] == 5, restored
+        assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+        noop = w(tok, pid, "dev", "README.md", reset=True)
+        assert noop["changed"] is False, noop
+
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        restored_missing = w(tok, pid, "dev", "README.md", reset=True)
+        assert restored_missing["changed"] is True, restored_missing
+        assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+
+        w(tok, pid, "dev", "fresh.txt", "new\n")
+        assert "no file at" in _expect_tool_error(
+            w, tok, pid, "dev", "fresh.txt", reset=True
+        )
+        wstools.workspace_delete_file(tok, pid, "dev", "fresh.txt")
+
+        w(tok, pid, "dev", "named.txt", "base one\n")
+        _git("-C", dest, "add", "named.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "named base",
+        )
+        _git("-C", dest, "branch", "reset-base")
+        w(tok, pid, "dev", "named.txt", "dirty named\n")
+        named = w(
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="reset-base",
+        )
+        assert named["ref"] == "reset-base" and named["changed"] is True, named
+        assert r(tok, pid, "dev", "named.txt")["content"] == "base one"
+        assert "unknown ref" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="missing-reset-ref",
+        )
+        assert "exactly one" in _expect_tool_error(
+            w, tok, pid, "dev", "named.txt", "content\n", reset=True
+        )
+        assert "exactly one" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            edits=[{"find": "base", "replace": "dirty"}],
+            reset=True,
+        )
+        assert "base_ref is valid only" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            "content\n",
+            base_ref="HEAD",
+        )
+
+        Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00binary\n")
+        Path(dest, "empty.txt").write_text("", encoding="utf-8")
+        _git("-C", dest, "add", "blob.bin", "empty.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "reset edge bytes",
+        )
+        assert "not UTF-8" in _expect_tool_error(
+            w, tok, pid, "dev", "blob.bin", reset=True
+        )
+        assert "empty file" in _expect_tool_error(
+            w, tok, pid, "dev", "empty.txt", reset=True
+        )
+
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace reset mode: ok")
+
+
 def test_owner_isolation(agents, wstools):
     sb = _FilesSandbox()
     try:
@@ -489,7 +635,7 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "a", "replace": "b"}],
         )
-        assert "not both" in _expect_tool_error(
+        assert "exactly one" in _expect_tool_error(
             w,
             tok,
             pid,
@@ -621,6 +767,7 @@ def main():
     test_sync_and_clocks_and_budget(agents, wstools)
     test_workspace_edits(agents, wstools)
     test_read_at_ref(agents, wstools)
+    test_workspace_reset(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 

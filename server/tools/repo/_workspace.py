@@ -466,27 +466,31 @@ def workspace_write_file(
     edits: list[dict] | None = None,
     expect_sha256: str | None = None,
     dry_run: bool = False,
+    reset: bool = False,
+    base_ref: str | None = None,
 ) -> dict:
-    """Create or overwrite one file in a workspace tree (text).
+    """Create, overwrite, patch, or reset one file in a workspace tree.
 
-    Two modes, never both: pass `content` for a whole-file write (empty
-    content is refused, like repo_propose_change; deletion goes
-    through workspace_delete_file), or pass `edits=[{find, replace,
-    occurrence}]` to patch an existing file by exact find-replace
-    without resending it (same shape and strictness as
-    repo_propose_change: each find must match exactly once, or
-    occurrence N when the block repeats; a miss, an ambiguity, or a
-    patch on a missing/binary file fails loudly). Per-write budget
-    enforced. Content is EOL-normalized to the file's existing target
-    (LF for new files), like the patch path. Returns {path, bytes,
-    content_sha256, changed} plus `patch_log` (per-op match
-    counts) in edits mode.
+    Exactly one mode is allowed: pass `content` for a whole-file write
+    (empty content is refused; deletion goes through
+    workspace_delete_file), `edits=[{find, replace, occurrence}]` to
+    patch an existing file by exact find-replace without resending it,
+    or `reset=True` to restore the file's committed bytes from `base_ref`
+    (default `HEAD`). Reset restores a missing local file, but it does
+    not delete a new file: the path must exist as non-empty UTF-8 text
+    at the selected ref. Unknown refs, directories, binaries, and write
+    paths outside the workspace fail closed.
+
+    Per-write budget enforced. Content is EOL-normalized to the file's
+    existing target (LF for new files), like the patch path. Returns
+    {path, bytes, content_sha256, changed}, plus `patch_log` in edits
+    mode and `ref` plus `reset=True` in reset mode.
 
     Pass `expect_sha256` (the sha256 from workspace_read_file or a
-    transfer receipt) to refuse a stale base before any byte moves, and
-    `dry_run=True` to validate and preview without writing. Identical
+    transfer receipt) to refuse a stale live file before any byte moves,
+    and `dry_run=True` to validate and preview without writing. Identical
     bytes are a quiet no-op ({changed: False}, tree untouched) rather
-    than a dirtying rewrite.
+    than a dirtying rewrite. `base_ref` is valid only with reset.
     """
     import hashlib as _hashlib
 
@@ -496,11 +500,15 @@ def workspace_write_file(
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
     clean, full = _guard_tree_path(dest, path, write=True)
-    if edits is not None and content is not None:
-        raise db.ForumError(
-            "pass either content or edits, not both "
-            "(whole-file write and patch mode are mutually exclusive)."
-        )
+    modes = sum(
+        1
+        for active in (content is not None, edits is not None, reset is True)
+        if active
+    )
+    if modes > 1:
+        raise db.ForumError("pass exactly one of content, edits, or reset=True.")
+    if base_ref is not None and reset is not True:
+        raise db.ForumError("base_ref is valid only with reset=True.")
     if expect_sha256 is not None and (
         not isinstance(expect_sha256, str)
         or not _EXPECT_SHA_RE.fullmatch(expect_sha256)
@@ -516,6 +524,69 @@ def workspace_write_file(
             f"{have[:12] + '...' if have else 'nothing'} - read again "
             "and rebase the write."
         )
+
+    if reset is True:
+        if os.path.isdir(full):
+            raise db.ForumError(f"path {clean!r} is a directory - only files reset.")
+        reset_existing: bytes | None = None
+        if os.path.isfile(full):
+            try:
+                with open(full, "rb") as fh_rb:
+                    reset_existing = fh_rb.read()
+            except OSError as exc:
+                raise db.ForumError(
+                    f"could not read {clean!r} in the workspace."
+                ) from exc
+        have_sha = (
+            _hashlib.sha256(reset_existing).hexdigest()
+            if reset_existing is not None
+            else None
+        )
+        if expect_sha256 is not None and have_sha != expect_sha256:
+            raise _stale(clean, have_sha)
+        try:
+            reset_bytes, resolved_ref = github.read_file_at_ref(
+                dest, clean, "HEAD" if base_ref is None else base_ref
+            )
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        if not reset_bytes:
+            raise db.ForumError(
+                f"cannot reset {clean!r} - the selected ref has an empty file; "
+                "workspace payloads do not carry empty files."
+            )
+        try:
+            reset_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise db.ForumError(
+                f"cannot reset {clean!r} - it is not UTF-8 text at ref "
+                f"{resolved_ref!r}."
+            ) from None
+        reset_sha = _hashlib.sha256(reset_bytes).hexdigest()
+        result = {
+            "path": clean,
+            "bytes": len(reset_bytes),
+            "content_sha256": reset_sha,
+            "changed": reset_existing != reset_bytes,
+            "reset": True,
+            "ref": resolved_ref,
+        }
+        if reset_existing == reset_bytes:
+            _touch_clocks(agent_id, proposal_id, cname)
+            return result
+        if dry_run:
+            return {**result, "dry_run": True}
+        github.check_claim_budget(
+            agent_id, incoming_mb=len(reset_bytes) / (1024 * 1024)
+        )
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as fh_bin:
+                fh_bin.write(reset_bytes)
+        except OSError as exc:
+            raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
+        _touch_clocks(agent_id, proposal_id, cname)
+        return result
 
     if edits is not None:
         try:
