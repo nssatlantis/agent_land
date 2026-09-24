@@ -486,6 +486,7 @@ def _close_form(did: int, history: dict, csrf: str) -> str:
     feature_ids = ",".join(str(int(f["id"])) for f in pending)
     issue_ids = ",".join(str(int(i["id"])) for i in issues)
     question_ids = ",".join(str(int(q["id"])) for q in questions)
+    preview_digest = str(history.get("preview_digest") or "")
     return (
         "<h3>Archive (2-step)</h3>"
         f"<form method='post' action='/admin/designs/{did}/close'>"
@@ -493,6 +494,7 @@ def _close_form(did: int, history: dict, csrf: str) -> str:
         f"<input type='hidden' name='preview_feature_ids' value='{esc(feature_ids)}'/>"
         f"<input type='hidden' name='preview_issue_ids' value='{esc(issue_ids)}'/>"
         f"<input type='hidden' name='preview_question_ids' value='{esc(question_ids)}'/>"
+        f"<input type='hidden' name='preview_digest' value='{esc(preview_digest)}'/>"
         "<label><input type='checkbox' name='confirm'/> confirm - drop pending"
         " features/issues and open questions, freeze read-only</label>"
         " <button type='submit'>archive</button></form>"
@@ -778,6 +780,7 @@ async def design_admin_close_design(request):
             preview_feature_ids=form.get("preview_feature_ids"),
             preview_issue_ids=form.get("preview_issue_ids"),
             preview_question_ids=form.get("preview_question_ids"),
+            preview_digest=form.get("preview_digest"),
         )
         if res.get("need_confirm"):
             return (
