@@ -913,7 +913,13 @@ def workspace_rehearse(
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname, delta=True)
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        base_ref = _validate_ref(base_ref)
+    snap = github.snapshot_claim_tree(
+        agent_id, proposal_id, cname, delta=True, base=base_ref
+    )
     if not snap["files"]:
         raise db.ForumError(
             "workspace snapshot is empty - the claim tree has no changes "
@@ -931,10 +937,6 @@ def workspace_rehearse(
     normalized = _changes_for_repo_propose(None, None, snap["files"])
     for entry in normalized:
         _validate_path(entry["path"])
-    if base_ref is not None:
-        from github._core import _validate_ref
-
-        base_ref = _validate_ref(base_ref)
     result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
