@@ -119,12 +119,12 @@ def test_read_ticket_reclaim_aba(agents):
         old = db.get_workspace(tok, pid, "dl")
         ticket = ticket_tools.workspace_fetch_ticket(tok, pid, "dl", ["note.txt"])
         original_read = ws.read_transfer_bytes
+        fresh = {}
 
         def reclaim_before_read(*args, **kwargs):
-            workspace_tools.release_workspace(tok, pid, "dl")
-            workspace_tools.claim_workspace(tok, pid, "dl")
-            fresh = db.get_workspace(tok, pid, "dl")
-            assert fresh["id"] != old["id"], (old, fresh)
+            db.release_workspace(tok, pid, "dl", claim_id=old["id"])
+            fresh["claim"] = db.claim_workspace(tok, pid, "dl")
+            assert fresh["claim"]["id"] != old["id"], (old, fresh)
             return original_read(*args, **kwargs)
 
         with patch.object(ws, "read_transfer_bytes", reclaim_before_read):
@@ -133,7 +133,7 @@ def test_read_ticket_reclaim_aba(agents):
             )
         assert response.status_code == 404, (response.status_code, response.body)
         assert "gone" in response.body.decode(), response.body
-        workspace_tools.release_workspace(tok, pid, "dl")
+        db.release_workspace(tok, pid, "dl", claim_id=fresh["claim"]["id"])
     finally:
         sb.close()
 
