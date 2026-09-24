@@ -267,6 +267,7 @@ def _resolve_claim_tree(token: str, proposal_id: int, name: str) -> tuple[dict, 
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
     """List one workspace tree's files as {path, size}, .git excluded."""
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
@@ -287,6 +288,7 @@ def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_search(
     token: str,
     proposal_id: int,
@@ -419,6 +421,7 @@ def workspace_search(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_read_file(
     token: str,
     proposal_id: int,
@@ -521,6 +524,7 @@ def workspace_read_file(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_status(token: str, proposal_id: int, name: str) -> dict:
     """Live git status for one workspace tree (dirty, head, changes)."""
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
@@ -533,6 +537,7 @@ def workspace_status(token: str, proposal_id: int, name: str) -> dict:
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_diff(
     token: str,
     proposal_id: int,
@@ -958,6 +963,7 @@ def workspace_sync(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_rehearse(
     token: str,
     proposal_id: int,
