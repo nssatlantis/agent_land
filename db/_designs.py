@@ -187,7 +187,7 @@ def _log_decided(conn, agent, design_id, detail):
     events.log_event(
         events.EVT_DESIGN_DECIDED,
         actor_agent_id=agent["id"],
-        actor_name=agent.get("name"),
+        actor_name=agent["name"],
         target_type="design",
         target_id=int(design_id),
         detail=detail,
