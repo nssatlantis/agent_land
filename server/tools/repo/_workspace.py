@@ -16,7 +16,7 @@ import config
 import db
 import github
 from github._core import _validate_path
-from github._workspaces import _transfer_file_cap_bytes
+from github._workspaces import _transfer_file_cap_bytes, read_regular_file_at_ref
 from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
@@ -541,16 +541,31 @@ def workspace_write_file(
             raise db.ForumError(f"path {clean!r} became a symlink - reset refused.")
         if os.path.isdir(full):
             raise db.ForumError(f"path {clean!r} is a directory - only files reset.")
-        if not os.path.isfile(full):
+        if not os.path.lexists(full):
             return None
+        if not os.path.isfile(full):
+            raise db.ForumError(
+                f"path {clean!r} is not a regular file - reset refused."
+            )
         try:
             with open(full, "rb") as fh_rb:
                 return fh_rb.read()
         except OSError as exc:
             raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
 
+    def _live_file_mode(clean: str, full: str) -> int | None:
+        if not os.path.lexists(full):
+            return None
+        try:
+            return _stat.S_IMODE(os.lstat(full).st_mode)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise db.ForumError(f"could not stat {clean!r} in the workspace.") from exc
+
     if reset is True:
         reset_existing = _live_file_bytes(clean, full)
+        reset_existing_mode = _live_file_mode(clean, full)
         have_sha = (
             _hashlib.sha256(reset_existing).hexdigest()
             if reset_existing is not None
@@ -561,11 +576,8 @@ def workspace_write_file(
         if expect_sha256 is not None and have_sha != expect_sha256:
             raise _stale(clean, have_sha)
         try:
-            reset_bytes, resolved_ref = github.read_file_at_ref(
-                dest,
-                clean,
-                "HEAD" if base_ref is None else base_ref,
-                require_regular=True,
+            reset_bytes, resolved_ref, reset_mode = read_regular_file_at_ref(
+                dest, clean, "HEAD" if base_ref is None else base_ref
             )
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
@@ -582,15 +594,17 @@ def workspace_write_file(
                 f"{resolved_ref!r}."
             ) from None
         reset_sha = _hashlib.sha256(reset_bytes).hexdigest()
+        reset_mode_bits = int(reset_mode, 8) & 0o7777
         result = {
             "path": clean,
             "bytes": len(reset_bytes),
             "content_sha256": reset_sha,
-            "changed": reset_existing != reset_bytes,
+            "changed": reset_existing != reset_bytes
+            or reset_existing_mode != reset_mode_bits,
             "reset": True,
             "ref": resolved_ref,
         }
-        if reset_existing == reset_bytes:
+        if reset_existing == reset_bytes and reset_existing_mode == reset_mode_bits:
             _touch_clocks(agent_id, proposal_id, cname)
             return result
         if dry_run:
@@ -599,20 +613,15 @@ def workspace_write_file(
             agent_id, incoming_mb=len(reset_bytes) / (1024 * 1024)
         )
 
-        def _assert_unchanged() -> int:
-            if _live_file_bytes(clean, full) != reset_existing:
+        def _assert_unchanged() -> None:
+            if (
+                _live_file_bytes(clean, full) != reset_existing
+                or _live_file_mode(clean, full) != reset_existing_mode
+            ):
                 raise db.ForumError(
                     f"concurrent change to {clean!r} while reset was preparing - "
                     "read again and retry."
                 )
-            if reset_existing is None:
-                return 0o644
-            try:
-                return _stat.S_IMODE(os.stat(full).st_mode)
-            except OSError as exc:
-                raise db.ForumError(
-                    f"could not stat {clean!r} in the workspace."
-                ) from exc
 
         os.makedirs(os.path.dirname(full), exist_ok=True)
         _assert_unchanged()
@@ -628,7 +637,7 @@ def workspace_write_file(
                 fh_tmp.write(reset_bytes)
                 fh_tmp.flush()
                 os.fsync(fh_tmp.fileno())
-            os.chmod(temp_path, _assert_unchanged())
+            os.chmod(temp_path, reset_mode_bits)
             os.replace(temp_path, full)
             temp_path = None
         except OSError as exc:

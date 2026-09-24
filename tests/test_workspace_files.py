@@ -442,14 +442,14 @@ def test_workspace_reset(agents, wstools):
         assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
         assert not list(Path(dest, ".git").glob("workspace-reset-*"))
 
-        original_ref_read = wstools.github.read_file_at_ref
+        original_ref_read = wstools.read_regular_file_at_ref
 
         def racing_ref_read(*args, **kwargs):
             result = original_ref_read(*args, **kwargs)
             Path(dest, "README.md").write_text("raced\n", encoding="utf-8")
             return result
 
-        with patch.object(wstools.github, "read_file_at_ref", racing_ref_read):
+        with patch.object(wstools, "read_regular_file_at_ref", racing_ref_read):
             assert "concurrent change" in _expect_tool_error(
                 w,
                 tok,
@@ -529,7 +529,39 @@ def test_workspace_reset(agents, wstools):
             "named base",
         )
         _git("-C", dest, "branch", "reset-base")
+        _git("-C", dest, "branch", "mode-base")
+        os.chmod(Path(dest, "named.txt"), 0o755)
+        _git("-C", dest, "update-index", "--chmod=+x", "named.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "executable base",
+        )
+        _git("-C", dest, "branch", "mode-exec")
         w(tok, pid, "dev", "named.txt", "dirty named\n")
+        exec_reset = w(tok, pid, "dev", "named.txt", reset=True)
+        assert exec_reset["changed"] is True, exec_reset
+        if os.name != "nt":
+            assert os.stat(Path(dest, "named.txt")).st_mode & 0o111, exec_reset
+        w(tok, pid, "dev", "named.txt", "dirty named again\n")
+        mode_reset = w(
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="mode-base",
+        )
+        assert mode_reset["ref"] == "mode-base", mode_reset
+        assert mode_reset["changed"] is True, mode_reset
+        if os.name != "nt":
+            assert not os.stat(Path(dest, "named.txt")).st_mode & 0o111, mode_reset
         named = w(
             tok,
             pid,
@@ -538,7 +570,7 @@ def test_workspace_reset(agents, wstools):
             reset=True,
             base_ref="reset-base",
         )
-        assert named["ref"] == "reset-base" and named["changed"] is True, named
+        assert named["ref"] == "reset-base" and named["changed"] is False, named
         assert r(tok, pid, "dev", "named.txt")["content"] == "base one"
         assert "unknown ref" in _expect_tool_error(
             w,
@@ -570,6 +602,20 @@ def test_workspace_reset(agents, wstools):
             "content\n",
             base_ref="HEAD",
         )
+
+        if hasattr(os, "mkfifo"):
+            fifo = Path(dest, "live.fifo")
+            os.mkfifo(fifo)
+            assert "not a regular" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "live.fifo",
+                reset=True,
+                expect_absent=True,
+            )
+            fifo.unlink()
 
         link_blob = (
             subprocess.run(
