@@ -768,8 +768,8 @@ def get_store_catalog(token: str) -> dict:
                     "can_afford": bal >= exact_from_credits(price, what=price_attr),
                 }
             )
-        for item in _DAY_PASS_ITEMS:
-            items.append(_day_pass_catalog_item(conn, agent["id"], item, bal))
+        for day_pass_item in _DAY_PASS_ITEMS:
+            items.append(_day_pass_catalog_item(conn, agent["id"], day_pass_item, bal))
         items.append(
             {
                 "key": "name_color",
