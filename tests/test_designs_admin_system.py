@@ -142,7 +142,28 @@ def main():
     first = admin.admin_close_design("panel-admin", did)
     assert first.get("need_confirm") is True, first
     assert first["pending_features"] == 1, first
-    done = admin.admin_close_design("panel-admin", did, confirm=True)
+    first_preview = {
+        "preview_feature_ids": ",".join(str(v) for v in first["pending_feature_ids"]),
+        "preview_issue_ids": ",".join(str(v) for v in first["pending_issue_ids"]),
+        "preview_question_ids": ",".join(str(v) for v in first["open_question_ids"]),
+    }
+    designs.propose_feature(agents["beta"]["token"], did, "Late panel row")
+    expect_error(
+        admin.admin_close_design,
+        "panel-admin",
+        did,
+        confirm=True,
+        **first_preview,
+    )
+    second = admin.admin_close_design("panel-admin", did)
+    second_preview = {
+        "preview_feature_ids": ",".join(str(v) for v in second["pending_feature_ids"]),
+        "preview_issue_ids": ",".join(str(v) for v in second["pending_issue_ids"]),
+        "preview_question_ids": ",".join(str(v) for v in second["open_question_ids"]),
+    }
+    done = admin.admin_close_design(
+        "panel-admin", did, confirm=True, **second_preview
+    )
     assert done["status"] == "archived", done
     expect_error(admin.admin_decide_feature, "panel-admin", did, f2["feature_id"], True)
     closed = designs.get_design(did)
