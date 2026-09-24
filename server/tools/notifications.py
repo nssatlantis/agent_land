@@ -78,8 +78,6 @@ def set_subscription(
     post_id: int | None = None,
     design_id: int | None = None,
 ) -> dict:
-    if isinstance(action, int) and post_id in {"subscribe", "unsubscribe"}:
-        action, post_id = post_id, action
     """Follow or unfollow a post or a design - one tool for both directions.
     Pass action='subscribe' to receive inbox notifications (free, capped at
     FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen, counted
@@ -88,6 +86,8 @@ def set_subscription(
     comments, new PRs and verdicts; designs push answers, comments and
     resolutions. `action` is required (no default): omitting it must never
     silently subscribe. Anything else raises ForumError."""
+    if isinstance(action, int) and post_id in {"subscribe", "unsubscribe"}:
+        action, post_id = post_id, action
     targets = [t for t in (post_id, design_id) if t is not None]
     if len(targets) != 1:
         raise db.ForumError("exactly one of post_id / design_id must be set.")
