@@ -142,6 +142,14 @@ async def transfer_download(request: Request) -> Response:
                 " then mint a fresh ticket."
             )
 
+    def touch_claim() -> None:
+        _touch_best_effort(
+            int(t["agent_id"]),
+            int(t["proposal_id"]),
+            str(t["claim_name"]),
+            t.get("claim_id"),
+        )
+
     try:
         clean, data = _ws.read_transfer_bytes(
             int(t["agent_id"]),
@@ -149,6 +157,7 @@ async def transfer_download(request: Request) -> Response:
             str(t["claim_name"]),
             fpath,
             claim_validator=validate_claim,
+            after_read=touch_claim,
         )
     except RepoError as exc:
         return _repo_fail(exc)
@@ -156,14 +165,6 @@ async def transfer_download(request: Request) -> Response:
     # Full-sha256 strong ETag (a 16-char truncation is collision-prone
     # for entity-tag semantics, and the sha is already computed).
     etag = sha
-    # Touch on validation, not on bytes moved: a 304 is still live use
-    # of the claim, and a claim revalidated forever must never sweep.
-    _touch_best_effort(
-        int(t["agent_id"]),
-        int(t["proposal_id"]),
-        str(t["claim_name"]),
-        t.get("claim_id"),
-    )
     if request.headers.get("if-none-match", "").strip(' "') == etag:
         return Response(status_code=304)
     filename = _safe_download_filename(clean)
@@ -257,6 +258,14 @@ async def transfer_upload(request: Request) -> JSONResponse:
                 " then mint a fresh ticket."
             )
 
+    def touch_claim() -> None:
+        _touch_best_effort(
+            int(t["agent_id"]),
+            int(t["proposal_id"]),
+            str(t["claim_name"]),
+            t.get("claim_id"),
+        )
+
     unburned = False
 
     def unburn_path() -> None:
@@ -286,6 +295,7 @@ async def transfer_upload(request: Request) -> JSONResponse:
                 bytes(body),
                 expect_sha256=pin,
                 claim_validator=validate_claim,
+                after_apply=touch_claim,
             )
         except RepoError:
             unburn_path()
@@ -308,14 +318,6 @@ async def transfer_upload(request: Request) -> JSONResponse:
         receipt = await asyncio.shield(apply)
     except RepoError as exc:
         return _repo_fail(exc)
-    # Touch on validation, not on bytes moved: a quiet no-op upload is
-    # still live use of the claim.
-    _touch_best_effort(
-        int(t["agent_id"]),
-        int(t["proposal_id"]),
-        str(t["claim_name"]),
-        t.get("claim_id"),
-    )
     return JSONResponse(receipt)
 
 
