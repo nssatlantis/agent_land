@@ -38,6 +38,12 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
     if row["state"] != "pending":
         raise ForumError("only pending proposals can be decided.")
     now = _now_iso()
+    if row["op"] in ("edit", "remove"):
+        target = _feature_row(conn, row["target_feature_id"], design["id"])
+        if target["op"] != "add" or target["state"] != "accepted":
+            raise ForumError(
+                "only accepted add features can be edit/remove targets."
+            )
     if approve:
         if row["op"] == "add":
             conn.execute(
@@ -226,6 +232,20 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     conn.execute(
         f"UPDATE {table} SET position = ? WHERE id = ?",
         (row["position"], int(other["id"])),
+    )
+    _log_decided(
+        conn,
+        agent,
+        design["id"],
+        {
+            "op": "move",
+            "kind": kind,
+            "item_id": int(row["id"]),
+            "other_id": int(other["id"]),
+            "direction": direction,
+            "old_position": int(row["position"]),
+            "new_position": int(other["position"]),
+        },
     )
     return {"item_id": int(row["id"]), "moved": True}
 
