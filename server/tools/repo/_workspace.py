@@ -20,6 +20,7 @@ import db
 import github
 from github._core import _validate_path
 from github._workspaces import (
+    _retire_claim_tree_locked,
     _transfer_file_cap_bytes,
     read_regular_file_at_ref,
     workspace_lock,
@@ -50,9 +51,27 @@ def _workspace_serialized(func):
 
                 acquire.add_done_callback(release_after_acquire)
                 raise
+            operation = asyncio.create_task(
+                func(token, proposal_id, name, *args, **kwargs)
+            )
             try:
-                return await func(token, proposal_id, name, *args, **kwargs)
-            finally:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError:
+
+                def release_after_operation(done: asyncio.Task) -> None:
+                    try:
+                        done.result()
+                    except BaseException:
+                        pass
+                    finally:
+                        lock.__exit__(None, None, None)
+
+                operation.add_done_callback(release_after_operation)
+                raise
+            except BaseException:
+                lock.__exit__(None, None, None)
+                raise
+            else:
                 lock.__exit__(None, None, None)
 
         return async_wrapper
@@ -105,16 +124,19 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
 
 @mcp.tool()
 @_logged
-@_workspace_serialized
 def release_workspace(token: str, proposal_id: int, name: str) -> dict:
     """Release one workspace claim and retire its tree (best-effort)."""
-    record = db.release_workspace(token, proposal_id, name)
-    try:
-        github.retire_claim_tree(
-            int(record["agent_id"]), proposal_id, str(record["name"])
-        )
-    except Exception:  # domain: degrade-silently - teardown best-effort; record answers
-        pass
+    record = db.get_workspace_for_release(token, proposal_id, name)
+    info = github.claim_tree_info(
+        int(record["agent_id"]), proposal_id, str(record["name"])
+    )
+    dest = str(info["path"])
+    with workspace_lock(dest, allow_missing=True):
+        record = db.release_workspace(token, proposal_id, name)
+        try:
+            _retire_claim_tree_locked(dest)
+        except Exception:  # domain: degrade-silently - teardown best-effort; record answers
+            pass
     try:
         from events import EVT_WORKSPACE_RELEASED, log_event
 
@@ -245,7 +267,7 @@ def workspace_search(
     `.git`, the managed manifest, symlinks, over-cap files (TRANSFER_MAX_FILE_MB) and
     non-UTF8 binaries never match. Returns `{query, matches: [{path,
     matches: [{line_number, text}]}], proposal_id, name}` with paths relative
-    to the tree root, bounded to `max_results` files (each capped at 50 lines,
+    to the tree root, bounded by `max_results` files (each capped at 50 lines,
     lines trimmed to 160 chars).
 
     `ref` (optional) searches the committed tree at that git ref (branch,
@@ -976,9 +998,9 @@ def workspace_rehearse(
         "watch_url": _ci_watch_url_for(kind),
         "workspace": summary,
         "note": (
-            "your run is still in flight: the MCP client's ~60s read timeout "
-            "beat it, which ended this request, NOT the run - it continues in "
-            "the background and audits itself on completion. Do not re-fire "
+            "your run is still in flight: the MCP client's ~60s read timeout"
+            "beat it, which ended this request, NOT the run - it continues in"
+            "the background and audits itself on completion. Do not re-fire"
             "the same payload; resolve it with repo_ci_run_status(run_id)."
         ),
     }
@@ -1098,7 +1120,7 @@ async def workspace_push(
                 detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
             )
             if pending_hold:
-                from events import EVT_PR_HOLD_APPLIED
+                from events import EVT_PR_HOLD_APPLIED, log_event
 
                 log_event(
                     EVT_PR_HOLD_APPLIED,
