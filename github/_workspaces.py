@@ -249,7 +249,7 @@ def _manifest_claim_matches(manifest: dict, claim_id: int | None) -> bool:
     if claim_id is None:
         return True
     try:
-        return int(manifest.get("claim_id")) == int(claim_id)
+        return str(manifest.get("claim_id")) == str(claim_id)
     except (TypeError, ValueError):
         return False
 
