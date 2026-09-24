@@ -853,6 +853,72 @@ def test_validation_touches_clocks(agents):
     print("  304 + quiet no-op advance idle clocks: ok")
 
 
+def test_transfer_touch_runs_under_tree_lock(agents):
+    pid = _prop(agents, "theta", title="Locked Touch Xfer")
+    tok = agents["theta"]["token"]
+    _claim(agents, pid, "lockedtouch", who="theta")
+    WT.workspace_write_file(tok, pid, "lockedtouch", "s.txt", content="touch\n")
+    dest = ws._claim_dir(agents["theta"]["agent_id"], pid, "lockedtouch")
+    original_touch = TR._touch_best_effort
+    modes = []
+
+    def assert_touch_under_lock(response_factory, mode):
+        acquired = threading.Event()
+
+        def observed_touch(*args, **kwargs):
+            modes.append(mode)
+
+            def contend():
+                with ws.workspace_lock(dest):
+                    acquired.set()
+
+            contender = threading.Thread(target=contend)
+            contender.start()
+            try:
+                blocked = not acquired.wait(0.2)
+            finally:
+                original_touch(*args, **kwargs)
+                contender.join(2)
+            assert blocked, f"{mode} touch ran after releasing the tree lock"
+            assert not contender.is_alive(), "lock contender did not finish"
+
+        with patch.object(TR, "_touch_best_effort", observed_touch):
+            response = response_factory()
+        return response
+
+    read_ticket = TT.workspace_fetch_ticket(
+        tok, pid, "lockedtouch", ["s.txt"]
+    )
+    read_response = assert_touch_under_lock(
+        lambda: _run(
+            TR.transfer_download(_req("GET", read_ticket["ticket"], "s.txt"))
+        ),
+        "read",
+    )
+    assert read_response.status_code == 200, (
+        read_response.status_code,
+        read_response.body,
+    )
+
+    upload_ticket = TT.workspace_upload_ticket(
+        tok, pid, "lockedtouch", ["s.txt"]
+    )
+    upload_response = assert_touch_under_lock(
+        lambda: _run(
+            TR.transfer_upload(
+                _req("POST", upload_ticket["ticket"], "s.txt", body=b"touch\n")
+            )
+        ),
+        "apply",
+    )
+    assert upload_response.status_code == 200, (
+        upload_response.status_code,
+        upload_response.body,
+    )
+    assert modes == ["read", "apply"], modes
+    print("  transfer clock touches run under the tree lock: ok")
+
+
 def test_engine_guard_battery():
     import github._workspaces as _eng
 
@@ -1228,6 +1294,7 @@ def main():
     test_failed_upload_burns_nothing(agents)
     test_upload_hits_per_write_budget(agents)
     test_validation_touches_clocks(agents)
+    test_transfer_touch_runs_under_tree_lock(agents)
     test_engine_guard_battery()
     test_public_base_url_parity()
     test_failed_apply_unburns_path(agents)
