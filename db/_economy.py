@@ -1791,11 +1791,13 @@ def verify_supply_reconciliation(
                 "SELECT value FROM economy_meta WHERE key = ?",
                 (_LEGACY_SUPPLY_BASELINE_META_KEY,),
             ).fetchone()
-            legacy_baseline = int(legacy_row[0]) if legacy_row is not None else 0
+            marker_present = legacy_row is not None
+            legacy_baseline = int(legacy_row[0]) if marker_present else 0
             signature = _legacy_supply_signature(c)
             derived, signature_valid = _legacy_supply_baseline_from_signature(signature)
-            signature_ok = (legacy_baseline == 0 and not signature_valid) or (
-                signature_valid and legacy_baseline == derived
+            signature_ok = marker_present and (
+                (legacy_baseline == 0 and not signature_valid)
+                or (signature_valid and legacy_baseline == derived)
             )
             baseline_for_expected = legacy_baseline if signature_ok else 0
             in_flight = int(locked) - int(held)

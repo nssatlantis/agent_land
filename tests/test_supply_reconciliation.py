@@ -209,6 +209,26 @@ def test_legacy_baseline_zero_marker_survives_later_id_collision():
         conn.close()
 
 
+def test_verify_rejects_absent_marker_with_partial_signature():
+    conn = _legacy_conn()
+    try:
+        conn.executemany(
+            "INSERT INTO credit_entries"
+            " (id, account, delta_units, reason, target_type, target_id, tx_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (
+                (42, "agent", -5, "job_escrow", "job", 1),
+                (65, "agent", 5, "official_job_wage", "job", 2),
+            ),
+        )
+        result = db._economy.verify_supply_reconciliation(conn)
+        assert result["ok"] is False, result
+        assert result["diff_units"] == 0, result
+        assert result["legacy_signature_ok"] is False, result
+    finally:
+        conn.close()
+
+
 def test_single_sided_mint_trips_with_exact_diff():
     s0 = _supply()
     with db._conn(immediate=True) as c:
