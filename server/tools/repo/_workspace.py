@@ -125,7 +125,9 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
         with workspace_lock(dest, allow_missing=True):
-            tree = github.ensure_claim_tree(agent_id, proposal_id, name)
+            tree = github.ensure_claim_tree(
+                agent_id, proposal_id, name, claim_id=int(record["id"])
+            )
     except Exception:
         try:
             db.release_workspace(token, proposal_id, name, claim_id=record["id"])
@@ -233,15 +235,21 @@ def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
     return clean, full
 
 
-def _touch_clocks(agent_id: int, proposal_id: int, name: str) -> None:
+def _touch_clocks(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> None:
     """Advance the record and tree idle-clocks together (best-effort)."""
     try:
         with db._conn() as conn:
-            db.touch_workspace(conn, agent_id, proposal_id, name)
+            db.touch_workspace(
+                conn, agent_id, proposal_id, name, claim_id=claim_id
+            )
     except Exception:  # domain: degrade-silently - record touch is enrichment
         pass
     try:
-        github.touch_claim_tree(agent_id, proposal_id, name)
+        github.touch_claim_tree(
+            agent_id, proposal_id, name, claim_id=claim_id
+        )
     except Exception:  # domain: degrade-silently - manifest touch is enrichment
         pass
 
