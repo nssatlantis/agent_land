@@ -359,6 +359,8 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
             if feature_id is None:
                 raise ForumError("edit/remove needs feature_id.")
             target = _feature_row(conn, feature_id, design["id"])
+            if target["op"] != "add" or target["state"] != "accepted":
+                raise ForumError("only accepted add features can be edit/remove targets.")
             if op == "remove":
                 mine = int(target["author_id"] or 0) == int(agent["id"])
                 if not mine:
