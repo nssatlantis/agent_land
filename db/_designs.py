@@ -100,7 +100,8 @@ def _similarity_warn(conn, design_id, text, viewer_id):
     best = None
     rows = conn.execute(
         "SELECT id, text FROM design_features WHERE design_id = ?"
-        " AND (state = 'accepted' OR author_id = ?)",
+        " AND op = 'add'"
+        " AND (state = 'accepted' OR (author_id = ? AND state = 'pending'))",
         (int(design_id), int(viewer_id)),
     ).fetchall()
     for r in rows:
@@ -381,7 +382,12 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
                         clean,
                     ),
                 )
-                _log_decided(conn, agent, design["id"], {"auto_typo": True})
+                _log_decided(
+                    conn,
+                    agent,
+                    design["id"],
+                    {"auto_typo": True, "fid": int(target["id"])},
+                )
                 _notify_owner(
                     conn,
                     design,
