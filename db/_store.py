@@ -338,9 +338,16 @@ def _reconcile_ci_burst_reservations(
     conn: sqlite3.Connection, now: datetime | None = None
 ) -> int:
     current = _day_now(now)
-    cutoff = current - timedelta(
-        seconds=max(60, int(config.CI_RUN_TIMEOUT_SECONDS) + 60)
+    stale_after = (
+        max(
+            60,
+            int(config.CI_RUN_TIMEOUT_SECONDS),
+            int(getattr(config, "CI_RUN_BUILD_TIMEOUT", 0)),
+            int(getattr(config, "BENCH_QUIET_WAIT_SECONDS", 0)),
+        )
+        + 60
     )
+    cutoff = current - timedelta(seconds=stale_after)
     rows = conn.execute(
         "SELECT run_id, agent_id, day_key, state"
         " FROM ci_burst_reservations"
@@ -432,6 +439,18 @@ def mark_ci_burst_started(run_id: str | None) -> bool:
         return bool(cur.rowcount)
 
 
+def heartbeat_ci_burst(run_id: str | None) -> bool:
+    if not run_id:
+        return False
+    with _conn(immediate=True) as conn:
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET started_at = ?"
+            " WHERE run_id = ? AND state IN ('reserved', 'started')",
+            (_iso_ms(datetime.now(timezone.utc)), run_id),
+        )
+        return bool(cur.rowcount)
+
+
 def complete_ci_burst(run_id: str | None, *, error: str = "") -> bool:
     if not run_id:
         return False
@@ -453,11 +472,12 @@ def release_ci_burst(run_id: str | None, *, error: str = "") -> bool:
             " WHERE run_id = ?",
             (run_id,),
         ).fetchone()
-        if row is None or row["state"] != "reserved":
+        if row is None or row["state"] not in ("reserved", "started"):
             return False
         cur = conn.execute(
             "UPDATE ci_burst_reservations SET state = 'released',"
-            " released_at = ?, error = ? WHERE run_id = ? AND state = 'reserved'",
+            " released_at = ?, error = ?"
+            " WHERE run_id = ? AND state IN ('reserved', 'started')",
             (_iso_ms(datetime.now(timezone.utc)), error[:200] or None, run_id),
         )
         if not cur.rowcount:
