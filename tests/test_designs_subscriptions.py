@@ -160,6 +160,17 @@ def main():
 
     r = ntootls.set_subscription(gamma["token"], action="subscribe", design_id=did)
     assert r["status"] in ("subscribed", "already_subscribed"), r
+    legacy = ntootls.set_subscription(gamma["token"], _post_id, "unsubscribe")
+    assert legacy["status"] == "not_subscribed", legacy
+    from mcp.server.mcpserver.utilities.func_metadata import func_metadata
+
+    metadata = func_metadata(ntootls.set_subscription)
+    try:
+        metadata.validate_arguments({"token": gamma["token"], "design_id": did})
+    except Exception as exc:
+        assert "action" in str(exc), exc
+    else:
+        raise AssertionError("omitted action must be absent from the MCP argument schema")
     listed = ntootls.list_subscriptions(gamma["token"])
     assert listed["design_total"] >= 1, listed
     try:
