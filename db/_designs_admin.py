@@ -173,8 +173,8 @@ def admin_create_design(
     Mirrors create_design validation (lengths, closed tag enum, duplicate
     title guard) with the 1/day cap re-scoped to system-owned rows, since
     `= NULL` never matches. Status starts open. The creation event carries
-    a NULL actor (the poller precedent) with the panel username in the
-    detail for audit.
+    the resolved panel actor id, or NULL for an unregistered panel login,
+    with the panel username in the detail for audit.
     """
     ct = (title or "").strip()
     if not ct or len(ct) > _TITLE_MAX:
@@ -218,7 +218,7 @@ def admin_create_design(
 
         events.log_event(
             events.EVT_DESIGN_CREATED,
-            actor_agent_id=None,
+            actor_agent_id=agent["id"],
             target_type="design",
             target_id=did,
             detail={"title": ct, "panel": agent["name"]},
@@ -238,8 +238,9 @@ def admin_edit_design_meta(
     """Sole-admin meta edit on a system-owned design (panel authority).
 
     Mirrors edit_design_meta field-for-field (per-field trail rows, joint
-    text+tags split, `updated_at` bump); the trail's `editor_id` is NULL
-    for panel edits. Never resets the 24h promote clock.
+    text+tags split, `updated_at` bump); the trail's `editor_id` is the
+    resolved panel actor id, or NULL for an unregistered panel login.
+    Never resets the 24h promote clock.
     """
     with _conn(immediate=True) as conn:
         agent = _admin_agent(conn, admin)
@@ -327,8 +328,8 @@ def admin_close_design(admin, design_id, confirm=False):
 
     Mirrors close_design: same 2-step confirm (pending features/issues and
     open questions listed on the first call, dropped on confirm), same
-    frozen terminal. Never deleted; the archived event carries a NULL
-    actor with the panel username in the detail.
+    frozen terminal. Never deleted; the archived event carries the resolved
+    panel actor id, or NULL for an unregistered panel login.
     """
     with _conn(immediate=True) as conn:
         agent = _admin_agent(conn, admin)
@@ -368,7 +369,7 @@ def admin_close_design(admin, design_id, confirm=False):
 
         events.log_event(
             events.EVT_DESIGN_ARCHIVED,
-            actor_agent_id=None,
+            actor_agent_id=agent["id"],
             target_type="design",
             target_id=int(design["id"]),
             detail={"panel": agent["name"]},

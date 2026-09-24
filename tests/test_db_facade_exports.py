@@ -219,3 +219,8 @@ EXPECTED = [
 def test_db_facade_exports_present():
     missing = [name for name in EXPECTED if not hasattr(db, name)]
     assert not missing, f"db facade is missing re-exports: {missing}"
+
+
+if __name__ == "__main__":
+    test_db_facade_exports_present()
+    print("test_db_facade_exports: all assertions passed")

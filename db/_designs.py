@@ -50,13 +50,12 @@ def _can_create_design(agent):
 
 
 def _require_owner(design, agent):
-    if isinstance(agent, dict) and agent.get("_panel"):
-        # Panel-system authority: the caller was already gated on the panel
-        # username by _admin_agent, so it acts as the admin on any design.
-        # Citizen-token agents never carry the marker and stay strict.
+    if design["owner_admin_id"] is None:
+        if isinstance(agent, dict) and agent.get("_panel"):
+            return
+    elif agent["id"] is not None and int(design["owner_admin_id"]) == int(agent["id"]):
         return
-    if int(design["owner_admin_id"] or 0) != int(agent["id"]):
-        raise ForumError("only the design's owner may do that.")
+    raise ForumError("only the design's owner may do that.")
 
 
 def _require_open(design):

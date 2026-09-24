@@ -178,3 +178,9 @@ def test_admin_facade_exports_present_at_runtime():
             assert getattr(server.admin, attr, None) is getattr(leaf, attr, None), (
                 f"server.admin.{attr} is not the real {module_name}.{attr} object"
             )
+
+
+if __name__ == "__main__":
+    test_admin_facade_exports_present_in_source()
+    test_admin_facade_exports_present_at_runtime()
+    print("test_admin_facade_exports: all assertions passed")

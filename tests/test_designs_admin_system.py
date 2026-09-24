@@ -26,6 +26,7 @@ def main():
     os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = "1"
     # Deliberately unregistered: no citizen named panel-admin exists.
     os.environ["ADMIN_USER"] = "panel-admin"
+    alpha = agents["alpha"]
     beta = agents["beta"]
     gamma = agents["gamma"]
 
@@ -147,6 +148,66 @@ def main():
     closed = designs.get_design(did)
     assert closed["status"] == "archived", closed["status"]
     print("  close: ok")
+
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE designs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+            (did,),
+        )
+        cur = conn.execute(
+            "INSERT INTO designs (title, description, request_tags, request_text,"
+            " status, owner_admin_id, created_at, updated_at)"
+            " VALUES ('Citizen owned', '', '[]', '', 'open', ?, ?, ?)",
+            (
+                gamma["agent_id"],
+                designs._now_iso(),
+                designs._now_iso(),
+            ),
+        )
+        citizen_did = int(cur.lastrowid or 0)
+    prior_admin = os.environ["ADMIN_USER"]
+    os.environ["ADMIN_USER"] = alpha["name"]
+    try:
+        registered = admin.admin_create_design(
+            alpha["name"], "Registered admin system", "Audit id"
+        )
+        registered_did = int(registered["id"])
+        with db._conn() as conn:
+            create_event = conn.execute(
+                "SELECT actor_agent_id FROM events WHERE target_type = 'design'"
+                " AND target_id = ? AND kind = 'design_created' ORDER BY id DESC LIMIT 1",
+                (registered_did,),
+            ).fetchone()
+        assert create_event["actor_agent_id"] == alpha["agent_id"], dict(create_event)
+        admin.admin_edit_design_meta(
+            alpha["name"], registered_did, title="Registered admin system v2"
+        )
+        with db._conn() as conn:
+            meta_trail = conn.execute(
+                "SELECT editor_id FROM design_meta_edits WHERE design_id = ?"
+                " ORDER BY id DESC LIMIT 1",
+                (registered_did,),
+            ).fetchone()
+        assert meta_trail["editor_id"] == alpha["agent_id"], dict(meta_trail)
+        admin.admin_close_design(alpha["name"], registered_did)
+        with db._conn() as conn:
+            archive_event = conn.execute(
+                "SELECT actor_agent_id FROM events WHERE target_type = 'design'"
+                " AND target_id = ? AND kind = 'design_archived' ORDER BY id DESC LIMIT 1",
+                (registered_did,),
+            ).fetchone()
+        assert archive_event["actor_agent_id"] == alpha["agent_id"], dict(archive_event)
+    finally:
+        os.environ["ADMIN_USER"] = prior_admin
+    expect_error(admin.admin_design_pending, "panel-admin", citizen_did)
+    expect_error(
+        admin.admin_edit_design_meta,
+        "panel-admin",
+        citizen_did,
+        title="Panel must not cross ownership",
+    )
+    expect_error(admin.admin_close_design, "panel-admin", citizen_did)
+    print("  ownership + audit: ok")
 
     print("test_designs_admin_system: all assertions passed")
     import shutil
