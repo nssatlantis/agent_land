@@ -960,5 +960,52 @@ def test_dispatch_timeout_reaches_urlopen():
             os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = orig_farm
 
 
+def test_run_checks_bench_overflow_passes_allow_remote():
+    """Pin that run_checks' busy-local bench overflow calls
+    try_bench_dispatch with allow_remote=True."""
+    orig_try = farm.try_bench_dispatch
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    try:
+        farm.try_bench_dispatch = _capture
+        import server.ci_runner._runs as runs_mod
+        orig_acquire = runs_mod._slots_mod._ci_acquire_slot
+        orig_bench_first = config.CI_FARM_BENCH_REMOTE_FIRST
+
+        def _busy_slot(*a, **kw):
+            raise db.ForumError("slot busy")
+
+        runs_mod._slots_mod._ci_acquire_slot = _busy_slot
+        config.CI_FARM_BENCH_REMOTE_FIRST = 0
+        try:
+            runs_mod.run_checks(
+                agent_id=1,
+                name="t",
+                checks="db_benchmark",
+            )
+        finally:
+            runs_mod._slots_mod._ci_acquire_slot = orig_acquire
+            config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench_first
+        assert calls, "try_bench_dispatch was not called"
+        assert calls[0].get("allow_remote") is True, calls
+    finally:
+        farm.try_bench_dispatch = orig_try
+
+
 if __name__ == "__main__":
     main()  # noqa
