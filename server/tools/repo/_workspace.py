@@ -355,7 +355,9 @@ def workspace_search(
             )
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
-        _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+        _touch_clocks(
+            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+        )
         return {
             "query": found["query"],
             "matches": found["matches"],
@@ -405,7 +407,9 @@ def workspace_search(
                     break
         if len(results) >= cap:
             break
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+        )
     return {
         "query": q,
         "matches": results,
@@ -921,7 +925,9 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
         os.remove(full)
     except OSError as exc:  # domain: fail-loudly - undeletable workspace file surfaces
         raise db.ForumError(f"could not delete {clean!r} in the workspace.") from exc
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+            int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+        )
     return {"path": clean, "deleted": True}
 
 
