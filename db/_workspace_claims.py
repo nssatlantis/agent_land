@@ -261,6 +261,32 @@ def get_workspace(token: str, proposal_id: int, name: str) -> dict:
         return dict(row)
 
 
+def get_workspace_for_release(token: str, proposal_id: int, name: str) -> dict:
+    """One active claim with release permission, including its owner id."""
+    name = _validate_claim_name(name)
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            "SELECT * FROM workspace_claims"
+            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
+            (proposal_id, name),
+        ).fetchone()
+        if row is None:
+            raise ForumError(
+                f"no active workspace '{name}' for proposal #{proposal_id}."
+            )
+        prow = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if agent["id"] != row["agent_id"] and (
+            prow is None or agent["id"] != prow["agent_id"]
+        ):
+            raise ForumError(
+                "only the claim owner or the proposal author may release it."
+            )
+        return dict(row)
+
+
 def touch_workspace(
     conn: sqlite3.Connection, agent_id: int, proposal_id: int, name: str
 ) -> None:
