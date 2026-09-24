@@ -1268,7 +1268,9 @@ def test_release_author_and_missing_tree(agents, wstools):
         assert released["status"] == "released", released
         assert not os.path.isdir(dest), dest
 
-        pid2 = db.create_proposal(alpha["token"], "Missing Tree Shop", "body")["post_id"]
+        pid2 = db.create_proposal(alpha["token"], "Missing Tree Shop", "body")[
+            "post_id"
+        ]
         claimed2 = wstools.claim_workspace(alpha["token"], pid2, "dev")
         dest2 = str(claimed2["tree"]["path"])
         shutil.rmtree(dest2)
