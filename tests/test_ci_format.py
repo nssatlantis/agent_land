@@ -90,6 +90,7 @@ def test_format_budget_free():
         "used_today": 0,
         "cap": 0,
         "remaining": None,
+        "burst_remaining": 0,
         "cooldown_wait_s": 0,
     }, "fresh format lane is uncapped zeros"
     for _ in range(3):

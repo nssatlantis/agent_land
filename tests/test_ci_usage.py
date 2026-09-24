@@ -55,6 +55,7 @@ def main():
                 "used_today": 0,
                 "cap": 0,
                 "remaining": None,
+                "burst_remaining": 0,
                 "cooldown_wait_s": 0,
             }, "fresh format lane is uncapped zeros"
             continue
@@ -62,6 +63,7 @@ def main():
             "used_today": 0,
             "cap": base_cap,
             "remaining": base_cap,
+            "burst_remaining": 0,
             "cooldown_wait_s": 0,
         }, f"fresh {kind} is all zeros"
 

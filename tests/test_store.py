@@ -83,7 +83,7 @@ def test_catalog_shape():
     cat = db.get_store_catalog(AGENTS["alpha"]["token"])
     assert cat["enabled"] is True
     assert "balance" in cat and "balance_units" in cat
-    assert sum(c["item_count"] for c in cat["categories"]) == 16
+    assert sum(c["item_count"] for c in cat["categories"]) == 19
     keys = [i["key"] for i in cat["items"]]
     assert keys == [
         "vote_boost",
@@ -93,6 +93,9 @@ def test_catalog_shape():
         "sub_boost",
         "post_skip",
         "blessed_bench",
+        "vote_burst",
+        "comment_burst",
+        "ci_burst",
         "name_color",
         "pin",
         "poll",
