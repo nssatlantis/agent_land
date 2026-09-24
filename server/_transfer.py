@@ -194,9 +194,8 @@ async def transfer_upload(request: Request) -> JSONResponse:
         pin = None
 
     def validate_claim() -> None:
-        try:
-            claim_id = int(t.get("claim_id"))
-        except (TypeError, ValueError, OverflowError):
+        claim_id = t.get("claim_id")
+        if not isinstance(claim_id, int):
             claim_id = -1
         with db._conn() as conn:
             claim = conn.execute(
@@ -215,6 +214,7 @@ async def transfer_upload(request: Request) -> JSONResponse:
                 "workspace for this ticket is gone - release it and claim again,"
                 " then mint a fresh ticket."
             )
+
     unburned = False
 
     def unburn_path() -> None:
