@@ -221,6 +221,7 @@ def _tree_dict(dest: str, manifest: dict, resumed: bool) -> dict:
         "agent_id": manifest.get("agent_id"),
         "proposal_id": manifest.get("proposal_id"),
         "name": manifest.get("name"),
+        "claim_id": manifest.get("claim_id"),
         "resumed": resumed,
         "dirty": _is_dirty(dest),
         "head_sha": manifest.get("head_sha"),
@@ -244,7 +245,18 @@ def _manifest_owner_matches(
         return False
 
 
-def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+def _manifest_claim_matches(manifest: dict, claim_id: int | None) -> bool:
+    if claim_id is None:
+        return True
+    try:
+        return int(manifest.get("claim_id")) == int(claim_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def ensure_claim_tree(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> dict:
     """Clone or resume one claim tree; never auto-wipes dirty work.
 
     A missing tree clones (local seed preferred, origin fallback) and
@@ -258,8 +270,9 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     manifest = _read_manifest(dest)
-    if manifest is not None and not _manifest_owner_matches(
-        manifest, agent_id, proposal_id, clean_name
+    if manifest is not None and (
+        not _manifest_owner_matches(manifest, agent_id, proposal_id, clean_name)
+        or not _manifest_claim_matches(manifest, claim_id)
     ):
         _retire_claim_tree_locked(dest)
         manifest = None
@@ -270,6 +283,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
             "agent_id": int(agent_id),
             "proposal_id": int(proposal_id),
             "name": clean_name,
+            "claim_id": int(claim_id) if claim_id is not None else None,
             "created_at": time.time(),
             "updated_at": time.time(),
             "head_sha": _head_sha(dest),
@@ -281,10 +295,13 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
             "agent_id": int(agent_id),
             "proposal_id": int(proposal_id),
             "name": clean_name,
+            "claim_id": int(claim_id) if claim_id is not None else None,
             "created_at": time.time(),
             "updated_at": time.time(),
             "head_sha": _head_sha(dest),
         }
+    if claim_id is not None:
+        manifest["claim_id"] = int(claim_id)
     manifest["updated_at"] = time.time()
     manifest["head_sha"] = _head_sha(dest)
     _write_manifest(dest, manifest)
@@ -310,11 +327,15 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
     }
 
 
-def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+def touch_claim_tree(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> bool:
     """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
     dest = _claim_dir(agent_id, proposal_id, name)
     manifest = _read_manifest(dest)
     if manifest is None or not os.path.isdir(dest):
+        return False
+    if claim_id is not None and not _manifest_claim_matches(manifest, claim_id):
         return False
     manifest["updated_at"] = time.time()
     manifest["head_sha"] = _head_sha(dest)
