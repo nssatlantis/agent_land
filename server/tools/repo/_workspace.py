@@ -29,6 +29,36 @@ from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
 
 
+def _workspace_serialized(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
+            _record, dest = _resolve_claim_tree(token, proposal_id, name)
+            lock = workspace_lock(dest)
+            acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
+            try:
+                await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+                await acquire
+                lock.__exit__(None, None, None)
+                raise
+            try:
+                return await func(token, proposal_id, name, *args, **kwargs)
+            finally:
+                lock.__exit__(None, None, None)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
+        _record, dest = _resolve_claim_tree(token, proposal_id, name)
+        with workspace_lock(dest):
+            return func(token, proposal_id, name, *args, **kwargs)
+
+    return sync_wrapper
+
+
 @mcp.tool()
 @_logged
 def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
@@ -68,6 +98,7 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def release_workspace(token: str, proposal_id: int, name: str) -> dict:
     """Release one workspace claim and retire its tree (best-effort)."""
     record = db.release_workspace(token, proposal_id, name)
@@ -115,36 +146,6 @@ def list_workspaces(token: str) -> list:
 _MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
 
 _EXPECT_SHA_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
-
-
-def _workspace_serialized(func):
-    if inspect.iscoroutinefunction(func):
-
-        @wraps(func)
-        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
-            _record, dest = _resolve_claim_tree(token, proposal_id, name)
-            lock = workspace_lock(dest)
-            acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
-            try:
-                await asyncio.shield(acquire)
-            except asyncio.CancelledError:
-                await acquire
-                lock.__exit__(None, None, None)
-                raise
-            try:
-                return await func(token, proposal_id, name, *args, **kwargs)
-            finally:
-                lock.__exit__(None, None, None)
-
-        return async_wrapper
-
-    @wraps(func)
-    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
-        _record, dest = _resolve_claim_tree(token, proposal_id, name)
-        with workspace_lock(dest):
-            return func(token, proposal_id, name, *args, **kwargs)
-
-    return sync_wrapper
 
 
 def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
@@ -905,7 +906,14 @@ def workspace_rehearse(
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname, delta=True)
+    if base_ref is not None:
+        from github._core import _validate_ref
+        from github._workspaces import _canonical_base_ref
+
+        base_ref = _canonical_base_ref(_validate_ref(base_ref))
+    snap = github.snapshot_claim_tree(
+        agent_id, proposal_id, cname, delta=True, base=base_ref
+    )
     if not snap["files"]:
         raise db.ForumError(
             "workspace snapshot is empty - the claim tree has no changes "
@@ -923,10 +931,6 @@ def workspace_rehearse(
     normalized = _changes_for_repo_propose(None, None, snap["files"])
     for entry in normalized:
         _validate_path(entry["path"])
-    if base_ref is not None:
-        from github._core import _validate_ref
-
-        base_ref = _validate_ref(base_ref)
     result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
@@ -997,8 +1001,8 @@ async def workspace_push(
     The first push creates branch claim/<agent>/<proposal>/<name>,
     commits the whole tree once, pushes, and opens the PR under the
     same gates, hold flow, link, and labels as repo_propose_change;
-    follow-up pushes from the same tree append one commit and reuse the
-    PR, PATCHing a revised title and/or body onto it when they
+    follow-up pushes from the same tree append one commit and reuse
+    the PR, PATCHing a revised title and/or body onto it when they
     differ (reported as `text_updated`). The claim stays active afterwards (release is manual).
     Pass `base_branch` to target a non-main base (stacked PRs).
     Rehearse first with workspace_rehearse: the PR's own branch CI is
@@ -1104,8 +1108,8 @@ async def workspace_push(
                 f"PR #{pr_number} opened for your proposal #{proposal_id}: {raw_title}"
             )
             collab_msg = (
-                f"PR #{pr_number} opened for collaborative proposal "
-                f"#{proposal_id} by {who['name']}: {raw_title}"
+                f"PR #{pr_number} opened for collaborative proposal"
+                f" #{proposal_id} by {who['name']}: {raw_title}"
             )
             subscriber_msg = (
                 f"PR #{pr_number} opened for proposal #{proposal_id}: {raw_title}"
