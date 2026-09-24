@@ -231,7 +231,9 @@ def test_search_at_ref(agents, wstools):
         w(tok, pid, "dev", "notes/typed.txt", "frozenmarker: typed details\n")
         big_line = "biggrepmarker:" + "x" * ((1 << 20) + 1) + "\n"
         w(tok, pid, "dev", "notes/biggrep.txt", big_line)
-        _git("-C", dest, "add", "notes/todo.txt", "notes/typed.txt", "notes/biggrep.txt")
+        _git(
+            "-C", dest, "add", "notes/todo.txt", "notes/typed.txt", "notes/biggrep.txt"
+        )
         _git(
             "-C",
             dest,
