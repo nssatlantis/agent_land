@@ -186,6 +186,16 @@ def main():
         csrf,
     )
     assert "rejected" in r.body.decode("utf-8")
+    rejectdet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "No plaid" in rejectdet.body.decode("utf-8")
     print("  decide-feature: ok")
 
     # --- answer + resolve + move + toggle --------------------------------------
@@ -214,6 +224,16 @@ def main():
         csrf,
     )
     assert "resolved" in r.body.decode("utf-8")
+    resolveddet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "<td>resolved</td>" in resolveddet.body.decode("utf-8")
     r = _post(
         admin.design_admin_move_item,
         f"/admin/designs/{did}/move-item",
@@ -360,6 +380,16 @@ def main():
         csrf,
     )
     assert "removed" in r.body.decode("utf-8")
+    decisiondet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "<td>remove</td>" in decisiondet.body.decode("utf-8")
     r = _post(
         admin.design_admin_edit_design_meta,
         f"/admin/designs/{sysdid}/edit-meta",
@@ -383,7 +413,9 @@ def main():
             headers=_ok_auth(),
         ),
     )
-    assert "Made by panel v2" in metadet.body.decode("utf-8")
+    metabody = metadet.body.decode("utf-8")
+    assert "Made by panel" in metabody
+    assert "Made by panel v2" in metabody
     designs.propose_feature(beta["token"], sysdid, "Panel pending widget")
     r = _post(
         admin.design_admin_close_design,
