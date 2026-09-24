@@ -20,6 +20,8 @@ import os
 import re
 import shutil
 import time
+from contextlib import contextmanager
+from typing import Any
 
 import config
 
@@ -79,6 +81,40 @@ def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
     if agent_id <= 0 or proposal_id <= 0:
         raise RepoError("agent and proposal ids must be positive integers.")
     return os.path.join(_claims_root(), str(agent_id), str(proposal_id), name)
+
+
+@contextmanager
+def workspace_lock(dest: str):
+    lock_path = os.path.join(dest, ".git", "workspace.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        if os.name == "nt":
+            msvcrt: Any = __import__("msvcrt")
+            locking = msvcrt.locking
+            lock_mode = msvcrt.LK_NBLCK
+            unlock_mode = msvcrt.LK_UNLCK
+            lock.seek(0)
+            lock.write(b"\0")
+            lock.flush()
+            while True:
+                try:
+                    lock.seek(0)
+                    locking(lock.fileno(), lock_mode, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                locking(lock.fileno(), unlock_mode, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _read_manifest(dest: str) -> dict | None:
@@ -605,22 +641,9 @@ def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
     )
 
 
-def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
-    """Committed bytes of one tree-relative path at `ref` (plus the winning
-    ref candidate - `origin/<ref>` when fallback resolves).
-
-    No checkout, no worktree touch: dirty edits are invisible here by
-    design, so a fix trail can be audited against the branch itself.
-    The blob is located via `ls-tree -z` (NUL-split, unquoted: a quote,
-    backslash or newline in the name can never break the parse - and a
-    `:` in the name can never split a `rev:path` arg, since no such arg
-    is built) and materialized with `cat-file -p` over the bytes path, so
-    binaries read like the live path does (decoded with replacement
-    downstream). The transfer cap is enforced from the `ls-tree --long`
-    size before any byte moves. Symlink blobs read as their target text
-    (the committed bytes); directories, submodules and missing paths
-    refuse.
-    """
+def _read_file_at_ref(
+    dest: str, clean: str, ref: str, *, require_regular: bool
+) -> tuple[bytes, str, str]:
     validated, commit = _resolve_tree_commit(dest, ref)
     listed = _git(dest, "ls-tree", "--long", "-z", commit, "--", clean, check=False)
     if listed.returncode != 0:
@@ -640,9 +663,11 @@ def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
                 "content lives in another repository."
             )
         raise RepoError(f"no file at {clean!r} in the tree at ref {validated!r}.")
+    if require_regular and entry[0] not in {"100644", "100755"}:
+        raise RepoError(f"path {clean!r} is not a regular file at ref {validated!r}.")
     try:
         size = int(entry[3])
-    except ValueError:  # domain: degrade-silently - bad size reads over-cap
+    except ValueError:
         size = _transfer_file_cap_bytes() + 1
     cap = _transfer_file_cap_bytes()
     if size > cap:
@@ -653,7 +678,31 @@ def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
     blob = _git_bytes(dest, "cat-file", "-p", entry[2], check=False)
     if blob.returncode != 0:
         raise RepoError(f"could not read {clean!r} at ref {validated!r}.")
-    return blob.stdout, validated
+    return blob.stdout, validated, entry[0]
+
+
+def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
+    """Committed bytes of one tree-relative path at `ref` (plus the winning
+    ref candidate - `origin/<ref>` when fallback resolves).
+
+    No checkout, no worktree touch: dirty edits are invisible here by
+    design, so a fix trail can be audited against the branch itself.
+    The blob is located via `ls-tree -z` (NUL-split, unquoted: a quote,
+    backslash or newline in the name can never break the parse - and a
+    `:` in the name can never split a `rev:path` arg, since no such arg
+    is built) and materialized with `cat-file -p` over the bytes path, so
+    binaries read like the live path does (decoded with replacement
+    downstream). The transfer cap is enforced from the `ls-tree --long`
+    size before any byte moves. Symlink blobs read as their target text;
+    directories, submodules and missing paths refuse.
+    """
+    data, validated, _mode = _read_file_at_ref(dest, clean, ref, require_regular=False)
+    return data, validated
+
+
+def read_regular_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str, str]:
+    """Committed bytes, winning ref, and git mode for a regular file."""
+    return _read_file_at_ref(dest, clean, ref, require_regular=True)
 
 
 def _transfer_file_cap_bytes() -> int:
@@ -743,6 +792,28 @@ def read_transfer_bytes(
 
 
 def apply_transfer_bytes(
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    path: str,
+    data: bytes,
+    *,
+    expect_sha256: str | None = None,
+) -> dict:
+    clean_name = _validate_claim_name(name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    with workspace_lock(dest):
+        return _apply_transfer_bytes(
+            agent_id,
+            proposal_id,
+            clean_name,
+            path,
+            data,
+            expect_sha256=expect_sha256,
+        )
+
+
+def _apply_transfer_bytes(
     agent_id: int,
     proposal_id: int,
     name: str,
