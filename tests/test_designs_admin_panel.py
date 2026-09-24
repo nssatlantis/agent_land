@@ -452,6 +452,7 @@ def main():
                 (sysdid,),
             ).fetchall()
         )
+    preview_digest = db.admin_design_history("alpha", sysdid)["preview_digest"]
     r = _post(
         admin.design_admin_close_design,
         f"/admin/designs/{sysdid}/close",
@@ -461,6 +462,7 @@ def main():
             "preview_feature_ids": preview_feature_ids,
             "preview_issue_ids": "",
             "preview_question_ids": "",
+            "preview_digest": preview_digest,
         },
         csrf,
     )
