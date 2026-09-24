@@ -259,6 +259,56 @@ def test_snapshot_delta_stacked_refuses():
     print("  snapshot delta stacked refusal (phantom tree guard): ok")
 
 
+def test_snapshot_delta_stacked_nonmain_base():
+    sb = _RehearseSandbox()
+    try:
+        bare = _mk_remote(os.path.join(sb.tmp, "remote3"))
+        old_ws, old_gh = ws._repo_url, gh._repo_url
+        ws._repo_url = lambda with_token=False: bare
+        gh._repo_url = lambda with_token=False: bare
+        try:
+            tree = ws.ensure_claim_tree(11, 43, "stacked-base")
+            Path(tree["path"], "r1.py").write_text("x = 1\n", encoding="utf-8")
+            _git("add", "-A", cwd=tree["path"])
+            _git(
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "round-1",
+                cwd=tree["path"],
+            )
+            # round-1 lands on the stacked base branch itself: the tree's
+            # layers ARE the ancestor, so the delta is honest, not phantom
+            _git("push", bare, "HEAD:refs/heads/feature-x", cwd=tree["path"])
+            _git("fetch", "origin", "feature-x", cwd=tree["path"])
+            Path(tree["path"], "r2.py").write_text("y = 2\n", encoding="utf-8")
+            delta = ws.snapshot_claim_tree(
+                11, 43, "stacked-base", delta=True, base="feature-x"
+            )
+            by_path = {f["path"]: f["content"] for f in delta["files"]}
+            assert by_path == {"r2.py": "y = 2\n"}, sorted(by_path)
+            # the same tree compared against origin/main IS stacked: the
+            # guard must key on the requested base, never hard-coded main
+            for base in (None, "main"):
+                err = _expect_repo_error(
+                    ws.snapshot_claim_tree,
+                    11,
+                    43,
+                    "stacked-base",
+                    delta=True,
+                    base=base,
+                )
+                assert "phantom" in err and "origin/" in err, err
+        finally:
+            ws._repo_url, gh._repo_url = old_ws, old_gh
+    finally:
+        sb.close()
+    print("  snapshot delta stacked base-aware (non-main base honored): ok")
+
+
 def test_tool_wiring(agents, wstools):
     import server.ci_runner as ci_runner  # noqa: E402
 
@@ -320,6 +370,8 @@ def main():
     test_snapshot_manifest()
     test_snapshot_guards()
     test_snapshot_delta()
+    test_snapshot_delta_stacked_refuses()
+    test_snapshot_delta_stacked_nonmain_base()
     test_tool_wiring(agents, wstools)
     test_tool_guards(agents, wstools)
     print("test_workspace_rehearse: all scenarios passed")
