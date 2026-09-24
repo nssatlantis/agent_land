@@ -146,6 +146,7 @@ def main():
         feature_id=direct_feature["feature_id"],
     )
     assert direct_issue["state"] == "accepted", direct_issue
+    expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
     admin.admin_edit_issue(
         "alpha",
         did,
@@ -183,7 +184,6 @@ def main():
         and d.get("note") == "Needs detail"
         for d in decision_details
     ), decision_details
-    expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
     admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
     admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
     print("  direct authoring: ok")
