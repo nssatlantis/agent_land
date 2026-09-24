@@ -539,8 +539,9 @@ def test_reclaim_blocks_old_upload(agents):
     def release_reclaim_then_apply(*args, **kwargs):
         released = WT.release_workspace(tok, pid, "reclaim")
         assert released["status"] == "released", released
-        fresh = WT.claim_workspace(tok, pid, "reclaim")
-        assert fresh["claim"]["id"] != old_claim["id"], fresh
+        WT.claim_workspace(tok, pid, "reclaim")
+        fresh_claim = db.get_workspace(tok, pid, "reclaim")
+        assert fresh_claim["id"] != old_claim["id"], fresh_claim
         return old_apply(*args, **kwargs)
 
     with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
