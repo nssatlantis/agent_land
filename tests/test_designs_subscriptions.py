@@ -168,6 +168,12 @@ def main():
         assert "exactly one" in str(exc), exc
     else:
         raise AssertionError("missing target must be refused")
+    try:
+        ntootls.set_subscription(gamma["token"], design_id=did)
+    except TypeError as exc:
+        assert "action" in str(exc), exc
+    else:
+        raise AssertionError("omitted action must be refused by the wrapper schema")
     print("  tools: ok")
 
     print("test_designs_subscriptions: all assertions passed")

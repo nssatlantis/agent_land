@@ -75,7 +75,8 @@ def mark_notifications_read(
 def set_subscription(
     token: str,
     post_id: int | None = None,
-    action: str = "",
+    *,
+    action: str,
     design_id: int | None = None,
 ) -> dict:
     """Follow or unfollow a post or a design - one tool for both directions.
