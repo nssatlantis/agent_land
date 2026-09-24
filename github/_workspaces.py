@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
 
@@ -904,10 +905,13 @@ def apply_transfer_bytes(
     data: bytes,
     *,
     expect_sha256: str | None = None,
+    claim_validator: Callable[[], None] | None = None,
 ) -> dict:
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     with workspace_lock(dest):
+        if claim_validator is not None:
+            claim_validator()
         return _apply_transfer_bytes(
             agent_id,
             proposal_id,
