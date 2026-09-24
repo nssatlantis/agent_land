@@ -516,8 +516,7 @@ def test_release_kills_ticket(agents):
     assert "gone" in resp.body.decode()
     with db._conn() as conn:
         conn.execute(
-            "UPDATE transfer_tickets SET claim_id = NULL"
-            " WHERE ticket_hash = ?",
+            "UPDATE transfer_tickets SET claim_id = NULL WHERE ticket_hash = ?",
             (hashlib.sha256(t["ticket"].encode()).hexdigest(),),
         )
     legacy = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
@@ -534,9 +533,7 @@ def test_reclaim_blocks_old_upload(agents):
     WT.workspace_write_file(tok, pid, "reclaim", "r.txt", content="before\n")
     pin = WT.workspace_read_file(tok, pid, "reclaim", "r.txt")["content_sha256"]
     old_claim = db.get_workspace(tok, pid, "reclaim")
-    ticket = TT.workspace_upload_ticket(
-        tok, pid, "reclaim", ["r.txt"], {"r.txt": pin}
-    )
+    ticket = TT.workspace_upload_ticket(tok, pid, "reclaim", ["r.txt"], {"r.txt": pin})
     old_apply = ws.apply_transfer_bytes
 
     def release_reclaim_then_apply(*args, **kwargs):
@@ -547,11 +544,7 @@ def test_reclaim_blocks_old_upload(agents):
         return old_apply(*args, **kwargs)
 
     with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
-        response = _run(
-            TR.transfer_upload(
-                _req("POST", ticket["ticket"], "r.txt", body=b"after\n")
-            )
-        )
+        response = _run(TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n")))
     assert response.status_code == 404, (response.status_code, response.body)
     assert "gone" in response.body.decode(), response.body
     current = db.get_workspace(tok, pid, "reclaim")
@@ -559,14 +552,11 @@ def test_reclaim_blocks_old_upload(agents):
     assert "could not read" in expect_error(
         WT.workspace_read_file, tok, pid, "reclaim", "r.txt"
     )
-    retry = _run(
-        TR.transfer_upload(
-            _req("POST", ticket["ticket"], "r.txt", body=b"after\n")
-        )
-    )
+    retry = _run(TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n")))
     assert retry.status_code == 404, (retry.status_code, retry.body)
     WT.release_workspace(tok, pid, "reclaim")
     print("  reclaim blocks an old redeemed upload without writing the new tree: ok")
+
 
 def test_p2_write_upgrades(agents):
     pid = _prop(agents, "zeta", title="P2 Xfer")
