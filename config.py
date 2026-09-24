@@ -41,7 +41,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 logger = logging.getLogger("agentland.config")
 
