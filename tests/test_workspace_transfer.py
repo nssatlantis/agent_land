@@ -175,6 +175,9 @@ def test_table_exists():
             ).fetchall()
         }
     assert "transfer_tickets" in tables
+    with db._conn() as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(transfer_tickets)")}
+    assert "claim_id" in columns, columns
     assert "idx_transfer_tickets_agent" in idx or any(
         "transfer_tickets" in i for i in idx
     ), idx
@@ -192,12 +195,13 @@ def test_mint_redeem_roundtrip(agents):
     # Raw secret is stored hashed, never plaintext.
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT ticket_hash FROM transfer_tickets"
+            "SELECT ticket_hash, claim_id FROM transfer_tickets"
             " WHERE agent_id = ? AND scope = 'read'",
             (agents["alpha"]["agent_id"],),
         ).fetchone()
     assert minted["ticket"] not in row["ticket_hash"]
     assert row["ticket_hash"] == hashlib.sha256(minted["ticket"].encode()).hexdigest()
+    assert row["claim_id"] is not None, row
     # Read scope never burns: redeem twice.
     t1 = db.redeem_transfer_ticket(minted["ticket"], "read", "README.md")
     t2 = db.redeem_transfer_ticket(minted["ticket"], "read", "README.md")
@@ -509,9 +513,60 @@ def test_release_kills_ticket(agents):
     _claim(agents, pid, "rel", who="epsilon")
     resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
     assert resp.status_code == 404, (resp.status_code, resp.body)
+    assert "gone" in resp.body.decode()
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE transfer_tickets SET claim_id = NULL"
+            " WHERE ticket_hash = ?",
+            (hashlib.sha256(t["ticket"].encode()).hexdigest(),),
+        )
+    legacy = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    assert legacy.status_code == 404, (legacy.status_code, legacy.body)
+    assert "gone" in legacy.body.decode()
     db.release_workspace(tok, pid, "rel")
     print("  released claim kills tickets, including after reclaim: ok")
 
+
+def test_reclaim_blocks_old_upload(agents):
+    pid = _prop(agents, "eta", title="Reclaim Xfer")
+    tok = agents["eta"]["token"]
+    _claim(agents, pid, "reclaim", who="eta")
+    WT.workspace_write_file(tok, pid, "reclaim", "r.txt", content="before\n")
+    pin = WT.workspace_read_file(tok, pid, "reclaim", "r.txt")["content_sha256"]
+    old_claim = db.get_workspace(tok, pid, "reclaim")
+    ticket = TT.workspace_upload_ticket(
+        tok, pid, "reclaim", ["r.txt"], {"r.txt": pin}
+    )
+    old_apply = ws.apply_transfer_bytes
+
+    def release_reclaim_then_apply(*args, **kwargs):
+        released = WT.release_workspace(tok, pid, "reclaim")
+        assert released["status"] == "released", released
+        fresh = WT.claim_workspace(tok, pid, "reclaim")
+        assert fresh["claim"]["id"] != old_claim["id"], fresh
+        return old_apply(*args, **kwargs)
+
+    with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
+        response = _run(
+            TR.transfer_upload(
+                _req("POST", ticket["ticket"], "r.txt", body=b"after\n")
+            )
+        )
+    assert response.status_code == 404, (response.status_code, response.body)
+    assert "gone" in response.body.decode(), response.body
+    current = db.get_workspace(tok, pid, "reclaim")
+    assert current["id"] != old_claim["id"], current
+    assert "could not read" in expect_error(
+        WT.workspace_read_file, tok, pid, "reclaim", "r.txt"
+    )
+    retry = _run(
+        TR.transfer_upload(
+            _req("POST", ticket["ticket"], "r.txt", body=b"after\n")
+        )
+    )
+    assert retry.status_code == 404, (retry.status_code, retry.body)
+    WT.release_workspace(tok, pid, "reclaim")
+    print("  reclaim blocks an old redeemed upload without writing the new tree: ok")
 
 def test_p2_write_upgrades(agents):
     pid = _prop(agents, "zeta", title="P2 Xfer")
@@ -1151,6 +1206,9 @@ def test_legacy_db_migrates():
             ).fetchall()
         }
     assert "transfer_tickets" in tables
+    with db._conn() as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(transfer_tickets)")}
+    assert "claim_id" in columns, columns
     print("  legacy DB gains transfer_tickets on init_db: ok")
 
 
@@ -1165,6 +1223,7 @@ def main():
     test_http_upload_lock_wait_keeps_event_loop_live(agents)
     test_http_upload_caps(agents)
     test_release_kills_ticket(agents)
+    test_reclaim_blocks_old_upload(agents)
     test_p2_write_upgrades(agents)
     test_concurrent_redeem_burns_once(agents)
     test_protected_and_git_refused(agents)
