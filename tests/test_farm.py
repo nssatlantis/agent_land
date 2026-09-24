@@ -827,5 +827,65 @@ def test_farm_retry_exhaustion_audited():
     assert match[0]["detail"]["farm_error"] == "boom"
 
 
+def test_bench_allow_remote_bypasses_preference():
+    row = farm.register_runner('overflow', 'http://x', token='t')
+    rid = row.get('id')
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {'ok': True, 'busy': False}
+    orig_disp = farm.dispatch_to_runner
+    dispatched = {}
+
+    def _capture(runner, payload):
+        dispatched['called'] = True
+        return {
+            'checks': 'db_benchmark', 'mode': 'main', 'sandboxed': True,
+            'ok': True, 'timed_out': False, 'exit_code': 0,
+            'duration_seconds': 5.0, 'head_sha': 'abc',
+            'output_tail': 'ok', 'summary': {'tests_run': True},
+        }
+
+    farm.dispatch_to_runner = _capture
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 0
+    try:
+        assert farm.try_bench_dispatch(
+            'db_benchmark', 1, 't', 'ci_db_bench_run', None) is None
+        result = farm.try_bench_dispatch(
+            'db_benchmark', 1, 't', 'ci_db_bench_run', None, allow_remote=True)
+        assert result is not None
+        assert dispatched.get('called')
+        assert farm.try_bench_dispatch(
+            'db_benchmark', 0, 't', 'ci_db_bench_run', None, allow_remote=True) is None
+        assert farm.try_bench_dispatch(
+            'db_benchmark', 1, 't', 'ci_db_bench_run', None,
+            pr_number=42, allow_remote=True) is None
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(rid)
+
+
+def test_dispatch_timeout_derives_from_run_timeout():
+    orig_run = os.environ.get('FORUM_CI_RUN_TIMEOUT_SECONDS')
+    orig_farm = os.environ.get('FORUM_CI_FARM_DISPATCH_TIMEOUT')
+    try:
+        os.environ['FORUM_CI_RUN_TIMEOUT_SECONDS'] = '1200'
+        os.environ.pop('FORUM_CI_FARM_DISPATCH_TIMEOUT', None)
+        assert config.CI_FARM_DISPATCH_TIMEOUT == 1230
+    finally:
+        if orig_run is None:
+            os.environ.pop('FORUM_CI_RUN_TIMEOUT_SECONDS', None)
+        else:
+            os.environ['FORUM_CI_RUN_TIMEOUT_SECONDS'] = orig_run
+        if orig_farm is None:
+            os.environ.pop('FORUM_CI_FARM_DISPATCH_TIMEOUT', None)
+        else:
+            os.environ['FORUM_CI_FARM_DISPATCH_TIMEOUT'] = orig_farm
+
+
 if __name__ == "__main__":
     main()  # noqa
