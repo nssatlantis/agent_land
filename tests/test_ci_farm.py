@@ -147,6 +147,9 @@ def test_http_health_and_auth():
             assert body["busy"] is False
             assert "docker_available" in body
             assert "active_runs" in body
+            assert "head_sha" in body
+            if body["head_sha"] is not None:
+                assert runner._BASE_SHA_RE.fullmatch(body["head_sha"]) is not None
         req = urllib.request.Request(
             base + "/run",
             data=b"{}",
@@ -190,6 +193,110 @@ def test_import_side_effect_safety():
         assert not e.endswith(".db"), f"unexpected DB file in data dir: {e}"
 
 
+def test_repo_head_shape():
+    """_repo_head returns None or a 40-hex sha, never garbage."""
+    head = runner._repo_head()
+    assert head is None or runner._BASE_SHA_RE.fullmatch(head) is not None
+
+
+def test_deps_freshness():
+    """_deps_fresh: older requirements are fresh, newer-or-missing are stale."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("requirements.txt", "requirements-dev.txt"):
+            Path(tmp, name).write_text("x\n", encoding="utf-8")
+        assert runner._deps_fresh(time.time() + 60, root=tmp) is True
+        Path(tmp, "requirements.txt").write_text("y\n", encoding="utf-8")
+        os.utime(Path(tmp, "requirements.txt"), (time.time() + 120,) * 2)
+        assert runner._deps_fresh(time.time(), root=tmp) is False
+        assert runner._deps_fresh(time.time(), root=str(Path(tmp, "nope"))) is False
+
+
+def test_repo_moved_predicate():
+    """_repo_moved: disabled without a startup snapshot, exact on equality."""
+    orig_head = runner._repo_head
+    orig_start = runner._START_SHA
+    try:
+        runner._START_SHA = None
+        runner._repo_head = lambda: "a" * 40
+        assert runner._repo_moved() is False
+        runner._START_SHA = "a" * 40
+        assert runner._repo_moved() is False
+        runner._START_SHA = "b" * 40
+        assert runner._repo_moved() is True
+    finally:
+        runner._repo_head = orig_head
+        runner._START_SHA = orig_start
+
+
+def test_stale_gates_release_lock():
+    """Fail-loud gates must never wedge the single-flight lock: after a 503
+    (stale venv) - and after a 500 (failed re-exec) - the next request is
+    answered normally and the lock reads free."""
+    import os as _os
+
+    farm = runner.FarmRunner("127.0.0.1", 0, token="farm-test-token")
+    t = threading.Thread(target=farm.serve_forever, daemon=True)
+    t.start()
+    time.sleep(0.2)
+    base = f"http://127.0.0.1:{farm.port}"
+
+    def _post(body):
+        req = urllib.request.Request(
+            base + "/run",
+            data=body,
+            headers={"Authorization": "Bearer farm-test-token"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read())
+
+    def _assert_lock_free():
+        deadline = time.monotonic() + 1
+        while runner.FarmHandler.lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runner.FarmHandler.lock.locked() is False, "runner lock stayed held"
+
+    orig_fresh = runner._deps_fresh
+    orig_moved = runner._repo_moved
+    orig_execv = _os.execv
+    try:
+        runner._deps_fresh = lambda since: False
+        status, _ = _post(b"{}")
+        assert status == 503, f"stale venv must fail loud, got {status}"
+        _assert_lock_free()
+        runner._deps_fresh = lambda since: True
+        status, body = _post(
+            json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
+        )
+        assert status == 200, f"post-503 request must be served, got {status}"
+        assert body.get("mode") is None or "error" in body
+        _assert_lock_free()
+        runner._repo_moved = lambda: True
+
+        def _boom(*args):
+            raise OSError("no exec here")
+
+        _os.execv = _boom
+        status, _ = _post(b"{}")
+        assert status == 500, f"failed re-exec must 500, got {status}"
+        _assert_lock_free()
+        runner._repo_moved = orig_moved
+        status, _ = _post(
+            json.dumps({"checks": "nope", "mode": "main"}).encode("utf-8")
+        )
+        assert status == 200, f"post-500 request must be served, got {status}"
+        _assert_lock_free()
+    finally:
+        runner._deps_fresh = orig_fresh
+        runner._repo_moved = orig_moved
+        _os.execv = orig_execv
+        farm.shutdown()
+        t.join(timeout=5)
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -208,6 +315,10 @@ def _run_all_tests() -> int:
         ),
         ("test_http_health_and_auth", test_http_health_and_auth),
         ("test_import_side_effect_safety", test_import_side_effect_safety),
+        ("test_repo_head_shape", test_repo_head_shape),
+        ("test_deps_freshness", test_deps_freshness),
+        ("test_repo_moved_predicate", test_repo_moved_predicate),
+        ("test_stale_gates_release_lock", test_stale_gates_release_lock),
     ]
     failed = 0
     for name, fn in tests:

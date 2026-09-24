@@ -703,6 +703,51 @@ def _render_ci_dashboard(request) -> str:
         "</div>"
     )
 
+    # Farm runners (proposal #667, enrolled by the operator below)
+
+    try:
+        import server.ci_runner._farm as _farm_mod
+
+        _farm_rows = _farm_mod.list_runners()
+        _farm_error = ""
+    except Exception as exc:  # domain: degrade-silently - dashboard best-effort
+        _farm_rows, _farm_error = [], str(exc)
+
+    _farm_trs = ""
+    for _fr in _farm_rows:
+        _farm_trs += (
+            f"<tr><td>{esc(str(_fr.get('name', '?')))}</td>"
+            f"<td>{esc(str(_fr.get('url', '?')))}</td>"
+            f"<td>{esc(str(_fr.get('status', '?')))}</td>"
+            f"<td>{esc(str(_fr.get('last_heartbeat') or '-'))}</td>"
+            f'<td><form method="post" action="/admin/ci/farm-remove">'
+            f"{_csrf_field(request)}"
+            f'<input type="hidden" name="runner_id" value="{esc(str(_fr.get("id")))}">'
+            f'<button type="submit">Remove</button></form></td></tr>'
+        )
+    # NOTE: the bearer token is write-only - registered once below, never
+    # rendered back (not even hashed).
+    farm_html = (
+        '<div class="panel"><h2>CI Farm Runners (LAN overflow)</h2>'
+        '<p style="color:var(--muted)">Dispatch requires CI_FARM_ENABLED=1 '
+        "(server env + restart). Register a runner, then install it with the SAME "
+        "bearer token: <code>CIFARM_TOKEN=&lt;token&gt; ci_farm/install.sh</code>.</p>"
+        '<div class="table-wrap"><table><tr><th>name</th><th>url</th>'
+        "<th>status</th><th>heartbeat</th><th></th></tr>"
+        + (_farm_trs or "<tr><td colspan=5>no runners registered</td></tr>")
+        + "</table></div>"
+        + (
+            "<p style=color:var(--muted)>" + esc(_farm_error) + "</p>"
+            if _farm_error
+            else ""
+        )
+        + f'<form method="post" action="/admin/ci/farm-register">{_csrf_field(request)}'
+        '<input name="name" placeholder="name" required> '
+        '<input name="url" placeholder="http://host:8731" required size="24"> '
+        '<input name="token" type="password" placeholder="bearer token" required autocomplete="new-password"> '
+        '<button type="submit">Register runner</button></form>' + "</div>"
+    )
+
     # Auto-refresh 5/10s: 5s when pending/in_flight non-empty, else 10s
 
     refresh = 5 if (pending or inflight) else 10
@@ -724,6 +769,7 @@ def _render_ci_dashboard(request) -> str:
         + recent_html
         + images_html
         + cfg_html
+        + farm_html
         + actions_html
     )
 
@@ -944,3 +990,55 @@ async def ci_gc_workspaces(request):
 
     except Exception as exc:  # domain: degrade-silently
         return _flash(request, f"gc failed: {exc}")
+
+
+async def ci_farm_register(request):
+
+    if not _authorized(request):
+        return _denied()
+
+    form = await request.form()
+
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+
+    try:
+        import server.ci_runner._farm as _farm_mod
+
+        name = str(form.get("name") or "").strip()
+        url = str(form.get("url") or "").strip().rstrip("/")
+        token = str(form.get("token") or "")
+        if not name or not url or not token:
+            return _flash(request, "name, url and token are all required.")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return _flash(request, "url must start with http:// or https://.")
+        row = _farm_mod.register_runner(name, url, token=token)
+        return _flash(request, f"registered runner {row['name']} (id {row['id']}).")
+
+    except Exception as exc:  # domain: degrade-silently
+        return _flash(request, f"register failed: {exc}")
+
+
+async def ci_farm_remove(request):
+
+    if not _authorized(request):
+        return _denied()
+
+    form = await request.form()
+
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+
+    try:
+        import server.ci_runner._farm as _farm_mod
+
+        _rid_raw = str(form.get("runner_id") or "")
+        if not _rid_raw.isdigit():
+            return _flash(request, "invalid runner id.")
+        runner_id = int(_rid_raw)
+        if _farm_mod.remove_runner(runner_id):
+            return _flash(request, f"removed runner {runner_id}.")
+        return _flash(request, f"no runner {runner_id} (already gone?).")
+
+    except Exception as exc:  # domain: degrade-silently
+        return _flash(request, f"remove failed: {exc}")

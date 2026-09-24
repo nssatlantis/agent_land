@@ -206,6 +206,10 @@ EXPECTED = [
     "admin_answer_question",
     "admin_enable_comments",
     "admin_design_pending",
+    # designs panel-system ops (proposal #694, no citizen required)
+    "admin_create_design",
+    "admin_edit_design_meta",
+    "admin_close_design",
     # designs subscriptions (proposal #652 follow-ups)
     "subscribe_design",
     "unsubscribe_design",
@@ -215,3 +219,8 @@ EXPECTED = [
 def test_db_facade_exports_present():
     missing = [name for name in EXPECTED if not hasattr(db, name)]
     assert not missing, f"db facade is missing re-exports: {missing}"
+
+
+if __name__ == "__main__":
+    test_db_facade_exports_present()
+    print("test_db_facade_exports: all assertions passed")

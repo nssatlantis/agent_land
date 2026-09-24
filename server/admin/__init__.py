@@ -67,15 +67,20 @@ from server.admin._ci import (  # noqa: F401  # noqa: F401
     _render_ci_dashboard,
     ci_admin_page,
     ci_clear_pending,
+    ci_farm_register,
+    ci_farm_remove,
     ci_gc_workspaces,
     ci_prune_images,
     ci_restart_ticker,
 )
 from server.admin._designs import (  # noqa: F401
     design_admin_answer,
+    design_admin_close_design,
+    design_admin_create_design,
     design_admin_decide_feature,
     design_admin_decide_issue,
     design_admin_detail_page,
+    design_admin_edit_design_meta,
     design_admin_move_item,
     design_admin_resolve_issue,
     design_admin_toggle_comments,
@@ -202,6 +207,8 @@ ROUTES = [
     Route("/admin/ci/prune-images", ci_prune_images, methods=["POST"]),
     Route("/admin/ci/restart-ticker", ci_restart_ticker, methods=["POST"]),
     Route("/admin/ci/gc-workspaces", ci_gc_workspaces, methods=["POST"]),
+    Route("/admin/ci/farm-register", ci_farm_register, methods=["POST"]),
+    Route("/admin/ci/farm-remove", ci_farm_remove, methods=["POST"]),
     Route("/admin/notifications", notifications_admin_page),
     Route("/admin/usage", usage_admin_page),
     Route("/admin/guilds", guilds_admin_page),
@@ -248,6 +255,21 @@ ROUTES = [
     Route(
         "/admin/designs/{design_id:int}/toggle-comments",
         design_admin_toggle_comments,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/create",
+        design_admin_create_design,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/edit-meta",
+        design_admin_edit_design_meta,
+        methods=["POST"],
+    ),
+    Route(
+        "/admin/designs/{design_id:int}/close",
+        design_admin_close_design,
         methods=["POST"],
     ),
 ]

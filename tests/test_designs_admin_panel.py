@@ -232,6 +232,84 @@ def main():
     assert "enabled" in r.body.decode("utf-8")
     print("  triage-posts: ok")
 
+    # --- system lifecycle: create form, create, meta, close 2-step --------------
+    assert "/admin/designs/create" in index.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_create_design,
+        "/admin/designs/create",
+        {},
+        {
+            "title": "Panel system design",
+            "description": "Made by panel",
+            "request_text": "Wanted: quiet",
+            "tag_new_ideas": "on",
+        },
+        csrf,
+    )
+    assert "created (system-owned)" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        sysrow = conn.execute(
+            "SELECT id, owner_admin_id FROM designs WHERE title = ?",
+            ("Panel system design",),
+        ).fetchone()
+    assert sysrow is not None and sysrow["owner_admin_id"] is None, dict(sysrow)
+    sysdid = int(sysrow["id"])
+    sysdet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    sysbody = sysdet.body.decode("utf-8")
+    assert f"/admin/designs/{sysdid}/edit-meta" in sysbody
+    assert f"/admin/designs/{sysdid}/close" in sysbody
+    r = _post(
+        admin.design_admin_edit_design_meta,
+        f"/admin/designs/{sysdid}/edit-meta",
+        {"design_id": sysdid},
+        {
+            "title": "Panel system design v2",
+            "description": "Made by panel",
+            "request_text": "Wanted: quiet",
+            "tag_new_ideas": "on",
+            "tag_improvements": "on",
+        },
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    designs.propose_feature(beta["token"], sysdid, "Panel pending widget")
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {},
+        csrf,
+    )
+    assert "tick confirm" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {"confirm": "on"},
+        csrf,
+    )
+    assert "archived" in r.body.decode("utf-8")
+    sysfrozen = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "Frozen" in sysfrozen.body.decode("utf-8")
+    assert f"/admin/designs/{sysdid}/close" not in sysfrozen.body.decode("utf-8")
+    print("  system-lifecycle: ok")
+
     # --- bad csrf + bad auth -----------------------------------------------------
     bad = _call(
         admin.design_admin_answer,

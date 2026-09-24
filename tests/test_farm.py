@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import threading
+import urllib.request
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_farm_"))
@@ -724,7 +725,7 @@ def test_dispatch_accounting_releases():
         picked = farm.pick_runner()
         assert picked is not None
         assert farm._ACTIVE_RUNS.get(row["id"]) == 1
-        urllib.request.urlopen = lambda req, timeout=None: _StubResp(
+        urllib.request.urlopen = lambda req, timeout=None: _StubResp(  # type: ignore[assignment]
             json.dumps({"ok": True}).encode("utf-8")
         )
         assert farm.dispatch_to_runner(picked, {"checks": "tests"}) == {"ok": True}
@@ -735,7 +736,7 @@ def test_dispatch_accounting_releases():
         def _boom(req, timeout=None):
             raise ConnectionError("runner died mid-run")
 
-        urllib.request.urlopen = _boom
+        urllib.request.urlopen = _boom  # type: ignore[assignment]
         assert farm.dispatch_to_runner(picked, {"checks": "tests"}) is None
         assert farm._ACTIVE_RUNS.get(row["id"]) is None
     finally:
@@ -797,6 +798,8 @@ def main():
     test_dispatch_accounting_releases()
     test_concurrent_pick_single_slot()
     test_farm_retry_exhaustion_audited()
+    test_bench_allow_remote_bypasses_preference()
+    test_dispatch_timeout_derives_from_run_timeout()
     print("All CI farm tests passed.")
     print("All CI farm tests passed.")
 
@@ -827,5 +830,183 @@ def test_farm_retry_exhaustion_audited():
     assert match[0]["detail"]["farm_error"] == "boom"
 
 
+def test_bench_allow_remote_bypasses_preference():
+    row = farm.register_runner("overflow", "http://x", token="t")
+    rid = row.get("id")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    dispatched = {}
+
+    def _capture(runner, payload):
+        dispatched["called"] = True
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    farm.dispatch_to_runner = _capture
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 0
+    try:
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+        result = farm.try_bench_dispatch(
+            "db_benchmark", 1, "t", "ci_db_bench_run", None, allow_remote=True
+        )
+        assert result is not None
+        assert dispatched.get("called")
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 0, "t", "ci_db_bench_run", None, allow_remote=True
+            )
+            is None
+        )
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark",
+                1,
+                "t",
+                "ci_db_bench_run",
+                None,
+                pr_number=42,
+                allow_remote=True,
+            )
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm.remove_runner(rid)  # type: ignore[arg-type]
+
+
+def test_dispatch_timeout_derives_from_run_timeout():
+    orig_run = os.environ.get("FORUM_CI_RUN_TIMEOUT_SECONDS")
+    orig_farm = os.environ.get("FORUM_CI_FARM_DISPATCH_TIMEOUT")
+    try:
+        os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = "1200"
+        os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        assert config.CI_FARM_DISPATCH_TIMEOUT == 1230
+    finally:
+        if orig_run is None:
+            os.environ.pop("FORUM_CI_RUN_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = orig_run
+        if orig_farm is None:
+            os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        else:
+            os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = orig_farm
+
+
+def test_dispatch_timeout_reaches_urlopen():
+    """Pin that the derived/overridden timeout reaches urlopen."""
+    orig_run = os.environ.get("FORUM_CI_RUN_TIMEOUT_SECONDS")
+    orig_farm = os.environ.get("FORUM_CI_FARM_DISPATCH_TIMEOUT")
+    orig_urlopen = urllib.request.urlopen
+    captured_timeouts: list[object] = []
+
+    class _FakeResp:
+        def __init__(self):
+            self._body = b'{"ok": true}'
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        captured_timeouts.append(timeout)
+        return _FakeResp()
+
+    try:
+        os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = "1200"
+        os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        urllib.request.urlopen = _fake_urlopen  # type: ignore[assignment]
+        runner = {"id": 1, "url": "http://x", "token": "t"}
+        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        assert captured_timeouts == [1230], captured_timeouts
+
+        os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = "500"
+        captured_timeouts.clear()
+        farm.dispatch_to_runner(runner, {"checks": "tests", "mode": "main"})
+        assert captured_timeouts == [500], captured_timeouts
+    finally:
+        urllib.request.urlopen = orig_urlopen
+        if orig_run is None:
+            os.environ.pop("FORUM_CI_RUN_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["FORUM_CI_RUN_TIMEOUT_SECONDS"] = orig_run
+        if orig_farm is None:
+            os.environ.pop("FORUM_CI_FARM_DISPATCH_TIMEOUT", None)
+        else:
+            os.environ["FORUM_CI_FARM_DISPATCH_TIMEOUT"] = orig_farm
+
+
+def test_run_checks_bench_overflow_passes_allow_remote():
+    """Pin that run_checks' busy-local bench overflow calls
+    try_bench_dispatch with allow_remote=True."""
+    orig_try = farm.try_bench_dispatch
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    try:
+        farm.try_bench_dispatch = _capture  # type: ignore[assignment]
+        import server.ci_runner._runs as runs_mod
+
+        orig_acquire = runs_mod._slots_mod._ci_acquire_slot
+        orig_bench_first = config.CI_FARM_BENCH_REMOTE_FIRST
+
+        def _busy_slot(*a, **kw):
+            raise db.ForumError("slot busy")
+
+        runs_mod._slots_mod._ci_acquire_slot = _busy_slot
+        config.CI_FARM_BENCH_REMOTE_FIRST = 0
+        try:
+            runs_mod.run_checks(
+                agent_id=1,
+                name="t",
+                checks="db_benchmark",
+            )
+        finally:
+            runs_mod._slots_mod._ci_acquire_slot = orig_acquire
+            config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench_first
+        assert calls, "try_bench_dispatch was not called"
+        assert calls[0].get("allow_remote") is True, calls
+    finally:
+        farm.try_bench_dispatch = orig_try
+
+
 if __name__ == "__main__":
-    main()
+    main()  # noqa

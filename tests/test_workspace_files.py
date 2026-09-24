@@ -4,7 +4,12 @@ Covers the seven workspace_* MCP tools against a claimed tree on a
 local bare remote (no network): write/read roundtrip with ranges,
 list without .git, status/diff pins, delete semantics, sync
 fast-forward plus dirty-refusal, both-clocks touch, per-write budget,
-path guards (.git/manifest/traversal/protected), and owner isolation.
+path guards (.git/manifest/traversal/protected), owner isolation, and
+ref reads (committed bytes at branch/tag/sha with dirt invisible,
+unknown/invalid-ref and dir/missing pins), and guarded per-file reset
+from HEAD or a named ref including dry-run, present/absent guards,
+atomic-replace failure, symlink refusal, budget, missing-live-file,
+untracked, binary, empty, and mode-validation edges.
 """
 
 import os
@@ -12,7 +17,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_files_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -263,6 +270,504 @@ def test_sync_and_clocks_and_budget(agents, wstools):
     print("  sync + both clocks + budget: ok")
 
 
+def test_read_at_ref(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Ref Shop")
+        w = wstools.workspace_write_file
+        r = wstools.workspace_read_file
+        aid = agents["alpha"]["agent_id"]
+        dest = ws._claim_dir(aid, pid, "dev")
+        w(tok, pid, "dev", "frozen.txt", "committed one\ncommitted two\n")
+        w(tok, pid, "dev", "sub/f.txt", "inner\n")
+        Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00binary\n")
+        Path(dest, "bigref.txt").write_text("z" * ((1 << 20) + 1), encoding="utf-8")
+        extras = ["blob.bin", "bigref.txt"]
+        try:
+            os.symlink("frozen.txt", os.path.join(dest, "linkref.txt"))
+            extras.append("linkref.txt")
+        except (OSError, NotImplementedError):
+            pass
+        _git("-C", dest, "add", "frozen.txt", "sub/f.txt", *extras)
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "freeze",
+        )
+        old = subprocess.run(
+            ["git", "-C", dest, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert old, "need the frozen commit sha"
+        _git("-C", dest, "branch", "frozen-ref-pin", old)
+        w(tok, pid, "dev", "frozen.txt", "dirty one\ndirty two\n")
+        at_sha = r(tok, pid, "dev", "frozen.txt", ref=old)
+        assert at_sha["content"] == "committed one\ncommitted two", at_sha
+        assert at_sha["ref"] == old, at_sha
+        live = r(tok, pid, "dev", "frozen.txt")
+        assert live["content"] == "dirty one\ndirty two", live
+        assert "ref" not in live, live
+        at_branch = r(tok, pid, "dev", "frozen.txt", ref="frozen-ref-pin")
+        assert at_branch["content"] == at_sha["content"], at_branch
+        assert at_branch["ref"] == "frozen-ref-pin", at_branch
+        page = r(
+            tok,
+            pid,
+            "dev",
+            "frozen.txt",
+            line_start=2,
+            line_end=2,
+            ref=old,
+        )
+        assert page["content"] == "committed two", page
+        assert page["content_sha256"] == at_sha["content_sha256"], page
+        # origin/ fallback: publish the branch, drop the local one, so
+        # only origin/frozen-ref-pin resolves.
+        _git("-C", dest, "push", "origin", "frozen-ref-pin")
+        _git("-C", dest, "branch", "-D", "frozen-ref-pin")
+        via_origin = r(tok, pid, "dev", "frozen.txt", ref="frozen-ref-pin")
+        assert via_origin["content"] == at_sha["content"], via_origin
+        assert via_origin["ref"] == "origin/frozen-ref-pin", via_origin
+        assert "unknown ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="no-such-branch-xyz"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="bad..ref"
+        )
+        assert "no file at" in _expect_tool_error(
+            r, tok, pid, "dev", "ghost.txt", ref=old
+        )
+        assert "is a directory" in _expect_tool_error(
+            r, tok, pid, "dev", "sub", ref=old
+        )
+        # Binary at ref decodes with replacement (proves the bytes path -
+        # text-mode git would raise before returning).
+        at_bin = r(tok, pid, "dev", "blob.bin", ref=old)
+        assert "binary" in at_bin["content"], at_bin
+        assert "over the" in _expect_tool_error(
+            r, tok, pid, "dev", "bigref.txt", ref=old
+        )
+        if "linkref.txt" in extras:
+            # Unreachable via the MCP tool (live symlink components
+            # refuse first), so pinned at the engine: the link blob reads
+            # as its target text.
+            link_raw, link_ref = ws.read_file_at_ref(dest, "linkref.txt", old)
+            assert link_raw == b"frozen.txt", link_raw
+            assert link_ref == old, link_ref
+        assert "must be a" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref=123
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="@{head}"
+        )
+        assert "invalid ref" in _expect_tool_error(
+            r, tok, pid, "dev", "frozen.txt", ref="-lead"
+        )
+        beta = agents["beta"]["token"]
+        assert "no active workspace" in _expect_tool_error(
+            r, beta, pid, "dev", "frozen.txt", ref=old
+        )
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+        r(tok, pid, "dev", "frozen.txt", ref=old)
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  ref reads (committed vs dirty): ok")
+
+
+def test_workspace_reset(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Reset Shop")
+        w = wstools.workspace_write_file
+        r = wstools.workspace_read_file
+        aid = agents["alpha"]["agent_id"]
+        dest = ws._claim_dir(aid, pid, "dev")
+        before_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+
+        w(tok, pid, "dev", "README.md", "dirty one\n")
+        first_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+        assert "stale base" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_sha256=first_sha,
+        )
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+
+        lock_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        replace_entered = threading.Event()
+        replace_release = threading.Event()
+        original_replace = os.replace
+        reset_result = {}
+        reset_errors = []
+        write_errors = []
+        write_done = threading.Event()
+
+        def blocked_replace(*args, **kwargs):
+            replace_entered.set()
+            if not replace_release.wait(5):
+                raise AssertionError("reset replacement was not released")
+            return original_replace(*args, **kwargs)
+
+        def run_reset():
+            try:
+                reset_result["value"] = w(
+                    tok,
+                    pid,
+                    "dev",
+                    "README.md",
+                    reset=True,
+                    expect_sha256=lock_sha,
+                )
+            except BaseException as exc:
+                reset_errors.append(exc)
+
+        def run_writer():
+            try:
+                w(tok, pid, "dev", "README.md", "raced after check\n")
+            except BaseException as exc:
+                write_errors.append(exc)
+            finally:
+                write_done.set()
+
+        with patch.object(os, "replace", blocked_replace):
+            reset_thread = threading.Thread(target=run_reset)
+            reset_thread.start()
+            assert replace_entered.wait(5)
+            write_thread = threading.Thread(target=run_writer)
+            write_thread.start()
+            assert not write_done.wait(0.2)
+            replace_release.set()
+            reset_thread.join(5)
+            write_thread.join(5)
+        assert not reset_thread.is_alive(), "reset thread did not finish"
+        assert not write_thread.is_alive(), "writer thread did not finish"
+        assert not reset_errors, reset_errors
+        assert not write_errors, write_errors
+        assert reset_result["value"]["changed"] is True, reset_result
+        assert r(tok, pid, "dev", "README.md")["content"] == "raced after check"
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+
+        current_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        preview = w(
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_sha256=current_sha,
+            dry_run=True,
+        )
+        assert preview["reset"] is True and preview["ref"] == "HEAD", preview
+        assert preview["changed"] is True and preview["dry_run"] is True, preview
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+
+        def fail_replace(*_args, **_kwargs):
+            raise OSError("injected replace failure")
+
+        with patch.object(os, "replace", fail_replace):
+            assert "atomically reset" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "README.md",
+                reset=True,
+                expect_sha256=current_sha,
+            )
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+        assert not list(Path(dest, ".git").glob("workspace-reset-*"))
+
+        original_ref_read = wstools.read_regular_file_at_ref
+
+        def racing_ref_read(*args, **kwargs):
+            result = original_ref_read(*args, **kwargs)
+            Path(dest, "README.md").write_text("raced\n", encoding="utf-8")
+            return result
+
+        with patch.object(wstools, "read_regular_file_at_ref", racing_ref_read):
+            assert "concurrent change" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "README.md",
+                reset=True,
+                expect_sha256=current_sha,
+            )
+        assert r(tok, pid, "dev", "README.md")["content"] == "raced"
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+
+        restored = w(tok, pid, "dev", "README.md", reset=True)
+        assert restored["reset"] is True and restored["ref"] == "HEAD", restored
+        assert restored["changed"] is True and restored["bytes"] == 5, restored
+        assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+        before_noop_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_noop_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
+        noop = w(tok, pid, "dev", "README.md", reset=True)
+        after_noop_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_noop_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert noop["changed"] is False, noop
+        assert after_noop_record > before_noop_record, (
+            before_noop_record,
+            after_noop_record,
+        )
+        assert after_noop_manifest["updated_at"] > before_noop_manifest["updated_at"]
+
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        restored_missing = w(
+            tok, pid, "dev", "README.md", reset=True, expect_absent=True
+        )
+        assert restored_missing["changed"] is True, restored_missing
+        assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        w(tok, pid, "dev", "README.md", "present\n")
+        assert "stale base" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_absent=True,
+        )
+        assert r(tok, pid, "dev", "README.md")["content"] == "present"
+        assert "not both" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_absent=True,
+            expect_sha256="0" * 64,
+        )
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        w(tok, pid, "dev", "README.md", "seed\n")
+
+        w(tok, pid, "dev", "fresh.txt", "new\n")
+        assert "no file at" in _expect_tool_error(
+            w, tok, pid, "dev", "fresh.txt", reset=True
+        )
+        wstools.workspace_delete_file(tok, pid, "dev", "fresh.txt")
+
+        w(tok, pid, "dev", "named.txt", "base one\n")
+        _git("-C", dest, "add", "named.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "named base",
+        )
+        _git("-C", dest, "branch", "reset-base")
+        _git("-C", dest, "branch", "mode-base")
+        os.chmod(Path(dest, "named.txt"), 0o755)
+        _git("-C", dest, "update-index", "--chmod=+x", "named.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "executable base",
+        )
+        _git("-C", dest, "branch", "mode-exec")
+        w(tok, pid, "dev", "named.txt", "dirty named\n")
+        exec_reset = w(tok, pid, "dev", "named.txt", reset=True)
+        assert exec_reset["changed"] is True, exec_reset
+        if os.name != "nt":
+            assert os.stat(Path(dest, "named.txt")).st_mode & 0o111, exec_reset
+        w(tok, pid, "dev", "named.txt", "dirty named again\n")
+        mode_reset = w(
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="mode-base",
+        )
+        assert mode_reset["ref"] == "mode-base", mode_reset
+        assert mode_reset["changed"] is True, mode_reset
+        if os.name != "nt":
+            assert not os.stat(Path(dest, "named.txt")).st_mode & 0o111, mode_reset
+        named = w(
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="reset-base",
+        )
+        assert named["ref"] == "reset-base" and named["changed"] is False, named
+        assert r(tok, pid, "dev", "named.txt")["content"] == "base one"
+        assert "unknown ref" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            reset=True,
+            base_ref="missing-reset-ref",
+        )
+        assert "exactly one" in _expect_tool_error(
+            w, tok, pid, "dev", "named.txt", "content\n", reset=True
+        )
+        assert "exactly one" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            edits=[{"find": "base", "replace": "dirty"}],
+            reset=True,
+        )
+        assert "base_ref is valid only" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "named.txt",
+            "content\n",
+            base_ref="HEAD",
+        )
+
+        if hasattr(os, "mkfifo"):
+            fifo = Path(dest, "live.fifo")
+            os.mkfifo(fifo)
+            assert "not a regular" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "live.fifo",
+                reset=True,
+                expect_absent=True,
+            )
+            fifo.unlink()
+
+        link_blob = (
+            subprocess.run(
+                ["git", "-C", dest, "hash-object", "-w", "--stdin"],
+                input=b"target.txt",
+                check=True,
+                capture_output=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        assert link_blob, "need a symlink blob"
+        _git(
+            "-C",
+            dest,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            link_blob,
+            "linkbase.txt",
+        )
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "symlink base",
+        )
+        _git("-C", dest, "branch", "symlink-reset-base")
+        Path(dest, "linkbase.txt").write_text("regular live\n", encoding="utf-8")
+        assert "not a regular file" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "linkbase.txt",
+            reset=True,
+            base_ref="symlink-reset-base",
+        )
+        assert r(tok, pid, "dev", "linkbase.txt")["content"] == "regular live"
+        _git("-C", dest, "reset", "--hard", "HEAD")
+
+        w(tok, pid, "dev", "named.txt", "budget dirty\n")
+        budget_sha = r(tok, pid, "dev", "named.txt")["content_sha256"]
+        old_cap = config.WORKSPACE_CLAIM_MAX_MB
+        config.WORKSPACE_CLAIM_MAX_MB = 0
+        try:
+            assert "MAX_MB" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "named.txt",
+                reset=True,
+                expect_sha256=budget_sha,
+            )
+        finally:
+            config.WORKSPACE_CLAIM_MAX_MB = old_cap
+        assert r(tok, pid, "dev", "named.txt")["content"] == "budget dirty"
+        w(tok, pid, "dev", "named.txt", "base one\n")
+
+        Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00binary\n")
+        Path(dest, "empty.txt").write_text("", encoding="utf-8")
+        _git("-C", dest, "add", "blob.bin", "empty.txt")
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "reset edge bytes",
+        )
+        assert "not UTF-8" in _expect_tool_error(
+            w, tok, pid, "dev", "blob.bin", reset=True
+        )
+        assert "empty file" in _expect_tool_error(
+            w, tok, pid, "dev", "empty.txt", reset=True
+        )
+
+        after_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
+        assert after_record >= before_record, (before_record, after_record)
+        assert after_manifest["updated_at"] > before_manifest["updated_at"]
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace reset mode: ok")
+
+
 def test_owner_isolation(agents, wstools):
     sb = _FilesSandbox()
     try:
@@ -369,7 +874,7 @@ def test_workspace_edits(agents, wstools):
             None,
             [{"find": "a", "replace": "b"}],
         )
-        assert "not both" in _expect_tool_error(
+        assert "exactly one" in _expect_tool_error(
             w,
             tok,
             pid,
@@ -500,6 +1005,8 @@ def main():
     test_delete_semantics(agents, wstools)
     test_sync_and_clocks_and_budget(agents, wstools)
     test_workspace_edits(agents, wstools)
+    test_read_at_ref(agents, wstools)
+    test_workspace_reset(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
