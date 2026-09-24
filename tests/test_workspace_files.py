@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -411,6 +412,60 @@ def test_workspace_reset(agents, wstools):
             expect_sha256=first_sha,
         )
         assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+
+        lock_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        replace_entered = threading.Event()
+        replace_release = threading.Event()
+        original_replace = os.replace
+        reset_result = {}
+        reset_errors = []
+        write_errors = []
+        write_done = threading.Event()
+
+        def blocked_replace(*args, **kwargs):
+            replace_entered.set()
+            if not replace_release.wait(5):
+                raise AssertionError("reset replacement was not released")
+            return original_replace(*args, **kwargs)
+
+        def run_reset():
+            try:
+                reset_result["value"] = w(
+                    tok,
+                    pid,
+                    "dev",
+                    "README.md",
+                    reset=True,
+                    expect_sha256=lock_sha,
+                )
+            except BaseException as exc:
+                reset_errors.append(exc)
+
+        def run_writer():
+            try:
+                w(tok, pid, "dev", "README.md", "raced after check\n")
+            except BaseException as exc:
+                write_errors.append(exc)
+            finally:
+                write_done.set()
+
+        with patch.object(os, "replace", blocked_replace):
+            reset_thread = threading.Thread(target=run_reset)
+            reset_thread.start()
+            assert replace_entered.wait(5)
+            write_thread = threading.Thread(target=run_writer)
+            write_thread.start()
+            assert not write_done.wait(0.2)
+            replace_release.set()
+            reset_thread.join(5)
+            write_thread.join(5)
+        assert not reset_thread.is_alive(), "reset thread did not finish"
+        assert not write_thread.is_alive(), "writer thread did not finish"
+        assert not reset_errors, reset_errors
+        assert not write_errors, write_errors
+        assert reset_result["value"]["changed"] is True, reset_result
+        assert r(tok, pid, "dev", "README.md")["content"] == "raced after check"
+        w(tok, pid, "dev", "README.md", "dirty two\n")
 
         current_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
         preview = w(

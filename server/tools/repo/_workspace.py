@@ -9,8 +9,12 @@ the answer. Claim/release emit the workspace ledger events.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any
 
 import config
 import db
@@ -108,6 +112,55 @@ def list_workspaces(token: str) -> list:
 _MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
 
 _EXPECT_SHA_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+@contextmanager
+def _workspace_lock(dest: str):
+    lock_path = os.path.join(dest, ".git", "workspace.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        if os.name == "nt":
+            msvcrt: Any = __import__("msvcrt")
+            locking = msvcrt.locking
+            lock_mode = msvcrt.LK_LOCK
+            unlock_mode = msvcrt.LK_UNLCK
+            lock.seek(0)
+            lock.write(b"\0")
+            lock.flush()
+            lock.seek(0)
+            locking(lock.fileno(), lock_mode, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                locking(lock.fileno(), unlock_mode, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _workspace_serialized(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
+            _record, dest = _resolve_claim_tree(token, proposal_id, name)
+            with _workspace_lock(dest):
+                return await func(token, proposal_id, name, *args, **kwargs)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
+        _record, dest = _resolve_claim_tree(token, proposal_id, name)
+        with _workspace_lock(dest):
+            return func(token, proposal_id, name, *args, **kwargs)
+
+    return sync_wrapper
 
 
 def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
@@ -457,6 +510,7 @@ def workspace_diff(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_write_file(
     token: str,
     proposal_id: int,
@@ -792,6 +846,7 @@ def workspace_write_file(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) -> dict:
     """Delete one file from a workspace tree (files only, never dirs)."""
     record, dest = _resolve_claim_tree(token, proposal_id, name)
@@ -810,6 +865,7 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_sync(
     token: str, proposal_id: int, name: str, base_branch: str | None = None
 ) -> dict:
@@ -927,6 +983,7 @@ def workspace_rehearse(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 async def workspace_push(
     token: str,
     proposal_id: int,
