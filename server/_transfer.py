@@ -109,9 +109,36 @@ async def transfer_download(request: Request) -> Response:
         t = db.redeem_transfer_ticket(ticket, "read", fpath)
     except db.ForumError as exc:
         return _ticket_fail(exc)
+
+    def validate_claim() -> None:
+        claim_id = t.get("claim_id")
+        if not isinstance(claim_id, int):
+            claim_id = -1
+        with db._conn() as conn:
+            claim = conn.execute(
+                "SELECT id FROM workspace_claims"
+                " WHERE id = ? AND agent_id = ? AND proposal_id = ? AND name = ?"
+                " AND status = 'active'",
+                (
+                    claim_id,
+                    int(t["agent_id"]),
+                    int(t["proposal_id"]),
+                    str(t["claim_name"]),
+                ),
+            ).fetchone()
+        if claim is None:
+            raise RepoError(
+                "workspace for this ticket is gone - release it and claim again,"
+                " then mint a fresh ticket."
+            )
+
     try:
         clean, data = _ws.read_transfer_bytes(
-            int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]), fpath
+            int(t["agent_id"]),
+            int(t["proposal_id"]),
+            str(t["claim_name"]),
+            fpath,
+            claim_validator=validate_claim,
         )
     except RepoError as exc:
         return _repo_fail(exc)
