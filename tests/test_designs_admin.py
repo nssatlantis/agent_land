@@ -98,6 +98,15 @@ def main():
     expect_error(
         admin.admin_move_design_item, "alpha", did, "nope", f3["feature_id"], "up"
     )
+    move_history = admin.admin_design_history("alpha", did)
+    move_details = [json.loads(d["detail"]) for d in move_history["decisions"]]
+    assert any(
+        d.get("op") == "move"
+        and d.get("kind") == "feature"
+        and d.get("item_id") == f3["feature_id"]
+        and d.get("direction") == "up"
+        for d in move_details
+    ), move_details
     q = discuss.ask_question(beta["token"], did, "What fuel?")
     a = admin.admin_answer_question("alpha", did, q["question_id"], "Sunlight.")
     assert a["state"] == "answered", a
@@ -147,6 +156,35 @@ def main():
     )
     assert direct_issue["state"] == "accepted", direct_issue
     expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
+    vanishing_feature = admin.admin_create_feature(
+        "alpha", did, "Feature with stale pending edit"
+    )
+    stale_edit = designs.propose_feature(
+        beta["token"],
+        did,
+        "Stale edit that must not revive a removed target",
+        op="edit",
+        feature_id=vanishing_feature["feature_id"],
+    )
+    admin.admin_remove_feature("alpha", did, vanishing_feature["feature_id"])
+    expect_error(
+        flow.decide_feature,
+        alpha["token"],
+        did,
+        stale_edit["feature_id"],
+        True,
+    )
+    resolved_parent = admin.admin_create_feature(
+        "alpha", did, "Feature with a resolved linked issue"
+    )
+    resolved_child = admin.admin_create_issue(
+        "alpha",
+        did,
+        "Resolved issue that no longer blocks parent removal",
+        feature_id=resolved_parent["feature_id"],
+    )
+    admin.admin_resolve_issue("alpha", did, resolved_child["issue_id"])
+    admin.admin_remove_feature("alpha", did, resolved_parent["feature_id"])
     admin.admin_edit_issue(
         "alpha",
         did,
