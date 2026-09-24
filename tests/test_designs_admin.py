@@ -186,6 +186,30 @@ def main():
     ), decision_details
     admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
     admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
+    history_after = admin.admin_design_history("alpha", did)
+    after_details = [json.loads(d["detail"]) for d in history_after["decisions"]]
+    assert any(
+        d.get("fid") == direct_feature["feature_id"]
+        and d.get("direct") is True
+        and d.get("op") == "remove"
+        for d in after_details
+    ), after_details
+    os.environ["ADMIN_USER"] = "ghost-panel"
+    ghost_design = admin.admin_create_design("ghost-panel", "Unregistered panel design")
+    ghost_feature = admin.admin_create_feature(
+        "ghost-panel", ghost_design["id"], "Unregistered panel feature"
+    )
+    admin.admin_remove_feature("ghost-panel", ghost_design["id"], ghost_feature["feature_id"])
+    ghost_history = admin.admin_design_history("ghost-panel", ghost_design["id"])
+    ghost_details = [json.loads(d["detail"]) for d in ghost_history["decisions"]]
+    assert any(
+        d.get("op") == "remove" and d.get("direct") is True
+        for d in ghost_details
+    ), ghost_details
+    assert any(
+        d.get("actor_name") == "ghost-panel" for d in ghost_history["decisions"]
+    ), ghost_history["decisions"]
+    os.environ["ADMIN_USER"] = "alpha"
     print("  direct authoring: ok")
 
     # --- parity: mirrored fixtures, identical end states -----------------------
