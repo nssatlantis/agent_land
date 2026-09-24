@@ -84,10 +84,11 @@ def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
 
 
 @contextmanager
-def workspace_lock(dest: str):
-    if not _has_git(dest):
+def workspace_lock(dest: str, *, allow_missing: bool = False):
+    if not allow_missing and not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     lock_path = dest + ".workspace.lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     with open(lock_path, "a+b") as lock:
         if os.name == "nt":
             msvcrt: Any = __import__("msvcrt")
@@ -191,6 +192,15 @@ def _retire_dir(dest: str) -> bool:
     return not os.path.isdir(dest)
 
 
+def _retire_claim_tree_locked(dest: str) -> bool:
+    return _retire_dir(dest)
+
+
+def _retire_claim_tree(dest: str) -> bool:
+    with workspace_lock(dest, allow_missing=True):
+        return _retire_claim_tree_locked(dest)
+
+
 def _clone_claim_tree(dest: str) -> None:
     parent = os.path.dirname(dest)
     try:
@@ -250,7 +260,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     if manifest is not None and not _manifest_owner_matches(
         manifest, agent_id, proposal_id, clean_name
     ):
-        _retire_dir(dest)
+        _retire_claim_tree(dest)
         manifest = None
     if manifest is None and not _has_git(dest):
         check_claim_budget(agent_id)
@@ -282,7 +292,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
 
 def retire_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
     """Best-effort removal of one claim tree. True when gone."""
-    return _retire_dir(_claim_dir(agent_id, proposal_id, name))
+    return _retire_claim_tree(_claim_dir(agent_id, proposal_id, name))
 
 
 def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
@@ -358,7 +368,7 @@ def _untracked_paths(dest: str) -> list:
 def _changed_paths(dest: str) -> list:
     """Paths a tree actually changed vs its HEAD: tracked edits (working
     tree vs HEAD, staged or not) plus untracked additions. Deleted
-    tracked paths are dropped - they are absent from the walk anyway.
+    tracked paths are dropped - they're absent from the walk anyway.
 
     This is the delta set the rehearsal snapshot rides on (bug #90): a
     claim tree cloned from an earlier base must not re-upload its stale
@@ -875,7 +885,7 @@ def read_transfer_bytes(
         raise RepoError(f"no file at {clean!r} in the workspace.") from exc
     cap = _transfer_file_cap_bytes()
     if size > cap:
-        raise RepoError(f"{clean!r} is {size} bytes, over the {cap} byte transfer cap.")
+        raise RepoError(f"path {clean!r} is {size} bytes, over the {cap} byte transfer cap.")
     try:
         with open(full, "rb") as fh:
             data = fh.read()
@@ -980,7 +990,7 @@ def _apply_transfer_bytes(
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8", newline="") as fh:
             fh.write(new_text)
-    except OSError as exc:  # domain: fail-loudly - workspace file not writable
+    except OSError as exc:  # domain: fail-loudly - an unwritable tree file surfaces
         raise RepoError(f"could not write {clean!r} in the workspace.") from exc
     return {
         "path": clean,
@@ -1252,7 +1262,7 @@ def sweep_idle_claim_trees() -> int:
                     ValueError,
                 ):  # domain: degrade-silently - bad stamp sweeps nothing
                     continue
-                if idle > ttl and _retire_dir(dest):
+                if idle > ttl and _retire_claim_tree(dest):
                     swept += 1
     return swept
 
@@ -1315,6 +1325,6 @@ def sweep_released_claim_trees(live: set) -> int:
                     continue
                 if key != (agent_id, proposal_id, claim):
                     continue
-                if key not in live and _retire_dir(dest):
+                if key not in live and _retire_claim_tree(dest):
                     swept += 1
     return swept
