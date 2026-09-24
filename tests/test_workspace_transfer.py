@@ -544,7 +544,9 @@ def test_reclaim_blocks_old_upload(agents):
         return old_apply(*args, **kwargs)
 
     with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
-        response = _run(TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n")))
+        response = _run(
+            TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
+        )
     assert response.status_code == 404, (response.status_code, response.body)
     assert "gone" in response.body.decode(), response.body
     current = db.get_workspace(tok, pid, "reclaim")
@@ -552,7 +554,9 @@ def test_reclaim_blocks_old_upload(agents):
     assert "could not read" in expect_error(
         WT.workspace_read_file, tok, pid, "reclaim", "r.txt"
     )
-    retry = _run(TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n")))
+    retry = _run(
+        TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
+    )
     assert retry.status_code == 404, (retry.status_code, retry.body)
     WT.release_workspace(tok, pid, "reclaim")
     print("  reclaim blocks an old redeemed upload without writing the new tree: ok")
