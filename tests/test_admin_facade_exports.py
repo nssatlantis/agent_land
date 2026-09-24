@@ -105,6 +105,12 @@ EXPECTED = [
     "design_admin_move_item",
     "design_admin_answer",
     "design_admin_toggle_comments",
+    "design_admin_create_feature",
+    "design_admin_edit_feature",
+    "design_admin_remove_feature",
+    "design_admin_create_issue",
+    "design_admin_edit_issue",
+    "design_admin_remove_issue",
     # designs panel-system ops (proposal #694)
     "design_admin_create_design",
     "design_admin_edit_design_meta",
