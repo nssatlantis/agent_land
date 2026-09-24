@@ -152,7 +152,7 @@ def main():
     assert _row(stats, "store_notes_unlock")["units"] == 1
     assert _row(stats, "store_notes_write")["source"] == "personal_notes_write"
     assert _row(stats, "store_notes_write")["category"] == "usage"
-    assert stats["catalog"]["item_count"] == 16
+    assert stats["catalog"]["item_count"] == 19
     assert sum(s["units"] for s in stats["sources"]) == stats["totals"]["units"]
     assert sum(c["units"] for c in stats["category_totals"]) == stats["totals"]["units"]
     assert stats["affordability"]["active_citizens"] >= 2
