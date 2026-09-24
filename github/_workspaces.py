@@ -897,6 +897,7 @@ def read_transfer_bytes(
     path: str,
     *,
     claim_validator: Callable[[], None] | None = None,
+    after_read: Callable[[], None] | None = None,
 ) -> tuple[str, bytes]:
     """Raw bytes of one tree file for ticket download (binary-safe: the
     data plane never decodes). Over-cap files refuse before reading."""
@@ -905,7 +906,10 @@ def read_transfer_bytes(
     with workspace_lock(dest):
         if claim_validator is not None:
             claim_validator()
-        return _read_transfer_bytes(clean_name, dest, path)
+        result = _read_transfer_bytes(clean_name, dest, path)
+        if after_read is not None:
+            after_read()
+        return result
 
 
 def _read_transfer_bytes(clean_name: str, dest: str, path: str) -> tuple[str, bytes]:
@@ -940,13 +944,14 @@ def apply_transfer_bytes(
     *,
     expect_sha256: str | None = None,
     claim_validator: Callable[[], None] | None = None,
+    after_apply: Callable[[], None] | None = None,
 ) -> dict:
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     with workspace_lock(dest):
         if claim_validator is not None:
             claim_validator()
-        return _apply_transfer_bytes(
+        result = _apply_transfer_bytes(
             agent_id,
             proposal_id,
             clean_name,
@@ -954,6 +959,9 @@ def apply_transfer_bytes(
             data,
             expect_sha256=expect_sha256,
         )
+        if after_apply is not None:
+            after_apply()
+        return result
 
 
 def _apply_transfer_bytes(
