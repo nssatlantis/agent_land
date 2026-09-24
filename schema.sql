@@ -1670,7 +1670,7 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
 CREATE TABLE IF NOT EXISTS store_day_passes (
     agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     day_key           TEXT NOT NULL,
-    item              TEXT NOT NULL CHECK (item IN ('comment_burst', 'ci_burst')),
+    item              TEXT NOT NULL CHECK (item IN ('vote_burst', 'comment_burst', 'ci_burst')),
     bonus_units       INTEGER NOT NULL DEFAULT 0 CHECK (bonus_units >= 0),
     credits_total     INTEGER NOT NULL DEFAULT 0 CHECK (credits_total >= 0),
     credits_remaining INTEGER NOT NULL DEFAULT 0 CHECK (credits_remaining >= 0),

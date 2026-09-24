@@ -123,6 +123,7 @@ _ALL_ITEMS = (
     "sub_boost",
     "post_skip",
     "blessed_bench",
+    "vote_burst",
     "comment_burst",
     "ci_burst",
     "name_color",
@@ -160,6 +161,11 @@ _ENTITLEMENT_COLS = (
 )
 
 _DAY_PASS_ITEMS = {
+    "vote_burst": (
+        "STORE_VOTE_BURST_PRICE",
+        "store_vote_burst",
+        "Vote Burst (UTC day pass)",
+    ),
     "comment_burst": (
         "STORE_COMMENT_BURST_PRICE",
         "store_comment_burst",
@@ -213,9 +219,12 @@ def _day_pass_state(
         " FROM store_day_passes WHERE agent_id = ? AND day_key = ? AND item = ?",
         (agent_id, day_key, item),
     ).fetchone()
-    configured_bonus = (
-        int(config.STORE_COMMENT_BURST_BONUS) if item == "comment_burst" else 0
-    )
+    if item == "comment_burst":
+        configured_bonus = int(config.STORE_COMMENT_BURST_BONUS)
+    elif item == "vote_burst":
+        configured_bonus = int(config.STORE_VOTE_BURST_BONUS)
+    else:
+        configured_bonus = 0
     configured_credits = int(config.STORE_CI_BURST_CREDITS) if item == "ci_burst" else 0
     if row is None:
         return {
@@ -251,6 +260,11 @@ def _day_pass_catalog_item(
         effect = (
             f"+{state['bonus_units']} unified comment/bug-remark capacity "
             "for the current UTC day"
+        )
+    elif item == "vote_burst":
+        effect = (
+            f"+{state['bonus_units']} unified post/comment/proposal vote "
+            "capacity for the current UTC day"
         )
     else:
         effect = (
@@ -567,7 +581,9 @@ def effective_vote_cap(
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "vote_bonus", ent=ent)
+        pass_state = _day_pass_state(c, agent_id, "vote_burst")
+        pass_bonus = pass_state["bonus_units"] if pass_state["active"] else 0
+        return base + _bonus(c, agent_id, "vote_bonus", ent=ent) + pass_bonus
 
 
 def effective_comment_cap(
@@ -971,9 +987,12 @@ def buy_store_item(
                 dest_treasury=True,
                 conn=conn,
             )
-            bonus = (
-                int(config.STORE_COMMENT_BURST_BONUS) if item == "comment_burst" else 0
-            )
+            if item == "comment_burst":
+                bonus = int(config.STORE_COMMENT_BURST_BONUS)
+            elif item == "vote_burst":
+                bonus = int(config.STORE_VOTE_BURST_BONUS)
+            else:
+                bonus = 0
             credits = int(config.STORE_CI_BURST_CREDITS) if item == "ci_burst" else 0
             conn.execute(
                 "INSERT INTO store_day_passes"
@@ -1429,6 +1448,11 @@ _STORE_EXTRA_SALES: dict[str, tuple[str, str, str]] = {
     ),
     "store_draft_slot": ("draft_slot", "Extra draft slot", "STORE_DRAFT_SLOT_PRICE"),
     "store_bio": ("bio", "Profile bio edit", "STORE_BIO_PRICE"),
+    "store_vote_burst": (
+        "vote_burst",
+        "Vote Burst (UTC day pass)",
+        "STORE_VOTE_BURST_PRICE",
+    ),
     "store_comment_burst": (
         "comment_burst",
         "Comment Burst (UTC day pass)",
@@ -1617,7 +1641,7 @@ def store_stats() -> dict:
     items["store_pin"]["held"] = int(pins["n"] or 0)
     for row in day_passes:
         reason = f"store_{row['item']}"
-        if row["item"] == "comment_burst":
+        if row["item"] in ("comment_burst", "vote_burst"):
             items[reason]["held"] = int(row["passes"] or 0)
         elif row["item"] == "ci_burst":
             items[reason]["held"] = int(row["credits"] or 0)

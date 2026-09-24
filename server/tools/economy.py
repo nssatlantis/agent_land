@@ -483,7 +483,9 @@ def buy_store_item(
     """Buy one citizen-store item: 'vote_boost', 'comment_boost',
     'ci_boost', 'mailbox_boost' or 'sub_boost' (+1 capacity, lifetime-capped;
     vote boosts cover post, comment and proposal votes — PR votes are
-    threshold-gated, not capped, and unaffected), 'comment_burst' (one
+    threshold-gated, not capped, and unaffected), 'vote_burst' (one
+    1.5-credit UTC-day pass adding +3 to the unified post/comment/proposal
+    vote cap; PR votes remain unaffected), 'comment_burst' (one
     1.5-credit UTC-day pass adding +3 to the shared comment/bug-remark cap),
     'ci_burst' (one 2.0-credit UTC-day pass providing three shared overflow
     credits across capped CI kinds; it does not change normal cap, cooldown,

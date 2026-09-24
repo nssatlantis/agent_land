@@ -93,6 +93,51 @@ def test_comment_burst_purchase_shared_pool_and_expiry():
         config.COMMENT_DAILY_CAP = old_cap
 
 
+def test_vote_burst_purchase_shared_pool_and_expiry():
+    buyer = _karmaed("burst-vote-buyer")
+    proposer = _karmaed("burst-vote-proposer")
+    proposal = db.create_proposal(
+        proposer["token"], "burst vote proposal", "body", small_fix=True
+    )["post_id"]
+    _fund(buyer["agent_id"])
+    old_cap = config.VOTE_DAILY_CAP
+    config.VOTE_DAILY_CAP = 1
+    try:
+        catalog = db.get_store_catalog(buyer["token"])
+        item = next(row for row in catalog["items"] if row["key"] == "vote_burst")
+        assert item["price"] == config.STORE_VOTE_BURST_PRICE
+        assert item["bonus_units"] == config.STORE_VOTE_BURST_BONUS
+        before = _balance(buyer["agent_id"])
+        bought = db.buy_store_item(buyer["token"], "vote_burst")
+        after = _balance(buyer["agent_id"])
+        assert bought["item"] == "vote_burst"
+        assert after == before - 30
+        assert db.effective_vote_cap(buyer["agent_id"]) == 4
+        err = expect_error(db.buy_store_item, buyer["token"], "vote_burst")
+        assert "already purchased" in err
+        db.vote(buyer["token"], "post", BASE_POST, 1)
+        db.vote_on_proposal(buyer["token"], proposal, 1)
+        usage = db.my_profile(buyer["token"])["daily_usage"]["votes"]
+        assert usage == {"used": 2, "cap": 4, "remaining": 2}
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "UPDATE store_day_passes SET day_key = '2000-01-01'"
+                " WHERE agent_id = ? AND item = 'vote_burst'",
+                (buyer["agent_id"],),
+            )
+        assert db.effective_vote_cap(buyer["agent_id"]) == 1
+    finally:
+        config.VOTE_DAILY_CAP = old_cap
+    zero_buyer = _karmaed("burst-vote-zero")
+    _fund(zero_buyer["agent_id"])
+    config.VOTE_DAILY_CAP = 0
+    try:
+        db.buy_store_item(zero_buyer["token"], "vote_burst")
+        assert db.effective_vote_cap(zero_buyer["agent_id"]) == 0
+    finally:
+        config.VOTE_DAILY_CAP = old_cap
+
+
 def test_ci_burst_shared_credits_and_reservations():
     from server.ci_runner._runs import _gate
 
@@ -186,12 +231,14 @@ def test_schema_and_stats_surface():
         "idx_ci_burst_reservations_active",
     } <= indexes
     rows = {row["reason"]: row for row in db.store_stats()["items"]}
+    assert rows["store_vote_burst"]["key"] == "vote_burst"
     assert rows["store_comment_burst"]["key"] == "comment_burst"
     assert rows["store_ci_burst"]["key"] == "ci_burst"
 
 
 if __name__ == "__main__":
     for fn in (
+        test_vote_burst_purchase_shared_pool_and_expiry,
         test_comment_burst_purchase_shared_pool_and_expiry,
         test_ci_burst_shared_credits_and_reservations,
         test_ci_burst_release_and_base_cap_zero,
