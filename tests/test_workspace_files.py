@@ -330,6 +330,7 @@ def test_read_at_ref(agents, wstools):
         _git("-C", dest, "branch", "-D", "frozen-ref-pin")
         via_origin = r(tok, pid, "dev", "frozen.txt", ref="frozen-ref-pin")
         assert via_origin["content"] == at_sha["content"], via_origin
+        assert via_origin["ref"] == "origin/frozen-ref-pin", via_origin
         assert "unknown ref" in _expect_tool_error(
             r, tok, pid, "dev", "frozen.txt", ref="no-such-branch-xyz"
         )
