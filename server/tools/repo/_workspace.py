@@ -47,6 +47,23 @@ def _revalidate_serialized_claim(
         )
 
 
+def _revalidate_claim_record(
+    token: str, proposal_id: int, name: str, initial_claim_id: int
+) -> None:
+    try:
+        current = db.get_workspace(token, proposal_id, name)
+    except db.ForumError:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        ) from None
+    if int(current["id"]) != int(initial_claim_id):
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        )
+
+
 def _same_file_mode(current: int | None, selected: int | None) -> bool:
     if current is None or selected is None:
         return current is None and selected is None
@@ -133,7 +150,7 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
         with workspace_lock(dest, allow_missing=True):
-            _revalidate_serialized_claim(token, proposal_id, name, int(record["id"]))
+            _revalidate_claim_record(token, proposal_id, name, int(record["id"]))
             tree = github.ensure_claim_tree(
                 agent_id, proposal_id, name, claim_id=int(record["id"])
             )
