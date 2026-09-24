@@ -25,6 +25,7 @@ import re
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import config
 from db._core import (
@@ -136,6 +137,49 @@ _ALL_ITEMS = (
     "draft_slot",
     "bio",
 )
+
+_CATEGORY_LABELS = {
+    "capacity": "Capacity",
+    "banked": "Banked",
+    "feature": "Features",
+    "presentation": "Presentation",
+    "usage": "Usage fees",
+    "other": "Other",
+}
+_CATALOG_CATEGORY_BY_ITEM = {
+    "vote_boost": "capacity",
+    "comment_boost": "capacity",
+    "ci_boost": "capacity",
+    "mailbox_boost": "capacity",
+    "sub_boost": "capacity",
+    "vote_burst": "capacity",
+    "comment_burst": "capacity",
+    "ci_burst": "capacity",
+    "notes_category": "capacity",
+    "notes_entry_pack": "capacity",
+    "draft_slot": "capacity",
+    "post_skip": "banked",
+    "blessed_bench": "banked",
+    "poll": "feature",
+    "notes_unlock": "feature",
+    "drafts_unlock": "feature",
+    "name_color": "presentation",
+    "pin": "presentation",
+    "bio": "presentation",
+}
+_CATALOG_SOURCE = "buy_store_item"
+_SOURCE_LABELS = {
+    "buy_store_item": "Catalog purchases",
+    "personal_notes_write": "Personal-notes rewrites",
+    "draft_save": "Draft creation",
+    "other": "Other",
+}
+_SOURCE_REASON_COUNTS = {
+    "buy_store_item": len(_ALL_ITEMS),
+    "personal_notes_write": 1,
+    "draft_save": 1,
+    "other": 0,
+}
 
 _ZERO_ENTITLEMENTS = {
     "vote_bonus": 0,
@@ -922,11 +966,27 @@ def get_store_catalog(token: str) -> dict:
                 "current": ent["bio"],
             }
         )
+        for item in items:
+            item["category"] = _CATALOG_CATEGORY_BY_ITEM.get(item["key"], "other")
+            item["source"] = _CATALOG_SOURCE
+        categories = [
+            {
+                "key": key,
+                "label": _CATEGORY_LABELS[key],
+                "item_count": sum(
+                    1
+                    for catalog_key in _ALL_ITEMS
+                    if _CATALOG_CATEGORY_BY_ITEM.get(catalog_key) == key
+                ),
+            }
+            for key in ("capacity", "banked", "feature", "presentation")
+        ]
         return {
             "enabled": bool(config.STORE_ENABLED),
             "balance": format_credits(bal),
             "balance_units": bal,
             "items": items,
+            "categories": categories,
         }
 
 
@@ -1465,6 +1525,162 @@ _STORE_EXTRA_SALES: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+_CATALOG_PRICE_ATTR_BY_ITEM = {key: data[1] for key, data in _BOOST_ITEMS.items()}
+for _reason, (_key, _label, _price_attr) in _STORE_EXTRA_SALES.items():
+    if _key in _ALL_ITEMS:
+        _CATALOG_PRICE_ATTR_BY_ITEM[_key] = _price_attr
+
+_CAP_PRESSURE_META: dict[str, tuple[str, str | int]] = {
+    "vote_boost": ("vote_bonus", "STORE_VOTE_MAX"),
+    "comment_boost": ("comment_bonus", "STORE_COMMENT_MAX"),
+    "ci_boost": ("ci_bonus", "STORE_CI_MAX"),
+    "mailbox_boost": ("mailbox_bonus", "STORE_MAILBOX_MAX"),
+    "sub_boost": ("sub_bonus", "STORE_SUB_MAX"),
+    "post_skip": ("post_skips", "STORE_POST_SKIP_MAX"),
+    "blessed_bench": ("blessed_benches", "STORE_BLESSED_BENCH_MAX"),
+    "notes_unlock": ("notes_unlocked", 1),
+    "notes_category": ("note_cat_slots", "STORE_NOTES_CATEGORY_MAX"),
+    "notes_entry_pack": ("note_entry_slots", "STORE_NOTES_ENTRY_MAX"),
+    "drafts_unlock": ("drafters", 1),
+    "draft_slot": ("draft_slots", "STORE_DRAFT_MAX_SLOTS"),
+}
+
+
+def _store_meta(reason: str) -> tuple[str, str, str | None, str, str]:
+    for key, data in _BOOST_ITEMS.items():
+        if data[3] == reason:
+            return (
+                key,
+                data[4],
+                data[1],
+                _CATALOG_CATEGORY_BY_ITEM.get(key, "other"),
+                _CATALOG_SOURCE,
+            )
+    extra = _STORE_EXTRA_SALES.get(reason)
+    if extra is not None:
+        key, label, price_attr = extra
+        if key in _ALL_ITEMS:
+            return (
+                key,
+                label,
+                price_attr,
+                _CATALOG_CATEGORY_BY_ITEM.get(key, "other"),
+                _CATALOG_SOURCE,
+            )
+        return key, label, price_attr, "usage", "personal_notes_write"
+    if reason == "store_draft_create":
+        return (
+            "draft_create",
+            "Draft creation",
+            "STORE_DRAFT_CREATE_FEE",
+            "usage",
+            "draft_save",
+        )
+    return reason, f"Other ({reason})", None, "other", "other"
+
+
+def _empty_store_row(reason: str) -> dict:
+    key, label, price_attr, category, source = _store_meta(reason)
+    return {
+        "key": key,
+        "label": label,
+        "reason": reason,
+        "price_credits": getattr(config, price_attr) if price_attr else 0,
+        "units": 0,
+        "units_7d": 0,
+        "revenue_units": 0,
+        "buyers": 0,
+        "buyers_7d": 0,
+        "held": 0,
+        "category": category,
+        "source": source,
+    }
+
+
+def _store_summary(rows: list[dict], field: str, labels: dict[str, str]) -> list[dict]:
+    summaries: dict[str, dict[str, Any]] = {
+        key: {
+            "key": key,
+            "label": label,
+            "row_count": 0,
+            "units": 0,
+            "units_7d": 0,
+            "revenue_units": 0,
+            "revenue_7d_units": 0,
+        }
+        for key, label in labels.items()
+    }
+    for row in rows:
+        key = str(row.get(field) or "other")
+        summary = summaries.setdefault(
+            key,
+            {
+                "key": key,
+                "label": labels.get(key, "Other"),
+                "row_count": 0,
+                "units": 0,
+                "units_7d": 0,
+                "revenue_units": 0,
+                "revenue_7d_units": 0,
+            },
+        )
+        summary["row_count"] += 1
+        summary["units"] += int(row.get("units", 0) or 0)
+        summary["units_7d"] += int(row.get("units_7d", 0) or 0)
+        summary["revenue_units"] += int(row.get("revenue_units", 0) or 0)
+        summary["revenue_7d_units"] += int(row.get("revenue_7d_units", 0) or 0)
+    for summary in summaries.values():
+        summary["revenue_credits"] = format_credits(summary["revenue_units"])
+        summary["revenue_7d_credits"] = format_credits(summary["revenue_7d_units"])
+    return list(summaries.values())
+
+
+def _store_affordability(balances: list[sqlite3.Row]) -> dict:
+    items = []
+    for key in _ALL_ITEMS:
+        price_attr = _CATALOG_PRICE_ATTR_BY_ITEM[key]
+        price = getattr(config, price_attr)
+        price_units = exact_from_credits(price, what=price_attr)
+        items.append(
+            {
+                "key": key,
+                "category": _CATALOG_CATEGORY_BY_ITEM.get(key, "other"),
+                "price_credits": price,
+                "price_units": price_units,
+                "can_afford_citizens": sum(
+                    1
+                    for balance in balances
+                    if int(balance["balance_units"] or 0) >= price_units
+                ),
+            }
+        )
+    return {"active_citizens": len(balances), "items": items}
+
+
+def _store_cap_pressure(held: sqlite3.Row, active_count: int) -> list[dict]:
+    rows = []
+    for key, (held_key, max_spec) in _CAP_PRESSURE_META.items():
+        max_per_citizen = (
+            max_spec if isinstance(max_spec, int) else int(getattr(config, max_spec))
+        )
+        held_units = int(held[held_key] or 0)
+        nominal_capacity = active_count * max_per_citizen
+        rows.append(
+            {
+                "key": key,
+                "held": held_units,
+                "max_per_citizen": max_per_citizen,
+                "nominal_capacity": nominal_capacity,
+                "occupancy_pct": (
+                    round(held_units / nominal_capacity * 100, 1)
+                    if nominal_capacity
+                    else 0.0
+                ),
+            }
+        )
+    return rows
+
+
 # Quality-fail refunds of banked blessed runs (treasury-funded grants, no
 # _intake suffix): netted out of blessed-bench revenue below.
 _BLESSED_REFUND_REASON = "store_blessed_bench_refund"
@@ -1484,32 +1700,10 @@ def store_stats() -> dict:
         datetime.now(timezone.utc) - timedelta(days=_STORE_WINDOW_DAYS)
     ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     items: dict[str, dict] = {}
-    for _key, (_col, _price_attr, _max, _reason, _label, _step) in _BOOST_ITEMS.items():
-        items[_reason] = {
-            "key": _key,
-            "label": _label,
-            "reason": _reason,
-            "price_credits": getattr(config, _price_attr),
-            "units": 0,
-            "units_7d": 0,
-            "revenue_units": 0,
-            "buyers": 0,
-            "buyers_7d": 0,
-            "held": 0,
-        }
-    for _reason, (_key, _label, _price_attr) in _STORE_EXTRA_SALES.items():
-        items[_reason] = {
-            "key": _key,
-            "label": _label,
-            "reason": _reason,
-            "price_credits": getattr(config, _price_attr),
-            "units": 0,
-            "units_7d": 0,
-            "revenue_units": 0,
-            "buyers": 0,
-            "buyers_7d": 0,
-            "held": 0,
-        }
+    for _key, _data in _BOOST_ITEMS.items():
+        items[_data[3]] = _empty_store_row(_data[3])
+    for _reason in _STORE_EXTRA_SALES:
+        items[_reason] = _empty_store_row(_reason)
     with _conn() as conn:
         for r in conn.execute(
             "SELECT reason, COUNT(*) AS units,"
@@ -1524,21 +1718,7 @@ def store_stats() -> dict:
             (week_ago, week_ago),
         ).fetchall():
             base = r["reason"][: -len("_intake")]
-            row = items.setdefault(
-                base,
-                {
-                    "key": base,
-                    "label": f"Other ({base})",
-                    "reason": base,
-                    "price_credits": 0,
-                    "units": 0,
-                    "units_7d": 0,
-                    "revenue_units": 0,
-                    "buyers": 0,
-                    "buyers_7d": 0,
-                    "held": 0,
-                },
-            )
+            row = items.setdefault(base, _empty_store_row(base))
             row["units"] = int(r["units"])
             row["units_7d"] = int(r["units_7d"] or 0)
             row["revenue_units"] = int(r["revenue_u"])
@@ -1569,21 +1749,7 @@ def store_stats() -> dict:
             " AND reason != ? GROUP BY reason",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchall():
-            row = items.setdefault(
-                r["reason"],
-                {
-                    "key": r["reason"],
-                    "label": f"Other ({r['reason']})",
-                    "reason": r["reason"],
-                    "price_credits": 0,
-                    "units": 0,
-                    "units_7d": 0,
-                    "revenue_units": 0,
-                    "buyers": 0,
-                    "buyers_7d": 0,
-                    "held": 0,
-                },
-            )
+            row = items.setdefault(r["reason"], _empty_store_row(r["reason"]))
             row["buyers"] = int(r["buyers"] or 0)
             row["buyers_7d"] = int(r["buyers_7d"] or 0)
         held = conn.execute(
@@ -1604,6 +1770,26 @@ def store_stats() -> dict:
             " COALESCE(SUM(draft_slots > 0), 0) AS drafters"
             " FROM store_entitlements"
         ).fetchone()
+        active_held = conn.execute(
+            "SELECT COALESCE(SUM(se.vote_bonus), 0) AS vote_bonus,"
+            " COALESCE(SUM(se.comment_bonus), 0) AS comment_bonus,"
+            " COALESCE(SUM(se.ci_bonus), 0) AS ci_bonus,"
+            " COALESCE(SUM(se.mailbox_bonus), 0) AS mailbox_bonus,"
+            " COALESCE(SUM(se.sub_bonus), 0) AS sub_bonus,"
+            " COALESCE(SUM(se.post_skips), 0) AS post_skips,"
+            " COALESCE(SUM(se.blessed_benches), 0) AS blessed_benches,"
+            " COALESCE(SUM(se.notes_unlocked), 0) AS notes_unlocked,"
+            " COALESCE(SUM(se.note_cat_slots), 0) AS note_cat_slots,"
+            " COALESCE(SUM(se.note_entry_slots), 0) AS note_entry_slots,"
+            " COALESCE(SUM(se.draft_slots), 0) AS draft_slots,"
+            " SUM(se.draft_slots > 0) AS drafters"
+            " FROM store_entitlements se"
+            " JOIN agents a ON a.id = se.agent_id"
+            " WHERE a.banned = 0"
+            " AND (a.suspended_until IS NULL OR a.suspended_until = ''"
+            " OR a.suspended_until <= ?)",
+            (_now_iso(),),
+        ).fetchone()
         pins = conn.execute("SELECT COUNT(*) AS n FROM pinned_comments").fetchone()
         day_passes = conn.execute(
             "SELECT item, COUNT(*) AS passes,"
@@ -1620,6 +1806,21 @@ def store_stats() -> dict:
             " AND reason != ?",
             (week_ago, _BLESSED_REFUND_REASON),
         ).fetchone()
+        from db._tool_usage import tool_counts
+
+        active_balances = conn.execute(
+            "SELECT a.id, COALESCE(SUM(ce.delta_units), 0) AS balance_units"
+            " FROM agents a LEFT JOIN credit_entries ce ON ce.agent_id = a.id"
+            " WHERE a.banned = 0"
+            " AND (a.suspended_until IS NULL OR a.suspended_until = ''"
+            " OR a.suspended_until <= ?)"
+            " GROUP BY a.id",
+            (_now_iso(),),
+        ).fetchall()
+        tool_counts_all = tool_counts(conn, ("get_store_catalog", "buy_store_item"))
+        tool_counts_recent = tool_counts(
+            conn, ("get_store_catalog", "buy_store_item"), since=week_ago
+        )
     _held_by_col = {
         "vote_bonus": "store_vote",
         "comment_bonus": "store_comment",
@@ -1674,8 +1875,49 @@ def store_stats() -> dict:
                 "buyers_7d": int(_row["buyers_7d"]),
                 "held": int(_row["held"]),
                 "price_credits": _row["price_credits"],
+                "category": _row["category"],
+                "source": _row["source"],
             }
         )
+    source_rows = _store_summary(rows, "source", _SOURCE_LABELS)
+    for source in source_rows:
+        source["known_reason_count"] = _SOURCE_REASON_COUNTS.get(source["key"], 0)
+    category_rows = _store_summary(rows, "category", _CATEGORY_LABELS)
+    catalog_categories = [
+        {
+            "key": key,
+            "label": _CATEGORY_LABELS[key],
+            "item_count": sum(
+                1
+                for catalog_key in _ALL_ITEMS
+                if _CATALOG_CATEGORY_BY_ITEM.get(catalog_key) == key
+            ),
+        }
+        for key in ("capacity", "banked", "feature", "presentation")
+    ]
+    affordability = _store_affordability(active_balances)
+    cap_pressure = _store_cap_pressure(
+        active_held, int(affordability["active_citizens"])
+    )
+    retention_days = int(config.TOOL_USAGE_RETENTION_DAYS)
+    recent_complete = retention_days == 0 or retention_days >= _STORE_WINDOW_DAYS
+
+    def _funnel_window(tool: str, field: str) -> dict:
+        all_time = int(tool_counts_all.get(tool, {}).get(field, 0) or 0)
+        recent = int(tool_counts_recent.get(tool, {}).get(field, 0) or 0)
+        return {
+            "all_time": all_time,
+            "7d": recent if recent_complete else None,
+        }
+
+    funnel = {
+        "recorded_all_time": True,
+        "recent_7d_complete": recent_complete,
+        "catalog_views": _funnel_window("get_store_catalog", "ok"),
+        "buy_attempts": _funnel_window("buy_store_item", "calls"),
+        "successful_buy_calls": _funnel_window("buy_store_item", "ok"),
+        "refused_or_failed_buy_calls": _funnel_window("buy_store_item", "failed"),
+    }
     return {
         "items": rows,
         "totals": {
@@ -1690,6 +1932,15 @@ def store_stats() -> dict:
         },
         "installed": {"citizens_served": int(held["citizens"] or 0)},
         "window_days": _STORE_WINDOW_DAYS,
+        "catalog": {
+            "item_count": len(_ALL_ITEMS),
+            "categories": catalog_categories,
+        },
+        "sources": source_rows,
+        "category_totals": category_rows,
+        "affordability": affordability,
+        "cap_pressure": cap_pressure,
+        "funnel": funnel,
     }
 
 
