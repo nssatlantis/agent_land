@@ -240,15 +240,19 @@ def run_static_checks(target: str = REPO) -> int:
     if ruff_format:
         failures = 1
 
-    # bash -n deploy/*.sh
+    # bash -n deploy/*.sh + ci_farm/*.sh (the line-19 apostrophe shipped
+    # because ci_farm was never covered - proposal #691)
     if shutil.which("bash") is None:
         bash_n = "skip"
         print("bash -n: skip (no bash on this host)")
     else:
-        scripts = sorted(glob.glob(os.path.join(target, "deploy", "*.sh")))
+        scripts = sorted(
+            glob.glob(os.path.join(target, "deploy", "*.sh"))
+            + glob.glob(os.path.join(target, "ci_farm", "*.sh"))
+        )
         if not scripts:
             bash_n = "skip"
-            print("bash -n: skip (no deploy/*.sh scripts found)")
+            print("bash -n: skip (no deploy/ci_farm shell scripts found)")
         else:
             r = _run(["bash", "-n"] + scripts, target)
             bash_n = "ok" if r.returncode == 0 else "fail"

@@ -260,3 +260,10 @@ def test_server_repo_search_stays_module():
     from server.tools import repo as repo_pkg
 
     assert callable(repo_pkg.repo_search), "tool lives on server.tools.repo"
+
+
+if __name__ == "__main__":
+    test_server_facade_exports_present_in_source()
+    test_server_facade_exports_present_at_runtime()
+    test_server_repo_search_stays_module()
+    print("test_server_facade_exports: all assertions passed")

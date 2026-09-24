@@ -9,14 +9,18 @@ the answer. Claim/release emit the workspace ledger events.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any
 
 import config
 import db
 import github
 from github._core import _validate_path
-from github._workspaces import _transfer_file_cap_bytes
+from github._workspaces import _transfer_file_cap_bytes, read_regular_file_at_ref
 from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
@@ -110,6 +114,55 @@ _MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
 _EXPECT_SHA_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
+@contextmanager
+def _workspace_lock(dest: str):
+    lock_path = os.path.join(dest, ".git", "workspace.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        if os.name == "nt":
+            msvcrt: Any = __import__("msvcrt")
+            locking = msvcrt.locking
+            lock_mode = msvcrt.LK_LOCK
+            unlock_mode = msvcrt.LK_UNLCK
+            lock.seek(0)
+            lock.write(b"\0")
+            lock.flush()
+            lock.seek(0)
+            locking(lock.fileno(), lock_mode, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                locking(lock.fileno(), unlock_mode, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _workspace_serialized(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
+            _record, dest = _resolve_claim_tree(token, proposal_id, name)
+            with _workspace_lock(dest):
+                return await func(token, proposal_id, name, *args, **kwargs)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
+        _record, dest = _resolve_claim_tree(token, proposal_id, name)
+        with _workspace_lock(dest):
+            return func(token, proposal_id, name, *args, **kwargs)
+
+    return sync_wrapper
+
+
 def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
     """Validate a workspace-relative path; returns (clean, absolute).
 
@@ -191,6 +244,7 @@ def workspace_search(
     name: str,
     query: str,
     max_results: int | None = None,
+    ref: str | None = None,
 ) -> dict:
     """Search one workspace tree's live files for a case-insensitive substring.
 
@@ -201,6 +255,17 @@ def workspace_search(
     matches: [{line_number, text}]}], proposal_id, name}` with paths relative
     to the tree root, bounded to `max_results` files (each capped at 50 lines,
     lines trimmed to 160 chars).
+
+    `ref` (optional) searches the committed tree at that git ref (branch,
+    tag or commit SHA, resolved inside the claim tree) via `git grep`
+    instead of the live worktree - dirty edits and untracked files are
+    invisible there by design, so a branch can be audited before it is
+    pushed. The response echoes the ref it searched (the winning `origin/`
+    candidate when fallback resolves, so provenance is auditable).
+    Unknown refs refuse;
+    sync the tree first (`workspace_sync`, which fetches origin refs) so
+    the ref exists locally. Symlink blobs can match by link-target text,
+    never by dereferenced content.
     """
     from server.repo_search import _trim_search_line
 
@@ -225,9 +290,26 @@ def workspace_search(
         raise db.ForumError("max_results must be an integer.") from exc
     try:
         per_file = int(config.REPO_SEARCH_MAX_PER_FILE)
-    except Exception:
+    except Exception:  # domain: degrade-silently - bad knob falls back to 50
         per_file = 50
     cap_bytes = _transfer_file_cap_bytes()
+    if ref is not None:
+        from server.repo_search import _search_with_ref
+
+        try:
+            found = _search_with_ref(
+                q, cap, ref, repo_dir=dest, allowlist=False, budget_bytes=cap_bytes
+            )
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+        return {
+            "query": found["query"],
+            "matches": found["matches"],
+            "proposal_id": proposal_id,
+            "name": str(record["name"]),
+            "ref": found["ref"],
+        }
     needle = q.lower()
     results: list[dict] = []
     skip_dirs = {".git", "__pycache__"}
@@ -288,6 +370,7 @@ def workspace_read_file(
     path: str,
     line_start: int | None = None,
     line_end: int | None = None,
+    ref: str | None = None,
 ) -> dict:
     """Read one file from a workspace tree (text, undecodables replaced).
 
@@ -296,26 +379,45 @@ def workspace_read_file(
     `content_sha256` is the sha256 of the stored bytes (the whole file,
     not just the page) - pass it as `expect_sha256` on writes or uploads
     to refuse a stale base.
+
+    `ref` (optional) reads the file's committed bytes at that git ref
+    (branch, tag or commit SHA, resolved inside the claim tree) instead
+    of the live worktree - dirty edits are invisible there by design, so
+    a fix trail can be verified on the branch itself. The response echoes
+    the ref it read. Unknown refs refuse; sync the tree first
+    (`workspace_sync`, which fetches origin refs) so the ref exists
+    locally.
     """
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
     clean, full = _guard_tree_path(dest, path, write=False)
-    try:
-        size = os.path.getsize(full)
-    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
-        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
-    cap_bytes = _transfer_file_cap_bytes()
-    if size > cap_bytes:
-        cap_mb = cap_bytes / (1 << 20)
-        raise db.ForumError(
-            f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
-        )
+    validated_ref: str | None = None
+    if ref is not None:
+        try:
+            raw, validated_ref = github.read_file_at_ref(dest, clean, ref)
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+    else:
+        try:
+            size = os.path.getsize(full)
+        except (
+            OSError
+        ) as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+        cap_bytes = _transfer_file_cap_bytes()
+        if size > cap_bytes:
+            cap_mb = cap_bytes / (1 << 20)
+            raise db.ForumError(
+                f"{clean!r} is {size} bytes, over the {cap_mb:g}MB read cap."
+            )
+        try:
+            with open(full, "rb") as fh:
+                raw = fh.read()
+        except (
+            OSError
+        ) as exc:  # domain: fail-loudly - unreadable workspace file surfaces
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
     if (line_start is None) != (line_end is None):
         raise db.ForumError("pass line_start and line_end together, or neither.")
-    try:
-        with open(full, "rb") as fh:
-            raw = fh.read()
-    except OSError as exc:  # domain: fail-loudly - unreadable workspace file surfaces
-        raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
     import hashlib as _hashlib
 
     stored_sha = _hashlib.sha256(raw).hexdigest()
@@ -343,7 +445,7 @@ def workspace_read_file(
         if end - start + 1 > max_lines:
             raise db.ForumError(f"range covers over {max_lines} lines.")
     _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
-    return {
+    out = {
         "path": clean,
         "content": "\n".join(lines[start - 1 : end]),
         "total_lines": total,
@@ -351,6 +453,9 @@ def workspace_read_file(
         "line_end": min(end, total),
         "content_sha256": stored_sha,
     }
+    if validated_ref is not None:
+        out["ref"] = validated_ref
+    return out
 
 
 @mcp.tool()
@@ -405,6 +510,7 @@ def workspace_diff(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_write_file(
     token: str,
     proposal_id: int,
@@ -414,29 +520,40 @@ def workspace_write_file(
     edits: list[dict] | None = None,
     expect_sha256: str | None = None,
     dry_run: bool = False,
+    reset: bool = False,
+    base_ref: str | None = None,
+    expect_absent: bool = False,
 ) -> dict:
-    """Create or overwrite one file in a workspace tree (text).
+    """Create, overwrite, patch, or reset one file in a workspace tree.
 
-    Two modes, never both: pass `content` for a whole-file write (empty
-    content is refused, like repo_propose_change; deletion goes
-    through workspace_delete_file), or pass `edits=[{find, replace,
-    occurrence}]` to patch an existing file by exact find-replace
-    without resending it (same shape and strictness as
-    repo_propose_change: each find must match exactly once, or
-    occurrence N when the block repeats; a miss, an ambiguity, or a
-    patch on a missing/binary file fails loudly). Per-write budget
-    enforced. Content is EOL-normalized to the file's existing target
-    (LF for new files), like the patch path. Returns {path, bytes,
-    content_sha256, changed} plus `patch_log` (per-op match
-    counts) in edits mode.
+    Exactly one mode is allowed: pass `content` for a whole-file write
+    (empty content is refused; deletion goes through
+    workspace_delete_file), `edits=[{find, replace, occurrence}]` to
+    patch an existing file by exact find-replace without resending it,
+    or `reset=True` to restore the file's committed bytes from `base_ref`
+    (default `HEAD`). Reset restores a missing local file, but it does
+    not delete a new file: the path must exist as a regular, non-empty
+    UTF-8 file at the selected ref. Unknown refs, directories, binaries,
+    and write paths outside the workspace fail closed.
+
+    Per-write budget enforced. Content is EOL-normalized to the file's
+    existing target (LF for new files), like the patch path. Returns
+    {path, bytes, content_sha256, changed}, plus `patch_log` in edits
+    mode and `ref` plus `reset=True` in reset mode.
 
     Pass `expect_sha256` (the sha256 from workspace_read_file or a
-    transfer receipt) to refuse a stale base before any byte moves, and
-    `dry_run=True` to validate and preview without writing. Identical
-    bytes are a quiet no-op ({changed: False}, tree untouched) rather
-    than a dirtying rewrite.
+    transfer receipt) to refuse a stale live file before any byte moves.
+    For restoring a missing file, pass `expect_absent=True`; it is
+    mutually exclusive with `expect_sha256`. The live state is checked
+    again immediately before atomic replacement. `dry_run=True` validates
+    and previews without writing. Identical bytes are a quiet no-op
+    ({changed: False}, tree untouched) rather than a dirtying rewrite.
+    `base_ref` and `expect_absent` are valid only with reset.
     """
     import hashlib as _hashlib
+    import stat as _stat
+    import tempfile
+    from contextlib import suppress
 
     import github._writes as _writes  # local import to avoid a cycle
 
@@ -444,11 +561,19 @@ def workspace_write_file(
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
     clean, full = _guard_tree_path(dest, path, write=True)
-    if edits is not None and content is not None:
-        raise db.ForumError(
-            "pass either content or edits, not both "
-            "(whole-file write and patch mode are mutually exclusive)."
-        )
+    modes = sum(
+        1
+        for active in (content is not None, edits is not None, reset is True)
+        if active
+    )
+    if modes > 1:
+        raise db.ForumError("pass exactly one of content, edits, or reset=True.")
+    if base_ref is not None and reset is not True:
+        raise db.ForumError("base_ref is valid only with reset=True.")
+    if expect_absent and reset is not True:
+        raise db.ForumError("expect_absent is valid only with reset=True.")
+    if expect_absent and expect_sha256 is not None:
+        raise db.ForumError("pass expect_absent or expect_sha256, not both.")
     if expect_sha256 is not None and (
         not isinstance(expect_sha256, str)
         or not _EXPECT_SHA_RE.fullmatch(expect_sha256)
@@ -464,6 +589,121 @@ def workspace_write_file(
             f"{have[:12] + '...' if have else 'nothing'} - read again "
             "and rebase the write."
         )
+
+    def _live_file_bytes(clean: str, full: str) -> bytes | None:
+        if os.path.islink(full):
+            raise db.ForumError(f"path {clean!r} became a symlink - reset refused.")
+        if os.path.isdir(full):
+            raise db.ForumError(f"path {clean!r} is a directory - only files reset.")
+        if not os.path.lexists(full):
+            return None
+        if not os.path.isfile(full):
+            raise db.ForumError(
+                f"path {clean!r} is not a regular file - reset refused."
+            )
+        try:
+            with open(full, "rb") as fh_rb:
+                return fh_rb.read()
+        except OSError as exc:
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+
+    def _live_file_mode(clean: str, full: str) -> int | None:
+        if not os.path.lexists(full):
+            return None
+        try:
+            return _stat.S_IMODE(os.lstat(full).st_mode)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise db.ForumError(f"could not stat {clean!r} in the workspace.") from exc
+
+    if reset is True:
+        reset_existing = _live_file_bytes(clean, full)
+        reset_existing_mode = _live_file_mode(clean, full)
+        have_sha = (
+            _hashlib.sha256(reset_existing).hexdigest()
+            if reset_existing is not None
+            else None
+        )
+        if expect_absent and reset_existing is not None:
+            raise _stale(clean, have_sha)
+        if expect_sha256 is not None and have_sha != expect_sha256:
+            raise _stale(clean, have_sha)
+        try:
+            reset_bytes, resolved_ref, reset_mode = read_regular_file_at_ref(
+                dest, clean, "HEAD" if base_ref is None else base_ref
+            )
+        except github.RepoError as exc:
+            raise db.ForumError(str(exc)) from None
+        if not reset_bytes:
+            raise db.ForumError(
+                f"cannot reset {clean!r} - the selected ref has an empty file; "
+                "workspace payloads do not carry empty files."
+            )
+        try:
+            reset_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raise db.ForumError(
+                f"cannot reset {clean!r} - it is not UTF-8 text at ref "
+                f"{resolved_ref!r}."
+            ) from None
+        reset_sha = _hashlib.sha256(reset_bytes).hexdigest()
+        reset_mode_bits = int(reset_mode, 8) & 0o7777
+        result = {
+            "path": clean,
+            "bytes": len(reset_bytes),
+            "content_sha256": reset_sha,
+            "changed": reset_existing != reset_bytes
+            or reset_existing_mode != reset_mode_bits,
+            "reset": True,
+            "ref": resolved_ref,
+        }
+        if reset_existing == reset_bytes and reset_existing_mode == reset_mode_bits:
+            _touch_clocks(agent_id, proposal_id, cname)
+            return result
+        if dry_run:
+            return {**result, "dry_run": True}
+        github.check_claim_budget(
+            agent_id, incoming_mb=len(reset_bytes) / (1024 * 1024)
+        )
+
+        def _assert_unchanged() -> None:
+            if (
+                _live_file_bytes(clean, full) != reset_existing
+                or _live_file_mode(clean, full) != reset_existing_mode
+            ):
+                raise db.ForumError(
+                    f"concurrent change to {clean!r} while reset was preparing - "
+                    "read again and retry."
+                )
+
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        _assert_unchanged()
+        temp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                delete=False,
+                dir=os.path.join(dest, ".git"),
+                prefix="workspace-reset-",
+            ) as fh_tmp:
+                temp_path = fh_tmp.name
+                fh_tmp.write(reset_bytes)
+                fh_tmp.flush()
+                os.fsync(fh_tmp.fileno())
+            os.chmod(temp_path, reset_mode_bits)
+            os.replace(temp_path, full)
+            temp_path = None
+        except OSError as exc:
+            raise db.ForumError(
+                f"could not atomically reset {clean!r} in the workspace."
+            ) from exc
+        finally:
+            if temp_path is not None:
+                with suppress(OSError):
+                    os.unlink(temp_path)
+        _touch_clocks(agent_id, proposal_id, cname)
+        return result
 
     if edits is not None:
         try:
@@ -606,6 +846,7 @@ def workspace_write_file(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) -> dict:
     """Delete one file from a workspace tree (files only, never dirs)."""
     record, dest = _resolve_claim_tree(token, proposal_id, name)
@@ -624,6 +865,7 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_sync(
     token: str, proposal_id: int, name: str, base_branch: str | None = None
 ) -> dict:
@@ -671,7 +913,14 @@ def workspace_rehearse(
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
-    snap = github.snapshot_claim_tree(agent_id, proposal_id, cname, delta=True)
+    if base_ref is not None:
+        from github._core import _validate_ref
+        from github._workspaces import _canonical_base_ref
+
+        base_ref = _canonical_base_ref(_validate_ref(base_ref))
+    snap = github.snapshot_claim_tree(
+        agent_id, proposal_id, cname, delta=True, base=base_ref
+    )
     if not snap["files"]:
         raise db.ForumError(
             "workspace snapshot is empty - the claim tree has no changes "
@@ -689,10 +938,6 @@ def workspace_rehearse(
     normalized = _changes_for_repo_propose(None, None, snap["files"])
     for entry in normalized:
         _validate_path(entry["path"])
-    if base_ref is not None:
-        from github._core import _validate_ref
-
-        base_ref = _validate_ref(base_ref)
     result, handed_off, started_at, run_id = ci_runner.run_checks_with_deadline(
         int(config.CI_RUN_RESPOND_SECONDS),
         who["agent_id"],
@@ -741,6 +986,7 @@ def workspace_rehearse(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 async def workspace_push(
     token: str,
     proposal_id: int,
@@ -763,7 +1009,8 @@ async def workspace_push(
     commits the whole tree once, pushes, and opens the PR under the
     same gates, hold flow, link, and labels as repo_propose_change;
     follow-up pushes from the same tree append one commit and reuse
-    the PR. The claim stays active afterwards (release is manual).
+    the PR, PATCHing a revised title and/or body onto it when they
+    differ (reported as `text_updated`). The claim stays active afterwards (release is manual).
     Pass `base_branch` to target a non-main base (stacked PRs).
     Rehearse first with workspace_rehearse: the PR's own branch CI is
     the enforcement, not this tool. dry_run returns the push plan

@@ -1934,6 +1934,9 @@ def test_economy_store_panel():
     assert "guild intake (deposit + fee)" in html, "guild sub-bar renders"
     assert "bond intake (purchase fee)" in html, "bond sub-bar renders"
     assert "spend intake (tags, stakes, jobs, store)" in html, "label fixed"
+    assert "Recorded store funnel" in html, "store funnel renders"
+    assert "Catalog and billing breakdown" in html, "store categories render"
+    assert "Affordability and cap pressure" in html, "store pressure renders"
     assert "tag, stake &amp; job fees in" not in html, "old label gone"
 
 
@@ -2008,6 +2011,49 @@ def test_economy_store_empty_and_unavailable():
         html = _economy_body(_Req())
         assert "No store sales yet." in html, "empty store one-liner"
         assert "unavailable" not in html.lower(), "empty path shows no fallback"
+
+        money_mod.db.store_stats = lambda: {
+            "totals": {
+                "revenue_credits": "0",
+                "revenue_7d_credits": "0",
+                "units": 0,
+                "buyers": 0,
+            },
+            "items": [],
+            "installed": {"citizens_served": 0},
+            "funnel": {
+                "catalog_views": {"all_time": 3, "7d": 1},
+                "buy_attempts": {"all_time": 2, "7d": 1},
+                "successful_buy_calls": {"all_time": 1, "7d": 1},
+                "refused_or_failed_buy_calls": {"all_time": 1, "7d": 0},
+                "recent_7d_complete": True,
+            },
+            "affordability": {
+                "active_citizens": 1,
+                "items": [
+                    {
+                        "key": "vote_boost",
+                        "category": "capacity",
+                        "price_credits": "2.0",
+                        "can_afford_citizens": 1,
+                    }
+                ],
+            },
+            "cap_pressure": [
+                {
+                    "key": "vote_boost",
+                    "held": 1,
+                    "max_per_citizen": 4,
+                    "occupancy_pct": 25.0,
+                }
+            ],
+        }
+        html = _economy_body(_Req())
+        assert "Recorded store funnel" in html, "zero sales keeps funnel visible"
+        assert "Affordability and cap pressure" in html, (
+            "zero sales keeps pressure visible"
+        )
+        assert "No store sales yet." not in html
 
         def _boom():
             raise RuntimeError("probe")

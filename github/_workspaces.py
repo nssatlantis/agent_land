@@ -24,10 +24,17 @@ import time
 import config
 
 from . import _core
-from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._core import (
+    GITHUB_BASE_BRANCH,
+    GITHUB_REPO,
+    RepoError,
+    _validate_path,
+    _validate_ref,
+)
 from ._eol import _normalize_eol, _target_eol_for_text
 from ._gitops import (
     _git,
+    _git_bytes,
     _push_auth,
     _push_ref,
     _repo_url,
@@ -364,11 +371,86 @@ def claim_tree_diff(
     return {"diff": "".join(parts), "head_sha": _head_sha(dest)}
 
 
+def _canonical_base_ref(ref: str) -> str:
+    """Collapse a ref spelling onto the short name the guard and the CI
+    fetch both resolve: `refs/heads/x` -> `x`, `refs/tags/x` -> `x`,
+    `refs/remotes/origin/x` -> `x`, `origin/x` -> `x`, recursively (a
+    nested `origin/refs/heads/x` collapses to `x` too); anything else
+    (short names, raw shas) returns unchanged. Idempotent."""
+    while True:
+        for prefix in ("refs/heads/", "refs/tags/", "refs/remotes/origin/", "origin/"):
+            if ref.startswith(prefix):
+                ref = ref[len(prefix) :]
+                break
+        else:
+            return ref
+
+
+def _stacked_layers(dest: str, base: str | None = None) -> int:
+    """Commits on the tree's HEAD not reachable from its own base ref.
+
+    The base defaults to the repo base branch; `workspace_rehearse`
+    threads its validated `base_ref` through, so a stacked rehearsal
+    against a non-main base compares against that base (its layers ARE
+    the ancestor), not origin/main. A claim tree's remote refs never
+    auto-advance (reads never fetch and v1 has no commit tool), so HEAD
+    sits ahead of the base ref exactly when a push - or a manual commit
+    - added layers to the tree. A delta-vs-HEAD snapshot then drops
+    those layers, rehearsing a phantom tree missing the early layers
+    (bug #97). A merely-stale tree (the remote advanced after the claim)
+    is NOT flagged: both refs still sit at the clone sha, so the delta
+    stays honest.
+
+    The base spelling is canonicalized first (a full `refs/heads/x`
+    spelling used to build a never-existing `origin/refs/heads/x`, which
+    degrades to 0 - the silent bypass). The claimed base must then
+    resolve to a real ref of this tree; an unresolvable base (a raw sha,
+    or a branch/tag the tree never fetched) FAILS CLOSED with RepoError
+    instead of returning the flat 0.
+    """
+    canonical = _canonical_base_ref(base or GITHUB_BASE_BRANCH)
+    ref = None
+    for candidate in (f"origin/{canonical}", f"refs/tags/{canonical}"):
+        ok = _git(
+            dest,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{candidate}^{{commit}}",
+            check=False,
+        )
+        if ok.returncode == 0:
+            ref = candidate
+            break
+    if ref is None:
+        if base is None:
+            return 0
+        raise RepoError(
+            f"cannot resolve rehearsal base {base!r} to a ref of this "
+            "claim tree - the tree holds no origin/<name> or refs/tags/"
+            "<name> to compare the stacked guard against (bug #97). "
+            "Fetch the base into the tree first, or use its branch/tag "
+            "name."
+        )
+    res = _git(dest, "rev-list", "--count", f"{ref}..HEAD", check=False)
+    if res.returncode != 0:
+        return 0
+    try:
+        return int(res.stdout.strip() or "0")
+    except ValueError:  # domain: degrade-silently - unparsable count, assume flat
+        return 0
+
+
 _SNAPSHOT_MAX_MB = 32.0
 
 
 def snapshot_claim_tree(
-    agent_id: int, proposal_id: int, name: str, *, delta: bool = False
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    *,
+    delta: bool = False,
+    base: str | None = None,
 ) -> dict:
     """Read one claim tree into a files-overlay ({path, content} entries).
 
@@ -383,14 +465,31 @@ def snapshot_claim_tree(
     With delta=True only the tree's own changes ride the overlay (see
     _changed_paths) - untouched tracked files are left out, so a stale
     claim tree cannot flatten a freshly-refreshed rehearsal base back
-    to its old bytes (bug #90). Whole-tree stays the default: the push
-    manifest must cover every file the PR would carry.
+    to its old bytes (bug #90). A tree whose HEAD carries pushed layers
+    is refused outright (bug #97): the delta would drop them and
+    rehearse a phantom tree (the stacked-refusal base defaults to
+    origin/main; a rehearsal `base` compares against its own ancestor,
+    so a valid stacked tree against a non-main base is not flagged).
+    Whole-tree stays the default: the push manifest must cover every
+    file the PR would carry.
     """
     dest = _claim_dir(agent_id, proposal_id, name)
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     if delta:
         changed = set(_changed_paths(dest))
+        base_name = _canonical_base_ref(base or GITHUB_BASE_BRANCH)
+        extra = _stacked_layers(dest, base_name)
+        if extra:
+            raise RepoError(
+                f"workspace HEAD is {extra} commit(s) ahead of "
+                f"origin/{base_name} - the tree's pushed layers "
+                "live in HEAD, which a delta-vs-HEAD snapshot drops, so "
+                "rehearsing would build a phantom tree without them "
+                "(bug #97). Release this claim (release_workspace) and "
+                "claim a fresh tree for stacked work, or rehearse once the "
+                "earlier layers land on the base."
+            )
     else:
         changed = None
     files: list = []
@@ -531,18 +630,135 @@ def _find_open_claim_pr(branch: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _strip_wip_prefix(text: str) -> str:
+    """Compare titles modulo the proposal-hold 'WIP: ' prefix: the poller
+    strips it on hold-lift while a later push may still carry it, and that
+    prefix-only delta must not count as a revised title (post-green review
+    on #1409 - the re-add window is cosmetic-only and self-healing, but
+    there is no reason to ever write it)."""
+    s = text or ""
+    return s[4:].lstrip() if s.upper().startswith("WIP:") else s
+
+
 def _open_or_reuse_claim_pr(
     branch: str, base: str, title: str, body: str, prior: dict | None
-) -> tuple[dict, bool]:
-    """Open the PR for one pushed branch, or reuse its open one."""
+) -> tuple[dict, bool, bool]:
+    """Open the PR for one pushed branch, or reuse its open one.
+
+    Returns (pr, first_push, text_updated). On reuse, a revised title
+    and/or body is PATCHed onto the live PR when it differs from what
+    the PR currently carries - a follow-up push must never silently drop
+    the caller's prose. Identical text makes no request. A PATCH failure
+    raises: the commit already landed, and the retry replays this exact
+    comparison idempotently (the already-pushed path re-enters here).
+    """
     if prior is not None:
         _core._invalidate_pr(int(prior["number"]))
-        return prior, False
+        patch: dict = {}
+        if _strip_wip_prefix(prior.get("title") or "") != _strip_wip_prefix(title):
+            patch["title"] = title
+        if (prior.get("body") or "") != body:
+            patch["body"] = body
+        if patch:
+            _core._request("PATCH", f"pulls/{prior['number']}", patch)
+            _core._invalidate_pr(int(prior["number"]))
+            prior = dict(prior)
+            prior.update(patch)
+        return prior, False, bool(patch)
     pr = _core._request(
         "POST", "pulls", {"title": title, "head": branch, "base": base, "body": body}
     )
     _core._open_prs_cache._store.pop("open_prs", None)
-    return pr, True
+    return pr, True, False
+
+
+def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
+    """Validate `ref` and resolve it to a commit SHA inside one tree.
+
+    Tries the ref as given, then under `origin/` (a branch fetched by
+    an earlier sync but never checked out locally). Returns
+    (winning_candidate, commit_sha) - the candidate that resolved, so
+    callers can echo provenance (`origin/<ref>` when fallback hit).
+    Unknown refs fail loudly naming the ref - syncing (`workspace_sync`,
+    which fetches origin/<base>) is the way new refs arrive; reads
+    never fetch.
+    """
+    validated = _validate_ref(ref)
+    for candidate in (validated, f"origin/{validated}"):
+        res = _git(
+            dest, "rev-parse", "--verify", f"{candidate}^{{commit}}", check=False
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return candidate, res.stdout.strip()
+    raise RepoError(
+        f"unknown ref {validated!r} - no such branch, tag or commit in "
+        "this workspace tree; sync it first (`workspace_sync`) to fetch "
+        "origin refs."
+    )
+
+
+def _read_file_at_ref(
+    dest: str, clean: str, ref: str, *, require_regular: bool
+) -> tuple[bytes, str, str]:
+    validated, commit = _resolve_tree_commit(dest, ref)
+    listed = _git(dest, "ls-tree", "--long", "-z", commit, "--", clean, check=False)
+    if listed.returncode != 0:
+        raise RepoError(f"could not list {clean!r} at ref {validated!r}.")
+    entry: list[str] | None = None
+    for record in listed.stdout.split("\0"):
+        meta, _, name = record.partition("\t")
+        if name == clean:
+            entry = meta.split()
+            break
+    if entry is None or len(entry) < 4 or entry[1] != "blob":
+        if entry is not None and len(entry) >= 2 and entry[1] == "tree":
+            raise RepoError(f"path {clean!r} is a directory at ref {validated!r}.")
+        if entry is not None and len(entry) >= 2 and entry[1] == "commit":
+            raise RepoError(
+                f"path {clean!r} is a submodule at ref {validated!r} - its "
+                "content lives in another repository."
+            )
+        raise RepoError(f"no file at {clean!r} in the tree at ref {validated!r}.")
+    if require_regular and entry[0] not in {"100644", "100755"}:
+        raise RepoError(f"path {clean!r} is not a regular file at ref {validated!r}.")
+    try:
+        size = int(entry[3])
+    except ValueError:
+        size = _transfer_file_cap_bytes() + 1
+    cap = _transfer_file_cap_bytes()
+    if size > cap:
+        raise RepoError(
+            f"{clean!r} is {size} bytes at ref {validated!r}, over the "
+            f"{cap / (1 << 20):g}MB read cap."
+        )
+    blob = _git_bytes(dest, "cat-file", "-p", entry[2], check=False)
+    if blob.returncode != 0:
+        raise RepoError(f"could not read {clean!r} at ref {validated!r}.")
+    return blob.stdout, validated, entry[0]
+
+
+def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
+    """Committed bytes of one tree-relative path at `ref` (plus the winning
+    ref candidate - `origin/<ref>` when fallback resolves).
+
+    No checkout, no worktree touch: dirty edits are invisible here by
+    design, so a fix trail can be audited against the branch itself.
+    The blob is located via `ls-tree -z` (NUL-split, unquoted: a quote,
+    backslash or newline in the name can never break the parse - and a
+    `:` in the name can never split a `rev:path` arg, since no such arg
+    is built) and materialized with `cat-file -p` over the bytes path, so
+    binaries read like the live path does (decoded with replacement
+    downstream). The transfer cap is enforced from the `ls-tree --long`
+    size before any byte moves. Symlink blobs read as their target text;
+    directories, submodules and missing paths refuse.
+    """
+    data, validated, _mode = _read_file_at_ref(dest, clean, ref, require_regular=False)
+    return data, validated
+
+
+def read_regular_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str, str]:
+    """Committed bytes, winning ref, and git mode for a regular file."""
+    return _read_file_at_ref(dest, clean, ref, require_regular=True)
 
 
 def _transfer_file_cap_bytes() -> int:
@@ -754,7 +970,9 @@ def push_claim_tree(
     (deletions and renames included via -A), commits once (``title`` +
     Citizen trailer), pushes with a plain push (never force), and opens
     the PR. Follow-up pushes from the same tree append one new commit
-    on the same branch and reuse its open PR. A tree whose branch
+    on the same branch and reuse its open PR, PATCHing a revised title
+    and/or body onto the live PR when they differ (reported as
+    ``text_updated``; identical text makes no request). A tree whose branch
     already has an open PR from an earlier life is refused with the
     way out (push follow-ups from the owning tree, update the PR, or
     use a new workspace name). The claim stays active afterwards -
@@ -816,13 +1034,16 @@ def push_claim_tree(
         # manifest landed while the PR POST failed): the tree already
         # holds exactly the pushed state, so finish opening its PR
         # instead of demanding new dirt or stacking a junk commit.
-        pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
+        pr, first, text_updated = _open_or_reuse_claim_pr(
+            branch, base, title, pr_body, prior
+        )
         plan.update(
             {
                 "pr_number": pr["number"],
                 "html_url": pr.get("html_url"),
                 "commit_sha": commit_sha,
                 "first_push": first,
+                "text_updated": text_updated,
             }
         )
         return plan
@@ -884,13 +1105,16 @@ def push_claim_tree(
         }
     )
     _write_manifest(dest, manifest)
-    pr, first = _open_or_reuse_claim_pr(branch, base, title, pr_body, prior)
+    pr, first, text_updated = _open_or_reuse_claim_pr(
+        branch, base, title, pr_body, prior
+    )
     plan.update(
         {
             "pr_number": pr["number"],
             "html_url": pr.get("html_url"),
             "commit_sha": commit_sha,
             "first_push": first,
+            "text_updated": text_updated,
         }
     )
     return plan

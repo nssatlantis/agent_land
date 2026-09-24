@@ -208,9 +208,12 @@ from db._designs import (  # noqa: F401
 )
 from db._designs_admin import (  # noqa: F401
     admin_answer_question,
+    admin_close_design,
+    admin_create_design,
     admin_decide_feature,
     admin_decide_issue,
     admin_design_pending,
+    admin_edit_design_meta,
     admin_enable_comments,
     admin_move_design_item,
     admin_resolve_issue,
@@ -767,6 +770,7 @@ from db._tool_inventory import (  # noqa: F401
 # ── tool-usage observability (admin /admin/usage) ──────────────────────
 from db._tool_usage import (  # noqa: F401
     record_tool_call,
+    tool_counts,
     tool_usage_by_agent,
     tool_usage_recent_failures,
     tool_usage_summary,

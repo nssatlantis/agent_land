@@ -44,6 +44,9 @@ def main():
     buyer_b = db.register_agent("stats-beta")
     _fund(buyer_a["agent_id"], 2000)
     _fund(buyer_b["agent_id"], 2000)
+    with db._conn() as conn:
+        conn.execute("DELETE FROM tool_calls")
+        conn.execute("DELETE FROM tool_usage")
 
     vote_q = _price("STORE_VOTE_PRICE")
     ci_q = _price("STORE_CI_PRICE")
@@ -63,6 +66,18 @@ def main():
     with db._conn(immediate=True) as conn:
         _store._take_blessed_bench(conn, buyer_b["agent_id"])
     db.refund_blessed_bench(buyer_b["agent_id"])
+    db.record_tool_call("get_store_catalog", ok=True, agent_id=buyer_a["agent_id"])
+    db.record_tool_call("buy_store_item", ok=True, agent_id=buyer_a["agent_id"])
+    db.record_tool_call("buy_store_item", ok=False, agent_id=buyer_b["agent_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO tool_usage (tool, day, calls, ok, failed, total_duration_ms, distinct_agents)"
+            " VALUES ('get_store_catalog', '2000-01-01', 2, 2, 0, 0, 1)"
+        )
+        conn.execute(
+            "INSERT INTO tool_usage (tool, day, calls, ok, failed, total_duration_ms, distinct_agents)"
+            " VALUES ('buy_store_item', '2000-01-01', 1, 1, 0, 0, 1)"
+        )
 
     # Backdate b's vote purchase 8 days (both legs share the tx).
     old_at = (
@@ -104,6 +119,8 @@ def main():
             "buyers_7d",
             "held",
             "price_credits",
+            "category",
+            "source",
         ):
             assert key in item, f"row misses {key}"
 
@@ -133,6 +150,74 @@ def main():
     assert hold["bio"] == "stats bio", "bio buy sets the bio"
     assert hold["draft_slots"] == 1, "bio buy grants no phantom slot"
     assert _row(stats, "store_notes_unlock")["units"] == 1
+    assert _row(stats, "store_notes_write")["source"] == "personal_notes_write"
+    assert _row(stats, "store_notes_write")["category"] == "usage"
+    assert stats["catalog"]["item_count"] == 16
+    assert sum(s["units"] for s in stats["sources"]) == stats["totals"]["units"]
+    assert sum(c["units"] for c in stats["category_totals"]) == stats["totals"]["units"]
+    assert stats["affordability"]["active_citizens"] >= 2
+    assert stats["cap_pressure"]
+    active_count = stats["affordability"]["active_citizens"]
+    with db._conn() as conn:
+        saved_states = [
+            (row["banned"], row["suspended_until"], row["id"])
+            for row in conn.execute(
+                "SELECT id, banned, suspended_until FROM agents ORDER BY id"
+            ).fetchall()
+        ]
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2999-01-01T00:00:00.000Z", buyer_b["agent_id"]),
+        )
+    suspended = db.store_stats()
+    suspended_count = suspended["affordability"]["active_citizens"]
+    assert suspended_count == active_count - 1
+    suspended_vote = next(
+        row for row in suspended["cap_pressure"] if row["key"] == "vote_boost"
+    )
+    assert suspended_vote["held"] == 1
+    assert suspended_vote["nominal_capacity"] == (
+        suspended_count * suspended_vote["max_per_citizen"]
+    )
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = NULL, banned = 1 WHERE id = ?",
+            (buyer_b["agent_id"],),
+        )
+    banned = db.store_stats()
+    banned_count = banned["affordability"]["active_citizens"]
+    assert banned_count == active_count - 1
+    banned_vote = next(
+        row for row in banned["cap_pressure"] if row["key"] == "vote_boost"
+    )
+    assert banned_vote["held"] == 1
+    assert banned_vote["nominal_capacity"] == (
+        banned_count * banned_vote["max_per_citizen"]
+    )
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE agents SET banned = 1")
+    all_banned = db.store_stats()
+    assert all_banned["affordability"]["active_citizens"] == 0
+    for pressure in all_banned["cap_pressure"]:
+        assert pressure["held"] == 0
+        assert pressure["nominal_capacity"] == 0
+        assert pressure["occupancy_pct"] == 0.0
+    with db._conn(immediate=True) as conn:
+        conn.executemany(
+            "UPDATE agents SET banned = ?, suspended_until = ? WHERE id = ?",
+            saved_states,
+        )
+    assert stats["funnel"]["catalog_views"]["all_time"] == 3
+    assert stats["funnel"]["buy_attempts"]["all_time"] == 3
+    assert stats["funnel"]["successful_buy_calls"]["all_time"] == 2
+    assert stats["funnel"]["refused_or_failed_buy_calls"]["all_time"] == 1
+    if stats["funnel"]["recent_7d_complete"]:
+        assert stats["funnel"]["catalog_views"]["7d"] == 1
+        assert stats["funnel"]["buy_attempts"]["7d"] == 2
+    else:
+        assert stats["funnel"]["catalog_views"]["7d"] is None
+        assert stats["funnel"]["buy_attempts"]["7d"] is None
 
     # Refund netting: the buy counts as a unit, the price nets to zero.
     bench = _row(stats, "store_blessed_bench")
@@ -169,6 +254,8 @@ def main():
     assert future["label"].startswith("Other ("), "unknown reason buckets Other"
     assert (future["units"], future["buyers"]) == (1, 1), "future reason counted"
     assert future["revenue_units"] == vote_q, "future revenue exact"
+    assert future["category"] == "other"
+    assert future["source"] == "other"
     assert not any(i["reason"] == "STORE_vote" for i in stats2["items"]), (
         "uppercase reason excluded from buyers"
     )
@@ -191,6 +278,27 @@ def main():
     )
     assert totals["buyers"] == 2 and totals["buyers_7d"] == 2, "both buyers counted"
     assert stats["installed"]["citizens_served"] == 2, "two entitlement rows"
+
+    draft_q = _price("STORE_DRAFT_CREATE_FEE")
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_units, reason, account)"
+            " VALUES (?, ?, 'store_draft_create', 'agent')",
+            (buyer_a["agent_id"], -draft_q),
+        )
+        conn.execute(
+            "INSERT INTO credit_entries (agent_id, delta_units, reason, account)"
+            " VALUES (NULL, ?, 'store_draft_create_intake', 'treasury')",
+            (draft_q,),
+        )
+    stats3 = db.store_stats()
+    draft = _row(stats3, "store_draft_create")
+    assert draft["key"] == "draft_create"
+    assert draft["source"] == "draft_save"
+    assert draft["category"] == "usage"
+    assert draft["price_credits"] == config.STORE_DRAFT_CREATE_FEE
+    draft_source = next(s for s in stats3["sources"] if s["key"] == "draft_save")
+    assert draft_source["units"] == 1
 
     # Empty DB renders zeros, never None.
     saved_db_path = db.DB_PATH
