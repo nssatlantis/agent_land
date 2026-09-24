@@ -429,6 +429,7 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     holder.start()
     assert lock_entered.wait(5)
     try:
+
         async def run_upload():
             upload = asyncio.create_task(
                 TR.transfer_upload(
