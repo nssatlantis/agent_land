@@ -8,8 +8,6 @@ close, review, stake).
 
 from __future__ import annotations
 
-from urllib.parse import quote as _urlquote
-
 from starlette.responses import RedirectResponse
 
 import config
@@ -23,8 +21,11 @@ from server.admin._auth import (
     _csrf_ok,
     _denied,
     _flash,
+    _page_href,
+    _page_number,
     _safe_referer,
 )
+from viewer._feed_helpers import _pager
 from viewer._utils import _evidence_has_more, esc
 
 
@@ -264,17 +265,18 @@ def _render_jobs(request) -> str:
 
     creator-initiated cancel."""
 
-    open_jobs = db.list_jobs(view="open", limit=100)["jobs"]
-
-    active_jobs = [
-        j
-        for j in db.list_jobs(view="all", limit=200)["jobs"]
-        if j["status"] == "active"
-    ]
+    board = db.admin_list_jobs(
+        statuses=("open", "offered", "active"),
+        limit=20,
+        page=_page_number(request, "jobs_page"),
+    )
+    jobs_page = board["jobs"]
+    page = board["page"]
+    total_pages = board["total_pages"]
 
     rows = ""
 
-    for j in open_jobs + active_jobs:
+    for j in jobs_page:
         if j["status"] == "active":
             who = esc(j["worker"] or "-")
 
@@ -336,8 +338,16 @@ def _render_jobs(request) -> str:
             f"<a href='/admin/jobs?q={j['job_id']}' style='font-size:11px'>manage</a></td></tr>"
         )
 
+    jobs_pager = _pager(
+        page,
+        total_pages,
+        lambda p: _page_href("/admin", {}, p, page_key="jobs_page"),
+    )
     jobs_table = (
-        '<div class="table-wrap"><table>'
+        f'<p style="color:var(--muted);font-size:13px">Showing {len(jobs_page)} of '
+        f"{board['total']} open or active jobs | page {page} of {total_pages}</p>"
+        + jobs_pager
+        + '<div class="table-wrap"><table>'
         "<tr><th>id</th><th>title</th><th>status</th><th>creator</th>"
         "<th>worker</th><th>wage/cycles</th><th>close</th></tr>"
         + (
@@ -346,6 +356,7 @@ def _render_jobs(request) -> str:
             "No open or in-progress jobs.</td></tr>"
         )
         + "</table></div>"
+        + jobs_pager
     )
 
     create_form = _official_create_form(request)
@@ -382,40 +393,20 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     q = (request.query_params.get("q") or "").strip().lower()
 
-    all_jobs = db.list_jobs(view="all", limit=300)["jobs"]
-
-    # Counts for header
-
-    counts = {
-        "open": sum(1 for j in all_jobs if j["status"] == "open"),
-        "offered": sum(1 for j in all_jobs if j["status"] == "offered"),
-        "active": sum(1 for j in all_jobs if j["status"] == "active"),
-        "completed": sum(1 for j in all_jobs if j["status"] == "completed"),
-        "cancelled": sum(1 for j in all_jobs if j["status"] == "cancelled"),
-        "expired": sum(1 for j in all_jobs if j["status"] == "expired"),
-    }
-
-    # Filter
-
-    filtered = all_jobs
-
-    if status_filter != "all":
-        if status_filter == "closed":
-            filtered = [j for j in filtered if j["status"] in ("cancelled", "expired")]
-
-        else:
-            filtered = [j for j in filtered if j["status"] == status_filter]
-
-    if q:
-        filtered = [
-            j
-            for j in filtered
-            if q in j["title"].lower()
-            or q in (j["scope"] or "").lower()
-            or q in j["creator"].lower()
-            or q in str(j["worker"] or "").lower()
-            or q == str(j["job_id"])
-        ]
+    if status_filter not in ("all", "open", "offered", "active", "completed", "closed"):
+        status_filter = "all"
+    per_page = 20
+    board = db.admin_list_jobs(
+        status=status_filter if status_filter != "all" else None,
+        q=q or None,
+        limit=per_page,
+        page=_page_number(request),
+    )
+    counts = board["status_counts"]
+    filtered = board["jobs"]
+    page = board["page"]
+    total_pages = board["total_pages"]
+    total = board["total"]
 
     # Tabs
 
@@ -431,7 +422,7 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
     ]:
         active = ' class="active" aria-current="page"' if key == status_filter else ""
 
-        href = f"/admin/jobs?status={key}" + (f"&q={_urlquote(q)}" if q else "")
+        href = _page_href("/admin/jobs", {"status": key, "q": q}, 1)
 
         cnt = (
             sum(counts.values())
@@ -466,19 +457,16 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
 
     # Cards - beautiful overview
 
-    shown = min(100, len(filtered))
     shown_note = (
         f"<p style='color:var(--muted);font-size:13px'>"
-        f"Showing {shown} of {len(filtered)} jobs</p>"
-        if len(filtered) > 100
-        else ""
+        f"Showing {len(filtered)} of {total} jobs | page {page} of {total_pages}</p>"
     )
     cards = ""
 
-    job_ids = [j["job_id"] for j in filtered[:100]]
+    job_ids = [j["job_id"] for j in filtered]
     details_map = {d["job_id"]: d for d in db.get_jobs(job_ids)}
 
-    for j in filtered[:100]:
+    for j in filtered:
         detail = details_map.get(j["job_id"])
         if detail is None:
             continue
@@ -647,7 +635,18 @@ def _render_jobs_manager(request, form_values=None, form_error=None) -> str:
         + "</div>"
         + search
         + shown_note
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin/jobs", {"status": status_filter, "q": q}, p),
+            top=True,
+        )
         + cards
+        + _pager(
+            page,
+            total_pages,
+            lambda p: _page_href("/admin/jobs", {"status": status_filter, "q": q}, p),
+        )
         + "</div>"
         + create_form
     )
