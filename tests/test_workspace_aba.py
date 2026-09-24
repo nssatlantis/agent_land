@@ -145,7 +145,14 @@ def test_sweeper_rechecks_live_and_idle_state():
         reclaimed = os.path.join(root, "reclaimed")
         os.makedirs(reclaimed)
         Path(reclaimed, ".workspace.json").write_text(
-            json.dumps({"agent_id": 7, "proposal_id": 4242, "name": "reclaimed"}),
+            json.dumps(
+                {
+                    "agent_id": 7,
+                    "proposal_id": 4242,
+                    "name": "reclaimed",
+                    "updated_at": time.time(),
+                }
+            ),
             encoding="utf-8",
         )
         assert ws.sweep_released_claim_trees(lambda: {(7, 4242, "reclaimed")}) == 0
