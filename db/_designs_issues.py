@@ -169,18 +169,13 @@ def list_issues(design_id, viewer_token=None, state=None):
             except ForumError:
                 viewer_id, is_owner = None, False
         sql = (
-            "SELECT i.*, a.name AS author_name, f.text AS feature_text"
+            "SELECT i.*, a.name AS author_name,"
+            " CASE WHEN i.feature_id IS NULL OR (f.design_id = i.design_id"
+            " AND f.op = 'add' AND f.state = 'accepted')"
+            " THEN f.text ELSE NULL END AS feature_text"
             " FROM design_issues i LEFT JOIN agents a ON a.id = i.author_id"
             " LEFT JOIN design_features f ON f.id = i.feature_id"
         )
-        if not is_owner:
-            # Blind-safe parent text: a linked feature that left the public
-            # set (rejected by an approved remove) must read as no link
-            # rather than leaking its text through the join.
-            sql += (
-                " AND f.design_id = i.design_id AND f.op = 'add'"
-                " AND f.state = 'accepted'"
-            )
         sql += " WHERE i.design_id = ?"
         args: list = [int(design["id"])]
         if not is_owner:
@@ -195,8 +190,16 @@ def list_issues(design_id, viewer_token=None, state=None):
             args.append(state)
         sql += " ORDER BY i.position, i.id"
         rows = conn.execute(sql, args).fetchall()
+        issues = []
+        for row in rows:
+            item = dict(row)
+            if not is_owner and item.get("feature_id") is not None and not item.get(
+                "feature_text"
+            ):
+                item["feature_id"] = None
+            issues.append(item)
         return {
             "design_id": int(design["id"]),
             "is_owner": is_owner,
-            "issues": [dict(r) for r in rows],
+            "issues": issues,
         }
