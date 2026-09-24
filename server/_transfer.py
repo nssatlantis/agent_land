@@ -16,6 +16,7 @@ user-facing surfaces fail visibly, never silently (review integrity).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 
 from starlette.requests import Request
@@ -188,7 +189,8 @@ async def transfer_upload(request: Request) -> JSONResponse:
     except Exception:  # domain: degrade-silently - corrupt pins read as unpinned
         pin = None
     try:
-        receipt = _ws.apply_transfer_bytes(
+        receipt = await asyncio.to_thread(
+            _ws.apply_transfer_bytes,
             int(t["agent_id"]),
             int(t["proposal_id"]),
             str(t["claim_name"]),
