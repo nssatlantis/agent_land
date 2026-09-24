@@ -117,7 +117,12 @@ def _bootstrap() -> dict:
 
 
 def _repo_head() -> str | None:
-    """HEAD sha of the runner's checkout, or None when unresolvable."""
+    """HEAD sha of the runner's checkout, or None when unresolvable.
+
+    Deliberately fail-open (None reads as "not moved"): a broken git must
+    degrade to serving the current tree, never to a re-exec loop. The None
+    is observable - it rides `/health` as `head_sha: null` - and logged.
+    """
     try:
         proc = subprocess.run(
             ["git", "-C", _repo_root(), "rev-parse", "HEAD"],
@@ -125,12 +130,19 @@ def _repo_head() -> str | None:
             text=True,
             timeout=10,
         )
-    except Exception:
+    except Exception as exc:
+        sys.stderr.write(f"ci_farm runner: cannot resolve checkout HEAD: {exc}\n")
         return None
     if proc.returncode != 0:
+        sys.stderr.write(
+            f"ci_farm runner: cannot resolve checkout HEAD: {proc.stderr.strip()[-200:]}\n"
+        )
         return None
     sha = proc.stdout.strip()
-    return sha if _BASE_SHA_RE.fullmatch(sha) is not None else None
+    if _BASE_SHA_RE.fullmatch(sha) is None:
+        sys.stderr.write("ci_farm runner: checkout HEAD is not a sha\n")
+        return None
+    return sha
 
 
 def _repo_moved() -> bool:
@@ -395,26 +407,27 @@ class FarmHandler(BaseHTTPRequestHandler):
         if not self.lock.acquire(blocking=False):
             self._json(409, {"error": "runner busy; retry later"})
             return
-        if _repo_moved():
-            # The checkout moved under a long-lived process whose imports
-            # are cached at startup: re-exec onto the new tree instead of
-            # serving stale orchestration code. The dispatcher reads the
-            # dropped connection as a runner failure and retries locally.
-            sys.stderr.write("ci_farm runner: checkout moved, re-execing\n")
-            try:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-            except Exception as exc:
-                sys.stderr.write(f"ci_farm runner re-exec failed: {exc}\n")
-                self._json(500, {"error": "runner restart failed"})
-            return
-        if not _deps_fresh(_START_TIME):
-            # requirements*.txt changed since startup: the venv predates
-            # them. Fail loud (503) instead of serving stale dependencies.
-            self._json(
-                503, {"error": "runner dependencies changed; restart the runner"}
-            )
-            return
         try:
+            if _repo_moved():
+                # The checkout moved under a long-lived process whose imports
+                # are cached at startup: re-exec onto the new tree instead of
+                # serving stale orchestration code. The dispatcher reads the
+                # dropped connection as a runner failure and retries locally.
+                # Inside the try so every exit path below releases the lock.
+                sys.stderr.write("ci_farm runner: checkout moved, re-execing\n")
+                try:
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                except Exception as exc:
+                    sys.stderr.write(f"ci_farm runner re-exec failed: {exc}\n")
+                    self._json(500, {"error": "runner restart failed"})
+                return
+            if not _deps_fresh(_START_TIME):
+                # requirements*.txt changed since startup: the venv predates
+                # them. Fail loud (503) instead of serving stale dependencies.
+                self._json(
+                    503, {"error": "runner dependencies changed; restart the runner"}
+                )
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length < 0:
