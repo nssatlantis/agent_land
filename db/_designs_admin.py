@@ -379,7 +379,7 @@ def admin_remove_issue(admin, design_id, issue_id):
 
 
 def admin_design_history(admin, design_id):
-    with _conn() as conn:
+    with _conn(immediate=True) as conn:
         agent = _admin_agent(conn, admin)
         design = _require_design(conn, design_id)
         _require_owner(design, agent)
