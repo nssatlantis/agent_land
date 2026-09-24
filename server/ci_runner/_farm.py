@@ -418,6 +418,10 @@ def try_dispatch(
         # run may or may not have executed remotely, so retry once locally
         # instead of reporting busy (P3-2).
         raise _FarmRetryLocal("runner reply unreadable")
+    if not isinstance(remote.get("ok"), bool):
+        raise _FarmRetryLocal(
+            str(remote.get("error") or "runner reply missing boolean ok")[:200]
+        )
     if "error" in remote and not any(
         key in remote for key in ("exit_code", "summary", "head_sha", "base_sha")
     ):
@@ -504,7 +508,11 @@ def try_bench_dispatch(
     # chars alongside PR 1 so real medians tables round-trip).
     payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
-    if remote is None or not isinstance(remote, dict) or "error" in remote:
+    if (
+        not isinstance(remote, dict)
+        or not isinstance(remote.get("ok"), bool)
+        or "error" in remote
+    ):
         return None
     extra: dict = {}
     for key in ("quiet", "contended", "bench_load"):
