@@ -287,6 +287,19 @@ def main():
         beta["token"], d["id"], "x", op="remove", feature_id=p3["feature_id"]
     )
     flow.decide_feature(alpha["token"], d["id"], pr["feature_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_features SET position = 0 WHERE id = ?",
+            (pe["feature_id"],),
+        )
+        conn.execute(
+            "UPDATE design_features SET position = 1 WHERE id = ?",
+            (p1["feature_id"],),
+        )
+    moved = flow.move_design_item(
+        alpha["token"], d["id"], "feature", p1["feature_id"], "up"
+    )
+    assert moved["moved"] is False, moved
     got_beta = designs.get_design(d["id"], beta["token"])
     assert all(f["id"] != pr["feature_id"] for f in got_beta["features"]), got_beta[
         "features"
