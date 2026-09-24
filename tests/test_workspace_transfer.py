@@ -854,11 +854,24 @@ def test_validation_touches_clocks(agents):
 
 
 def test_transfer_touch_runs_under_tree_lock(agents):
-    pid = _prop(agents, "theta", title="Locked Touch Xfer")
-    tok = agents["theta"]["token"]
-    _claim(agents, pid, "lockedtouch", who="theta")
+    pid = _prop(agents, "fresh", title="Locked Touch Xfer")
+    tok = agents["fresh"]["token"]
+    with db._conn() as conn:
+        held = conn.execute(
+            "SELECT id, proposal_id, name FROM workspace_claims"
+            " WHERE agent_id = ? AND status = 'active'",
+            (agents["fresh"]["agent_id"],),
+        ).fetchall()
+    for row in held:
+        db.release_workspace(
+            tok,
+            int(row["proposal_id"]),
+            str(row["name"]),
+            claim_id=int(row["id"]),
+        )
+    _claim(agents, pid, "lockedtouch", who="fresh")
     WT.workspace_write_file(tok, pid, "lockedtouch", "s.txt", content="touch\n")
-    dest = ws._claim_dir(agents["theta"]["agent_id"], pid, "lockedtouch")
+    dest = ws._claim_dir(agents["fresh"]["agent_id"], pid, "lockedtouch")
     original_touch = TR._touch_best_effort
     modes = []
 
@@ -910,6 +923,7 @@ def test_transfer_touch_runs_under_tree_lock(agents):
         upload_response.body,
     )
     assert modes == ["read", "apply"], modes
+    db.release_workspace(tok, pid, "lockedtouch")
     print("  transfer clock touches run under the tree lock: ok")
 
 
