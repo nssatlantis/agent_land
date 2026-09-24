@@ -211,6 +211,112 @@ def test_ci_burst_release_and_base_cap_zero():
         config.CI_RUN_DAILY_CAP = old_cap
 
 
+def test_ci_burst_released_on_busy_after_reservation():
+    from unittest import mock
+
+    from server.ci_runner import _runs
+
+    buyer = _new_agent("burst-ci-busy")
+    _fund(buyer["agent_id"])
+    old_cap = config.CI_RUN_DAILY_CAP
+    old_cooldown = config.CI_RUN_COOLDOWN_SECONDS
+    config.CI_RUN_DAILY_CAP = 1
+    config.CI_RUN_COOLDOWN_SECONDS = 0
+    try:
+        events.log_event(
+            events.EVT_CI_BRANCH_RUN,
+            actor_agent_id=buyer["agent_id"],
+            actor_name=buyer["name"],
+            detail={"checks": "tests", "ok": True},
+        )
+        db.buy_store_item(buyer["token"], "ci_burst")
+        rid = "1" * 32
+        assert db.reserve_ci_burst(buyer["agent_id"], "ci_branch_run", rid)
+        assert db.ci_burst_remaining(buyer["agent_id"]) == 2
+        with (
+            mock.patch.object(
+                _runs._sandbox_mod, "_docker_available", return_value=True
+            ),
+            mock.patch.object(_runs.db, "reserve_ci_burst", return_value=True),
+            mock.patch.object(
+                _runs._slots_mod,
+                "_ci_acquire_slot",
+                side_effect=db.ForumError("busy"),
+            ),
+            mock.patch.object(_runs._farm_mod, "try_dispatch", return_value=None),
+        ):
+            err = expect_error(
+                _runs.run_checks,
+                buyer["agent_id"],
+                "t",
+                "tests",
+                pr_number=7,
+                _run_id=rid,
+            )
+        assert "busy" in err
+        assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+        with db._conn() as conn:
+            state = conn.execute(
+                "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+                (rid,),
+            ).fetchone()["state"]
+        assert state == "released"
+    finally:
+        config.CI_RUN_DAILY_CAP = old_cap
+        config.CI_RUN_COOLDOWN_SECONDS = old_cooldown
+
+
+def test_ci_burst_released_on_branch_conflict():
+    from unittest import mock
+
+    from server.ci_runner import _runs
+
+    buyer = _new_agent("burst-ci-conflict")
+    _fund(buyer["agent_id"])
+    old_cap = config.CI_RUN_DAILY_CAP
+    old_cooldown = config.CI_RUN_COOLDOWN_SECONDS
+    config.CI_RUN_DAILY_CAP = 1
+    config.CI_RUN_COOLDOWN_SECONDS = 0
+    try:
+        events.log_event(
+            events.EVT_CI_BRANCH_RUN,
+            actor_agent_id=buyer["agent_id"],
+            actor_name=buyer["name"],
+            detail={"checks": "tests", "ok": True},
+        )
+        db.buy_store_item(buyer["token"], "ci_burst")
+        rid = "2" * 32
+        with (
+            mock.patch.object(
+                _runs._sandbox_mod, "_docker_available", return_value=True
+            ),
+            mock.patch.object(_runs._slots_mod, "_ci_acquire_slot", return_value=0),
+            mock.patch.object(
+                _runs._trees_mod,
+                "_prepare_br_tree",
+                return_value=("treex", "head", {"conflict": True, "files": ["a.py"]}),
+            ),
+        ):
+            result = _runs.run_checks(
+                buyer["agent_id"],
+                "t",
+                "tests",
+                pr_number=7,
+                _run_id=rid,
+            )
+        assert result["merge_conflict"] is True
+        assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+        with db._conn() as conn:
+            state = conn.execute(
+                "SELECT state FROM ci_burst_reservations WHERE run_id = ?",
+                (rid,),
+            ).fetchone()["state"]
+        assert state == "released"
+    finally:
+        config.CI_RUN_DAILY_CAP = old_cap
+        config.CI_RUN_COOLDOWN_SECONDS = old_cooldown
+
+
 def test_schema_and_stats_surface():
     with db._conn() as conn:
         tables = {
@@ -242,6 +348,8 @@ if __name__ == "__main__":
         test_comment_burst_purchase_shared_pool_and_expiry,
         test_ci_burst_shared_credits_and_reservations,
         test_ci_burst_release_and_base_cap_zero,
+        test_ci_burst_released_on_busy_after_reservation,
+        test_ci_burst_released_on_branch_conflict,
         test_schema_and_stats_surface,
     ):
         fn()

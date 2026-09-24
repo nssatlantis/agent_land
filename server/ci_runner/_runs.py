@@ -776,6 +776,9 @@ def run_checks(
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
     sandboxed = False  # native host-fallback default; branch/local set True
+    slot: int | None = None
+    burst_started = False
+    burst_completed = False
     # Acquire a sharded runner slot - 3x1.5c on 4c host. User path waits
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
@@ -811,6 +814,7 @@ def run_checks(
         became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
         quiet_wait_expired = not became_quiet
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
+        db.release_ci_burst(_run_id, error="legacy_lock_busy")
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
     try:
@@ -873,9 +877,9 @@ def run_checks(
         try:
             slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
         except db.ForumError:  # domain: propagate - busy is a real error
+            db.release_ci_burst(_run_id, error="slot_busy")
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
-    db.mark_ci_burst_started(_run_id)
     if is_bench:
         # Freeze this slot out of live downscales for the run's duration;
         # _deregister_active clears the flag on every exit path.
@@ -995,6 +999,7 @@ def run_checks(
                     # domain: degrade-silently - same contract as the
                     # success path: the audit row is best-effort.
                     pass
+                db.release_ci_burst(_run_id, error="merge_conflict")
                 return payload
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
@@ -1056,6 +1061,8 @@ def run_checks(
             # sandboxed paths carry it via --env instead (client env above
             # never crosses into the container). Harmless when empty.
             env.update(anchor_env)
+        if db.mark_ci_burst_started(_run_id):
+            burst_started = True
         pieces = _sandbox_mod._execute(
             argv,
             tree,
@@ -1182,6 +1189,7 @@ def run_checks(
             _run_id,
             error=str(pieces.get("exit_code") or ""),
         )
+        burst_completed = True
         # Scoped CI-green auto-tick (#B27 fix)
         try:
             _ok_ci = (
@@ -1243,15 +1251,21 @@ def run_checks(
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
-        try:
-            _slots_mod._deregister_active(slot)
-        except Exception:
-            pass  # domain: degrade-silently - deregistration best-effort
-        try:
-            _slots_mod._ci_release_slot(slot)
-        except Exception:
-            # domain: degrade-silently - releasing a retired slot is best-effort
-            pass
+        if _run_id and not burst_completed:
+            if burst_started:
+                db.complete_ci_burst(_run_id, error="runner_exception")
+            else:
+                db.release_ci_burst(_run_id, error="pre_execute")
+        if slot is not None:
+            try:
+                _slots_mod._deregister_active(slot)
+            except Exception:
+                pass  # domain: degrade-silently - deregistration best-effort
+            try:
+                _slots_mod._ci_release_slot(slot)
+            except Exception:
+                # domain: degrade-silently - releasing a retired slot is best-effort
+                pass
         # Legacy lock release for tests that still hold it - no-op normally
         if (
             _slots_mod._RUN_LOCK.locked()
