@@ -451,6 +451,56 @@ def test_dispatch_test_base_ref_contract():
         dispatch_test.post_runner = original_post
 
 
+def test_dispatch_rejects_missing_ok_shape():
+    from unittest import mock
+
+    import server.ci_runner._farm as farm
+
+    runner = {"id": 1, "name": "test-runner", "url": "http://runner"}
+    with (
+        mock.patch.object(farm.config, "CI_FARM_ENABLED", True),
+        mock.patch.object(farm, "pick_runner", return_value=runner),
+        mock.patch.object(farm, "dispatch_to_runner", return_value={}),
+    ):
+        try:
+            farm.try_dispatch(
+                checks="tests",
+                local_mode=False,
+                branch_mode=False,
+                is_bench=False,
+                pr_number=None,
+                files=None,
+                tree=None,
+                quiet=None,
+                base_ref=None,
+                agent_id=1,
+                name="tester",
+                kind_event="ci_run",
+                run_id="a" * 32,
+            )
+        except farm._FarmRetryLocal as exc:
+            assert "missing boolean ok" in str(exc)
+        else:
+            raise AssertionError("missing ok must request a local retry")
+    with (
+        mock.patch.object(farm.config, "CI_FARM_ENABLED", True),
+        mock.patch.object(farm.config, "CI_FARM_BENCH_REMOTE_FIRST", True),
+        mock.patch.object(farm, "pick_runner", return_value=runner),
+        mock.patch.object(farm, "dispatch_to_runner", return_value={}),
+        mock.patch.object(runs_mod, "_bench_anchor_env", return_value=({}, None)),
+    ):
+        assert (
+            farm.try_bench_dispatch(
+                checks="db_benchmark",
+                agent_id=1,
+                name="tester",
+                kind_event="ci_db_bench_run",
+                run_id="b" * 32,
+            )
+            is None
+        )
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -486,6 +536,10 @@ def _run_all_tests() -> int:
         ("test_deps_freshness", test_deps_freshness),
         ("test_repo_moved_predicate", test_repo_moved_predicate),
         ("test_stale_gates_release_lock", test_stale_gates_release_lock),
+        (
+            "test_dispatch_rejects_missing_ok_shape",
+            test_dispatch_rejects_missing_ok_shape,
+        ),
     ]
     failed = 0
     for name, fn in tests:
