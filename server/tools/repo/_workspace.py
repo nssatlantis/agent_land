@@ -40,8 +40,15 @@ def _workspace_serialized(func):
             try:
                 await asyncio.shield(acquire)
             except asyncio.CancelledError:
-                await acquire
-                lock.__exit__(None, None, None)
+
+                def release_after_acquire(done: asyncio.Task[None]) -> None:
+                    try:
+                        done.result()
+                    except BaseException:
+                        return
+                    lock.__exit__(None, None, None)
+
+                acquire.add_done_callback(release_after_acquire)
                 raise
             try:
                 return await func(token, proposal_id, name, *args, **kwargs)
