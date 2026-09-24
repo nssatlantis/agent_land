@@ -28,7 +28,10 @@ SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
 _SEARCH_SKIP_DIRS = {".git", "__pycache__"}
 # git grep emits "<rev>:<path>:<line>:<text>" - path and text may both
 # hold ":" (odd names, type hints, URLs), so the line number anchors the
-# split: greedy path, digits, rest is text.
+# split: greedy path, digits, rest is text. Greedy takes the LAST
+# ":digits:" as the line number: colon-bearing paths resolve correctly,
+# while match text that itself ends in ":<digits>:" reports the inner
+# number (rare; paths are the load-bearing side for an audit tool).
 _GREP_LINE_RE = re.compile(r"^(?P<path>.+):(?P<lineno>\d+):(?P<text>.*)$")
 
 
