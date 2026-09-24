@@ -143,7 +143,7 @@ def main():
         did,
         direct_issue["issue_id"],
         "Admin-authored edited issue",
-        feature_id=None,
+        feature_id=f1["feature_id"],
     )
     history = admin.admin_design_history("alpha", did)
     assert any(
@@ -154,6 +154,17 @@ def main():
         i["id"] == direct_issue["issue_id"] and i["state"] == "accepted"
         for i in history["issues"]
     ), history
+    issue_edits = [
+        e
+        for e in history["edit_logs"]
+        if e["kind"] == "issue" and e["feature_or_issue_id"] == direct_issue["issue_id"]
+    ]
+    assert issue_edits[-1]["old_text"] == (
+        f"Admin-authored accepted issue [feature_id={direct_feature['feature_id']}]"
+    )
+    assert issue_edits[-1]["new_text"] == (
+        f"Admin-authored edited issue [feature_id={f1['feature_id']}]"
+    )
     admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
     admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
     print("  direct authoring: ok")
