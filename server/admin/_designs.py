@@ -348,12 +348,32 @@ def _history_rows(history: dict) -> str:
             f"<td>{esc(c.get('author_name') or 'admin/system')}</td>"
             f"<td>{_human_ts(str(c.get('created_at') or ''))}</td></tr>"
         )
+    decisions = []
+    for d in history.get("decisions", []):
+        detail = d.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except (TypeError, ValueError):
+                detail = {}
+        elif not isinstance(detail, dict):
+            detail = {}
+        kind = "issue" if detail.get("issue_id") is not None else "feature"
+        target = detail.get("issue_id", detail.get("fid", "?"))
+        result = "approved" if detail.get("ok") else "declined"
+        decisions.append(
+            f"<tr><td>#{int(d['id'])}</td><td>{kind} #{esc(target)}</td>"
+            f"<td>{result}</td><td>{esc(detail.get('note') or '')}</td>"
+            f"<td>{esc(d.get('actor_name') or 'admin/system')}</td>"
+            f"<td>{_human_ts(str(d.get('created_at') or ''))}</td></tr>"
+        )
     meta = []
     for m in history.get("meta_edits", []):
         meta.append(
             f"<tr><td>#{int(m['id'])}</td>"
             f"<td>{esc(m.get('old_title') or '')} -> {esc(m.get('new_title') or '')}</td>"
             f"<td>{esc(m.get('old_request') or '')} -> {esc(m.get('new_request') or '')}</td>"
+            f"<td>{esc(m.get('old_description') or '')} -> {esc(m.get('new_description') or '')}</td>"
             f"<td>{esc(m.get('editor_name') or 'admin/system')}</td>"
             f"<td>{_human_ts(str(m.get('edited_at') or ''))}</td></tr>"
         )
@@ -389,8 +409,13 @@ def _history_rows(history: dict) -> str:
         )
         + _history_table(
             "Meta edits",
-            "<th>id</th><th>title</th><th>request</th><th>editor</th><th>edited</th>",
+            "<th>id</th><th>title</th><th>request</th><th>description</th><th>editor</th><th>edited</th>",
             meta,
+        )
+        + _history_table(
+            "Decisions",
+            "<th>id</th><th>target</th><th>result</th><th>note</th><th>actor</th><th>created</th>",
+            decisions,
         )
         + _history_table(
             "Edit log",
