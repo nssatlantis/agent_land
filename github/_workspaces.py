@@ -85,8 +85,9 @@ def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
 
 @contextmanager
 def workspace_lock(dest: str):
-    lock_path = os.path.join(dest, ".git", "workspace.lock")
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    if not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    lock_path = dest + ".workspace.lock"
     with open(lock_path, "a+b") as lock:
         if os.name == "nt":
             msvcrt: Any = __import__("msvcrt")
