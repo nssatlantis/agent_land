@@ -886,13 +886,9 @@ def test_transfer_touch_runs_under_tree_lock(agents):
             response = response_factory()
         return response
 
-    read_ticket = TT.workspace_fetch_ticket(
-        tok, pid, "lockedtouch", ["s.txt"]
-    )
+    read_ticket = TT.workspace_fetch_ticket(tok, pid, "lockedtouch", ["s.txt"])
     read_response = assert_touch_under_lock(
-        lambda: _run(
-            TR.transfer_download(_req("GET", read_ticket["ticket"], "s.txt"))
-        ),
+        lambda: _run(TR.transfer_download(_req("GET", read_ticket["ticket"], "s.txt"))),
         "read",
     )
     assert read_response.status_code == 200, (
@@ -900,9 +896,7 @@ def test_transfer_touch_runs_under_tree_lock(agents):
         read_response.body,
     )
 
-    upload_ticket = TT.workspace_upload_ticket(
-        tok, pid, "lockedtouch", ["s.txt"]
-    )
+    upload_ticket = TT.workspace_upload_ticket(tok, pid, "lockedtouch", ["s.txt"])
     upload_response = assert_touch_under_lock(
         lambda: _run(
             TR.transfer_upload(
