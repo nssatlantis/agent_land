@@ -38,7 +38,7 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
     if row["state"] != "pending":
         raise ForumError("only pending proposals can be decided.")
     now = _now_iso()
-    if row["op"] in ("edit", "remove"):
+    if approve and row["op"] in ("edit", "remove"):
         target = _feature_row(conn, row["target_feature_id"], design["id"])
         if target["op"] != "add" or target["state"] != "accepted":
             raise ForumError("only accepted add features can be edit/remove targets.")
