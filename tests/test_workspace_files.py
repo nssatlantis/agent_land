@@ -219,7 +219,7 @@ def test_read_tools_wait_for_tree_lock(agents, wstools):
         assert_serialized(lambda: wstools.workspace_diff(tok, pid, "dev"))
 
         snapshot_entered = threading.Event()
-        original_snapshot = ws.snapshot_claim_tree
+        original_snapshot = wstools.github.snapshot_claim_tree
 
         def observed_snapshot(*args, **kwargs):
             snapshot_entered.set()
@@ -233,7 +233,7 @@ def test_read_tools_wait_for_tree_lock(agents, wstools):
             except BaseException as exc:
                 errors.append(exc)
 
-        with patch.object(ws, "snapshot_claim_tree", observed_snapshot):
+        with patch.object(wstools.github, "snapshot_claim_tree", observed_snapshot):
             worker = threading.Thread(target=rehearse)
             with ws.workspace_lock(dest):
                 worker.start()
