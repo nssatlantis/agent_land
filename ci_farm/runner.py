@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUNNER_VERSION = 1
@@ -63,6 +64,9 @@ _CHECKS_TO_SCRIPT = {
 }
 
 _mods: dict | None = None
+
+_START_TIME = time.time()
+_START_SHA: str | None = None  # checkout HEAD at startup, set by main()
 
 
 def _repo_root() -> str:
@@ -110,6 +114,65 @@ def _bootstrap() -> dict:
         "trees": trees,
     }
     return _mods
+
+
+def _repo_head() -> str | None:
+    """HEAD sha of the runner's checkout, or None when unresolvable.
+
+    Deliberately fail-open (None reads as "not moved"): a broken git must
+    degrade to serving the current tree, never to a re-exec loop. The None
+    is observable - it rides `/health` as `head_sha: null` - and logged.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", _repo_root(), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        sys.stderr.write(f"ci_farm runner: cannot resolve checkout HEAD: {exc}\n")
+        return None
+    if proc.returncode != 0:
+        sys.stderr.write(
+            f"ci_farm runner: cannot resolve checkout HEAD: {proc.stderr.strip()[-200:]}\n"
+        )
+        return None
+    sha = proc.stdout.strip()
+    if _BASE_SHA_RE.fullmatch(sha) is None:
+        sys.stderr.write("ci_farm runner: checkout HEAD is not a sha\n")
+        return None
+    return sha
+
+
+def _repo_moved() -> bool:
+    """True when the checkout HEAD differs from the startup snapshot.
+
+    Imports are cached for the process lifetime, so a moved checkout means
+    stale orchestration code. None snapshot (main() never ran, e.g. tests)
+    disables the check.
+    """
+    if _START_SHA is None:
+        return False
+    head = _repo_head()
+    return head is not None and head != _START_SHA
+
+
+def _deps_fresh(since: float, root: str | None = None) -> bool:
+    """True when neither requirements file changed since `since` (epoch).
+
+    A changed requirements file with a running pre-change process means a
+    stale venv: refuse work fail-loud instead of serving stale deps. A
+    missing file also reads stale (broken checkout, fail closed).
+    """
+    base = root if root is not None else _repo_root()
+    for name in ("requirements.txt", "requirements-dev.txt"):
+        try:
+            if os.path.getmtime(os.path.join(base, name)) > since:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _check_token(token: str, expected: str) -> bool:
@@ -323,6 +386,7 @@ class FarmHandler(BaseHTTPRequestHandler):
                     "busy": self.lock.locked(),
                     "docker_available": docker_ok,
                     "active_runs": 1 if self.lock.locked() else 0,
+                    "head_sha": _repo_head(),
                 },
             )
         else:
@@ -344,6 +408,26 @@ class FarmHandler(BaseHTTPRequestHandler):
             self._json(409, {"error": "runner busy; retry later"})
             return
         try:
+            if _repo_moved():
+                # The checkout moved under a long-lived process whose imports
+                # are cached at startup: re-exec onto the new tree instead of
+                # serving stale orchestration code. The dispatcher reads the
+                # dropped connection as a runner failure and retries locally.
+                # Inside the try so every exit path below releases the lock.
+                sys.stderr.write("ci_farm runner: checkout moved, re-execing\n")
+                try:
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                except Exception as exc:
+                    sys.stderr.write(f"ci_farm runner re-exec failed: {exc}\n")
+                    self._json(500, {"error": "runner restart failed"})
+                return
+            if not _deps_fresh(_START_TIME):
+                # requirements*.txt changed since startup: the venv predates
+                # them. Fail loud (503) instead of serving stale dependencies.
+                self._json(
+                    503, {"error": "runner dependencies changed; restart the runner"}
+                )
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length < 0:
@@ -395,6 +479,8 @@ def main() -> None:
     args = parser.parse_args()
     if not args.token:
         raise SystemExit("CIFARM_TOKEN (or --token) is required")
+    global _START_SHA
+    _START_SHA = _repo_head()
     farm = FarmRunner(args.bind, args.port, args.token)
     print(f"CI farm runner v{RUNNER_VERSION} listening on {args.bind}:{farm.port}")
     farm.serve_forever()

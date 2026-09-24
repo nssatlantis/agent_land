@@ -81,4 +81,8 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now "$UNIT"
+# enable --now only starts an inactive unit: without this, re-running the
+# installer (new checkout and/or fresh venv) would leave the OLD process
+# serving stale code and stale dependencies.
+systemctl restart "$UNIT"
 echo "CI farm runner installed: $UNIT on $BIND:$PORT"
