@@ -293,6 +293,7 @@ from db._guilds import (  # noqa: F401
     list_guild_chat,
     list_guilds,
     member_net,
+    open_guild_match_window,
     post_guild_chat,
     rejoin_guild,
     rename_guild,
@@ -441,7 +442,7 @@ from db._jobs import (  # noqa: F401
     tick_job_step,
 )
 
-# ── subsidized job requests (proposal #600, small_fix) ─────────────────
+# ── subsidized job requests (proposal #600, small_fix) ------------------
 from db._jobs_subsidy import (  # noqa: F401
     cancel_subsidy_request,
     decide_subsidy_request,
@@ -818,6 +819,7 @@ from db._workspace_claims import (  # noqa: F401
     active_workspaces_for_proposal,
     claim_workspace,
     get_workspace,
+    get_workspace_for_release,
     list_workspaces,
     release_workspace,
     release_workspaces_for_proposal,
