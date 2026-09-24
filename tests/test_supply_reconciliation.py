@@ -278,6 +278,83 @@ def test_legacy_baseline_rejects_unknown_state():
         conn.close()
 
 
+def test_legacy_baseline_existing_marker_infers_legacy():
+    conn = _legacy_conn()
+    try:
+        _seed_legacy_rows(conn)
+        conn.execute(
+            "INSERT INTO economy_meta (key, value)"
+            " VALUES ('legacy_supply_baseline_units', '45')"
+        )
+        result = db._economy.backfill_legacy_supply_baseline(conn)
+        assert result == {
+            "baseline_units": 45,
+            "signature_rows": 19,
+            "already_set": True,
+        }, result
+        state = conn.execute(
+            "SELECT value FROM economy_meta WHERE key = 'legacy_supply_baseline_state'"
+        ).fetchone()
+        assert state == ("legacy",), state
+        reconciled = db._economy.verify_supply_reconciliation(conn)
+        assert reconciled["ok"] is True, reconciled
+        assert reconciled["legacy_baseline_units"] == 45, reconciled
+        assert reconciled["legacy_signature_ok"] is True, reconciled
+    finally:
+        conn.close()
+
+
+def test_legacy_baseline_rejects_fresh_state_with_legacy_rows():
+    conn = _legacy_conn()
+    try:
+        _seed_legacy_rows(conn)
+        conn.execute(
+            "INSERT INTO economy_meta (key, value)"
+            " VALUES ('legacy_supply_baseline_units', '0')"
+        )
+        conn.execute(
+            "INSERT INTO economy_meta (key, value)"
+            " VALUES ('legacy_supply_baseline_state', 'fresh')"
+        )
+        result = db._economy.verify_supply_reconciliation(conn)
+        assert result["ok"] is False, result
+        assert result["legacy_signature_ok"] is False, result
+        try:
+            db._economy.backfill_legacy_supply_baseline(conn)
+        except db.ForumError as exc:
+            assert "fresh supply baseline marker" in str(exc)
+        else:
+            raise AssertionError(
+                "fresh state with the exact legacy signature must fail"
+            )
+    finally:
+        conn.close()
+
+
+def test_legacy_baseline_rejects_fresh_state_with_positive_marker():
+    conn = _legacy_conn()
+    try:
+        conn.execute(
+            "INSERT INTO economy_meta (key, value)"
+            " VALUES ('legacy_supply_baseline_units', '45')"
+        )
+        conn.execute(
+            "INSERT INTO economy_meta (key, value)"
+            " VALUES ('legacy_supply_baseline_state', 'fresh')"
+        )
+        result = db._economy.verify_supply_reconciliation(conn)
+        assert result["ok"] is False, result
+        assert result["legacy_signature_ok"] is False, result
+        try:
+            db._economy.backfill_legacy_supply_baseline(conn)
+        except db.ForumError as exc:
+            assert "fresh supply baseline marker" in str(exc)
+        else:
+            raise AssertionError("fresh state with a positive marker must fail")
+    finally:
+        conn.close()
+
+
 def test_verify_rejects_absent_marker_with_partial_signature():
     conn = _legacy_conn()
     try:
