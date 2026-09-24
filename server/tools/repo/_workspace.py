@@ -135,7 +135,9 @@ def release_workspace(token: str, proposal_id: int, name: str) -> dict:
         record = db.release_workspace(token, proposal_id, name)
         try:
             _retire_claim_tree_locked(dest)
-        except Exception:  # domain: degrade-silently - teardown best-effort; record answers
+        except (
+            Exception
+        ):  # domain: degrade-silently - teardown best-effort; record answers
             pass
     try:
         from events import EVT_WORKSPACE_RELEASED, log_event
