@@ -133,9 +133,7 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
         with workspace_lock(dest, allow_missing=True):
-            _revalidate_serialized_claim(
-                token, proposal_id, name, int(record["id"])
-            )
+            _revalidate_serialized_claim(token, proposal_id, name, int(record["id"]))
             tree = github.ensure_claim_tree(
                 agent_id, proposal_id, name, claim_id=int(record["id"])
             )
@@ -693,7 +691,6 @@ def workspace_write_file(
             return None
         except OSError as exc:
             raise db.ForumError(f"could not stat {clean!r} in the workspace.") from exc
-
 
     if reset is True:
         reset_existing = _live_file_bytes(clean, full)
