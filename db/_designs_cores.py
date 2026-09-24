@@ -199,9 +199,11 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     row = dict(row)
     if row["state"] != "accepted":
         raise ForumError("only accepted items can be reordered.")
+    feature_filter = " AND op = 'add'" if kind == "feature" else ""
     if direction == "up":
         other = conn.execute(
             f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
+            f"{feature_filter}"
             " AND (position < ? OR (position = ? AND id < ?))"
             " ORDER BY position DESC, id DESC LIMIT 1",
             (int(design["id"]), row["position"], row["position"], int(row["id"])),
@@ -209,6 +211,7 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     else:
         other = conn.execute(
             f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
+            f"{feature_filter}"
             " AND (position > ? OR (position = ? AND id > ?))"
             " ORDER BY position ASC, id ASC LIMIT 1",
             (int(design["id"]), row["position"], row["position"], int(row["id"])),
