@@ -885,7 +885,9 @@ def read_transfer_bytes(
         raise RepoError(f"no file at {clean!r} in the workspace.") from exc
     cap = _transfer_file_cap_bytes()
     if size > cap:
-        raise RepoError(f"path {clean!r} is {size} bytes, over the {cap} byte transfer cap.")
+        raise RepoError(
+            f"path {clean!r} is {size} bytes, over the {cap} byte transfer cap."
+        )
     try:
         with open(full, "rb") as fh:
             data = fh.read()
