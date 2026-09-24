@@ -145,6 +145,8 @@ def _search_with_ref(
     except OSError as exc:  # domain: fail-loudly - unspawnable git surfaces
         raise RepoError(f"repo_search could not start git grep: {exc}") from None
     assert proc.stdout is not None and proc.stderr is not None
+    out = proc.stdout
+    err = proc.stderr
     # Bounded queue: backpressure into git's pipe, so the held output can
     # never exceed the budget plus a few chunks no matter how the reader
     # thread races ahead; the finally-block drains it before reaping.
@@ -153,7 +155,7 @@ def _search_with_ref(
     def _drain() -> None:
         try:
             while True:
-                part = proc.stdout.read(65536)
+                part = out.read(65536)
                 if not part:
                     break
                 pieces.put(part)
@@ -195,11 +197,11 @@ def _search_with_ref(
             proc.kill()
         proc.wait()
         try:
-            err_text = (proc.stderr.read() or b"").decode("utf-8", errors="replace")
+            err_text = (err.read() or b"").decode("utf-8", errors="replace")
         except OSError:
             err_text = ""
-        proc.stdout.close()
-        proc.stderr.close()
+        out.close()
+        err.close()
         try:
             while True:
                 pieces.get_nowait()
@@ -255,7 +257,7 @@ def _search_with_ref(
             continue
         lst.append({"line_number": lineno, "text": _trim_search_line(text)})
     results = [{"path": p, "matches": by_file[p]} for p in order if by_file[p]]
-    return {"query": query, "matches": results, "ref": ref}
+    return {"query": query, "matches": results, "ref": resolved}
 
 
 def search_files(
