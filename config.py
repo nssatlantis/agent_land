@@ -1604,6 +1604,21 @@ def __getattr__(name: str) -> Any:
     return default
 
 
+def _effective_default(name: str) -> object:
+    """Return the effective default for a knob (what __getattr__ returns
+    when no env var is set). Used by config_drift to compare live values
+    against the effective default, not the raw registry default."""
+    spec = _TUNING.get(name)
+    if spec is None:
+        return None
+    _, default, convert = spec
+    if default is None:
+        if name == "CI_FARM_DISPATCH_TIMEOUT":
+            return int(_effective_default("CI_RUN_TIMEOUT_SECONDS")) + 30
+        return None
+    return default
+
+
 def reload_dotenv() -> list[str]:
     """Re-read both .env files (data dir outranks the repo) and apply file
     edits to the environment, returning the keys that changed.
