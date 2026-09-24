@@ -855,8 +855,10 @@ config pointing at that URL. The server advertises these tools:
   optional `expect_sha256` plus `dry_run`; identical bytes are a quiet
   no-op. It also accepts `reset=True` to restore one file from committed
   `HEAD` bytes (or `base_ref=<branch/tag/sha>`), including when the live
-  file was deleted; the selected ref must contain non-empty UTF-8 text,
-  and reset never deletes a new file. `workspace_push`
+  file was deleted (`expect_absent=True` pins that absence). The selected
+  ref must contain a regular, non-empty UTF-8 file; reset never deletes a
+  new file and installs verified bytes by atomic replacement after a final
+  live-state check. `workspace_push`
   echoes a per-file sha256 manifest and accepts optional `expect_shas` to
   snapshot the tree's text files (binaries, empties, symlinks and .github ride as counted skips, outside this receipt); docket rows and proposal pages
   show the per-proposal active-claim count

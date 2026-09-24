@@ -7,7 +7,8 @@ fast-forward plus dirty-refusal, both-clocks touch, per-write budget,
 path guards (.git/manifest/traversal/protected), owner isolation, and
 ref reads (committed bytes at branch/tag/sha with dirt invisible,
 unknown/invalid-ref and dir/missing pins), and guarded per-file reset
-from HEAD or a named ref including dry-run, stale, missing-live-file,
+from HEAD or a named ref including dry-run, present/absent guards,
+atomic-replace failure, symlink refusal, budget, missing-live-file,
 untracked, binary, empty, and mode-validation edges.
 """
 
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_files_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -424,17 +426,88 @@ def test_workspace_reset(agents, wstools):
         assert preview["changed"] is True and preview["dry_run"] is True, preview
         assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
 
+        def fail_replace(*_args, **_kwargs):
+            raise OSError("injected replace failure")
+
+        with patch.object(os, "replace", fail_replace):
+            assert "atomically reset" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "README.md",
+                reset=True,
+                expect_sha256=current_sha,
+            )
+        assert r(tok, pid, "dev", "README.md")["content"] == "dirty two"
+        assert not list(Path(dest, ".git").glob("workspace-reset-*"))
+
+        original_ref_read = wstools.github.read_file_at_ref
+
+        def racing_ref_read(*args, **kwargs):
+            result = original_ref_read(*args, **kwargs)
+            Path(dest, "README.md").write_text("raced\n", encoding="utf-8")
+            return result
+
+        with patch.object(wstools.github, "read_file_at_ref", racing_ref_read):
+            assert "concurrent change" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "README.md",
+                reset=True,
+                expect_sha256=current_sha,
+            )
+        assert r(tok, pid, "dev", "README.md")["content"] == "raced"
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+
         restored = w(tok, pid, "dev", "README.md", reset=True)
         assert restored["reset"] is True and restored["ref"] == "HEAD", restored
         assert restored["changed"] is True and restored["bytes"] == 5, restored
         assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+        before_noop_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        before_noop_manifest = dict(ws.claim_tree_info(aid, pid, "dev")["manifest"])
         noop = w(tok, pid, "dev", "README.md", reset=True)
+        after_noop_record = db.get_workspace(tok, pid, "dev")["updated_at"]
+        after_noop_manifest = ws.claim_tree_info(aid, pid, "dev")["manifest"]
         assert noop["changed"] is False, noop
+        assert after_noop_record > before_noop_record, (
+            before_noop_record,
+            after_noop_record,
+        )
+        assert after_noop_manifest["updated_at"] > before_noop_manifest["updated_at"]
 
         wstools.workspace_delete_file(tok, pid, "dev", "README.md")
-        restored_missing = w(tok, pid, "dev", "README.md", reset=True)
+        restored_missing = w(
+            tok, pid, "dev", "README.md", reset=True, expect_absent=True
+        )
         assert restored_missing["changed"] is True, restored_missing
         assert r(tok, pid, "dev", "README.md")["content"] == "seed"
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        w(tok, pid, "dev", "README.md", "present\n")
+        assert "stale base" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_absent=True,
+        )
+        assert r(tok, pid, "dev", "README.md")["content"] == "present"
+        assert "not both" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "README.md",
+            reset=True,
+            expect_absent=True,
+            expect_sha256="0" * 64,
+        )
+        wstools.workspace_delete_file(tok, pid, "dev", "README.md")
+        w(tok, pid, "dev", "README.md", "seed\n")
 
         w(tok, pid, "dev", "fresh.txt", "new\n")
         assert "no file at" in _expect_tool_error(
@@ -497,6 +570,71 @@ def test_workspace_reset(agents, wstools):
             "content\n",
             base_ref="HEAD",
         )
+
+        link_blob = (
+            subprocess.run(
+                ["git", "-C", dest, "hash-object", "-w", "--stdin"],
+                input=b"target.txt",
+                check=True,
+                capture_output=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        assert link_blob, "need a symlink blob"
+        _git(
+            "-C",
+            dest,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            link_blob,
+            "linkbase.txt",
+        )
+        _git(
+            "-C",
+            dest,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "symlink base",
+        )
+        _git("-C", dest, "branch", "symlink-reset-base")
+        Path(dest, "linkbase.txt").write_text("regular live\n", encoding="utf-8")
+        assert "not a regular file" in _expect_tool_error(
+            w,
+            tok,
+            pid,
+            "dev",
+            "linkbase.txt",
+            reset=True,
+            base_ref="symlink-reset-base",
+        )
+        assert r(tok, pid, "dev", "linkbase.txt")["content"] == "regular live"
+        _git("-C", dest, "reset", "--hard", "HEAD")
+
+        w(tok, pid, "dev", "named.txt", "budget dirty\n")
+        budget_sha = r(tok, pid, "dev", "named.txt")["content_sha256"]
+        old_cap = config.WORKSPACE_CLAIM_MAX_MB
+        config.WORKSPACE_CLAIM_MAX_MB = 0
+        try:
+            assert "MAX_MB" in _expect_tool_error(
+                w,
+                tok,
+                pid,
+                "dev",
+                "named.txt",
+                reset=True,
+                expect_sha256=budget_sha,
+            )
+        finally:
+            config.WORKSPACE_CLAIM_MAX_MB = old_cap
+        assert r(tok, pid, "dev", "named.txt")["content"] == "budget dirty"
+        w(tok, pid, "dev", "named.txt", "base one\n")
 
         Path(dest, "blob.bin").write_bytes(b"\xff\xfe\x00binary\n")
         Path(dest, "empty.txt").write_text("", encoding="utf-8")

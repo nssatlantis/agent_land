@@ -468,6 +468,7 @@ def workspace_write_file(
     dry_run: bool = False,
     reset: bool = False,
     base_ref: str | None = None,
+    expect_absent: bool = False,
 ) -> dict:
     """Create, overwrite, patch, or reset one file in a workspace tree.
 
@@ -477,9 +478,9 @@ def workspace_write_file(
     patch an existing file by exact find-replace without resending it,
     or `reset=True` to restore the file's committed bytes from `base_ref`
     (default `HEAD`). Reset restores a missing local file, but it does
-    not delete a new file: the path must exist as non-empty UTF-8 text
-    at the selected ref. Unknown refs, directories, binaries, and write
-    paths outside the workspace fail closed.
+    not delete a new file: the path must exist as a regular, non-empty
+    UTF-8 file at the selected ref. Unknown refs, directories, binaries,
+    and write paths outside the workspace fail closed.
 
     Per-write budget enforced. Content is EOL-normalized to the file's
     existing target (LF for new files), like the patch path. Returns
@@ -487,12 +488,18 @@ def workspace_write_file(
     mode and `ref` plus `reset=True` in reset mode.
 
     Pass `expect_sha256` (the sha256 from workspace_read_file or a
-    transfer receipt) to refuse a stale live file before any byte moves,
-    and `dry_run=True` to validate and preview without writing. Identical
-    bytes are a quiet no-op ({changed: False}, tree untouched) rather
-    than a dirtying rewrite. `base_ref` is valid only with reset.
+    transfer receipt) to refuse a stale live file before any byte moves.
+    For restoring a missing file, pass `expect_absent=True`; it is
+    mutually exclusive with `expect_sha256`. The live state is checked
+    again immediately before atomic replacement. `dry_run=True` validates
+    and previews without writing. Identical bytes are a quiet no-op
+    ({changed: False}, tree untouched) rather than a dirtying rewrite.
+    `base_ref` and `expect_absent` are valid only with reset.
     """
     import hashlib as _hashlib
+    import stat as _stat
+    import tempfile
+    from contextlib import suppress
 
     import github._writes as _writes  # local import to avoid a cycle
 
@@ -509,6 +516,10 @@ def workspace_write_file(
         raise db.ForumError("pass exactly one of content, edits, or reset=True.")
     if base_ref is not None and reset is not True:
         raise db.ForumError("base_ref is valid only with reset=True.")
+    if expect_absent and reset is not True:
+        raise db.ForumError("expect_absent is valid only with reset=True.")
+    if expect_absent and expect_sha256 is not None:
+        raise db.ForumError("pass expect_absent or expect_sha256, not both.")
     if expect_sha256 is not None and (
         not isinstance(expect_sha256, str)
         or not _EXPECT_SHA_RE.fullmatch(expect_sha256)
@@ -525,28 +536,36 @@ def workspace_write_file(
             "and rebase the write."
         )
 
-    if reset is True:
+    def _live_file_bytes(clean: str, full: str) -> bytes | None:
+        if os.path.islink(full):
+            raise db.ForumError(f"path {clean!r} became a symlink - reset refused.")
         if os.path.isdir(full):
             raise db.ForumError(f"path {clean!r} is a directory - only files reset.")
-        reset_existing: bytes | None = None
-        if os.path.isfile(full):
-            try:
-                with open(full, "rb") as fh_rb:
-                    reset_existing = fh_rb.read()
-            except OSError as exc:
-                raise db.ForumError(
-                    f"could not read {clean!r} in the workspace."
-                ) from exc
+        if not os.path.isfile(full):
+            return None
+        try:
+            with open(full, "rb") as fh_rb:
+                return fh_rb.read()
+        except OSError as exc:
+            raise db.ForumError(f"could not read {clean!r} in the workspace.") from exc
+
+    if reset is True:
+        reset_existing = _live_file_bytes(clean, full)
         have_sha = (
             _hashlib.sha256(reset_existing).hexdigest()
             if reset_existing is not None
             else None
         )
+        if expect_absent and reset_existing is not None:
+            raise _stale(clean, have_sha)
         if expect_sha256 is not None and have_sha != expect_sha256:
             raise _stale(clean, have_sha)
         try:
             reset_bytes, resolved_ref = github.read_file_at_ref(
-                dest, clean, "HEAD" if base_ref is None else base_ref
+                dest,
+                clean,
+                "HEAD" if base_ref is None else base_ref,
+                require_regular=True,
             )
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
@@ -579,12 +598,47 @@ def workspace_write_file(
         github.check_claim_budget(
             agent_id, incoming_mb=len(reset_bytes) / (1024 * 1024)
         )
+
+        def _assert_unchanged() -> int:
+            if _live_file_bytes(clean, full) != reset_existing:
+                raise db.ForumError(
+                    f"concurrent change to {clean!r} while reset was preparing - "
+                    "read again and retry."
+                )
+            if reset_existing is None:
+                return 0o644
+            try:
+                return _stat.S_IMODE(os.stat(full).st_mode)
+            except OSError as exc:
+                raise db.ForumError(
+                    f"could not stat {clean!r} in the workspace."
+                ) from exc
+
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        _assert_unchanged()
+        temp_path: str | None = None
         try:
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, "wb") as fh_bin:
-                fh_bin.write(reset_bytes)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                delete=False,
+                dir=os.path.join(dest, ".git"),
+                prefix="workspace-reset-",
+            ) as fh_tmp:
+                temp_path = fh_tmp.name
+                fh_tmp.write(reset_bytes)
+                fh_tmp.flush()
+                os.fsync(fh_tmp.fileno())
+            os.chmod(temp_path, _assert_unchanged())
+            os.replace(temp_path, full)
+            temp_path = None
         except OSError as exc:
-            raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
+            raise db.ForumError(
+                f"could not atomically reset {clean!r} in the workspace."
+            ) from exc
+        finally:
+            if temp_path is not None:
+                with suppress(OSError):
+                    os.unlink(temp_path)
         _touch_clocks(agent_id, proposal_id, cname)
         return result
 

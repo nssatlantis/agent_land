@@ -605,7 +605,9 @@ def _resolve_tree_commit(dest: str, ref: str) -> tuple[str, str]:
     )
 
 
-def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
+def read_file_at_ref(
+    dest: str, clean: str, ref: str, *, require_regular: bool = False
+) -> tuple[bytes, str]:
     """Committed bytes of one tree-relative path at `ref` (plus the winning
     ref candidate - `origin/<ref>` when fallback resolves).
 
@@ -619,7 +621,8 @@ def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
     downstream). The transfer cap is enforced from the `ls-tree --long`
     size before any byte moves. Symlink blobs read as their target text
     (the committed bytes); directories, submodules and missing paths
-    refuse.
+    refuse. `require_regular=True` additionally refuses symlink blobs so
+    destructive callers cannot materialize one as a regular file.
     """
     validated, commit = _resolve_tree_commit(dest, ref)
     listed = _git(dest, "ls-tree", "--long", "-z", commit, "--", clean, check=False)
@@ -640,6 +643,8 @@ def read_file_at_ref(dest: str, clean: str, ref: str) -> tuple[bytes, str]:
                 "content lives in another repository."
             )
         raise RepoError(f"no file at {clean!r} in the tree at ref {validated!r}.")
+    if require_regular and entry[0] not in {"100644", "100755"}:
+        raise RepoError(f"path {clean!r} is not a regular file at ref {validated!r}.")
     try:
         size = int(entry[3])
     except ValueError:  # domain: degrade-silently - bad size reads over-cap
