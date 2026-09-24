@@ -47,6 +47,14 @@ def _revalidate_serialized_claim(
         )
 
 
+def _same_file_mode(current: int | None, selected: int | None) -> bool:
+    if current is None or selected is None:
+        return current is None and selected is None
+    if os.name == "nt":
+        return bool(current & 0o200) == bool(selected & 0o200)
+    return current == selected
+
+
 def _workspace_serialized(func):
     if inspect.iscoroutinefunction(func):
 
@@ -125,6 +133,9 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
         with workspace_lock(dest, allow_missing=True):
+            _revalidate_serialized_claim(
+                token, proposal_id, name, int(record["id"])
+            )
             tree = github.ensure_claim_tree(
                 agent_id, proposal_id, name, claim_id=int(record["id"])
             )
@@ -683,12 +694,6 @@ def workspace_write_file(
         except OSError as exc:
             raise db.ForumError(f"could not stat {clean!r} in the workspace.") from exc
 
-    def _same_file_mode(current: int | None, selected: int | None) -> bool:
-        if current is None or selected is None:
-            return current is None and selected is None
-        if os.name == "nt":
-            return bool(current & 0o200) == bool(selected & 0o200)
-        return current == selected
 
     if reset is True:
         reset_existing = _live_file_bytes(clean, full)
