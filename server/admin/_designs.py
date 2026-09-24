@@ -2,18 +2,23 @@
 
 Design docket + per-design triage: pending feature/issue queues with
 approve/reject + note, open-question answer boxes, accepted-issue resolve,
-accepted-item move up/down and the comments toggle. All reads degrade
-silently; every mutation goes through the db sole-admin engine
+accepted-item move up/down and the comments toggle, plus the system-owned
+lifecycle (#694): create form, meta editor and the 2-step close. All reads
+degrade silently; every mutation goes through the db sole-admin engine
 (db/_designs_admin.py - name authority, never a token) and surfaces
 refusals verbatim.
 
-Authority note: the panel acts as the Basic-auth username, which must be
-the ADMIN_USER citizen (the engine refuses anything else). Pending rows
+Authority note: the panel acts as the Basic-auth username, which must equal
+ADMIN_USER (no citizen row required - the engine uses a registered row
+when one exists, else a synthetic panel agent). Pending rows
 never render on the anonymous viewer - this panel is their only home.
-Create/edit/promote/close stay on the admin citizen's MCP tools.
+Panel creations are system-owned (owner NULL); promote stays on the admin
+citizen's MCP tools (a system-authored Idea post is schema-illegal).
 """
 
 from __future__ import annotations
+
+import json
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -62,9 +67,41 @@ async def designs_admin_page(request: Request) -> HTMLResponse:
     else:
         table = "<p style='color:var(--muted)'>No designs on record.</p>"
     body = (
-        _admin_nav() + '<div class="panel"><h2>Designs — admin</h2>' + table + "</div>"
+        _admin_nav()
+        + '<div class="panel"><h2>Designs — admin</h2>'
+        + _create_form(request)
+        + table
+        + "</div>"
     )
     return _admin_page(request, "admin — designs", body)
+
+
+def _tag_boxes(selected: set) -> str:
+    bits = []
+    for t in db.REQUEST_TAGS:
+        checked = " checked" if t in selected else ""
+        bits.append(
+            f"<label><input type='checkbox' name='tag_{esc(t)}'{checked}/>"
+            f" {esc(t)}</label> "
+        )
+    return "".join(bits)
+
+
+def _create_form(request) -> str:
+    csrf = _csrf_field(request)
+    return (
+        "<h3>New design (system-owned)</h3>"
+        "<form method='post' action='/admin/designs/create'>"
+        f"{csrf}"
+        "<input type='text' name='title' placeholder='title (1-128 chars)'"
+        " maxlength='128' size='40' required/> "
+        "<input type='text' name='request_text' placeholder='request (<=2000)'"
+        " maxlength='2000' size='40'/>"
+        f"<br/>{_tag_boxes(set())}"
+        "<br/><textarea name='description' placeholder='description (<=4000)'"
+        " rows='3' cols='60'></textarea>"
+        " <button type='submit'>create</button></form>"
+    )
 
 
 def _pending_feature_rows(did: int, pending: list[dict], csrf: str) -> str:
@@ -186,6 +223,39 @@ def _accepted_rows(did: int, d: dict, csrf: str) -> str:
     )
 
 
+def _current_tags(d: dict) -> set:
+    try:
+        return set(json.loads(d.get("request_tags") or "[]"))
+    except (TypeError, ValueError):
+        return set()
+
+
+def _meta_form(did: int, d: dict, csrf: str) -> str:
+    return (
+        "<h3>Meta (owner-editable request)</h3>"
+        f"<form method='post' action='/admin/designs/{did}/edit-meta'>"
+        f"{csrf}"
+        f"<input type='text' name='title' value='{esc(d.get('title') or '')}'"
+        " maxlength='128' size='40'/> "
+        f"<input type='text' name='request_text' value='{esc(d.get('request_text') or '')}'"
+        " maxlength='2000' size='40'/>"
+        f"<br/>{_tag_boxes(_current_tags(d))}"
+        f"<br/><textarea name='description' rows='3' cols='60'>{esc(d.get('description') or '')}</textarea>"
+        " <button type='submit'>save meta</button></form>"
+    )
+
+
+def _close_form(did: int, csrf: str) -> str:
+    return (
+        "<h3>Archive (2-step)</h3>"
+        f"<form method='post' action='/admin/designs/{did}/close'>"
+        f"{csrf}"
+        "<label><input type='checkbox' name='confirm'/> confirm - drop pending"
+        " features/issues and open questions, freeze read-only</label>"
+        " <button type='submit'>archive</button></form>"
+    )
+
+
 async def design_admin_detail_page(request: Request) -> HTMLResponse:
     """One design for the maintainer: pending queues with decide/answer
     affordances, accepted move/resolve and the comments toggle."""
@@ -234,11 +304,13 @@ async def design_admin_detail_page(request: Request) -> HTMLResponse:
         _admin_nav()
         + f"<div class='panel'><h2>{esc(d.get('title') or '?')} — admin</h2>"
         + head
+        + _meta_form(design_id, d, csrf)
         + _pending_feature_rows(design_id, pend["pending_features"], csrf)
         + _pending_issue_rows(design_id, pend["pending_issues"], csrf)
         + _open_question_rows(design_id, pend["open_questions"], csrf)
         + _accepted_rows(design_id, d, csrf)
         + toggle
+        + _close_form(design_id, csrf)
         + "</div>"
     )
     return _admin_page(request, f"admin — design {design_id}", body)
@@ -342,5 +414,59 @@ async def design_admin_toggle_comments(request):
         enabled = bool(form.get("enabled"))
         db.admin_enable_comments(admin, did, enabled=enabled)
         return f"Comments on design #{did} {'enabled' if enabled else 'disabled'}."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_create_design(request):
+    async def _run(admin, form, request):
+        title = (form.get("title") or "").strip()
+        description = (form.get("description") or "").strip()
+        request_text = (form.get("request_text") or "").strip()
+        tags = [t for t in db.REQUEST_TAGS if form.get("tag_" + t)]
+        d = db.admin_create_design(
+            admin,
+            title,
+            description=description,
+            request_tags=tags,
+            request_text=request_text,
+        )
+        return f"Design #{int(d['id'])} created (system-owned)."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_edit_design_meta(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        tags = [t for t in db.REQUEST_TAGS if form.get("tag_" + t)]
+        res = db.admin_edit_design_meta(
+            admin,
+            did,
+            title=(form.get("title") or ""),
+            description=(form.get("description") or ""),
+            request_tags=tags,
+            request_text=(form.get("request_text") or ""),
+        )
+        if res.get("unchanged"):
+            return f"Design #{did} unchanged."
+        return f"Design #{did} updated ({', '.join(res['updated'])})."
+
+    return await _design_action(request, _run)
+
+
+async def design_admin_close_design(request):
+    async def _run(admin, form, request):
+        did = int(request.path_params["design_id"])
+        confirm = bool(form.get("confirm"))
+        res = db.admin_close_design(admin, did, confirm=confirm)
+        if res.get("need_confirm"):
+            return (
+                f"Design #{did} still holds {res['pending_features']} pending"
+                f" features, {res['pending_issues']} pending issues and"
+                f" {res['open_questions']} open questions - tick confirm to"
+                " archive them all."
+            )
+        return f"Design #{did} archived."
 
     return await _design_action(request, _run)
