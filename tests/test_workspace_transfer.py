@@ -18,7 +18,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_transfer_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -395,6 +398,66 @@ def test_http_upload_apply(agents):
     resp6 = _run(TR.transfer_upload(_req("POST", w5["ticket"], "empty.txt", body=b"")))
     assert resp6.status_code == 400, (resp6.status_code, resp6.body)
     print("  HTTP upload apply/receipt/pins/no-op/refusals: ok")
+
+
+def test_http_upload_lock_wait_keeps_event_loop_live(agents):
+    pid = _prop(agents, "alpha", title="Async Upload Xfer")
+    tok = agents["alpha"]["token"]
+    _claim(agents, pid, "asyncup", who="alpha")
+    WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
+    pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")[
+        "content_sha256"
+    ]
+    ticket = TT.workspace_upload_ticket(
+        tok, pid, "asyncup", ["held.txt"], {"held.txt": pin}
+    )
+    dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "asyncup")
+    lock_entered = threading.Event()
+    apply_entered = threading.Event()
+    timing = {}
+    original_apply = ws.apply_transfer_bytes
+
+    def observed_apply(*args, **kwargs):
+        apply_entered.set()
+        return original_apply(*args, **kwargs)
+
+    def hold_lock():
+        with ws.workspace_lock(dest):
+            lock_entered.set()
+            time.sleep(0.5)
+            timing["released"] = time.monotonic()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(5)
+    try:
+        async def run_upload():
+            upload = asyncio.create_task(
+                TR.transfer_upload(
+                    _req("POST", ticket["ticket"], "held.txt", body=b"next\n")
+                )
+            )
+            while not apply_entered.is_set():
+                await asyncio.sleep(0)
+            heartbeat_at = None
+
+            async def heartbeat():
+                nonlocal heartbeat_at
+                await asyncio.sleep(0)
+                heartbeat_at = time.monotonic()
+
+            await heartbeat()
+            return await upload, heartbeat_at
+
+        with patch.object(ws, "apply_transfer_bytes", observed_apply):
+            response, heartbeat_at = asyncio.run(run_upload())
+    finally:
+        holder.join(5)
+    assert not holder.is_alive(), "workspace lock holder did not finish"
+    assert heartbeat_at < timing["released"], (heartbeat_at, timing["released"])
+    assert response.status_code == 200, (response.status_code, response.body)
+    assert WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content"] == "next"
+    print("  async upload lock wait keeps the event loop live: ok")
 
 
 def test_http_upload_caps(agents):
@@ -1045,6 +1108,7 @@ def main():
     test_expiry_and_sweep(agents)
     test_http_download(agents)
     test_http_upload_apply(agents)
+    test_http_upload_lock_wait_keeps_event_loop_live(agents)
     test_http_upload_caps(agents)
     test_release_kills_ticket(agents)
     test_p2_write_upgrades(agents)
