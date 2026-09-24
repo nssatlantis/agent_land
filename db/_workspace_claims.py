@@ -111,12 +111,24 @@ def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:(conn: sqlite3.Conne
     if ttl_hours <= 0:
         return 0
     cutoff = _now_iso(datetime.now(timezone.utc) - timedelta(hours=ttl_hours))
-    cur = conn.execute(
-        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-        " WHERE status = 'active' AND updated_at < ?",
-        (_now_iso(), cutoff),
-    )
-    return cur.rowcount
+    rows = conn.execute(
+        "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+        " WHERE status = 'active' AND updated_at < ? ORDER BY id",
+        (cutoff,),
+    ).fetchall()
+    released = 0
+    for row in rows:
+        try:
+            with _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"]):
+                cur = conn.execute(
+                    "UPDATE workspace_claims SET status = 'released', updated_at = ?"
+                    " WHERE id = ? AND status = 'active' AND updated_at < ?",
+                    (_now_iso(), row["id"], cutoff),
+                )
+        except Exception:
+            continue
+        released += cur.rowcount
+    return released
 
 
 def _require_workspace_permission(
