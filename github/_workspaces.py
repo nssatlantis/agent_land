@@ -1286,7 +1286,10 @@ def sweep_idle_claim_trees() -> int:
                             continue
                         if idle > ttl and _retire_claim_tree_locked(dest):
                             swept += 1
-                except (OSError, RepoError):  # domain: degrade-silently - sweep one tree
+                except (
+                    OSError,
+                    RepoError,
+                ):  # domain: degrade-silently - sweep one tree
                     continue
     return swept
 
@@ -1348,7 +1351,10 @@ def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
                                 int(manifest.get("proposal_id", -1)),
                                 str(manifest.get("name", "")),
                             )
-                        except (TypeError, ValueError):  # domain: degrade-silently - no owner
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):  # domain: degrade-silently - no owner
                             continue
                         if key != (agent_id, proposal_id, claim):
                             continue
@@ -1357,6 +1363,9 @@ def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
                             continue
                         if key not in current_live and _retire_claim_tree_locked(dest):
                             swept += 1
-                except (OSError, RepoError):  # domain: degrade-silently - sweep one tree
+                except (
+                    OSError,
+                    RepoError,
+                ):  # domain: degrade-silently - sweep one tree
                     continue
     return swept
