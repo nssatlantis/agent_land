@@ -984,6 +984,7 @@ def test_run_checks_bench_overflow_passes_allow_remote():
     try:
         farm.try_bench_dispatch = _capture  # type: ignore[assignment]
         import server.ci_runner._runs as runs_mod
+
         orig_acquire = runs_mod._slots_mod._ci_acquire_slot
         orig_bench_first = config.CI_FARM_BENCH_REMOTE_FIRST
 
