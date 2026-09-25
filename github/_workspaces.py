@@ -750,7 +750,8 @@ def _open_or_reuse_claim_pr(
         patch: dict = {}
         if _strip_wip_prefix(prior.get("title") or "") != _strip_wip_prefix(title):
             patch["title"] = title
-        if _strip_mirror_span(prior.get("body") or "") != body:
+        prior_known = _strip_mirror_span(prior.get("body") or "").rstrip()
+        if prior_known != (body or "").rstrip():
             patch["body"] = body
         if patch:
             _core._request("PATCH", f"pulls/{prior['number']}", patch)
