@@ -263,3 +263,22 @@ def test_get_pr_failure_with_pr_number():
     ):
         result = search.find_similar_prs(pr_number=999)
     assert result == []
+
+
+def main():
+    test_empty_when_no_args()
+    test_file_path_overlap()
+    test_title_body_overlap()
+    test_excludes_own_pr()
+    test_no_match_below_threshold()
+    test_limit_respected()
+    test_pr_number_fetches_metadata()
+    test_graceful_on_github_error()
+    test_score_fields()
+    test_per_pr_files_failure()
+    test_get_pr_failure_with_pr_number()
+    print("test_similar_prs: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()
