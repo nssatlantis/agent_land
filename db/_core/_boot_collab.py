@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from ._migrate import _ensure_column, _rebuild_table, _widen_notifications_check
+from ._migrate import (
+    _ensure_column,
+    _ensure_column_with_backfill,
+    _rebuild_table,
+    _widen_notifications_check,
+)
 
 
 def run(conn) -> set:
@@ -466,48 +471,23 @@ def run(conn) -> set:
     # review on PR #1452). owner_admin_id IS NULL historically meant
     # "panel-created", but the owner FK is ON DELETE SET NULL: a later
     # owner hard-delete forges the same NULL, and the panel marker would
-    # then grant authority gained through deletion. The ALTER, the
-    # one-shot backfill and the completion marker commit in ONE
-    # transaction (house pattern: _migrate._swap): Python's sqlite3
-    # runs DDL in autocommit, so an unwrapped ALTER + backfill would
-    # persist one statement at a time and a crash between them would
-    # leave the column present with every legacy row unmarked - a
-    # presence-gated guard could then never finish it. The marker makes
-    # that state self-heal on the next boot: while it is absent no
-    # orphan can exist (a crashed init_db never serves traffic - the
-    # same argument as _backfill_unit_cutover), and once it is set a
-    # post-cutover orphan never inherits the marker. Fresh databases
-    # carry the column via schema.sql: their ALTER/backfill branch is
-    # skipped and the marker records on first boot over zero rows.
-    _design_cols = {row[1] for row in conn.execute("PRAGMA table_info(designs)")}
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY)"
+    # then grant authority gained through deletion. ALTER, one-shot
+    # backfill (pre-cutover owner_admin_id IS NULL rows) and the
+    # completion sentinel run through _ensure_column_with_backfill: one
+    # explicit transaction, marker-absent self-heal on later boots
+    # (while the marker is absent no orphan can exist - a crashed
+    # init_db never serves traffic, the same argument as
+    # _backfill_unit_cutover), and once it is set a post-cutover orphan
+    # never inherits the marker. Fresh databases carry the column via
+    # schema.sql: their ALTER/backfill branch is skipped and the marker
+    # records on first boot over zero rows.
+    _ensure_column_with_backfill(
+        conn,
+        "designs",
+        "system_owned",
+        "INTEGER NOT NULL DEFAULT 0",
+        "UPDATE designs SET system_owned = 1 WHERE owner_admin_id IS NULL",
     )
-    if "system_owned" not in _design_cols:
-        conn.executescript(
-            "BEGIN;\n"
-            "ALTER TABLE designs ADD COLUMN system_owned INTEGER NOT NULL DEFAULT 0;\n"
-            "UPDATE designs SET system_owned = 1 WHERE owner_admin_id IS NULL;\n"
-            "INSERT OR IGNORE INTO schema_migration_markers (name) VALUES ('designs_system_owned');\n"
-            "COMMIT;\n"
-        )
-    else:
-        _sys_owned_done = conn.execute(
-            "SELECT 1 FROM schema_migration_markers"
-            " WHERE name = 'designs_system_owned'"
-        ).fetchone()
-        if _sys_owned_done is None:
-            # Wedge heal (review on PR #1452): column present but the
-            # completion marker absent - only the pre-fix crash shape
-            # reads that way (or a fresh schema.sql database, whose
-            # backfill finds nothing). Re-run the backfill; the marker
-            # lands atomically behind it.
-            conn.executescript(
-                "BEGIN;\n"
-                "UPDATE designs SET system_owned = 1 WHERE owner_admin_id IS NULL;\n"
-                "INSERT OR IGNORE INTO schema_migration_markers (name) VALUES ('designs_system_owned');\n"
-                "COMMIT;\n"
-            )
     _guild_tables = {
         row[0]
         for row in conn.execute(
@@ -517,9 +497,16 @@ def run(conn) -> set:
     if "guilds" in _guild_tables:
         _ensure_column(conn, "guilds", "emptied_at", "TEXT")
         # Mission postdates the PR-1 table shape: ensure before any copy
-        # that names it, and backfill (the new DDL is NOT NULL).
-        _ensure_column(conn, "guilds", "mission", "TEXT NOT NULL DEFAULT ''")
-        conn.execute("UPDATE guilds SET mission = '' WHERE mission IS NULL")
+        # that names it, and backfill (the new DDL is NOT NULL), completion
+        # sentinel - ALTER + backfill in one explicit transaction so this
+        # pair cannot re-wedge either (review, PR #1452).
+        _ensure_column_with_backfill(
+            conn,
+            "guilds",
+            "mission",
+            "TEXT NOT NULL DEFAULT ''",
+            "UPDATE guilds SET mission = '' WHERE mission IS NULL",
+        )
     if "guild_job_links" in _guild_tables:
         _ensure_column(conn, "guild_job_links", "grace_until", "TEXT")
     # Citizen deletion (proposal #525, PR-14, item 5069) NULLs attribution
