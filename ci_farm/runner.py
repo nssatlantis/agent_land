@@ -359,12 +359,6 @@ def _run_job(payload: dict) -> dict:
             if static_result == "skipped":
                 result["host_fallback_static_skipped"] = True
         result["head_sha"] = head_sha
-        if checks in ("db_benchmark", "db_bench"):
-            # Single-flight runner: no overlapping job, so the load
-            # attestation is trivially quiet/uncontended. The host bless
-            # path (db/_bench_anchor.py) requires bench_load present and
-            # quiet:true; without it a remote heartbeat bench is unblessable.
-            result["bench_load"] = {"quiet": True, "contended": False}
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
