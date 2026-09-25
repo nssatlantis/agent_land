@@ -1182,9 +1182,6 @@ def test_run_checks_native_test_remote_first_gate():
     orig_gate = runs_mod._gate
     runs_mod._gate = _Gate()
 
-    def _busy_slot(*a, **k):
-        raise db.ForumError("slot busy")
-
     def _ok_slot(*a, **k):
         return {"id": 1}
 
@@ -1200,8 +1197,14 @@ def test_run_checks_native_test_remote_first_gate():
     try:
         config.CI_FARM_TEST_REMOTE_FIRST = True
         calls.clear()
-        runs_mod._slots_mod._ci_acquire_slot = _busy_slot
-        result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
+        try:
+            result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        except Exception as exc:
+            raise AssertionError(
+                f"ON: local path leaked past slot; gate must dispatch first, got {exc!r}"
+            ) from exc
         assert result["mode"] == "native", result
         assert result["runner"] == "nt-gate", result
         assert len(calls) == 1, f"ON: 1 dispatch, got {len(calls)}"
