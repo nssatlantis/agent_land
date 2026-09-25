@@ -500,10 +500,19 @@ def main():
         r = db.flip_ready(conn, pid_flip, 4245, beta, _SHA_B)
         assert r == {"ready": True, "finding_ids": [flip_fid]}, r
         # The flip mirrors the vote change path: -1 becomes +1 with the
-        # bar stamped, and a second flip refuses.
-        t = db.flip_pr_vote_to_approve(conn, 4245, beta)
+        # bar stamped, and a second flip refuses. The flip re-checks
+        # every consented row in-txn: stale one first and it aborts.
+        db.finding_stale_on_push(conn, 4245, _SHA_A)
+        err = expect_error(
+            db.flip_pr_vote_to_approve, conn, pid_flip, 4245, beta, _SHA_B
+        )
+        assert "reopened during the flip" in err, err
+        db.finding_verify(conn, flip_fid, delta, _SHA_B)
+        t = db.flip_pr_vote_to_approve(conn, pid_flip, 4245, beta, _SHA_B)
         assert (t["up"], t["down"], t["net"]) == (1, 0, 1), t
-        err = expect_error(db.flip_pr_vote_to_approve, conn, 4245, beta)
+        err = expect_error(
+            db.flip_pr_vote_to_approve, conn, pid_flip, 4245, beta, _SHA_B
+        )
         assert "no -1 vote to flip" in err, err
 
     # A voter with no consented findings never flips (own connection -
@@ -681,6 +690,75 @@ def main():
             "SELECT state FROM review_findings WHERE id = ?", (swf,)
         ).fetchone()[0]
         assert st == "stale", st
+    # --- poller rebase path stales at the choke point ---------------------
+    # The mock head matches the attestation, so the sweep-wide
+    # reconcile is a guaranteed no-op here: only the direct staling
+    # call after rebase_pr_onto_main can stale the row. Deleting that
+    # block fails this test.
+    import contextlib
+    from datetime import datetime, timedelta, timezone
+
+    from server.poller import _pr_vote_sweep
+
+    pid_rb = _proposal(agents, "rebase")
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4251, ?, ?)",
+            (pid_rb, alpha),
+        )
+        rbf = db.finding_add(
+            conn, pid_rb, 4251, beta, "bug", "other", "c", "f", ["a.py"], True
+        )
+        db.finding_mark_resolved(conn, rbf, alpha, "fixed")
+        db.finding_verify(conn, rbf, gamma, _SHA_A)
+    for _name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(agents[_name]["token"], 4251, 1)
+    import github as _gh3
+
+    _saved_rb = {}
+    _old_rb = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    _mock_rb = {
+        "number": 4251,
+        "head_sha": _SHA_A,
+        "title": "rebase choke probe",
+        "state": "open",
+        "body": "",
+        "created_at": _old_rb,
+    }
+
+    def _fake_rebase(number, **kw):
+        assert number == 4251
+        return {"status": "ok", "new_sha": _SHA_B}
+
+    @contextlib.contextmanager
+    def _rb_patch():
+        try:
+            for _k, _v in {
+                "open_prs": lambda: [_mock_rb],
+                "pr_has_label": lambda number, label, **kw: False,
+                "pr_checks": lambda number, **kw: {"state": "success"},
+                "merge_pr": lambda number, **kw: {"pr_number": number},
+                "decline_pr": lambda number, **kw: {"pr_number": number},
+                "rebase_pr_onto_main": _fake_rebase,
+                "wait_for_ci": lambda number, **kw: "success",
+            }.items():
+                _saved_rb[_k] = getattr(_gh3, _k)
+                setattr(_gh3, _k, _v)
+            yield
+        finally:
+            for _k, _v in _saved_rb.items():
+                setattr(_gh3, _k, _v)
+
+    with _rb_patch():
+        _pr_vote_sweep()
+    with db._conn() as conn:
+        st = conn.execute(
+            "SELECT state FROM review_findings WHERE id = ?", (rbf,)
+        ).fetchone()[0]
+        assert st == "stale", "the rebase choke point stales the board"
     pid2 = _proposal(agents, "docket")
     with db._conn() as conn:
         from db._review_findings import _findings_summary_for_posts
