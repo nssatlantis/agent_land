@@ -809,7 +809,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # within the min/max (ACK in visits, enforced as 24h each, pause tolls).
     "SERVICE_MAX_ACTIVE_PER_AGENT": ("FORUM_SERVICE_MAX_ACTIVE", 4, int),
     # Floor on the service order price (credits).
-    "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.1, float),
+    "SERVICE_MIN_PRICE": ("FORUM_SERVICE_MIN_PRICE", 0.15, float),
     # Ceiling on the service order price (credits).
     "SERVICE_MAX_PRICE": ("FORUM_SERVICE_MAX_PRICE", 12.5, float),
     # Treasury fee per service listing.
