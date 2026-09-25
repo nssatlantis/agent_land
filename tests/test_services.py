@@ -84,7 +84,7 @@ def main():
     print("  create/list/get + shelf fee: ok")
 
     # --- 2. validation bounds -------------------------------------------
-    for bad_price in (0.05, 0.0, 20.0):
+    for bad_price in (0.05, 0.0, 0.11, 20.0):
         try:
             _listing(seller, price=bad_price)
             raise AssertionError(f"price {bad_price} must be refused")
@@ -95,6 +95,8 @@ def main():
     dime_seller = _fund("svc-dime-seller")
     dime = _listing(dime_seller, price=0.1)
     assert dime["price_units"] == 2, dime
+    exact = _listing(dime_seller, price=0.15)
+    assert exact["price_units"] == 3, exact
     # The lowered job floor (proposal #551) keeps dime listings orderable:
     # ordering routes the 2-unit price straight through job intake.
     dime_order = db.order_service(buyer["token"], dime["id"])
@@ -169,6 +171,7 @@ def main():
     for bad in (
         {"price_credits": "oops"},
         {"price_credits": []},
+        {"price_credits": 0.11},
         {"ack_visits": 2.5},
         {"ack_visits": True},
         {"deliver_days": 1.7},

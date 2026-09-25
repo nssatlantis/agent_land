@@ -938,7 +938,76 @@ def main():
     test_run_checks_native_test_remote_first_gate()
     test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
+    test_dropped_dispatch_is_ledgered()
     print("All CI farm tests passed.")
+
+
+def test_dropped_dispatch_is_ledgered():
+    """S3 pin: a picked runner whose reply is unusable leaves one
+    ci_farm_dispatch_failed row before the host falls back to local CI.
+    Fail-before: both lanes degraded silently, so a farm that failed every
+    dispatch was invisible in the public record."""
+    reg = farm.register_runner("audit-runner", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    try:
+        farm.dispatch_to_runner = lambda runner, payload: None
+        try:
+            farm.try_dispatch(
+                checks="tests",
+                local_mode=False,
+                branch_mode=False,
+                is_bench=False,
+                pr_number=None,
+                files=None,
+                tree=None,
+                quiet=None,
+                base_ref=None,
+                agent_id=1,
+                name="tester",
+                kind_event="ci_run",
+                run_id="d" * 32,
+            )
+        except farm._FarmRetryLocal as exc:
+            assert "unreadable" in str(exc)
+        else:
+            raise AssertionError("an unreadable reply must retry locally")
+        rows = events.query_events(kind=events.EVT_CI_FARM_DISPATCH_FAILED, limit=10)
+        detail = rows[0]["detail"] if rows else {}
+        assert detail.get("runner") == "audit-runner", rows
+        assert detail.get("lane") == "overflow", detail
+        assert "unreadable" in detail.get("error", ""), detail
+        # The bench lane has its own call site: it returns None instead of
+        # raising, and must still leave the row. pick_runner admits one run
+        # per runner and the overflow call above took that slot (our
+        # dispatch_to_runner stub never released it), so free it first.
+        farm._ACTIVE_RUNS.clear()
+        farm.dispatch_to_runner = lambda runner, payload: {"error": "boom"}
+        assert (
+            farm.try_bench_dispatch("db_benchmark", 1, "t", "ci_db_bench_run", None)
+            is None
+        )
+        bench = [
+            r
+            for r in events.query_events(
+                kind=events.EVT_CI_FARM_DISPATCH_FAILED, limit=10
+            )
+            if (r.get("detail") or {}).get("lane") == "bench"
+        ]
+        assert bench, "the bench lane drop left no ledger row"
+        assert "boom" in bench[0]["detail"]["error"]
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        farm._ACTIVE_RUNS.clear()
+        farm.remove_runner(reg["id"])
 
 
 def test_farm_retry_exhaustion_audited():

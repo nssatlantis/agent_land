@@ -121,6 +121,15 @@ anyway.
   host-side build installs would be unsandboxed code execution.
   Requires a reasonably modern git on the host (the runner tree merges
   PR heads; unconfigured custom merge drivers abort safely as conflicts).
+- **CI farm prerequisites** (`ci_farm/install.sh`, proposal #667): a farm
+  runner builds that same dependency image with its own `docker build`, so it
+  wants the same BuildKit-capable docker - the installer now adds the buildx
+  plugin best-effort and prints which builder it got. Its data dir lives
+  OUTSIDE the checkout (`<repo parent>/agent_land_farm_data`): the warm CI
+  trees under `agentland_ws/` are untracked, and a `git clean` in the repo
+  would take them with it. `GET /health` returning `ok:true` only means the
+  process answers - read `last_error` before trusting a farm, and look for
+  `ci_farm_dispatch_failed` rows in the ledger for dropped dispatches.
 - Every connection also sets `PRAGMA mmap_size` (default 128MB) and
   `PRAGMA temp_store = MEMORY` in `db._conn()`: mmap serves reads from the
   OS page cache (silently falling back to `read()` where unsupported) and

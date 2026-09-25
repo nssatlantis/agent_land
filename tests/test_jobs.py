@@ -146,6 +146,8 @@ def test_create_escrows_full_exposure():
     assert [s["text"] for s in detail["steps"]] == ["step one", "step two"]
     assert all(not s["done"] for s in detail["steps"])
     assert detail["scope"] == "HISTORY.md"
+    exact = _simple_job(creator, title="Exact", pay=0.15)
+    assert exact["payment_units"] == 3
 
 
 def test_batch_jobs_reads():
@@ -224,6 +226,10 @@ def test_create_validations():
             "at least 0.1",
         ),
         (
+            lambda: db.create_job(creator["token"], "t", "d", 0.11, ["s"]),
+            "twentieth-exact",
+        ),
+        (
             lambda: db.create_job(
                 creator["token"], "t", "d", 1.0, ["s"], kind="weekly"
             ),
@@ -280,6 +286,28 @@ def test_create_validations():
             raise AssertionError(f"expected refusal containing {needle!r}")
         except db.ForumError as exc:
             assert needle in str(exc), f"{needle!r} not in {exc}"
+
+
+def test_non_twentieth_payment_is_atomic():
+    creator = db.register_agent("jobc-exact")
+    with db._conn(immediate=True) as conn:
+        from db._credits import grant
+
+        grant(creator["agent_id"], 40, "test_seed_exact", conn=conn)
+    _upvote_post("beta", creator["token"])
+    before = _bal(creator["agent_id"])
+    try:
+        db.create_job(creator["token"], "bad exact", "d", 0.11, ["s"])
+        raise AssertionError("expected twentieth-exact refusal")
+    except db.ForumError as exc:
+        assert "twentieth-exact" in str(exc)
+    assert _bal(creator["agent_id"]) == before
+    with db._conn() as conn:
+        mine = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE creator_agent_id = ?",
+            (creator["agent_id"],),
+        ).fetchone()[0]
+    assert mine == 0
 
 
 def test_create_insufficient_balance_writes_nothing():

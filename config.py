@@ -1033,12 +1033,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # PR auto-decline: once a PR has enough opposing votes to be decline-
     # eligible, it is not auto-declined until it has been decline-eligible
-    # for at least this many seconds (default 12 hours).  The grace window
+    # for at least this many seconds (default 24 hours).  The grace window
     # lets the author correct mistakes and request fresh reviews before the
     # PR is closed.  Set to 0 to decline immediately.
     "PR_DECLINE_GRACE_SECONDS": (
         "FORUM_PR_DECLINE_GRACE_SECONDS",
-        43200,
+        86400,
         int,
     ),
     # Opener stall notice: an open, linked, below-bar PR whose proposal
