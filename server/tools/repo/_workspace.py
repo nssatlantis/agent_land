@@ -20,6 +20,7 @@ import db
 import github
 from github._core import _validate_path
 from github._workspaces import (
+    _discard_claim_lock,
     _retire_claim_tree_locked,
     _transfer_file_cap_bytes,
     read_regular_file_at_ref,
@@ -196,6 +197,7 @@ def release_workspace(token: str, proposal_id: int, name: str) -> dict:
             Exception
         ):  # domain: degrade-silently - teardown best-effort; record answers
             pass
+    _discard_claim_lock(dest)
     try:
         from events import EVT_WORKSPACE_RELEASED, log_event
 
