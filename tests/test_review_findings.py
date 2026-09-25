@@ -274,6 +274,22 @@ def main():
             " VALUES (4244, ?, NULL)",
             (pid,),
         )
+        # finding_add itself refuses opener-less links (not just the
+        # tools): an orphan row can never be constructed through the API.
+        err = expect_error(
+            db.finding_add,
+            conn,
+            pid,
+            4244,
+            beta,
+            "bug",
+            "other",
+            "c",
+            "f",
+            ["a.py"],
+            False,
+        )
+        assert "no recorded opener" in err, err
         cur = conn.execute(
             "INSERT INTO review_findings (post_id, pr_number, finder_agent_id,"
             " category, class, check_text, flip_path, paths, auto_flip)"
@@ -382,6 +398,11 @@ def main():
     finally:
         github._pr_raw = real_raw
     assert staled_all >= 1, "a dead GitHub read stales instead of skipping"
+    with db._conn() as conn:
+        st = conn.execute(
+            "SELECT state FROM review_findings WHERE id = ?", (fid2,)
+        ).fetchone()[0]
+        assert st == "stale", st
 
     # --- locked proposal freezes every user mutation --------------------
     # Runs last on pid: corroborate, resolve, dispute and verify join
@@ -441,6 +462,32 @@ def main():
         }, summary[pid2]
     row = next(p for p in db.list_proposals() if p["id"] == pid2)
     assert row["findings_summary"]["open_blockers"] == 1, "docket attaches counts"
+
+    # --- verdict is scoped to the rows' PR -------------------------------
+    # A second PR on the same proposal with a verified finding must not
+    # leak into the first PR's verdict (the round-3 contamination class).
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4248, ?, ?)",
+            (pid2, alpha),
+        )
+        div = db.finding_add(
+            conn, pid2, 4248, beta, "bug", "other", "c", "f", ["a.py"], True
+        )
+        db.finding_mark_resolved(conn, div, alpha, "fixed")
+        db.finding_verify(conn, div, gamma, _SHA_A)
+        v43 = db.finding_verdict(conn, pid2, 4243)
+        assert v43["pr_number"] == 4243
+        assert v43["open_auto_flip_by_voter"] == [{"finder_agent_id": beta, "n": 1}], (
+            v43
+        )
+        v48 = db.finding_verdict(conn, pid2, 4248)
+        assert v48["open_auto_flip_by_voter"] == [], v48
+    lout48 = asyncio.run(ftools.findings_list(pid2, 4248, "all"))
+    assert lout48["verdict"]["pr_number"] == 4248, lout48["verdict"]
+    assert all(f["pr_number"] == 4248 for f in lout48["findings"])
+    assert all(f["verified_by_agent_id"] is not None for f in lout48["findings"])
 
     # --- migration: pre-board DB gains tables via init_db() --------------
     # Partial loss heals too: dropping ONE child table must recreate
