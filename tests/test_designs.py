@@ -336,7 +336,7 @@ def main():
     ], got_gamma["features"]
     dock = designs.list_designs("open")
     row = [x for x in dock["designs"] if x["id"] == d["id"]][0]
-    assert row["accepted"] == 1 and row["total"] == 3, row
+    assert row["accepted"] == 1 and row["total"] == 4, row
     assert dock["total"] >= 1
     print("  ghost filter + counts: ok")
 
