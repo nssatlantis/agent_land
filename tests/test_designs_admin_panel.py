@@ -344,6 +344,82 @@ def main():
         csrf,
     )
     assert "added and accepted" in r.body.decode("utf-8")
+    hidden_fid_result = _post(
+        admin.design_admin_create_feature,
+        f"/admin/designs/{sysdid}/feature/create",
+        {"design_id": sysdid},
+        {"text": "Hidden parent feature"},
+        csrf,
+    )
+    assert "added and accepted" in hidden_fid_result.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_fid = int(
+            conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Hidden parent feature"),
+            ).fetchone()[0]
+        )
+    hidden_iid_result = _post(
+        admin.design_admin_create_issue,
+        f"/admin/designs/{sysdid}/issue/create",
+        {"design_id": sysdid},
+        {"text": "Issue with hidden parent", "feature_id": str(hidden_fid)},
+        csrf,
+    )
+    assert "added and accepted" in hidden_iid_result.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_iid = int(
+            conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Issue with hidden parent"),
+            ).fetchone()[0]
+        )
+    _post(
+        admin.design_admin_resolve_issue,
+        f"/admin/designs/{sysdid}/resolve-issue",
+        {"design_id": sysdid},
+        {"issue_id": str(hidden_iid)},
+        csrf,
+    )
+    _post(
+        admin.design_admin_remove_feature,
+        f"/admin/designs/{sysdid}/feature/remove",
+        {"design_id": sysdid},
+        {"feature_id": str(hidden_fid)},
+        csrf,
+    )
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {"issue_id": str(hidden_iid), "text": "Edited after hidden parent"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link == hidden_fid, hidden_link
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {
+            "issue_id": str(hidden_iid),
+            "text": "Explicitly unlinked",
+            "feature_id": "",
+        },
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link is None, hidden_link
     sysdet_after = _call(
         admin.design_admin_detail_page,
         _req(
