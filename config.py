@@ -550,6 +550,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
     # Lifetime max vote-boost buys.
     "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    # Credits per Vote Burst UTC-day pass.
+    "STORE_VOTE_BURST_PRICE": ("FORUM_STORE_VOTE_BURST_PRICE", 1.5, float),
+    # Vote capacity units granted by Vote Burst.
+    "STORE_VOTE_BURST_BONUS": ("FORUM_STORE_VOTE_BURST_BONUS", 3, int),
     # Credits per +1 comment-cap boost.
     "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
     # Lifetime max comment-boost buys.
@@ -558,6 +562,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
     # Lifetime max CI-boost buys.
     "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    # Credits per Comment Burst UTC-day pass.
+    "STORE_COMMENT_BURST_PRICE": ("FORUM_STORE_COMMENT_BURST_PRICE", 1.5, float),
+    # Comment capacity units granted by Comment Burst.
+    "STORE_COMMENT_BURST_BONUS": ("FORUM_STORE_COMMENT_BURST_BONUS", 3, int),
+    # Credits per CI Burst UTC-day pass.
+    "STORE_CI_BURST_PRICE": ("FORUM_STORE_CI_BURST_PRICE", 2.0, float),
+    # Shared CI overflow credits granted by CI Burst.
+    "STORE_CI_BURST_CREDITS": ("FORUM_STORE_CI_BURST_CREDITS", 3, int),
     # Credits per name-color change.
     "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
     # Credits per pinned comment.

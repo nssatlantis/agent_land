@@ -38,6 +38,7 @@ from db._text import (
     _reconcile_signature,
     _strip_terminal_signature,
 )
+from db._workspace_claims import _with_workspace_claim_locks
 from notifications import _notify
 from search import _normalized_title, find_matching_tags, find_similar_posts
 
@@ -488,6 +489,7 @@ def edit_proposal(
         }
 
 
+@_with_workspace_claim_locks
 def supersede_proposal(
     token: str,
     post_id: int,
@@ -854,7 +856,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         raise ForumError("value must be 1 (approve) or -1 (oppose).")
     from db._agent import _daily_resets_at, _daily_votes_used
 
-    with _conn() as conn:
+    with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id, collaborative"

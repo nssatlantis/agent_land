@@ -169,6 +169,20 @@ def test_farm_panel_renders_and_redacts():
         assert "/admin/ci/farm-register" in html
         assert "/admin/ci/farm-remove" in html
         assert 'type="password"' in html, "token field must mask input"
+        assert 'id="farm-register-form"' in html
+        assert "paused while the runner form is focused or dirty" in html
+        assert 'x.type!=="hidden"' in html
+        assert "document.activeElement===f||f.contains(document.activeElement)" in html
+        assert "else{tick();}" in html
+        # The refresh script must wait for the form to be in the DOM before it
+        # can read it: an inline script that runs before the <form> parses
+        # sees f=null and reloads unconditionally, wiping the form.
+        assert 'document.addEventListener("DOMContentLoaded"' in html, (
+            "refresh script must be gated on DOMContentLoaded"
+        )
+        assert "last probe" in html
+        assert "free means an in-process persistent slot token is available" in html
+        assert "Process stats: acquires" in html
         assert "CI_FARM_ENABLED=1" in html, "panel must state the enable step"
     finally:
         farm.remove_runner(row["id"])
@@ -185,37 +199,52 @@ def test_farm_register_remove_handlers():
     """Register/remove handlers: happy paths, duplicates, bad input, CSRF."""
     saved = _open_admin()
     try:
-        ok = _authed({"name": "h1", "url": "http://h1:8731", "token": "t1"})
+        secret = "secret-sentinel-9c2f"
+        ok = _authed({"name": "h1", "url": "http://h1:8731", "token": secret})
         ok = asyncio.run(ci_farm_register(ok))
-        assert "registered runner h1" in _body(ok)
+        assert ok.status_code == 303
+        assert ok.headers["location"] == "/admin/ci?farm_notice=registered#farm-runners"
+        assert secret not in ok.headers["location"]
         assert any(r["name"] == "h1" for r in farm.list_runners())
 
-        dup = _authed({"name": "h1", "url": "http://h1:8731", "token": "t1"})
+        dup = _authed({"name": "h1", "url": "http://h1:8731", "token": secret})
         dup = asyncio.run(ci_farm_register(dup))
-        assert "register failed" in _body(dup), "duplicate must fail closed"
+        assert dup.status_code == 303
+        assert dup.headers["location"].endswith(
+            "farm_notice=register-error#farm-runners"
+        )
+        assert secret not in dup.headers["location"]
 
         missing = asyncio.run(ci_farm_register(_authed({"name": "x"})))
-        assert "all required" in _body(missing)
+        assert missing.status_code == 303
+        assert missing.headers["location"].endswith("farm_notice=missing#farm-runners")
 
         badurl = _authed({"name": "x", "url": "gopher://x", "token": "t"})
         badurl = asyncio.run(ci_farm_register(badurl))
-        assert "http://" in _body(badurl)
+        assert badurl.status_code == 303
+        assert badurl.headers["location"].endswith("farm_notice=bad-url#farm-runners")
 
         nocsrf = asyncio.run(
             ci_farm_register(_StubReq({"name": "x", "url": "http://x", "token": "t"}))
         )
-        assert "CSRF" in _body(nocsrf)
+        assert nocsrf.status_code == 303
+        assert nocsrf.headers["location"].endswith("farm_notice=csrf#farm-runners")
 
         rid = next(r["id"] for r in farm.list_runners() if r["name"] == "h1")
         gone = asyncio.run(ci_farm_remove(_authed({"runner_id": str(rid)})))
-        assert f"removed runner {rid}" in _body(gone)
+        assert gone.status_code == 303
+        assert gone.headers["location"].endswith("farm_notice=removed#farm-runners")
         assert all(r["id"] != rid for r in farm.list_runners())
 
         again = asyncio.run(ci_farm_remove(_authed({"runner_id": str(rid)})))
-        assert "already gone" in _body(again)
+        assert again.status_code == 303
+        assert again.headers["location"].endswith(
+            "farm_notice=already-gone#farm-runners"
+        )
 
         bad = asyncio.run(ci_farm_remove(_authed({"runner_id": "nope"})))
-        assert "invalid runner id" in _body(bad)
+        assert bad.status_code == 303
+        assert bad.headers["location"].endswith("farm_notice=remove-error#farm-runners")
     finally:
         for r in farm.list_runners():
             if r["name"] in ("h1", "x"):

@@ -229,6 +229,139 @@ def test_map_and_log_provenance():
         config.CI_FARM_ENABLED = orig_enabled
 
 
+def test_try_dispatch_forwards_base_ref():
+    row = farm.register_runner("base-ref", "http://x", token="t")
+    original_ping = farm._ping
+    original_dispatch = farm.dispatch_to_runner
+    original_enabled = config.CI_FARM_ENABLED
+    captured: dict = {}
+
+    def capture(_runner, payload):
+        captured.update(payload)
+        return {
+            "checks": "format",
+            "mode": "local",
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+            "head_sha": "a" * 40,
+            "summary": {"tests_run": False},
+            "base_ref": "refs/heads/parent",
+            "base_sha": "b" * 40,
+            "executed_base_sha": "b" * 40,
+            "local": True,
+        }
+
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    farm.dispatch_to_runner = capture
+    config.CI_FARM_ENABLED = True
+    try:
+        result = farm.try_dispatch(
+            checks="format",
+            local_mode=True,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=[{"path": "README.md", "content": "x\n"}],
+            tree=None,
+            quiet=None,
+            base_ref="refs/heads/parent",
+            agent_id=1,
+            name="tester",
+            kind_event="ci_run",
+            run_id="rid-base-ref",
+        )
+        assert result is not None
+        assert captured["base_ref"] == "refs/heads/parent"
+        assert result["base_ref"] == "refs/heads/parent"
+        assert result["base_sha"] == result["executed_base_sha"]
+    finally:
+        farm._ping = original_ping
+        farm.dispatch_to_runner = original_dispatch
+        config.CI_FARM_ENABLED = original_enabled
+        farm.remove_runner(row["id"])
+
+
+def test_try_dispatch_base_ref_failures_retry_local():
+    row = farm.register_runner("base-ref-retry", "http://x", token="t")
+    original_ping = farm._ping
+    original_dispatch = farm.dispatch_to_runner
+    original_enabled = config.CI_FARM_ENABLED
+    responses = [
+        {"ok": False, "error": "invalid base_ref"},
+        {
+            "checks": "format",
+            "mode": "local",
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+            "head_sha": "a" * 40,
+            "summary": {"tests_run": False},
+            "base_ref": "refs/heads/other",
+            "base_sha": "b" * 40,
+            "executed_base_sha": "b" * 40,
+            "local": True,
+        },
+        {
+            "checks": "format",
+            "mode": "local",
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+            "head_sha": "a" * 40,
+            "summary": {"tests_run": False},
+            "base_ref": "refs/heads/parent",
+        },
+    ]
+
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    farm.dispatch_to_runner = lambda runner, payload: responses.pop(0)
+    config.CI_FARM_ENABLED = True
+    try:
+        for expected in (
+            "invalid base_ref",
+            "runner base_ref mismatch",
+            "runner base metadata missing or inconsistent",
+        ):
+            try:
+                farm.try_dispatch(
+                    checks="format",
+                    local_mode=True,
+                    branch_mode=False,
+                    is_bench=False,
+                    pr_number=None,
+                    files=[{"path": "README.md", "content": "x\n"}],
+                    tree=None,
+                    quiet=None,
+                    base_ref="refs/heads/parent",
+                    agent_id=1,
+                    name="tester",
+                    kind_event="ci_run",
+                    run_id="rid-base-ref-retry",
+                )
+            except farm._FarmRetryLocal as exc:
+                assert expected in str(exc)
+            else:
+                raise AssertionError(f"base_ref failure must retry locally: {expected}")
+            finally:
+                farm._release(row["id"])
+    finally:
+        farm._ping = original_ping
+        farm.dispatch_to_runner = original_dispatch
+        config.CI_FARM_ENABLED = original_enabled
+        farm.remove_runner(row["id"])
+
+
+def test_runs_base_ref_typeerror_fallback_is_closed():
+    from server.ci_runner import _runs as runs_mod
+
+    source = Path(runs_mod.__file__).read_text(encoding="utf-8")
+    assert "if base_ref is not None:\n                        raise" in source
+
+
 def test_try_dispatch_disabled():
     orig = config.CI_FARM_ENABLED
     config.CI_FARM_ENABLED = False
@@ -786,6 +919,9 @@ def main():
     test_register_duplicate_refused()
     test_farm_status_admin_and_strip()
     test_map_and_log_provenance()
+    test_try_dispatch_forwards_base_ref()
+    test_try_dispatch_base_ref_failures_retry_local()
+    test_runs_base_ref_typeerror_fallback_is_closed()
     test_try_dispatch_disabled()
     test_try_dispatch_gates()
     test_bench_remote_first_dispatch()

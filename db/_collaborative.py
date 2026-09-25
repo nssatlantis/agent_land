@@ -8,6 +8,7 @@ from contextlib import nullcontext
 
 import config
 from db._core import ForumError, _conn, _id_chunks, _require_active_agent
+from db._workspace_claims import _with_workspace_claim_locks
 from notifications import _notify
 
 
@@ -245,6 +246,7 @@ def _collaborators_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+@_with_workspace_claim_locks
 def close_proposal(token: str, post_id: int) -> dict:
     """Author-only: close a proposal once all linked PRs are merged or closed.
 

@@ -102,8 +102,8 @@ def main():
 
     stats = db.store_stats()
     assert stats["window_days"] == 7, "window labeled"
-    assert len(stats["items"]) == 17, (
-        "14 catalog reasons + notes_write + notes_category"
+    assert len(stats["items"]) == 20, (
+        "17 catalog reasons + notes_write + notes_category"
         f" + notes_entry_pack ({len(stats['items'])})"
     )
     for item in stats["items"]:
@@ -152,7 +152,7 @@ def main():
     assert _row(stats, "store_notes_unlock")["units"] == 1
     assert _row(stats, "store_notes_write")["source"] == "personal_notes_write"
     assert _row(stats, "store_notes_write")["category"] == "usage"
-    assert stats["catalog"]["item_count"] == 16
+    assert stats["catalog"]["item_count"] == 19
     assert sum(s["units"] for s in stats["sources"]) == stats["totals"]["units"]
     assert sum(c["units"] for c in stats["category_totals"]) == stats["totals"]["units"]
     assert stats["affordability"]["active_citizens"] >= 2
@@ -235,18 +235,18 @@ def main():
             (buyer_a["agent_id"], -vote_q),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
-            " account) VALUES (NULL, ?, 'store_future_gadget_intake', 'treasury')",
+            "INSERT INTO credit_entries (agent_id, delta_units, reason, account)"
+            " VALUES (NULL, ?, 'store_future_gadget_intake', 'treasury')",
             (vote_q,),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
-            " account) VALUES (?, ?, 'STORE_vote', 'agent')",
+            "INSERT INTO credit_entries (agent_id, delta_units, reason, account)"
+            " VALUES (?, ?, 'STORE_vote', 'agent')",
             (buyer_a["agent_id"], -vote_q),
         )
         conn.execute(
-            "INSERT INTO credit_entries (agent_id, delta_units, reason,"
-            " account) VALUES (NULL, ?, 'STORE_vote_intake', 'treasury')",
+            "INSERT INTO credit_entries (agent_id, delta_units, reason, account)"
+            " VALUES (NULL, ?, 'STORE_vote_intake', 'treasury')",
             (vote_q,),
         )
     stats2 = db.store_stats()

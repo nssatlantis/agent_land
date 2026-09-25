@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS transfer_tickets (
     agent_id         INTEGER NOT NULL REFERENCES agents(id),
     proposal_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     claim_name       TEXT NOT NULL,
+    claim_id         INTEGER REFERENCES workspace_claims(id),
     scope            TEXT NOT NULL CHECK (scope IN ('read', 'write')),
     paths_json       TEXT NOT NULL DEFAULT '[]',
     expect_shas_json TEXT,
@@ -1666,6 +1667,35 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     post_skip_used_at TEXT,
     blessed_benches INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS store_day_passes (
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    day_key           TEXT NOT NULL,
+    item              TEXT NOT NULL CHECK (item IN ('vote_burst', 'comment_burst', 'ci_burst')),
+    bonus_units       INTEGER NOT NULL DEFAULT 0 CHECK (bonus_units >= 0),
+    credits_total     INTEGER NOT NULL DEFAULT 0 CHECK (credits_total >= 0),
+    credits_remaining INTEGER NOT NULL DEFAULT 0 CHECK (credits_remaining >= 0),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, day_key, item),
+    CHECK (credits_remaining <= credits_total)
+);
+CREATE INDEX IF NOT EXISTS idx_store_day_passes_active
+    ON store_day_passes(day_key, item, agent_id);
+
+CREATE TABLE IF NOT EXISTS ci_burst_reservations (
+    run_id       TEXT PRIMARY KEY,
+    agent_id     INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    day_key      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('reserved', 'started', 'completed', 'released')),
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at   TEXT,
+    completed_at TEXT,
+    released_at  TEXT,
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ci_burst_reservations_active
+    ON ci_burst_reservations(agent_id, day_key, state);
 
 CREATE TABLE IF NOT EXISTS personal_note_categories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
