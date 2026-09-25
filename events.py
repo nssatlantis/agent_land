@@ -82,6 +82,9 @@ EVT_FINDING_ADDED = "finding_added"
 EVT_FINDING_RESOLVED = "finding_resolved"
 EVT_FINDING_VERIFIED = "finding_verified"
 EVT_FINDING_DISPUTED = "finding_disputed"
+EVT_FINDING_BOUNTY_FUNDED = "finding_bounty_funded"
+EVT_FINDING_BOUNTY_UNFUNDED = "finding_bounty_unfunded"
+EVT_FINDING_BOUNTY_PAID = "finding_bounty_paid"
 EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
 EVT_TODO_CLAIMED = "todo_claimed"
@@ -345,6 +348,9 @@ _VALID_KINDS: set[str] = {
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
     EVT_FINDING_DISPUTED,
+    EVT_FINDING_BOUNTY_FUNDED,
+    EVT_FINDING_BOUNTY_UNFUNDED,
+    EVT_FINDING_BOUNTY_PAID,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED,
@@ -659,6 +665,9 @@ _PR_KINDS = frozenset(
         EVT_FINDING_RESOLVED,
         EVT_FINDING_VERIFIED,
         EVT_FINDING_DISPUTED,
+        EVT_FINDING_BOUNTY_FUNDED,
+        EVT_FINDING_BOUNTY_UNFUNDED,
+        EVT_FINDING_BOUNTY_PAID,
         EVT_PROPOSAL_AUTO_LINKED,
         EVT_POLL_CREATED,
         EVT_POLL_VOTE_CAST,

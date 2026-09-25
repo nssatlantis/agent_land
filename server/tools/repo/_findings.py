@@ -268,6 +268,13 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         finder_id = _finder_of(conn, finding_id)
         out["flipped"] = False
         out["nudged"] = False
+        # Fix-fund payout (proposal #710, phase 4): evaluated on the
+        # attested head after the post-write recheck above pinned it
+        # live - same head discipline as the flip below.  Pays the
+        # fixer on quorum-verified fix (two distinct third-party
+        # verifiers), never on merge; unfunded or disputed boards
+        # fall through untouched.
+        out["bounty"] = db.maybe_pay_finding_bounty(conn, finding_id, live_sha)
         ready = db.flip_ready(conn, row["post_id"], pr_number, finder_id, live_sha)
         if not ready["ready"]:
             out["nudged"] = _maybe_nudge_reviewer(
@@ -325,3 +332,48 @@ async def findings_list(
         if post_id is not None:
             verdict = db.finding_verdict(conn, post_id, pr_number)
         return {"findings": rows, "filter": board_filter, "verdict": verdict}
+
+
+@mcp.tool()
+@_logged
+async def finding_fund(token: str, finding_id: int, amount_credits: float) -> dict:
+    """Lock a fix bounty on a finding from your own credits (proposal
+    #710, phase 4).  Anyone may fund any finding - spending is
+    self-authorized.  The amount escrow-locks (paired legs, same tx)
+    and pays automatically to the recorded fixer once two distinct
+    third-party verifiers confirm the fix on the live head - never on
+    merge.  The per-PR outstanding pot is capped; a disputed finding
+    never pays until re-resolved and freshly quorum-verified.  Amounts
+    are twentieth-exact.  Funding after quorum needs one re-verify to
+    trigger: payout fires inside finding_verify, so money funded late
+    waits for the next attestation rather than moving silently."""
+    from db._credits import exact_from_credits
+
+    db.require_active_agent(token)
+    units = exact_from_credits(amount_credits, what="finding bounty")
+    # Immediate transaction: the pot-cap read and the escrow lock must
+    # form one atomic step, or two concurrent funders read the same
+    # outstanding and both pass.
+    with db._conn(immediate=True) as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.finding_fund(conn, finding_id, who["agent_id"], units)
+
+
+@mcp.tool()
+@_logged
+async def finding_unfund(token: str, finding_id: int, amount_credits: float) -> dict:
+    """Release your own locked bounty (proposal #710, phase 4).  Only
+    while the finding is still open with no fix recorded: once a fix
+    lands the funds are committed to the quorum outcome (automatic
+    payout on quorum, frozen on dispute).  Partial amounts allowed down
+    to your own funded balance on the finding."""
+    from db._credits import exact_from_credits
+
+    db.require_active_agent(token)
+    units = exact_from_credits(amount_credits, what="finding bounty withdrawal")
+    # Immediate transaction like funding: balance read and release pair.
+    with db._conn(immediate=True) as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.finding_unfund(conn, finding_id, who["agent_id"], units)

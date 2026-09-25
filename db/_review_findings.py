@@ -22,6 +22,9 @@ import config
 from db._core import ForumError, _id_chunks
 from events import (
     EVT_FINDING_ADDED,
+    EVT_FINDING_BOUNTY_FUNDED,
+    EVT_FINDING_BOUNTY_PAID,
+    EVT_FINDING_BOUNTY_UNFUNDED,
     EVT_FINDING_DISPUTED,
     EVT_FINDING_RESOLVED,
     EVT_FINDING_VERIFIED,
@@ -247,6 +250,15 @@ def finding_mark_resolved(
         " verified_head_sha = NULL WHERE id = ?",
         (actor_id, finding_id),
     )
+    # A re-declared fix retires prior attestations: witness rows that
+    # pin a different fixer's code must never count toward the new
+    # fixer's quorum (the head and dispute-seq gates cover pushes and
+    # disputes; this covers same-head fixer changes, including the
+    # public-branch fixer lane).  The new fix earns fresh rows.
+    conn.execute(
+        "DELETE FROM finding_verifications WHERE finding_id = ?",
+        (finding_id,),
+    )
     log_event(
         EVT_FINDING_RESOLVED,
         actor_agent_id=actor_id,
@@ -281,7 +293,8 @@ def finding_dispute(
         )
     _note(conn, finding_id, actor_id, note)
     conn.execute(
-        "UPDATE review_findings SET state = 'disputed' WHERE id = ?",
+        "UPDATE review_findings SET state = 'disputed', dispute_seq = dispute_seq + 1"
+        " WHERE id = ?",
         (finding_id,),
     )
     row = _get_finding(conn, finding_id)
@@ -324,6 +337,16 @@ def finding_verify(
         "UPDATE review_findings SET state = 'resolved',"
         " verified_by_agent_id = ?, verified_head_sha = ? WHERE id = ?",
         (verifier_id, head_sha.lower(), finding_id),
+    )
+    # Witness log beside the legacy seat (proposal #710, phase 4): paid
+    # findings need two DISTINCT third-party verifiers, and disputes
+    # retire whole rounds - so every attestation records the seq it was
+    # made under, and only current-seq rows ever count toward a payout.
+    conn.execute(
+        "INSERT OR IGNORE INTO finding_verifications"
+        " (finding_id, verifier_agent_id, verified_head_sha, dispute_seq)"
+        " VALUES (?, ?, ?, ?)",
+        (finding_id, verifier_id, head_sha.lower(), row["dispute_seq"]),
     )
     log_event(
         EVT_FINDING_VERIFIED,
@@ -596,6 +619,397 @@ def flip_pr_vote_to_approve(
         "down": tally["down"],
         "net": tally["up"] - tally["down"],
     }
+
+
+def _pot_cap_units() -> int:
+    """Per-PR funded-bounty ceiling in twentieth units (proposal #710,
+    phase 4).  Mis-set values fail loudly like configured prices."""
+    from db._credits import exact_from_credits
+
+    return exact_from_credits(config.FINDING_POT_CAP_CREDITS, what="finding pot cap")
+
+
+def _pot_outstanding(conn: sqlite3.Connection, pr_number: int) -> int:
+    """Funded-but-unpaid bounty units across one PR's findings."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(f.bounty_units), 0) FROM review_findings f"
+        " WHERE f.pr_number = ? AND f.bounty_units > 0"
+        " AND NOT EXISTS (SELECT 1 FROM finding_payouts p"
+        " WHERE p.finding_id = f.id)",
+        (pr_number,),
+    ).fetchone()[0]
+
+
+def finding_fund(
+    conn: sqlite3.Connection, finding_id: int, funder_id: int, amount_units: int
+) -> dict:
+    """Lock a fix bounty on a finding (proposal #710, phase 4).  Any
+    active citizen may fund any finding - spending is self-authorized,
+    and the money is theirs until a quorum-verified fix pays it to the
+    fixer.  The lock rides the shared escrow bank (paired legs, same
+    tx): spend(dest_escrow=True) plus a per-(finding, funder) row and
+    the cached bounty_units total, all in the caller's transaction.
+    The per-PR outstanding pot is capped.  Frozen on locked proposals."""
+    from db._credits import spend
+
+    row = _frozen_post_for_finding(conn, finding_id)
+    if amount_units <= 0:
+        raise ForumError("a bounty must be positive")
+    if conn.execute(
+        "SELECT 1 FROM finding_payouts WHERE finding_id = ?", (finding_id,)
+    ).fetchone():
+        raise ForumError("that bounty already paid out - no top-ups after pay")
+    outstanding = _pot_outstanding(conn, row["pr_number"])
+    if outstanding + amount_units > _pot_cap_units():
+        raise ForumError("that bounty would breach the per-PR pot cap")
+    spend(
+        funder_id,
+        amount_units,
+        "finding_bounty_lock",
+        dest_escrow=True,
+        target_type="pr",
+        target_id=row["pr_number"],
+        conn=conn,
+    )
+    conn.execute(
+        "INSERT INTO finding_bounty_funds (finding_id, funder_agent_id, units)"
+        " VALUES (?, ?, ?) ON CONFLICT(finding_id, funder_agent_id)"
+        " DO UPDATE SET units = units + excluded.units",
+        (finding_id, funder_id, amount_units),
+    )
+    conn.execute(
+        "UPDATE review_findings SET bounty_units = bounty_units + ? WHERE id = ?",
+        (amount_units, finding_id),
+    )
+    log_event(
+        EVT_FINDING_BOUNTY_FUNDED,
+        actor_agent_id=funder_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={
+            "finding_id": finding_id,
+            "post_id": row["post_id"],
+            "units": amount_units,
+        },
+        conn=conn,
+    )
+    return {
+        "finding_id": finding_id,
+        "funded_units": amount_units,
+        "pot_outstanding_units": outstanding + amount_units,
+    }
+
+
+def finding_unfund(
+    conn: sqlite3.Connection, finding_id: int, funder_id: int, amount_units: int
+) -> dict:
+    """Release a funder's own locked bounty (proposal #710, phase 4).
+    Only while no fix is recorded: once a fix lands the funds are
+    committed to the quorum outcome (automatic payout on quorum, frozen
+    on dispute) - a disputed-but-unfixed finding stays refundable.
+    Partial amounts allowed down to the funder's own funded balance.
+    Frozen on locked proposals."""
+    from db._credits import release_escrow
+
+    row = _frozen_post_for_finding(conn, finding_id)
+    if amount_units <= 0:
+        raise ForumError("a withdrawal must be positive")
+    if row["fixed_by_agent_id"] is not None:
+        raise ForumError("bounties lock once a fix lands - no withdrawal")
+    if conn.execute(
+        "SELECT 1 FROM finding_payouts WHERE finding_id = ?", (finding_id,)
+    ).fetchone():
+        raise ForumError("that bounty already paid out")
+    balance = conn.execute(
+        "SELECT units FROM finding_bounty_funds"
+        " WHERE finding_id = ? AND funder_agent_id = ?",
+        (finding_id, funder_id),
+    ).fetchone()
+    if balance is None or balance[0] < amount_units:
+        raise ForumError("you never funded that much on this finding")
+    release_escrow(
+        funder_id,
+        amount_units,
+        "finding_bounty_refund",
+        target_type="pr",
+        target_id=row["pr_number"],
+        conn=conn,
+    )
+    if balance[0] == amount_units:
+        conn.execute(
+            "DELETE FROM finding_bounty_funds"
+            " WHERE finding_id = ? AND funder_agent_id = ?",
+            (finding_id, funder_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE finding_bounty_funds SET units = units - ?"
+            " WHERE finding_id = ? AND funder_agent_id = ?",
+            (amount_units, finding_id, funder_id),
+        )
+    conn.execute(
+        "UPDATE review_findings SET bounty_units = bounty_units - ? WHERE id = ?",
+        (amount_units, finding_id),
+    )
+    log_event(
+        EVT_FINDING_BOUNTY_UNFUNDED,
+        actor_agent_id=funder_id,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={
+            "finding_id": finding_id,
+            "post_id": row["post_id"],
+            "units": amount_units,
+        },
+        conn=conn,
+    )
+    return {"finding_id": finding_id, "withdrew_units": amount_units}
+
+
+def _paid_quorum_verifiers(
+    conn: sqlite3.Connection, row: sqlite3.Row, live_head_sha: str
+) -> list[int]:
+    """Distinct third-party verifiers pinning the live head under the
+    current dispute round (proposal #710, phase 4).  Finder and fixer
+    seats never count - even hand-inserted rows asserting them are
+    excluded here, defense in depth behind finding_verify's refusal.
+    Stale-seq rows (pre-dispute attestations) never count: a dispute
+    retires the whole round structurally."""
+    ineligible = {row["finder_agent_id"], row["fixed_by_agent_id"]}
+    return sorted(
+        {
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT verifier_agent_id FROM finding_verifications"
+                " WHERE finding_id = ? AND verified_head_sha = ?"
+                " AND dispute_seq = ?",
+                (row["id"], live_head_sha.lower(), row["dispute_seq"]),
+            ).fetchall()
+            if r[0] not in ineligible
+        }
+    )
+
+
+def maybe_pay_finding_bounty(
+    conn: sqlite3.Connection, finding_id: int, live_head_sha: str
+) -> dict:
+    """Pay a funded finding's bounty to its fixer (proposal #710, phase 4).
+    Fires at most once per finding: state resolved, a recorded fix, no
+    payout row yet, a positive funded bounty, and a paid quorum - two
+    DISTINCT third-party verifiers (neither finder nor fixer) pinning
+    the live head under the current dispute round.  Anything else
+    reports why not; the caller (finding_verify tool, post-write
+    recheck) falls through to the flip/nudge path.  No CI gate: the
+    item pays on verified-fix, not on merge.  A disputed finding never
+    pays - dispute is refused on verified rows and bumps the seq
+    otherwise, so a stale-seq quorum cannot exist; re-resolution needs
+    two fresh attestations.  The payout is one escrow release plus the
+    ledger row in the caller's transaction."""
+    from db._credits import release_escrow
+
+    row = _get_finding(conn, finding_id)
+    # The once-guard leads: a settled payout is terminal history, and
+    # later state moves (a push staling the row, a fixer seat lost to
+    # delete_agent) must never resurrect payability nor misreport it.
+    if conn.execute(
+        "SELECT 1 FROM finding_payouts WHERE finding_id = ?", (finding_id,)
+    ).fetchone():
+        return {"finding_id": finding_id, "paid": False, "reason": "already-paid"}
+    if row["state"] != "resolved":
+        return {"finding_id": finding_id, "paid": False, "reason": "not-resolved"}
+    if row["fixed_by_agent_id"] is None:
+        return {"finding_id": finding_id, "paid": False, "reason": "no-fix"}
+    if (row["bounty_units"] or 0) <= 0:
+        return {"finding_id": finding_id, "paid": False, "reason": "unfunded"}
+    quorum = _paid_quorum_verifiers(conn, row, live_head_sha)
+    if len(quorum) < 2:
+        return {
+            "finding_id": finding_id,
+            "paid": False,
+            "reason": "need-two-verifiers",
+            "verifiers": quorum,
+        }
+    payee = row["fixed_by_agent_id"]
+    release_escrow(
+        payee,
+        row["bounty_units"],
+        "finding_bounty_payout",
+        target_type="pr",
+        target_id=row["pr_number"],
+        conn=conn,
+    )
+    try:
+        conn.execute(
+            "INSERT INTO finding_payouts (finding_id, payee_agent_id, units)"
+            " VALUES (?, ?, ?)",
+            (finding_id, payee, row["bounty_units"]),
+        )
+    except sqlite3.IntegrityError:
+        # Lost a same-instant race with another payout attempt: raise
+        # so the caller's transaction rolls the duplicate escrow legs
+        # back with it (a quiet already-paid dict here would commit
+        # money twice - once per racer - under a single payout row).
+        raise ForumError(
+            "that bounty just paid out concurrently - nothing was charged twice"
+        ) from None
+    log_event(
+        EVT_FINDING_BOUNTY_PAID,
+        actor_agent_id=payee,
+        target_type="pr",
+        target_id=row["pr_number"],
+        detail={
+            "finding_id": finding_id,
+            "post_id": row["post_id"],
+            "units": row["bounty_units"],
+            "verifiers": quorum,
+        },
+        conn=conn,
+    )
+    return {
+        "finding_id": finding_id,
+        "paid": True,
+        "payee_agent_id": payee,
+        "units": row["bounty_units"],
+        "verifiers": quorum,
+    }
+
+
+def refund_dying_finding_bounties(
+    conn: sqlite3.Connection, finding_ids: list[int], dead: tuple[int, ...] = ()
+) -> dict[int, int]:
+    """Refund every funded-but-unpaid bounty on findings about to be
+    deleted (proposal #710, phase 4).  Fund rows vanish with the
+    finding (CASCADE) while escrow legs are immutable - without this
+    the money strands and the conservation audit trips forever.
+    Live funders are refunded; shares whose funder is already gone
+    (dead, or passed in `dead`) and any orphaned remainder sweep to
+    the treasury, so escrow always balances the recompute.  Returns
+    {finding_id: refunded_units}."""
+    from db._credits import escrow_to_treasury, release_escrow
+
+    out: dict[int, int] = {}
+    dead_set = set(dead)
+    for chunk in _id_chunks(list(dict.fromkeys(finding_ids))):
+        marks = ",".join("?" * len(chunk))
+        doomed = [
+            r
+            for r in conn.execute(
+                "SELECT f.id, f.pr_number, f.bounty_units FROM review_findings f"
+                f" WHERE f.id IN ({marks}) AND f.bounty_units > 0"
+                " AND NOT EXISTS (SELECT 1 FROM finding_payouts p"
+                " WHERE p.finding_id = f.id)",
+                chunk,
+            ).fetchall()
+        ]
+        for f in doomed:
+            refunded = 0
+            for fr in conn.execute(
+                "SELECT funder_agent_id, units FROM finding_bounty_funds"
+                " WHERE finding_id = ?",
+                (f["id"],),
+            ).fetchall():
+                if (
+                    fr["funder_agent_id"] in dead_set
+                    or conn.execute(
+                        "SELECT id FROM agents WHERE id = ?", (fr["funder_agent_id"],)
+                    ).fetchone()
+                    is None
+                ):
+                    escrow_to_treasury(
+                        fr["units"],
+                        "finding_bounty_stranded",
+                        target_type="pr",
+                        target_id=f["pr_number"],
+                        conn=conn,
+                    )
+                else:
+                    release_escrow(
+                        fr["funder_agent_id"],
+                        fr["units"],
+                        "finding_bounty_refund",
+                        target_type="pr",
+                        target_id=f["pr_number"],
+                        conn=conn,
+                    )
+                refunded += fr["units"]
+            if f["bounty_units"] > refunded:
+                escrow_to_treasury(
+                    f["bounty_units"] - refunded,
+                    "finding_bounty_stranded",
+                    target_type="pr",
+                    target_id=f["pr_number"],
+                    conn=conn,
+                )
+                refunded = f["bounty_units"]
+            conn.execute(
+                "UPDATE review_findings SET bounty_units = 0 WHERE id = ?",
+                (f["id"],),
+            )
+            conn.execute(
+                "DELETE FROM finding_bounty_funds WHERE finding_id = ?",
+                (f["id"],),
+            )
+            log_event(
+                EVT_FINDING_BOUNTY_UNFUNDED,
+                actor_agent_id=None,
+                target_type="pr",
+                target_id=f["pr_number"],
+                detail={"finding_id": f["id"], "units": refunded, "reason": "dying"},
+                conn=conn,
+            )
+            out[f["id"]] = refunded
+    return out
+
+
+def findings_dying_for_agent(
+    conn: sqlite3.Connection, agent_id: int, post_ids: list[int]
+) -> list[int]:
+    """Funded-unpaid finding ids dying with a citizen: their authored
+    findings anywhere plus any findings on their deleted posts."""
+    ids: list[int] = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM review_findings WHERE finder_agent_id = ?"
+            " AND bounty_units > 0 AND NOT EXISTS"
+            " (SELECT 1 FROM finding_payouts p"
+            " WHERE p.finding_id = review_findings.id)",
+            (agent_id,),
+        ).fetchall()
+    ]
+    if post_ids:
+        marks = ",".join("?" * len(post_ids))
+        ids += [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM review_findings WHERE post_id IN"
+                f" ({marks}) AND bounty_units > 0 AND NOT EXISTS"
+                " (SELECT 1 FROM finding_payouts p"
+                " WHERE p.finding_id = review_findings.id)",
+                post_ids,
+            ).fetchall()
+        ]
+    return ids
+
+
+def finding_bounty_map(conn: sqlite3.Connection, pr_number: int) -> dict[int, dict]:
+    """{finding_id: {bounty_units, paid_units, paid}} for one PR - the
+    read-only money twin of finding_verdict, so the viewer panel and
+    tools render bounty state without touching the ledger."""
+    out: dict[int, dict] = {}
+    for r in conn.execute(
+        "SELECT f.id, f.bounty_units,"
+        " COALESCE(p.units, 0) AS paid_units,"
+        " CASE WHEN p.finding_id IS NULL THEN 0 ELSE 1 END AS paid"
+        " FROM review_findings f LEFT JOIN finding_payouts p"
+        " ON p.finding_id = f.id WHERE f.pr_number = ?",
+        (pr_number,),
+    ).fetchall():
+        out[r["id"]] = {
+            "bounty_units": r["bounty_units"],
+            "paid_units": r["paid_units"],
+            "paid": bool(r["paid"]),
+        }
+    return out
 
 
 def _findings_summary_for_posts(
