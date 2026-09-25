@@ -501,27 +501,12 @@ def create_comment(
                 }
 
         if config.COMMENT_DAILY_CAP > 0:
-            from db._agent import _daily_resets_at
+            from db._agent import _daily_comment_used, _daily_resets_at
             from db._store import effective_comment_cap
 
             comment_cap = effective_comment_cap(agent["id"], conn=conn, ent=cap_ent)
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
-            today = conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
-                (agent["id"], midnight),
-            ).fetchone()[0]
-            try:
-                # Bug remarks (proposal #502) share this pool: a remark is a
-                # small message, not a second budget.
-                today += conn.execute(
-                    "SELECT COUNT(*) FROM bug_remarks"
-                    " WHERE agent_id = ? AND created_at >= ?",
-                    (agent["id"], midnight),
-                ).fetchone()[0]
-            except sqlite3.OperationalError:  # domain: degrade-silently -
-                # pre-migration schema without the remarks table; comments
-                # alone bound the pool while the migration lands.
-                pass
+            today = _daily_comment_used(conn, agent["id"], midnight)
             if today >= comment_cap:
                 # Wire text unchanged (pinned by clients/tests); machine
                 # readers take exc.detail instead of parsing the string.

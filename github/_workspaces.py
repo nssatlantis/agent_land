@@ -20,6 +20,9 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any
 
 import config
 
@@ -79,6 +82,45 @@ def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
     if agent_id <= 0 or proposal_id <= 0:
         raise RepoError("agent and proposal ids must be positive integers.")
     return os.path.join(_claims_root(), str(agent_id), str(proposal_id), name)
+
+
+@contextmanager
+def workspace_lock(dest: str, *, allow_missing: bool = False):
+    if not allow_missing and not _has_git(dest):
+        raise RepoError("no workspace tree held - claim it first.")
+    # The lock file is a permanent rendezvous, never unlinked: the same
+    # triple reclaims the identical path, and any unlink would split the
+    # inode a live holder is locked on (POSIX) while fixing nothing.
+    lock_path = dest + ".workspace.lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        if os.name == "nt":
+            msvcrt: Any = __import__("msvcrt")
+            locking = msvcrt.locking
+            lock_mode = msvcrt.LK_NBLCK
+            unlock_mode = msvcrt.LK_UNLCK
+            lock.seek(0)
+            lock.write(b"\0")
+            lock.flush()
+            while True:
+                try:
+                    lock.seek(0)
+                    locking(lock.fileno(), lock_mode, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                locking(lock.fileno(), unlock_mode, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _read_manifest(dest: str) -> dict | None:
@@ -154,6 +196,15 @@ def _retire_dir(dest: str) -> bool:
     return not os.path.isdir(dest)
 
 
+def _retire_claim_tree_locked(dest: str) -> bool:
+    return _retire_dir(dest)
+
+
+def _retire_claim_tree(dest: str) -> bool:
+    with workspace_lock(dest, allow_missing=True):
+        return _retire_claim_tree_locked(dest)
+
+
 def _clone_claim_tree(dest: str) -> None:
     parent = os.path.dirname(dest)
     try:
@@ -173,6 +224,7 @@ def _tree_dict(dest: str, manifest: dict, resumed: bool) -> dict:
         "agent_id": manifest.get("agent_id"),
         "proposal_id": manifest.get("proposal_id"),
         "name": manifest.get("name"),
+        "claim_id": manifest.get("claim_id"),
         "resumed": resumed,
         "dirty": _is_dirty(dest),
         "head_sha": manifest.get("head_sha"),
@@ -196,7 +248,18 @@ def _manifest_owner_matches(
         return False
 
 
-def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
+def _manifest_claim_matches(manifest: dict, claim_id: int | None) -> bool:
+    if claim_id is None:
+        return True
+    try:
+        return str(manifest.get("claim_id")) == str(claim_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def ensure_claim_tree(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> dict:
     """Clone or resume one claim tree; never auto-wipes dirty work.
 
     A missing tree clones (local seed preferred, origin fallback) and
@@ -210,10 +273,11 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
     manifest = _read_manifest(dest)
-    if manifest is not None and not _manifest_owner_matches(
-        manifest, agent_id, proposal_id, clean_name
+    if manifest is not None and (
+        not _manifest_owner_matches(manifest, agent_id, proposal_id, clean_name)
+        or not _manifest_claim_matches(manifest, claim_id)
     ):
-        _retire_dir(dest)
+        _retire_claim_tree_locked(dest)
         manifest = None
     if manifest is None and not _has_git(dest):
         check_claim_budget(agent_id)
@@ -222,6 +286,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
             "agent_id": int(agent_id),
             "proposal_id": int(proposal_id),
             "name": clean_name,
+            "claim_id": int(claim_id) if claim_id is not None else None,
             "created_at": time.time(),
             "updated_at": time.time(),
             "head_sha": _head_sha(dest),
@@ -233,10 +298,13 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
             "agent_id": int(agent_id),
             "proposal_id": int(proposal_id),
             "name": clean_name,
+            "claim_id": int(claim_id) if claim_id is not None else None,
             "created_at": time.time(),
             "updated_at": time.time(),
             "head_sha": _head_sha(dest),
         }
+    if claim_id is not None:
+        manifest["claim_id"] = int(claim_id)
     manifest["updated_at"] = time.time()
     manifest["head_sha"] = _head_sha(dest)
     _write_manifest(dest, manifest)
@@ -245,7 +313,7 @@ def ensure_claim_tree(agent_id: int, proposal_id: int, name: str) -> dict:
 
 def retire_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
     """Best-effort removal of one claim tree. True when gone."""
-    return _retire_dir(_claim_dir(agent_id, proposal_id, name))
+    return _retire_claim_tree(_claim_dir(agent_id, proposal_id, name))
 
 
 def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
@@ -262,11 +330,15 @@ def claim_tree_info(agent_id: int, proposal_id: int, name: str) -> dict:
     }
 
 
-def touch_claim_tree(agent_id: int, proposal_id: int, name: str) -> bool:
+def touch_claim_tree(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> bool:
     """Refresh one claim tree's idle clock (manifest updated_at + head_sha)."""
     dest = _claim_dir(agent_id, proposal_id, name)
     manifest = _read_manifest(dest)
     if manifest is None or not os.path.isdir(dest):
+        return False
+    if claim_id is not None and not _manifest_claim_matches(manifest, claim_id):
         return False
     manifest["updated_at"] = time.time()
     manifest["head_sha"] = _head_sha(dest)
@@ -321,7 +393,7 @@ def _untracked_paths(dest: str) -> list:
 def _changed_paths(dest: str) -> list:
     """Paths a tree actually changed vs its HEAD: tracked edits (working
     tree vs HEAD, staged or not) plus untracked additions. Deleted
-    tracked paths are dropped - they are absent from the walk anyway.
+    tracked paths are dropped - they're absent from the walk anyway.
 
     This is the delta set the rehearsal snapshot rides on (bug #90): a
     claim tree cloned from an earlier base must not re-upload its stale
@@ -781,7 +853,8 @@ def _refuse_symlink_components(dest: str, clean: str) -> None:
     containment alone resolves an intra-tree `evil -> .git/hooks/x` link
     to an inside-dest path, so name checks pass while reads/writes land
     in .git internals. Walk every component lexically - islink needs no
-    target to exist, so dangling links refuse too."""
+    target to exist, so dangling links refuse too.
+    """
     cur = dest
     for part in clean.split("/"):
         cur = os.path.join(cur, part)
@@ -821,12 +894,28 @@ def _guard_transfer_path(dest: str, path: str) -> tuple[str, str]:
 
 
 def read_transfer_bytes(
-    agent_id: int, proposal_id: int, name: str, path: str
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    path: str,
+    *,
+    claim_validator: Callable[[], None] | None = None,
+    after_read: Callable[[], None] | None = None,
 ) -> tuple[str, bytes]:
     """Raw bytes of one tree file for ticket download (binary-safe: the
     data plane never decodes). Over-cap files refuse before reading."""
     clean_name = _validate_claim_name(name)
     dest = _claim_dir(agent_id, proposal_id, clean_name)
+    with workspace_lock(dest):
+        if claim_validator is not None:
+            claim_validator()
+        result = _read_transfer_bytes(clean_name, dest, path)
+        if after_read is not None:
+            after_read()
+        return result
+
+
+def _read_transfer_bytes(clean_name: str, dest: str, path: str) -> tuple[str, bytes]:
     if not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
     clean, full = _guard_transfer_path(dest, path)
@@ -838,7 +927,9 @@ def read_transfer_bytes(
         raise RepoError(f"no file at {clean!r} in the workspace.") from exc
     cap = _transfer_file_cap_bytes()
     if size > cap:
-        raise RepoError(f"{clean!r} is {size} bytes, over the {cap} byte transfer cap.")
+        raise RepoError(
+            f"path {clean!r} is {size} bytes, over the {cap} byte transfer cap."
+        )
     try:
         with open(full, "rb") as fh:
             data = fh.read()
@@ -848,6 +939,35 @@ def read_transfer_bytes(
 
 
 def apply_transfer_bytes(
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    path: str,
+    data: bytes,
+    *,
+    expect_sha256: str | None = None,
+    claim_validator: Callable[[], None] | None = None,
+    after_apply: Callable[[], None] | None = None,
+) -> dict:
+    clean_name = _validate_claim_name(name)
+    dest = _claim_dir(agent_id, proposal_id, clean_name)
+    with workspace_lock(dest):
+        if claim_validator is not None:
+            claim_validator()
+        result = _apply_transfer_bytes(
+            agent_id,
+            proposal_id,
+            clean_name,
+            path,
+            data,
+            expect_sha256=expect_sha256,
+        )
+        if after_apply is not None:
+            after_apply()
+        return result
+
+
+def _apply_transfer_bytes(
     agent_id: int,
     proposal_id: int,
     name: str,
@@ -921,7 +1041,7 @@ def apply_transfer_bytes(
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8", newline="") as fh:
             fh.write(new_text)
-    except OSError as exc:  # domain: fail-loudly - workspace file not writable
+    except OSError as exc:  # domain: fail-loudly - an unwritable tree file surfaces
         raise RepoError(f"could not write {clean!r} in the workspace.") from exc
     return {
         "path": clean,
@@ -946,8 +1066,8 @@ def _check_expect_shas(manifest: list, expect_shas: dict) -> None:
         if got != want:
             raise RepoError(
                 f"sha mismatch for {path!r}: expected "
-                f"{str(want)[:12]}..., snapshot {got[:12]}... - rehearse "
-                "again and retry."
+                f"{str(want)[:12]}..., snapshot {got[:12]}... - rehearse"
+                " again and retry."
             )
 
 
@@ -1185,26 +1305,34 @@ def sweep_idle_claim_trees() -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
-                manifest = _read_manifest(dest)
                 try:
-                    idle = now - float((manifest or {}).get("updated_at", 0))
+                    with workspace_lock(dest, allow_missing=True):
+                        manifest = _read_manifest(dest)
+                        try:
+                            idle = now - float((manifest or {}).get("updated_at", 0))
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):  # domain: degrade-silently - bad stamp sweeps nothing
+                            continue
+                        if idle > ttl and _retire_claim_tree_locked(dest):
+                            swept += 1
                 except (
-                    TypeError,
-                    ValueError,
-                ):  # domain: degrade-silently - bad stamp sweeps nothing
+                    OSError,
+                    RepoError,
+                ):  # domain: degrade-silently - sweep one tree
                     continue
-                if idle > ttl and _retire_dir(dest):
-                    swept += 1
     return swept
 
 
-def sweep_released_claim_trees(live: set) -> int:
+def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
     """Retire claim trees whose record is gone (merge/close release records).
 
     `live` holds (agent_id, proposal_id, name) triples with an active
-    record; anything else on disk retires. Manifest-less dirs are left
-    for the idle sweep - without a manifest there is no owner to judge,
-    and a foreign manifest rebuilds on next claim instead.
+    record; anything else on disk retires. A callable is re-read under each
+    tree lock. Manifest-less dirs are left for the idle sweep - without a
+    manifest there is no owner to judge, and a foreign manifest rebuilds
+    on next claim instead.
     """
     try:
         root = _claims_root()
@@ -1243,19 +1371,32 @@ def sweep_released_claim_trees(live: set) -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
-                manifest = _read_manifest(dest)
-                if manifest is None:
-                    continue
                 try:
-                    key = (
-                        int(manifest.get("agent_id", -1)),
-                        int(manifest.get("proposal_id", -1)),
-                        str(manifest.get("name", "")),
-                    )
-                except (TypeError, ValueError):  # domain: degrade-silently - no owner
+                    with workspace_lock(dest, allow_missing=True):
+                        manifest = _read_manifest(dest)
+                        if manifest is None:
+                            continue
+                        try:
+                            key = (
+                                int(manifest.get("agent_id", -1)),
+                                int(manifest.get("proposal_id", -1)),
+                                str(manifest.get("name", "")),
+                            )
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):  # domain: degrade-silently - no owner
+                            continue
+                        if key != (agent_id, proposal_id, claim):
+                            continue
+                        current_live = live() if callable(live) else live
+                        if current_live is None:
+                            continue
+                        if key not in current_live and _retire_claim_tree_locked(dest):
+                            swept += 1
+                except (
+                    OSError,
+                    RepoError,
+                ):  # domain: degrade-silently - sweep one tree
                     continue
-                if key != (agent_id, proposal_id, claim):
-                    continue
-                if key not in live and _retire_dir(dest):
-                    swept += 1
     return swept

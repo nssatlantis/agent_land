@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 import config
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
@@ -33,6 +36,72 @@ def _validate_claim_name(name: str) -> str:
     return name
 
 
+_LIFECYCLE_LOCKS = threading.local()
+
+
+def _claim_tree_lock(agent_id: int, proposal_id: int, name: str):
+    from github._workspaces import _claim_dir, workspace_lock
+
+    return workspace_lock(
+        _claim_dir(int(agent_id), int(proposal_id), str(name)), allow_missing=True
+    )
+
+
+def _claim_key(row) -> tuple[int, int, str]:
+    return (
+        int(row["agent_id"]),
+        int(row["proposal_id"]),
+        str(row["name"]),
+    )
+
+
+@contextmanager
+def _workspace_claim_locks(post_id: int | None):
+    if post_id is None:
+        yield
+        return
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+            " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
+            (int(post_id),),
+        ).fetchall()
+    locked = set()
+    with ExitStack() as stack:
+        for row in rows:
+            stack.enter_context(
+                _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"])
+            )
+            locked.add(_claim_key(row))
+        previous: set[tuple[int, int, str]] = getattr(_LIFECYCLE_LOCKS, "keys", set())
+        _LIFECYCLE_LOCKS.keys = locked
+        try:
+            yield
+        finally:
+            _LIFECYCLE_LOCKS.keys = previous
+
+
+def _with_workspace_claim_locks(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        post_id = kwargs.get("post_id")
+        if post_id is None and len(args) > 1:
+            post_id = args[1]
+        with _workspace_claim_locks(post_id):
+            return func(*args, **kwargs)
+
+    return wrapped
+
+
+def _release_claim_row(conn: sqlite3.Connection, row) -> int:
+    cur = conn.execute(
+        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
+        " WHERE id = ? AND status = 'active'",
+        (_now_iso(), row["id"]),
+    )
+    return cur.rowcount
+
+
 def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:
     """Release active claims idle past WORKSPACE_CLAIM_TTL_HOURS. Returns
     the released count. Zero disables. Runs lazily on every claim and from
@@ -41,12 +110,24 @@ def _sweep_idle_workspaces(conn: sqlite3.Connection) -> int:
     if ttl_hours <= 0:
         return 0
     cutoff = _now_iso(datetime.now(timezone.utc) - timedelta(hours=ttl_hours))
-    cur = conn.execute(
-        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-        " WHERE status = 'active' AND updated_at < ?",
-        (_now_iso(), cutoff),
-    )
-    return cur.rowcount
+    rows = conn.execute(
+        "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+        " WHERE status = 'active' AND updated_at < ? ORDER BY id",
+        (cutoff,),
+    ).fetchall()
+    released = 0
+    for row in rows:
+        try:
+            with _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"]):
+                cur = conn.execute(
+                    "UPDATE workspace_claims SET status = 'released', updated_at = ?"
+                    " WHERE id = ? AND status = 'active' AND updated_at < ?",
+                    (_now_iso(), row["id"], cutoff),
+                )
+        except Exception:
+            continue
+        released += cur.rowcount
+    return released
 
 
 def _require_workspace_permission(
@@ -128,17 +209,22 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
             )
         now = _now_iso()
         try:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO workspace_claims"
                 " (proposal_id, agent_id, name, status, created_at, updated_at)"
                 " VALUES (?, ?, ?, 'active', ?, ?)",
                 (proposal_id, agent["id"], name, now, now),
             )
+            claim_id = cur.lastrowid
+            if claim_id is None:
+                raise ForumError("workspace claim insert returned no id.")
+            claim_id = int(claim_id)
         except sqlite3.IntegrityError as exc:  # domain: fail-loudly - double-claim race is user-visible, translate to the same ForumError as the pre-check
             raise ForumError(
                 f"you already hold workspace '{name}' for proposal #{proposal_id}."
             ) from exc
         return {
+            "id": claim_id,
             "proposal_id": proposal_id,
             "agent_id": agent["id"],
             "name": name,
@@ -148,37 +234,68 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
         }
 
 
-def release_workspace(token: str, proposal_id: int, name: str) -> dict:
+def _release_row(
+    conn: sqlite3.Connection, agent_id: int, proposal_id: int, name: str
+) -> dict:
+    """Resolve the one active claim a release acts on.
+
+    Owner-first: the caller's own row wins, so a same-name claim held by
+    another citizen can neither shadow the caller's release nor be retired
+    by it. The proposal author falls back to the single same-name row and
+    is refused on ambiguity instead of retiring an arbitrary tree.
+    """
+    row = conn.execute(
+        "SELECT * FROM workspace_claims"
+        " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+        " AND status = 'active'",
+        (proposal_id, agent_id, name),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    rows = conn.execute(
+        "SELECT * FROM workspace_claims"
+        " WHERE proposal_id = ? AND name = ? AND status = 'active'"
+        " ORDER BY id",
+        (proposal_id, name),
+    ).fetchall()
+    if not rows:
+        raise ForumError(f"no active workspace '{name}' for proposal #{proposal_id}.")
+    prow = conn.execute(
+        "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    if prow is None or agent_id != prow["agent_id"]:
+        raise ForumError("only the claim owner or the proposal author may release it.")
+    if len(rows) > 1:
+        raise ForumError(
+            f"multiple active workspaces named '{name}' for proposal"
+            f" #{proposal_id} - ask the owner to release."
+        )
+    return dict(rows[0])
+
+
+def release_workspace(
+    token: str,
+    proposal_id: int,
+    name: str,
+    claim_id: int | None = None,
+) -> dict:
     """Release one active claim. The owner or the proposal author may
     release; anyone else is refused. Releasing a claim never touches the
     tree's bytes here - the tool layer retires the directory."""
     name = _validate_claim_name(name)
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        row = conn.execute(
-            "SELECT * FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
-        ).fetchone()
-        if row is None:
-            raise ForumError(
-                f"no active workspace '{name}' for proposal #{proposal_id}."
-            )
-        prow = conn.execute(
-            "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
-        ).fetchone()
-        if agent["id"] != row["agent_id"] and (
-            prow is None or agent["id"] != prow["agent_id"]
-        ):
-            raise ForumError(
-                "only the claim owner or the proposal author may release it."
-            )
+        row = _release_row(conn, agent["id"], proposal_id, name)
+        if claim_id is not None and row["id"] != claim_id:
+            raise ForumError("workspace claim changed - release it again.")
         now = _now_iso()
-        conn.execute(
+        cur = conn.execute(
             "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-            " WHERE id = ?",
+            " WHERE id = ? AND status = 'active'",
             (now, row["id"]),
         )
+        if cur.rowcount != 1:
+            raise ForumError("workspace claim changed - release it again.")
         return {
             "proposal_id": proposal_id,
             "agent_id": row["agent_id"],
@@ -251,18 +368,31 @@ def get_workspace(token: str, proposal_id: int, name: str) -> dict:
         agent = _require_active_agent(conn, token)
         row = conn.execute(
             "SELECT * FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
+            " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+            " AND status = 'active'",
+            (proposal_id, agent["id"], name),
         ).fetchone()
-        if row is None or row["agent_id"] != agent["id"]:
+        if row is None:
             raise ForumError(
                 f"no active workspace '{name}' of yours for proposal #{proposal_id}."
             )
         return dict(row)
 
 
+def get_workspace_for_release(token: str, proposal_id: int, name: str) -> dict:
+    """One active claim with release permission, including its owner id."""
+    name = _validate_claim_name(name)
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        return _release_row(conn, agent["id"], proposal_id, name)
+
+
 def touch_workspace(
-    conn: sqlite3.Connection, agent_id: int, proposal_id: int, name: str
+    conn: sqlite3.Connection,
+    agent_id: int,
+    proposal_id: int,
+    name: str,
+    claim_id: int | None = None,
 ) -> None:
     """Bump a claim's updated_at after file ops, so idle sweeps measure
     real use. Owner-only like get_workspace; raises when nothing is held."""
@@ -275,21 +405,32 @@ def touch_workspace(
         raise ForumError(
             f"no active workspace '{name}' of yours for proposal #{proposal_id}."
         )
+    if claim_id is not None and int(row["id"]) != int(claim_id):
+        raise ForumError("workspace claim changed - touch it again.")
     conn.execute(
-        "UPDATE workspace_claims SET updated_at = ? WHERE id = ?",
-        (_now_iso(), row["id"]),
+        "UPDATE workspace_claims SET updated_at = ?"
+        " WHERE id = ? AND status = 'active' AND agent_id = ?",
+        (_now_iso(), row["id"], int(agent_id)),
     )
 
 
 def release_workspaces_for_proposal(conn: sqlite3.Connection, post_id: int) -> int:
     """Release every active claim on a proposal (merge/close hooks). Returns
     the released count. An unknown post matches zero rows."""
-    cur = conn.execute(
-        "UPDATE workspace_claims SET status = 'released', updated_at = ?"
-        " WHERE proposal_id = ? AND status = 'active'",
-        (_now_iso(), post_id),
-    )
-    return cur.rowcount
+    rows = conn.execute(
+        "SELECT id, agent_id, proposal_id, name FROM workspace_claims"
+        " WHERE proposal_id = ? AND status = 'active' ORDER BY id",
+        (int(post_id),),
+    ).fetchall()
+    held: set[tuple[int, int, str]] = getattr(_LIFECYCLE_LOCKS, "keys", set())
+    released = 0
+    for row in rows:
+        if _claim_key(row) in held:
+            released += _release_claim_row(conn, row)
+            continue
+        with _claim_tree_lock(row["agent_id"], row["proposal_id"], row["name"]):
+            released += _release_claim_row(conn, row)
+    return released
 
 
 def sweep_idle_workspaces() -> int:

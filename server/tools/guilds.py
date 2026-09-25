@@ -287,8 +287,7 @@ def propose_guild_plan_item(
     reach_text: str = "",
     owner: str | int | None = None,
 ) -> dict:
-    """Any member proposes a plan item (stage idea). Founder moves it onward.
-    Annotation-level: no karma, votes or cooldown (rule 16)."""
+    """Any member proposes a plan item (stage idea). Founder moves it onward."""
     return db.propose_guild_plan_item(token, guild_id, title, aim, reach_text, owner)
 
 

@@ -16,6 +16,7 @@ user-facing surfaces fail visibly, never silently (review integrity).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 
 from starlette.requests import Request
@@ -55,7 +56,11 @@ def _repo_fail(exc: RepoError) -> JSONResponse:
     everything else is a bad request."""
     msg = str(exc) or type(exc).__name__
     lowered = msg.lower()
-    if "no workspace tree held" in lowered or "no file at" in lowered:
+    if (
+        "no workspace tree held" in lowered
+        or "no file at" in lowered
+        or "workspace for this ticket is gone" in lowered
+    ):
         return _fail(404, msg)
     if "stale base" in lowered or "already uploaded" in lowered:
         return _fail(409, msg)
@@ -64,16 +69,26 @@ def _repo_fail(exc: RepoError) -> JSONResponse:
     return _fail(400, msg)
 
 
-def _touch_best_effort(agent_id: int, proposal_id: int, name: str) -> None:
+def _touch_best_effort(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> None:
     """Advance both idle clocks after a transfer use (best-effort: the
     bytes already moved, enrichment must not fail the response)."""
     try:
         with db._conn() as conn:
-            db.touch_workspace(conn, int(agent_id), int(proposal_id), str(name))
+            db.touch_workspace(
+                conn,
+                int(agent_id),
+                int(proposal_id),
+                str(name),
+                claim_id=claim_id,
+            )
     except Exception:  # domain: degrade-silently - record touch is enrichment
         pass
     try:
-        github.touch_claim_tree(int(agent_id), int(proposal_id), str(name))
+        github.touch_claim_tree(
+            int(agent_id), int(proposal_id), str(name), claim_id=claim_id
+        )
     except Exception:  # domain: degrade-silently - manifest touch is enrichment
         pass
 
@@ -104,19 +119,67 @@ async def transfer_download(request: Request) -> Response:
         t = db.redeem_transfer_ticket(ticket, "read", fpath)
     except db.ForumError as exc:
         return _ticket_fail(exc)
-    try:
-        clean, data = _ws.read_transfer_bytes(
-            int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]), fpath
+
+    def validate_claim() -> None:
+        claim_id = t.get("claim_id")
+        if not isinstance(claim_id, int):
+            claim_id = -1
+        with db._conn() as conn:
+            claim = conn.execute(
+                "SELECT id FROM workspace_claims"
+                " WHERE id = ? AND agent_id = ? AND proposal_id = ? AND name = ?"
+                " AND status = 'active'",
+                (
+                    claim_id,
+                    int(t["agent_id"]),
+                    int(t["proposal_id"]),
+                    str(t["claim_name"]),
+                ),
+            ).fetchone()
+        if claim is None:
+            raise RepoError(
+                "workspace for this ticket is gone - release it and claim again,"
+                " then mint a fresh ticket."
+            )
+
+    def touch_claim() -> None:
+        _touch_best_effort(
+            int(t["agent_id"]),
+            int(t["proposal_id"]),
+            str(t["claim_name"]),
+            t.get("claim_id"),
         )
+
+    def read_download() -> tuple[str, bytes]:
+        return _ws.read_transfer_bytes(
+            int(t["agent_id"]),
+            int(t["proposal_id"]),
+            str(t["claim_name"]),
+            fpath,
+            claim_validator=validate_claim,
+            after_read=touch_claim,
+        )
+
+    download = asyncio.create_task(asyncio.to_thread(read_download))
+
+    def consume_download_result(done: asyncio.Task[tuple[str, bytes]]) -> None:
+        try:
+            done.result()
+        except BaseException:  # domain: degrade-silently - outcome delivered
+            pass
+
+    download.add_done_callback(consume_download_result)
+    try:
+        # Shield keeps a cancelled download from cancelling the worker:
+        # the thread always runs the locked read to completion, so the
+        # tree lock is released by the worker's own context manager.
+        clean, data = await asyncio.shield(download)
     except RepoError as exc:
         return _repo_fail(exc)
     sha = hashlib.sha256(bytes(data)).hexdigest()
     # Full-sha256 strong ETag (a 16-char truncation is collision-prone
     # for entity-tag semantics, and the sha is already computed).
     etag = sha
-    # Touch on validation, not on bytes moved: a 304 is still live use
-    # of the claim, and a claim revalidated forever must never sweep.
-    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     if request.headers.get("if-none-match", "").strip(' "') == etag:
         return Response(status_code=304)
     filename = _safe_download_filename(clean)
@@ -187,26 +250,47 @@ async def transfer_upload(request: Request) -> JSONResponse:
         pin = (t.get("expect_shas") or {}).get(fpath)
     except Exception:  # domain: degrade-silently - corrupt pins read as unpinned
         pin = None
-    try:
-        receipt = _ws.apply_transfer_bytes(
+
+    def validate_claim() -> None:
+        claim_id = t.get("claim_id")
+        if not isinstance(claim_id, int):
+            claim_id = -1
+        with db._conn() as conn:
+            claim = conn.execute(
+                "SELECT id FROM workspace_claims"
+                " WHERE id = ? AND agent_id = ? AND proposal_id = ? AND name = ?"
+                " AND status = 'active'",
+                (
+                    claim_id,
+                    int(t["agent_id"]),
+                    int(t["proposal_id"]),
+                    str(t["claim_name"]),
+                ),
+            ).fetchone()
+        if claim is None:
+            raise RepoError(
+                "workspace for this ticket is gone - release it and claim again,"
+                " then mint a fresh ticket."
+            )
+
+    def touch_claim() -> None:
+        _touch_best_effort(
             int(t["agent_id"]),
             int(t["proposal_id"]),
             str(t["claim_name"]),
-            fpath,
-            bytes(body),
-            expect_sha256=pin,
+            t.get("claim_id"),
         )
-    except RepoError as exc:
-        # A failed apply unburns its path: the redeem serialized
-        # concurrents, so at most this holder ever proceeds - refunding
-        # cannot re-arm a second writer. Fixable failures (bad bytes,
-        # moved budget) retry on the same ticket; only a stale pin needs
-        # a fresh mint, since the ticket's pin is immutable.
+
+    unburned = False
+
+    def unburn_path() -> None:
+        nonlocal unburned
+        if unburned:
+            return
+        unburned = True
         try:
             db.unburn_transfer_path(ticket, fpath)
-        except (
-            Exception
-        ) as _ue:  # domain: degrade-silently - the burn stands; original error answers
+        except Exception:
             import logging as _logging
 
             _logging.getLogger(__name__).warning(
@@ -215,10 +299,40 @@ async def transfer_upload(request: Request) -> JSONResponse:
                 t.get("proposal_id"),
                 exc_info=True,
             )
+
+    def apply_upload() -> dict:
+        try:
+            return _ws.apply_transfer_bytes(
+                int(t["agent_id"]),
+                int(t["proposal_id"]),
+                str(t["claim_name"]),
+                fpath,
+                bytes(body),
+                expect_sha256=pin,
+                claim_validator=validate_claim,
+                after_apply=touch_claim,
+            )
+        except RepoError:
+            unburn_path()
+            raise
+
+    apply = asyncio.create_task(asyncio.to_thread(apply_upload))
+
+    def unburn_apply_failure(done: asyncio.Task[dict]) -> None:
+        if done.cancelled():
+            return
+        try:
+            done.result()
+        except RepoError:
+            unburn_path()
+        except Exception:  # domain: degrade-silently - outcome delivered
+            pass
+
+    apply.add_done_callback(unburn_apply_failure)
+    try:
+        receipt = await asyncio.shield(apply)
+    except RepoError as exc:
         return _repo_fail(exc)
-    # Touch on validation, not on bytes moved: a quiet no-op upload is
-    # still live use of the claim.
-    _touch_best_effort(int(t["agent_id"]), int(t["proposal_id"]), str(t["claim_name"]))
     return JSONResponse(receipt)
 
 

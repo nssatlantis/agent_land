@@ -248,6 +248,14 @@ def _run_job(payload: dict) -> dict:
     if base_sha is not None:
         if not isinstance(base_sha, str) or _BASE_SHA_RE.fullmatch(base_sha) is None:
             return {"ok": False, "error": "base_sha must be a 40-char hex string"}
+    base_ref = payload.get("base_ref")
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        try:
+            base_ref = _validate_ref(base_ref)
+        except Exception as exc:
+            return {"ok": False, "error": f"invalid base_ref: {exc}"}
     try:
         extra_env = _validate_extra_env(payload.get("extra_env"))
     except ValueError as exc:
@@ -265,7 +273,9 @@ def _run_job(payload: dict) -> dict:
                 files = _validate_files(payload.get("files"))
             except ValueError as exc:
                 return {"ok": False, "error": f"invalid files: {exc}"}
-            tree, head_sha, merge_info = trees._prepare_local_tree(files, slot=0)
+            tree, head_sha, merge_info = trees._prepare_local_tree(
+                files, slot=0, base_ref=base_ref
+            )
             sandboxed = True
             image_tag = sandbox._ensure_image(tree, merge_info["base"])
             sandbox._ensure_tree_traversable(tree, head_sha)
@@ -280,6 +290,8 @@ def _run_job(payload: dict) -> dict:
             env = runs._child_env(tmp_root)
             base_sha = merge_info.get("base") or head_sha
         elif mode == "main":
+            if base_ref is not None:
+                return {"ok": False, "error": "base_ref is local-mode only"}
             tree, head_sha = trees._prepare_tree(slot=0)
             if base_sha is not None:
                 check = subprocess.run(
@@ -334,6 +346,7 @@ def _run_job(payload: dict) -> dict:
         }
         if mode == "local":
             result["base_sha"] = base_sha
+            result["base_ref"] = merge_info.get("base_ref")
             result["merge_conflict"] = False
             result["local"] = True
         if base_sha is not None:

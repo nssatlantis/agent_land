@@ -37,6 +37,7 @@ _ACTIVE_RUNS: dict[int, int] = {}
 _ACTIVE_LOCK = threading.Lock()
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class _FarmRetryLocal(Exception):
@@ -231,7 +232,9 @@ def dispatch_to_runner(runner: dict, payload: dict) -> dict | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=config.CI_RUN_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(
+            req, timeout=config.CI_FARM_DISPATCH_TIMEOUT
+        ) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         return body if isinstance(body, dict) else None
     except Exception:
@@ -304,6 +307,8 @@ def _map_and_log(
         "failed_files",
         "local",
         "base_sha",
+        "base_ref",
+        "executed_base_sha",
         "pr_number",
         "quiet",
         "contended",
@@ -329,7 +334,9 @@ def _map_and_log(
     }
     if result.get("local"):
         detail["local"] = True
-        detail["base_sha"] = result.get("base_sha")
+        for key in ("base_ref", "base_sha", "executed_base_sha"):
+            if result.get(key) is not None:
+                detail[key] = result[key]
     detail = _fold_output(detail, result)
     if extra_detail:
         detail.update(extra_detail)
@@ -411,11 +418,33 @@ def try_dispatch(
         # run may or may not have executed remotely, so retry once locally
         # instead of reporting busy (P3-2).
         raise _FarmRetryLocal("runner reply unreadable")
-    if "error" in remote and "ok" not in remote:
-        # Runner-reported failure with no result shape (mid-run death): retry
-        # once locally. Replies carrying "ok" (even ok False, even with
-        # warning extras) are real results and map normally.
+    if not isinstance(remote.get("ok"), bool):
+        raise _FarmRetryLocal(
+            str(remote.get("error") or "runner reply missing boolean ok")[:200]
+        )
+    if "error" in remote and not any(
+        key in remote for key in ("exit_code", "summary", "head_sha", "base_sha")
+    ):
+        # Validation and compatibility failures are not completed CI runs;
+        # retry once against the host instead of turning them into red results.
         raise _FarmRetryLocal(str(remote.get("error"))[:200])
+    if base_ref is not None:
+        from github._core import _validate_ref
+
+        try:
+            expected_ref = _validate_ref(base_ref)
+        except Exception as exc:
+            raise _FarmRetryLocal("invalid base_ref") from exc
+        if remote.get("base_ref") != expected_ref:
+            raise _FarmRetryLocal("runner base_ref mismatch")
+        executed_base = remote.get("executed_base_sha")
+        result_base = remote.get("base_sha")
+        if (
+            not isinstance(executed_base, str)
+            or _COMMIT_RE.fullmatch(executed_base) is None
+            or result_base != executed_base
+        ):
+            raise _FarmRetryLocal("runner base metadata missing or inconsistent")
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
 
 
@@ -429,6 +458,7 @@ def try_bench_dispatch(
     files: list | None = None,
     tree: str | None = None,
     base_ref: str | None = None,
+    allow_remote: bool = False,
 ) -> dict | None:
     """Bench remote-first dispatch (PR 3). Tries a healthy runner before
     local slot acquisition. Returns the full host-shaped result dict
@@ -449,7 +479,7 @@ def try_bench_dispatch(
     """
     if not config.CI_FARM_ENABLED:
         return None
-    if not config.CI_FARM_BENCH_REMOTE_FIRST:
+    if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote:
         return None
     if agent_id == 0:
         return None  # system/heartbeat benches: local only, can never bless
@@ -478,7 +508,11 @@ def try_bench_dispatch(
     # chars alongside PR 1 so real medians tables round-trip).
     payload: dict = {"checks": checks, "mode": "main", "extra_env": anchor_env}
     remote = dispatch_to_runner(runner, payload)
-    if remote is None or not isinstance(remote, dict) or "error" in remote:
+    if (
+        not isinstance(remote, dict)
+        or not isinstance(remote.get("ok"), bool)
+        or "error" in remote
+    ):
         return None
     extra: dict = {}
     for key in ("quiet", "contended", "bench_load"):

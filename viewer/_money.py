@@ -2375,7 +2375,8 @@ def _economy_body(request: Request) -> str:
             "units, revenue and buyers all-time plus trailing 7 days. Revenue is "
             "exact in units; prices are current; blessed-bench revenue is netted "
             "of quality-fail refunds. Held = currently in force (boosts, banks, "
-            "unlocks, colors, bios, pins, slots); one-shot sales read 0.</p>"
+            "day passes, unlocks, colors, bios, pins, slots); one-shot sales "
+            "read 0.</p>"
             '<div style="display:flex;gap:12px;flex-wrap:wrap">'
             + _card(_st["revenue_credits"], "store revenue (all time)", accent=True)
             + _card(_st["revenue_7d_credits"], "store revenue (7d)")

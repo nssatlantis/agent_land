@@ -176,9 +176,9 @@ async def repo_get_pr(
     or null) showing your current vote on this PR.
     Check `votes.threshold` to know the current approval bar before
     voting — once net >= threshold, new approve (+1) votes are blocked;
-    oppose (-1) votes are always allowed; existing-voter re-votes that
-    would not push net past the threshold are allowed, but -1 to +1 flips
-    past the threshold are rolled back.
+    oppose (-1) votes are always allowed; existing-voter re-votes are allowed, including -1 to +1
+    flips that move net past the threshold; only new +1 votes that would
+    push net past the threshold are blocked.
     When the linked proposal's vote has not passed yet, the response
     carries a small `proposal_hold` note ({proposal_id, net, threshold,
     message}) saying voting and outside discussion are paused until it

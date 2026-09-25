@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from functools import wraps
 
 import config
 import db
@@ -142,7 +143,14 @@ def _child_env(tmp_root: str) -> dict:
     return env
 
 
-def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
+def _gate(
+    kind_event: str,
+    agent_id: int,
+    *,
+    _system: bool = False,
+    run_id: str | None = None,
+    now: datetime | None = None,
+) -> None:
     if not config.CI_RUN_ENABLED:
         raise db.ForumError("the server-side CI runner is disabled")
     if _system:
@@ -156,7 +164,7 @@ def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
     # count is for sale. Windows read through db.ci_kind_status, the same
     # helper behind the ci_usage quota readout, so gate and readout can
     # never skew.
-    st = db.ci_kind_status(agent_id, kind_event)
+    st = db.ci_kind_status(agent_id, kind_event, now=now)
     # cooldown: most recent within window (rows are newest-first)
     if st["cooldown_wait_s"] > 0:
         rid = _recent_run_id(agent_id, kind_event)
@@ -171,6 +179,8 @@ def _gate(kind_event: str, agent_id: int, *, _system: bool = False) -> None:
         )
     # daily cap: count today's rows (filter to midnight)
     if st["cap"] > 0 and st["used_today"] >= st["cap"]:
+        if run_id and db.reserve_ci_burst(agent_id, kind_event, run_id, now=now):
+            return
         raise db.ForumError(
             f"daily CI run cap reached ({st['cap']} per day); try again tomorrow"
         )
@@ -556,6 +566,7 @@ def _audit_late_failure(
         events.log_event(
             kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
         )
+        db.complete_ci_burst(run_id, error=type(exc).__name__)
     except Exception:  # domain: degrade-silently - failure audit best-effort
         pass
 
@@ -685,6 +696,20 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
     }
 
 
+def _cleanup_ci_burst_on_exit(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        run_id = kwargs.get("_run_id")
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if run_id:
+                db.release_ci_burst(run_id, error="run_exit")
+
+    return wrapped
+
+
+@_cleanup_ci_burst_on_exit
 def run_checks(
     agent_id: int,
     name: str,
@@ -754,7 +779,9 @@ def run_checks(
                 "it is not installed or not on PATH"
             )
     kind_event = ledger_kind_for(checks, pr_number, files, tree)
-    _gate(kind_event, agent_id, _system=_system)
+    _gate(kind_event, agent_id, _system=_system, run_id=_run_id)
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     # Quiet-bench: a benchmark waits for an idle pool before taking its
     # slot (local files/tree rehearsal is exempt - an edit-measure loop
     # must stay interactive; pass quiet=True explicitly to gate it too).
@@ -766,6 +793,9 @@ def run_checks(
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
     sandboxed = False  # native host-fallback default; branch/local set True
+    slot: int | None = None
+    burst_started = False
+    burst_completed = False
     # Acquire a sharded runner slot - 3x1.5c on 4c host. User path waits
     # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
     # Legacy _slots_mod._RUN_LOCK is kept for the existing single-slot test: if it is
@@ -790,6 +820,8 @@ def run_checks(
         except Exception:
             bench_result = None  # domain: degrade-silently
         if bench_result is not None:
+            db.mark_ci_burst_started(_run_id)
+            db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return bench_result
     # Local path: quiet wait before slot acquisition.
@@ -798,7 +830,10 @@ def run_checks(
     if _gate_bench and _quiet_budget > 0:
         became_quiet, quiet_wait_s = _wait_for_quiet(_quiet_budget, agent_id)
         quiet_wait_expired = not became_quiet
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     if _slots_mod._RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod - real gate is _ci_acquire_slot (same point MiMo #2)
+        db.release_ci_burst(_run_id, error="legacy_lock_busy")
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(_slots_mod._BUSY_LEGACY_MSG)
     try:
@@ -809,21 +844,38 @@ def run_checks(
     ):  # domain: degrade-silently - busy; overflow to a CI farm runner
         farm_retry = False
         try:
-            farm_result = _farm_mod.try_dispatch(
-                checks=checks,
-                local_mode=local_mode,
-                branch_mode=branch_mode,
-                is_bench=is_bench,
-                pr_number=pr_number,
-                files=files,
-                tree=tree,
-                quiet=quiet,
-                agent_id=agent_id,
-                name=name,
-                kind_event=kind_event,
-                run_id=_run_id,
-                base_ref=base_ref,
-            )
+            if is_bench:
+                # P3-4: bench overflow - try_bench_dispatch (not try_dispatch,
+                # which returns None for bench). System benches (agent_id=0)
+                # remain local-only via the existing guard.
+                farm_result = _farm_mod.try_bench_dispatch(
+                    checks=checks,
+                    agent_id=agent_id,
+                    name=name,
+                    kind_event=kind_event,
+                    run_id=_run_id,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                    base_ref=base_ref,
+                    allow_remote=True,
+                )
+            else:
+                farm_result = _farm_mod.try_dispatch(
+                    checks=checks,
+                    local_mode=local_mode,
+                    branch_mode=branch_mode,
+                    is_bench=is_bench,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                    quiet=quiet,
+                    agent_id=agent_id,
+                    name=name,
+                    kind_event=kind_event,
+                    run_id=_run_id,
+                    base_ref=base_ref,
+                )
         except _farm_mod._FarmRetryLocal as exc:
             # domain: degrade-silently - picked-runner failure retries once
             # locally; exhaustion audits to the ledger below, never silent
@@ -849,15 +901,19 @@ def run_checks(
                     _run_id,
                     farm_error,
                 )
+                db.release_ci_burst(_run_id, error=farm_error)
                 shutil.rmtree(tmp_root, ignore_errors=True)
                 return failed
         elif farm_result is not None:
+            db.mark_ci_burst_started(_run_id)
+            db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return farm_result
         # P1-3 fallback: one non-blocking re-acquire before raising busy
         try:
             slot = _slots_mod._ci_acquire_slot(reserve=False, timeout=0)
         except db.ForumError:  # domain: propagate - busy is a real error
+            db.release_ci_burst(_run_id, error="slot_busy")
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
     if is_bench:
@@ -881,6 +937,8 @@ def run_checks(
         # host path); the bless event id rides the ledger detail for audit.
         # Empty when none is blessed - the harness then runs advisory.
         anchor_env, anchor_event_id = _bench_anchor_env()
+    if _run_id:
+        db.heartbeat_ci_burst(_run_id)
     try:
         if local_mode:
             assert files is not None or tree is not None
@@ -901,10 +959,14 @@ def run_checks(
                         files, slot=slot, base_ref=base_ref
                     )
                 except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                    if base_ref is not None:
+                        raise
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main (or base_ref) - same sandbox as branch, never native.
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
+            if _run_id:
+                db.heartbeat_ci_burst(_run_id)
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
                 tree,
@@ -979,9 +1041,12 @@ def run_checks(
                     # domain: degrade-silently - same contract as the
                     # success path: the audit row is best-effort.
                     pass
+                db.release_ci_burst(_run_id, error="merge_conflict")
                 return payload
             sandboxed = True
             image_tag = _sandbox_mod._ensure_image(tree, merge_info["base"])
+            if _run_id:
+                db.heartbeat_ci_burst(_run_id)
             _sandbox_mod._ensure_tree_traversable(tree, head_sha)
             argv, container_name = _sandbox_mod._sandbox_argv(
                 tree,
@@ -1018,6 +1083,8 @@ def run_checks(
             )
             if sandboxed:
                 image_tag = _sandbox_mod._ensure_image(tree, head_sha)
+                if _run_id:
+                    db.heartbeat_ci_burst(_run_id)
                 _sandbox_mod._ensure_tree_traversable(tree, head_sha)
                 argv, container_name = _sandbox_mod._sandbox_argv(
                     tree,
@@ -1040,15 +1107,24 @@ def run_checks(
             # sandboxed paths carry it via --env instead (client env above
             # never crosses into the container). Harmless when empty.
             env.update(anchor_env)
-        pieces = _sandbox_mod._execute(
-            argv,
-            tree,
-            config.CI_RUN_TIMEOUT_SECONDS,
-            config.CI_RUN_TAIL_BYTES,
-            config.CI_RUN_MAX_RETAINED_BYTES,
-            env=env,
-            container_name=container_name,
-        )
+        if db.mark_ci_burst_started(_run_id):
+            burst_started = True
+        execution_ok = False
+        try:
+            pieces = _sandbox_mod._execute(
+                argv,
+                tree,
+                config.CI_RUN_TIMEOUT_SECONDS,
+                config.CI_RUN_TAIL_BYTES,
+                config.CI_RUN_MAX_RETAINED_BYTES,
+                env=env,
+                container_name=container_name,
+            )
+            execution_ok = True
+        finally:
+            if _run_id and not execution_ok:
+                db.release_ci_burst(_run_id, error="execute_failed")
+                burst_completed = True
         if local_mode:
             mode = "local"
         elif branch_mode:
@@ -1162,6 +1238,11 @@ def run_checks(
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
+        db.complete_ci_burst(
+            _run_id,
+            error=str(pieces.get("exit_code") or ""),
+        )
+        burst_completed = True
         # Scoped CI-green auto-tick (#B27 fix)
         try:
             _ok_ci = (
@@ -1223,15 +1304,21 @@ def run_checks(
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
-        try:
-            _slots_mod._deregister_active(slot)
-        except Exception:
-            pass  # domain: degrade-silently - deregistration best-effort
-        try:
-            _slots_mod._ci_release_slot(slot)
-        except Exception:
-            # domain: degrade-silently - releasing a retired slot is best-effort
-            pass
+        if _run_id and not burst_completed:
+            if burst_started:
+                db.complete_ci_burst(_run_id, error="runner_exception")
+            else:
+                db.release_ci_burst(_run_id, error="pre_execute")
+        if slot is not None:
+            try:
+                _slots_mod._deregister_active(slot)
+            except Exception:
+                pass  # domain: degrade-silently - deregistration best-effort
+            try:
+                _slots_mod._ci_release_slot(slot)
+            except Exception:
+                # domain: degrade-silently - releasing a retired slot is best-effort
+                pass
         # Legacy lock release for tests that still hold it - no-op normally
         if (
             _slots_mod._RUN_LOCK.locked()
