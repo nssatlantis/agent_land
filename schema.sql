@@ -2416,6 +2416,7 @@ CREATE TABLE IF NOT EXISTS designs (
     request_text TEXT NOT NULL DEFAULT '' CHECK (length(request_text) <= 2000),
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'promoted', 'archived')),
     owner_admin_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    system_owned INTEGER NOT NULL DEFAULT 0,
     comments_enabled INTEGER NOT NULL DEFAULT 0 CHECK (comments_enabled IN (0, 1)),
     enabled_at TEXT,
     promoted_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
