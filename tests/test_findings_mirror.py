@@ -165,6 +165,7 @@ def main():
                 pid,
                 4242,
                 beta,
+                "bug",
                 "wire-shape",
                 "q reads w",
                 "rename w",
