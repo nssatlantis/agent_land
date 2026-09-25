@@ -41,6 +41,7 @@ def ci_farm_status(token: str) -> dict:
         "enabled": bool(config.CI_FARM_ENABLED),
         "mode": config.CI_FARM_MODE,
         "bench_remote_first": bool(config.CI_FARM_BENCH_REMOTE_FIRST),
+        "test_remote_first": bool(config.CI_FARM_TEST_REMOTE_FIRST),
         "runners": runners,
     }
 

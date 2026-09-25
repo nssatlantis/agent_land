@@ -935,9 +935,10 @@ def main():
     test_concurrent_pick_single_slot()
     test_farm_retry_exhaustion_audited()
     test_bench_allow_remote_bypasses_preference()
+    test_run_checks_native_test_remote_first_gate()
+    test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
     test_dropped_dispatch_is_ledgered()
-    print("All CI farm tests passed.")
     print("All CI farm tests passed.")
 
 
@@ -1211,6 +1212,149 @@ def test_run_checks_bench_overflow_passes_allow_remote():
         assert calls[0].get("allow_remote") is True, calls
     finally:
         farm.try_bench_dispatch = orig_try
+
+
+def test_run_checks_native_test_remote_first_gate():
+    from server.ci_runner import _runs as runs_mod
+
+    row = farm.register_runner("nt-gate", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {
+        "checks": "tests",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 120.0,
+        "head_sha": "abc123",
+        "output_tail": "ok",
+        "summary": {"tests_run": True},
+    }
+    calls = []
+
+    def _record(runner, payload):
+        calls.append((runner, payload))
+        try:
+            return remote
+        finally:
+            farm._release(runner["id"])
+
+    farm.dispatch_to_runner = _record
+
+    class _Gate:
+        def __call__(self, kind_event, agent_id, _system=False, run_id=None):
+            return 0
+
+    orig_gate = runs_mod._gate
+    runs_mod._gate = _Gate()
+
+    def _ok_slot(*a, **k):
+        return {"id": 1}
+
+    def _fail_prepare(*a, **k):
+        raise db.ForumError("no docker")
+
+    orig_acquire = runs_mod._slots_mod._ci_acquire_slot
+    orig_prepare = runs_mod._trees_mod._prepare_tree
+
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    try:
+        config.CI_FARM_TEST_REMOTE_FIRST = True
+        calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
+        try:
+            result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        except Exception as exc:
+            raise AssertionError(
+                f"ON: local path leaked past slot; gate must dispatch first, got {exc!r}"
+            ) from exc
+        assert result["mode"] == "native", result
+        assert result["runner"] == "nt-gate", result
+        assert len(calls) == 1, f"ON: 1 dispatch, got {len(calls)}"
+
+        config.CI_FARM_TEST_REMOTE_FIRST = False
+        calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
+        try:
+            runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        except Exception:
+            pass
+        assert len(calls) == 0, f"off: no dispatch, got {len(calls)}"
+
+        config.CI_FARM_TEST_REMOTE_FIRST = True
+        calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
+        try:
+            runs_mod.run_checks(agent_id=1, name="t", checks="static")
+        except Exception:
+            pass
+        assert len(calls) == 0, f"scope: no dispatch, got {len(calls)}"
+    finally:
+        runs_mod._gate = orig_gate
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
+        farm.dispatch_to_runner = orig_disp
+        farm._ping = orig_ping
+        runs_mod._slots_mod._ci_acquire_slot = orig_acquire
+        runs_mod._trees_mod._prepare_tree = orig_prepare
+        farm.remove_runner(row["id"])
+
+
+def test_native_test_dispatch_remote_first():
+    """try_dispatch dispatches a native reference test run (checks=tests,
+    no pr/files/tree/base_ref) to a healthy runner - the path used by
+    run_checks' test remote-first block when CI_FARM_TEST_REMOTE_FIRST is on."""
+    row = farm.register_runner("nt1", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {
+        "checks": "tests",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 120.0,
+        "head_sha": "abc123",
+        "output_tail": "ok",
+        "summary": {"tests_run": True},
+    }
+    farm.dispatch_to_runner = lambda runner, payload: remote
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    try:
+        result = farm.try_dispatch(
+            "tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="t",
+            kind_event="ci_run",
+            run_id=None,
+        )
+        assert result is not None
+        assert result["mode"] == "native"
+        assert result["runner"] == "nt1"
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        farm.remove_runner(row["id"])
 
 
 if __name__ == "__main__":

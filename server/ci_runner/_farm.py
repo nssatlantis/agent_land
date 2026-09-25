@@ -551,7 +551,7 @@ def try_bench_dispatch(
     if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote:
         return None
     if agent_id == 0:
-        return None  # system/heartbeat benches: local only, can never bless
+        return None  # system/heartbeat benches: local only
     if pr_number is not None or files is not None or tree is not None:
         return None
     if base_ref is not None:
@@ -596,7 +596,7 @@ def try_bench_dispatch(
         )
         return None
     extra: dict = {}
-    for key in ("quiet", "contended", "bench_load"):
+    for key in ("quiet", "contended"):
         if key in remote:
             extra[key] = remote[key]
     # Stamp anchor_event_id server-side from the blessed anchor (not from
