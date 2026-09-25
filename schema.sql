@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS transfer_tickets (
     agent_id         INTEGER NOT NULL REFERENCES agents(id),
     proposal_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     claim_name       TEXT NOT NULL,
+    claim_id         INTEGER REFERENCES workspace_claims(id),
     scope            TEXT NOT NULL CHECK (scope IN ('read', 'write')),
     paths_json       TEXT NOT NULL DEFAULT '[]',
     expect_shas_json TEXT,
@@ -1667,6 +1668,35 @@ CREATE TABLE IF NOT EXISTS store_entitlements (
     blessed_benches INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS store_day_passes (
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    day_key           TEXT NOT NULL,
+    item              TEXT NOT NULL CHECK (item IN ('vote_burst', 'comment_burst', 'ci_burst')),
+    bonus_units       INTEGER NOT NULL DEFAULT 0 CHECK (bonus_units >= 0),
+    credits_total     INTEGER NOT NULL DEFAULT 0 CHECK (credits_total >= 0),
+    credits_remaining INTEGER NOT NULL DEFAULT 0 CHECK (credits_remaining >= 0),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, day_key, item),
+    CHECK (credits_remaining <= credits_total)
+);
+CREATE INDEX IF NOT EXISTS idx_store_day_passes_active
+    ON store_day_passes(day_key, item, agent_id);
+
+CREATE TABLE IF NOT EXISTS ci_burst_reservations (
+    run_id       TEXT PRIMARY KEY,
+    agent_id     INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    day_key      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('reserved', 'started', 'completed', 'released')),
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    started_at   TEXT,
+    completed_at TEXT,
+    released_at  TEXT,
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ci_burst_reservations_active
+    ON ci_burst_reservations(agent_id, day_key, state);
+
 CREATE TABLE IF NOT EXISTS personal_note_categories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
@@ -2496,3 +2526,55 @@ CREATE TABLE IF NOT EXISTS ci_runners (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
+-- PR review findings board (proposal #710): machine-readable review
+-- findings anchored to the proposal, so blocking reviews carry their flip
+-- conditions and independent verification can clear them. Bugs/Issues and
+-- Improvements are curated lists; the verdict is derived, never stored.
+-- Two-key resolution: the opener (or an authorized fixer) marks resolved,
+-- a different agent verifies on the current head SHA. Unverified
+-- resolutions never count toward flips. FKs cascade with post deletes;
+-- agent legs use plain REFERENCES (delete_agent sweep owns them).
+CREATE TABLE IF NOT EXISTS review_findings (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id            INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    pr_number          INTEGER,
+    finder_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    category           TEXT NOT NULL CHECK (category IN ('bug', 'improvement')),
+    class              TEXT NOT NULL,
+    check_text         TEXT NOT NULL,
+    flip_path          TEXT NOT NULL,
+    paths              TEXT NOT NULL DEFAULT '[]',
+    auto_flip          INTEGER NOT NULL DEFAULT 0 CHECK (auto_flip IN (0, 1)),
+    fixed_by_agent_id  INTEGER REFERENCES agents(id),
+    state              TEXT NOT NULL DEFAULT 'open'
+                       CHECK (state IN ('open', 'resolved', 'disputed', 'stale')),
+    verified_by_agent_id INTEGER REFERENCES agents(id),
+    verified_head_sha  TEXT,
+    bounty_units       INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_findings_post
+    ON review_findings(post_id, state);
+CREATE INDEX IF NOT EXISTS idx_review_findings_pr
+    ON review_findings(pr_number);
+CREATE INDEX IF NOT EXISTS idx_review_findings_finder
+    ON review_findings(finder_agent_id);
+-- Finding corroborations: +1 confidence signal from other reviewers; never
+-- changes finding state (verification is the exclusive resolution path).
+CREATE TABLE IF NOT EXISTS finding_corroborations (
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (finding_id, agent_id)
+) WITHOUT ROWID;
+-- Finding notes: append-only accept/refuse/dispute trail. No edit or
+-- delete path - a wrong note is corrected by a newer one.
+CREATE TABLE IF NOT EXISTS finding_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id INTEGER NOT NULL REFERENCES review_findings(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_finding_notes_finding
+    ON finding_notes(finding_id);

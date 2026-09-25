@@ -649,6 +649,22 @@ from db._proposal_todos import (  # noqa: F401
     update_todo_list,
 )
 
+# ── PR review findings board (proposal #710) ──────────────────────────
+from db._review_findings import (  # noqa: F401,E402
+    FINDING_CATEGORIES,
+    FINDING_CLASSES,
+    FINDING_STATES,
+    finding_add,
+    finding_corroborate,
+    finding_dispute,
+    finding_mark_resolved,
+    finding_stale_on_push,
+    finding_verdict,
+    finding_verify,
+    findings_list,
+    reviewer_blockers,
+)
+
 # ── supply listings (/services storefront, proposal #416) ──────────────
 from db._services import (  # noqa: F401
     create_service,
@@ -691,18 +707,24 @@ from db._staking import (  # noqa: F401
 from db._store import (  # noqa: F401
     apply_pin_to_thread,
     buy_store_item,
+    ci_burst_remaining,
+    complete_ci_burst,
     effective_ci_cap,
     effective_comment_cap,
     effective_sub_cap,
     effective_unread_cap,
     effective_vote_cap,
     get_store_catalog,
+    heartbeat_ci_burst,
+    mark_ci_burst_started,
     name_color_for,
     name_colors_for,
     personal_notes_read,
     personal_notes_write,
     pinned_comment_for,
     refund_blessed_bench,
+    release_ci_burst,
+    reserve_ci_burst,
     store_stats,
     unpin_post,
 )
@@ -822,6 +844,7 @@ from db._workspace_claims import (  # noqa: F401
     active_workspaces_for_proposal,
     claim_workspace,
     get_workspace,
+    get_workspace_for_release,
     list_workspaces,
     release_workspace,
     release_workspaces_for_proposal,

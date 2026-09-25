@@ -296,6 +296,15 @@ async def repo_update_pr(
                 debounced_enqueue(number)
             except Exception:
                 pass  # domain: degrade-silently - enqueue must not fail the update response
+            # A pushed head invalidates prior verification attestations on
+            # the PR's findings board (proposal #710) - stale them so the
+            # next verify re-pins against the new head.
+            try:
+                from ._findings import stale_findings_on_push
+
+                await stale_findings_on_push(number)
+            except Exception:
+                pass  # domain: degrade-silently - staling never fails the update response
     return result
 
 
@@ -424,9 +433,9 @@ def vote_on_prs(
     FORUM_PR_VOTE_THRESHOLD, default 3), the system auto-merges it;
     enough opposing votes auto-declines it. Once the threshold is reached
     new approve (+1) votes are blocked; oppose (-1) votes are always
-    allowed; existing-voter re-votes that would not push net past the
-    threshold are allowed, but -1 to +1 flips past the threshold are
-    rolled back. A PR whose linked proposal has not passed its community
+    allowed; existing-voter re-votes are allowed, including -1 to +1
+    flips that move net past the threshold; only new +1 votes that would
+    push net past the threshold are blocked. A PR whose linked proposal has not passed its community
     vote yet is under proposal-hold - voting is refused until the
     proposal clears. This is not the content/governance vote (vote, batch
     of up to 10 on posts/comments/proposals), the non-binding post-poll
