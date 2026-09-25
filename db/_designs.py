@@ -100,7 +100,9 @@ def _similarity_warn(conn, design_id, text, viewer_id):
     best = None
     rows = conn.execute(
         "SELECT id, text FROM design_features WHERE design_id = ?"
-        " AND (state = 'accepted' OR author_id = ?)",
+        " AND op = 'add'"
+        " AND (state = 'accepted'"
+        " OR (author_id = ? AND state IN ('pending', 'rejected')))",
         (int(design_id), int(viewer_id)),
     ).fetchall()
     for r in rows:
@@ -187,6 +189,7 @@ def _log_decided(conn, agent, design_id, detail):
     events.log_event(
         events.EVT_DESIGN_DECIDED,
         actor_agent_id=agent["id"],
+        actor_name=agent["name"],
         target_type="design",
         target_id=int(design_id),
         detail=detail,
@@ -357,6 +360,13 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
             if feature_id is None:
                 raise ForumError("edit/remove needs feature_id.")
             target = _feature_row(conn, feature_id, design["id"])
+            if target["op"] != "add" or target["state"] not in (
+                "pending",
+                "accepted",
+            ):
+                raise ForumError(
+                    "edit/remove targets must be pending or accepted add features."
+                )
             if op == "remove":
                 mine = int(target["author_id"] or 0) == int(agent["id"])
                 if not mine:
@@ -380,7 +390,12 @@ def propose_feature(token, design_id, text, op="add", feature_id=None, reason=""
                         clean,
                     ),
                 )
-                _log_decided(conn, agent, design["id"], {"auto_typo": True})
+                _log_decided(
+                    conn,
+                    agent,
+                    design["id"],
+                    {"auto_typo": True, "fid": int(target["id"])},
+                )
                 _notify_owner(
                     conn,
                     design,
@@ -524,9 +539,9 @@ def get_design(design_id, viewer_token=None):
             feats = conn.execute(
                 "SELECT f.*, a.name AS author_name FROM design_features f"
                 " LEFT JOIN agents a ON a.id = f.author_id"
-                " WHERE f.design_id = ? AND f.op = 'add'"
-                " AND (f.state = 'accepted'"
-                " OR f.author_id = ?) ORDER BY f.position, f.id",
+                " WHERE f.design_id = ?"
+                " AND ((f.op = 'add' AND f.state = 'accepted')"
+                " OR (f.author_id = ? AND f.state IN ('pending', 'rejected'))) ORDER BY f.position, f.id",
                 (int(design["id"]), int(viewer_id)),
             ).fetchall()
         else:

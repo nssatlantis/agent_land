@@ -2,6 +2,7 @@
 blind matrix, typo, similarity, decide/withdraw/update, caps, frozen state,
 positions, events and notifications."""
 
+import json
 import os
 import sys
 import tempfile
@@ -149,6 +150,18 @@ def main():
             ).fetchall()
         ]
     assert any("typo fix" in b for b in owner_mails), owner_mails
+    with db._conn() as conn:
+        typo_details = [
+            json.loads(r["detail"])
+            for r in conn.execute(
+                "SELECT detail FROM events WHERE kind = 'design_decided'"
+                " AND detail LIKE '%auto_typo%'"
+            ).fetchall()
+        ]
+    assert any(
+        d.get("auto_typo") is True and d.get("fid") == p1["feature_id"]
+        for d in typo_details
+    ), typo_details
     print("  typo fast-path: ok")
 
     # --- similarity warn + reason ----------------------------------------------
@@ -160,6 +173,16 @@ def main():
         reason="gamma needs a blue variant for cold climates, distinct scope",
     )
     assert p2["state"] == "pending" and p2["warning"] is not None, p2
+    rejected = designs.propose_feature(
+        gamma["token"], d["id"], "qz rejected marker 7319"
+    )
+    flow.decide_feature(alpha["token"], d["id"], rejected["feature_id"], False)
+    expect_error(
+        designs.propose_feature,
+        gamma["token"],
+        d["id"],
+        "qz rejected marker 7319",
+    )
     print("  similarity warn: ok")
 
     # --- remove-own / withdraw / update-pending ----------------------------------
@@ -186,6 +209,33 @@ def main():
         text="hijack",
     )
     print("  remove/withdraw/update-pending: ok")
+
+    own_edit = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "A deliberately distinct revision for the studio tool",
+        op="edit",
+        feature_id=p1["feature_id"],
+    )
+    own_remove = designs.propose_feature(
+        beta["token"],
+        d["id"],
+        "x",
+        op="remove",
+        feature_id=p3["feature_id"],
+    )
+    got_beta = designs.get_design(d["id"], beta["token"])
+    assert any(
+        f["id"] == own_edit["feature_id"] and f["state"] == "pending"
+        for f in got_beta["features"]
+    ), got_beta["features"]
+    assert any(
+        f["id"] == own_remove["feature_id"] and f["state"] == "pending"
+        for f in got_beta["features"]
+    ), got_beta["features"]
+    flow.withdraw_feature(beta["token"], d["id"], own_edit["feature_id"])
+    flow.withdraw_feature(beta["token"], d["id"], own_remove["feature_id"])
+    print("  own pending edit/remove visibility: ok")
 
     # --- positions ---------------------------------------------------------------
     flow.decide_feature(alpha["token"], d["id"], p3["feature_id"], True)
@@ -249,6 +299,10 @@ def main():
     )
     assert pe["state"] == "pending", pe
     flow.decide_feature(alpha["token"], d["id"], pe["feature_id"], True)
+    got_beta = designs.get_design(d["id"], beta["token"])
+    assert all(f["id"] != pe["feature_id"] for f in got_beta["features"]), got_beta[
+        "features"
+    ]
     got_gamma = designs.get_design(d["id"], gamma["token"])
     texts = [f["text"] for f in got_gamma["features"]]
     assert texts.count("A magenta gadget for studios") == 1, texts
@@ -256,13 +310,33 @@ def main():
         beta["token"], d["id"], "x", op="remove", feature_id=p3["feature_id"]
     )
     flow.decide_feature(alpha["token"], d["id"], pr["feature_id"], True)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_features SET position = 0 WHERE id = ?",
+            (pe["feature_id"],),
+        )
+        conn.execute(
+            "UPDATE design_features SET position = 1 WHERE id = ?",
+            (p1["feature_id"],),
+        )
+    moved = db.move_design_item(
+        alpha["token"], d["id"], "feature", p1["feature_id"], "up"
+    )
+    assert moved["moved"] is False, moved
+    expect_error(
+        db.move_design_item, alpha["token"], d["id"], "feature", pe["feature_id"], "up"
+    )
+    got_beta = designs.get_design(d["id"], beta["token"])
+    assert all(f["id"] != pr["feature_id"] for f in got_beta["features"]), got_beta[
+        "features"
+    ]
     got_gamma = designs.get_design(d["id"], gamma["token"])
-    assert [f["text"] for f in got_gamma["features"]] == [
+    assert [f["text"] for f in got_gamma["features"] if f["state"] == "accepted"] == [
         "A magenta gadget for studios"
     ], got_gamma["features"]
     dock = designs.list_designs("open")
     row = [x for x in dock["designs"] if x["id"] == d["id"]][0]
-    assert row["accepted"] == 1 and row["total"] == 3, row
+    assert row["accepted"] == 1 and row["total"] == 4, row
     assert dock["total"] >= 1
     print("  ghost filter + counts: ok")
 

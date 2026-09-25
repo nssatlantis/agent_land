@@ -2,6 +2,7 @@
 owner ops plus parity with the token path (mirrored fixtures, identical
 end states - the duplication guard)."""
 
+import json
 import os
 import sys
 import tempfile
@@ -67,6 +68,13 @@ def main():
     r = admin.admin_decide_feature("alpha", did, f2["feature_id"], False, note="No")
     assert r["approved"] is False, r
     expect_error(admin.admin_decide_feature, "alpha", did, f2["feature_id"], True)
+    rejected_issue = issues.propose_issue(beta["token"], did, "Issue needing a note")
+    assert (
+        admin.admin_decide_issue(
+            "alpha", did, rejected_issue["issue_id"], False, note="Needs detail"
+        )["approved"]
+        is False
+    )
     print("  decide-feature: ok")
 
     # --- decide + resolve issue ----------------------------------------------
@@ -90,6 +98,15 @@ def main():
     expect_error(
         admin.admin_move_design_item, "alpha", did, "nope", f3["feature_id"], "up"
     )
+    move_history = admin.admin_design_history("alpha", did)
+    move_details = [json.loads(d["detail"]) for d in move_history["decisions"]]
+    assert any(
+        d.get("op") == "move"
+        and d.get("kind") == "feature"
+        and d.get("item_id") == f3["feature_id"]
+        and d.get("direction") == "up"
+        for d in move_details
+    ), move_details
     q = discuss.ask_question(beta["token"], did, "What fuel?")
     a = admin.admin_answer_question("alpha", did, q["question_id"], "Sunlight.")
     assert a["state"] == "answered", a
@@ -122,6 +139,173 @@ def main():
         is False
     )
     print("  move/answer/toggle: ok")
+
+    # --- direct admin authoring ----------------------------------------------
+    direct_feature = admin.admin_create_feature(
+        "alpha", did, "Admin-authored accepted feature"
+    )
+    assert direct_feature["state"] == "accepted", direct_feature
+    admin.admin_edit_feature(
+        "alpha", did, direct_feature["feature_id"], "Admin-authored edited feature"
+    )
+    direct_issue = admin.admin_create_issue(
+        "alpha",
+        did,
+        "Admin-authored accepted issue",
+        feature_id=direct_feature["feature_id"],
+    )
+    assert direct_issue["state"] == "accepted", direct_issue
+    expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
+    prior_floor = os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"]
+    os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = "0"
+    try:
+        pending_remove = designs.propose_feature(
+            alpha["token"],
+            did,
+            "remove",
+            op="remove",
+            feature_id=direct_feature["feature_id"],
+        )
+        expect_error(
+            flow.decide_feature,
+            alpha["token"],
+            did,
+            pending_remove["feature_id"],
+            True,
+        )
+        flow.withdraw_feature(alpha["token"], did, pending_remove["feature_id"])
+    finally:
+        os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = prior_floor
+    vanishing_feature = admin.admin_create_feature(
+        "alpha", did, "Feature with stale pending edit"
+    )
+    stale_edit = designs.propose_feature(
+        beta["token"],
+        did,
+        "Stale edit that must not revive a removed target",
+        op="edit",
+        feature_id=vanishing_feature["feature_id"],
+    )
+    admin.admin_remove_feature("alpha", did, vanishing_feature["feature_id"])
+    expect_error(
+        flow.decide_feature,
+        alpha["token"],
+        did,
+        stale_edit["feature_id"],
+        True,
+    )
+    assert (
+        flow.decide_feature(alpha["token"], did, stale_edit["feature_id"], False)[
+            "approved"
+        ]
+        is False
+    )
+    resolved_parent = admin.admin_create_feature(
+        "alpha", did, "Feature with a resolved linked issue"
+    )
+    resolved_child = admin.admin_create_issue(
+        "alpha",
+        did,
+        "Resolved issue that no longer blocks parent removal",
+        feature_id=resolved_parent["feature_id"],
+    )
+    admin.admin_resolve_issue("alpha", did, resolved_child["issue_id"])
+    admin.admin_remove_feature("alpha", did, resolved_parent["feature_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_issues SET state = 'accepted' WHERE id = ?",
+            (resolved_child["issue_id"],),
+        )
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        resolved_child["issue_id"],
+        "Edited after hidden parent removal",
+    )
+    with db._conn() as conn:
+        kept_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?",
+            (resolved_child["issue_id"],),
+        ).fetchone()[0]
+    assert kept_link == resolved_parent["feature_id"], kept_link
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        resolved_child["issue_id"],
+        "Explicitly unlinked after hidden parent removal",
+        feature_id=None,
+    )
+    with db._conn() as conn:
+        cleared_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?",
+            (resolved_child["issue_id"],),
+        ).fetchone()[0]
+    assert cleared_link is None, cleared_link
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        direct_issue["issue_id"],
+        "Admin-authored edited issue",
+        feature_id=f1["feature_id"],
+    )
+    history = admin.admin_design_history("alpha", did)
+    assert any(
+        f["id"] == direct_feature["feature_id"] and f["state"] == "accepted"
+        for f in history["features"]
+    ), history
+    assert any(
+        i["id"] == direct_issue["issue_id"] and i["state"] == "accepted"
+        for i in history["issues"]
+    ), history
+    issue_edits = [
+        e
+        for e in history["edit_logs"]
+        if e["kind"] == "issue" and e["feature_or_issue_id"] == direct_issue["issue_id"]
+    ]
+    assert issue_edits[-1]["old_text"] == (
+        f"Admin-authored accepted issue [feature_id={direct_feature['feature_id']}]"
+    )
+    assert issue_edits[-1]["new_text"] == (
+        f"Admin-authored edited issue [feature_id={f1['feature_id']}]"
+    )
+    decision_details = [json.loads(d["detail"]) for d in history["decisions"]]
+    assert any(
+        d.get("fid") == f2["feature_id"] and d.get("note") == "No"
+        for d in decision_details
+    ), decision_details
+    assert any(
+        d.get("issue_id") == rejected_issue["issue_id"]
+        and d.get("note") == "Needs detail"
+        for d in decision_details
+    ), decision_details
+    admin.admin_remove_issue("alpha", did, direct_issue["issue_id"])
+    admin.admin_remove_feature("alpha", did, direct_feature["feature_id"])
+    history_after = admin.admin_design_history("alpha", did)
+    after_details = [json.loads(d["detail"]) for d in history_after["decisions"]]
+    assert any(
+        d.get("fid") == direct_feature["feature_id"]
+        and d.get("direct") is True
+        and d.get("op") == "remove"
+        for d in after_details
+    ), after_details
+    os.environ["ADMIN_USER"] = "ghost-panel"
+    ghost_design = admin.admin_create_design("ghost-panel", "Unregistered panel design")
+    ghost_feature = admin.admin_create_feature(
+        "ghost-panel", ghost_design["id"], "Unregistered panel feature"
+    )
+    admin.admin_remove_feature(
+        "ghost-panel", ghost_design["id"], ghost_feature["feature_id"]
+    )
+    ghost_history = admin.admin_design_history("ghost-panel", ghost_design["id"])
+    ghost_details = [json.loads(d["detail"]) for d in ghost_history["decisions"]]
+    assert any(
+        d.get("op") == "remove" and d.get("direct") is True for d in ghost_details
+    ), ghost_details
+    assert any(
+        d.get("actor_name") == "ghost-panel" for d in ghost_history["decisions"]
+    ), ghost_history["decisions"]
+    os.environ["ADMIN_USER"] = "alpha"
+    print("  direct authoring: ok")
 
     # --- parity: mirrored fixtures, identical end states -----------------------
     with db._conn() as conn:

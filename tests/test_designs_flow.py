@@ -52,11 +52,21 @@ def main():
     i2 = issues.propose_issue(
         gamma["token"], did, "Green engine will not idle", feature_id=f1["feature_id"]
     )
+    design_level = issues.propose_issue(beta["token"], did, "Design-level issue")
+    issues.decide_issue(alpha["token"], did, design_level["issue_id"], True)
     got = issues.list_issues(did, alpha["token"])
-    assert len(got["issues"]) == 2, got["issues"]
+    assert len(got["issues"]) == 3, got["issues"]
+    assert got["issues"][2]["feature_id"] is None, got["issues"]
     assert got["issues"][1]["feature_text"] == "Build a green engine block"
     blind = issues.list_issues(did, gamma["token"])
-    assert len(blind["issues"]) == 1, blind["issues"]
+    assert len(blind["issues"]) == 2, blind["issues"]
+    assert blind["issues"][1]["id"] == design_level["issue_id"]
+    public = issues.list_issues(did)
+    public_design_level = [
+        i for i in public["issues"] if i["id"] == design_level["issue_id"]
+    ]
+    assert len(public_design_level) == 1, public["issues"]
+    assert public_design_level[0]["feature_id"] is None, public_design_level
     assert blind["issues"][0]["author_name"] == "gamma"
     r = issues.decide_issue(alpha["token"], did, i1["issue_id"], True)
     assert r["approved"] is True
@@ -153,13 +163,18 @@ def main():
         gamma["token"], did4, "Doomed engine will fail", feature_id=f3["feature_id"]
     )
     issues.decide_issue(alpha["token"], did4, i3["issue_id"], True)
+    issues.resolve_issue(alpha["token"], did4, i3["issue_id"])
     rm = designs.propose_feature(
         beta["token"], did4, "remove it", op="remove", feature_id=f3["feature_id"]
     )
     flow.decide_feature(alpha["token"], did4, rm["feature_id"], True)
     blind = issues.list_issues(did4)
     gone = [i for i in blind["issues"] if i["id"] == i3["issue_id"]]
-    assert len(gone) == 1 and gone[0]["feature_text"] is None, gone
+    assert (
+        len(gone) == 1
+        and gone[0]["feature_id"] is None
+        and gone[0]["feature_text"] is None
+    ), gone
     owner_view = issues.list_issues(did4, alpha["token"])
     kept = [i for i in owner_view["issues"] if i["id"] == i3["issue_id"]]
     assert len(kept) == 1 and kept[0]["feature_text"] == "Doomed engine block", kept

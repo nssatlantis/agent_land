@@ -30,6 +30,7 @@ proposal-sized migration, tracked as the follow-up.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -38,9 +39,14 @@ from db._core import ForumError, _check_agent_active, _conn, _now_iso
 from db._designs import (
     _DESC_MAX,
     _REQ_TEXT_MAX,
+    _TEXT_MAX,
     _TITLE_MAX,
     REQUEST_TAGS,
+    _agent_name,
+    _feature_row,
     _is_admin_name,
+    _log_decided,
+    _next_position,
     _norm,
     _require_design,
     _require_open,
@@ -81,6 +87,364 @@ def _admin_agent(conn, admin):
     agent = dict(row)
     agent["_panel"] = True
     return agent
+
+
+_UNSET = object()
+
+
+def _direct_feature_target(conn, design_id, feature_id):
+    row = _feature_row(conn, feature_id, design_id)
+    if row["op"] != "add" or row["state"] != "accepted":
+        raise ForumError("only accepted add features can be authored directly.")
+    return row
+
+
+def _direct_issue_target(conn, design_id, issue_id):
+    from db._designs_issues import _issue_row
+
+    row = _issue_row(conn, issue_id, design_id)
+    if row["state"] != "accepted":
+        raise ForumError("only accepted issues can be authored directly.")
+    return row
+
+
+def _direct_issue_link(conn, design_id, feature_id):
+    if feature_id is None or str(feature_id).strip() == "":
+        return None
+    try:
+        fid = int(feature_id)
+    except (TypeError, ValueError) as exc:
+        raise ForumError("linked feature id must be an integer.") from exc
+    row = conn.execute(
+        "SELECT id, op, state FROM design_features WHERE id = ? AND design_id = ?",
+        (fid, int(design_id)),
+    ).fetchone()
+    if row is None or row["op"] != "add" or row["state"] != "accepted":
+        raise ForumError("only accepted add features take linked issues.")
+    return fid
+
+
+def _direct_edit_log(conn, design_id, row_id, kind, editor_id, old_text, new_text):
+    conn.execute(
+        "INSERT INTO design_edit_log (design_id, feature_or_issue_id, kind,"
+        " editor_id, old_text, new_text, auto_typo, similarity)"
+        " VALUES (?, ?, ?, ?, ?, ?, 0, NULL)",
+        (int(design_id), int(row_id), kind, editor_id, old_text, new_text),
+    )
+
+
+def _issue_edit_snapshot(text, feature_id):
+    link = "none" if feature_id is None else str(int(feature_id))
+    return f"{text} [feature_id={link}]"
+
+
+def admin_create_feature(admin, design_id, text):
+    clean = (text or "").strip()
+    if not clean or len(clean) > _TEXT_MAX:
+        raise ForumError(f"feature text must be 1-{_TEXT_MAX} characters.")
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM design_features WHERE design_id = ?"
+            " AND state IN ('pending', 'accepted')",
+            (int(design["id"]),),
+        ).fetchone()[0]
+        if int(count or 0) >= int(config.DESIGN_MAX_FEATURES):
+            raise ForumError(
+                f"that design already holds {int(config.DESIGN_MAX_FEATURES)} features."
+            )
+        now = _now_iso()
+        cur = conn.execute(
+            "INSERT INTO design_features (design_id, text, author_id, state,"
+            " op, position, created_at, decided_at, decided_by)"
+            " VALUES (?, ?, ?, 'accepted', 'add', ?, ?, ?, ?)",
+            (
+                int(design["id"]),
+                clean,
+                agent["id"],
+                _next_position(conn, design["id"]),
+                now,
+                now,
+                agent["id"],
+            ),
+        )
+        fid = int(cur.lastrowid or 0)
+        _direct_edit_log(conn, design["id"], fid, "feature", agent["id"], "", clean)
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"fid": fid, "ok": True, "direct": True, "op": "add"},
+        )
+        return {"feature_id": fid, "state": "accepted", "direct": True}
+
+
+def admin_edit_feature(admin, design_id, feature_id, text):
+    clean = (text or "").strip()
+    if not clean or len(clean) > _TEXT_MAX:
+        raise ForumError(f"feature text must be 1-{_TEXT_MAX} characters.")
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        target = _direct_feature_target(conn, design["id"], feature_id)
+        conn.execute(
+            "UPDATE design_features SET text = ? WHERE id = ?",
+            (clean, int(target["id"])),
+        )
+        _direct_edit_log(
+            conn,
+            design["id"],
+            target["id"],
+            "feature",
+            agent["id"],
+            target["text"],
+            clean,
+        )
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"fid": int(target["id"]), "ok": True, "direct": True, "op": "edit"},
+        )
+        return {"feature_id": int(target["id"]), "state": "accepted", "direct": True}
+
+
+def admin_remove_feature(admin, design_id, feature_id):
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        target = _direct_feature_target(conn, design["id"], feature_id)
+        linked = conn.execute(
+            "SELECT id FROM design_issues WHERE design_id = ? AND feature_id = ?"
+            " AND state IN ('pending', 'accepted') LIMIT 1",
+            (int(design["id"]), int(target["id"])),
+        ).fetchone()
+        if linked is not None:
+            raise ForumError("cannot remove a feature with linked issues.")
+        now = _now_iso()
+        conn.execute(
+            "UPDATE design_features SET state = 'rejected', decided_at = ?,"
+            " decided_by = ? WHERE id = ?",
+            (now, agent["id"], int(target["id"])),
+        )
+        _direct_edit_log(
+            conn,
+            design["id"],
+            target["id"],
+            "feature",
+            agent["id"],
+            target["text"],
+            "",
+        )
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"fid": int(target["id"]), "ok": True, "direct": True, "op": "remove"},
+        )
+        return {"feature_id": int(target["id"]), "state": "rejected", "direct": True}
+
+
+def admin_create_issue(admin, design_id, text, feature_id=None):
+    clean = (text or "").strip()
+    if not clean or len(clean) > _TEXT_MAX:
+        raise ForumError(f"issue text must be 1-{_TEXT_MAX} characters.")
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM design_issues WHERE design_id = ?"
+            " AND state IN ('pending', 'accepted')",
+            (int(design["id"]),),
+        ).fetchone()[0]
+        if int(count or 0) >= int(config.DESIGN_MAX_ISSUES):
+            raise ForumError(
+                f"that design already holds {int(config.DESIGN_MAX_ISSUES)} issues."
+            )
+        fid = _direct_issue_link(conn, design["id"], feature_id)
+        now = _now_iso()
+        pos = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM design_issues"
+            " WHERE design_id = ?",
+            (int(design["id"]),),
+        ).fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO design_issues (design_id, text, author_id, feature_id,"
+            " state, position, created_at, decided_at, decided_by)"
+            " VALUES (?, ?, ?, ?, 'accepted', ?, ?, ?, ?)",
+            (
+                int(design["id"]),
+                clean,
+                agent["id"],
+                fid,
+                int(pos or 0),
+                now,
+                now,
+                agent["id"],
+            ),
+        )
+        iid = int(cur.lastrowid or 0)
+        _direct_edit_log(conn, design["id"], iid, "issue", agent["id"], "", clean)
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"issue_id": iid, "ok": True, "direct": True, "op": "add"},
+        )
+        return {"issue_id": iid, "state": "accepted", "direct": True}
+
+
+def admin_edit_issue(admin, design_id, issue_id, text, feature_id=_UNSET):
+    clean = (text or "").strip()
+    if not clean or len(clean) > _TEXT_MAX:
+        raise ForumError(f"issue text must be 1-{_TEXT_MAX} characters.")
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        target = _direct_issue_target(conn, design["id"], issue_id)
+        fid = target["feature_id"]
+        if feature_id is not _UNSET:
+            fid = _direct_issue_link(conn, design["id"], feature_id)
+        conn.execute(
+            "UPDATE design_issues SET text = ?, feature_id = ? WHERE id = ?",
+            (clean, fid, int(target["id"])),
+        )
+        old_snapshot = _issue_edit_snapshot(target["text"], target["feature_id"])
+        new_snapshot = _issue_edit_snapshot(clean, fid)
+        _direct_edit_log(
+            conn,
+            design["id"],
+            target["id"],
+            "issue",
+            agent["id"],
+            old_snapshot,
+            new_snapshot,
+        )
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {
+                "issue_id": int(target["id"]),
+                "old_feature_id": target["feature_id"],
+                "feature_id": fid,
+                "ok": True,
+                "direct": True,
+                "op": "edit",
+            },
+        )
+        return {"issue_id": int(target["id"]), "state": "accepted", "direct": True}
+
+
+def admin_remove_issue(admin, design_id, issue_id):
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        _require_open(design)
+        target = _direct_issue_target(conn, design["id"], issue_id)
+        now = _now_iso()
+        conn.execute(
+            "UPDATE design_issues SET state = 'rejected', decided_at = ?,"
+            " decided_by = ? WHERE id = ?",
+            (now, agent["id"], int(target["id"])),
+        )
+        _direct_edit_log(
+            conn,
+            design["id"],
+            target["id"],
+            "issue",
+            agent["id"],
+            target["text"],
+            "",
+        )
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"issue_id": int(target["id"]), "ok": True, "direct": True, "op": "remove"},
+        )
+        return {"issue_id": int(target["id"]), "state": "rejected", "direct": True}
+
+
+def admin_design_history(admin, design_id):
+    with _conn(immediate=True) as conn:
+        agent = _admin_agent(conn, admin)
+        design = _require_design(conn, design_id)
+        _require_owner(design, agent)
+        feats = conn.execute(
+            "SELECT f.*, a.name AS author_name, target.text AS target_text"
+            " FROM design_features f LEFT JOIN agents a ON a.id = f.author_id"
+            " LEFT JOIN design_features target ON target.id = f.target_feature_id"
+            " WHERE f.design_id = ? ORDER BY f.position, f.id",
+            (int(design["id"]),),
+        ).fetchall()
+        issues = conn.execute(
+            "SELECT i.*, a.name AS author_name, f.text AS feature_text"
+            " FROM design_issues i LEFT JOIN agents a ON a.id = i.author_id"
+            " LEFT JOIN design_features f ON f.id = i.feature_id"
+            " WHERE i.design_id = ? ORDER BY i.position, i.id",
+            (int(design["id"]),),
+        ).fetchall()
+        questions = conn.execute(
+            "SELECT q.*, a.name AS asker_name FROM design_questions q"
+            " LEFT JOIN agents a ON a.id = q.asker_id"
+            " WHERE q.design_id = ? ORDER BY q.id",
+            (int(design["id"]),),
+        ).fetchall()
+        comments = conn.execute(
+            "SELECT c.*, a.name AS author_name FROM design_comments c"
+            " LEFT JOIN agents a ON a.id = c.author_id"
+            " WHERE c.design_id = ? ORDER BY c.created_at, c.id",
+            (int(design["id"]),),
+        ).fetchall()
+        meta = conn.execute(
+            "SELECT m.*, a.name AS editor_name FROM design_meta_edits m"
+            " LEFT JOIN agents a ON a.id = m.editor_id"
+            " WHERE m.design_id = ? ORDER BY m.id",
+            (int(design["id"]),),
+        ).fetchall()
+        edits = conn.execute(
+            "SELECT l.*, a.name AS editor_name FROM design_edit_log l"
+            " LEFT JOIN agents a ON a.id = l.editor_id"
+            " WHERE l.design_id = ? ORDER BY l.id",
+            (int(design["id"]),),
+        ).fetchall()
+        decisions = conn.execute(
+            "SELECT e.id, e.kind, e.category, e.actor_agent_id,"
+            " COALESCE(e.actor_name, a.name) AS actor_name, e.target_type,"
+            " e.target_id, e.detail, e.created_at FROM events e"
+            " LEFT JOIN agents a ON a.id = e.actor_agent_id"
+            " WHERE e.kind = 'design_decided' AND e.target_type = 'design'"
+            " AND e.target_id = ? ORDER BY e.id",
+            (int(design["id"]),),
+        ).fetchall()
+        d = dict(design)
+        d["owner_name"] = _agent_name(conn, design["owner_admin_id"])
+        d["is_owner"] = True
+        return {
+            "design": d,
+            "features": [dict(r) for r in feats],
+            "issues": [dict(r) for r in issues],
+            "questions": [dict(r) for r in questions],
+            "comments_enabled": bool(design["comments_enabled"]),
+            "comments": [dict(r) for r in comments],
+            "meta_edits": [dict(r) for r in meta],
+            "edit_logs": [dict(r) for r in edits],
+            "decisions": [dict(r) for r in decisions],
+            "preview_digest": _preview_digest(conn, design["id"]),
+        }
 
 
 def admin_decide_feature(admin, design_id, feature_id, approve, note=""):
@@ -131,8 +495,9 @@ def admin_design_pending(admin, design_id):
         design = _require_design(conn, design_id)
         _require_owner(design, agent)
         feats = conn.execute(
-            "SELECT f.*, a.name AS author_name FROM design_features f"
-            " LEFT JOIN agents a ON a.id = f.author_id"
+            "SELECT f.*, a.name AS author_name, target.text AS target_text"
+            " FROM design_features f LEFT JOIN agents a ON a.id = f.author_id"
+            " LEFT JOIN design_features target ON target.id = f.target_feature_id"
             " WHERE f.design_id = ? AND f.state = 'pending' ORDER BY f.id",
             (int(design["id"]),),
         ).fetchall()
@@ -323,7 +688,52 @@ def admin_edit_design_meta(
         return {"design_id": int(design["id"]), "updated": sorted(updates)}
 
 
-def admin_close_design(admin, design_id, confirm=False):
+def _preview_ids(value):
+    if value is None:
+        return None
+    try:
+        return tuple(
+            int(part.strip()) for part in str(value).split(",") if part.strip()
+        )
+    except (TypeError, ValueError) as exc:
+        raise ForumError("invalid archive preview.") from exc
+
+
+def _preview_digest(conn, design_id):
+    payload = []
+    for row in conn.execute(
+        "SELECT id, text, reason, op, target_feature_id FROM design_features"
+        " WHERE design_id = ? AND state = 'pending' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("feature", dict(row)))
+    for row in conn.execute(
+        "SELECT id, text, feature_id, reason FROM design_issues"
+        " WHERE design_id = ? AND state = 'pending' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("issue", dict(row)))
+    for row in conn.execute(
+        "SELECT id, body FROM design_questions"
+        " WHERE design_id = ? AND state = 'open' ORDER BY id",
+        (int(design_id),),
+    ).fetchall():
+        payload.append(("question", dict(row)))
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def admin_close_design(
+    admin,
+    design_id,
+    confirm=False,
+    preview_feature_ids=None,
+    preview_issue_ids=None,
+    preview_question_ids=None,
+    preview_digest=None,
+):
     """Sole-admin archive of a system-owned design (panel authority).
 
     Mirrors close_design: same 2-step confirm (pending features/issues and
@@ -337,14 +747,54 @@ def admin_close_design(admin, design_id, confirm=False):
         _require_owner(design, agent)
         _require_open(design)
         pend, ipend, open_q = _open_counts(conn, design["id"])
+        feature_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND state = 'pending' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
+        issue_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND state = 'pending' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
+        question_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_questions WHERE design_id = ?"
+                " AND state = 'open' ORDER BY id",
+                (int(design["id"]),),
+            ).fetchall()
+        ]
+        current_digest = _preview_digest(conn, design["id"])
         if (pend or ipend or open_q) and not confirm:
             return {
                 "need_confirm": True,
                 "pending_features": pend,
                 "pending_issues": ipend,
                 "open_questions": open_q,
+                "pending_feature_ids": feature_ids,
+                "pending_issue_ids": issue_ids,
+                "open_question_ids": question_ids,
+                "preview_digest": current_digest,
                 "hint": "re-run with confirm=True to drop them and archive",
             }
+        if confirm and (pend or ipend or open_q):
+            expected = (
+                _preview_ids(preview_feature_ids),
+                _preview_ids(preview_issue_ids),
+                _preview_ids(preview_question_ids),
+            )
+            current = (tuple(feature_ids), tuple(issue_ids), tuple(question_ids))
+            if expected != current or preview_digest != current_digest:
+                raise ForumError(
+                    "archive preview changed; re-preview before confirming."
+                )
         now = _now_iso()
         conn.execute(
             "UPDATE designs SET status = 'archived', closed_at = ? WHERE id = ?",
