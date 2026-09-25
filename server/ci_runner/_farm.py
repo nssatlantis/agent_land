@@ -495,6 +495,8 @@ def try_dispatch(
         try:
             expected_ref = _validate_ref(base_ref)
         except Exception:
+            # Not a swallow: _retry_local audits the drop and re-raises the
+            # typed signal the caller retries on.
             _retry_local(runner, "invalid base_ref", checks, agent_id, name)
         if remote.get("base_ref") != expected_ref:
             _retry_local(runner, "runner base_ref mismatch", checks, agent_id, name)
