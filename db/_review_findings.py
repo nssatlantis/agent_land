@@ -509,14 +509,21 @@ def flip_ready(
 
 
 def flip_pr_vote_to_approve(
-    conn: sqlite3.Connection, pr_number: int, voter_id: int
+    conn: sqlite3.Connection,
+    post_id: int,
+    pr_number: int,
+    voter_id: int,
+    live_head_sha: str,
 ) -> dict:
     """System-cast flip of an existing -1 to +1 after every consented
     blocker verified on a green head.  Mirrors vote_on_pr's change path
     (same row write, same bar stamp, same event) - existing-voter flips
     are always threshold-legal, so no post-insert guard applies.  The
-    voter may always re-vote -1 afterwards; a flip is a standing
-    instruction, never a lock."""
+    flip re-checks every consented row inside this same transaction
+    (still verified at the live head): a push that landed between the
+    readiness read and this write aborts to the nudge path instead of
+    flipping on a moved head.  The voter may always re-vote -1
+    afterwards; a flip is a standing instruction, never a lock."""
     from db._pr_vote import _pr_vote_threshold
     from events import EVT_PR_VOTE_CHANGED, log_event
 
@@ -526,6 +533,18 @@ def flip_pr_vote_to_approve(
     ).fetchone()
     if existing is None or existing["value"] != -1:
         raise ForumError("no -1 vote to flip on this PR")
+    reopened = conn.execute(
+        "SELECT id FROM review_findings"
+        " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
+        " AND auto_flip = 1 AND NOT (state = 'resolved'"
+        " AND verified_by_agent_id IS NOT NULL AND verified_head_sha = ?)",
+        (post_id, pr_number, voter_id, live_head_sha.lower()),
+    ).fetchall()
+    if reopened:
+        raise ForumError(
+            "blockers reopened during the flip - nudge instead: "
+            + ",".join(str(r["id"]) for r in reopened)
+        )
     from db._core import _now_iso
 
     bar = _pr_vote_threshold(conn)
