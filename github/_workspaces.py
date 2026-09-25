@@ -197,9 +197,29 @@ def _retire_claim_tree_locked(dest: str) -> bool:
     return _retire_dir(dest)
 
 
+def _discard_claim_lock(dest: str) -> None:
+    """Best-effort remove of a retired tree's sibling lock file.
+
+    Runs only after the locking fd is closed: callers retire under the
+    lock, release it, then discard (Windows cannot remove an open file).
+    A racing reclaim between close and unlink converges through claim-id
+    revalidation and downstream tree-gone errors; the unlink itself never
+    fails loudly.
+    """
+    if os.path.isdir(dest):
+        return
+    try:
+        os.unlink(dest + ".workspace.lock")
+    except OSError:  # domain: degrade-silently - lock litter converges later
+        pass
+
+
 def _retire_claim_tree(dest: str) -> bool:
     with workspace_lock(dest, allow_missing=True):
-        return _retire_claim_tree_locked(dest)
+        gone = _retire_claim_tree_locked(dest)
+    if gone:
+        _discard_claim_lock(dest)
+    return gone
 
 
 def _clone_claim_tree(dest: str) -> None:
@@ -1302,6 +1322,7 @@ def sweep_idle_claim_trees() -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
+                retired = False
                 try:
                     with workspace_lock(dest, allow_missing=True):
                         manifest = _read_manifest(dest)
@@ -1313,12 +1334,15 @@ def sweep_idle_claim_trees() -> int:
                         ):  # domain: degrade-silently - bad stamp sweeps nothing
                             continue
                         if idle > ttl and _retire_claim_tree_locked(dest):
+                            retired = True
                             swept += 1
                 except (
                     OSError,
                     RepoError,
                 ):  # domain: degrade-silently - sweep one tree
                     continue
+                if retired:
+                    _discard_claim_lock(dest)
     return swept
 
 
@@ -1368,6 +1392,7 @@ def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
                 dest = os.path.join(prop_dir, claim)
                 if not os.path.isdir(dest):
                     continue
+                retired = False
                 try:
                     with workspace_lock(dest, allow_missing=True):
                         manifest = _read_manifest(dest)
@@ -1390,10 +1415,13 @@ def sweep_released_claim_trees(live: set | Callable[[], set]) -> int:
                         if current_live is None:
                             continue
                         if key not in current_live and _retire_claim_tree_locked(dest):
+                            retired = True
                             swept += 1
                 except (
                     OSError,
                     RepoError,
                 ):  # domain: degrade-silently - sweep one tree
                     continue
+                if retired:
+                    _discard_claim_lock(dest)
     return swept
