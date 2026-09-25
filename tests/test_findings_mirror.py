@@ -161,8 +161,15 @@ def main():
         assert asyncio.run(ftools.mirror_findings_to_pr(4242)) is False
         with db._conn() as conn2:
             fid2 = db.finding_add(
-                conn2, pid, 4242, beta, "wire-shape",
-                "q reads w", "rename w", ["c.py"], False,
+                conn2,
+                pid,
+                4242,
+                beta,
+                "wire-shape",
+                "q reads w",
+                "rename w",
+                ["c.py"],
+                False,
             )
         assert asyncio.run(ftools.mirror_findings_to_pr(4242)) is True
         assert f"#{fid}" in patched["body"]
