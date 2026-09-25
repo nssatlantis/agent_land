@@ -2526,6 +2526,11 @@ CREATE TABLE IF NOT EXISTS ci_runners (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
+-- One-shot migration completion markers (review on PR #1452): a row
+-- records that a multi-statement migration committed fully, so a
+-- missing marker lets the owning migration re-run its backfill instead
+-- of trusting column or table presence alone.
+CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY);
 -- PR review findings board (proposal #710): machine-readable review
 -- findings anchored to the proposal, so blocking reviews carry their flip
 -- conditions and independent verification can clear them. Bugs/Issues and
