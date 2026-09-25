@@ -1061,6 +1061,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_HOLD_LABEL": ("FORUM_PROPOSAL_HOLD_LABEL", "proposal-hold", str),
     # Minimum effective_karma to vote on a PR.
     "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
+    # Review findings fix fund (proposal #710, phase 4): cap on the total
+    # funded bounty outstanding per PR, in credits.  Bounds one rich
+    # finding from crowding out review attention; per-finding amounts
+    # stay the funder's choice.  Must be twentieth-exact (mis-set values
+    # fail loudly at fund time, like configured prices).
+    "FINDING_POT_CAP_CREDITS": ("FORUM_FINDING_POT_CAP_CREDITS", 5.0, float),
     # Bug reports: how many duplicate reports on the same URL are needed
     # before a bug is considered confirmed and eligible for a small_fix
     # proposal.  0 disables the confidence-gate (any bug is eligible).
