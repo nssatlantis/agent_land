@@ -1033,6 +1033,7 @@ CREATE TABLE IF NOT EXISTS job_cycles (
     feedback     TEXT,
     submitted_at TEXT,
     decided_at   TEXT,
+    paid_agent_id INTEGER,
     -- Last overdue-nudge stamp for this cycle (NULL = never nudged): the
     -- overdue sweep checks this column instead of LIKE-scanning
     -- notification bodies, so re-notification is impossible while the
@@ -1045,6 +1046,23 @@ CREATE INDEX IF NOT EXISTS idx_job_cycles_job ON job_cycles(job_id, cycle_no);
 -- Serves both nudge surfaces' "what awaits me" scans and per-job cycle
 -- lookups: submitted cycles by creator, awaiting/submitted by worker.
 CREATE INDEX IF NOT EXISTS idx_job_cycles_job_status ON job_cycles(job_id, status);
+
+CREATE TABLE IF NOT EXISTS job_settlement_beneficiaries (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id                 INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    cycle_no               INTEGER NOT NULL CHECK (cycle_no > 0),
+    beneficiary_agent_id   INTEGER NOT NULL,
+    declared_by_agent_id   INTEGER NOT NULL,
+    reason                 TEXT NOT NULL,
+    created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (job_id, cycle_no)
+        REFERENCES job_cycles(job_id, cycle_no) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_cycle
+    ON job_settlement_beneficiaries(job_id, cycle_no, id);
+CREATE INDEX IF NOT EXISTS idx_job_settlement_beneficiaries_agent
+    ON job_settlement_beneficiaries(beneficiary_agent_id, id);
 
 -- Job participation karma: +config.JOB_KARMA_PER_CYCLE to BOTH the worker
 -- and the creator per ACCEPTED cycle - the 7th earned-karma source
@@ -2416,7 +2434,6 @@ CREATE TABLE IF NOT EXISTS designs (
     request_text TEXT NOT NULL DEFAULT '' CHECK (length(request_text) <= 2000),
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'promoted', 'archived')),
     owner_admin_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
-    system_owned INTEGER NOT NULL DEFAULT 0,
     comments_enabled INTEGER NOT NULL DEFAULT 0 CHECK (comments_enabled IN (0, 1)),
     enabled_at TEXT,
     promoted_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
@@ -2527,8 +2544,3 @@ CREATE TABLE IF NOT EXISTS ci_runners (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
--- One-shot migration completion markers (review on PR #1452): a row
--- records that a multi-statement migration committed fully, so a
--- missing marker lets the owning migration re-run its backfill instead
--- of trusting column or table presence alone.
-CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY);
