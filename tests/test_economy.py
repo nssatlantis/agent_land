@@ -355,15 +355,28 @@ def test_delete_agent_forfeits_then_anonymizes():
 
 
 def test_admin_cap_and_proposal_gate():
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "DELETE FROM credit_entries WHERE account = 'treasury'"
+            " AND reason IN ('admin_mint', 'admin_burn')"
+            " AND target_type = 'economy' AND target_id IS NULL"
+        )
+    with db._conn() as conn:
+        used = conn.execute(
+            "SELECT COALESCE(SUM(ABS(delta_units)), 0)"
+            " FROM credit_entries WHERE account = 'treasury'"
+            " AND reason IN ('admin_mint', 'admin_burn')"
+            " AND target_type = 'economy' AND target_id IS NULL"
+        ).fetchone()[0]
+    assert used == 0
     _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 1.0)
     try:
         out = db.economy_admin_adjust("mint", 0.5, "small mint", admin="tester")
         assert out["minted_units"] == 10
         assert out["reason"] == "small mint"
         assert out["family_reason"] == "admin_mint"
-        assert any(
-            e["detail"].get("reason_detail") == "small mint"
-            for e in _events("credit_minted")
+        assert (
+            _events("credit_minted")[0]["detail"].get("reason_detail") == "small mint"
         )
         from tests._setup import expect_error
 
@@ -377,7 +390,10 @@ def test_admin_cap_and_proposal_gate():
         assert "daily discretionary budget" in msg
         assert "passed proposal" in msg
 
+        checked_proposal_ids = []
+
         def _fake_check(conn, proposal_id):
+            checked_proposal_ids.append(proposal_id)
             return {"id": proposal_id}
 
         with patch.object(economy, "_approved_proposal_check", _fake_check):
@@ -392,9 +408,17 @@ def test_admin_cap_and_proposal_gate():
         assert out["proposal_id"] == BASE_POST
         assert out["reason"] == "community-approved mint"
         assert out["family_reason"] == "proposal_mint"
-        assert any(
-            e["detail"].get("reason_detail") == "community-approved mint"
-            for e in _events("credit_minted")
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT reason FROM credit_entries"
+                " WHERE account = 'treasury' AND target_type = 'economy'"
+                " AND target_id = ? ORDER BY id DESC LIMIT 1",
+                (BASE_POST,),
+            ).fetchone()
+        assert row["reason"] == "proposal_mint"
+        assert (
+            _events("credit_minted")[0]["detail"].get("reason_detail")
+            == "community-approved mint"
         )
         with patch.object(economy, "_approved_proposal_check", _fake_check):
             proposal_burn = db.economy_admin_adjust(
@@ -407,6 +431,7 @@ def test_admin_cap_and_proposal_gate():
         assert proposal_burn["burned_units"] == 5
         assert proposal_burn["reason"] == "proposal burn rationale"
         assert proposal_burn["family_reason"] == "proposal_burn"
+        assert checked_proposal_ids == [BASE_POST, BASE_POST]
         with db._conn() as conn:
             row = conn.execute(
                 "SELECT reason FROM credit_entries"
@@ -415,9 +440,9 @@ def test_admin_cap_and_proposal_gate():
                 (BASE_POST,),
             ).fetchone()
         assert row["reason"] == "proposal_burn"
-        assert any(
-            e["detail"].get("reason_detail") == "proposal burn rationale"
-            for e in _events("credit_burned")
+        assert (
+            _events("credit_burned")[0]["detail"].get("reason_detail")
+            == "proposal burn rationale"
         )
         burn_out = db.economy_admin_adjust(
             "burn", 0.1, "admin burn rationale", admin="tester"
@@ -432,9 +457,9 @@ def test_admin_cap_and_proposal_gate():
                 " ORDER BY id DESC LIMIT 1"
             ).fetchone()
         assert row["reason"] == "admin_burn"
-        assert any(
-            e["detail"].get("reason_detail") == "admin burn rationale"
-            for e in _events("credit_burned")
+        assert (
+            _events("credit_burned")[0]["detail"].get("reason_detail")
+            == "admin burn rationale"
         )
 
         msg = expect_error(
@@ -446,6 +471,12 @@ def test_admin_cap_and_proposal_gate():
         )
         assert "reason is required" in msg
     finally:
+        with db._conn(immediate=True) as conn:
+            conn.execute(
+                "DELETE FROM credit_entries WHERE account = 'treasury'"
+                " AND reason IN ('admin_mint', 'admin_burn')"
+                " AND target_type = 'economy' AND target_id IS NULL"
+            )
         _restore()
 
 
