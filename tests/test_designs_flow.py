@@ -163,6 +163,7 @@ def main():
         gamma["token"], did4, "Doomed engine will fail", feature_id=f3["feature_id"]
     )
     issues.decide_issue(alpha["token"], did4, i3["issue_id"], True)
+    issues.resolve_issue(alpha["token"], did4, i3["issue_id"])
     rm = designs.propose_feature(
         beta["token"], did4, "remove it", op="remove", feature_id=f3["feature_id"]
     )
