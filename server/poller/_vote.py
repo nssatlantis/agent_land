@@ -362,6 +362,32 @@ def _pr_vote_sweep(
     actions: list[dict] = []
     if open_prs is None:
         open_prs = github.open_prs()
+    # Findings-board reconcile (proposal #710): heads move outside the
+    # forum's push tools too (a previous poller's rebase, direct git
+    # pushes, maintainer merge-main).  The push hooks cannot see those,
+    # so every sweep reconciles verified attestations against the live
+    # heads from this same fetch - idempotent (matching heads update
+    # zero rows) and bounded to PRs actually holding verified rows.
+    # This is also the backstop for a push hook lost to a transient
+    # fault: staleness survives at most one poll interval.
+    try:
+        with db._conn() as conn:
+            _heads: dict[int, str] = {}
+            for pr in open_prs:
+                _sha = pr.get("head_sha") or ""
+                if _sha:
+                    _heads[pr["number"]] = _sha
+            _staled = db.reconcile_boards_for_heads(conn, _heads) if _heads else {}
+            _staled_total = sum(_staled.values())
+        if _staled_total:
+            actions.append({"action": "findings_reconciled", "staled": _staled})
+    except (
+        Exception
+    ) as exc:  # domain: degrade-silently - reconcile never breaks the vote sweep
+        logutil.log(
+            "finding_reconcile_failed",
+            error=str(exc)[:200],
+        )
     # Batched pre-pass (proposal #111 audit item: N+1 in the vote sweep):
     # one connection resolves everything the per-PR gates used to re-derive
     # per number - the linked opener/proposal maps, the small-fix kind
@@ -863,6 +889,19 @@ def _pr_vote_sweep(
             # over cloud) runs only under CI_FALLBACK_ENABLED and
             # CI_RUN_BRANCH_ENABLED.
             new_sha = rebase_result["new_sha"]
+            # Findings-board reconcile (proposal #710): the rebase
+            # force-pushed a new head, so prior verification attestations
+            # stale here - before the post-rebase CI gate below can merge
+            # on a board that still paints the old head green.
+            try:
+                with db._conn() as conn:
+                    db.finding_stale_on_push(conn, number, new_sha)
+            except Exception as exc:  # domain: degrade-silently - the sweep-wide reconcile above heals it next pass
+                logutil.log(
+                    "finding_reconcile_failed",
+                    pr_number=number,
+                    error=str(exc)[:200],
+                )
             gh_state = "unknown"
             local_ok = False
             local_res = None

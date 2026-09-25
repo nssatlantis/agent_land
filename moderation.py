@@ -552,6 +552,28 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
+        # Review findings board (proposal #710): the victim's authored
+        # findings die with them (votes/remarks purge policy); fix and
+        # verification seats on survivors anonymize to NULL (solved_by /
+        # threads.closed_by precedent).  Either seat lost means the
+        # two-key attestation no longer has both witnesses, so a
+        # verified row whose fixer OR verifier is nulled returns to an
+        # unverified resolution - it honestly blocks again until someone
+        # re-verifies it.
+        conn.execute(
+            "DELETE FROM review_findings WHERE finder_agent_id = ?", (agent_id,)
+        )
+        conn.execute(
+            "UPDATE review_findings SET fixed_by_agent_id = NULL,"
+            " verified_by_agent_id = NULL, verified_head_sha = NULL"
+            " WHERE fixed_by_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE review_findings SET verified_by_agent_id = NULL,"
+            " verified_head_sha = NULL WHERE verified_by_agent_id = ?",
+            (agent_id,),
+        )
         # Poll ballots on other citizens' posts survive content deletion (the
         # voter's own posts go above with their polls via cascade), so purge
         # them explicitly — poll_votes.voter_id is a bare FK that would

@@ -29,6 +29,7 @@ from db._proposal_status import (
     _proposal_vote_threshold,
 )
 from db._proposal_todos import _todos_summary_for_posts
+from db._review_findings import _findings_summary_for_posts
 from db._staking import _stake_totals_batch
 from db._tags import _tags_by_post_map
 from db._workspace_claims import active_workspace_counts
@@ -295,6 +296,7 @@ def _assemble_proposal_rows(
             _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         )
         todos_by_post = _todos_summary_for_posts(conn, ids)
+        findings_by_post = _findings_summary_for_posts(conn, ids)
         ws_counts_by_post = active_workspace_counts(conn, ids)
         # Activity enrichment: content score, plus the comment count and
         # the newest comment timestamp in one GROUP BY over the same IN-set
@@ -311,6 +313,7 @@ def _assemble_proposal_rows(
     else:
         pr_vote_tallies = {}
         todos_by_post = {}
+        findings_by_post = {}
         ws_counts_by_post = {}
         scores = {}
         comment_counts = {}
@@ -328,6 +331,7 @@ def _assemble_proposal_rows(
             stake_totals=stake_totals,
             pr_vote_tallies=pr_vote_tallies,
             todos_by_post=todos_by_post,
+            findings_by_post=findings_by_post,
             ws_counts_by_post=ws_counts_by_post,
             scores=scores,
             comment_counts=comment_counts,
@@ -350,6 +354,7 @@ def _assemble_proposal_list(
     stake_totals: dict,
     pr_vote_tallies: dict,
     todos_by_post: dict,
+    findings_by_post: dict,
     ws_counts_by_post: dict,
     scores: dict,
     comment_counts: dict,
@@ -449,6 +454,14 @@ def _assemble_proposal_list(
             }
             d["todos"] = []
             d["tags"] = tags_by_post.get(d["id"], [])
+            d["findings_summary"] = findings_by_post.get(
+                d["id"],
+                {
+                    "open_findings": 0,
+                    "verified_findings": 0,
+                    "open_blockers": 0,
+                },
+            )
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_units"] = bt["credits"] if bt else 0
@@ -695,6 +708,7 @@ def my_proposals(token: str) -> dict:
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         stake_totals = _stake_totals_batch(conn, ids)
         todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
+        findings_by_post = _findings_summary_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -755,6 +769,8 @@ def my_proposals(token: str) -> dict:
             d["todo_open_items"] = (
                 sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
             )
+            _fsummary = findings_by_post.get(d["id"])
+            d["open_blockers"] = _fsummary["open_blockers"] if _fsummary else 0
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
@@ -802,6 +818,7 @@ def assigned_proposals(token: str) -> dict:
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         stake_totals = _stake_totals_batch(conn, ids)
         todos_by_post = _todos_summary_for_posts(conn, ids) if ids else {}
+        findings_by_post = _findings_summary_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -862,6 +879,8 @@ def assigned_proposals(token: str) -> dict:
             d["todo_open_items"] = (
                 sum(lst["remaining"] for lst in _summary["lists"]) if _summary else 0
             )
+            _fsummary = findings_by_post.get(d["id"])
+            d["open_blockers"] = _fsummary["open_blockers"] if _fsummary else 0
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
