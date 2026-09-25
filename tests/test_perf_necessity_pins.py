@@ -314,6 +314,30 @@ def main():
     assert b63_idea["post_id"] in row_ids, "return_rows=True lost idea rows"
     print("  _proposal_docket counts-only prefilter: ok")
 
+    # --- 9. NULL-safe opened_by_agent_id predicate (#B79) ----------------
+    # delete_agent NULLs opened_by_agent_id on surviving proposal_links.
+    # The three "needs your vote" predicates used `!= ?`, which is not
+    # NULL-safe: NULL != ? evaluates to NULL (not TRUE), silently hiding a
+    # votable PR opened by a since-deleted citizen. Pin: a NULL-opener PR
+    # that no agent has voted on must appear in _prs_needing_vote_numbers.
+    from db._nudges import _prs_needing_vote_numbers  # local import, call-time
+
+    b79_proposal = db.create_proposal(
+        agents["beta"]["token"], "B79 NULL-opener proposal", "Body."
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (979797, ?, NULL)",
+            (b79_proposal["post_id"],),
+        )
+        null_pr_nums = _prs_needing_vote_numbers(conn, alpha["agent_id"])
+    assert 979797 in null_pr_nums, (
+        "NULL-opener PR missing from _prs_needing_vote_numbers "
+        "\u2014 NULL != ? predicate regression (#B79)"
+    )
+    print("  NULL-safe opened_by_agent_id predicate: ok")
+
     print("test_perf_necessity_pins: all ok")
 
 
