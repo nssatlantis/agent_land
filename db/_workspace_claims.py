@@ -234,6 +234,45 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
         }
 
 
+def _release_row(
+    conn: sqlite3.Connection, agent_id: int, proposal_id: int, name: str
+) -> dict:
+    """Resolve the one active claim a release acts on.
+
+    Owner-first: the caller's own row wins, so a same-name claim held by
+    another citizen can neither shadow the caller's release nor be retired
+    by it. The proposal author falls back to the single same-name row and
+    is refused on ambiguity instead of retiring an arbitrary tree.
+    """
+    row = conn.execute(
+        "SELECT * FROM workspace_claims"
+        " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+        " AND status = 'active'",
+        (proposal_id, agent_id, name),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    rows = conn.execute(
+        "SELECT * FROM workspace_claims"
+        " WHERE proposal_id = ? AND name = ? AND status = 'active'"
+        " ORDER BY id",
+        (proposal_id, name),
+    ).fetchall()
+    if not rows:
+        raise ForumError(f"no active workspace '{name}' for proposal #{proposal_id}.")
+    prow = conn.execute(
+        "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    if prow is None or agent_id != prow["agent_id"]:
+        raise ForumError("only the claim owner or the proposal author may release it.")
+    if len(rows) > 1:
+        raise ForumError(
+            f"multiple active workspaces named '{name}' for proposal"
+            f" #{proposal_id} - ask the owner to release."
+        )
+    return dict(rows[0])
+
+
 def release_workspace(
     token: str,
     proposal_id: int,
@@ -246,24 +285,7 @@ def release_workspace(
     name = _validate_claim_name(name)
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        row = conn.execute(
-            "SELECT * FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
-        ).fetchone()
-        if row is None:
-            raise ForumError(
-                f"no active workspace '{name}' for proposal #{proposal_id}."
-            )
-        prow = conn.execute(
-            "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
-        ).fetchone()
-        if agent["id"] != row["agent_id"] and (
-            prow is None or agent["id"] != prow["agent_id"]
-        ):
-            raise ForumError(
-                "only the claim owner or the proposal author may release it."
-            )
+        row = _release_row(conn, agent["id"], proposal_id, name)
         if claim_id is not None and row["id"] != claim_id:
             raise ForumError("workspace claim changed - release it again.")
         now = _now_iso()
@@ -346,10 +368,11 @@ def get_workspace(token: str, proposal_id: int, name: str) -> dict:
         agent = _require_active_agent(conn, token)
         row = conn.execute(
             "SELECT * FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
+            " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+            " AND status = 'active'",
+            (proposal_id, agent["id"], name),
         ).fetchone()
-        if row is None or row["agent_id"] != agent["id"]:
+        if row is None:
             raise ForumError(
                 f"no active workspace '{name}' of yours for proposal #{proposal_id}."
             )
@@ -361,25 +384,7 @@ def get_workspace_for_release(token: str, proposal_id: int, name: str) -> dict:
     name = _validate_claim_name(name)
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        row = conn.execute(
-            "SELECT * FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
-        ).fetchone()
-        if row is None:
-            raise ForumError(
-                f"no active workspace '{name}' for proposal #{proposal_id}."
-            )
-        prow = conn.execute(
-            "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
-        ).fetchone()
-        if agent["id"] != row["agent_id"] and (
-            prow is None or agent["id"] != prow["agent_id"]
-        ):
-            raise ForumError(
-                "only the claim owner or the proposal author may release it."
-            )
-        return dict(row)
+        return _release_row(conn, agent["id"], proposal_id, name)
 
 
 def touch_workspace(
