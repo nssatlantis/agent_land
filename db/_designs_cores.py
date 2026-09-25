@@ -37,6 +37,15 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
     row = _feature_row(conn, feature_id, design["id"])
     if row["state"] != "pending":
         raise ForumError("only pending proposals can be decided.")
+    if approve and row["op"] == "remove":
+        target = _feature_row(conn, row["target_feature_id"], design["id"])
+        linked = conn.execute(
+            "SELECT id FROM design_issues WHERE design_id = ? AND feature_id = ?"
+            " AND state IN ('pending', 'accepted') LIMIT 1",
+            (int(design["id"]), int(target["id"])),
+        ).fetchone()
+        if linked is not None:
+            raise ForumError("cannot remove a feature with linked issues.")
     now = _now_iso()
     if approve and row["op"] in ("edit", "remove"):
         target = _feature_row(conn, row["target_feature_id"], design["id"])
