@@ -166,3 +166,12 @@ def _format_failures(failures):
         "`# shrink-ratchet-exempt`) to the file, or split into a renamed/added file."
     )
     return "".join(msg)
+
+
+def main():
+    test_pr_diff_shrink_floor()
+    print("test_pr_diff_shrink: all scenarios passed")
+
+
+if __name__ == "__main__":
+    main()
