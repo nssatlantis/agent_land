@@ -655,7 +655,9 @@ async def design_admin_move_item(request):
         kind = (form.get("kind") or "").strip()
         iid = _form_int(form, "item_id", "item")
         direction = (form.get("direction") or "").strip()
-        db.admin_move_design_item(admin, did, kind, iid, direction)
+        result = db.admin_move_design_item(admin, did, kind, iid, direction)
+        if not result.get("moved"):
+            return f"{kind} #{iid} on design #{did} unchanged; no {direction} neighbor."
         return f"{kind} #{iid} on design #{did} moved {direction}."
 
     return await _design_action(request, _run)
