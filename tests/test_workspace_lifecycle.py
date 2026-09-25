@@ -207,9 +207,7 @@ def test_admin_close_proposal_releases_workspaces(agents):
     db.create_todo_list(author["token"], pid, "Work", [])
     db.claim_workspace(author["token"], pid, "dev")
     pr_number = 987603
-    db.link_pr_to_proposal(
-        pr_number, pid, author["agent_id"], enforce_claims=False
-    )
+    db.link_pr_to_proposal(pr_number, pid, author["agent_id"], enforce_claims=False)
     db.record_proposal_outcome(pr_number, pid, "merged", db._now_iso())
     result = admin_close_proposal("admin", pid)
     assert result["status"] == "merged", result
