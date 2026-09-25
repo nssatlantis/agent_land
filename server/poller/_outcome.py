@@ -450,7 +450,7 @@ def _process_closed_pr(pr: dict) -> None:
 
                     if _proposal_status_for(conn, proposal_post_id) != "open":
                         db.release_workspaces_for_proposal(conn, proposal_post_id)
-                except Exception:
+                except Exception:  # domain: degrade-silently - release advisory
                     pass
             # Guilds (proposal #525, PR-6; request model #643): the first
             # linked PR merge completes a paid grant link (proof the funded
