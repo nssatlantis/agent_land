@@ -12,12 +12,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_ci_farm_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 
 import json  # noqa: E402
 import urllib.error  # noqa: E402
@@ -501,6 +503,71 @@ def test_dispatch_rejects_missing_ok_shape():
         )
 
 
+def test_installer_buildx_and_data_dir():
+    """S1 pin: the farm installer must try to install a docker buildx plugin
+    (a legacy builder cannot build the dependency image) and must keep its
+    data dir outside the checkout, where a git clean would take the warm CI
+    trees with it."""
+    text = (_REPO_ROOT / "ci_farm" / "install.sh").read_text(encoding="utf-8")
+    apt = [ln for ln in text.splitlines() if "apt-get install" in ln]
+    assert any("docker-buildx" in ln for ln in apt), apt
+    assert '\nDATA_DIR="$REPO_DIR/ci_farm/data"' not in text
+    assert 'dirname "$REPO_DIR"' in text
+    assert "AGENTLAND_DATA_DIR=$DATA_DIR" in text
+    assert "LEGACY_DATA_DIR" in text
+
+
+def test_dockerfile_no_buildkit_only():
+    """S2 pin: the dependency image is built by `docker build` on every CI
+    host, including farm runners that may be plain docker.io with no buildx
+    plugin. A BuildKit-only instruction there fails every dispatch and the
+    error reads like a repo bug rather than a missing package."""
+    text = (_REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    # Only instructions can break a builder; a comment may name them freely.
+    instrs = "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+    for banned in ("RUN --mount", "COPY --link", "ADD --link", "RUN --network"):
+        assert banned not in instrs, banned
+    # The pin must not be satisfiable by deleting the install itself.
+    assert "uv pip install --system" in text
+    assert "requirements-dev.txt" in text
+
+
+def test_health_reports_last_error():
+    """S3 pin: /health must carry the runner's own last error - the host
+    treats any 200 as healthy, so a runner failing every dispatch with no
+    last_error is indistinguishable from a working one."""
+    saved = runner._LAST_ERROR
+    runner._LAST_ERROR = "sandbox image build failed: legacy builder"
+    farm = runner.FarmRunner("127.0.0.1", 0, token="farm-health-token")
+    t = threading.Thread(target=farm.serve_forever, daemon=True)
+    t.start()
+    time.sleep(0.2)
+    try:
+        url = f"http://127.0.0.1:{farm.port}/health"
+        with urllib.request.urlopen(url) as resp:
+            body = json.loads(resp.read())
+        assert body["last_error"] == "sandbox image build failed: legacy builder"
+    finally:
+        farm.shutdown()
+        t.join(timeout=5)
+        runner._LAST_ERROR = saved
+
+
+def test_data_dir_default_beside_checkout():
+    """S1 pin, functional: with no AGENTLAND_DATA_DIR the runner's default
+    must be a sibling of the repo, so an operator who never sets the knob
+    cannot park the warm CI trees inside the checkout."""
+    nested = _TMP / "nested"
+    fake = nested / "agent_land_farm"
+    fake.mkdir(parents=True, exist_ok=True)
+    with mock.patch.dict(os.environ, {"CIFARM_REPO_DIR": str(fake)}, clear=False):
+        os.environ.pop("AGENTLAND_DATA_DIR", None)
+        dd = runner._data_dir()
+    assert Path(dd) == nested / "agent_land_farm_data"
+    assert not Path(dd).is_relative_to(fake)
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -539,6 +606,22 @@ def _run_all_tests() -> int:
         (
             "test_dispatch_rejects_missing_ok_shape",
             test_dispatch_rejects_missing_ok_shape,
+        ),
+        (
+            "test_installer_buildx_and_data_dir",
+            test_installer_buildx_and_data_dir,
+        ),
+        (
+            "test_dockerfile_no_buildkit_only",
+            test_dockerfile_no_buildkit_only,
+        ),
+        (
+            "test_health_reports_last_error",
+            test_health_reports_last_error,
+        ),
+        (
+            "test_data_dir_default_beside_checkout",
+            test_data_dir_default_beside_checkout,
         ),
     ]
     failed = 0
