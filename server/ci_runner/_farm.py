@@ -479,10 +479,9 @@ def try_bench_dispatch(
     """
     if not config.CI_FARM_ENABLED:
         return None
-    heartbeat_ok = agent_id == 0 and config.CI_FARM_HEARTBEAT_REMOTE_FIRST
-    if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote and not heartbeat_ok:
+    if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote:
         return None
-    if agent_id == 0 and not heartbeat_ok:
+    if agent_id == 0:
         return None  # system/heartbeat benches: local only unless the knob is on
     if pr_number is not None or files is not None or tree is not None:
         return None
@@ -515,22 +514,8 @@ def try_bench_dispatch(
         or "error" in remote
     ):
         return None
-    # Heartbeat (agent_id=0) benches are blessed: the bless path
-    # (db/_bench_anchor.py) requires a quiet/uncontended bench_load
-    # attestation. The runner attests its own single-flight load state;
-    # if it is missing or invalid, return None so run_checks falls back
-    # to the local path (a remote result without it is unblessable, and
-    # returning it would skip the local fallback entirely).
-    if agent_id == 0:
-        load = remote.get("bench_load")
-        if (
-            not isinstance(load, dict)
-            or load.get("quiet") is not True
-            or load.get("contended")
-        ):
-            return None
     extra: dict = {}
-    for key in ("quiet", "contended", "bench_load"):
+    for key in ("quiet", "contended"):
         if key in remote:
             extra[key] = remote[key]
     # Stamp anchor_event_id server-side from the blessed anchor (not from
