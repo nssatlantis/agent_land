@@ -1291,10 +1291,6 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # the local slot (remote-first, like bench). Off by default: test runs
     # overflow to the farm only when the local pool is saturated.
     "CI_FARM_TEST_REMOTE_FIRST": ("FORUM_CI_FARM_TEST_REMOTE_FIRST", 0, int),
-    # When on, system/heartbeat (agent_id=0) bench runs may dispatch to the
-    # farm runner (the blessed anchor bench). Off by default: heartbeat
-    # benches are local-only and can never bless remotely.
-    "CI_FARM_HEARTBEAT_REMOTE_FIRST": ("FORUM_CI_FARM_HEARTBEAT_REMOTE_FIRST", 0, int),
     # P3-3: max concurrent runs per runner (capacity accounting).
     "CI_FARM_RUNNER_MAX_ACTIVE": ("FORUM_CI_FARM_RUNNER_MAX_ACTIVE", 1, int),
     # Dispatch HTTP timeout: the socket timeout for the runner /run call.
