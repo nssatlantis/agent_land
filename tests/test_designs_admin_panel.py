@@ -265,6 +265,22 @@ def main():
     assert "down " in movedbody
     assert "->" in movedbody
     r = _post(
+        admin.design_admin_move_item,
+        f"/admin/designs/{did}/move-item",
+        {"design_id": did},
+        {"kind": "feature", "item_id": str(f3["feature_id"]), "direction": "up"},
+        csrf,
+    )
+    assert "unchanged" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_move_item,
+        f"/admin/designs/{did}/move-item",
+        {"design_id": did},
+        {"kind": "feature", "item_id": str(f1["feature_id"]), "direction": "down"},
+        csrf,
+    )
+    assert "unchanged" in r.body.decode("utf-8")
+    r = _post(
         admin.design_admin_toggle_comments,
         f"/admin/designs/{did}/toggle-comments",
         {"design_id": did},
