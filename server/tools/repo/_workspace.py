@@ -1329,4 +1329,13 @@ async def workspace_push(
             debounced_enqueue(plan["pr_number"])
         except Exception:
             pass  # domain: degrade-silently - enqueue must not fail the PR response
+        # A pushed head invalidates prior verification attestations on
+        # the PR's findings board (proposal #710) - stale them so the
+        # next verify re-pins against the new head.
+        try:
+            from ._findings import stale_findings_on_push
+
+            await stale_findings_on_push(plan["pr_number"])
+        except Exception:
+            pass  # domain: degrade-silently - staling never fails the PR response
     return plan
