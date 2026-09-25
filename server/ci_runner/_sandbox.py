@@ -356,6 +356,24 @@ def _prune_stale_images(keep_tag: str) -> None:
         pass
 
 
+def _buildkit_hint(output: str) -> str:
+    """Actionable prefix when a `docker build` failure is the BUILDER's, not
+    the Dockerfile's. A host without the buildx plugin answers with "the
+    --mount option requires BuildKit", which reads like a repo bug and sends
+    the reader hunting in the wrong file - while the real fix is one apt
+    package. The Dockerfile carries no BuildKit-only instruction, so that
+    signature can only mean the plugin is missing. Empty string otherwise,
+    which leaves the original message untouched."""
+    if "--mount option requires BuildKit" in output or (
+        "buildx component is missing" in output
+    ):
+        return (
+            " [docker is on the legacy builder: install the buildx plugin"
+            " (docker-buildx / docker-buildx-plugin) or set DOCKER_BUILDKIT=1]"
+        )
+    return ""
+
+
 def _ensure_image(tree: str, rev: str) -> str:
     """Return a tag whose image contains exactly the pinned dependencies of
     *rev* - branch mode always passes origin/main's sha, never the merge
@@ -405,15 +423,7 @@ def _ensure_image(tree: str, rev: str) -> str:
             # carries no BuildKit-only instruction, so that signature means
             # the plugin is missing.
             out = (build.stderr or build.stdout).strip()
-            hint = ""
-            if "--mount option requires BuildKit" in out or (
-                "buildx component is missing" in out
-            ):
-                hint = (
-                    " [docker is on the legacy builder: install the buildx"
-                    " plugin (docker-buildx / docker-buildx-plugin) or set"
-                    " DOCKER_BUILDKIT=1]"
-                )
+            hint = _buildkit_hint(out)
             raise db.ForumError(
                 f"sandbox image build failed: {hint} {out[-300:]}".rstrip()
             )
