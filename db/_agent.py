@@ -704,7 +704,7 @@ def check_in(token: str) -> dict:
             """(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, """
             """(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, """
             """(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
-            """(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
+            """(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?) AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
             (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"]),
         ).fetchone()
         assert row is not None
@@ -964,7 +964,7 @@ def _actionable_ids(conn, agent_id: int) -> dict:
                 " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 " JOIN posts p ON p.id = pl.post_id"
                 " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-                " AND pl.opened_by_agent_id != ?"
+                " AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?)"
                 " AND NOT EXISTS (SELECT 1 FROM pr_votes"
                 " WHERE pr_number = pl.pr_number AND voter_id = ?)"
                 " ORDER BY pl.pr_number",

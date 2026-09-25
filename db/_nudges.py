@@ -1260,7 +1260,7 @@ def _prs_needing_vote_numbers(conn: sqlite3.Connection, agent_id: int) -> list[i
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
             " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-            " AND pl.opened_by_agent_id != ?"
+            " AND (pl.opened_by_agent_id IS NULL OR pl.opened_by_agent_id != ?)"
             " AND NOT EXISTS ("
             "   SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number"
             "   AND voter_id = ?"
