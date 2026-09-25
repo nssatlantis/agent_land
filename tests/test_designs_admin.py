@@ -156,6 +156,21 @@ def main():
     )
     assert direct_issue["state"] == "accepted", direct_issue
     expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
+    pending_remove = designs.propose_feature(
+        alpha["token"],
+        did,
+        "remove",
+        op="remove",
+        feature_id=direct_feature["feature_id"],
+    )
+    expect_error(
+        flow.decide_feature,
+        alpha["token"],
+        did,
+        pending_remove["feature_id"],
+        True,
+    )
+    flow.withdraw_feature(alpha["token"], did, pending_remove["feature_id"])
     vanishing_feature = admin.admin_create_feature(
         "alpha", did, "Feature with stale pending edit"
     )
@@ -191,6 +206,31 @@ def main():
     )
     admin.admin_resolve_issue("alpha", did, resolved_child["issue_id"])
     admin.admin_remove_feature("alpha", did, resolved_parent["feature_id"])
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        resolved_child["issue_id"],
+        "Edited after hidden parent removal",
+    )
+    with db._conn() as conn:
+        kept_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?",
+            (resolved_child["issue_id"],),
+        ).fetchone()[0]
+    assert kept_link == resolved_parent["feature_id"], kept_link
+    admin.admin_edit_issue(
+        "alpha",
+        did,
+        resolved_child["issue_id"],
+        "Explicitly unlinked after hidden parent removal",
+        feature_id=None,
+    )
+    with db._conn() as conn:
+        cleared_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?",
+            (resolved_child["issue_id"],),
+        ).fetchone()[0]
+    assert cleared_link is None, cleared_link
     admin.admin_edit_issue(
         "alpha",
         did,
