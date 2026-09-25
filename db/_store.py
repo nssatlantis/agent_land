@@ -382,14 +382,14 @@ def _reconcile_ci_burst_reservations(
 def ci_burst_remaining(
     agent_id: int,
     *,
-    conn: sqlite3.Connection | None = None,
     now: datetime | None = None,
 ) -> int:
     current = _day_now(now)
-    # Reconcile writes: take the write lock up front when opening our own
-    # connection, so a status read racing a concurrent writer busy-waits
-    # instead of dying on a deferred read-to-write lock upgrade.
-    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+    # Reconcile writes: take the write lock up front, so a status read
+    # racing a concurrent writer busy-waits instead of dying on a deferred
+    # read-to-write lock upgrade. No conn passthrough: a caller-passed read
+    # connection would silently reintroduce that exact failure.
+    with _conn(immediate=True) as c:
         _reconcile_ci_burst_reservations(c, current)
         return int(
             _day_pass_state(c, agent_id, "ci_burst", now=current)["credits_remaining"]
@@ -401,13 +401,14 @@ def reserve_ci_burst(
     kind: str,
     run_id: str,
     *,
-    conn: sqlite3.Connection | None = None,
     now: datetime | None = None,
 ) -> bool:
     if kind not in _CAPPED_CI_KINDS or not run_id:
         return False
     current = _day_now(now)
-    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+    # Own immediate transaction, never a caller-passed connection: the
+    # reconcile-plus-spend must stay atomic under concurrency.
+    with _conn(immediate=True) as c:
         _reconcile_ci_burst_reservations(c, current)
         if c.execute(
             "SELECT 1 FROM ci_burst_reservations WHERE run_id = ?", (run_id,)
