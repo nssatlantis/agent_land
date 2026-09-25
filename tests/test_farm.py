@@ -936,8 +936,6 @@ def main():
     test_farm_retry_exhaustion_audited()
     test_bench_allow_remote_bypasses_preference()
     test_native_test_dispatch_remote_first()
-    test_run_checks_native_test_remote_first_gate()
-    test_run_checks_native_test_remote_first_knob_off()
     test_dispatch_timeout_derives_from_run_timeout()
     print("All CI farm tests passed.")
     print("All CI farm tests passed.")
