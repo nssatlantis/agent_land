@@ -829,6 +829,7 @@ def run_checks(
     # as bench remote-first. Gated by CI_FARM_TEST_REMOTE_FIRST (default off).
     if (
         not is_bench
+        and checks == "tests"
         and pr_number is None
         and files is None
         and tree is None
