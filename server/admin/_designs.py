@@ -731,11 +731,14 @@ async def design_admin_edit_issue(request):
         did = int(request.path_params["design_id"])
         iid = _form_int(form, "issue_id", "issue")
         text = (form.get("text") or "").strip()
-        feature_id = (form.get("feature_id") or "").strip()
-        if feature_id == "__keep__":
+        if "feature_id" not in form:
             db.admin_edit_issue(admin, did, iid, text)
         else:
-            db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id or None)
+            feature_id = (form.get("feature_id") or "").strip()
+            if feature_id == "__keep__":
+                db.admin_edit_issue(admin, did, iid, text)
+            else:
+                db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id or None)
         return f"Issue #{iid} updated."
 
     return await _design_action(request, _run)
