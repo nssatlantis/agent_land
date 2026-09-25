@@ -885,19 +885,27 @@ def _synthetic_pr_raw(row: dict) -> dict:
     }
 
 
-def _pr_raw(number: int) -> dict:
+def _pr_raw(number: int, *, head_sha: str | None = None) -> dict:
     """The raw GitHub /pulls/{number} payload, TTL-cached under its own key so
     the several reads that need it (get_pr, pr_diff, pr_has_label) share one
     API call per PR_CACHE_SECONDS window instead of each fetching it afresh
     (Item B of the rate-limit reduction).  Lives here in the read package
     because it is purely a read; the poller's proposal-hold gate calls it
     through ``pr_has_label`` only when a caller did not already hold the row.
+
+    When ``head_sha`` is provided, the cache key includes it and the returned
+    payload is validated against it. If the live head sha has moved, a fresh
+    fetch is forced.
     """
-    cache_key = ("pr_raw", number)
+    cache_key = ("pr_raw", number, head_sha or "")
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
     pr = _core._request("GET", f"pulls/{number}")
+    if head_sha is not None and pr.get("head", {}).get("sha") != head_sha:
+        # Head moved since caller read it - force a fresh read by not caching
+        # the mismatched payload and returning the fresh one.
+        return pr
     _core._pr_cache.set(cache_key, pr)
     return pr
 
