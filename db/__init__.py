@@ -440,6 +440,7 @@ from db._jobs import (  # noqa: F401
     auto_accept_jobs_for_merged_pr,
     cancel_job,
     claim_job,
+    clear_job_settlement_beneficiary,
     create_job,
     create_job_official,
     decline_job_offer,
@@ -448,6 +449,7 @@ from db._jobs import (  # noqa: F401
     job_creator_status_counts,
     list_jobs,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )
