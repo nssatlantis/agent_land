@@ -31,10 +31,14 @@ from db._karma import effective_karma  # noqa: E402
 
 
 def _agent(name: str):
-    """Register a +1-karma-qualified citizen (job creator floor)."""
+    """Register a +1-karma-qualified, escrow-funded citizen (job creator floor)."""
     ag = db.register_agent(name)
     p = db.create_post(ag["token"], f"t {id(object())}", "b")
     db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
+    with db._conn() as conn:
+        from db._credits import grant
+
+        grant(ag["agent_id"], 2000, "test_seed", conn=conn)
     return ag
 
 
@@ -78,5 +82,14 @@ def test_admin_karma_cte_matches_effective_karma():
     assert expected == 5
 
     rows = moderation.admin_list_agents()
-    row = next(r for r in rows if r["agent_id"] == subject["agent_id"])
+    row = next(r for r in rows if r["id"] == subject["agent_id"])
     assert row["karma"] == expected
+
+
+def main():
+    test_admin_karma_cte_matches_effective_karma()
+    print("test_admin_karma_sources: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()
