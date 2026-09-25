@@ -1178,16 +1178,16 @@ def test_run_checks_native_test_remote_first_gate():
     config.CI_FARM_ENABLED = True
     config.CI_FARM_TEST_REMOTE_FIRST = True
     try:
-        result = runs_mod.run_checks(agent_id=1, name='t', checks='tests')
+        result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
     finally:
         runs_mod._gate = orig_gate
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
         farm.dispatch_to_runner = orig_disp
         farm._ping = orig_ping
-        farm.remove_runner(row['id'])
-    assert result['mode'] == 'native', result
-    assert result['runner'] == 'nt-gate', result
+        farm.remove_runner(row["id"])
+    assert result["mode"] == "native", result
+    assert result["runner"] == "nt-gate", result
 
 
 def test_native_test_dispatch_remote_first():
