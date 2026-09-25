@@ -10,9 +10,12 @@ Eligibility per candidate, all required:
 - job active + flagged + cycle submitted + cycle is the current one,
 - non-empty evidence citing the merged PR,
 - ALL evidence PRs merged (reused _all_prs_merged),
-- EVERY evidence PR opened by the job's worker (hard anti-spoof gate;
-  forum-linked PRs only — unlinked PRs attribute to nobody and fail
-  closed; mismatches fall back to admin_review_job, never auto-pay),
+- EVERY evidence PR opened by the job's resolved settlement beneficiary
+  (hard anti-spoof gate, checked against beneficiary_id rather than the
+  worker seat so a declared payee cannot receive the wage without having
+  opened the evidence; forum-linked PRs only — unlinked PRs attribute to
+  nobody and fail closed; mismatches fall back to admin_review_job,
+  never auto-pay),
 - for bug-bound jobs (scope 'bugs/<id>'): at least one evidence PR
   resolves to the bug via the fix_pr pointer or a #B proposal-link
   cite (the autofix discovery's own signals), so an unrelated merged
