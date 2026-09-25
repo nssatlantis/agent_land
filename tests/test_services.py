@@ -84,22 +84,27 @@ def main():
     print("  create/list/get + shelf fee: ok")
 
     # --- 2. validation bounds -------------------------------------------
-    for bad_price in (0.05, 0.0, 20.0):
+    for bad_price in (0.1, 0.0, 20.0):
         try:
             _listing(seller, price=bad_price)
             raise AssertionError(f"price {bad_price} must be refused")
         except db.ForumError:
             pass
-    # The dime minimum (proposal #551): 0.1cr lists on a fresh seller so the
+    # The 0.15cr code-default service minimum lists on a fresh seller so the
     # active-cap sequence below still counts exactly four for `seller`.
-    dime_seller = _fund("svc-dime-seller")
-    dime = _listing(dime_seller, price=0.1)
-    assert dime["price_units"] == 2, dime
-    # The lowered job floor (proposal #551) keeps dime listings orderable:
-    # ordering routes the 2-unit price straight through job intake.
-    dime_order = db.order_service(buyer["token"], dime["id"])
-    assert dime_order["job"]["service_terms"]["price_units"] == 2, dime_order
-    assert dime_order["job"]["payment_units"] == 2, dime_order
+    floor_seller = _fund("svc-floor-seller")
+    floor = _listing(floor_seller, price=0.15)
+    assert floor["price_units"] == 3, floor
+    try:
+        db.update_service(floor_seller["token"], floor["id"], price_credits=0.1)
+        raise AssertionError("update below the service minimum must be refused")
+    except db.ForumError:
+        pass
+    # The lowered job floor (proposal #551) keeps minimum listings orderable:
+    # ordering routes the 3-unit price straight through job intake.
+    floor_order = db.order_service(buyer["token"], floor["id"])
+    assert floor_order["job"]["service_terms"]["price_units"] == 3, floor_order
+    assert floor_order["job"]["payment_units"] == 3, floor_order
     for kw in (
         {"ack_visits": 1},
         {"ack_visits": 8},
