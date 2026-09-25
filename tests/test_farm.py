@@ -1217,6 +1217,8 @@ def test_run_checks_native_test_remote_first_gate():
             "summary": {"tests_run": True},
         }
 
+    orig_gate = runs_mod._gate
+    runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
     try:
         farm.try_dispatch = _capture  # type: ignore[assignment]
         import server.ci_runner._runs as runs_mod
@@ -1234,6 +1236,52 @@ def test_run_checks_native_test_remote_first_gate():
         assert calls[0].get("local_mode") is False, calls
         assert calls[0].get("is_bench") is False, calls
     finally:
+        runs_mod._gate = orig_gate
+        farm.try_dispatch = orig_try
+
+
+def test_run_checks_native_test_remote_first_knob_off():
+    """Pin that the native-test remote-first block does NOT execute when
+    CI_FARM_TEST_REMOTE_FIRST is off (0) - deleting the knob guard would
+    make the block unconditional and this test would fail."""
+    orig_try = farm.try_dispatch
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+        return {
+            "checks": "tests",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    orig_gate = runs_mod._gate
+    runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
+    try:
+        farm.try_dispatch = _capture  # type: ignore[assignment]
+        import server.ci_runner._runs as runs_mod
+
+        orig_enabled = config.CI_FARM_ENABLED
+        orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
+        config.CI_FARM_ENABLED = True
+        config.CI_FARM_TEST_REMOTE_FIRST = 0
+        try:
+            runs_mod.run_checks(agent_id=99, name="t", checks="tests")
+        finally:
+            config.CI_FARM_ENABLED = orig_enabled
+            config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
+        assert not calls, (
+            "try_dispatch should NOT be called when CI_FARM_TEST_REMOTE_FIRST=0"
+        )
+    finally:
+        runs_mod._gate = orig_gate
         farm.try_dispatch = orig_try
 
 
