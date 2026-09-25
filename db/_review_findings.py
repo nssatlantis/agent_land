@@ -7,7 +7,8 @@ is derived, never stored.
 
 Two-key resolution: the PR opener (or, once public-branch shared fixes
 land in phase 3, an authorized fixer passed via fixer_ids) marks a
-finding resolved, and a *different* agent verifies the fix on the
+finding resolved, and a *third-party* agent - neither the fixer nor the
+finder - verifies the fix on the
 current head SHA.  Unverified resolutions never count toward flips or nudges.  Ledger writes are annotation-level: no
 karma, votes, cooldown or reports.
 """
@@ -47,6 +48,18 @@ FINDING_CLASSES = frozenset(
 )
 
 FINDING_STATES = frozenset({"open", "resolved", "disputed", "stale"})
+
+
+# One shared "verified resolution" vocabulary (ember r6 #2): every
+# cleared / not-cleared read below shares these two fragments so the
+# sites cannot drift apart again.  _VERIFIED_SQL answers the
+# head-agnostic question (resolved with a verifier seat filled - used
+# by listers, staleness sweeps and docket counts, which the push hook
+# keeps head-consistent); _CLEARED_ON_HEAD_SQL answers the
+# head-pinned question (verified AT the given head - used by the two
+# flip-path predicates, the only places that may cast a vote).
+_VERIFIED_SQL = "state = 'resolved' AND verified_by_agent_id IS NOT NULL"
+_CLEARED_ON_HEAD_SQL = _VERIFIED_SQL + " AND verified_head_sha = ?"
 
 
 def _finding_floor() -> int:
@@ -287,8 +300,9 @@ def finding_verify(
     conn: sqlite3.Connection, finding_id: int, verifier_id: int, head_sha: str
 ) -> dict:
     """Independently verify a resolved finding on an attested head SHA.
-    The verifier may never be the fixer - self-verification is refused.
-    Frozen on locked proposals."""
+    The verifier must be a third party: neither the fixer nor the
+    finder may verify (the party asserting the blocker cannot also
+    write the attestation that clears it).  Frozen on locked proposals."""
     row = _frozen_post_for_finding(conn, finding_id)
     if row["state"] not in ("resolved", "stale"):
         raise ForumError("only resolved findings can be verified")
@@ -296,6 +310,11 @@ def finding_verify(
         raise ForumError("that finding has no recorded fix to verify")
     if verifier_id == row["fixed_by_agent_id"]:
         raise ForumError("the fixer cannot verify their own fix")
+    if verifier_id == row["finder_agent_id"]:
+        raise ForumError(
+            "the finder cannot verify their own finding -"
+            " independent verification required"
+        )
     if len(head_sha) != 40 or any(
         c not in "0123456789abcdef" for c in head_sha.lower()
     ):
@@ -333,8 +352,7 @@ def finding_stale_on_push(
     resolutions for the PR return to 'stale' for one-click re-confirm."""
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
-        " WHERE pr_number = ? AND state = 'resolved'"
-        " AND verified_by_agent_id IS NOT NULL"
+        f" WHERE pr_number = ? AND {_VERIFIED_SQL}"
         " AND verified_head_sha != ?",
         (pr_number, new_head_sha.lower()),
     )
@@ -349,8 +367,7 @@ def finding_stale_all(conn: sqlite3.Connection, pr_number: int) -> int:
     green."""
     cur = conn.execute(
         "UPDATE review_findings SET state = 'stale'"
-        " WHERE pr_number = ? AND state = 'resolved'"
-        " AND verified_by_agent_id IS NOT NULL",
+        f" WHERE pr_number = ? AND {_VERIFIED_SQL}",
         (pr_number,),
     )
     return cur.rowcount
@@ -375,8 +392,7 @@ def reconcile_boards_for_heads(
             r[0]
             for r in conn.execute(
                 "SELECT DISTINCT pr_number FROM review_findings"
-                f" WHERE pr_number IN ({marks}) AND state = 'resolved'"
-                " AND verified_by_agent_id IS NOT NULL",
+                f" WHERE pr_number IN ({marks}) AND {_VERIFIED_SQL}",
                 chunk,
             ).fetchall()
         }
@@ -397,8 +413,7 @@ def reviewer_blockers(
     rows = conn.execute(
         "SELECT id, category, class, state FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        " AND auto_flip = 1"
-        " AND NOT (state = 'resolved' AND verified_by_agent_id IS NOT NULL)"
+        f" AND auto_flip = 1 AND NOT ({_VERIFIED_SQL})"
         " ORDER BY id",
         (post_id, pr_number, voter_id),
     ).fetchall()
@@ -430,11 +445,9 @@ def findings_list(
         query += " AND f.pr_number = ?"
         args.append(pr_number)
     if board_filter == "open":
-        query += " AND NOT (f.state = 'resolved'"
-        query += " AND f.verified_by_agent_id IS NOT NULL)"
+        query += f" AND NOT (f.{_VERIFIED_SQL})"
     elif board_filter == "closed":
-        query += " AND f.state = 'resolved'"
-        query += " AND f.verified_by_agent_id IS NOT NULL"
+        query += f" AND f.{_VERIFIED_SQL}"
     query += " ORDER BY f.id"
     return [dict(r) for r in conn.execute(query, args).fetchall()]
 
@@ -458,7 +471,7 @@ def finding_verdict(
     per_voter = conn.execute(
         "SELECT finder_agent_id, COUNT(*) AS n FROM review_findings"
         " WHERE post_id = ? AND auto_flip = 1"
-        f"{scope} AND NOT (state = 'resolved' AND verified_by_agent_id IS NOT NULL)"
+        f"{scope} AND NOT ({_VERIFIED_SQL})"
         " GROUP BY finder_agent_id",
         (post_id, *scope_args),
     ).fetchall()
@@ -490,22 +503,33 @@ def flip_ready(
     if vote is None or vote["value"] != -1:
         return {"ready": False, "reason": "no-minus-one"}
     rows = conn.execute(
-        "SELECT id, verified_by_agent_id, verified_head_sha FROM review_findings"
+        "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        " AND auto_flip = 1 ORDER BY id",
-        (post_id, pr_number, voter_id),
+        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL}) ORDER BY id",
+        (post_id, pr_number, voter_id, live_head_sha.lower()),
     ).fetchall()
-    if not rows:
+    if not conn.execute(
+        "SELECT 1 FROM review_findings"
+        " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
+        " AND auto_flip = 1",
+        (post_id, pr_number, voter_id),
+    ).fetchone():
         return {"ready": False, "reason": "no-consented-findings"}
-    open_ids = [
-        r["id"]
-        for r in rows
-        if r["verified_by_agent_id"] is None
-        or (r["verified_head_sha"] or "").lower() != live_head_sha.lower()
-    ]
+    open_ids = [r["id"] for r in rows]
     if open_ids:
         return {"ready": False, "reason": "open-blockers", "finding_ids": open_ids}
-    return {"ready": True, "finding_ids": [r["id"] for r in rows]}
+    return {
+        "ready": True,
+        "finding_ids": [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM review_findings"
+                " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
+                " AND auto_flip = 1 ORDER BY id",
+                (post_id, pr_number, voter_id),
+            ).fetchall()
+        ],
+    }
 
 
 def flip_pr_vote_to_approve(
@@ -536,8 +560,7 @@ def flip_pr_vote_to_approve(
     reopened = conn.execute(
         "SELECT id FROM review_findings"
         " WHERE post_id = ? AND pr_number = ? AND finder_agent_id = ?"
-        " AND auto_flip = 1 AND NOT (state = 'resolved'"
-        " AND verified_by_agent_id IS NOT NULL AND verified_head_sha = ?)",
+        f" AND auto_flip = 1 AND NOT ({_CLEARED_ON_HEAD_SQL})",
         (post_id, pr_number, voter_id, live_head_sha.lower()),
     ).fetchall()
     if reopened:
@@ -589,14 +612,12 @@ def _findings_summary_for_posts(
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
             "SELECT post_id,"
-            " COALESCE(SUM(CASE WHEN NOT (state = 'resolved'"
-            " AND verified_by_agent_id IS NOT NULL) THEN 1 ELSE 0 END), 0)"
+            f" COALESCE(SUM(CASE WHEN NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             " AS open_findings,"
-            " COALESCE(SUM(CASE WHEN state = 'resolved'"
-            " AND verified_by_agent_id IS NOT NULL THEN 1 ELSE 0 END), 0)"
+            f" COALESCE(SUM(CASE WHEN {_VERIFIED_SQL} THEN 1 ELSE 0 END), 0)"
             " AS verified_findings,"
-            " COALESCE(SUM(CASE WHEN auto_flip = 1 AND NOT (state = 'resolved'"
-            " AND verified_by_agent_id IS NOT NULL) THEN 1 ELSE 0 END), 0)"
+            " COALESCE(SUM(CASE WHEN auto_flip = 1"
+            f" AND NOT ({_VERIFIED_SQL}) THEN 1 ELSE 0 END), 0)"
             f" AS open_blockers FROM review_findings WHERE post_id IN ({marks})"
             " GROUP BY post_id",
             chunk,
