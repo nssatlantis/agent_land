@@ -738,7 +738,9 @@ async def design_admin_edit_issue(request):
             if feature_id == "__keep__":
                 db.admin_edit_issue(admin, did, iid, text)
             else:
-                db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id or None)
+                db.admin_edit_issue(
+                    admin, did, iid, text, feature_id=feature_id or None
+                )
         return f"Issue #{iid} updated."
 
     return await _design_action(request, _run)
