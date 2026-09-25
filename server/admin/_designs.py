@@ -206,11 +206,22 @@ def _owner_label(d: dict) -> str:
 
 
 def _feature_options(features: list[dict], selected=None) -> str:
-    bits = ["<option value=''>design-level</option>"]
+    selected_id = "" if selected is None else str(selected)
+    linked_hidden = selected_id and not any(
+        f.get("state") == "accepted"
+        and f.get("op") == "add"
+        and str(f.get("id")) == selected_id
+        for f in features
+    )
+    bits = []
+    if linked_hidden:
+        bits.append("<option value='__keep__' selected>keep current link</option>")
+    level_mark = " selected" if not selected_id else ""
+    bits.append(f"<option value=''{level_mark}>design-level (unlink)</option>")
     for f in features:
         if f.get("state") != "accepted" or f.get("op") != "add":
             continue
-        mark = " selected" if str(selected or "") == str(f.get("id")) else ""
+        mark = " selected" if selected_id == str(f.get("id")) else ""
         bits.append(
             f"<option value='{int(f['id'])}'{mark}>#{int(f['id'])} "
             f"{esc(f.get('text') or '')}</option>"
@@ -720,8 +731,11 @@ async def design_admin_edit_issue(request):
         did = int(request.path_params["design_id"])
         iid = _form_int(form, "issue_id", "issue")
         text = (form.get("text") or "").strip()
-        feature_id = (form.get("feature_id") or "").strip() or None
-        db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id)
+        feature_id = (form.get("feature_id") or "").strip()
+        if feature_id == "__keep__":
+            db.admin_edit_issue(admin, did, iid, text)
+        else:
+            db.admin_edit_issue(admin, did, iid, text, feature_id=feature_id or None)
         return f"Issue #{iid} updated."
 
     return await _design_action(request, _run)
