@@ -683,6 +683,7 @@ def ci_run_status(agent_id: int, run_id: str) -> dict:
                     "base_sha": detail.get("base_sha"),
                     "runner": detail.get("runner"),
                     "output_sha256": detail.get("output_sha256"),
+                    "output_tail": detail.get("output_tail"),
                 }
     return {
         "run_id": rid,
