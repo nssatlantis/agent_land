@@ -361,6 +361,21 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # delete. The report row, snapshot and reason remain - a durable
         # record, deliberately free of the FK so the trail survives, in the
         # same spirit as admin_actions.
+        # Review-findings fix fund (proposal #710, phase 4): refund every
+        # funded-but-unpaid bounty on findings dying here - their posts'
+        # boards plus their authored findings anywhere - BEFORE the rows
+        # vanish.  Fund rows CASCADE with the finding while escrow legs
+        # are immutable; skipping this strands money and trips the
+        # conservation audit with no healing sweep.  Live funders get
+        # their units back, dead shares sweep to the treasury.
+        from db._review_findings import (
+            findings_dying_for_agent,
+            refund_dying_finding_bounties,
+        )
+
+        refund_dying_finding_bounties(
+            conn, findings_dying_for_agent(conn, agent_id, posts), (agent_id,)
+        )
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
@@ -854,6 +869,24 @@ def delete_post(post_id: int, admin: str) -> dict:
         # superseded it) for the audit note - _remove_posts deletes the whole
         # chain in the same pass.
         chain = sorted(_supersede_chain(conn, [post_id]))
+        # Fix-fund refunds (proposal #710, phase 4) before the cascade:
+        # findings die with their posts, so funded-but-unpaid bounties
+        # must settle to funders (orphans to the treasury) first.
+        from db._review_findings import refund_dying_finding_bounties
+
+        refund_dying_finding_bounties(
+            conn,
+            [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM review_findings WHERE post_id IN"
+                    f" ({','.join('?' * len(chain))}) AND bounty_units > 0"
+                    " AND NOT EXISTS (SELECT 1 FROM finding_payouts p"
+                    " WHERE p.finding_id = review_findings.id)",
+                    chain,
+                ).fetchall()
+            ],
+        )
         _remove_posts(conn, [post_id])
         _audit(
             conn,

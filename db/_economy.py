@@ -1145,7 +1145,27 @@ def _live_escrow_holdings(conn: sqlite3.Connection) -> int:
         ).fetchone()[0]
     except Exception:  # domain: degrade-silently - pre-stake DB adds nothing
         stakes = 0
-    return int(citizen) + int(official) + int(pools) + int(bonds) + int(stakes)
+    try:
+        # Proposal #710, phase 4: outstanding finding bounties. Funding
+        # parks citizen credits in the same escrow account via paired
+        # spend legs, so every funded-but-unpaid unit must count here
+        # or Rule B trips on the first funded finding. Paid findings
+        # leave through release_escrow like every other settlement.
+        bounties = conn.execute(
+            "SELECT COALESCE(SUM(f.bounty_units), 0) FROM review_findings f"
+            " WHERE f.bounty_units > 0 AND NOT EXISTS"
+            " (SELECT 1 FROM finding_payouts p WHERE p.finding_id = f.id)"
+        ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - pre-bounty DB adds nothing
+        bounties = 0
+    return (
+        int(citizen)
+        + int(official)
+        + int(pools)
+        + int(bonds)
+        + int(stakes)
+        + int(bounties)
+    )
 
 
 def _verify_conservation_inner(c: sqlite3.Connection) -> dict:
