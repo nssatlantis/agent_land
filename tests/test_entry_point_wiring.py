@@ -3,12 +3,21 @@
 tests/run_all.py spawns each file as a bare subprocess and scores only the
 exit code (#672 item 5342, the vacuous-green class of #1038/#1041/#1069):
 a file whose test defs are never invoked passes while asserting nothing.
-This test AST-scans tests/ and fails naming any file with test_ defs but
-no `if __name__ == "__main__"` tail reaching them. A tail reaches its
-tests by calling them (or `main()`) directly, or through one level of
-module-level driver (e.g. a `_run_all_tests()` list driver). Files run_all
-skips (e2e suites + benchmark, own harnesses) are excluded, mirroring
-tests/run_all.py:_SKIP by name.
+This test AST-scans tests/ and fails naming every module-level test def the
+file's `if __name__ == "__main__"` tail cannot reach. Reachability expands
+the tail's call graph recursively through module-level defs with a visited
+set - `main` itself is not a target, so a tail that merely calls `main()`
+proves nothing until the expansion lands on real test defs (a bare
+`def main(): pass` driver reaches none). Dynamic discovery (`globals()` /
+`locals()` / `dir()` / `vars()` called anywhere in the tail's closure,
+plus a call) still passes a file: thirty-one suites drive every test
+through a globals() list driver, and that form genuinely executes them.
+Files run_all skips (e2e suites + benchmark, own harnesses) are excluded,
+mirroring tests/run_all.py:_SKIP by name.
+
+Known debt lives in EXPECTED_UNWIRED_COUNTS (dated 2026-09-25): per-file
+counts of unreached defs, enforced exactly. The map can only shrink -
+wiring a test without shrinking it fails CI, and so does any growth.
 """
 
 from __future__ import annotations
@@ -32,6 +41,20 @@ SKIPPED_BY_RUN_ALL = frozenset(
 )
 
 _DYNAMIC_DISCOVERY = frozenset({"globals", "locals", "dir", "vars"})
+
+# Pinned record of known entry-point debt at the per-test ratchet landing
+# (2026-09-25, #672 item 5342, PR #1462): filename -> unreached test-def
+# count. Enforced EXACTLY - growth fails CI, fixes must shrink this map in
+# the same PR. Never extend it for new code; wire the tests instead.
+EXPECTED_UNWIRED_COUNTS = {
+    "test_viewer.py": 28,
+    "test_credits.py": 4,
+    "test_github_http.py": 3,
+    "test_farm.py": 2,
+    "test_bench_gate.py": 1,
+    "test_economy.py": 1,
+    "test_pr_vote.py": 1,
+}
 
 
 def _module_test_defs(tree: ast.Module) -> list:
@@ -74,40 +97,93 @@ def _loaded_names(node: ast.AST) -> set:
     return names
 
 
-def _calls_something(node: ast.AST) -> bool:
-    return any(isinstance(child, ast.Call) for child in ast.walk(node))
+def _tail_closure(tree: ast.Module) -> list:
+    """Tail node plus every module-level def it reaches by name.
 
-
-def _tail_invokes_tests(tree: ast.Module, test_names: list) -> bool:
-    targets = set(test_names) | {"main"}
+    The `__main__` tail's loaded names expand transitively through
+    module-level defs (visited set, order-free: defs may sit after the
+    tail's `main()`). Names matching no module def are leaves.
+    """
     defs = _module_defs(tree)
-    for node in tree.body:
-        if isinstance(node, ast.If) and _is_main_guard(node.test):
-            refs = _loaded_names(node)
-            for name in list(refs):
-                func = defs.get(name)
-                if func is not None:
-                    refs |= _loaded_names(func)
-            if refs & targets:
-                return True
-            if refs & _DYNAMIC_DISCOVERY and _calls_something(node):
-                return True
-    return False
+    nodes: list = []
+    visited: set = set()
+    frontier = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.If) and _is_main_guard(node.test)
+    ]
+    while frontier:
+        cur = frontier.pop()
+        nodes.append(cur)
+        for name in _loaded_names(cur) - visited:
+            visited.add(name)
+            func = defs.get(name)
+            if func is not None:
+                frontier.append(func)
+    return nodes
+
+
+def _tail_reached_tests(tree: ast.Module, test_names: list) -> set:
+    """Module-level test defs the `__main__` tail can reach.
+
+    Dynamic discovery (`globals()` / `locals()` / `dir()` / `vars()`
+    called anywhere in the tail's closure, plus a call) runs every test
+    by construction. Otherwise a test is reached when its name loads
+    anywhere in the closure. `main` is deliberately NOT a target: a tail
+    that merely calls `main()` reaches nothing until the expansion lands
+    on real test defs.
+    """
+    targets = set(test_names)
+    closure = _tail_closure(tree)
+    calls = False
+    discovered = False
+    for node in closure:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                calls = True
+                func = child.func
+                if isinstance(func, ast.Name) and func.id in _DYNAMIC_DISCOVERY:
+                    discovered = True
+    if discovered and calls:
+        return set(test_names)
+    reached: set = set()
+    for node in closure:
+        reached |= _loaded_names(node) & targets
+    return reached
 
 
 def test_all_test_files_execute_their_tests():
-    offenders = []
+    actual: dict = {}
     for path in sorted(TESTS_DIR.glob("test_*.py")):
         if path.name in SKIPPED_BY_RUN_ALL:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         names = _module_test_defs(tree)
-        if names and not _tail_invokes_tests(tree, names):
-            offenders.append(f"{path.name}: {', '.join(names)}")
-    assert not offenders, (
-        "test files with un-invoked test defs (vacuous green under run_all.py):\n"
-        + "\n".join(offenders)
+        unreached = sorted(set(names) - _tail_reached_tests(tree, names))
+        if unreached:
+            actual[path.name] = unreached
+    detail = "; ".join(
+        fname + ": " + ", ".join(actual[fname]) for fname in sorted(actual)
     )
+    assert set(actual) == set(EXPECTED_UNWIRED_COUNTS), (
+        "entry-point debt membership changed (#672 item 5342): actual=["
+        + detail
+        + "] allowlisted="
+        + str(sorted(EXPECTED_UNWIRED_COUNTS))
+        + ". Wire the tests (and shrink the allowlist in the same PR) "
+        "instead of extending it."
+    )
+    for fname, expected in EXPECTED_UNWIRED_COUNTS.items():
+        assert len(actual[fname]) == expected, (
+            fname
+            + ": "
+            + str(len(actual[fname]))
+            + " unreached, allowlist pins "
+            + str(expected)
+            + " (#672 item 5342): "
+            + ", ".join(actual[fname])
+            + ". Shrink the wiring AND the allowlist in the same PR."
+        )
 
 
 def main():
