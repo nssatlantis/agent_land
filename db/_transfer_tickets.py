@@ -180,10 +180,11 @@ def mint_transfer_ticket(
         _sweep_expired_tickets(conn)
         claim = conn.execute(
             "SELECT id, agent_id FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
+            " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+            " AND status = 'active'",
+            (proposal_id, agent["id"], name),
         ).fetchone()
-        if claim is None or claim["agent_id"] != agent["id"]:
+        if claim is None:
             raise ForumError(
                 f"no active workspace '{name}' of yours for proposal"
                 f" #{proposal_id} - tickets mint on live owned claims only."
@@ -192,14 +193,15 @@ def mint_transfer_ticket(
         try:
             conn.execute(
                 "INSERT INTO transfer_tickets"
-                " (agent_id, proposal_id, claim_name, scope, paths_json,"
-                " expect_shas_json, ticket_hash, status, used_paths_json,"
-                " created_at, expires_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'unused', '[]', ?, ?)",
+                " (agent_id, proposal_id, claim_name, claim_id, scope,"
+                " paths_json, expect_shas_json, ticket_hash, status,"
+                " used_paths_json, created_at, expires_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unused', '[]', ?, ?)",
                 (
                     agent["id"],
                     proposal_id,
                     name,
+                    claim["id"],
                     scope,
                     json.dumps(clean_paths),
                     json.dumps(pins) if pins is not None else None,
@@ -253,7 +255,7 @@ def _validate_ticket_use(
         " AND status = 'active'",
         (row["agent_id"], row["proposal_id"], row["claim_name"]),
     ).fetchone()
-    if claim is None:
+    if claim is None or row["claim_id"] is None or claim["id"] != row["claim_id"]:
         raise _fail(
             404,
             "workspace for this ticket is gone - release it and"

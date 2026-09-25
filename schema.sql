@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS transfer_tickets (
     agent_id         INTEGER NOT NULL REFERENCES agents(id),
     proposal_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     claim_name       TEXT NOT NULL,
+    claim_id         INTEGER REFERENCES workspace_claims(id),
     scope            TEXT NOT NULL CHECK (scope IN ('read', 'write')),
     paths_json       TEXT NOT NULL DEFAULT '[]',
     expect_shas_json TEXT,

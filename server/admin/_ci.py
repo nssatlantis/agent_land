@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 
 from starlette.responses import RedirectResponse
 
@@ -503,7 +504,7 @@ def _render_ci_dashboard(request) -> str:
     ci_html = (
         '<div class="panel"><h2>CI Runner Pool (Docker sandboxed)</h2>'
         f'<p style="color:var(--muted)">desired {ci.get("desired", "?")} | avail {ci.get("avail", "?")} | busy {ci.get("busy", "?")} | effective_cpus {ci.get("effective_cpus", "?")} (host {ci.get("host_cpus") or "?"}c; ceil when <=1 busy, host/busy - 0.1 reserve when contended) | docker {"yes" if ci.get("docker") else "no"} | mem {snap.get("ci_mem")}M+{snap.get("ci_swap")}M swap | timeout {snap.get("ci_timeout")}s</p>'
-        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>size</th><th>git</th></tr>'
+        '<div class="table-wrap"><table><tr><th>slot</th><th>dir + state</th><th>git</th></tr>'
         + "".join(_slot_row(s) for s in ci.get("slots", []))
         + "</table></div>"
         + (
@@ -647,7 +648,7 @@ def _render_ci_dashboard(request) -> str:
     ticker_html = (
         '<div class="panel"><h2>Ticker Coalesce (file-at-a-time)</h2>'
         f'<p style="color:var(--muted)">alive {ticker.get("alive")} | in_flight {esc(str(inflight))} | poll 5s base, 10s when backlog | coalesce 15s | max 5 requeues</p>'
-        '<div class="table-wrap"><table><tr><th>PR</th><th>deadline in</th><th>requeues</th></tr>'
+        '<div class="table-wrap"><table><tr><th>pr</th><th>deadline in</th><th>requeues</th></tr>'
         + pending_rows
         + "</table></div>"
         + (
@@ -965,6 +966,7 @@ async def ci_gc_workspaces(request):
         # against empty (which would retire every held tree).
         swept_claims = 0
         live_claims = None
+        live_claims_reader: Callable[[], set] | None = None
         try:
             import db as _ws_db
 
@@ -984,14 +986,21 @@ async def ci_gc_workspaces(request):
                 (r["agent_id"], r["proposal_id"], r["name"])
                 for r in _ws_db.active_workspace_claims()
             }
+
+            def live_claims_reader() -> set:
+                return {
+                    (r["agent_id"], r["proposal_id"], r["name"])
+                    for r in _ws_db.active_workspace_claims()
+                }
         except Exception:  # domain: degrade-silently - unknown live set sweeps nothing
             live_claims = None
+            live_claims_reader = None
         retired_claims = 0
         try:
             from github._workspaces import sweep_released_claim_trees
 
-            if live_claims is not None:
-                retired_claims = sweep_released_claim_trees(live_claims)
+            if live_claims is not None and live_claims_reader is not None:
+                retired_claims = sweep_released_claim_trees(live_claims_reader)
         except Exception:  # domain: degrade-silently - released sweep never breaks GC
             pass
         try:

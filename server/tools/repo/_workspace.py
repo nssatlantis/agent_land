@@ -9,21 +9,130 @@ the answer. Claim/release emit the workspace ledger events.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 import re
-from contextlib import contextmanager
 from functools import wraps
-from typing import Any
 
 import config
 import db
 import github
 from github._core import _validate_path
-from github._workspaces import _transfer_file_cap_bytes, read_regular_file_at_ref
+from github._workspaces import (
+    _retire_claim_tree_locked,
+    _transfer_file_cap_bytes,
+    read_regular_file_at_ref,
+    workspace_lock,
+)
 from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels
 from server.repo_helpers import _body_with_proposal_identity
+
+
+def _revalidate_serialized_claim(
+    token: str, proposal_id: int, name: str, initial_claim_id: int
+) -> None:
+    try:
+        current, _dest = _resolve_claim_tree(token, proposal_id, name)
+    except db.ForumError:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        ) from None
+    if int(current["id"]) != initial_claim_id:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        )
+
+
+def _revalidate_claim_record(
+    token: str, proposal_id: int, name: str, initial_claim_id: int
+) -> None:
+    try:
+        current = db.get_workspace(token, proposal_id, name)
+    except db.ForumError:
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        ) from None
+    if int(current["id"]) != int(initial_claim_id):
+        raise db.ForumError(
+            f"workspace claim {name!r} changed while waiting for its lock; "
+            "retry against the current claim."
+        )
+
+
+def _same_file_mode(current: int | None, selected: int | None) -> bool:
+    if current is None or selected is None:
+        return current is None and selected is None
+    if os.name == "nt":
+        return bool(current & 0o200) == bool(selected & 0o200)
+    return current == selected
+
+
+def _workspace_serialized(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
+            record, dest = _resolve_claim_tree(token, proposal_id, name)
+            claim_id = int(record["id"])
+            lock = workspace_lock(dest)
+            acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
+            try:
+                await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+
+                def release_after_acquire(done: asyncio.Task[None]) -> None:
+                    try:
+                        done.result()
+                    except BaseException:
+                        return
+                    lock.__exit__(None, None, None)
+
+                acquire.add_done_callback(release_after_acquire)
+                raise
+            try:
+                _revalidate_serialized_claim(token, proposal_id, name, claim_id)
+            except BaseException:
+                lock.__exit__(None, None, None)
+                raise
+            operation = asyncio.create_task(
+                func(token, proposal_id, name, *args, **kwargs)
+            )
+            try:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError:
+
+                def release_after_operation(done: asyncio.Task) -> None:
+                    try:
+                        done.result()
+                    except BaseException:
+                        pass
+                    finally:
+                        lock.__exit__(None, None, None)
+
+                operation.add_done_callback(release_after_operation)
+                raise
+            except BaseException:
+                lock.__exit__(None, None, None)
+                raise
+            else:
+                lock.__exit__(None, None, None)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
+        record, dest = _resolve_claim_tree(token, proposal_id, name)
+        claim_id = int(record["id"])
+        with workspace_lock(dest):
+            _revalidate_serialized_claim(token, proposal_id, name, claim_id)
+            return func(token, proposal_id, name, *args, **kwargs)
+
+    return sync_wrapper
 
 
 @mcp.tool()
@@ -38,11 +147,16 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
     record = db.claim_workspace(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     name = str(record["name"])
+    dest = str(github.claim_tree_info(agent_id, proposal_id, name)["path"])
     try:
-        tree = github.ensure_claim_tree(agent_id, proposal_id, name)
+        with workspace_lock(dest, allow_missing=True):
+            _revalidate_claim_record(token, proposal_id, name, int(record["id"]))
+            tree = github.ensure_claim_tree(
+                agent_id, proposal_id, name, claim_id=int(record["id"])
+            )
     except Exception:
         try:
-            db.release_workspace(token, proposal_id, name)
+            db.release_workspace(token, proposal_id, name, claim_id=record["id"])
         except (
             Exception
         ):  # domain: degrade-silently - compensation best-effort; tree error answers
@@ -67,13 +181,21 @@ def claim_workspace(token: str, proposal_id: int, name: str) -> dict:
 @_logged
 def release_workspace(token: str, proposal_id: int, name: str) -> dict:
     """Release one workspace claim and retire its tree (best-effort)."""
-    record = db.release_workspace(token, proposal_id, name)
-    try:
-        github.retire_claim_tree(
-            int(record["agent_id"]), proposal_id, str(record["name"])
+    record = db.get_workspace_for_release(token, proposal_id, name)
+    info = github.claim_tree_info(
+        int(record["agent_id"]), proposal_id, str(record["name"])
+    )
+    dest = str(info["path"])
+    with workspace_lock(dest, allow_missing=True):
+        record = db.release_workspace(
+            token, proposal_id, name, claim_id=int(record["id"])
         )
-    except Exception:  # domain: degrade-silently - teardown best-effort; record answers
-        pass
+        try:
+            _retire_claim_tree_locked(dest)
+        except (
+            Exception
+        ):  # domain: degrade-silently - teardown best-effort; record answers
+            pass
     try:
         from events import EVT_WORKSPACE_RELEASED, log_event
 
@@ -114,55 +236,6 @@ _MANAGED_HEADS = frozenset({".git", ".workspace.json", ".workspace.json.tmp"})
 _EXPECT_SHA_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
-@contextmanager
-def _workspace_lock(dest: str):
-    lock_path = os.path.join(dest, ".git", "workspace.lock")
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    with open(lock_path, "a+b") as lock:
-        if os.name == "nt":
-            msvcrt: Any = __import__("msvcrt")
-            locking = msvcrt.locking
-            lock_mode = msvcrt.LK_LOCK
-            unlock_mode = msvcrt.LK_UNLCK
-            lock.seek(0)
-            lock.write(b"\0")
-            lock.flush()
-            lock.seek(0)
-            locking(lock.fileno(), lock_mode, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if os.name == "nt":
-                lock.seek(0)
-                locking(lock.fileno(), unlock_mode, 1)
-            else:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def _workspace_serialized(func):
-    if inspect.iscoroutinefunction(func):
-
-        @wraps(func)
-        async def async_wrapper(token, proposal_id, name, *args, **kwargs):
-            _record, dest = _resolve_claim_tree(token, proposal_id, name)
-            with _workspace_lock(dest):
-                return await func(token, proposal_id, name, *args, **kwargs)
-
-        return async_wrapper
-
-    @wraps(func)
-    def sync_wrapper(token, proposal_id, name, *args, **kwargs):
-        _record, dest = _resolve_claim_tree(token, proposal_id, name)
-        with _workspace_lock(dest):
-            return func(token, proposal_id, name, *args, **kwargs)
-
-    return sync_wrapper
-
-
 def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
     """Validate a workspace-relative path; returns (clean, absolute).
 
@@ -188,15 +261,17 @@ def _guard_tree_path(dest: str, path: str, *, write: bool) -> tuple[str, str]:
     return clean, full
 
 
-def _touch_clocks(agent_id: int, proposal_id: int, name: str) -> None:
+def _touch_clocks(
+    agent_id: int, proposal_id: int, name: str, claim_id: int | None = None
+) -> None:
     """Advance the record and tree idle-clocks together (best-effort)."""
     try:
         with db._conn() as conn:
-            db.touch_workspace(conn, agent_id, proposal_id, name)
+            db.touch_workspace(conn, agent_id, proposal_id, name, claim_id=claim_id)
     except Exception:  # domain: degrade-silently - record touch is enrichment
         pass
     try:
-        github.touch_claim_tree(agent_id, proposal_id, name)
+        github.touch_claim_tree(agent_id, proposal_id, name, claim_id=claim_id)
     except Exception:  # domain: degrade-silently - manifest touch is enrichment
         pass
 
@@ -218,6 +293,7 @@ def _resolve_claim_tree(token: str, proposal_id: int, name: str) -> tuple[dict, 
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
     """List one workspace tree's files as {path, size}, .git excluded."""
     _record, dest = _resolve_claim_tree(token, proposal_id, name)
@@ -238,6 +314,7 @@ def workspace_list_tree(token: str, proposal_id: int, name: str) -> list:
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_search(
     token: str,
     proposal_id: int,
@@ -253,14 +330,14 @@ def workspace_search(
     `.git`, the managed manifest, symlinks, over-cap files (TRANSFER_MAX_FILE_MB) and
     non-UTF8 binaries never match. Returns `{query, matches: [{path,
     matches: [{line_number, text}]}], proposal_id, name}` with paths relative
-    to the tree root, bounded to `max_results` files (each capped at 50 lines,
+    to the tree root, bounded by `max_results` files (each capped at 50 lines,
     lines trimmed to 160 chars).
 
     `ref` (optional) searches the committed tree at that git ref (branch,
     tag or commit SHA, resolved inside the claim tree) via `git grep`
     instead of the live worktree - dirty edits and untracked files are
-    invisible there by design, so a branch can be audited before it is
-    pushed. The response echoes the ref it searched (the winning `origin/`
+    invisible there by design, so a branch can be audited before merge.
+    The response echoes the ref it searched (the winning `origin/`
     candidate when fallback resolves, so provenance is auditable).
     Unknown refs refuse;
     sync the tree first (`workspace_sync`, which fetches origin refs) so
@@ -302,7 +379,12 @@ def workspace_search(
             )
         except github.RepoError as exc:
             raise db.ForumError(str(exc)) from None
-        _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+        _touch_clocks(
+            int(record["agent_id"]),
+            proposal_id,
+            str(record["name"]),
+            int(record["id"]),
+        )
         return {
             "query": found["query"],
             "matches": found["matches"],
@@ -352,7 +434,9 @@ def workspace_search(
                     break
         if len(results) >= cap:
             break
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+    )
     return {
         "query": q,
         "matches": results,
@@ -363,6 +447,7 @@ def workspace_search(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_read_file(
     token: str,
     proposal_id: int,
@@ -444,7 +529,12 @@ def workspace_read_file(
             max_lines = 1000
         if end - start + 1 > max_lines:
             raise db.ForumError(f"range covers over {max_lines} lines.")
-    _touch_clocks(int(_record["agent_id"]), proposal_id, str(_record["name"]))
+    _touch_clocks(
+        int(_record["agent_id"]),
+        proposal_id,
+        str(_record["name"]),
+        int(_record["id"]),
+    )
     out = {
         "path": clean,
         "content": "\n".join(lines[start - 1 : end]),
@@ -460,18 +550,20 @@ def workspace_read_file(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_status(token: str, proposal_id: int, name: str) -> dict:
     """Live git status for one workspace tree (dirty, head, changes)."""
     record, _dest = _resolve_claim_tree(token, proposal_id, name)
     agent_id = int(record["agent_id"])
     cname = str(record["name"])
     st = github.claim_tree_status(agent_id, proposal_id, cname)
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return st
 
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_diff(
     token: str,
     proposal_id: int,
@@ -498,7 +590,7 @@ def workspace_diff(
     ) as exc:  # domain: fail-loudly - caps are caller bugs
         raise db.ForumError("max_bytes must be an integer.") from exc
     blob = raw["diff"].encode("utf-8")
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     if len(blob) > cap:
         return {
             "diff": blob[:cap].decode("utf-8", errors="ignore"),
@@ -654,12 +746,14 @@ def workspace_write_file(
             "bytes": len(reset_bytes),
             "content_sha256": reset_sha,
             "changed": reset_existing != reset_bytes
-            or reset_existing_mode != reset_mode_bits,
+            or not _same_file_mode(reset_existing_mode, reset_mode_bits),
             "reset": True,
             "ref": resolved_ref,
         }
-        if reset_existing == reset_bytes and reset_existing_mode == reset_mode_bits:
-            _touch_clocks(agent_id, proposal_id, cname)
+        if reset_existing == reset_bytes and _same_file_mode(
+            reset_existing_mode, reset_mode_bits
+        ):
+            _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
             return result
         if dry_run:
             return {**result, "dry_run": True}
@@ -668,9 +762,8 @@ def workspace_write_file(
         )
 
         def _assert_unchanged() -> None:
-            if (
-                _live_file_bytes(clean, full) != reset_existing
-                or _live_file_mode(clean, full) != reset_existing_mode
+            if _live_file_bytes(clean, full) != reset_existing or not _same_file_mode(
+                _live_file_mode(clean, full), reset_existing_mode
             ):
                 raise db.ForumError(
                     f"concurrent change to {clean!r} while reset was preparing - "
@@ -702,7 +795,7 @@ def workspace_write_file(
             if temp_path is not None:
                 with suppress(OSError):
                     os.unlink(temp_path)
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return result
 
     if edits is not None:
@@ -755,7 +848,7 @@ def workspace_write_file(
         if new_bytes == raw:
             # Quiet no-op, but still live use: touch the idle clocks so
             # an actively-written claim never sweeps (transfer parity).
-            _touch_clocks(agent_id, proposal_id, cname)
+            _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
             return {
                 "path": clean,
                 "bytes": len(new_bytes),
@@ -775,11 +868,12 @@ def workspace_write_file(
         incoming = len(new_bytes) / (1024 * 1024)
         github.check_claim_budget(agent_id, incoming_mb=incoming)
         try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="") as fh_w:
                 fh_w.write(new_text)
         except OSError as exc:
             raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return {
             "path": clean,
             "bytes": len(new_bytes),
@@ -812,7 +906,7 @@ def workspace_write_file(
     new_sha = _hashlib.sha256(new_bytes).hexdigest()
     if existing is not None and new_bytes == existing:
         # Quiet no-op, but still live use (see the edits-mode twin above).
-        _touch_clocks(agent_id, proposal_id, cname)
+        _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
         return {
             "path": clean,
             "bytes": len(new_bytes),
@@ -835,7 +929,7 @@ def workspace_write_file(
             fh_w.write(new_text)
     except OSError as exc:  # domain: fail-loudly - workspace file not writable
         raise db.ForumError(f"could not write {clean!r} in the workspace.") from exc
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return {
         "path": clean,
         "bytes": len(new_bytes),
@@ -859,7 +953,9 @@ def workspace_delete_file(token: str, proposal_id: int, name: str, path: str) ->
         os.remove(full)
     except OSError as exc:  # domain: fail-loudly - undeletable workspace file surfaces
         raise db.ForumError(f"could not delete {clean!r} in the workspace.") from exc
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+        int(record["agent_id"]), proposal_id, str(record["name"]), int(record["id"])
+    )
     return {"path": clean, "deleted": True}
 
 
@@ -880,12 +976,13 @@ def workspace_sync(
     synced = github.sync_claim_tree(
         agent_id, proposal_id, cname, base_branch=base_branch
     )
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     return synced
 
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_rehearse(
     token: str,
     proposal_id: int,
@@ -957,7 +1054,7 @@ def workspace_rehearse(
         "skipped_symlinks": snap["skipped_symlinks"],
         "total_bytes": snap["total_bytes"],
     }
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     if not handed_off:
         assert result is not None  # wrapper: full result unless handed off
         result["workspace"] = summary
@@ -976,9 +1073,9 @@ def workspace_rehearse(
         "watch_url": _ci_watch_url_for(kind),
         "workspace": summary,
         "note": (
-            "your run is still in flight: the MCP client's ~60s read timeout "
-            "beat it, which ended this request, NOT the run - it continues in "
-            "the background and audits itself on completion. Do not re-fire "
+            "your run is still in flight: the MCP client's ~60s read timeout"
+            "beat it, which ended this request, NOT the run - it continues in"
+            "the background and audits itself on completion. Do not re-fire"
             "the same payload; resolve it with repo_ci_run_status(run_id)."
         ),
     }
@@ -1062,7 +1159,7 @@ async def workspace_push(
         expect_shas=expect_shas,
         base_branch=base_branch,
     )
-    _touch_clocks(agent_id, proposal_id, cname)
+    _touch_clocks(agent_id, proposal_id, cname, int(record["id"]))
     proposal_link_error = None
     todo_link_error = None
     if not dry_run:
@@ -1098,7 +1195,7 @@ async def workspace_push(
                 detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
             )
             if pending_hold:
-                from events import EVT_PR_HOLD_APPLIED
+                from events import EVT_PR_HOLD_APPLIED, log_event
 
                 log_event(
                     EVT_PR_HOLD_APPLIED,

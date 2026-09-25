@@ -822,6 +822,7 @@ from db._workspace_claims import (  # noqa: F401
     active_workspaces_for_proposal,
     claim_workspace,
     get_workspace,
+    get_workspace_for_release,
     list_workspaces,
     release_workspace,
     release_workspaces_for_proposal,
