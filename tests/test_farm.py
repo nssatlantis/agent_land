@@ -1144,5 +1144,125 @@ def test_run_checks_bench_overflow_passes_allow_remote():
         farm.try_bench_dispatch = orig_try
 
 
+def test_heartbeat_bench_local_only_default():
+    """agent_id=0 (system/heartbeat) bench: local-only by default -
+    try_bench_dispatch returns None unless CI_FARM_HEARTBEAT_REMOTE_FIRST is on."""
+    row = farm.register_runner("hb1", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    orig_hb = config.CI_FARM_HEARTBEAT_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    config.CI_FARM_HEARTBEAT_REMOTE_FIRST = 0
+    try:
+        assert (
+            farm.try_bench_dispatch(
+                "db_benchmark", 0, "system", "ci_db_bench_run", None
+            )
+            is None
+        )
+    finally:
+        farm._ping = orig_ping
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = orig_hb
+        farm.remove_runner(row["id"])
+
+
+def test_heartbeat_bench_remote_first():
+    """agent_id=0 bench dispatches to the farm when
+    CI_FARM_HEARTBEAT_REMOTE_FIRST is on (the blessed anchor bench)."""
+    row = farm.register_runner("hb2", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {
+        "checks": "db_benchmark",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 45.2,
+        "head_sha": "abc123",
+        "output_tail": "bench complete",
+        "summary": {"tests_run": False},
+        "quiet": True,
+        "contended": False,
+    }
+    farm.dispatch_to_runner = lambda runner, payload: remote
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    orig_hb = config.CI_FARM_HEARTBEAT_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_BENCH_REMOTE_FIRST = 1
+    config.CI_FARM_HEARTBEAT_REMOTE_FIRST = 1
+    try:
+        result = farm.try_bench_dispatch(
+            "db_benchmark", 0, "system", "ci_db_bench_run", None
+        )
+        assert result is not None
+        assert result["mode"] == "native"
+        assert result["runner"] == "hb2"
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = orig_hb
+        farm.remove_runner(row["id"])
+
+
+def test_native_test_dispatch_remote_first():
+    """try_dispatch dispatches a native reference test run (checks=tests,
+    no pr/files/tree/base_ref) to a healthy runner - the path used by
+    run_checks' test remote-first block when CI_FARM_TEST_REMOTE_FIRST is on."""
+    row = farm.register_runner("nt1", "http://x", token="t")
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {
+        "checks": "tests",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 120.0,
+        "head_sha": "abc123",
+        "output_tail": "ok",
+        "summary": {"tests_run": True},
+    }
+    farm.dispatch_to_runner = lambda runner, payload: remote
+    orig_enabled = config.CI_FARM_ENABLED
+    config.CI_FARM_ENABLED = True
+    try:
+        result = farm.try_dispatch(
+            "tests",
+            local_mode=False,
+            branch_mode=False,
+            is_bench=False,
+            pr_number=None,
+            files=None,
+            tree=None,
+            quiet=None,
+            base_ref=None,
+            agent_id=1,
+            name="t",
+            kind_event="ci_run",
+            run_id=None,
+        )
+        assert result is not None
+        assert result["mode"] == "native"
+        assert result["runner"] == "nt1"
+    finally:
+        farm._ping = orig_ping
+        farm.dispatch_to_runner = orig_disp
+        config.CI_FARM_ENABLED = orig_enabled
+        farm.remove_runner(row["id"])
+
+
 if __name__ == "__main__":
     main()  # noqa
