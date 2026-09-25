@@ -159,8 +159,10 @@ def economy_admin_adjust(
             admin=admin,
             proposal_id=proposal_id,
             conn=conn,
+            reason_detail=reason,
         )
-    result["reason"] = fn_reason
+    result["reason"] = reason
+    result["family_reason"] = fn_reason
     result["proposal_id"] = proposal_id
     return result
 

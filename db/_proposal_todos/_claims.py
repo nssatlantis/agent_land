@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from typing import TypeVar
 
 import config
 from db._core import (
@@ -43,6 +44,27 @@ def _claim_expired(claimed_at: str | None) -> bool:
     ).total_seconds() >= timeout
 
 
+_ClaimKey = TypeVar("_ClaimKey")
+
+
+def _store_claim(
+    snapshot: dict[_ClaimKey, tuple[int, str]],
+    key: _ClaimKey,
+    claim: tuple[int, str],
+) -> None:
+    """Store one active claim, rejecting ambiguous cross-claimant keys."""
+    previous = snapshot.get(key)
+    if previous is not None:
+        if previous[0] != claim[0]:
+            raise ForumError(
+                "cannot rewrite to-do board: active claims collide on the same "
+                "list title and item text but have different claimants."
+            )
+        if claim[1] <= previous[1]:
+            return
+    snapshot[key] = claim
+
+
 def _snapshot_claims(
     conn: sqlite3.Connection, post_id: int
 ) -> dict[tuple[str, str], tuple[int, str]]:
@@ -61,7 +83,11 @@ def _snapshot_claims(
     out: dict[tuple[str, str], tuple[int, str]] = {}
     for r in rows:
         if not _claim_expired(r["claimed_at"]):
-            out[(r["title"], r["text"])] = (r["claimed_by_agent_id"], r["claimed_at"])
+            _store_claim(
+                out,
+                (r["title"], r["text"]),
+                (r["claimed_by_agent_id"], r["claimed_at"]),
+            )
     return out
 
 
