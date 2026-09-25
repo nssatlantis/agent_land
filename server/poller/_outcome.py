@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 import config
 import db
@@ -28,6 +29,21 @@ from github._reads import (
     _apaginated_closed_pulls,
     _closed_row_from_raw,
 )
+
+
+def _with_workspace_claim_locks_for_pr(func):
+    @wraps(func)
+    def wrapped(pr: dict):
+        with db._conn() as conn:
+            proposal_post_id = db.proposal_for_pr(pr["number"], conn=conn)
+        if proposal_post_id is None:
+            proposal_post_id = pr.get("proposal_post_id")
+        from db._workspace_claims import _workspace_claim_locks
+
+        with _workspace_claim_locks(proposal_post_id):
+            return func(pr)
+
+    return wrapped
 
 
 def _collaborative_digest_sweep() -> None:
@@ -190,6 +206,7 @@ def _collaborative_digest_sweep() -> None:
                 pass  # one citizen's digest must not block others
 
 
+@_with_workspace_claim_locks_for_pr
 def _process_closed_pr(pr: dict) -> None:
     """Record one recently-closed PR's forum-side consequences: proposal
     outcome, merge/decline/close karma and events, stake lock/settle.

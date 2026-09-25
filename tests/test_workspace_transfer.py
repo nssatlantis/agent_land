@@ -18,7 +18,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_workspace_transfer_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
@@ -172,6 +175,9 @@ def test_table_exists():
             ).fetchall()
         }
     assert "transfer_tickets" in tables
+    with db._conn() as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(transfer_tickets)")}
+    assert "claim_id" in columns, columns
     assert "idx_transfer_tickets_agent" in idx or any(
         "transfer_tickets" in i for i in idx
     ), idx
@@ -189,12 +195,13 @@ def test_mint_redeem_roundtrip(agents):
     # Raw secret is stored hashed, never plaintext.
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT ticket_hash FROM transfer_tickets"
+            "SELECT ticket_hash, claim_id FROM transfer_tickets"
             " WHERE agent_id = ? AND scope = 'read'",
             (agents["alpha"]["agent_id"],),
         ).fetchone()
     assert minted["ticket"] not in row["ticket_hash"]
     assert row["ticket_hash"] == hashlib.sha256(minted["ticket"].encode()).hexdigest()
+    assert row["claim_id"] is not None, row
     # Read scope never burns: redeem twice.
     t1 = db.redeem_transfer_ticket(minted["ticket"], "read", "README.md")
     t2 = db.redeem_transfer_ticket(minted["ticket"], "read", "README.md")
@@ -397,6 +404,121 @@ def test_http_upload_apply(agents):
     print("  HTTP upload apply/receipt/pins/no-op/refusals: ok")
 
 
+def test_http_upload_lock_wait_keeps_event_loop_live(agents):
+    pid = _prop(agents, "beta", title="Async Upload Xfer")
+    tok = agents["beta"]["token"]
+    _claim(agents, pid, "asyncup", who="beta")
+    WT.workspace_write_file(tok, pid, "asyncup", "held.txt", content="base\n")
+    pin = WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content_sha256"]
+    ticket = TT.workspace_upload_ticket(
+        tok, pid, "asyncup", ["held.txt"], {"held.txt": pin}
+    )
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncup")
+    lock_entered = threading.Event()
+    apply_entered = threading.Event()
+    timing = {}
+    original_apply = ws.apply_transfer_bytes
+
+    def observed_apply(*args, **kwargs):
+        apply_entered.set()
+        return original_apply(*args, **kwargs)
+
+    def hold_lock():
+        with ws.workspace_lock(dest):
+            lock_entered.set()
+            time.sleep(0.5)
+            timing["released"] = time.monotonic()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(5)
+    try:
+
+        async def run_upload():
+            upload = asyncio.create_task(
+                TR.transfer_upload(
+                    _req("POST", ticket["ticket"], "held.txt", body=b"next\n")
+                )
+            )
+            while not apply_entered.is_set():
+                await asyncio.sleep(0)
+            heartbeat_at = None
+
+            async def heartbeat():
+                nonlocal heartbeat_at
+                await asyncio.sleep(0)
+                heartbeat_at = time.monotonic()
+
+            await heartbeat()
+            return await upload, heartbeat_at
+
+        with patch.object(ws, "apply_transfer_bytes", observed_apply):
+            response, heartbeat_at = asyncio.run(run_upload())
+    finally:
+        holder.join(5)
+    assert not holder.is_alive(), "workspace lock holder did not finish"
+    assert heartbeat_at < timing["released"], (heartbeat_at, timing["released"])
+    assert response.status_code == 200, (response.status_code, response.body)
+    assert WT.workspace_read_file(tok, pid, "asyncup", "held.txt")["content"] == "next"
+    print("  async upload lock wait keeps the event loop live: ok")
+    db.release_workspace(tok, pid, "asyncup")
+
+
+def test_http_download_lock_wait_keeps_event_loop_live(agents):
+    pid = _prop(agents, "beta", title="Async Download Xfer")
+    tok = agents["beta"]["token"]
+    _claim(agents, pid, "asyncdl", who="beta")
+    WT.workspace_write_file(tok, pid, "asyncdl", "held.txt", content="base\n")
+    ticket = TT.workspace_fetch_ticket(tok, pid, "asyncdl", ["held.txt"])
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncdl")
+    lock_entered = threading.Event()
+    read_entered = threading.Event()
+    timing = {}
+    original_read = ws.read_transfer_bytes
+
+    def observed_read(*args, **kwargs):
+        read_entered.set()
+        return original_read(*args, **kwargs)
+
+    def hold_lock():
+        with ws.workspace_lock(dest):
+            lock_entered.set()
+            time.sleep(0.5)
+            timing["released"] = time.monotonic()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(5)
+    try:
+
+        async def run_download():
+            download = asyncio.create_task(
+                TR.transfer_download(_req("GET", ticket["ticket"], "held.txt"))
+            )
+            while not read_entered.is_set():
+                await asyncio.sleep(0)
+            heartbeat_at = None
+
+            async def heartbeat():
+                nonlocal heartbeat_at
+                await asyncio.sleep(0)
+                heartbeat_at = time.monotonic()
+
+            await heartbeat()
+            return await download, heartbeat_at
+
+        with patch.object(ws, "read_transfer_bytes", observed_read):
+            response, heartbeat_at = asyncio.run(run_download())
+    finally:
+        holder.join(5)
+    assert not holder.is_alive(), "workspace lock holder did not finish"
+    assert heartbeat_at < timing["released"], (heartbeat_at, timing["released"])
+    assert response.status_code == 200, (response.status_code, response.body)
+    assert response.body == b"base\n", response.body
+    print("  async download lock wait keeps the event loop live: ok")
+    db.release_workspace(tok, pid, "asyncdl")
+
+
 def test_http_upload_caps(agents):
     pid = _prop(agents, "delta", title="Cap Xfer")
     tok = agents["delta"]["token"]
@@ -442,7 +564,58 @@ def test_release_kills_ticket(agents):
     db.release_workspace(tok, pid, "rel")
     resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
     assert resp.status_code == 404, (resp.status_code, resp.body)
-    print("  released claim kills tickets: ok")
+    time.sleep(0.001)
+    _claim(agents, pid, "rel", who="epsilon")
+    resp = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    assert resp.status_code == 404, (resp.status_code, resp.body)
+    assert "gone" in resp.body.decode()
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE transfer_tickets SET claim_id = NULL WHERE ticket_hash = ?",
+            (hashlib.sha256(t["ticket"].encode()).hexdigest(),),
+        )
+    legacy = _run(TR.transfer_download(_req("GET", t["ticket"], "README.md")))
+    assert legacy.status_code == 404, (legacy.status_code, legacy.body)
+    assert "gone" in legacy.body.decode()
+    db.release_workspace(tok, pid, "rel")
+    print("  released claim kills tickets, including after reclaim: ok")
+
+
+def test_reclaim_blocks_old_upload(agents):
+    pid = _prop(agents, "eta", title="Reclaim Xfer")
+    tok = agents["eta"]["token"]
+    _claim(agents, pid, "reclaim", who="eta")
+    WT.workspace_write_file(tok, pid, "reclaim", "r.txt", content="before\n")
+    pin = WT.workspace_read_file(tok, pid, "reclaim", "r.txt")["content_sha256"]
+    old_claim = db.get_workspace(tok, pid, "reclaim")
+    ticket = TT.workspace_upload_ticket(tok, pid, "reclaim", ["r.txt"], {"r.txt": pin})
+    old_apply = ws.apply_transfer_bytes
+
+    def release_reclaim_then_apply(*args, **kwargs):
+        released = WT.release_workspace(tok, pid, "reclaim")
+        assert released["status"] == "released", released
+        WT.claim_workspace(tok, pid, "reclaim")
+        fresh_claim = db.get_workspace(tok, pid, "reclaim")
+        assert fresh_claim["id"] != old_claim["id"], fresh_claim
+        return old_apply(*args, **kwargs)
+
+    with patch.object(ws, "apply_transfer_bytes", release_reclaim_then_apply):
+        response = _run(
+            TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
+        )
+    assert response.status_code == 404, (response.status_code, response.body)
+    assert "gone" in response.body.decode(), response.body
+    current = db.get_workspace(tok, pid, "reclaim")
+    assert current["id"] != old_claim["id"], current
+    assert "could not read" in expect_error(
+        WT.workspace_read_file, tok, pid, "reclaim", "r.txt"
+    )
+    retry = _run(
+        TR.transfer_upload(_req("POST", ticket["ticket"], "r.txt", body=b"after\n"))
+    )
+    assert retry.status_code == 404, (retry.status_code, retry.body)
+    WT.release_workspace(tok, pid, "reclaim")
+    print("  reclaim blocks an old redeemed upload without writing the new tree: ok")
 
 
 def test_p2_write_upgrades(agents):
@@ -735,6 +908,84 @@ def test_validation_touches_clocks(agents):
     print("  304 + quiet no-op advance idle clocks: ok")
 
 
+def test_transfer_touch_runs_under_tree_lock(agents):
+    pid = _prop(agents, "fresh", title="Locked Touch Xfer")
+    tok = agents["fresh"]["token"]
+    with db._conn() as conn:
+        held = conn.execute(
+            "SELECT id, proposal_id, name FROM workspace_claims"
+            " WHERE agent_id = ? AND status = 'active'",
+            (agents["fresh"]["agent_id"],),
+        ).fetchall()
+    for row in held:
+        db.release_workspace(
+            tok,
+            int(row["proposal_id"]),
+            str(row["name"]),
+            claim_id=int(row["id"]),
+        )
+    _claim(agents, pid, "lockedtouch", who="fresh")
+    WT.workspace_write_file(tok, pid, "lockedtouch", "s.txt", content="touch\n")
+    dest = ws._claim_dir(agents["fresh"]["agent_id"], pid, "lockedtouch")
+    original_touch = TR._touch_best_effort
+    modes = []
+
+    def assert_touch_under_lock(response_factory, mode):
+        acquired = threading.Event()
+        contenders = []
+        blocked_results = []
+
+        def observed_touch(*args, **kwargs):
+            modes.append(mode)
+
+            def contend():
+                with ws.workspace_lock(dest):
+                    acquired.set()
+
+            contender = threading.Thread(target=contend)
+            contenders.append(contender)
+            contender.start()
+            try:
+                blocked_results.append(not acquired.wait(0.2))
+            finally:
+                original_touch(*args, **kwargs)
+
+        with patch.object(TR, "_touch_best_effort", observed_touch):
+            response = response_factory()
+        for contender in contenders:
+            contender.join(2)
+        assert blocked_results == [True], blocked_results
+        assert all(not contender.is_alive() for contender in contenders)
+        return response
+
+    read_ticket = TT.workspace_fetch_ticket(tok, pid, "lockedtouch", ["s.txt"])
+    read_response = assert_touch_under_lock(
+        lambda: _run(TR.transfer_download(_req("GET", read_ticket["ticket"], "s.txt"))),
+        "read",
+    )
+    assert read_response.status_code == 200, (
+        read_response.status_code,
+        read_response.body,
+    )
+
+    upload_ticket = TT.workspace_upload_ticket(tok, pid, "lockedtouch", ["s.txt"])
+    upload_response = assert_touch_under_lock(
+        lambda: _run(
+            TR.transfer_upload(
+                _req("POST", upload_ticket["ticket"], "s.txt", body=b"touch\n")
+            )
+        ),
+        "apply",
+    )
+    assert upload_response.status_code == 200, (
+        upload_response.status_code,
+        upload_response.body,
+    )
+    assert modes == ["read", "apply"], modes
+    db.release_workspace(tok, pid, "lockedtouch")
+    print("  transfer clock touches run under the tree lock: ok")
+
+
 def test_engine_guard_battery():
     import github._workspaces as _eng
 
@@ -781,6 +1032,55 @@ def test_failed_apply_unburns_path(agents):
     good = _run(TR.transfer_upload(_req("POST", w["ticket"], "u.txt", body=b"fixed\n")))
     assert good.status_code == 200, (good.status_code, good.body)
     assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "fixed"
+    retry_ticket = TT.workspace_upload_ticket(tok, pid, "unburn", ["u.txt"])
+    apply_entered = threading.Event()
+    apply_release = threading.Event()
+    unburned = threading.Event()
+    unburn_calls = []
+    original_unburn = db.unburn_transfer_path
+
+    def failed_apply(*args, **kwargs):
+        apply_entered.set()
+        if not apply_release.wait(5):
+            raise AssertionError("failed apply was not released")
+        raise TR.RepoError("injected async apply failure")
+
+    def observed_unburn(raw_ticket, path):
+        unburn_calls.append((raw_ticket, path))
+        result = original_unburn(raw_ticket, path)
+        unburned.set()
+        return result
+
+    async def run_cancelled_apply():
+        upload = asyncio.create_task(
+            TR.transfer_upload(
+                _req("POST", retry_ticket["ticket"], "u.txt", body=b"retry\n")
+            )
+        )
+        assert await asyncio.to_thread(apply_entered.wait, 1)
+        upload.cancel()
+        try:
+            await upload
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancelled upload did not stay cancelled")
+        apply_release.set()
+        assert await asyncio.to_thread(unburned.wait, 1)
+
+    with (
+        patch.object(ws, "apply_transfer_bytes", failed_apply),
+        patch.object(db, "unburn_transfer_path", observed_unburn),
+    ):
+        asyncio.run(run_cancelled_apply())
+    assert unburn_calls == [(retry_ticket["ticket"], "u.txt")], unburn_calls
+    recovered = _run(
+        TR.transfer_upload(
+            _req("POST", retry_ticket["ticket"], "u.txt", body=b"retry\n")
+        )
+    )
+    assert recovered.status_code == 200, (recovered.status_code, recovered.body)
+    assert WT.workspace_read_file(tok, pid, "unburn", "u.txt")["content"] == "retry"
     print("  failed apply unburns its path (same-ticket retry): ok")
 
 
@@ -1034,6 +1334,9 @@ def test_legacy_db_migrates():
             ).fetchall()
         }
     assert "transfer_tickets" in tables
+    with db._conn() as conn:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(transfer_tickets)")}
+    assert "claim_id" in columns, columns
     print("  legacy DB gains transfer_tickets on init_db: ok")
 
 
@@ -1045,8 +1348,11 @@ def main():
     test_expiry_and_sweep(agents)
     test_http_download(agents)
     test_http_upload_apply(agents)
+    test_http_upload_lock_wait_keeps_event_loop_live(agents)
+    test_http_download_lock_wait_keeps_event_loop_live(agents)
     test_http_upload_caps(agents)
     test_release_kills_ticket(agents)
+    test_reclaim_blocks_old_upload(agents)
     test_p2_write_upgrades(agents)
     test_concurrent_redeem_burns_once(agents)
     test_protected_and_git_refused(agents)
@@ -1056,6 +1362,7 @@ def main():
     test_failed_upload_burns_nothing(agents)
     test_upload_hits_per_write_budget(agents)
     test_validation_touches_clocks(agents)
+    test_transfer_touch_runs_under_tree_lock(agents)
     test_engine_guard_battery()
     test_public_base_url_parity()
     test_failed_apply_unburns_path(agents)

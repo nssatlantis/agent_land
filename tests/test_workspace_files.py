@@ -12,6 +12,7 @@ atomic-replace failure, symlink refusal, budget, missing-live-file,
 untracked, binary, empty, and mode-validation edges.
 """
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -181,6 +182,71 @@ def test_list_status_diff(agents, wstools):
     finally:
         sb.close()
     print("  list/status/diff pins: ok")
+
+
+def test_read_tools_wait_for_tree_lock(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Read Lock Shop")
+        dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
+
+        def assert_serialized(call):
+            done = threading.Event()
+            errors = []
+
+            def invoke():
+                try:
+                    call()
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    done.set()
+
+            worker = threading.Thread(target=invoke)
+            with ws.workspace_lock(dest):
+                worker.start()
+                assert not done.wait(0.1), "read tool bypassed the tree lock"
+            worker.join(2)
+            assert not worker.is_alive(), "read tool did not finish after unlock"
+            assert not errors, errors
+
+        assert_serialized(lambda: wstools.workspace_list_tree(tok, pid, "dev"))
+        assert_serialized(lambda: wstools.workspace_search(tok, pid, "dev", "seed"))
+        assert_serialized(
+            lambda: wstools.workspace_read_file(tok, pid, "dev", "README.md")
+        )
+        assert_serialized(lambda: wstools.workspace_status(tok, pid, "dev"))
+        assert_serialized(lambda: wstools.workspace_diff(tok, pid, "dev"))
+
+        snapshot_entered = threading.Event()
+        original_snapshot = wstools.github.snapshot_claim_tree
+
+        def observed_snapshot(*args, **kwargs):
+            snapshot_entered.set()
+            return original_snapshot(*args, **kwargs)
+
+        errors = []
+
+        def rehearse():
+            try:
+                wstools.workspace_rehearse(tok, pid, "dev", checks="format")
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch.object(wstools.github, "snapshot_claim_tree", observed_snapshot):
+            worker = threading.Thread(target=rehearse)
+            with ws.workspace_lock(dest):
+                worker.start()
+                assert not snapshot_entered.wait(0.1)
+            worker.join(2)
+        assert not worker.is_alive(), "rehearse did not finish after unlock"
+        assert snapshot_entered.is_set()
+        assert len(errors) == 1, errors
+        assert "snapshot is empty" in str(errors[0]), errors
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  read/status/diff/rehearse wait for the tree lock: ok")
 
 
 def test_path_guards(agents, wstools):
@@ -391,6 +457,12 @@ def test_read_at_ref(agents, wstools):
 def test_workspace_reset(agents, wstools):
     sb = _FilesSandbox()
     try:
+        with patch.object(wstools.os, "name", "nt"):
+            assert wstools._same_file_mode(0o644, 0o664)
+            assert not wstools._same_file_mode(0o644, 0o466)
+        with patch.object(wstools.os, "name", "posix"):
+            assert wstools._same_file_mode(0o644, 0o644)
+            assert not wstools._same_file_mode(0o644, 0o664)
         pid, tok = _claim(agents, wstools, "alpha", "Reset Shop")
         w = wstools.workspace_write_file
         r = wstools.workspace_read_file
@@ -465,6 +537,66 @@ def test_workspace_reset(agents, wstools):
         assert not write_errors, write_errors
         assert reset_result["value"]["changed"] is True, reset_result
         assert r(tok, pid, "dev", "README.md")["content"] == "raced after check"
+        w(tok, pid, "dev", "README.md", "dirty two\n")
+
+        transfer_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
+        transfer_entered = threading.Event()
+        transfer_release = threading.Event()
+        transfer_done = threading.Event()
+        transfer_errors = []
+        original_transfer_replace = os.replace
+        transfer_reset_result = {}
+
+        def blocked_transfer_replace(*args, **kwargs):
+            transfer_entered.set()
+            if not transfer_release.wait(5):
+                raise AssertionError("transfer reset replacement was not released")
+            return original_transfer_replace(*args, **kwargs)
+
+        def run_transfer_reset():
+            try:
+                transfer_reset_result["value"] = w(
+                    tok,
+                    pid,
+                    "dev",
+                    "README.md",
+                    reset=True,
+                    expect_sha256=transfer_sha,
+                )
+            except BaseException as exc:
+                transfer_errors.append(exc)
+
+        def run_transfer():
+            try:
+                ws.apply_transfer_bytes(
+                    aid,
+                    pid,
+                    "dev",
+                    "README.md",
+                    b"transfer after check\n",
+                    expect_sha256=transfer_sha,
+                )
+            except BaseException as exc:
+                transfer_errors.append(exc)
+            finally:
+                transfer_done.set()
+
+        with patch.object(os, "replace", blocked_transfer_replace):
+            transfer_reset_thread = threading.Thread(target=run_transfer_reset)
+            transfer_reset_thread.start()
+            assert transfer_entered.wait(5)
+            transfer_thread = threading.Thread(target=run_transfer)
+            transfer_thread.start()
+            assert not transfer_done.wait(0.2)
+            transfer_release.set()
+            transfer_reset_thread.join(5)
+            transfer_thread.join(5)
+        assert not transfer_reset_thread.is_alive(), "transfer reset did not finish"
+        assert not transfer_thread.is_alive(), "transfer upload did not finish"
+        assert len(transfer_errors) == 1, transfer_errors
+        assert "stale base" in str(transfer_errors[0])
+        assert transfer_reset_result["value"]["changed"] is True
+        assert r(tok, pid, "dev", "README.md")["content"] == "seed"
         w(tok, pid, "dev", "README.md", "dirty two\n")
 
         current_sha = r(tok, pid, "dev", "README.md")["content_sha256"]
@@ -995,18 +1127,306 @@ def test_workspace_edits(agents, wstools):
     print("  workspace edits mode: ok")
 
 
+def test_workspace_serialized_async(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Async Lock Shop")
+
+        async def run_hold_release():
+            first_entered = asyncio.Event()
+            first_release = asyncio.Event()
+            second_started = asyncio.Event()
+            active = 0
+            max_active = 0
+
+            async def operation(token, proposal_id, name, value):
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                try:
+                    if value == 1:
+                        first_entered.set()
+                        await first_release.wait()
+                    elif value == 2:
+                        second_started.set()
+                    await asyncio.sleep(0)
+                    return value
+                finally:
+                    active -= 1
+
+            serialized = wstools._workspace_serialized(operation)
+            first = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            await asyncio.wait_for(first_entered.wait(), 1)
+            second = asyncio.create_task(serialized(tok, pid, "dev", 2))
+            done, _ = await asyncio.wait({second}, timeout=0.05)
+            assert not done
+            assert not second_started.is_set()
+            first_release.set()
+            assert await first == 1
+            assert await second == 2
+            assert max_active == 1
+
+        asyncio.run(run_hold_release())
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace async enter/hold/release serialization: ok")
+
+
+def test_workspace_serialized_cancellation(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Async Cancellation Shop")
+
+        async def run_cancellation():
+            entered = asyncio.Event()
+            blocked_entered = asyncio.Event()
+            finally_ran = False
+            active = 0
+            operation_release = asyncio.Event()
+
+            async def operation(token, proposal_id, name, value):
+                nonlocal active, finally_ran
+                active += 1
+                try:
+                    if value == 1:
+                        entered.set()
+                        await operation_release.wait()
+                    elif value == 3:
+                        blocked_entered.set()
+                        await asyncio.sleep(0)
+                    else:
+                        await asyncio.sleep(0)
+                    return value
+                finally:
+                    active -= 1
+                    if value == 1:
+                        finally_ran = True
+
+            serialized = wstools._workspace_serialized(operation)
+            task = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("serialized operation was not cancelled")
+            assert finally_ran is False
+            assert active == 1
+            operation_release.set()
+            assert await asyncio.wait_for(serialized(tok, pid, "dev", 4), 2) == 4
+            assert finally_ran is True
+            assert active == 0
+
+            dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
+            lock_factory = wstools.workspace_lock
+            real_lock = lock_factory(dest)
+            holder_entered = threading.Event()
+            holder_release = threading.Event()
+            acquire_attempted = threading.Event()
+
+            class ObservedLock:
+                def __init__(self, lock):
+                    self._lock = lock
+
+                def __enter__(self):
+                    acquire_attempted.set()
+                    return self._lock.__enter__()
+
+                def __exit__(self, *args):
+                    return self._lock.__exit__(*args)
+
+            def observed_lock(path):
+                assert path == dest
+                return ObservedLock(lock_factory(path))
+
+            def hold_lock():
+                with real_lock:
+                    holder_entered.set()
+                    if not holder_release.wait(5):
+                        raise AssertionError("workspace lock holder was not released")
+
+            holder = threading.Thread(target=hold_lock)
+            with patch.object(wstools, "workspace_lock", observed_lock):
+                holder.start()
+                try:
+                    blocked = asyncio.create_task(serialized(tok, pid, "dev", 3))
+                    assert await asyncio.to_thread(holder_entered.wait, 1)
+                    assert await asyncio.to_thread(acquire_attempted.wait, 1)
+                    blocked.cancel()
+                    await asyncio.sleep(0)
+                    blocked.cancel()
+                    holder_release.set()
+                    try:
+                        await asyncio.wait_for(blocked, 1)
+                    except asyncio.CancelledError:
+                        pass
+                    else:
+                        raise AssertionError("blocked acquisition was not cancelled")
+                    assert not blocked_entered.is_set()
+                    assert (
+                        await asyncio.wait_for(serialized(tok, pid, "dev", 4), 2) == 4
+                    )
+                finally:
+                    holder_release.set()
+                    await asyncio.to_thread(holder.join, 5)
+            assert not holder.is_alive(), "workspace lock holder did not finish"
+            assert await serialized(tok, pid, "dev", 2) == 2
+
+        asyncio.run(run_cancellation())
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace async cancellation: ok")
+
+
+def test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Cancelled Worker Shop")
+
+        async def run_cancelled_worker():
+            worker_started = threading.Event()
+            worker_release = threading.Event()
+
+            async def operation(token, proposal_id, name, value):
+                def worker():
+                    worker_started.set()
+                    if not worker_release.wait(5):
+                        raise AssertionError("cancelled worker was not released")
+                    return value
+
+                return await asyncio.to_thread(worker)
+
+            serialized = wstools._workspace_serialized(operation)
+            first = asyncio.create_task(serialized(tok, pid, "dev", 1))
+            assert await asyncio.to_thread(worker_started.wait, 1)
+            first.cancel()
+            try:
+                await first
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("serialized operation was not cancelled")
+            second = asyncio.create_task(serialized(tok, pid, "dev", 2))
+            done, _ = await asyncio.wait({second}, timeout=0.05)
+            assert not done, "cancelled worker released the lock too early"
+            worker_release.set()
+            assert await asyncio.wait_for(second, 2) == 2
+
+        asyncio.run(run_cancelled_worker())
+        wstools.release_workspace(tok, pid, "dev")
+    finally:
+        sb.close()
+    print("  workspace cancellation holds lock through worker: ok")
+
+
+def test_release_author_and_missing_tree(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        alpha = agents["alpha"]
+        beta = agents["beta"]
+        pid = db.create_proposal(
+            alpha["token"], "Author Release Shop", "body", collaborative=True
+        )["post_id"]
+        db.create_todo_list(alpha["token"], pid, "Work", [])
+        db.join_proposal(beta["token"], pid)
+        claimed = wstools.claim_workspace(beta["token"], pid, "dev")
+        dest = str(claimed["tree"]["path"])
+        released = wstools.release_workspace(alpha["token"], pid, "dev")
+        assert released["status"] == "released", released
+        assert not os.path.isdir(dest), dest
+
+        pid2 = db.create_proposal(alpha["token"], "Missing Tree Shop", "body")[
+            "post_id"
+        ]
+        claimed2 = wstools.claim_workspace(alpha["token"], pid2, "dev")
+        dest2 = str(claimed2["tree"]["path"])
+        shutil.rmtree(dest2)
+        released2 = wstools.release_workspace(alpha["token"], pid2, "dev")
+        assert released2["status"] == "released", released2
+    finally:
+        sb.close()
+    print("  author release + missing-tree release: ok")
+
+
+def test_lock_sibling_survives_release(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Lockfile Shop")
+        dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
+        lock_path = dest + ".workspace.lock"
+        assert os.path.isfile(lock_path), lock_path
+        before = os.stat(lock_path)
+        wstools.release_workspace(tok, pid, "dev")
+        assert not os.path.isdir(dest), dest
+        assert os.path.isfile(lock_path), lock_path
+        # A reclaim reuses the identical rendezvous path and inode: no
+        # unlink may ever split a live holder from future contenders.
+        wstools.claim_workspace(tok, pid, "dev")
+        assert os.path.isfile(lock_path), lock_path
+        assert os.stat(lock_path).st_ino == before.st_ino, lock_path
+        wstools.release_workspace(tok, pid, "dev")
+        assert os.path.isfile(lock_path), lock_path
+    finally:
+        sb.close()
+    print("  lock sibling survives release + reclaim: ok")
+
+
+def test_release_same_name_two_agents(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        gamma = agents["gamma"]
+        alpha = agents["alpha"]
+        beta = agents["beta"]
+        pid = db.create_proposal(
+            gamma["token"], "Shared Name Shop", "body", collaborative=True
+        )["post_id"]
+        db.create_todo_list(gamma["token"], pid, "Work", [])
+        db.join_proposal(alpha["token"], pid)
+        db.join_proposal(beta["token"], pid)
+        wstools.claim_workspace(alpha["token"], pid, "dev")
+        wstools.claim_workspace(beta["token"], pid, "dev")
+        dest_alpha = ws._claim_dir(alpha["agent_id"], pid, "dev")
+        dest_beta = ws._claim_dir(beta["agent_id"], pid, "dev")
+        # The author holds no row: two same-name rows refuse as ambiguous
+        # instead of retiring an arbitrary tree.
+        err = _expect_tool_error(wstools.release_workspace, gamma["token"], pid, "dev")
+        assert "multiple active workspaces" in err, err
+        assert os.path.isdir(dest_alpha) and os.path.isdir(dest_beta)
+        # Owner-first: alpha's release retires only her own tree.
+        wstools.release_workspace(alpha["token"], pid, "dev")
+        assert not os.path.isdir(dest_alpha), dest_alpha
+        assert os.path.isdir(dest_beta), dest_beta
+        # Beta's claim survived: she releases it herself.
+        wstools.release_workspace(beta["token"], pid, "dev")
+        assert not os.path.isdir(dest_beta), dest_beta
+    finally:
+        sb.close()
+    print("  same-name release scopes to the owner, author disambiguates: ok")
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
     agents, _post_id = setup()
     test_write_read_roundtrip(agents, wstools)
     test_list_status_diff(agents, wstools)
+    test_read_tools_wait_for_tree_lock(agents, wstools)
     test_path_guards(agents, wstools)
     test_delete_semantics(agents, wstools)
     test_sync_and_clocks_and_budget(agents, wstools)
     test_workspace_edits(agents, wstools)
     test_read_at_ref(agents, wstools)
     test_workspace_reset(agents, wstools)
+    test_workspace_serialized_async(agents, wstools)
+    test_workspace_serialized_cancellation(agents, wstools)
+    test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools)
+    test_release_author_and_missing_tree(agents, wstools)
+    test_lock_sibling_survives_release(agents, wstools)
+    test_release_same_name_two_agents(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 

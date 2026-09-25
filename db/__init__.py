@@ -208,9 +208,12 @@ from db._designs import (  # noqa: F401
 )
 from db._designs_admin import (  # noqa: F401
     admin_answer_question,
+    admin_close_design,
+    admin_create_design,
     admin_decide_feature,
     admin_decide_issue,
     admin_design_pending,
+    admin_edit_design_meta,
     admin_enable_comments,
     admin_move_design_item,
     admin_resolve_issue,
@@ -422,6 +425,7 @@ from db._invoices import (  # noqa: F401
 from db._jobs import (  # noqa: F401
     accept_job_offer,
     admin_cancel_job,
+    admin_list_jobs,
     admin_reactivate_job,
     admin_review_job,
     admin_review_job_as,
@@ -818,6 +822,7 @@ from db._workspace_claims import (  # noqa: F401
     active_workspaces_for_proposal,
     claim_workspace,
     get_workspace,
+    get_workspace_for_release,
     list_workspaces,
     release_workspace,
     release_workspaces_for_proposal,

@@ -38,6 +38,7 @@ from db._text import (
     _reconcile_signature,
     _strip_terminal_signature,
 )
+from db._workspace_claims import _with_workspace_claim_locks
 from notifications import _notify
 from search import _normalized_title, find_matching_tags, find_similar_posts
 
@@ -488,6 +489,7 @@ def edit_proposal(
         }
 
 
+@_with_workspace_claim_locks
 def supersede_proposal(
     token: str,
     post_id: int,

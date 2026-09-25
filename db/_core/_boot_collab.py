@@ -13,6 +13,13 @@ def run(conn) -> set:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
+    if "transfer_tickets" in existing_tables:
+        _ensure_column(
+            conn,
+            "transfer_tickets",
+            "claim_id",
+            "INTEGER REFERENCES workspace_claims(id)",
+        )
     if "proposal_collaborators" not in existing_tables:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS proposal_collaborators (

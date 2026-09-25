@@ -809,21 +809,38 @@ def run_checks(
     ):  # domain: degrade-silently - busy; overflow to a CI farm runner
         farm_retry = False
         try:
-            farm_result = _farm_mod.try_dispatch(
-                checks=checks,
-                local_mode=local_mode,
-                branch_mode=branch_mode,
-                is_bench=is_bench,
-                pr_number=pr_number,
-                files=files,
-                tree=tree,
-                quiet=quiet,
-                agent_id=agent_id,
-                name=name,
-                kind_event=kind_event,
-                run_id=_run_id,
-                base_ref=base_ref,
-            )
+            if is_bench:
+                # P3-4: bench overflow - try_bench_dispatch (not try_dispatch,
+                # which returns None for bench). System benches (agent_id=0)
+                # remain local-only via the existing guard.
+                farm_result = _farm_mod.try_bench_dispatch(
+                    checks=checks,
+                    agent_id=agent_id,
+                    name=name,
+                    kind_event=kind_event,
+                    run_id=_run_id,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                    base_ref=base_ref,
+                    allow_remote=True,
+                )
+            else:
+                farm_result = _farm_mod.try_dispatch(
+                    checks=checks,
+                    local_mode=local_mode,
+                    branch_mode=branch_mode,
+                    is_bench=is_bench,
+                    pr_number=pr_number,
+                    files=files,
+                    tree=tree,
+                    quiet=quiet,
+                    agent_id=agent_id,
+                    name=name,
+                    kind_event=kind_event,
+                    run_id=_run_id,
+                    base_ref=base_ref,
+                )
         except _farm_mod._FarmRetryLocal as exc:
             # domain: degrade-silently - picked-runner failure retries once
             # locally; exhaustion audits to the ledger below, never silent
@@ -901,6 +918,8 @@ def run_checks(
                         files, slot=slot, base_ref=base_ref
                     )
                 except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                    if base_ref is not None:
+                        raise
                     tree, head_sha, merge_info = _trees_mod._prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main (or base_ref) - same sandbox as branch, never native.
             sandboxed = True
