@@ -1194,8 +1194,5 @@ def test_native_test_dispatch_remote_first():
         farm.remove_runner(row["id"])
 
 
-
-
-
 if __name__ == "__main__":
     main()  # noqa
