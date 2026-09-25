@@ -503,6 +503,57 @@ def _ensure_column(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
 
 
+def _ensure_column_with_backfill(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    typedef: str,
+    backfill_sql: str,
+) -> None:
+    """Add a missing column with its backfill and a completion sentinel in ONE
+    explicit transaction (review, PR #1452). Python's sqlite3 commits DDL at
+    autocommit, so a bare ``_ensure_column`` + backfill pair persists one
+    statement at a time and a crash between them leaves the column present with
+    its legacy rows unmarked - a presence gate can then never finish the work.
+    The sentinel (``schema_migration_markers``, named ``<table>_<column>``)
+    lands inside the same transaction; a later boot with the column present but
+    the sentinel absent re-runs ``backfill_sql`` (crash-wedge self-heal).
+    ``backfill_sql`` is one UPDATE statement with no trailing semicolon. Use
+    ``executescript`` for the block below rather than ``conn.execute`` calls
+    around a manual ``BEGIN``: ``executescript`` implicitly commits any pending
+    transaction before it runs (documented behaviour), which is what lets the
+    literal ``BEGIN IMMEDIATE`` start cleanly even when an earlier boot phase
+    left DML open on ``init_db``'s default-isolation connection - the obvious
+    ``execute`` rewrite would raise ``cannot start a transaction within a
+    transaction`` at boot."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY)"
+    )
+    sentinel = f"{table}_{column}"
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.executescript(
+            "BEGIN IMMEDIATE;\n"
+            f"ALTER TABLE {table} ADD COLUMN {column} {typedef};\n"
+            f"{backfill_sql};\n"
+            f"INSERT OR IGNORE INTO schema_migration_markers (name)"
+            f" VALUES ('{sentinel}');\n"
+            "COMMIT;\n"
+        )
+        return
+    done = conn.execute(
+        "SELECT 1 FROM schema_migration_markers WHERE name = ?", (sentinel,)
+    ).fetchone()
+    if done is None:
+        conn.executescript(
+            "BEGIN IMMEDIATE;\n"
+            f"{backfill_sql};\n"
+            f"INSERT OR IGNORE INTO schema_migration_markers (name)"
+            f" VALUES ('{sentinel}');\n"
+            "COMMIT;\n"
+        )
+
+
 def _quote_ident(name: str) -> str:
     """Double-quote an identifier for safe interpolation into SQL."""
     return '"' + name.replace('"', '""') + '"'

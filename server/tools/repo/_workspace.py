@@ -1060,7 +1060,7 @@ def workspace_rehearse(
         result["workspace"] = summary
         return result
     kind = ci_runner.ledger_kind_for(checks, None, normalized, None)
-    from server.tools.repo._govern import _ci_watch_url_for
+    from server.tools.repo._govern import _ci_handoff_note, _ci_watch_url_for
 
     return {
         "status": "running",
@@ -1072,12 +1072,7 @@ def workspace_rehearse(
         "watch_events": {"kind": kind, "since": started_at},
         "watch_url": _ci_watch_url_for(kind),
         "workspace": summary,
-        "note": (
-            "your run is still in flight: the MCP client's ~60s read timeout"
-            "beat it, which ended this request, NOT the run - it continues in"
-            "the background and audits itself on completion. Do not re-fire"
-            "the same payload; resolve it with repo_ci_run_status(run_id)."
-        ),
+        "note": _ci_handoff_note(),
     }
 
 
