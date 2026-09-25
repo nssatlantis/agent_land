@@ -500,6 +500,7 @@ def _process_closed_pr(pr: dict) -> None:
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
             blamed_id = agent_id
+            blamed_fixer = False
             # Shared fixes (proposal #710, phase 3): on a public branch
             # the decline karma follows the most recent fixer commit,
             # not the opener.  The commit fetch rides the poller's
@@ -507,17 +508,35 @@ def _process_closed_pr(pr: dict) -> None:
             # anything failing here falls back to the opener, and the
             # Treasury fine below always stays with the opener (they own
             # the branch - reverting a bad fix was theirs to do).
+            # Blame reads commit *messages*: the Citizen trailer lives
+            # at the message end, while the bare git author name never
+            # carries one.  A blamed citizen since deleted also falls
+            # back to the opener - recording a ghost would bill nobody
+            # and leave no history row.
             try:
                 if db.is_public_branch(conn, pr["number"]):
                     _commits = github.pr_commits(pr["number"]).get("commits", [])
-                    _authors = [c.get("author_name") or "" for c in _commits]
-                    blamed_id = db.decline_blame_agent(agent_id, _authors)
+                    _texts = [c.get("message") or "" for c in _commits]
+                    _blamed = db.decline_blame_agent(agent_id, _texts)
+                    if (
+                        _blamed != agent_id
+                        and conn.execute(
+                            "SELECT id FROM agents WHERE id = ?", (_blamed,)
+                        ).fetchone()
+                    ):
+                        blamed_id = _blamed
+                        blamed_fixer = True
             except (
                 Exception
             ):  # domain: degrade-silently - blame falls back to the opener
                 blamed_id = agent_id
+                blamed_fixer = False
             if db.record_pr_decline(
-                pr["number"], blamed_id, pr.get("closed_at") or "", conn=conn
+                pr["number"],
+                blamed_id,
+                pr.get("closed_at") or "",
+                conn=conn,
+                blamed_fixer=blamed_fixer,
             ):
                 logutil.log(
                     "pr_decline_karma", pr_number=pr["number"], agent_id=blamed_id
