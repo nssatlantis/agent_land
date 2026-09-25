@@ -213,14 +213,14 @@ def _validate_service_intake(
         raise ForumError(
             f"description exceeds {config.JOB_DESC_MAX_LEN} chars (FORUM_JOB_DESC_MAX_LEN)."
         )
-    from db._credits import to_units
+    from db._credits import exact_from_credits
 
     try:
-        price_q = int(to_units(float(price_credits)))
-    except Exception as exc:
+        price_q = exact_from_credits(price_credits, what="service price")
+    except (TypeError, ValueError, ArithmeticError) as exc:
         raise ForumError(f"bad price value: {exc}") from None
-    min_q = int(to_units(float(config.SERVICE_MIN_PRICE)))
-    max_q = int(to_units(float(config.SERVICE_MAX_PRICE)))
+    min_q = exact_from_credits(config.SERVICE_MIN_PRICE, what="service minimum")
+    max_q = exact_from_credits(config.SERVICE_MAX_PRICE, what="service maximum")
     if price_q < min_q or price_q > max_q:
         raise ForumError(
             f"price must be between {config.SERVICE_MIN_PRICE:g} and"

@@ -383,13 +383,16 @@ def ci_burst_remaining(
     agent_id: int,
     *,
     now: datetime | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> int:
     current = _day_now(now)
     # Reconcile writes: take the write lock up front, so a status read
     # racing a concurrent writer busy-waits instead of dying on a deferred
-    # read-to-write lock upgrade. No conn passthrough: a caller-passed read
-    # connection would silently reintroduce that exact failure.
-    with _conn(immediate=True) as c:
+    # read-to-write lock upgrade. A caller-held conn rides it (bug #110):
+    # the caller's own txn already owns RESERVED, so a fresh BEGIN IMMEDIATE
+    # here would block and die after SQLITE_BUSY_TIMEOUT_SECONDS - run inside
+    # their held write txn instead, exactly like reserve_ci_burst.
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         _reconcile_ci_burst_reservations(c, current)
         return int(
             _day_pass_state(c, agent_id, "ci_burst", now=current)["credits_remaining"]

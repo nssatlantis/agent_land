@@ -1033,12 +1033,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # PR auto-decline: once a PR has enough opposing votes to be decline-
     # eligible, it is not auto-declined until it has been decline-eligible
-    # for at least this many seconds (default 12 hours).  The grace window
+    # for at least this many seconds (default 24 hours).  The grace window
     # lets the author correct mistakes and request fresh reviews before the
     # PR is closed.  Set to 0 to decline immediately.
     "PR_DECLINE_GRACE_SECONDS": (
         "FORUM_PR_DECLINE_GRACE_SECONDS",
-        43200,
+        86400,
         int,
     ),
     # Opener stall notice: an open, linked, below-bar PR whose proposal
@@ -1287,6 +1287,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When on, bench runs prefer the farm runner (PR 3). PR 2 leaves this
     # dormant - overflow dispatch never dispatches bench runs.
     "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
+    # When on, regular (native) CI test runs prefer the farm runner BEFORE
+    # the local slot (remote-first, like bench). Off by default: test runs
+    # overflow to the farm only when the local pool is saturated.
+    "CI_FARM_TEST_REMOTE_FIRST": ("FORUM_CI_FARM_TEST_REMOTE_FIRST", 0, int),
     # P3-3: max concurrent runs per runner (capacity accounting).
     "CI_FARM_RUNNER_MAX_ACTIVE": ("FORUM_CI_FARM_RUNNER_MAX_ACTIVE", 1, int),
     # Dispatch HTTP timeout: the socket timeout for the runner /run call.

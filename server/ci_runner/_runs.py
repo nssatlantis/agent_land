@@ -824,6 +824,42 @@ def run_checks(
             db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return bench_result
+    # Test remote-first: a native reference test run (no pr/files/tree/
+    # base_ref) prefers a healthy runner BEFORE the local slot - same shape
+    # as bench remote-first. Gated by CI_FARM_TEST_REMOTE_FIRST (default off).
+    if (
+        not is_bench
+        and checks == "tests"
+        and pr_number is None
+        and files is None
+        and tree is None
+        and base_ref is None
+        and config.CI_FARM_ENABLED
+        and config.CI_FARM_TEST_REMOTE_FIRST
+    ):
+        try:
+            test_result = _farm_mod.try_dispatch(
+                checks=checks,
+                local_mode=False,
+                branch_mode=False,
+                is_bench=False,
+                pr_number=None,
+                files=None,
+                tree=None,
+                quiet=quiet,
+                agent_id=agent_id,
+                name=name,
+                kind_event=kind_event,
+                run_id=_run_id,
+                base_ref=None,
+            )
+        except Exception:
+            test_result = None  # domain: degrade-silently - fall through to local
+        if test_result is not None:
+            db.mark_ci_burst_started(_run_id)
+            db.complete_ci_burst(_run_id)
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return test_result
     # Local path: quiet wait before slot acquisition.
     _gate_bench = _should_gate_bench(checks, quiet, local_mode)
     _quiet_budget = _bench_quiet_wait()

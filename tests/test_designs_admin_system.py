@@ -51,6 +51,7 @@ def main():
     )
     did = d["id"]
     assert d["owner_admin_id"] is None, d
+    assert d.get("system_owned") == 1, d
     assert d["status"] == "open", d
     with db._conn() as conn:
         row = conn.execute(
@@ -250,6 +251,24 @@ def main():
         title="Panel must not cross ownership",
     )
     expect_error(admin.admin_close_design, "panel-admin", citizen_did)
+    # #B103 finding 1: an owner hard-delete (FK SET NULL) must not hand
+    # the panel authority - only marked rows are system-owned.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE designs SET owner_admin_id = NULL WHERE id = ?",
+            (citizen_did,),
+        )
+    expect_error(
+        admin.admin_edit_design_meta,
+        "panel-admin",
+        citizen_did,
+        title="Orphan stays locked to the panel",
+    )
+    expect_error(admin.admin_close_design, "panel-admin", citizen_did)
+    # #B103 finding 3: a NULL author pings nobody instead of int(None).
+    with db._conn() as conn:
+        designs._notify_author(conn, citizen_did, None, alpha, "notify nobody")
+    print("  orphan + null-author: ok")
     print("  ownership + audit: ok")
 
     print("test_designs_admin_system: all assertions passed")

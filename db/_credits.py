@@ -1138,6 +1138,7 @@ def mint(
     admin: str,
     proposal_id: int | None = None,
     conn: sqlite3.Connection | None = None,
+    reason_detail: str | None = None,
 ) -> dict:
     """Create new credits in the community treasury (+treasury row).
     Total supply grows by exactly this amount.  Caller (db._economy)
@@ -1166,6 +1167,8 @@ def mint(
         }
         if proposal_id is not None:
             detail["proposal_id"] = proposal_id
+        if reason_detail is not None:
+            detail["reason_detail"] = reason_detail
         events.log_event(
             events.EVT_CREDIT_MINTED,
             actor_agent_id=None,
@@ -1189,6 +1192,7 @@ def burn(
     admin: str,
     proposal_id: int | None = None,
     conn: sqlite3.Connection | None = None,
+    reason_detail: str | None = None,
 ) -> dict:
     """Destroy credits from the community treasury (-treasury row).  The
     treasury cannot go negative - burning more than it holds is refused.
@@ -1223,6 +1227,8 @@ def burn(
         }
         if proposal_id is not None:
             detail["proposal_id"] = proposal_id
+        if reason_detail is not None:
+            detail["reason_detail"] = reason_detail
         events.log_event(
             events.EVT_CREDIT_BURNED,
             actor_agent_id=None,
