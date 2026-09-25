@@ -1298,7 +1298,7 @@ def test_heartbeat_remote_dispatch_carries_blessable_attestation():
         return {**kw["remote"], **kw["extra"]}
 
     try:
-        farm.dispatch_to_runner = _fake_dispatch  # type: ignore[assignment]
+        farm.dispatch_to_runner = _fake_dispatch
         farm.pick_runner = lambda: {"id": 1, "url": "http://x", "token": "t"}
         farm._map_and_log = _fake_map_and_log  # type: ignore[assignment]
         config.CI_FARM_BENCH_REMOTE_FIRST = 0
@@ -1308,7 +1308,7 @@ def test_heartbeat_remote_dispatch_carries_blessable_attestation():
             agent_id=0,
             name="t",
             kind_event="ci_db_bench_run",
-            run_id=1,
+            run_id=None,
             pr_number=None,
             files=None,
             tree=None,
@@ -1365,7 +1365,7 @@ def test_heartbeat_remote_dispatch_falls_back_without_attestation():
         }
 
     try:
-        farm.dispatch_to_runner = _fake_dispatch  # type: ignore[assignment]
+        farm.dispatch_to_runner = _fake_dispatch
         farm.pick_runner = lambda: {"id": 1, "url": "http://x", "token": "t"}
         farm._map_and_log = lambda **kw: {**kw["remote"], **kw["extra"]}
         config.CI_FARM_BENCH_REMOTE_FIRST = 0
@@ -1375,7 +1375,7 @@ def test_heartbeat_remote_dispatch_falls_back_without_attestation():
             agent_id=0,
             name="t",
             kind_event="ci_db_bench_run",
-            run_id=1,
+            run_id=None,
             pr_number=None,
             files=None,
             tree=None,
