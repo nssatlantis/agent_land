@@ -69,6 +69,94 @@ def test_run_job_rejects_unknown_mode():
     assert "unknown mode" in result["error"]
 
 
+def test_run_job_forwards_local_base_ref():
+    captured: dict = {}
+    original_prepare = trees_mod._prepare_local_tree
+    original_ensure_image = sandbox_mod._ensure_image
+    original_traverse = sandbox_mod._ensure_tree_traversable
+    original_argv = sandbox_mod._sandbox_argv
+    original_execute = sandbox_mod._execute
+    original_mypy_dir = sandbox_mod._mypy_host_dir
+    original_ruff_dir = sandbox_mod._ruff_host_dir
+    original_child_env = runs_mod._child_env
+
+    def fake_prepare(files, slot=None, base_ref=None):
+        captured["files"] = files
+        captured["slot"] = slot
+        captured["base_ref"] = base_ref
+        return (
+            str(_TMP / "farm-tree"),
+            "a" * 40,
+            {
+                "base": "b" * 40,
+                "base_ref": base_ref,
+            },
+        )
+
+    try:
+        trees_mod._prepare_local_tree = fake_prepare
+        sandbox_mod._ensure_image = lambda *args, **kwargs: "image"
+        sandbox_mod._ensure_tree_traversable = lambda *args, **kwargs: None
+        sandbox_mod._sandbox_argv = lambda *args, **kwargs: (["python"], "container")
+        sandbox_mod._execute = lambda *args, **kwargs: {
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+            "summary": {"tests_run": False},
+        }
+        sandbox_mod._mypy_host_dir = lambda slot: str(_TMP / "mypy")
+        sandbox_mod._ruff_host_dir = lambda slot: str(_TMP / "ruff")
+        runs_mod._child_env = lambda *args, **kwargs: {}
+        result = runner._run_job(
+            {
+                "checks": "format",
+                "mode": "local",
+                "base_ref": "refs/heads/stack-parent",
+                "files": [{"path": "README.md", "content": "x\n"}],
+            }
+        )
+    finally:
+        trees_mod._prepare_local_tree = original_prepare
+        sandbox_mod._ensure_image = original_ensure_image
+        sandbox_mod._ensure_tree_traversable = original_traverse
+        sandbox_mod._sandbox_argv = original_argv
+        sandbox_mod._execute = original_execute
+        sandbox_mod._mypy_host_dir = original_mypy_dir
+        sandbox_mod._ruff_host_dir = original_ruff_dir
+        runs_mod._child_env = original_child_env
+    assert result["ok"] is True, result
+    assert captured["slot"] == 0
+    assert captured["base_ref"] == "refs/heads/stack-parent"
+    assert result["base_ref"] == "refs/heads/stack-parent"
+
+
+def test_run_job_rejects_base_ref_outside_local():
+    result = runner._run_job(
+        {
+            "checks": "format",
+            "mode": "main",
+            "base_ref": "refs/heads/stack-parent",
+        }
+    )
+    assert result["ok"] is False
+    assert "local-mode only" in result["error"]
+
+
+def test_run_job_rejects_invalid_base_ref():
+    for value in ("../main", "main;echo-owned", "main branch"):
+        result = runner._run_job(
+            {
+                "checks": "format",
+                "mode": "local",
+                "base_ref": value,
+                "files": [],
+            }
+        )
+        assert result["ok"] is False
+        assert "invalid base_ref" in result["error"]
+
+
 def test_run_job_rejects_bad_payload_shapes():
     """Validator failures are client errors (ok False), never 500s: bad
     extra_env, bad files, non-hex base_sha, and base_sha in local mode."""
@@ -297,6 +385,72 @@ def test_stale_gates_release_lock():
         t.join(timeout=5)
 
 
+def test_dispatch_test_base_ref_contract():
+    original_argv = sys.argv
+    original_run = dispatch_test.runner._run_job
+    original_post = dispatch_test.post_runner
+    captured: dict = {}
+
+    def host_run(payload):
+        captured.update(payload)
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "timed_out": False,
+            "summary": {"tests_run": False},
+            "failed_files": [],
+            "base_ref": "refs/heads/stack-parent",
+            "base_sha": "b" * 40,
+            "executed_base_sha": "b" * 40,
+            "local": True,
+            "head_sha": "a" * 40,
+        }
+
+    dispatch_test.runner._run_job = host_run
+    dispatch_test.post_runner = lambda _url, _token, payload: host_run(payload)
+    try:
+        sys.argv = [
+            "dispatch_test.py",
+            "--url",
+            "http://runner",
+            "--token",
+            "test-token",
+            "--mode",
+            "local",
+            "--base-ref",
+            "refs/heads/stack-parent",
+        ]
+        try:
+            dispatch_test.main()
+        except SystemExit as exc:
+            assert exc.code == 0
+        else:
+            raise AssertionError("parity harness must exit after success")
+        assert captured["base_ref"] == "refs/heads/stack-parent"
+
+        sys.argv = [
+            "dispatch_test.py",
+            "--url",
+            "http://runner",
+            "--token",
+            "test-token",
+            "--mode",
+            "main",
+            "--base-ref",
+            "refs/heads/stack-parent",
+        ]
+        try:
+            dispatch_test.main()
+        except SystemExit as exc:
+            assert "local-mode only" in str(exc.code)
+        else:
+            raise AssertionError("base_ref outside local mode must refuse")
+    finally:
+        sys.argv = original_argv
+        dispatch_test.runner._run_job = original_run
+        dispatch_test.post_runner = original_post
+
+
 def _run_all_tests() -> int:
     """Run all test functions, print PASS/FAIL per test, return exit code."""
     tests = [
@@ -304,6 +458,15 @@ def _run_all_tests() -> int:
         ("test_token_check", test_token_check),
         ("test_run_job_rejects_unknown_checks", test_run_job_rejects_unknown_checks),
         ("test_run_job_rejects_unknown_mode", test_run_job_rejects_unknown_mode),
+        ("test_run_job_forwards_local_base_ref", test_run_job_forwards_local_base_ref),
+        (
+            "test_run_job_rejects_base_ref_outside_local",
+            test_run_job_rejects_base_ref_outside_local,
+        ),
+        (
+            "test_run_job_rejects_invalid_base_ref",
+            test_run_job_rejects_invalid_base_ref,
+        ),
         (
             "test_run_job_rejects_bad_payload_shapes",
             test_run_job_rejects_bad_payload_shapes,
@@ -312,6 +475,10 @@ def _run_all_tests() -> int:
         (
             "test_dispatch_parity_ignores_run_specific_summary_keys",
             test_dispatch_parity_ignores_run_specific_summary_keys,
+        ),
+        (
+            "test_dispatch_test_base_ref_contract",
+            test_dispatch_test_base_ref_contract,
         ),
         ("test_http_health_and_auth", test_http_health_and_auth),
         ("test_import_side_effect_safety", test_import_side_effect_safety),
