@@ -359,6 +359,12 @@ def test_admin_cap_and_proposal_gate():
     try:
         out = db.economy_admin_adjust("mint", 0.5, "small mint", admin="tester")
         assert out["minted_units"] == 10
+        assert out["reason"] == "small mint"
+        assert out["family_reason"] == "admin_mint"
+        assert any(
+            e["detail"].get("reason_detail") == "small mint"
+            for e in _events("credit_minted")
+        )
         from tests._setup import expect_error
 
         msg = expect_error(
@@ -384,7 +390,52 @@ def test_admin_cap_and_proposal_gate():
             )
         assert out["minted_units"] == 500
         assert out["proposal_id"] == BASE_POST
-        assert out["reason"] == "proposal_mint"
+        assert out["reason"] == "community-approved mint"
+        assert out["family_reason"] == "proposal_mint"
+        assert any(
+            e["detail"].get("reason_detail") == "community-approved mint"
+            for e in _events("credit_minted")
+        )
+        with patch.object(economy, "_approved_proposal_check", _fake_check):
+            proposal_burn = db.economy_admin_adjust(
+                "burn",
+                0.25,
+                "proposal burn rationale",
+                admin="tester",
+                proposal_id=BASE_POST,
+            )
+        assert proposal_burn["burned_units"] == 5
+        assert proposal_burn["reason"] == "proposal burn rationale"
+        assert proposal_burn["family_reason"] == "proposal_burn"
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT reason FROM credit_entries"
+                " WHERE account = 'treasury' AND target_type = 'economy'"
+                " AND target_id = ? ORDER BY id DESC LIMIT 1",
+                (BASE_POST,),
+            ).fetchone()
+        assert row["reason"] == "proposal_burn"
+        assert any(
+            e["detail"].get("reason_detail") == "proposal burn rationale"
+            for e in _events("credit_burned")
+        )
+        burn_out = db.economy_admin_adjust(
+            "burn", 0.1, "admin burn rationale", admin="tester"
+        )
+        assert burn_out["burned_units"] == 2
+        assert burn_out["reason"] == "admin burn rationale"
+        assert burn_out["family_reason"] == "admin_burn"
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT reason FROM credit_entries"
+                " WHERE account = 'treasury' AND target_type = 'economy'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row["reason"] == "admin_burn"
+        assert any(
+            e["detail"].get("reason_detail") == "admin burn rationale"
+            for e in _events("credit_burned")
+        )
 
         msg = expect_error(
             db.economy_admin_adjust,
