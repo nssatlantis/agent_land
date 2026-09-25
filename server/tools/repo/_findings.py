@@ -212,7 +212,8 @@ async def stale_findings_on_push(pr_number: int) -> int:
 @_logged
 async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
     """Independently verify a resolved finding on the attested head SHA.
-    You may never verify your own fix. When this clears the finder's
+    You may never verify your own fix - or your own finding: the
+    verifier must be a third party. When this clears the finder's
     last consented blocker on a green head, their -1 flips to +1
     automatically (pre-authorized by their auto_flip flags); otherwise
     they get the advisory nudge."""
@@ -246,7 +247,18 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
     # the push paths' own invalidation - but an out-of-band push lands
     # without invalidating, so re-read and compare unconditionally.
     github._invalidate_pr(pr_number)
-    raw2 = await asyncio.to_thread(github._pr_raw, pr_number)
+    try:
+        raw2 = await asyncio.to_thread(github._pr_raw, pr_number)
+    except Exception as _exc:  # domain: fail-loudly - compensation (fail-closed staling) runs before the raise; nothing is swallowed
+        # Fail closed (ember r6 #1): the row just committed resolved +
+        # verified with no post-write attestation.  Stale the board
+        # rather than display an unattested verification, then report.
+        with db._conn() as conn:
+            db.finding_stale_all(conn, pr_number)
+        raise db.ForumError(
+            "post-write head read failed - verification staled"
+            " fail-closed, re-verify once the head is readable"
+        ) from _exc
     live2 = ((raw2.get("head") or {}).get("sha") or "").lower()
     if live2 != head_sha.lower():
         with db._conn() as conn:
