@@ -599,7 +599,7 @@ def test_schema_and_stats_surface():
     assert rows["store_ci_burst"]["key"] == "ci_burst"
 
 
-def test_ci_burst_two_whoami_on_one_held_write_txn():
+def test_ci_burst_concurrent_reserve_and_status():
     buyer = _new_agent("burst-ci-race")
     _fund(buyer["agent_id"])
     db.buy_store_item(buyer["token"], "ci_burst")
@@ -642,6 +642,30 @@ def test_ci_burst_two_whoami_on_one_held_write_txn():
     print("  concurrent reserve/status never upgrade-fails, accounting exact")
 
 
+def test_ci_burst_two_whoami_on_one_held_write_txn():
+    # Bug #110 regression: two whoami calls sharing one write txn used to
+    # deadlock. whoami runs ci_usage_for(conn=c) while the caller's txn
+    # holds RESERVED; ci_burst_remaining's own BEGIN IMMEDIATE then blocked
+    # and died after SQLITE_BUSY_TIMEOUT_SECONDS. Threading the caller conn
+    # through makes the burst reconcile ride the held txn instead.
+    buyer = _new_agent("burst-whoami-twice")
+    _fund(buyer["agent_id"])
+    db.buy_store_item(buyer["token"], "ci_burst")
+    token = buyer["token"]
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET last_seen_at = last_seen_at WHERE id = ?",
+            (buyer["agent_id"],),
+        )
+        first = db.whoami(token, conn)
+        second = db.whoami(token, conn)
+        assert second["agent_id"] == first["agent_id"] == buyer["agent_id"]
+        assert second["ci_usage"]["ci_local_run"]["burst_remaining"] == 3, second[
+            "ci_usage"
+        ]["ci_local_run"]
+    print("  two whoami on one held write txn: no nested-immediate deadlock")
+
+
 if __name__ == "__main__":
     for fn in (
         test_vote_burst_purchase_shared_pool_and_expiry,
@@ -658,6 +682,7 @@ if __name__ == "__main__":
         test_ci_burst_release_handles_started_state,
         test_ci_burst_heartbeat_keeps_reserved_lease_alive,
         test_ci_burst_concurrent_reserve_and_status,
+        test_ci_burst_two_whoami_on_one_held_write_txn,
         test_schema_and_stats_surface,
     ):
         fn()
