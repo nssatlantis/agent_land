@@ -13,7 +13,9 @@ provenance), raises _FarmRetryLocal when a picked runner fails (the caller
 retries once locally), or returns None when dispatch is not eligible / no
 runner is available - the caller then raises the busy error. try_bench_dispatch
 keeps the older None-on-error contract (silent local fallback); the two lanes
-are documented, not unified.
+are documented, not unified. Both lanes ledger a dropped dispatch
+(ci_farm_dispatch_failed) before falling back, so the fallback stays silent
+to the caller while the failure stops disappearing entirely.
 
 PR 2 scope: overflow for native + local modes only. Bench remote-first is PR 3;
 branch (pr_number) and named-tree runs are host-local and never dispatched.
@@ -27,6 +29,7 @@ import re
 import sqlite3
 import threading
 import urllib.request
+from typing import NoReturn
 
 import config
 import db
@@ -151,6 +154,60 @@ def _release(runner_id: int) -> None:
             _ACTIVE_RUNS.pop(runner_id, None)
         else:
             _ACTIVE_RUNS[runner_id] = left
+
+
+def _audit_dispatch_failed(
+    runner: dict,
+    checks: str,
+    agent_id: int,
+    name: str,
+    reason: str,
+    lane: str,
+) -> None:
+    """Ledger one dropped farm dispatch.
+
+    Both lanes degrade to the host after a picked runner returns nothing
+    usable - overflow raises _FarmRetryLocal, bench returns None - and the
+    run then completes locally, so a runner that fails EVERY dispatch (no
+    buildx plugin, a dead image build) leaves no trace: its /health answers
+    200 and no ci_* event ever names a runner. This row is the durable,
+    public answer to "why is my farm never used?". Best-effort by contract.
+    A record only: nothing keys runner eligibility off it, because a
+    skip-on-failure rule with no self-clearing path would brick dispatch
+    until an operator intervened (see _LAST_ERROR in ci_farm/runner.py).
+    """
+    try:
+        events.log_event(
+            events.EVT_CI_FARM_DISPATCH_FAILED,
+            actor_agent_id=agent_id,
+            actor_name=name,
+            detail={
+                "runner": str(runner.get("name") or ""),
+                "runner_id": runner.get("id"),
+                "url": str(runner.get("url") or ""),
+                "checks": checks,
+                "lane": lane,
+                "error": reason[:200],
+            },
+        )
+    except Exception:
+        # domain: degrade-silently - the audit row is best-effort; the
+        # caller's fallback must happen either way.
+        pass
+
+
+def _retry_local(
+    runner: dict, reason: str, checks: str, agent_id: int, name: str
+) -> NoReturn:
+    """Audit the failure, then raise the caller's retry-locally signal.
+
+    Every picked-but-unusable runner reply funnels through here, so the
+    overflow lane gets one durable ledger row per dropped dispatch instead
+    of a silent host fallback. Annotated NoReturn (not None) so mypy - and
+    the next reader - know control never continues past the call.
+    """
+    _audit_dispatch_failed(runner, checks, agent_id, name, reason, "overflow")
+    raise _FarmRetryLocal(reason)
 
 
 def pick_runner() -> dict | None:
@@ -417,26 +474,32 @@ def try_dispatch(
         # Transport failure or unreadable body AFTER a runner was picked: the
         # run may or may not have executed remotely, so retry once locally
         # instead of reporting busy (P3-2).
-        raise _FarmRetryLocal("runner reply unreadable")
+        _retry_local(runner, "runner reply unreadable", checks, agent_id, name)
     if not isinstance(remote.get("ok"), bool):
-        raise _FarmRetryLocal(
-            str(remote.get("error") or "runner reply missing boolean ok")[:200]
+        _retry_local(
+            runner,
+            str(remote.get("error") or "runner reply missing boolean ok")[:200],
+            checks,
+            agent_id,
+            name,
         )
     if "error" in remote and not any(
         key in remote for key in ("exit_code", "summary", "head_sha", "base_sha")
     ):
         # Validation and compatibility failures are not completed CI runs;
         # retry once against the host instead of turning them into red results.
-        raise _FarmRetryLocal(str(remote.get("error"))[:200])
+        _retry_local(runner, str(remote.get("error"))[:200], checks, agent_id, name)
     if base_ref is not None:
         from github._core import _validate_ref
 
         try:
             expected_ref = _validate_ref(base_ref)
-        except Exception as exc:
-            raise _FarmRetryLocal("invalid base_ref") from exc
+        except Exception:
+            # Not a swallow: _retry_local audits the drop and re-raises the
+            # typed signal the caller retries on.
+            _retry_local(runner, "invalid base_ref", checks, agent_id, name)
         if remote.get("base_ref") != expected_ref:
-            raise _FarmRetryLocal("runner base_ref mismatch")
+            _retry_local(runner, "runner base_ref mismatch", checks, agent_id, name)
         executed_base = remote.get("executed_base_sha")
         result_base = remote.get("base_sha")
         if (
@@ -444,7 +507,13 @@ def try_dispatch(
             or _COMMIT_RE.fullmatch(executed_base) is None
             or result_base != executed_base
         ):
-            raise _FarmRetryLocal("runner base metadata missing or inconsistent")
+            _retry_local(
+                runner,
+                "runner base metadata missing or inconsistent",
+                checks,
+                agent_id,
+                name,
+            )
     return _map_and_log(remote, checks, agent_id, name, kind_event, run_id, runner)
 
 
@@ -513,6 +582,18 @@ def try_bench_dispatch(
         or not isinstance(remote.get("ok"), bool)
         or "error" in remote
     ):
+        _audit_dispatch_failed(
+            runner,
+            checks,
+            agent_id,
+            name,
+            (
+                "runner reply unreadable"
+                if not isinstance(remote, dict)
+                else str(remote.get("error") or "runner reply unusable")[:200]
+            ),
+            "bench",
+        )
         return None
     extra: dict = {}
     for key in ("quiet", "contended", "bench_load"):

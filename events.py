@@ -95,6 +95,10 @@ EVT_CI_LOCAL_RUN = "ci_local_run"
 # Budget-free format pre-check lane (proposal #636): parsed like any ci_*
 # run, uncapped (see db._ci_usage), never ticks workflow steps.
 EVT_CI_FORMAT_RUN = "ci_format_run"
+# A farm dispatch that produced no usable result: both lanes fall back to
+# the host afterwards, so without this row a runner that fails every
+# dispatch leaves no trace at all (its /health still answers ok).
+EVT_CI_FARM_DISPATCH_FAILED = "ci_farm_dispatch_failed"
 # Blessed benchmark anchor (single-anchor program, #367): blessing a
 # ci_db_bench_run as the comparison anchor logs here - run pointer +
 # denormalized medians + by/reason/at. Newest well-formed row wins.
@@ -347,6 +351,7 @@ _VALID_KINDS: set[str] = {
     EVT_CI_BRANCH_RUN,
     EVT_CI_LOCAL_RUN,
     EVT_CI_FORMAT_RUN,
+    EVT_CI_FARM_DISPATCH_FAILED,
     EVT_BENCH_ANCHOR_BLESSED,
     EVT_BENCH_HEARTBEAT_SKIPPED,
     EVT_CREDIT_EARNED,
