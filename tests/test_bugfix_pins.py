@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def test_create_post_tool_forwards_use_cooldown_skip():
@@ -27,3 +31,13 @@ def test_boot_final_binds_logutil_at_module_level():
         "logutil must be importable at module level, not only inside "
         "conditional branches"
     )
+
+
+def main():
+    test_create_post_tool_forwards_use_cooldown_skip()
+    test_boot_final_binds_logutil_at_module_level()
+    print("test_bugfix_pins: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()
