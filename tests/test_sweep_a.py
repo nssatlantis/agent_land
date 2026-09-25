@@ -412,7 +412,7 @@ def test_sweep_decline_grace_delays():
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
     old_grace = config.PR_DECLINE_GRACE_SECONDS
-    config.PR_DECLINE_GRACE_SECONDS = 43200
+    config.PR_DECLINE_GRACE_SECONDS = 86400
     try:
         log = _CallLog()
         opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
