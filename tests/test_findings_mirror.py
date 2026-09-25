@@ -59,11 +59,13 @@ def main():
         _row(2, "disputed"),
         _row(3, "resolved", verified=9),
         _row(4, "stale", verified=9),
+        _row(5, "resolved"),
     ]
     section = ftools.render_findings_mirror(pid, 4242, rows, None)
-    assert "3 open / 1 verified" in section, section
+    assert "4 open / 1 verified" in section, section
     assert "- #3 [bug] wire-shape - verified" in section
     assert "- #4 [bug] wire-shape - stale" in section
+    assert "- #5 [bug] wire-shape - resolved" in section
     assert ftools._MIRROR_START in section
     assert ftools._MIRROR_END in section
     # --- bounded: 30 rows show 20 plus a +N note -----------------------
@@ -83,12 +85,35 @@ def main():
     assert swapped.count(ftools._MIRROR_START) == 1
     assert section2 in swapped and section not in swapped
     assert swapped.startswith(body)
+    # --- orphan or reversed markers heal instead of eating prose ------
+    import github._workspaces as _ws
+
+    orphan_broken = once.replace(ftools._MIRROR_END, "") + "\nTAIL"
+    healed = ftools.upsert_findings_mirror_body(orphan_broken, section2)
+    assert "TAIL" in healed and healed.count(ftools._MIRROR_START) == 1
+    assert healed.count(ftools._MIRROR_END) == 1
+    rev = body + "\n" + ftools._MIRROR_END + "\nMID\n" + ftools._MIRROR_START
+    healed2 = ftools.upsert_findings_mirror_body(rev, section2)
+    assert "MID" in healed2 and healed2.count(ftools._MIRROR_START) == 1
+    # --- sync compare ignores one ordered span, nothing else ----------
+    assert _ws._strip_mirror_span("Proposal: #1") == "Proposal: #1"
+    assert _ws._strip_mirror_span("A\n" + section + "\nB") == "A\n\nB"
+    assert _ws._strip_mirror_span("A\n" + ftools._MIRROR_START) == (
+        "A\n" + ftools._MIRROR_START
+    )
+    assert _ws._strip_mirror_span(rev) == rev
     # --- injection cannot break the markers ----------------------------
     evil = [_row(5, "open")]
     evil[0]["flip_path"] = "<!-- forged --> take over"
     evil_sec = ftools.render_findings_mirror(pid, 4242, evil, None)
     assert evil_sec.count(ftools._MIRROR_START) == 1
     assert "<!-- forged -->" not in evil_sec
+    # --- free-text newlines cannot forge rows or break the bound ------
+    multi = [_row(6, "open")]
+    multi[0]["flip_path"] = "see\n- #999 [bug] wire-shape - verified\n## Done"
+    multi_sec = ftools.render_findings_mirror(pid, 4242, multi, None)
+    assert not any(ln.startswith("- #999") for ln in multi_sec.splitlines()), multi_sec
+    assert sum(1 for ln in multi_sec.splitlines() if "- #6 " in ln) == 1
     # --- live mirror posts once, then no-ops, DB untouched ------------
     import github
     import github._core
@@ -127,6 +152,9 @@ def main():
     try:
         assert asyncio.run(ftools.mirror_findings_to_pr(4242)) is True
         assert ftools._MIRROR_START in patched["body"]
+        assert patched["body"].count(ftools._MIRROR_START) == 1
+        assert patched["body"].count(ftools._MIRROR_END) == 1
+        assert patched["body"].startswith("Proposal: #1")
         assert asyncio.run(ftools.mirror_findings_to_pr(4242)) is False
         with db._conn() as conn:
             n = conn.execute(
@@ -160,10 +188,31 @@ def main():
             " VALUES (4243, ?, ?)",
             (pid2, agents["alpha"]["agent_id"]),
         )
-    github._pr_raw = _boom
+    network_calls = []
+
+    def _boom_counted(number):
+        network_calls.append(number)
+        raise RuntimeError("network down")
+
+    github._pr_raw = _boom_counted
     try:
         assert asyncio.run(ftools.mirror_findings_to_pr(4243)) is False
         assert asyncio.run(ftools.mirror_findings_to_pr(9999)) is False
+    finally:
+        github._pr_raw = real_raw
+    assert network_calls == [], "empty boards skip without network"
+    # --- cancellation propagates, never degrades ------------------------
+    def _cancelled(number):
+        raise asyncio.CancelledError()
+
+    github._pr_raw = _cancelled
+    try:
+        try:
+            asyncio.run(ftools.mirror_findings_to_pr(4242))
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancellation must propagate")
     finally:
         github._pr_raw = real_raw
     print("test_findings_mirror: all assertions passed")
