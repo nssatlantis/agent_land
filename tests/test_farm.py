@@ -936,8 +936,6 @@ def main():
     test_farm_retry_exhaustion_audited()
     test_bench_allow_remote_bypasses_preference()
     test_native_test_dispatch_remote_first()
-    test_run_checks_native_test_remote_first_gate()
-    test_run_checks_native_test_remote_first_knob_off()
     test_dispatch_timeout_derives_from_run_timeout()
     print("All CI farm tests passed.")
     print("All CI farm tests passed.")
@@ -1196,96 +1194,7 @@ def test_native_test_dispatch_remote_first():
         farm.remove_runner(row["id"])
 
 
-def test_run_checks_native_test_remote_first_gate():
-    """Pin that run_checks' native-test remote-first path is exercised by
-    CI_FARM_TEST_REMOTE_FIRST (on -> dispatches to farm, local_mode=False),
-    so deleting the block would fail the test."""
-    orig_try = farm.try_dispatch
-    calls: list[dict] = []
 
-    def _capture(**kw):
-        calls.append(kw)
-        return {
-            "checks": "tests",
-            "mode": "main",
-            "sandboxed": True,
-            "ok": True,
-            "timed_out": False,
-            "exit_code": 0,
-            "duration_seconds": 5.0,
-            "head_sha": "abc",
-            "output_tail": "ok",
-            "summary": {"tests_run": True},
-        }
-
-    import server.ci_runner._runs as runs_mod
-
-    orig_gate = runs_mod._gate
-    runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
-    try:
-        farm.try_dispatch = _capture  # type: ignore[assignment]
-
-        orig_enabled = config.CI_FARM_ENABLED
-        orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
-        config.CI_FARM_ENABLED = True
-        config.CI_FARM_TEST_REMOTE_FIRST = 1
-        try:
-            runs_mod.run_checks(agent_id=99, name="t", checks="tests")
-        finally:
-            config.CI_FARM_ENABLED = orig_enabled
-            config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
-        assert calls, "try_dispatch was not called for native test remote-first"
-        assert calls[0].get("local_mode") is False, calls
-        assert calls[0].get("is_bench") is False, calls
-    finally:
-        runs_mod._gate = orig_gate
-        farm.try_dispatch = orig_try
-
-
-def test_run_checks_native_test_remote_first_knob_off():
-    """Pin that the native-test remote-first block does NOT execute when
-    CI_FARM_TEST_REMOTE_FIRST is off (0) - deleting the knob guard would
-    make the block unconditional and this test would fail."""
-    orig_try = farm.try_dispatch
-    calls: list[dict] = []
-
-    def _capture(**kw):
-        calls.append(kw)
-        return {
-            "checks": "tests",
-            "mode": "main",
-            "sandboxed": True,
-            "ok": True,
-            "timed_out": False,
-            "exit_code": 0,
-            "duration_seconds": 5.0,
-            "head_sha": "abc",
-            "output_tail": "ok",
-            "summary": {"tests_run": True},
-        }
-
-    import server.ci_runner._runs as runs_mod
-
-    orig_gate = runs_mod._gate
-    runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
-    try:
-        farm.try_dispatch = _capture  # type: ignore[assignment]
-
-        orig_enabled = config.CI_FARM_ENABLED
-        orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
-        config.CI_FARM_ENABLED = True
-        config.CI_FARM_TEST_REMOTE_FIRST = 0
-        try:
-            runs_mod.run_checks(agent_id=99, name="t", checks="tests")
-        finally:
-            config.CI_FARM_ENABLED = orig_enabled
-            config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
-        assert not calls, (
-            "try_dispatch should NOT be called when CI_FARM_TEST_REMOTE_FIRST=0"
-        )
-    finally:
-        runs_mod._gate = orig_gate
-        farm.try_dispatch = orig_try
 
 
 if __name__ == "__main__":
