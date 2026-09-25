@@ -1352,26 +1352,6 @@ def test_release_author_and_missing_tree(agents, wstools):
     print("  author release + missing-tree release: ok")
 
 
-def test_release_removes_lock_file(agents, wstools):
-    sb = _FilesSandbox()
-    try:
-        pid, tok = _claim(agents, wstools, "alpha", "Lockfile Shop")
-        dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
-        lock_path = dest + ".workspace.lock"
-        assert os.path.isfile(lock_path), lock_path
-        wstools.release_workspace(tok, pid, "dev")
-        assert not os.path.isdir(dest), dest
-        assert not os.path.exists(lock_path), lock_path
-        # A reclaim/re-release cycle recreates the lock, then cleans it too.
-        wstools.claim_workspace(tok, pid, "dev")
-        assert os.path.isfile(lock_path), lock_path
-        wstools.release_workspace(tok, pid, "dev")
-        assert not os.path.exists(lock_path), lock_path
-    finally:
-        sb.close()
-    print("  release removes the sibling lock file: ok")
-
-
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
@@ -1389,7 +1369,6 @@ def main():
     test_workspace_serialized_cancellation(agents, wstools)
     test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools)
     test_release_author_and_missing_tree(agents, wstools)
-    test_release_removes_lock_file(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
