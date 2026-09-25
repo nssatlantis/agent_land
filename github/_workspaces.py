@@ -712,6 +712,25 @@ def _strip_wip_prefix(text: str) -> str:
     return s[4:].lstrip() if s.upper().startswith("WIP:") else s
 
 
+_MIRROR_START = "<!-- findings-board:start -->"
+_MIRROR_END = "<!-- findings-board:end -->"
+
+
+def _strip_mirror_span(text: str) -> str:
+    """Remove one ordered findings-board mirror block for comparison:
+    the push-text sync compares live vs caller prose, and the mirror
+    block lives only on the live side - it must never count as revised
+    prose (proposal #710 part 5). Comparison only; never written."""
+    s = text or ""
+    start = s.find(_MIRROR_START)
+    if start == -1:
+        return s
+    end = s.find(_MIRROR_END, start + len(_MIRROR_START))
+    if end == -1:
+        return s
+    return s[:start] + s[end + len(_MIRROR_END) :]
+
+
 def _open_or_reuse_claim_pr(
     branch: str, base: str, title: str, body: str, prior: dict | None
 ) -> tuple[dict, bool, bool]:
@@ -720,7 +739,9 @@ def _open_or_reuse_claim_pr(
     Returns (pr, first_push, text_updated). On reuse, a revised title
     and/or body is PATCHed onto the live PR when it differs from what
     the PR currently carries - a follow-up push must never silently drop
-    the caller's prose. Identical text makes no request. A PATCH failure
+    the caller's prose. Identical text makes no request. The body
+    compare ignores one ordered findings-board mirror block, which lives
+    only on the live side (proposal #710 part 5). A PATCH failure
     raises: the commit already landed, and the retry replays this exact
     comparison idempotently (the already-pushed path re-enters here).
     """
@@ -729,7 +750,7 @@ def _open_or_reuse_claim_pr(
         patch: dict = {}
         if _strip_wip_prefix(prior.get("title") or "") != _strip_wip_prefix(title):
             patch["title"] = title
-        if (prior.get("body") or "") != body:
+        if _strip_mirror_span(prior.get("body") or "") != body:
             patch["body"] = body
         if patch:
             _core._request("PATCH", f"pulls/{prior['number']}", patch)
