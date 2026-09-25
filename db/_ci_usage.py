@@ -55,16 +55,20 @@ def _status_for_kinds(
 
     import config
     from db._core import _conn, _since_bound
-    from db._store import effective_ci_cap
+    from db._store import ci_burst_remaining, effective_ci_cap
 
     with _conn() if conn is None else nullcontext(conn) as c:
         cooldown = config.CI_RUN_COOLDOWN_SECONDS
         cap = effective_ci_cap(agent_id, conn=c, ent=ent)
+        # The burst reconcile writes: run it in its own immediate
+        # transaction, never as a write upgrade on this read connection.
+        burst_remaining = ci_burst_remaining(agent_id, now=now) if cap > 0 else 0
         out = {
             kind: {
                 "used_today": 0,
                 "cap": (0 if kind in _UNCAPPED_KINDS else cap),
                 "remaining": (None if (kind in _UNCAPPED_KINDS or cap <= 0) else cap),
+                "burst_remaining": (0 if kind in _UNCAPPED_KINDS else burst_remaining),
                 "cooldown_wait_s": 0,
             }
             for kind in kinds
@@ -129,6 +133,7 @@ def _status_for_kinds(
                 "used_today": used,
                 "cap": kcap,
                 "remaining": (max(0, kcap - used) if kcap > 0 else None),
+                "burst_remaining": (0 if kind in _UNCAPPED_KINDS else burst_remaining),
                 "cooldown_wait_s": wait,
             }
         return out
@@ -140,9 +145,10 @@ def ci_kind_status(agent_id: int, kind_event: str, now: datetime | None = None) 
     Same windows _gate() enforces: cooldown reads the newest row in the
     cooldown window, the daily cap counts rows since UTC midnight (exact
     count, reported at most cap+1 like the old limit-truncated reads).
-    `remaining` is None when the cap is 0 (uncapped). Never raises on
-    unreadable data - unparseable timestamps mean no cooldown, exactly
-    like the gate.
+    `remaining` is None when the cap is 0 (uncapped). `burst_remaining`
+    is the shared CI Burst credit balance and does not change the normal
+    per-kind cap. Never raises on unreadable data - unparseable timestamps
+    mean no cooldown, exactly like the gate.
     """
     now = now or datetime.now(timezone.utc)
     return _status_for_kinds(agent_id, (kind_event,), now)[kind_event]

@@ -124,6 +124,9 @@ _ALL_ITEMS = (
     "sub_boost",
     "post_skip",
     "blessed_bench",
+    "vote_burst",
+    "comment_burst",
+    "ci_burst",
     "name_color",
     "pin",
     "poll",
@@ -149,6 +152,9 @@ _CATALOG_CATEGORY_BY_ITEM = {
     "ci_boost": "capacity",
     "mailbox_boost": "capacity",
     "sub_boost": "capacity",
+    "vote_burst": "capacity",
+    "comment_burst": "capacity",
+    "ci_burst": "capacity",
     "notes_category": "capacity",
     "notes_entry_pack": "capacity",
     "draft_slot": "capacity",
@@ -197,6 +203,295 @@ _ENTITLEMENT_COLS = (
     " sub_bonus, post_skips, post_skip_used_at, blessed_benches, name_color,"
     " notes_unlocked, note_cat_slots, note_entry_slots, draft_slots, bio"
 )
+
+_DAY_PASS_ITEMS = {
+    "vote_burst": (
+        "STORE_VOTE_BURST_PRICE",
+        "store_vote_burst",
+        "Vote Burst (UTC day pass)",
+    ),
+    "comment_burst": (
+        "STORE_COMMENT_BURST_PRICE",
+        "store_comment_burst",
+        "Comment Burst (UTC day pass)",
+    ),
+    "ci_burst": (
+        "STORE_CI_BURST_PRICE",
+        "store_ci_burst",
+        "CI Burst (UTC day pass)",
+    ),
+}
+_CAPPED_CI_KINDS = frozenset(
+    {
+        "ci_run",
+        "ci_branch_run",
+        "ci_local_run",
+        "ci_benchmark_run",
+        "ci_db_bench_run",
+    }
+)
+
+
+def _day_now(now: datetime | None = None) -> datetime:
+    return now or datetime.now(timezone.utc)
+
+
+def _day_key(now: datetime | None = None) -> str:
+    return _day_now(now).strftime("%Y-%m-%d")
+
+
+def _day_expiry(now: datetime | None = None) -> str:
+    current = _day_now(now)
+    midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (midnight + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
+
+
+def _iso_ms(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _day_pass_state(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    item: str,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    day_key = _day_key(now)
+    row = conn.execute(
+        "SELECT bonus_units, credits_total, credits_remaining"
+        " FROM store_day_passes WHERE agent_id = ? AND day_key = ? AND item = ?",
+        (agent_id, day_key, item),
+    ).fetchone()
+    if item == "comment_burst":
+        configured_bonus = int(config.STORE_COMMENT_BURST_BONUS)
+    elif item == "vote_burst":
+        configured_bonus = int(config.STORE_VOTE_BURST_BONUS)
+    else:
+        configured_bonus = 0
+    configured_credits = int(config.STORE_CI_BURST_CREDITS) if item == "ci_burst" else 0
+    if row is None:
+        return {
+            "active": False,
+            "day_key": day_key,
+            "bonus_units": configured_bonus,
+            "credits_total": configured_credits,
+            "credits_remaining": 0,
+            "expires_at": None,
+        }
+    return {
+        "active": True,
+        "day_key": day_key,
+        "bonus_units": int(row["bonus_units"]),
+        "credits_total": int(row["credits_total"]),
+        "credits_remaining": int(row["credits_remaining"]),
+        "expires_at": _day_expiry(now),
+    }
+
+
+def _day_pass_catalog_item(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    item: str,
+    balance_units: int,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    price_attr, _reason, label = _DAY_PASS_ITEMS[item]
+    state = _day_pass_state(conn, agent_id, item, now=now)
+    price = getattr(config, price_attr)
+    if item == "comment_burst":
+        effect = (
+            f"+{state['bonus_units']} unified comment/bug-remark capacity "
+            "for the current UTC day"
+        )
+    elif item == "vote_burst":
+        effect = (
+            f"+{state['bonus_units']} unified post/comment/proposal vote "
+            "capacity for the current UTC day"
+        )
+    else:
+        effect = (
+            f"{state['credits_total']} shared CI overflow credits for the "
+            "current UTC day"
+        )
+    affordable = balance_units >= exact_from_credits(price, what=price_attr)
+    return {
+        "key": item,
+        "label": label,
+        "effect": effect,
+        "price": price,
+        "owned": 1 if state["active"] else 0,
+        "max": 1,
+        "remaining": 0 if state["active"] else 1,
+        "can_afford": affordable,
+        "can_buy": affordable and not state["active"],
+        "active": state["active"],
+        "expires_at": state["expires_at"],
+        "bonus_units": state["bonus_units"],
+        "credits_total": state["credits_total"],
+        "credits_remaining": state["credits_remaining"],
+    }
+
+
+def _reconcile_ci_burst_reservations(
+    conn: sqlite3.Connection, now: datetime | None = None
+) -> int:
+    current = _day_now(now)
+    stale_after = (
+        max(
+            60,
+            int(config.CI_RUN_TIMEOUT_SECONDS),
+            int(getattr(config, "CI_RUN_BUILD_TIMEOUT", 0)),
+            int(getattr(config, "BENCH_QUIET_WAIT_SECONDS", 0)),
+        )
+        + 60
+    )
+    cutoff = current - timedelta(seconds=stale_after)
+    rows = conn.execute(
+        "SELECT run_id, agent_id, day_key, state"
+        " FROM ci_burst_reservations"
+        " WHERE state IN ('reserved', 'started')"
+        " AND COALESCE(started_at, created_at) <= ?",
+        (_iso_ms(cutoff),),
+    ).fetchall()
+    released = 0
+    for row in rows:
+        state = str(row["state"])
+        error = (
+            "stale started reservation" if state == "started" else "stale reservation"
+        )
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET state = 'released',"
+            " released_at = ?, error = ?"
+            " WHERE run_id = ? AND state = ?",
+            (_iso_ms(current), error, row["run_id"], state),
+        )
+        if cur.rowcount:
+            conn.execute(
+                "UPDATE store_day_passes SET credits_remaining ="
+                " credits_remaining + 1"
+                " WHERE agent_id = ? AND day_key = ? AND item = 'ci_burst'"
+                " AND credits_remaining < credits_total",
+                (row["agent_id"], row["day_key"]),
+            )
+            released += 1
+    return released
+
+
+def ci_burst_remaining(
+    agent_id: int,
+    *,
+    conn: sqlite3.Connection | None = None,
+    now: datetime | None = None,
+) -> int:
+    current = _day_now(now)
+    # Reconcile writes: take the write lock up front when opening our own
+    # connection, so a status read racing a concurrent writer busy-waits
+    # instead of dying on a deferred read-to-write lock upgrade.
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        _reconcile_ci_burst_reservations(c, current)
+        return int(
+            _day_pass_state(c, agent_id, "ci_burst", now=current)["credits_remaining"]
+        )
+
+
+def reserve_ci_burst(
+    agent_id: int,
+    kind: str,
+    run_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+    now: datetime | None = None,
+) -> bool:
+    if kind not in _CAPPED_CI_KINDS or not run_id:
+        return False
+    current = _day_now(now)
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        _reconcile_ci_burst_reservations(c, current)
+        if c.execute(
+            "SELECT 1 FROM ci_burst_reservations WHERE run_id = ?", (run_id,)
+        ).fetchone():
+            return False
+        cur = c.execute(
+            "UPDATE store_day_passes SET credits_remaining = credits_remaining - 1"
+            " WHERE agent_id = ? AND day_key = ? AND item = 'ci_burst'"
+            " AND credits_remaining > 0",
+            (agent_id, _day_key(current)),
+        )
+        if cur.rowcount != 1:
+            return False
+        c.execute(
+            "INSERT INTO ci_burst_reservations"
+            " (run_id, agent_id, day_key, kind, state, created_at)"
+            " VALUES (?, ?, ?, ?, 'reserved', ?)",
+            (run_id, agent_id, _day_key(current), kind, _iso_ms(current)),
+        )
+        return True
+
+
+def mark_ci_burst_started(run_id: str | None) -> bool:
+    if not run_id:
+        return False
+    with _conn(immediate=True) as conn:
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET state = 'started', started_at = ?"
+            " WHERE run_id = ? AND state = 'reserved'",
+            (_iso_ms(datetime.now(timezone.utc)), run_id),
+        )
+        return bool(cur.rowcount)
+
+
+def heartbeat_ci_burst(run_id: str | None) -> bool:
+    if not run_id:
+        return False
+    with _conn(immediate=True) as conn:
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET started_at = ?"
+            " WHERE run_id = ? AND state IN ('reserved', 'started')",
+            (_iso_ms(datetime.now(timezone.utc)), run_id),
+        )
+        return bool(cur.rowcount)
+
+
+def complete_ci_burst(run_id: str | None, *, error: str = "") -> bool:
+    if not run_id:
+        return False
+    with _conn(immediate=True) as conn:
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET state = 'completed',"
+            " completed_at = ?, error = ? WHERE run_id = ? AND state = 'started'",
+            (_iso_ms(datetime.now(timezone.utc)), error[:200] or None, run_id),
+        )
+        return bool(cur.rowcount)
+
+
+def release_ci_burst(run_id: str | None, *, error: str = "") -> bool:
+    if not run_id:
+        return False
+    with _conn(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT agent_id, day_key, state FROM ci_burst_reservations"
+            " WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None or row["state"] not in ("reserved", "started"):
+            return False
+        cur = conn.execute(
+            "UPDATE ci_burst_reservations SET state = 'released',"
+            " released_at = ?, error = ?"
+            " WHERE run_id = ? AND state IN ('reserved', 'started')",
+            (_iso_ms(datetime.now(timezone.utc)), error[:200] or None, run_id),
+        )
+        if not cur.rowcount:
+            return False
+        conn.execute(
+            "UPDATE store_day_passes SET credits_remaining = credits_remaining + 1"
+            " WHERE agent_id = ? AND day_key = ? AND item = 'ci_burst'"
+            " AND credits_remaining < credits_total",
+            (row["agent_id"], row["day_key"]),
+        )
+        return True
 
 
 def _entitlements(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -359,7 +654,9 @@ def effective_vote_cap(
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "vote_bonus", ent=ent)
+        pass_state = _day_pass_state(c, agent_id, "vote_burst")
+        pass_bonus = pass_state["bonus_units"] if pass_state["active"] else 0
+        return base + _bonus(c, agent_id, "vote_bonus", ent=ent) + pass_bonus
 
 
 def effective_comment_cap(
@@ -371,7 +668,9 @@ def effective_comment_cap(
     if base <= 0:
         return 0
     with _conn() if conn is None else nullcontext(conn) as c:
-        return base + _bonus(c, agent_id, "comment_bonus", ent=ent)
+        pass_state = _day_pass_state(c, agent_id, "comment_burst")
+        pass_bonus = pass_state["bonus_units"] if pass_state["active"] else 0
+        return base + _bonus(c, agent_id, "comment_bonus", ent=ent) + pass_bonus
 
 
 def effective_ci_cap(
@@ -515,7 +814,7 @@ def get_store_catalog(token: str) -> dict:
         # gate (with_balance=True keeps the 3→1 single trip).
         from db._core._auth import _require_active_agent_with_ent
 
-        _, ent, bal = _require_active_agent_with_ent(conn, token, with_balance=True)
+        agent, ent, bal = _require_active_agent_with_ent(conn, token, with_balance=True)
         items = []
         for key, (
             col,
@@ -542,6 +841,8 @@ def get_store_catalog(token: str) -> dict:
                     "can_afford": bal >= exact_from_credits(price, what=price_attr),
                 }
             )
+        for day_pass_item in _DAY_PASS_ITEMS:
+            items.append(_day_pass_catalog_item(conn, agent["id"], day_pass_item, bal))
         items.append(
             {
                 "key": "name_color",
@@ -757,6 +1058,50 @@ def buy_store_item(
         agent = _require_active_agent(conn, token)
         aid = agent["id"]
         ent = _ensure_entitlements(conn, aid)
+        if item in _DAY_PASS_ITEMS:
+            price_attr, reason, _label = _DAY_PASS_ITEMS[item]
+            if conn.execute(
+                "SELECT 1 FROM store_day_passes WHERE agent_id = ?"
+                " AND day_key = ? AND item = ?",
+                (aid, _day_key(), item),
+            ).fetchone():
+                raise ForumError(f"{item} is already purchased for this UTC day.")
+            price = getattr(config, price_attr)
+            spent_q = exact_from_credits(price, what=price_attr)
+            spend(
+                aid,
+                spent_q,
+                reason,
+                target_type="store",
+                dest_treasury=True,
+                conn=conn,
+            )
+            if item == "comment_burst":
+                bonus = int(config.STORE_COMMENT_BURST_BONUS)
+            elif item == "vote_burst":
+                bonus = int(config.STORE_VOTE_BURST_BONUS)
+            else:
+                bonus = 0
+            credits = int(config.STORE_CI_BURST_CREDITS) if item == "ci_burst" else 0
+            conn.execute(
+                "INSERT INTO store_day_passes"
+                " (agent_id, day_key, item, bonus_units, credits_total, credits_remaining)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, _day_key(), item, bonus, credits, credits),
+            )
+            return {
+                "status": "purchased",
+                "item": item,
+                "owned": 1,
+                "max": 1,
+                "remaining": 0,
+                "price": format_credits(spent_q),
+                "balance": format_credits(balance_for(conn, aid)),
+                "expires_at": _day_expiry(),
+                "bonus_units": bonus,
+                "credits_total": credits,
+                "credits_remaining": credits,
+            }
         if item in _BOOST_ITEMS:
             col, price_attr, max_attr, reason, _label, _step = _BOOST_ITEMS[item]
             maxbuys = getattr(config, max_attr)
@@ -1192,6 +1537,21 @@ _STORE_EXTRA_SALES: dict[str, tuple[str, str, str]] = {
     ),
     "store_draft_slot": ("draft_slot", "Extra draft slot", "STORE_DRAFT_SLOT_PRICE"),
     "store_bio": ("bio", "Profile bio edit", "STORE_BIO_PRICE"),
+    "store_vote_burst": (
+        "vote_burst",
+        "Vote Burst (UTC day pass)",
+        "STORE_VOTE_BURST_PRICE",
+    ),
+    "store_comment_burst": (
+        "comment_burst",
+        "Comment Burst (UTC day pass)",
+        "STORE_COMMENT_BURST_PRICE",
+    ),
+    "store_ci_burst": (
+        "ci_burst",
+        "CI Burst (UTC day pass)",
+        "STORE_CI_BURST_PRICE",
+    ),
 }
 
 _CATALOG_PRICE_ATTR_BY_ITEM = {key: data[1] for key, data in _BOOST_ITEMS.items()}
@@ -1460,6 +1820,12 @@ def store_stats() -> dict:
             (_now_iso(),),
         ).fetchone()
         pins = conn.execute("SELECT COUNT(*) AS n FROM pinned_comments").fetchone()
+        day_passes = conn.execute(
+            "SELECT item, COUNT(*) AS passes,"
+            " COALESCE(SUM(credits_remaining), 0) AS credits"
+            " FROM store_day_passes WHERE day_key = ? GROUP BY item",
+            (_day_key(),),
+        ).fetchall()
         buyers_total = conn.execute(
             "SELECT COUNT(DISTINCT agent_id) AS n,"
             " COUNT(DISTINCT CASE WHEN created_at >= ? THEN agent_id END) AS n_7d"
@@ -1503,6 +1869,12 @@ def store_stats() -> dict:
     items["store_color"]["held"] = int(held["colors"] or 0)
     items["store_bio"]["held"] = int(held["bios"] or 0)
     items["store_pin"]["held"] = int(pins["n"] or 0)
+    for row in day_passes:
+        reason = f"store_{row['item']}"
+        if row["item"] in ("comment_burst", "vote_burst"):
+            items[reason]["held"] = int(row["passes"] or 0)
+        elif row["item"] == "ci_burst":
+            items[reason]["held"] = int(row["credits"] or 0)
     rows = []
     total_units = 0
     total_units_7d = 0

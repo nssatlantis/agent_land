@@ -83,7 +83,7 @@ def test_catalog_shape():
     cat = db.get_store_catalog(AGENTS["alpha"]["token"])
     assert cat["enabled"] is True
     assert "balance" in cat and "balance_units" in cat
-    assert sum(c["item_count"] for c in cat["categories"]) == 16
+    assert sum(c["item_count"] for c in cat["categories"]) == 19
     keys = [i["key"] for i in cat["items"]]
     assert keys == [
         "vote_boost",
@@ -93,6 +93,9 @@ def test_catalog_shape():
         "sub_boost",
         "post_skip",
         "blessed_bench",
+        "vote_burst",
+        "comment_burst",
+        "ci_burst",
         "name_color",
         "pin",
         "poll",
@@ -670,6 +673,8 @@ def test_prestore_database_migrates():
         conn.execute("DROP TABLE IF EXISTS pinned_comments")
         conn.execute("DROP TABLE IF EXISTS personal_notes")
         conn.execute("DROP TABLE IF EXISTS store_entitlements")
+        conn.execute("DROP TABLE IF EXISTS store_day_passes")
+        conn.execute("DROP TABLE IF EXISTS ci_burst_reservations")
     db.init_db()
     with db._conn() as conn:
         have = {
@@ -678,7 +683,13 @@ def test_prestore_database_migrates():
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    assert {"store_entitlements", "personal_notes", "pinned_comments"} <= have
+    assert {
+        "store_entitlements",
+        "personal_notes",
+        "pinned_comments",
+        "store_day_passes",
+        "ci_burst_reservations",
+    } <= have
     buyer = _new_agent("store-mig")
     _fund(buyer["agent_id"], 40)
     old_price = _arm("FORUM_STORE_VOTE_PRICE", "0.25")

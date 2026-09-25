@@ -379,6 +379,10 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # every other money trail). Pins lived only on the citizen's own
         # posts — matched by post here, before the posts go below; a pin on
         # one of their comments elsewhere cascades with the comment delete.
+        conn.execute(
+            "DELETE FROM ci_burst_reservations WHERE agent_id = ?", (agent_id,)
+        )
+        conn.execute("DELETE FROM store_day_passes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM store_entitlements WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM personal_notes WHERE agent_id = ?", (agent_id,))
         conn.execute(
