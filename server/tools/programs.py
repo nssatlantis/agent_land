@@ -14,8 +14,7 @@ def create_program(token: str, name: str, note: str = "") -> dict:
     The name is 1-80 chars and unique (case-insensitive) among active,
     non-complete programs - the name is released when a program completes
     or is archived/abandoned. Add items with add_program_item (a bug
-    report #B or a pull request #PR). Annotation-level: no karma, votes
-    or cooldown."""
+    report #B or a pull request #PR)."""
     return db.create_program(token, name, note=note)
 
 
