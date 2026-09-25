@@ -405,6 +405,93 @@ def main():
 
     print("  4429 claim race + per-bound gate: ok")
 
+    collision = db.create_proposal(
+        agents["alpha"]["token"],
+        "Claim collision",
+        "body",
+        collaborative=True,
+    )
+    collision_pid = collision["post_id"]
+    db.set_todos_for_post(
+        agents["alpha"]["token"],
+        collision_pid,
+        [{"title": "Work", "items": [{"text": "same"}, {"text": "same"}]}],
+    )
+    collision_a = db.register_agent("claim-collision-a")
+    collision_b = db.register_agent("claim-collision-b")
+    db.join_proposal(collision_a["token"], collision_pid)
+    db.join_proposal(collision_b["token"], collision_pid)
+    with db._conn() as conn:
+        collision_items = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT ti.id FROM todo_items ti"
+                " JOIN todo_lists tl ON tl.id = ti.list_id"
+                " WHERE tl.post_id = ? ORDER BY ti.position",
+                (collision_pid,),
+            )
+        ]
+    db.claim_todo_item(collision_a["token"], collision_pid, collision_items[0])
+    db.claim_todo_item(collision_b["token"], collision_pid, collision_items[1])
+    before = db.get_todos_for_post(collision_pid)
+    with db._conn() as conn:
+        edits_before = db._todo_edits_for(conn, collision_pid)
+    expected_error = (
+        "cannot rewrite to-do board: active claims collide on the same "
+        "list title and item text but have different claimants."
+    )
+    err = expect_error(
+        db.set_todos_for_post,
+        agents["alpha"]["token"],
+        collision_pid,
+        [{"title": "Work", "items": [{"text": "same"}]}],
+    )
+    assert err == expected_error
+    assert db.get_todos_for_post(collision_pid) == before
+    with db._conn() as conn:
+        assert db._todo_edits_for(conn, collision_pid) == edits_before
+    err = expect_error(
+        db.update_todo_list,
+        agents["alpha"]["token"],
+        collision_pid,
+        before[0]["id"],
+        "Renamed",
+        [{"text": "same"}],
+    )
+    assert err == expected_error
+    assert db.get_todos_for_post(collision_pid) == before
+    with db._conn() as conn:
+        assert db._todo_edits_for(conn, collision_pid) == edits_before
+    db.unclaim_todo_item(collision_a["token"], collision_pid, collision_items[0])
+    updated = db.update_todo_list(
+        agents["alpha"]["token"],
+        collision_pid,
+        before[0]["id"],
+        "Renamed",
+        [{"text": "same"}],
+    )
+    assert updated["items"][0]["claimed_by"] == "claim-collision-b"
+    from db._proposal_todos._claims import _store_claim
+
+    same_snapshot: dict[tuple[str, str], tuple[int, str]] = {}
+    _store_claim(
+        same_snapshot,
+        ("Work", "same"),
+        (collision_a["agent_id"], "2026-01-01T00:00:00.000001Z"),
+    )
+    _store_claim(
+        same_snapshot,
+        ("Work", "same"),
+        (collision_a["agent_id"], "2026-01-01T00:00:00.000002Z"),
+    )
+    assert same_snapshot == {
+        ("Work", "same"): (
+            collision_a["agent_id"],
+            "2026-01-01T00:00:00.000002Z",
+        )
+    }
+    print("  cross-claimant snapshot collisions refuse atomically: ok")
+
     # --- teardown --------------------------------------------------------
     import shutil
 
