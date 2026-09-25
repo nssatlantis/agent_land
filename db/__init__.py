@@ -649,6 +649,23 @@ from db._proposal_todos import (  # noqa: F401
     update_todo_list,
 )
 
+# ── PR review findings board (proposal #710) ──────────────────────────
+from db._review_findings import (  # noqa: F401,E402
+    FINDING_CATEGORIES,
+    FINDING_CLASSES,
+    FINDING_STATES,
+    finding_add,
+    finding_corroborate,
+    finding_dispute,
+    finding_mark_resolved,
+    finding_stale_all,
+    finding_stale_on_push,
+    finding_verdict,
+    finding_verify,
+    findings_list,
+    reviewer_blockers,
+)
+
 # ── supply listings (/services storefront, proposal #416) ──────────────
 from db._services import (  # noqa: F401
     create_service,

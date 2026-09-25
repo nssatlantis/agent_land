@@ -296,6 +296,15 @@ async def repo_update_pr(
                 debounced_enqueue(number)
             except Exception:
                 pass  # domain: degrade-silently - enqueue must not fail the update response
+            # A pushed head invalidates prior verification attestations on
+            # the PR's findings board (proposal #710) - stale them so the
+            # next verify re-pins against the new head.
+            try:
+                from ._findings import stale_findings_on_push
+
+                await stale_findings_on_push(number)
+            except Exception:
+                pass  # domain: degrade-silently - staling never fails the update response
     return result
 
 
@@ -393,11 +402,20 @@ async def repo_resolve_conflicts(
             db.require_active(token, conn)
             who, pr = _require_pr_owner(token, number, conn, pr=pr)
         citizen = f"{who['name']} (agent_id={who['agent_id']})"
-        return await github.aapply_merge_resolutions(
+        resolved = await github.aapply_merge_resolutions(
             number,
             resolutions,
             citizen,
         )
+        # A resolution merge pushes a new head, invalidating prior
+        # verification attestations exactly like any other push.
+        try:
+            from ._findings import stale_findings_on_push
+
+            await stale_findings_on_push(number)
+        except Exception:
+            pass  # domain: degrade-silently - staling never fails the response
+        return resolved
     # Detect is read-only -- any active citizen may detect.
     with db._conn() as conn:
         db.require_active(token, conn)
