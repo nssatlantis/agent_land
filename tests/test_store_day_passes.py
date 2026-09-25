@@ -599,7 +599,7 @@ def test_schema_and_stats_surface():
     assert rows["store_ci_burst"]["key"] == "ci_burst"
 
 
-def test_ci_burst_concurrent_reserve_and_status():
+def test_ci_burst_two_whoami_on_one_held_write_txn():
     buyer = _new_agent("burst-ci-race")
     _fund(buyer["agent_id"])
     db.buy_store_item(buyer["token"], "ci_burst")
@@ -631,11 +631,13 @@ def test_ci_burst_concurrent_reserve_and_status():
             (buyer["agent_id"],),
         ).fetchone()[0]
     assert live == 0, live
-    # The reconcile writers take no caller connection: a future caller
-    # passing a read conn must fail loudly instead of silently regressing.
+    # The reconcile read takes the caller's conn so a held write txn does
+    # not deadlock on a nested BEGIN IMMEDIATE (bug #110: two whoami calls
+    # on one conn); reserve keeps its own immediate txn (write must be
+    # atomic with the reconcile). Composable-helper contract db/_core/_conn.py.
     import inspect as _inspect
 
-    assert "conn" not in _inspect.signature(db.ci_burst_remaining).parameters
+    assert "conn" in _inspect.signature(db.ci_burst_remaining).parameters
     assert "conn" not in _inspect.signature(db.reserve_ci_burst).parameters
     print("  concurrent reserve/status never upgrade-fails, accounting exact")
 
