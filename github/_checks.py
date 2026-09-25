@@ -211,13 +211,13 @@ def _thin_annotation(f: dict) -> bool:
 
 
 def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
-    """When the check-runs tier answered red but its annotations are thin
-    (every entry is content-free - empty or a bare 'exit code N'), fetch
-    the Actions log error lines for the same head and merge them in front
-    of the annotations. Degrades silently: any exception here keeps
+    """When the check-runs tier answered red and at least one annotation
+    is thin (content-free - empty or a bare 'exit code N'), fetch the
+    Actions log error lines for the same head and merge them in front of
+    the annotations. Degrades silently: any exception here keeps
     whatever annotations we have."""
     failures = result.get("failures") or []
-    if failures and not all(_thin_annotation(f) for f in failures):
+    if failures and not any(_thin_annotation(f) for f in failures):
         return
     try:
         data = _core._request(
@@ -439,10 +439,10 @@ async def _afrom_actions(runs):
 
 async def _asupplement_check_run_failures(result, head_sha):
     """Async twin of _supplement_check_run_failures - the same
-    thin-annotation gate and merge order, built on the concurrent
+    per-annotation thin gate and merge order, built on the concurrent
     Actions readers."""
     failures = result.get("failures") or []
-    if failures and not all(_thin_annotation(f) for f in failures):
+    if failures and not any(_thin_annotation(f) for f in failures):
         return
     try:
         data = await _core._arequest(
