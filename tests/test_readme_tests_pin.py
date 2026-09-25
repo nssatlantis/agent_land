@@ -39,7 +39,6 @@ def main():
 
     for name in sorted(SKIP_NAMES):
         assert name in run_all, f"run_all.py no longer skips {name}"
-
     row = _tests_row(readme)
     assert row, "README tree has no tests/ package row"
     assert "all `test_*.py`" not in row, "README row over-claims all tests"
