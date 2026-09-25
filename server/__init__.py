@@ -316,6 +316,7 @@ from server.tools.repo import (  # noqa: F401
     repo_workflow_status,
     repo_workflow_step,
     set_claimable,
+    set_public_branch,
     similar_prs,
     vote_on_prs,
     workspace_delete_file,

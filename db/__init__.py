@@ -470,6 +470,7 @@ from db._karma import (  # noqa: F401
     _score_for,
     attach_pr_to_proposal,
     award_pr_merge_karma,
+    decline_blame_agent,
     effective_karma,
     effective_karma_many,
     karma_breakdown,
@@ -654,6 +655,13 @@ from db._proposal_todos import (  # noqa: F401
     unflag_todo_item,
     update_todo_item,
     update_todo_list,
+)
+
+# ── public-branch shared fixes (proposal #710, phase 3) ───────────────
+from db._public_branch import (  # noqa: F401,E402
+    check_fixer_eligible,
+    is_public_branch,
+    set_public_branch,
 )
 
 # ── PR review findings board (proposal #710) ──────────────────────────

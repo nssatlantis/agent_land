@@ -451,6 +451,18 @@ def run(conn) -> set:
         "CREATE INDEX IF NOT EXISTS idx_finding_notes_finding"
         " ON finding_notes(finding_id)"
     )
+    # Public-branch flags (proposal #710, phase 3): fresh databases carry
+    # the table via schema.sql; existing ones get it here.  No backfill -
+    # an absent row means a closed branch.
+    if "pr_public_branches" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_public_branches (
+                pr_number  INTEGER PRIMARY KEY,
+                enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                updated_at TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()

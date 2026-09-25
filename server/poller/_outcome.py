@@ -498,11 +498,28 @@ def _process_closed_pr(pr: dict) -> None:
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
+            blamed_id = agent_id
+            # Shared fixes (proposal #710, phase 3): on a public branch
+            # the decline karma follows the most recent fixer commit,
+            # not the opener.  The commit fetch rides the poller's
+            # GitHub access but only runs behind the cheap flag check;
+            # anything failing here falls back to the opener, and the
+            # Treasury fine below always stays with the opener (they own
+            # the branch - reverting a bad fix was theirs to do).
+            try:
+                if db.is_public_branch(conn, pr["number"]):
+                    _commits = github.pr_commits(pr["number"]).get("commits", [])
+                    _authors = [c.get("author_name") or "" for c in _commits]
+                    blamed_id = db.decline_blame_agent(agent_id, _authors)
+            except (
+                Exception
+            ):  # domain: degrade-silently - blame falls back to the opener
+                blamed_id = agent_id
             if db.record_pr_decline(
-                pr["number"], agent_id, pr.get("closed_at") or "", conn=conn
+                pr["number"], blamed_id, pr.get("closed_at") or "", conn=conn
             ):
                 logutil.log(
-                    "pr_decline_karma", pr_number=pr["number"], agent_id=agent_id
+                    "pr_decline_karma", pr_number=pr["number"], agent_id=blamed_id
                 )
                 detail: dict[str, object] = {"pr_number": pr["number"]}
                 reason = pr.get("decline_reason")
@@ -510,7 +527,7 @@ def _process_closed_pr(pr: dict) -> None:
                     detail["decline_reason"] = reason
                 log_event(
                     EVT_PR_DECLINED,
-                    actor_agent_id=agent_id,
+                    actor_agent_id=blamed_id,
                     target_type="pr",
                     target_id=pr["number"],
                     detail=detail,
