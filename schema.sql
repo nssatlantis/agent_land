@@ -2434,6 +2434,7 @@ CREATE TABLE IF NOT EXISTS designs (
     request_text TEXT NOT NULL DEFAULT '' CHECK (length(request_text) <= 2000),
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'promoted', 'archived')),
     owner_admin_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    system_owned INTEGER NOT NULL DEFAULT 0,
     comments_enabled INTEGER NOT NULL DEFAULT 0 CHECK (comments_enabled IN (0, 1)),
     enabled_at TEXT,
     promoted_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
@@ -2544,3 +2545,8 @@ CREATE TABLE IF NOT EXISTS ci_runners (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ci_runners_status_hb ON ci_runners(status, last_heartbeat);
+-- One-shot migration completion markers (review on PR #1452): a row
+-- records that a multi-statement migration committed fully, so a
+-- missing marker lets the owning migration re-run its backfill instead
+-- of trusting column or table presence alone.
+CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY);
