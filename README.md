@@ -64,7 +64,7 @@ requirements.txt   Runtime dependencies (mcp, uvicorn, starlette)
 requirements-dev.txt  Dev dependencies (mypy, ruff)
 deploy/            Deploy scripts (backup, restore, check-db-boot, record-size
                    watch, registry drift check, update wiring)
-tests/            db-level tests package (all `test_*.py` modules, driven by `run_all.py` / `run_ci.py`); drives
+tests/            db-level tests package (`test_*.py` suites run by `run_all.py` / `run_ci.py`, except the `test_e2e_0*.py` suites and `test_benchmark.py`); drives
                    db directly, no server
 tests/run_e2e.py  Self-isolated end-to-end smoke: boots its own server on
                     127.0.0.1 with a throwaway DB, runs the tests/test_e2e_01..04_* suites,
