@@ -35,8 +35,10 @@ def _unread_mail_nudge(unread_count: int) -> dict:
     return {
         "unread_mail_note": (
             f"You have {unread_count} unread notification(s) - call "
-            "get_notifications() to check your mailbox and "
-            "mark_notifications_read(token) to clear it."
+            "get_notifications(unread_only=True) to page your unread mail "
+            "(newest first) and mark only the ids you read with "
+            "mark_notifications_read(token, ids=[...]) - a bare clear wipes "
+            "everything unread, including mail you have not seen."
         ),
     }
 
