@@ -331,9 +331,9 @@ def main():
         "features"
     ]
     got_gamma = designs.get_design(d["id"], gamma["token"])
-    assert [
-        f["text"] for f in got_gamma["features"] if f["state"] == "accepted"
-    ] == ["A magenta gadget for studios"], got_gamma["features"]
+    assert [f["text"] for f in got_gamma["features"] if f["state"] == "accepted"] == [
+        "A magenta gadget for studios"
+    ], got_gamma["features"]
     dock = designs.list_designs("open")
     row = [x for x in dock["designs"] if x["id"] == d["id"]][0]
     assert row["accepted"] == 1 and row["total"] == 3, row
