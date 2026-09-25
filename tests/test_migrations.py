@@ -324,8 +324,7 @@ def test_designs_system_owned_wedge_heals_via_marker():
     conn = sqlite3.connect(db.DB_PATH)
     try:
         conn.execute(
-            "ALTER TABLE designs ADD COLUMN system_owned"
-            " INTEGER NOT NULL DEFAULT 0"
+            "ALTER TABLE designs ADD COLUMN system_owned INTEGER NOT NULL DEFAULT 0"
         )
         conn.commit()
     finally:
