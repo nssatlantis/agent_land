@@ -253,6 +253,132 @@ def list_jobs(
     }
 
 
+def admin_list_jobs(
+    status: str | None = None,
+    statuses: tuple[str, ...] | None = None,
+    q: str | None = None,
+    limit: int = 20,
+    page: int = 1,
+) -> dict:
+    valid_statuses = ("open", "offered", "active", "completed", "cancelled", "expired")
+    if status not in (
+        None,
+        "all",
+        "open",
+        "offered",
+        "active",
+        "completed",
+        "closed",
+    ):
+        raise ForumError(
+            "status must be all, open, offered, active, completed, or closed."
+        )
+    if statuses is not None and (
+        not statuses or any(s not in valid_statuses for s in statuses)
+    ):
+        raise ForumError("statuses must contain valid job statuses.")
+    if statuses is not None and status not in (None, "all"):
+        raise ForumError("use status or statuses, not both.")
+    per_page = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    requested_page = max(1, int(page))
+    q_text = str(q or "").strip()
+    q_parts: list[str] = []
+    q_params: list[object] = []
+    if q_text:
+        q_esc = q_text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        like = f"%{q_esc}%"
+        q_parts.append(
+            "(lower(j.title) LIKE lower(?) ESCAPE '!'"
+            " OR lower(COALESCE(j.scope, '')) LIKE lower(?) ESCAPE '!'"
+            " OR lower(COALESCE(c.name, 'admin')) LIKE lower(?) ESCAPE '!'"
+            " OR lower(COALESCE(w.name, '')) LIKE lower(?) ESCAPE '!'"
+            " OR CAST(j.id AS TEXT) = ?)"
+        )
+        q_params.extend([like, like, like, like, q_text])
+    status_parts: list[str] = []
+    status_params: list[object] = []
+    if statuses is not None:
+        status_parts.append("j.status IN (" + ",".join("?" * len(statuses)) + ")")
+        status_params.extend(statuses)
+    elif status == "closed":
+        status_parts.append("j.status IN ('cancelled', 'expired')")
+    elif status in ("open", "offered", "active", "completed"):
+        status_parts.append(f"j.status = '{status}'")
+    base_parts = q_parts
+    selected_parts = [*q_parts, *status_parts]
+    selected_params = [*q_params, *status_params]
+    base_where = f" WHERE {' AND '.join(base_parts)}" if base_parts else ""
+    selected_where = f" WHERE {' AND '.join(selected_parts)}" if selected_parts else ""
+    joins = (
+        " FROM jobs j"
+        " LEFT JOIN agents c ON c.id = j.creator_agent_id"
+        " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+        " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
+    )
+    with _conn() as conn:
+        status_counts = {status: 0 for status in valid_statuses}
+        status_counts.update(
+            {
+                r["status"]: int(r["n"])
+                for r in conn.execute(
+                    "SELECT j.status, COUNT(*) AS n"
+                    + joins
+                    + base_where
+                    + " GROUP BY j.status",
+                    q_params,
+                ).fetchall()
+            }
+        )
+        total = int(
+            conn.execute(
+                "SELECT COUNT(*)" + joins + selected_where,
+                selected_params,
+            ).fetchone()[0]
+        )
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        current_page = min(requested_page, total_pages)
+        offset = (current_page - 1) * per_page
+        rows = conn.execute(
+            "SELECT j.id, j.title, j.kind, j.status, j.scope,"
+            " j.cycle_every_days, j.payment_units, j.total_cycles, j.cycles_done,"
+            " j.official, j.long_running, j.created_at, j.creator_agent_id,"
+            " c.name AS creator_name, w.name AS worker_name, o.name AS offered_to_name"
+            + joins
+            + selected_where
+            + " ORDER BY j.id DESC LIMIT ? OFFSET ?",
+            [*selected_params, per_page, offset],
+        ).fetchall()
+    jobs = [
+        {
+            "job_id": r["id"],
+            "title": r["title"],
+            "kind": r["kind"],
+            "status": r["status"],
+            "scope": r["scope"],
+            "official": bool(r["official"]),
+            "creator_agent_id": r["creator_agent_id"],
+            "cycle_every_days": r["cycle_every_days"],
+            "creator": r["creator_name"] or "admin",
+            "worker": r["worker_name"],
+            "offered_to": r["offered_to_name"],
+            "payment_credits": _fmt_q(r["payment_units"]),
+            "total_cycles": r["total_cycles"],
+            "cycles_done": r["cycles_done"],
+            "long_running": bool(r["long_running"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+    return {
+        "jobs": jobs,
+        "status_counts": status_counts,
+        "total": total,
+        "page": current_page,
+        "page_size": per_page,
+        "total_pages": total_pages,
+    }
+
+
 def get_job(job_id: int) -> dict:
     """Full public detail of one job."""
     with _conn() as conn:

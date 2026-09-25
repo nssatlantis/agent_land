@@ -1648,6 +1648,7 @@ _LEGACY_SUPPLY_BASELINE_ROWS = (
     (1165, "treasury", -20, "job_escrow_treasury", "job", 2, None),
 )
 _LEGACY_SUPPLY_BASELINE_META_KEY = "legacy_supply_baseline_units"
+_LEGACY_SUPPLY_BASELINE_STATE_META_KEY = "legacy_supply_baseline_state"
 
 
 def _legacy_supply_signature(
@@ -1666,8 +1667,6 @@ def _legacy_supply_signature(
 def _legacy_supply_baseline_from_signature(
     signature: tuple[tuple[object, ...], ...],
 ) -> tuple[int, bool]:
-    if not signature:
-        return 0, True
     if signature == _LEGACY_SUPPLY_BASELINE_ROWS:
         return sum(int(row[2]) for row in signature), True
     return 0, False
@@ -1688,6 +1687,11 @@ def backfill_legacy_supply_baseline(
             "SELECT value FROM economy_meta WHERE key = ?",
             (_LEGACY_SUPPLY_BASELINE_META_KEY,),
         ).fetchone()
+        state_row = c.execute(
+            "SELECT value FROM economy_meta WHERE key = ?",
+            (_LEGACY_SUPPLY_BASELINE_STATE_META_KEY,),
+        ).fetchone()
+        state = state_row[0] if state_row is not None else None
         if existing is not None:
             try:
                 baseline = int(existing[0])
@@ -1695,28 +1699,49 @@ def backfill_legacy_supply_baseline(
                 raise ForumError(
                     "economy_meta legacy supply baseline is not an integer"
                 ) from exc
-            if baseline == 0 and not valid:
-                return {
-                    "baseline_units": baseline,
-                    "signature_rows": len(signature),
-                    "already_set": True,
-                }
-            if not valid or baseline != derived:
+            inferred = state is None
+            if inferred:
+                state = "legacy" if baseline != 0 else "fresh"
+            if state not in {"legacy", "fresh"}:
+                raise ForumError("legacy supply baseline state is invalid")
+            if state == "legacy" and (not valid or baseline != derived):
                 raise ForumError(
                     "legacy supply baseline no longer matches its exact row signature"
+                )
+            if state == "fresh" and (baseline != 0 or valid):
+                raise ForumError(
+                    "fresh supply baseline marker no longer matches its row state"
+                )
+            if inferred:
+                c.execute(
+                    "INSERT INTO economy_meta (key, value) VALUES (?, ?)",
+                    (_LEGACY_SUPPLY_BASELINE_STATE_META_KEY, state),
                 )
             return {
                 "baseline_units": baseline,
                 "signature_rows": len(signature),
                 "already_set": True,
             }
-        if not valid:
+        if state is not None:
+            raise ForumError(
+                "legacy supply baseline state exists without its numeric marker"
+            )
+        if not signature:
+            state = "fresh"
+            derived = 0
+        elif valid:
+            state = "legacy"
+        else:
             raise ForumError(
                 "pre-cutover credit signature mismatch; refusing to seed a supply baseline"
             )
         c.execute(
             "INSERT INTO economy_meta (key, value) VALUES (?, ?)",
             (_LEGACY_SUPPLY_BASELINE_META_KEY, str(derived)),
+        )
+        c.execute(
+            "INSERT INTO economy_meta (key, value) VALUES (?, ?)",
+            (_LEGACY_SUPPLY_BASELINE_STATE_META_KEY, state),
         )
         return {
             "baseline_units": derived,
@@ -1791,14 +1816,32 @@ def verify_supply_reconciliation(
                 "SELECT value FROM economy_meta WHERE key = ?",
                 (_LEGACY_SUPPLY_BASELINE_META_KEY,),
             ).fetchone()
+            state_row = c.execute(
+                "SELECT value FROM economy_meta WHERE key = ?",
+                (_LEGACY_SUPPLY_BASELINE_STATE_META_KEY,),
+            ).fetchone()
             marker_present = legacy_row is not None
+            state_present = state_row is not None
             legacy_baseline = int(legacy_row[0]) if marker_present else 0
+            state = state_row[0] if state_row is not None else None
             signature = _legacy_supply_signature(c)
             derived, signature_valid = _legacy_supply_baseline_from_signature(signature)
-            signature_ok = marker_present and (
-                (legacy_baseline == 0 and not signature_valid)
-                or (signature_valid and legacy_baseline == derived)
-            )
+            if state == "legacy":
+                signature_ok = (
+                    marker_present
+                    and state_present
+                    and signature_valid
+                    and legacy_baseline == derived
+                )
+            elif state == "fresh":
+                signature_ok = (
+                    marker_present
+                    and state_present
+                    and legacy_baseline == 0
+                    and not signature_valid
+                )
+            else:
+                signature_ok = False
             baseline_for_expected = legacy_baseline if signature_ok else 0
             in_flight = int(locked) - int(held)
             expected = (

@@ -20,7 +20,12 @@ import db
 import github._workspaces as _ws
 from server._mcp import _logged, mcp
 
-from ._workspace import _guard_tree_path, _resolve_claim_tree, _touch_clocks
+from ._workspace import (
+    _guard_tree_path,
+    _resolve_claim_tree,
+    _touch_clocks,
+    _workspace_serialized,
+)
 
 
 def _transfer_base() -> str:
@@ -78,6 +83,7 @@ def _mint_ticket(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_fetch_ticket(
     token: str, proposal_id: int, name: str, paths: list
 ) -> dict:
@@ -118,7 +124,12 @@ def workspace_fetch_ticket(
     files = _transfer_urls(minted["ticket"], clean)
     for entry, sha in zip(files, shas, strict=True):
         entry["sha256"] = sha
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+        int(record["agent_id"]),
+        proposal_id,
+        str(record["name"]),
+        int(record["id"]),
+    )
     return {
         "ticket": minted["ticket"],
         "scope": "read",
@@ -130,6 +141,7 @@ def workspace_fetch_ticket(
 
 @mcp.tool()
 @_logged
+@_workspace_serialized
 def workspace_upload_ticket(
     token: str,
     proposal_id: int,
@@ -155,7 +167,12 @@ def workspace_upload_ticket(
         "write",
         expect_shas=expect_shas,
     )
-    _touch_clocks(int(record["agent_id"]), proposal_id, str(record["name"]))
+    _touch_clocks(
+        int(record["agent_id"]),
+        proposal_id,
+        str(record["name"]),
+        int(record["id"]),
+    )
     return {
         "ticket": minted["ticket"],
         "scope": "write",

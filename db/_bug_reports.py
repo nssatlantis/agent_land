@@ -914,27 +914,12 @@ def remark_bug_report(
                 f" (you have {ek})."
             )
         if config.COMMENT_DAILY_CAP > 0:
-            from db._agent import _daily_resets_at
+            from db._agent import _daily_comment_used, _daily_resets_at
             from db._store import effective_comment_cap
 
             comment_cap = effective_comment_cap(agent["id"], conn=conn, ent=cap_ent)
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
-            used_comments = conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
-                (agent["id"], midnight),
-            ).fetchone()[0]
-            used_remarks = 0
-            try:
-                used_remarks = conn.execute(
-                    "SELECT COUNT(*) FROM bug_remarks"
-                    " WHERE agent_id = ? AND created_at >= ?",
-                    (agent["id"], midnight),
-                ).fetchone()[0]
-            except sqlite3.OperationalError:  # domain: degrade-silently -
-                # pre-migration schema without the remarks table; the
-                # comments count above still bounds the shared pool.
-                pass
-            used = used_comments + used_remarks
+            used = _daily_comment_used(conn, agent["id"], midnight)
             if used >= comment_cap:
                 # Wire text mirrors the comment cap (pinned by clients);
                 # machine readers take exc.detail instead of the string.

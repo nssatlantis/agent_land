@@ -550,6 +550,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_VOTE_PRICE": ("FORUM_STORE_VOTE_PRICE", 6.0, float),
     # Lifetime max vote-boost buys.
     "STORE_VOTE_MAX": ("FORUM_STORE_VOTE_MAX", 6, int),
+    # Credits per Vote Burst UTC-day pass.
+    "STORE_VOTE_BURST_PRICE": ("FORUM_STORE_VOTE_BURST_PRICE", 1.5, float),
+    # Vote capacity units granted by Vote Burst.
+    "STORE_VOTE_BURST_BONUS": ("FORUM_STORE_VOTE_BURST_BONUS", 3, int),
     # Credits per +1 comment-cap boost.
     "STORE_COMMENT_PRICE": ("FORUM_STORE_COMMENT_PRICE", 5.0, float),
     # Lifetime max comment-boost buys.
@@ -558,6 +562,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STORE_CI_PRICE": ("FORUM_STORE_CI_PRICE", 6.0, float),
     # Lifetime max CI-boost buys.
     "STORE_CI_MAX": ("FORUM_STORE_CI_MAX", 5, int),
+    # Credits per Comment Burst UTC-day pass.
+    "STORE_COMMENT_BURST_PRICE": ("FORUM_STORE_COMMENT_BURST_PRICE", 1.5, float),
+    # Comment capacity units granted by Comment Burst.
+    "STORE_COMMENT_BURST_BONUS": ("FORUM_STORE_COMMENT_BURST_BONUS", 3, int),
+    # Credits per CI Burst UTC-day pass.
+    "STORE_CI_BURST_PRICE": ("FORUM_STORE_CI_BURST_PRICE", 2.0, float),
+    # Shared CI overflow credits granted by CI Burst.
+    "STORE_CI_BURST_CREDITS": ("FORUM_STORE_CI_BURST_CREDITS", 3, int),
     # Credits per name-color change.
     "STORE_COLOR_PRICE": ("FORUM_STORE_COLOR_PRICE", 2.0, float),
     # Credits per pinned comment.
@@ -1277,6 +1289,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FARM_BENCH_REMOTE_FIRST": ("FORUM_CI_FARM_BENCH_REMOTE_FIRST", 1, int),
     # P3-3: max concurrent runs per runner (capacity accounting).
     "CI_FARM_RUNNER_MAX_ACTIVE": ("FORUM_CI_FARM_RUNNER_MAX_ACTIVE", 1, int),
+    # Dispatch HTTP timeout: the socket timeout for the runner /run call.
+    # Defaults to CI_RUN_TIMEOUT_SECONDS + 30 so network latency never
+    # races the run itself.
+    "CI_FARM_DISPATCH_TIMEOUT": ("FORUM_CI_FARM_DISPATCH_TIMEOUT", None, int),
     # Hybrid OR gate: local branch CI may satisfy merge (0 = GitHub-only).
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 0, int),
     # GitHub-pending time before a local branch CI runs (fallback mode).
@@ -1591,7 +1607,28 @@ def __getattr__(name: str) -> Any:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     env_key, default, convert = spec
     raw = os.environ.get(env_key)
-    return convert(raw) if raw is not None else default
+    if raw is not None:
+        return convert(raw)
+    if default is None:
+        if name == "CI_FARM_DISPATCH_TIMEOUT":
+            return int(__getattr__("CI_RUN_TIMEOUT_SECONDS")) + 30
+        return None
+    return default
+
+
+def _effective_default(name: str) -> object:
+    """Return the effective default for a knob (what __getattr__ returns
+    when no env var is set). Used by config_drift to compare live values
+    against the effective default, not the raw registry default."""
+    spec = _TUNING.get(name)
+    if spec is None:
+        return None
+    _, default, convert = spec
+    if default is None:
+        if name == "CI_FARM_DISPATCH_TIMEOUT":
+            return int(__getattr__("CI_RUN_TIMEOUT_SECONDS")) + 30
+        return None
+    return default
 
 
 def reload_dotenv() -> list[str]:
