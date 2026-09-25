@@ -6,6 +6,7 @@ import asyncio
 
 import db
 import github
+from github._workspaces import _MIRROR_END, _MIRROR_START
 from server._mcp import _logged, mcp
 
 
@@ -208,8 +209,7 @@ async def stale_findings_on_push(pr_number: int) -> int:
         return staled
 
 
-_MIRROR_START = "<!-- findings-board:start -->"
-_MIRROR_END = "<!-- findings-board:end -->"
+# _MIRROR_START/_END live in github._workspaces (sync-compare owner).
 _MIRROR_MAX_ROWS = 20
 
 
@@ -255,9 +255,11 @@ def render_findings_mirror(
     shown = open_rows + done_rows
     extra = len(shown) - _MIRROR_MAX_ROWS
     for r in shown[:_MIRROR_MAX_ROWS]:
-        cat = str(r.get("category") or "?").replace("<!--", "<--")
-        cls = str(r.get("class") or "?").replace("<!--", "<--")
-        flip = str(r.get("flip_path") or "")[:120]
+        cat = " ".join(str(r.get("category") or "?").split())
+        cat = cat.replace("<!--", "<--")
+        cls = " ".join(str(r.get("class") or "?").split())
+        cls = cls.replace("<!--", "<--")
+        flip = " ".join(str(r.get("flip_path") or "").split())[:120]
         flip = flip.replace("<!--", "<--")
         state = _mirror_row_state(r)
         rid = r.get("id")
@@ -276,10 +278,13 @@ def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
     marked block when present, else append. Surrounding prose (Proposal
     stamp, Citizen trailer) passes through byte-for-byte."""
     body = existing_body or ""
-    if _MIRROR_START in body and _MIRROR_END in body:
-        start = body.index(_MIRROR_START)
-        end = body.index(_MIRROR_END) + len(_MIRROR_END)
-        return body[:start] + section + body[end:]
+    start = body.find(_MIRROR_START)
+    if start != -1:
+        end = body.find(_MIRROR_END, start + len(_MIRROR_START))
+        if end != -1:
+            return body[:start] + section + body[end + len(_MIRROR_END) :]
+    if _MIRROR_START in body or _MIRROR_END in body:
+        body = body.replace(_MIRROR_START, "").replace(_MIRROR_END, "")
     if not body:
         return section
     if not body.endswith("\n"):
