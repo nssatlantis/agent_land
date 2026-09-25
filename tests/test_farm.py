@@ -1201,14 +1201,17 @@ def test_run_checks_native_test_remote_first_gate():
 
         config.CI_FARM_TEST_REMOTE_FIRST = False
         calls.clear()
+        farm._ACTIVE_RUNS[row["id"]] = config.CI_FARM_RUNNER_MAX_ACTIVE
         try:
             runs_mod.run_checks(agent_id=1, name="t", checks="tests")
         except Exception:
             pass
         assert len(calls) == 0, f"off: no dispatch, got {len(calls)}"
+        farm._ACTIVE_RUNS[row["id"]] = 0
 
         config.CI_FARM_TEST_REMOTE_FIRST = True
         calls.clear()
+        farm._ACTIVE_RUNS[row["id"]] = config.CI_FARM_RUNNER_MAX_ACTIVE
         try:
             runs_mod.run_checks(agent_id=1, name="t", checks="static")
         except Exception:
