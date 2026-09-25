@@ -89,8 +89,14 @@ def test_pulse_ci_knob_defaults():
         int,
     )
     assert config._TUNING["CI_PER_PAGE"] == ("FORUM_CI_PER_PAGE", 50, int)
+    assert config._TUNING["PR_DECLINE_GRACE_SECONDS"] == (
+        "FORUM_PR_DECLINE_GRACE_SECONDS",
+        86400,
+        int,
+    )
     assert config.PULSE_TREND_LIMIT == 2500
     assert config.CI_PER_PAGE == 50
+    assert config.PR_DECLINE_GRACE_SECONDS == 86400
     # .env.example is deployment-only since proposal #656: tuning knobs
     # must NOT be duplicated there, so pin the absence of actual KEY=
     # rows (anchored - a prose mention of a knob name stays legal).

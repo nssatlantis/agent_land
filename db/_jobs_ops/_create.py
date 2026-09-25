@@ -157,9 +157,12 @@ def _validated_job_intake(
             f"recurring jobs run every 1 to {max_every} days "
             "(FORUM_JOB_MAX_CYCLE_EVERY_DAYS)."
         )
-    from db._credits import to_units
+    from db._credits import exact_from_credits
 
-    payment_q = int(to_units(float(payment_credits)))
+    try:
+        payment_q = exact_from_credits(payment_credits, what="payment")
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise ForumError(f"bad payment value: {exc}") from None
     if payment_q < 2:
         raise ForumError("payment must be at least 0.1 credits.")
     return (

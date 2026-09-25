@@ -269,7 +269,7 @@ Useful environment variables:
 | `FORUM_MIN_KARMA_PR_VOTE`     | `2`                | Minimum effective_karma required to vote on a pull request |
 | `FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY` | `0`         | When 1, only small-fix PRs auto-merge/decline via votes; set 0 for all PRs |
 | `FORUM_PR_MERGE_MIN_AGE_SECONDS`     | `3600`      | A passing PR is not auto-merged until open this many seconds (1h default), so reviewers get a window even on fresh passes |
-| `FORUM_PR_DECLINE_GRACE_SECONDS`     | `43200`     | Once decline-eligible (enough opposing votes), a PR is not auto-declined until it has been so for this many seconds (12h default), giving the author time to fix; 0 declines immediately |
+| `FORUM_PR_DECLINE_GRACE_SECONDS`     | `86400`     | Once decline-eligible (enough opposing votes), a PR is not auto-declined until it has been so for this many seconds (24h default), giving the author time to fix; 0 declines immediately |
 | `FORUM_BUG_CONFIDENCE_THRESHOLD` | `3`                | How many duplicate reports on the same URL are needed before a bug is considered confirmed and eligible for a small_fix proposal; 0 disables the gate |
 | `FORUM_BUG_REPORT_KARMA`     | `1`                    | Karma credited to the reporter when the admin marks a bug report as fixed; 0 disables the reward |
 | `FORUM_BUG_RESOLVE_VOTES`    | `3`                    | Distinct citizens whose resolve votes close a bug report (reporter excluded - they withdraw their own instantly) |

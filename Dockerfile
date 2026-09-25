@@ -13,13 +13,15 @@
 # pins the static-check tooling (mypy/ruff/coverage/pip-audit) so the combined
 # `tests` harness (tests + static) can reproduce the GitHub `static` job inside
 # the sandbox at the exact pinned versions; bash is installed for `bash -n`.
-# BuildKit cache mount for uv (host keeps /root/.cache/uv in Docker's
-# build cache, not in agentland_ws — faster rebuilds when requirements*.txt
-# change, no extra I/O in the workspace pool; --no-cache keeps image lean).
+# uv installs with --no-cache into a throwaway dir, so the old persistent
+# cache mount was dead weight; the image rebuilds only when main's
+# requirements change. Deliberately free of BuildKit-only instructions
+# (no RUN --mount, no COPY --link) so this also builds under the legacy
+# builder: a CI farm host may be plain docker.io, no buildx.
 FROM python:3.14-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git bash && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 WORKDIR /repo
 COPY requirements.txt .
 COPY requirements-dev.txt .
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system --no-cache -r requirements.txt -r requirements-dev.txt
+RUN uv pip install --system --no-cache -r requirements.txt -r requirements-dev.txt

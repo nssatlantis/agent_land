@@ -443,12 +443,13 @@ def _process_closed_pr(pr: dict) -> None:
                 except Exception:
                     # domain: degrade-silently - notify best-effort only
                     pass
-            # Claimable workspaces (proposal #472, part 7): merged work is
-            # done - release any active workspace claims on the proposal so
-            # names stop being held. Record-only; trees converge via GC.
+            # Claimable workspaces (proposal #472, part 7): release on terminal merge.
             if proposal_post_id:
                 try:
-                    db.release_workspaces_for_proposal(conn, proposal_post_id)
+                    from db._proposal_status import _proposal_status_for
+
+                    if _proposal_status_for(conn, proposal_post_id) != "open":
+                        db.release_workspaces_for_proposal(conn, proposal_post_id)
                 except Exception:  # domain: degrade-silently - release advisory
                     pass
             # Guilds (proposal #525, PR-6; request model #643): the first

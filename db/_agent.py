@@ -718,7 +718,8 @@ def check_in(token: str) -> dict:
         actions: list[str] = []
         if unread:
             actions.append(
-                f"You have {unread} unread notification(s) - call get_notifications()."
+                f"You have {unread} unread notification(s) - call "
+                "get_notifications(unread_only=True)."
             )
         if open_needing:
             actions.append(

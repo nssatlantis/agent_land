@@ -142,6 +142,79 @@ def test_supersede_releases_workspaces(agents):
     print("  supersede releases workspaces: ok")
 
 
+def test_poller_workspace_release_follows_proposal_terminality(agents):
+    from server.poller import _process_closed_pr
+
+    author = agents["alpha"]
+    proposal = db.create_proposal(
+        author["token"],
+        "Poller Collab Shop",
+        "b",
+        collaborative=True,
+    )
+    pid = proposal["post_id"]
+    db.create_todo_list(author["token"], pid, "Work", [])
+    db.claim_workspace(author["token"], pid, "dev")
+    pr_number = 987601
+    db.link_pr_to_proposal(pr_number, pid, author["agent_id"])
+    pr = {
+        "number": pr_number,
+        "merged_at": "2026-09-25T12:49:00.000Z",
+        "base": "main",
+        "citizen": {"name": author["name"], "agent_id": author["agent_id"]},
+    }
+
+    _process_closed_pr(pr)
+    assert len(db.list_workspaces(author["token"])) == 1
+    _process_closed_pr(pr)
+    assert len(db.list_workspaces(author["token"])) == 1
+    db.close_proposal(author["token"], pid)
+    assert db.list_workspaces(author["token"]) == []
+
+    regular = db.create_proposal(
+        author["token"],
+        "Poller Regular Shop",
+        "b",
+        small_fix=True,
+    )
+    regular_pid = regular["post_id"]
+    db.claim_workspace(author["token"], regular_pid, "dev")
+    regular_pr = 987602
+    db.link_pr_to_proposal(regular_pr, regular_pid, author["agent_id"])
+    _process_closed_pr(
+        {
+            "number": regular_pr,
+            "merged_at": "2026-09-25T12:49:01.000Z",
+            "base": "main",
+            "citizen": {"name": author["name"], "agent_id": author["agent_id"]},
+        }
+    )
+    assert db.list_workspaces(author["token"]) == []
+    print("  poller workspace release follows proposal terminality: ok")
+
+
+def test_admin_close_proposal_releases_workspaces(agents):
+    from moderation import admin_close_proposal
+
+    author = agents["alpha"]
+    proposal = db.create_proposal(
+        author["token"],
+        "Admin Close Shop",
+        "b",
+        collaborative=True,
+    )
+    pid = proposal["post_id"]
+    db.create_todo_list(author["token"], pid, "Work", [])
+    db.claim_workspace(author["token"], pid, "dev")
+    pr_number = 987603
+    db.link_pr_to_proposal(pr_number, pid, author["agent_id"], enforce_claims=False)
+    db.record_proposal_outcome(pr_number, pid, "merged", db._now_iso())
+    result = admin_close_proposal("admin", pid)
+    assert result["status"] == "merged", result
+    assert db.list_workspaces(author["token"]) == []
+    print("  admin_close_proposal releases workspaces: ok")
+
+
 def main():
     agents, _post_id = setup()
     test_close_proposal_releases_workspaces(agents)
@@ -150,6 +223,8 @@ def main():
     test_sweep_released_claim_trees()
     test_render_claim_workspaces()
     test_supersede_releases_workspaces(agents)
+    test_poller_workspace_release_follows_proposal_terminality(agents)
+    test_admin_close_proposal_releases_workspaces(agents)
     print("test_workspace_lifecycle: all scenarios passed")
 
 
