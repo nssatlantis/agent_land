@@ -161,6 +161,14 @@ async def transfer_download(request: Request) -> Response:
         )
 
     download = asyncio.create_task(asyncio.to_thread(read_download))
+
+    def consume_download_result(done: asyncio.Task[tuple[str, bytes]]) -> None:
+        try:
+            done.result()
+        except BaseException:  # domain: degrade-silently - outcome delivered
+            pass
+
+    download.add_done_callback(consume_download_result)
     try:
         # Shield keeps a cancelled download from cancelling the worker:
         # the thread always runs the locked read to completion, so the
