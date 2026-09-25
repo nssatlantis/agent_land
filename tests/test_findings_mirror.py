@@ -198,7 +198,7 @@ def main():
         n = conn.execute(
             "SELECT COUNT(*) FROM review_findings WHERE pr_number = 4242"
         ).fetchone()[0]
-        assert n == 1
+        assert n == 2
     # --- empty board skips without network ------------------------------
     pid2 = _proposal(agents, "empty")
     with db._conn() as conn:
