@@ -58,6 +58,16 @@ def main():
     assert "unread" in who_after["unread_mail_note"], (
         "mail nudge names the unread count"
     )
+    assert "unread_only" in who_after["unread_mail_note"], (
+        "mail nudge recommends the scoped unread read (#672 L6)"
+    )
+    assert "ids" in who_after["unread_mail_note"], (
+        "mail nudge recommends marking only the returned ids (#672 L6)"
+    )
+    ci_a = db.check_in(nudge_a["token"])
+    assert any("unread_only" in a for a in ci_a["suggested_actions"]), (
+        "check_in action recommends the scoped unread read (#672 L6)"
+    )
     # Clear mail silences the nudge.
     from notifications import mark_notifications_read
 
