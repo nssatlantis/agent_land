@@ -1218,11 +1218,12 @@ def test_run_checks_native_test_remote_first_gate():
             "summary": {"tests_run": True},
         }
 
+    import server.ci_runner._runs as runs_mod
+
     orig_gate = runs_mod._gate
     runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
     try:
         farm.try_dispatch = _capture  # type: ignore[assignment]
-        import server.ci_runner._runs as runs_mod
 
         orig_enabled = config.CI_FARM_ENABLED
         orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
@@ -1263,11 +1264,12 @@ def test_run_checks_native_test_remote_first_knob_off():
             "summary": {"tests_run": True},
         }
 
+    import server.ci_runner._runs as runs_mod
+
     orig_gate = runs_mod._gate
     runs_mod._gate = lambda *a, **k: None  # hermetic: skip cooldown gate
     try:
         farm.try_dispatch = _capture  # type: ignore[assignment]
-        import server.ci_runner._runs as runs_mod
 
         orig_enabled = config.CI_FARM_ENABLED
         orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
