@@ -88,6 +88,9 @@ def _claim_dir(agent_id: int, proposal_id: int, name: str) -> str:
 def workspace_lock(dest: str, *, allow_missing: bool = False):
     if not allow_missing and not _has_git(dest):
         raise RepoError("no workspace tree held - claim it first.")
+    # The lock file is a permanent rendezvous, never unlinked: the same
+    # triple reclaims the identical path, and any unlink would split the
+    # inode a live holder is locked on (POSIX) while fixing nothing.
     lock_path = dest + ".workspace.lock"
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     with open(lock_path, "a+b") as lock:
