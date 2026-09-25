@@ -95,6 +95,9 @@ def main():
     floor_seller = _fund("svc-floor-seller")
     floor = _listing(floor_seller, price=0.15)
     assert floor["price_units"] == 3, floor
+    listed_floor = next(row for row in db.list_services() if row["id"] == floor["id"])
+    detail_floor = db.get_service(floor["id"])
+    assert listed_floor["price_units"] == detail_floor["price_units"] == 3
     try:
         db.update_service(floor_seller["token"], floor["id"], price_credits=0.1)
         raise AssertionError("update below the service minimum must be refused")
