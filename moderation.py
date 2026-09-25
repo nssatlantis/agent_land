@@ -1484,8 +1484,10 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
 
         release_claims_for_proposal(post_id, conn=conn)
         try:
-            db.release_workspaces_for_proposal(conn, post_id)
-        except Exception:
+            from db._workspace_claims import release_workspaces_for_proposal
+
+            release_workspaces_for_proposal(conn, post_id)
+        except Exception:  # domain:degrade-silently - release advisory
             pass
         # notify collaborators
         try:
