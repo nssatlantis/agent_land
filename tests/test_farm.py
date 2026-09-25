@@ -1264,5 +1264,219 @@ def test_native_test_dispatch_remote_first():
         farm.remove_runner(row["id"])
 
 
+def test_heartbeat_remote_dispatch_carries_blessable_attestation():
+    """Pin that a remote-dispatched heartbeat bench carries a valid
+    bench_load attestation (quiet:true, contended falsy) so the bless
+    path (db/_bench_anchor) accepts it; without it the result is
+    unblessable and there is no local fallback."""
+    from db import _bench_anchor
+
+    orig_dispatch = farm.dispatch_to_runner
+    orig_pick = farm.pick_runner
+    orig_map = farm._map_and_log
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    orig_hb = config.CI_FARM_HEARTBEAT_REMOTE_FIRST
+
+    def _fake_dispatch(runner, payload):
+        # The runner attests its single-flight load state (quiet,
+        # uncontended) - mirroring the ci_farm/runner.py change.
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+            "bench_load": {"quiet": True, "contended": False},
+        }
+
+    def _fake_map_and_log(**kw):
+        return {**kw["remote"], **kw["extra"]}
+
+    try:
+        farm.dispatch_to_runner = _fake_dispatch  # type: ignore[assignment]
+        farm.pick_runner = lambda: {"id": 1, "url": "http://x", "token": "t"}
+        farm._map_and_log = _fake_map_and_log  # type: ignore[assignment]
+        config.CI_FARM_BENCH_REMOTE_FIRST = 0
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = 1
+        result = farm.try_bench_dispatch(
+            checks="db_benchmark",
+            agent_id=0,
+            name="t",
+            kind_event="ci_db_bench_run",
+            run_id=1,
+            pr_number=None,
+            files=None,
+            tree=None,
+            base_ref=None,
+        )
+        assert result is not None, "heartbeat dispatch should succeed with attestation"
+        load = result.get("bench_load")
+        assert isinstance(load, dict), result
+        assert load.get("quiet") is True, result
+        assert not load.get("contended"), result
+        detail = {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "bench_load": load,
+        }
+        assert _bench_anchor._candidate_problem(detail) is None, detail
+    finally:
+        farm.dispatch_to_runner = orig_dispatch
+        farm.pick_runner = orig_pick
+        farm._map_and_log = orig_map
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = orig_hb
+
+
+def test_heartbeat_remote_dispatch_falls_back_without_attestation():
+    """Pin that a remote heartbeat bench result WITHOUT a valid bench_load
+    attestation is refused (returns None) so run_checks falls back to the
+    local path, which produces a blessable result."""
+    orig_dispatch = farm.dispatch_to_runner
+    orig_pick = farm.pick_runner
+    orig_map = farm._map_and_log
+    orig_bench = config.CI_FARM_BENCH_REMOTE_FIRST
+    orig_hb = config.CI_FARM_HEARTBEAT_REMOTE_FIRST
+
+    def _fake_dispatch(runner, payload):
+        # No bench_load attestation (the pre-fix runner shape).
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    try:
+        farm.dispatch_to_runner = _fake_dispatch  # type: ignore[assignment]
+        farm.pick_runner = lambda: {"id": 1, "url": "http://x", "token": "t"}
+        farm._map_and_log = lambda **kw: {**kw["remote"], **kw["extra"]}
+        config.CI_FARM_BENCH_REMOTE_FIRST = 0
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = 1
+        result = farm.try_bench_dispatch(
+            checks="db_benchmark",
+            agent_id=0,
+            name="t",
+            kind_event="ci_db_bench_run",
+            run_id=1,
+            pr_number=None,
+            files=None,
+            tree=None,
+            base_ref=None,
+        )
+        assert result is None, "unattested remote heartbeat must fall back to local"
+    finally:
+        farm.dispatch_to_runner = orig_dispatch
+        farm.pick_runner = orig_pick
+        farm._map_and_log = orig_map
+        config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = orig_hb
+
+
+def test_run_checks_heartbeat_remote_first_gate_self_sufficient():
+    """Pin that run_checks' pre-local bench gate enters the remote-first
+    path for a heartbeat bench (agent_id=0) when CI_FARM_HEARTBEAT_REMOTE_FIRST
+    is on, even with CI_FARM_BENCH_REMOTE_FIRST=0 (the knob is
+    self-sufficient)."""
+    orig_try = farm.try_bench_dispatch
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+        return {
+            "checks": "db_benchmark",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+            "bench_load": {"quiet": True, "contended": False},
+        }
+
+    try:
+        farm.try_bench_dispatch = _capture  # type: ignore[assignment]
+        import server.ci_runner._runs as runs_mod
+
+        orig_enabled = config.CI_FARM_ENABLED
+        orig_bench_first = config.CI_FARM_BENCH_REMOTE_FIRST
+        orig_hb_first = config.CI_FARM_HEARTBEAT_REMOTE_FIRST
+        config.CI_FARM_ENABLED = True
+        config.CI_FARM_BENCH_REMOTE_FIRST = 0
+        config.CI_FARM_HEARTBEAT_REMOTE_FIRST = 1
+        try:
+            runs_mod.run_checks(agent_id=0, name="t", checks="db_benchmark")
+        finally:
+            config.CI_FARM_ENABLED = orig_enabled
+            config.CI_FARM_BENCH_REMOTE_FIRST = orig_bench_first
+            config.CI_FARM_HEARTBEAT_REMOTE_FIRST = orig_hb_first
+        assert calls, "try_bench_dispatch was not called for heartbeat remote-first"
+        assert calls[0].get("agent_id") == 0, calls
+    finally:
+        farm.try_bench_dispatch = orig_try
+
+
+def test_run_checks_native_test_remote_first_gate():
+    """Pin that run_checks' native-test remote-first path is exercised by
+    CI_FARM_TEST_REMOTE_FIRST (on -> dispatches to farm, local_mode=False),
+    so deleting the block would fail the test."""
+    orig_try = farm.try_dispatch
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+        return {
+            "checks": "tests",
+            "mode": "main",
+            "sandboxed": True,
+            "ok": True,
+            "timed_out": False,
+            "exit_code": 0,
+            "duration_seconds": 5.0,
+            "head_sha": "abc",
+            "output_tail": "ok",
+            "summary": {"tests_run": True},
+        }
+
+    try:
+        farm.try_dispatch = _capture  # type: ignore[assignment]
+        import server.ci_runner._runs as runs_mod
+
+        orig_enabled = config.CI_FARM_ENABLED
+        orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
+        config.CI_FARM_ENABLED = True
+        config.CI_FARM_TEST_REMOTE_FIRST = 1
+        try:
+            runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        finally:
+            config.CI_FARM_ENABLED = orig_enabled
+            config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
+        assert calls, "try_dispatch was not called for native test remote-first"
+        assert calls[0].get("local_mode") is False, calls
+        assert calls[0].get("is_bench") is False, calls
+    finally:
+        farm.try_dispatch = orig_try
+
+
 if __name__ == "__main__":
     main()  # noqa
