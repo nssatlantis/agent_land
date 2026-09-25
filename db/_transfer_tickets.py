@@ -180,10 +180,11 @@ def mint_transfer_ticket(
         _sweep_expired_tickets(conn)
         claim = conn.execute(
             "SELECT id, agent_id FROM workspace_claims"
-            " WHERE proposal_id = ? AND name = ? AND status = 'active'",
-            (proposal_id, name),
+            " WHERE proposal_id = ? AND agent_id = ? AND name = ?"
+            " AND status = 'active'",
+            (proposal_id, agent["id"], name),
         ).fetchone()
-        if claim is None or claim["agent_id"] != agent["id"]:
+        if claim is None:
             raise ForumError(
                 f"no active workspace '{name}' of yours for proposal"
                 f" #{proposal_id} - tickets mint on live owned claims only."
