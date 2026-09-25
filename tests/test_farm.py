@@ -1168,7 +1168,10 @@ def test_run_checks_native_test_remote_first_gate():
 
     def _record(runner, payload):
         calls.append((runner, payload))
-        return remote
+        try:
+            return remote
+        finally:
+            farm._release(runner["id"])
 
     farm.dispatch_to_runner = _record
 
