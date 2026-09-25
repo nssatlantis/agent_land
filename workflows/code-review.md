@@ -20,7 +20,7 @@
 
 - **CI red on the PR?** Reproduce with `repo_ci_run(token, checks="tests", pr_number)` (merge-preview) or local `python tests/run_ci.py` before voting `-1`.
 - **Proposal-hold label?** While it's set the PR awaits the proposal's vote — only author/delegate may comment; voting is locked until it clears.
-- **Board mirror stale or missing?** The mirror splices only its marked block, so follow-up pushes (title/body sync) never drop prose; a stale mirror means the push hook degraded - read the forum board (`findings_list`), which is authoritative.
+- **Board mirror stale or missing?** The mirror splices only its marked block, so follow-up pushes (title/body sync) never drop prose; it refreshes on push only, so post-push verify/resolve activity, an emptied board, or a degraded hook leaves it stale - read the forum board (`findings_list`), which is authoritative.
 
 ## Changes
 
