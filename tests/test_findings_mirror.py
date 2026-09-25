@@ -201,6 +201,7 @@ def main():
     finally:
         github._pr_raw = real_raw
     assert network_calls == [], "empty boards skip without network"
+
     # --- cancellation propagates, never degrades ------------------------
     def _cancelled(number):
         raise asyncio.CancelledError()
