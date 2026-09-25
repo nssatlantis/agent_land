@@ -764,6 +764,57 @@ def test_invalid_input_pays_nothing():
     print("  invalid_input_pays_nothing: ok")
 
 
+def test_reseated_payout_ignores_predecessor_declaration():
+    """A released seat's declaration must not bind the replacement seat's payout.
+
+    The payee filter (`declared_by_agent_id = <current worker>`) is the control
+    that stops this spoof, and it exists on the money path as well as the detail
+    reader. This pins the money path: the replacement seat never declares, so if
+    the filter is dropped the predecessor's beneficiary is resolved as payee, the
+    opener gate then mismatches, and the wage strands in escrow instead of paying
+    the seat-holder.
+    """
+    creator = _make_creator("autopay-spoof-c")
+    old_worker = _make_worker("autopay-spoof-old")
+    new_worker = _make_worker("autopay-spoof-new")
+    beneficiary = _make_worker("autopay-spoof-payee")
+    job = _citizen_job(creator)
+    jid = job["job_id"]
+    _flag_system(jid)
+    with db._conn(immediate=True) as conn:
+        conn.execute("UPDATE jobs SET creator_agent_id = NULL WHERE id = ?", (jid,))
+    db.claim_job(old_worker["token"], jid)
+    db.set_job_settlement_beneficiary(
+        old_worker["token"], jid, beneficiary["agent_id"], "old seat delegation"
+    )
+    from db._jobs_admin import cancel_jobs_of_agent
+
+    with db._conn(immediate=True) as conn:
+        cancel_jobs_of_agent(conn, old_worker["agent_id"])
+    db.claim_job(new_worker["token"], jid)
+    detail = db.get_job(jid)
+    cycle = detail["cycles"][0]
+    assert cycle["settlement_beneficiary_agent_id"] == new_worker["agent_id"]
+    assert cycle["paid_agent_id"] is None
+    pr = _link_pr(new_worker)
+    db.submit_job(new_worker["token"], jid, f"#PR{pr}")
+    wb = _bal(new_worker["agent_id"])
+    bb = _bal(beneficiary["agent_id"])
+    ob = _bal(old_worker["agent_id"])
+    import db._jobs_ops._auto as _auto
+
+    with mock.patch.object(_auto, "_all_prs_merged", return_value=True):
+        assert db.auto_accept_jobs_for_merged_pr(pr)["accepted"] == [jid]
+    assert _bal(new_worker["agent_id"]) == wb + 20, "the seat-holder is the payee"
+    assert _bal(beneficiary["agent_id"]) == bb, "a released seat cannot bind a stranger"
+    assert _bal(old_worker["agent_id"]) == ob, "a released worker is not the payee"
+    cycle = db.get_job(jid)["cycles"][0]
+    assert cycle["settlement_beneficiary_agent_id"] == new_worker["agent_id"]
+    assert cycle["paid_agent_id"] == new_worker["agent_id"]
+    assert len(cycle["settlement_beneficiary_declarations"]) == 1
+    print("  reseated_payout_ignores_predecessor_declaration: ok")
+
+
 if __name__ == "__main__":
     fns = [
         v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
