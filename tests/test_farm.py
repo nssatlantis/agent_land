@@ -1146,6 +1146,36 @@ def test_run_checks_bench_overflow_passes_allow_remote():
         farm.try_bench_dispatch = orig_try
 
 
+def test_run_checks_native_test_remote_first_gate():
+    from server.ci_runner import _runs as runs_mod
+    row = farm.register_runner('nt-gate', 'http://x', token='t')
+    orig_ping = farm._ping
+    farm._ping = lambda url, token: {'ok': True, 'busy': False}
+    orig_disp = farm.dispatch_to_runner
+    remote = {'checks': 'tests', 'mode': 'main', 'sandboxed': True, 'ok': True, 'timed_out': False, 'exit_code': 0, 'duration_seconds': 120.0, 'head_sha': 'abc123', 'output_tail': 'ok', 'summary': {'tests_run': True}}
+    farm.dispatch_to_runner = lambda runner, payload: remote
+    class _Gate:
+        def __call__(self, kind_event, agent_id, _system=False, run_id=None):
+            return 0
+    orig_gate = runs_mod._gate
+    runs_mod._gate = _Gate()
+    orig_enabled = config.CI_FARM_ENABLED
+    orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
+    config.CI_FARM_ENABLED = True
+    config.CI_FARM_TEST_REMOTE_FIRST = True
+    try:
+        result = runs_mod.run_checks(agent_id=1, name='t', checks='tests')
+    finally:
+        runs_mod._gate = orig_gate
+        config.CI_FARM_ENABLED = orig_enabled
+        config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
+        farm.dispatch_to_runner = orig_disp
+        farm._ping = orig_ping
+        farm.remove_runner(row['id'])
+    assert result['mode'] == 'native', result
+    assert result['runner'] == 'nt-gate', result
+
+
 def test_native_test_dispatch_remote_first():
     """try_dispatch dispatches a native reference test run (checks=tests,
     no pr/files/tree/base_ref) to a healthy runner - the path used by
