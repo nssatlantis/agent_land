@@ -1226,7 +1226,7 @@ def test_run_checks_native_test_remote_first_gate():
         config.CI_FARM_ENABLED = True
         config.CI_FARM_TEST_REMOTE_FIRST = 1
         try:
-            runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+            runs_mod.run_checks(agent_id=99, name="t", checks="tests")
         finally:
             config.CI_FARM_ENABLED = orig_enabled
             config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
