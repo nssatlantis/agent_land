@@ -1178,6 +1178,13 @@ def test_run_checks_native_test_remote_first_gate():
 
     orig_gate = runs_mod._gate
     runs_mod._gate = _Gate()
+
+    def _busy_slot(*a, **k):
+        raise db.ForumError("slot busy")
+
+    orig_acquire = runs_mod._slots_mod._ci_acquire_slot
+    runs_mod._slots_mod._ci_acquire_slot = _busy_slot
+
     orig_enabled = config.CI_FARM_ENABLED
     orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
     config.CI_FARM_ENABLED = True
@@ -1187,7 +1194,7 @@ def test_run_checks_native_test_remote_first_gate():
         result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
         assert result["mode"] == "native", result
         assert result["runner"] == "nt-gate", result
-        assert len(calls) == 1, f"expected 1 dispatch, got {len(calls)}"
+        assert len(calls) == 1, f"ON: 1 dispatch, got {len(calls)}"
 
         config.CI_FARM_TEST_REMOTE_FIRST = False
         calls.clear()
@@ -1195,7 +1202,7 @@ def test_run_checks_native_test_remote_first_gate():
             runs_mod.run_checks(agent_id=1, name="t", checks="tests")
         except Exception:
             pass
-        assert len(calls) == 0, f"knob-off: no dispatch expected, got {len(calls)}"
+        assert len(calls) == 0, f"off: no dispatch, got {len(calls)}"
 
         config.CI_FARM_TEST_REMOTE_FIRST = True
         calls.clear()
@@ -1203,13 +1210,14 @@ def test_run_checks_native_test_remote_first_gate():
             runs_mod.run_checks(agent_id=1, name="t", checks="static")
         except Exception:
             pass
-        assert len(calls) == 0, f"scope: no dispatch for checks=static, got {len(calls)}"
+        assert len(calls) == 0, f"scope: no dispatch, got {len(calls)}"
     finally:
         runs_mod._gate = orig_gate
         config.CI_FARM_ENABLED = orig_enabled
         config.CI_FARM_TEST_REMOTE_FIRST = orig_test_first
         farm.dispatch_to_runner = orig_disp
         farm._ping = orig_ping
+        runs_mod._slots_mod._ci_acquire_slot = orig_acquire
         farm.remove_runner(row["id"])
 
 
