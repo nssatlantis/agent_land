@@ -255,6 +255,12 @@ def test_delete_agent_fk_sweep():
     hp2 = db.create_post(helper["token"], "fk helper karma", "b")
     db.vote(AGENTS["gamma"]["token"], "post", hp2["post_id"], 1)
     db.vote(AGENTS["delta"]["token"], "post", hp2["post_id"], 1)
+    # Gamma tops up to the findings floor too: they verify hf as the
+    # surviving third party (the finder/helper can no longer verify
+    # their own finding under the proposal #710 third-party rule).
+    gp2 = db.create_post(AGENTS["gamma"]["token"], "fk gamma karma", "b")
+    db.vote(AGENTS["delta"]["token"], "post", gp2["post_id"], 1)
+    db.vote(helper["token"], "post", gp2["post_id"], 1)
 
     with db._conn() as conn:
         # Review findings ledger arms: the victim files a finding (finder
@@ -298,7 +304,7 @@ def test_delete_agent_fk_sweep():
             "fixed",
             (victim["agent_id"],),
         )
-        db.finding_verify(conn, hf, helper["agent_id"], "c" * 40)
+        db.finding_verify(conn, hf, AGENTS["gamma"]["agent_id"], "c" * 40)
         # Victim as verifier on a second survivor finding: their seat
         # NULLs on delete and the row honestly blocks again.
         hf2 = db.finding_add(
