@@ -445,13 +445,13 @@ def _process_closed_pr(pr: dict) -> None:
                     pass
             # Claimable workspaces (proposal #472, part 7): release on terminal merge.
             if proposal_post_id:
-                from db._proposal_status import _proposal_status_for
+                try:
+                    from db._proposal_status import _proposal_status_for
 
-                if _proposal_status_for(conn, proposal_post_id) != "open":
-                    try:
+                    if _proposal_status_for(conn, proposal_post_id) != "open":
                         db.release_workspaces_for_proposal(conn, proposal_post_id)
-                    except Exception:  # domain: degrade-silently - release advisory
-                        pass
+                except Exception:
+                    pass
             # Guilds (proposal #525, PR-6; request model #643): the first
             # linked PR merge completes a paid grant link (proof the funded
             # work shipped) and expires unclaimed legacy auto-tranches.
