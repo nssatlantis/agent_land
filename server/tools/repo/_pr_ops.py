@@ -424,9 +424,9 @@ def vote_on_prs(
     FORUM_PR_VOTE_THRESHOLD, default 3), the system auto-merges it;
     enough opposing votes auto-declines it. Once the threshold is reached
     new approve (+1) votes are blocked; oppose (-1) votes are always
-    allowed; existing-voter re-votes that would not push net past the
-    threshold are allowed, but -1 to +1 flips past the threshold are
-    rolled back. A PR whose linked proposal has not passed its community
+    allowed; existing-voter re-votes are allowed, including -1 to +1
+    flips that move net past the threshold; only new +1 votes that would
+    push net past the threshold are blocked. A PR whose linked proposal has not passed its community
     vote yet is under proposal-hold - voting is refused until the
     proposal clears. This is not the content/governance vote (vote, batch
     of up to 10 on posts/comments/proposals), the non-binding post-poll
