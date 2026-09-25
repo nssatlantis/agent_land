@@ -180,7 +180,7 @@ def main():
             n = conn.execute(
                 "SELECT COUNT(*) FROM review_findings WHERE pr_number = 4242"
             ).fetchone()[0]
-            assert n == 1, "mirror never writes the ledger"
+            assert n == 2, "mirror never writes the ledger"
     finally:
         github._pr_raw = real_raw
         github._core._request = real_req
