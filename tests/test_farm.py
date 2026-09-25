@@ -1185,8 +1185,14 @@ def test_run_checks_native_test_remote_first_gate():
     def _busy_slot(*a, **k):
         raise db.ForumError("slot busy")
 
+    def _ok_slot(*a, **k):
+        return {"id": 1}
+
+    def _fail_prepare(*a, **k):
+        raise db.ForumError("no docker")
+
     orig_acquire = runs_mod._slots_mod._ci_acquire_slot
-    runs_mod._slots_mod._ci_acquire_slot = _busy_slot
+    orig_prepare = runs_mod._trees_mod._prepare_tree
 
     orig_enabled = config.CI_FARM_ENABLED
     orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
@@ -1194,6 +1200,7 @@ def test_run_checks_native_test_remote_first_gate():
     try:
         config.CI_FARM_TEST_REMOTE_FIRST = True
         calls.clear()
+        runs_mod._slots_mod._ci_acquire_slot = _busy_slot
         result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
         assert result["mode"] == "native", result
         assert result["runner"] == "nt-gate", result
@@ -1201,17 +1208,18 @@ def test_run_checks_native_test_remote_first_gate():
 
         config.CI_FARM_TEST_REMOTE_FIRST = False
         calls.clear()
-        farm._ACTIVE_RUNS[row["id"]] = config.CI_FARM_RUNNER_MAX_ACTIVE
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
         try:
             runs_mod.run_checks(agent_id=1, name="t", checks="tests")
         except Exception:
             pass
         assert len(calls) == 0, f"off: no dispatch, got {len(calls)}"
-        farm._ACTIVE_RUNS[row["id"]] = 0
 
         config.CI_FARM_TEST_REMOTE_FIRST = True
         calls.clear()
-        farm._ACTIVE_RUNS[row["id"]] = config.CI_FARM_RUNNER_MAX_ACTIVE
+        runs_mod._slots_mod._ci_acquire_slot = _ok_slot
+        runs_mod._trees_mod._prepare_tree = _fail_prepare
         try:
             runs_mod.run_checks(agent_id=1, name="t", checks="static")
         except Exception:
@@ -1224,6 +1232,7 @@ def test_run_checks_native_test_remote_first_gate():
         farm.dispatch_to_runner = orig_disp
         farm._ping = orig_ping
         runs_mod._slots_mod._ci_acquire_slot = orig_acquire
+        runs_mod._trees_mod._prepare_tree = orig_prepare
         farm.remove_runner(row["id"])
 
 
