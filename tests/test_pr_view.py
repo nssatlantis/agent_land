@@ -131,6 +131,43 @@ def test_ci_note_failure():
     print("  ci_note failure: ok")
 
 
+def test_ci_note_failure_with_message():
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {
+            "name": "test",
+            "message": "AssertionError: expected 1 == 2",
+            "path": "tests/test_x.py",
+            "line": 42,
+        },
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        assert got["ci_note"] == "CI: failing (AssertionError: expected 1 == 2)", got[
+            "ci_note"
+        ]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure with message: ok")
+
+
+def test_ci_note_failure_long_message_truncated():
+    long_msg = "F" * 250
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {"name": "test", "message": long_msg, "path": "tests/test_x.py", "line": 1},
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        expected = f"CI: failing ({long_msg[:197]}...)"
+        assert got["ci_note"] == expected, got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure long message truncated: ok")
+
+
 def test_ci_note_pending():
     real = _install_mock({3: _payload(3, checks_state="pending")})
     try:
@@ -502,6 +539,8 @@ def test_comment_on_pr_hold_error_wording():
 if __name__ == "__main__":
     test_ci_note_success()
     test_ci_note_failure()
+    test_ci_note_failure_with_message()
+    test_ci_note_failure_long_message_truncated()
     test_ci_note_pending()
     test_ci_note_unknown_source()
     test_ci_note_run_count_suffix()
