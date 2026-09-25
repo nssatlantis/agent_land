@@ -513,7 +513,7 @@ def test_installer_buildx_and_data_dir():
     assert any("docker-buildx" in ln for ln in apt), apt
     assert '\nDATA_DIR="$REPO_DIR/ci_farm/data"' not in text
     assert 'dirname "$REPO_DIR"' in text
-    assert "AGENTLAND_DATA_DIR=$DATA_DIR" in text
+    assert 'AGENTLAND_DATA_DIR="$DATA_DIR"' in text
     assert "LEGACY_DATA_DIR" in text
 
 
@@ -526,7 +526,19 @@ def test_dockerfile_no_buildkit_only():
     lines = text.splitlines()
     # Only instructions can break a builder; a comment may name them freely.
     instrs = "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
-    for banned in ("RUN --mount", "COPY --link", "ADD --link", "RUN --network"):
+    for banned in (
+        "RUN --mount",
+        "RUN --network",
+        "RUN --security",
+        "RUN --device",
+        "COPY --link",
+        "COPY --chmod",
+        "COPY --exclude",
+        "COPY --parents",
+        "ADD --link",
+        "ADD --checksum",
+        "FROM --platform",
+    ):
         assert banned not in instrs, banned
     # The pin must not be satisfiable by deleting the install itself.
     assert "uv pip install --system" in text
@@ -566,6 +578,28 @@ def test_data_dir_default_beside_checkout():
         dd = runner._data_dir()
     assert Path(dd) == nested / "agent_land_farm_data"
     assert not Path(dd).is_relative_to(fake)
+
+
+def test_build_error_names_the_missing_plugin():
+    """The legacy-builder signature must name the fix, not just echo the
+    builder: that message is all a farm operator sees when every dispatch
+    fails, and the raw text points at the Dockerfile instead of the host."""
+    legacy = "the --mount option requires BuildKit. Refer to https://x"
+    assert "docker-buildx" in sandbox_mod._buildkit_hint(legacy)
+    assert "buildx" in sandbox_mod._buildkit_hint(
+        "BuildKit is enabled but the buildx component is missing"
+    )
+    # A genuine build failure keeps the original, unhinted message.
+    assert sandbox_mod._buildkit_hint("COPY failed: not found") == ""
+
+
+def test_last_error_tracks_runner_refusals():
+    """A dispatch that returns a normal 200 carrying `error` is a
+    runner-side refusal the host drops as a failed dispatch, so /health must
+    not read it as a completed run. A red suite is not a refusal."""
+    assert runner._result_error({"ok": False, "error": "boom"}) == "boom"
+    assert runner._result_error({"ok": True, "exit_code": 1}) is None
+    assert runner._result_error({"ok": False, "summary": {}}) is None
 
 
 def _run_all_tests() -> int:
@@ -622,6 +656,14 @@ def _run_all_tests() -> int:
         (
             "test_data_dir_default_beside_checkout",
             test_data_dir_default_beside_checkout,
+        ),
+        (
+            "test_build_error_names_the_missing_plugin",
+            test_build_error_names_the_missing_plugin,
+        ),
+        (
+            "test_last_error_tracks_runner_refusals",
+            test_last_error_tracks_runner_refusals,
         ),
     ]
     failed = 0
