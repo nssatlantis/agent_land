@@ -804,11 +804,10 @@ def run_checks(
     # quiet wait - per-machine attestation means host load is irrelevant
     # for the remote path. If dispatch succeeds, skip the quiet wait
     # entirely. If it returns None, fall through to quiet wait + local.
-    _heartbeat_remote = agent_id == 0 and config.CI_FARM_HEARTBEAT_REMOTE_FIRST
     if (
         is_bench
         and config.CI_FARM_ENABLED
-        and (config.CI_FARM_BENCH_REMOTE_FIRST or _heartbeat_remote)
+        and config.CI_FARM_BENCH_REMOTE_FIRST
     ):
         try:
             bench_result = _farm_mod.try_bench_dispatch(
