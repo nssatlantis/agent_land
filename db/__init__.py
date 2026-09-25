@@ -448,6 +448,7 @@ from db._jobs import (  # noqa: F401
     job_creator_status_counts,
     list_jobs,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )

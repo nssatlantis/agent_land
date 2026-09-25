@@ -54,6 +54,7 @@ from ._flow import (  # noqa: F401
     claim_job,
     decline_job_offer,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )

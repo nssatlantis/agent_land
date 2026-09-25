@@ -93,6 +93,7 @@ EXPECTED = [
     "bounty_map_for_bugs",
     "admin_set_job_long_running",
     "list_jobs",
+    "set_job_settlement_beneficiary",
     # treasury
     "economy_overview",
     # citizen store

@@ -172,6 +172,7 @@ from server.tools.economy import (  # noqa: F401
     redeem_bond,
     request_subsidized_job,
     review_job,
+    set_job_settlement_beneficiary,
     stake,
     store_stats,
     submit_job,

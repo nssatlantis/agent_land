@@ -42,6 +42,7 @@ from db._jobs_ops import (  # noqa: F401
     job_overdue_cutoff,
     list_jobs,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )
