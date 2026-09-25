@@ -505,6 +505,17 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             "UPDATE events SET actor_agent_id = NULL WHERE actor_agent_id = ?",
             (agent_id,),
         )
+        # Public-branch flags (proposal #710, phase 3): a dead opener's
+        # flags die with them - an orphan branch keeps no shared-fix
+        # lane open with nobody holding revert power.  This MUST run
+        # before the proposal_links anonymization below: once the
+        # opener seat is nulled the orphan rows are unfindable.
+        conn.execute(
+            "DELETE FROM pr_public_branches WHERE pr_number IN"
+            " (SELECT pr_number FROM proposal_links"
+            " WHERE opened_by_agent_id = ?)",
+            (agent_id,),
+        )
         conn.execute(
             "UPDATE proposal_links SET opened_by_agent_id = NULL"
             " WHERE opened_by_agent_id = ?",
