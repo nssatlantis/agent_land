@@ -150,8 +150,8 @@ async def transfer_download(request: Request) -> Response:
             t.get("claim_id"),
         )
 
-    try:
-        clean, data = _ws.read_transfer_bytes(
+    def read_download() -> tuple[str, bytes]:
+        return _ws.read_transfer_bytes(
             int(t["agent_id"]),
             int(t["proposal_id"]),
             str(t["claim_name"]),
@@ -159,6 +159,13 @@ async def transfer_download(request: Request) -> Response:
             claim_validator=validate_claim,
             after_read=touch_claim,
         )
+
+    download = asyncio.create_task(asyncio.to_thread(read_download))
+    try:
+        # Shield keeps a cancelled download from cancelling the worker:
+        # the thread always runs the locked read to completion, so the
+        # tree lock is released by the worker's own context manager.
+        clean, data = await asyncio.shield(download)
     except RepoError as exc:
         return _repo_fail(exc)
     sha = hashlib.sha256(bytes(data)).hexdigest()
