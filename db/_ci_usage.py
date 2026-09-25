@@ -60,9 +60,9 @@ def _status_for_kinds(
     with _conn() if conn is None else nullcontext(conn) as c:
         cooldown = config.CI_RUN_COOLDOWN_SECONDS
         cap = effective_ci_cap(agent_id, conn=c, ent=ent)
-        burst_remaining = (
-            ci_burst_remaining(agent_id, conn=c, now=now) if cap > 0 else 0
-        )
+        # The burst reconcile writes: run it in its own immediate
+        # transaction, never as a write upgrade on this read connection.
+        burst_remaining = ci_burst_remaining(agent_id, now=now) if cap > 0 else 0
         out = {
             kind: {
                 "used_today": 0,
