@@ -21,6 +21,7 @@ from ._claims import (
     _restore_list_claims,
     _snapshot_claims,
     _snapshot_list_claims,
+    _store_claim,
     _sweep_expired_claims,
 )
 from ._edits import (
@@ -456,7 +457,11 @@ def update_todo_list(
                 (list_id,),
             ).fetchall():
                 if not _claim_expired(r["claimed_at"]):
-                    old_claims[r["text"]] = (r["claimed_by_agent_id"], r["claimed_at"])
+                    _store_claim(
+                        old_claims,
+                        r["text"],
+                        (r["claimed_by_agent_id"], r["claimed_at"]),
+                    )
             conn.execute("DELETE FROM todo_items WHERE list_id = ?", (list_id,))
             for ipos, item in enumerate(item_entries):
                 conn.execute(

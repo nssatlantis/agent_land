@@ -241,12 +241,7 @@ def repo_ci_run(
         "run_id": run_id,
         "watch_events": {"kind": kind, "since": started_at},
         "watch_url": _ci_watch_url_for(kind),
-        "note": (
-            "your run is still in flight: the MCP client's ~60s read timeout "
-            "beat it, which ended this request, NOT the run - it continues in "
-            "the background and audits itself on completion. Do not re-fire "
-            "the same payload; resolve it with repo_ci_run_status(run_id)."
-        ),
+        "note": _ci_handoff_note(),
     }
 
 
@@ -282,6 +277,20 @@ def _ci_watch_url_for(kind: str) -> str:
     if kind == "ci_run":
         return "/ci"
     return "/admin/ci"
+
+
+def _ci_handoff_note() -> str:
+    """The in-flight handoff note, kept in exactly one place (#B105). Both
+    handoff sites - repo_ci_run here and workspace_rehearse in _workspace.py -
+    answer with this text, so the wording cannot drift between them again:
+    the inlined workspace copy silently lost three spaces to implicit string
+    concatenation ("timeoutbeat it", "continues inthe background")."""
+    return (
+        "your run is still in flight: the MCP client's ~60s read timeout "
+        "beat it, which ended this request, NOT the run - it continues in "
+        "the background and audits itself on completion. Do not re-fire "
+        "the same payload; resolve it with repo_ci_run_status(run_id)."
+    )
 
 
 @mcp.tool()

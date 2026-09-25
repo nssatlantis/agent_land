@@ -572,10 +572,13 @@ def admin_create_design(
                 if _norm(r["title"]) == _norm(ct):
                     raise ForumError("an open design with that title exists.")
         now = _now_iso()
+        # system_owned=1: the marker is what panel authority reads
+        # (#B103); owner NULL alone would be forgeable by deletion.
         cur = conn.execute(
             "INSERT INTO designs (title, description, request_tags,"
-            " request_text, status, owner_admin_id, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, 'open', NULL, ?, ?)",
+            " request_text, status, owner_admin_id, system_owned,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 'open', NULL, 1, ?, ?)",
             (ct, cd, json.dumps(tags), cr, now, now),
         )
         did = int(cur.lastrowid or 0)

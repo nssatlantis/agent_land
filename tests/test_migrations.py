@@ -88,6 +88,31 @@ CREATE TABLE stake_rewards (id INTEGER PRIMARY KEY);
 CREATE TABLE karma_spends_new (id INTEGER PRIMARY KEY);
 """
 
+# The pre-#713 designs shape (no system_owned column), with one panel
+# creation (owner NULL) and one owned row: the one-shot backfill pins.
+_LEGACY_DESIGNS = """
+CREATE TABLE designs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL CHECK (title <> '' AND length(title) <= 128),
+    description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 4000),
+    request_tags TEXT NOT NULL DEFAULT '[]',
+    request_text TEXT NOT NULL DEFAULT '' CHECK (length(request_text) <= 2000),
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'promoted', 'archived')),
+    owner_admin_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+    comments_enabled INTEGER NOT NULL DEFAULT 0 CHECK (comments_enabled IN (0, 1)),
+    enabled_at TEXT,
+    promoted_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT 'legacy',
+    updated_at TEXT NOT NULL DEFAULT 'legacy',
+    closed_at TEXT
+);
+INSERT INTO designs (title, status, owner_admin_id)
+    VALUES ('Legacy system', 'open', NULL);
+INSERT INTO designs (title, status, owner_admin_id)
+    VALUES ('Legacy owned', 'open', 2);
+"""
+
 
 def _replant(extra: str) -> None:
     # B2 + Windows fix: close pooled handles that lock the file on Windows.
@@ -231,6 +256,97 @@ def test_supply_baseline_boot_from_legacy_schema():
     }, rows
 
 
+def test_designs_system_owned_backfill():
+    """#713 / #B103: the column add is one-shot - the backfill marks only
+    rows that predate the cutover; a post-cutover owner deletion
+    (FK SET NULL) never inherits the system-owned marker."""
+    _replant(_LEGACY_DESIGNS)
+    db.init_db()
+    cols = {r[1] for r in _query("PRAGMA table_info(designs)")}
+    assert "system_owned" in cols, cols
+    rows = _query("SELECT owner_admin_id, system_owned FROM designs ORDER BY id")
+    assert rows == [(None, 1), (2, 0)], rows
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        conn.execute("UPDATE designs SET owner_admin_id = NULL WHERE id = 2")
+        conn.commit()
+    finally:
+        conn.close()
+    db.init_db()
+    rows = _query("SELECT owner_admin_id, system_owned FROM designs ORDER BY id")
+    assert rows == [(None, 1), (None, 0)], rows
+
+
+def test_designs_system_owned_atomic_on_backfill_fault():
+    """PR #1452 review: a backfill crash must not persist the column
+    without its rows - the failed script rolls the ALTER back with the
+    backfill, and a clean retry completes and records the marker."""
+    _replant(_LEGACY_DESIGNS)
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        conn.executescript(
+            "CREATE TRIGGER designs_backfill_boom BEFORE UPDATE ON designs"
+            " BEGIN SELECT RAISE(ABORT, 'injected backfill failure'); END;"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    raised = ""
+    try:
+        db.init_db()
+    except sqlite3.Error as exc:
+        raised = str(exc)
+    assert "injected backfill failure" in raised, raised
+    cols = {r[1] for r in _query("PRAGMA table_info(designs)")}
+    assert "system_owned" not in cols, cols
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        conn.execute("DROP TRIGGER designs_backfill_boom")
+        conn.commit()
+    finally:
+        conn.close()
+    db.init_db()
+    cols = {r[1] for r in _query("PRAGMA table_info(designs)")}
+    assert "system_owned" in cols, cols
+    rows = _query("SELECT owner_admin_id, system_owned FROM designs ORDER BY id")
+    assert rows == [(None, 1), (2, 0)], rows
+    marker = _query(
+        "SELECT 1 FROM schema_migration_markers WHERE name = 'designs_system_owned'"
+    )
+    assert marker == [(1,)], marker
+
+
+def test_designs_system_owned_wedge_heals_via_marker():
+    """PR #1452 review: the pre-fix wedge (column present, backfill
+    lost, no marker) heals on the next boot, and the marker it records
+    still keeps a later orphan from inheriting panel authority."""
+    _replant(_LEGACY_DESIGNS)
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        conn.execute(
+            "ALTER TABLE designs ADD COLUMN system_owned INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    db.init_db()
+    rows = _query("SELECT owner_admin_id, system_owned FROM designs ORDER BY id")
+    assert rows == [(None, 1), (2, 0)], rows
+    marker = _query(
+        "SELECT 1 FROM schema_migration_markers WHERE name = 'designs_system_owned'"
+    )
+    assert marker == [(1,)], marker
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        conn.execute("UPDATE designs SET owner_admin_id = NULL WHERE id = 2")
+        conn.commit()
+    finally:
+        conn.close()
+    db.init_db()
+    rows = _query("SELECT owner_admin_id, system_owned FROM designs ORDER BY id")
+    assert rows == [(None, 1), (None, 0)], rows
+
+
 if __name__ == "__main__":
     test_full_upgrade_from_clean_legacy()
     print("full upgrade from clean legacy: ok")
@@ -238,6 +354,12 @@ if __name__ == "__main__":
     print("second boot noop: ok")
     test_wedge_from_interrupted_boot_self_heals()
     print("wedge self-heal (prod outage repro): ok")
+    test_designs_system_owned_backfill()
+    print("designs system_owned one-shot backfill: ok")
+    test_designs_system_owned_atomic_on_backfill_fault()
+    print("designs system_owned atomic backfill (fault injection): ok")
+    test_designs_system_owned_wedge_heals_via_marker()
+    print("designs system_owned wedge heal via completion marker: ok")
     test_supply_baseline_boot_from_legacy_schema()
     print("supply baseline boot from legacy schema: ok")
     print("test_migrations: all scenarios passed")
