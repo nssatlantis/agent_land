@@ -464,6 +464,61 @@ def test_http_upload_lock_wait_keeps_event_loop_live(agents):
     db.release_workspace(tok, pid, "asyncup")
 
 
+def test_http_download_lock_wait_keeps_event_loop_live(agents):
+    pid = _prop(agents, "beta", title="Async Download Xfer")
+    tok = agents["beta"]["token"]
+    _claim(agents, pid, "asyncdl", who="beta")
+    WT.workspace_write_file(tok, pid, "asyncdl", "held.txt", content="base\n")
+    ticket = TT.workspace_fetch_ticket(tok, pid, "asyncdl", ["held.txt"])
+    dest = ws._claim_dir(agents["beta"]["agent_id"], pid, "asyncdl")
+    lock_entered = threading.Event()
+    read_entered = threading.Event()
+    timing = {}
+    original_read = ws.read_transfer_bytes
+
+    def observed_read(*args, **kwargs):
+        read_entered.set()
+        return original_read(*args, **kwargs)
+
+    def hold_lock():
+        with ws.workspace_lock(dest):
+            lock_entered.set()
+            time.sleep(0.5)
+            timing["released"] = time.monotonic()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert lock_entered.wait(5)
+    try:
+
+        async def run_download():
+            download = asyncio.create_task(
+                TR.transfer_download(_req("GET", ticket["ticket"], "held.txt"))
+            )
+            while not read_entered.is_set():
+                await asyncio.sleep(0)
+            heartbeat_at = None
+
+            async def heartbeat():
+                nonlocal heartbeat_at
+                await asyncio.sleep(0)
+                heartbeat_at = time.monotonic()
+
+            await heartbeat()
+            return await download, heartbeat_at
+
+        with patch.object(ws, "read_transfer_bytes", observed_read):
+            response, heartbeat_at = asyncio.run(run_download())
+    finally:
+        holder.join(5)
+    assert not holder.is_alive(), "workspace lock holder did not finish"
+    assert heartbeat_at < timing["released"], (heartbeat_at, timing["released"])
+    assert response.status_code == 200, (response.status_code, response.body)
+    assert response.body == b"base\n", response.body
+    print("  async download lock wait keeps the event loop live: ok")
+    db.release_workspace(tok, pid, "asyncdl")
+
+
 def test_http_upload_caps(agents):
     pid = _prop(agents, "delta", title="Cap Xfer")
     tok = agents["delta"]["token"]
@@ -1294,6 +1349,7 @@ def main():
     test_http_download(agents)
     test_http_upload_apply(agents)
     test_http_upload_lock_wait_keeps_event_loop_live(agents)
+    test_http_download_lock_wait_keeps_event_loop_live(agents)
     test_http_upload_caps(agents)
     test_release_kills_ticket(agents)
     test_reclaim_blocks_old_upload(agents)
