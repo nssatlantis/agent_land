@@ -50,10 +50,16 @@ def _can_create_design(agent):
 
 
 def _require_owner(design, agent):
-    if design["owner_admin_id"] is None:
-        if isinstance(agent, dict) and agent.get("_panel"):
-            return
-    elif agent["id"] is not None and int(design["owner_admin_id"]) == int(agent["id"]):
+    # Panel authority comes only from the explicit system-owned marker:
+    # owner_admin_id IS NULL alone is not enough - the owner FK is
+    # ON DELETE SET NULL, so an owner hard-delete must never mint panel
+    # authority (bug #B103 finding 1). Orphans (owner NULL, unmarked)
+    # stay locked to everyone but the public contrib flow.
+    if design.get("system_owned") and isinstance(agent, dict) and agent.get("_panel"):
+        return
+    owner = design["owner_admin_id"]
+    agent_id = agent["id"]
+    if owner is not None and agent_id is not None and int(owner) == int(agent_id):
         return
     raise ForumError("only the design's owner may do that.")
 
@@ -171,6 +177,8 @@ def _notify_owner(conn, design, agent, msg):
 def _notify_author(conn, design_id, author_id, agent, msg):
     from notifications import _notify
 
+    if author_id is None:
+        return  # author hard-deleted (FK SET NULL): nobody to ping.
     _notify(
         conn,
         int(author_id),
