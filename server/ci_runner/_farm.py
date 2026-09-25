@@ -481,8 +481,8 @@ def try_bench_dispatch(
         return None
     if not config.CI_FARM_BENCH_REMOTE_FIRST and not allow_remote:
         return None
-    if agent_id == 0:
-        return None  # system/heartbeat benches: local only, can never bless
+    if agent_id == 0 and not config.CI_FARM_HEARTBEAT_REMOTE_FIRST:
+        return None  # system/heartbeat benches: local only unless the knob is on
     if pr_number is not None or files is not None or tree is not None:
         return None
     if base_ref is not None:
