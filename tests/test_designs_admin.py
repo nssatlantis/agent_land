@@ -156,21 +156,26 @@ def main():
     )
     assert direct_issue["state"] == "accepted", direct_issue
     expect_error(admin.admin_remove_feature, "alpha", did, direct_feature["feature_id"])
-    pending_remove = designs.propose_feature(
-        alpha["token"],
-        did,
-        "remove",
-        op="remove",
-        feature_id=direct_feature["feature_id"],
-    )
-    expect_error(
-        flow.decide_feature,
-        alpha["token"],
-        did,
-        pending_remove["feature_id"],
-        True,
-    )
-    flow.withdraw_feature(alpha["token"], did, pending_remove["feature_id"])
+    prior_floor = os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"]
+    os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = "0"
+    try:
+        pending_remove = designs.propose_feature(
+            alpha["token"],
+            did,
+            "remove",
+            op="remove",
+            feature_id=direct_feature["feature_id"],
+        )
+        expect_error(
+            flow.decide_feature,
+            alpha["token"],
+            did,
+            pending_remove["feature_id"],
+            True,
+        )
+        flow.withdraw_feature(alpha["token"], did, pending_remove["feature_id"])
+    finally:
+        os.environ["FORUM_DESIGN_CONTRIB_MIN_KARMA"] = prior_floor
     vanishing_feature = admin.admin_create_feature(
         "alpha", did, "Feature with stale pending edit"
     )
