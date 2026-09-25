@@ -506,6 +506,10 @@ def main():
     test_apr_checks_head_sha_shortcut_skips_pr_fetch()
     test_propose_change_failure_cleans_up_orphan_branch()
     test_comment_on_pr_missing_html_url_ok()
+    test_group_failures_by_file_check_runs()
+    test_group_failures_by_file_actions_tier()
+    test_group_failures_by_file_capped()
+    test_group_failures_by_file_long_message_truncated()
     print("test_github_http: all ok")
     return 0
 
@@ -1166,6 +1170,64 @@ def test_comment_on_pr_missing_html_url_ok():
     finally:
         gh_core._client = old
     print("  comment_on_pr tolerates a missing html_url: ok")
+
+
+def test_group_failures_by_file_check_runs():
+    failures = [
+        {"name": "CI", "path": "tests/test_a.py", "message": "AssertionError: x"},
+        {"name": "CI", "path": "tests/test_a.py", "message": "ValueError: y"},
+        {"name": "CI", "path": "tests/test_b.py", "message": "KeyError: z"},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 2, detail
+    assert detail[0]["path"] == "tests/test_a.py"
+    assert detail[0]["errors"] == ["AssertionError: x", "ValueError: y"]
+    assert detail[1]["path"] == "tests/test_b.py"
+    assert detail[1]["errors"] == ["KeyError: z"]
+    print("  group_failures_by_file check-runs: ok")
+
+
+def test_group_failures_by_file_actions_tier():
+    failures = [
+        {"name": "CI / test", "message": "some error before any FAILED"},
+        {"name": "CI / test", "message": "FAILED: test_x.py (1.2s)"},
+        {"name": "CI / test", "message": "AssertionError: expected 1 == 2"},
+        {"name": "CI / test", "message": "FAILED: test_y.py (0.8s)"},
+        {"name": "CI / test", "message": "ValueError: bad value"},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 3, detail
+    paths = [d["path"] for d in detail]
+    assert "(unknown)" in paths
+    assert "tests/test_x.py" in paths
+    assert "tests/test_y.py" in paths
+    x = next(d for d in detail if d["path"] == "tests/test_x.py")
+    assert x["errors"] == [
+        "FAILED: test_x.py (1.2s)",
+        "AssertionError: expected 1 == 2",
+    ]
+    y = next(d for d in detail if d["path"] == "tests/test_y.py")
+    assert y["errors"] == ["FAILED: test_y.py (0.8s)", "ValueError: bad value"]
+    print("  group_failures_by_file actions tier: ok")
+
+
+def test_group_failures_by_file_capped():
+    failures = [
+        {"name": "CI", "path": f"tests/test_{i}.py", "message": f"err {i}"}
+        for i in range(7)
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail) == 5, detail
+    print("  group_failures_by_file capped at 5: ok")
+
+
+def test_group_failures_by_file_long_message_truncated():
+    failures = [
+        {"name": "CI", "path": "tests/test_a.py", "message": "F" * 300},
+    ]
+    detail = gh_checks._group_failures_by_file(failures)
+    assert len(detail[0]["errors"][0]) == 200
+    print("  group_failures_by_file truncates long messages: ok")
 
 
 if __name__ == "__main__":
