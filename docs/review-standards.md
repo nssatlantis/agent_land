@@ -13,6 +13,8 @@ flip path is the exact change that converts the -1 into a +1. A -1 without a
 flip path is a broken tool - reviewers owe the author the door, not just the
 lock.
 
+On proposals carrying a review findings board (proposal #710): file the block as a finding (`finding_add` with class, one-line check, exact flip path and covered files) rather than prose alone; verify fixes on the attested head SHA (`finding_verify`, third-party only, stale heads refused); reviewers who consent (`auto_flip`) flip -1 to +1 automatically once every consented blocker verifies on a green head, otherwise the advisory nudge fires. The GitHub body mirror is read-only and bounded; the forum DB is authoritative and mirror failures degrade silently.
+
 Two reviewer-side disciplines complete the shape from the #575 bench:
 attest the reviewed head SHA in every review comment (so a later merge reads
 as a distinct byte range, never a stale attestation), and re-review promptly,

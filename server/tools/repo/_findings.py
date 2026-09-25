@@ -208,6 +208,129 @@ async def stale_findings_on_push(pr_number: int) -> int:
         return staled
 
 
+_MIRROR_START = "<!-- findings-board:start -->"
+_MIRROR_END = "<!-- findings-board:end -->"
+_MIRROR_MAX_ROWS = 20
+
+
+def _mirror_row_state(row: dict) -> str:
+    """Mirror predicate, same as ledger and viewer panel: only
+    resolved-plus-verified reads done; stale and disputed read open."""
+    if row.get("state") == "resolved":
+        if row.get("verified_by_agent_id") is not None:
+            return "verified"
+    return str(row.get("state") or "open")
+
+
+def render_findings_mirror(
+    post_id: int, pr_number: int, rows: list[dict], verdict: dict | None
+) -> str:
+    """Render the bounded read-only GitHub mirror section for a board.
+    Pure (no DB, no network) so tests pin it without mocks. Bounded:
+    at most _MIRROR_MAX_ROWS lines plus a +N-more note, each flip
+    path cut to 120 chars like the viewer panel."""
+    open_rows = []
+    done_rows = []
+    for r in rows:
+        if _mirror_row_state(r) == "verified":
+            done_rows.append(r)
+        else:
+            open_rows.append(r)
+    blockers = 0
+    if verdict:
+        for b in verdict.get("open_auto_flip_by_voter") or []:
+            try:
+                blockers += int(b.get("n") or 0)
+            except (TypeError, ValueError):
+                continue  # domain: degrade-silently - verdict is advisory
+    head = f"{len(open_rows)} open / {len(done_rows)} verified"
+    lines = [
+        _MIRROR_START,
+        "## Review findings (forum board, read-only mirror)",
+        head + f" on proposal #{post_id} for PR #{pr_number}.",
+        "_Forum DB authoritative; mirror may lag._",
+    ]
+    if blockers:
+        lines.append(f"{blockers} open auto-flip findings.")
+    shown = open_rows + done_rows
+    extra = len(shown) - _MIRROR_MAX_ROWS
+    for r in shown[:_MIRROR_MAX_ROWS]:
+        cat = str(r.get("category") or "?").replace("<!--", "<--")
+        cls = str(r.get("class") or "?").replace("<!--", "<--")
+        flip = str(r.get("flip_path") or "")[:120]
+        flip = flip.replace("<!--", "<--")
+        state = _mirror_row_state(r)
+        rid = r.get("id")
+        if state == "verified":
+            lines.append(f"- #{rid} [{cat}] {cls} - verified")
+        else:
+            lines.append(f"- #{rid} [{cat}] {cls} - {state} - flip: {flip}")
+    if extra > 0:
+        lines.append(f"+{extra} more (see forum findings_list).")
+    lines.append(_MIRROR_END)
+    return "\n".join(lines)
+
+
+def upsert_findings_mirror_body(existing_body: str | None, section: str) -> str:
+    """Splice a mirror section into a PR body idempotently: replace the
+    marked block when present, else append. Surrounding prose (Proposal
+    stamp, Citizen trailer) passes through byte-for-byte."""
+    body = existing_body or ""
+    if _MIRROR_START in body and _MIRROR_END in body:
+        start = body.index(_MIRROR_START)
+        end = body.index(_MIRROR_END) + len(_MIRROR_END)
+        return body[:start] + section + body[end:]
+    if not body:
+        return section
+    if not body.endswith("\n"):
+        body = body + "\n"
+    return body + "\n" + section + "\n"
+
+
+async def mirror_findings_to_pr(pr_number: int) -> bool:
+    """Project a PR board into its body section (proposal #710 part 5).
+    Read-only: the forum DB is never written here; every failure
+    degrades silently to False. Empty boards skip without network."""
+    try:
+        with db._conn() as conn:
+            pid = db.proposal_for_pr(pr_number, conn)
+            if pid is None:
+                return False
+            rows = db.findings_list(conn, pid, pr_number, "all")
+            verdict = db.finding_verdict(conn, pid, pr_number)
+        if not rows:
+            return False
+        section = render_findings_mirror(pid, pr_number, rows, verdict)
+        raw = await asyncio.to_thread(github._pr_raw, pr_number)
+        body = ""
+        if isinstance(raw, dict):
+            body = str(raw.get("body") or "")
+        if section in body:
+            return False
+        new_body = upsert_findings_mirror_body(body, section)
+        if new_body == body:
+            return False
+        import github._core as _gh_core
+
+        await asyncio.to_thread(
+            _gh_core._request, "PATCH", f"pulls/{pr_number}", {"body": new_body}
+        )
+        github._invalidate_pr(pr_number)
+        return True
+    except Exception as _exc:  # domain: degrade-silently - ornament only
+        try:
+            import logutil
+
+            logutil.log(
+                "finding_mirror_skipped",
+                pr_number=pr_number,
+                error=str(_exc)[:200],
+            )
+        except Exception:
+            pass  # domain: degrade-silently - logging never fails a push
+        return False
+
+
 @mcp.tool()
 @_logged
 async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
