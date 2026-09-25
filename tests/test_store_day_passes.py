@@ -613,6 +613,10 @@ def test_ci_burst_concurrent_reserve_and_status():
                     assert db.ci_burst_remaining(buyer["agent_id"]) >= 0
                     assert db.release_ci_burst(rid, error="race")
                 assert db.ci_burst_remaining(buyer["agent_id"]) >= 0
+                # Hammer the fixed line too: the status read path must stay
+                # exact under the same contention.
+                st = db.ci_kind_status(buyer["agent_id"], "ci_local_run")
+                assert st["burst_remaining"] >= 0, st
         except Exception as exc:  # fail-loudly - any OperationalError fails
             errors.append(exc)
 
@@ -627,6 +631,12 @@ def test_ci_burst_concurrent_reserve_and_status():
             (buyer["agent_id"],),
         ).fetchone()[0]
     assert live == 0, live
+    # The reconcile writers take no caller connection: a future caller
+    # passing a read conn must fail loudly instead of silently regressing.
+    import inspect as _inspect
+
+    assert "conn" not in _inspect.signature(db.ci_burst_remaining).parameters
+    assert "conn" not in _inspect.signature(db.reserve_ci_burst).parameters
     print("  concurrent reserve/status never upgrade-fails, accounting exact")
 
 
