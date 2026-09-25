@@ -1837,6 +1837,48 @@ def test_fast_run_stamps_run_id_on_result_and_event():
         stub.cleanup()
 
 
+def test_handoff_note_reads_as_prose():
+    """#B105: the shared handoff note must read as prose. The inlined
+    workspace copy dropped the trailing space from three literals, so the
+    concatenation produced "timeoutbeat it" / "inthe background" /
+    "re-firethe same payload"."""
+    from server.tools.repo import _govern
+
+    helper = getattr(_govern, "_ci_handoff_note", None)
+    assert callable(helper), (
+        "#B105's fix is one shared _ci_handoff_note() in server/tools/repo/_govern.py"
+    )
+    note = helper()
+    for span in (
+        "read timeout beat it",
+        "it continues in the background",
+        "Do not re-fire the same payload",
+        "resolve it with repo_ci_run_status(run_id).",
+    ):
+        assert span in note, note
+    assert "  " not in note, note
+
+
+def test_both_handoff_sites_share_one_note():
+    """Neither handoff payload may re-inline the sentence: both answer with
+    the shared helper and the literal lives once, so a wording fix cannot
+    drift between the two sites again (source-level pin, the launch-site
+    idiom from tests/test_keepalive.py)."""
+    repo = Path(config.REPO_DIR)
+    govern = (repo / "server/tools/repo/_govern.py").read_text(encoding="utf-8")
+    workspace = (repo / "server/tools/repo/_workspace.py").read_text(encoding="utf-8")
+    for name, text in (("_govern.py", govern), ("_workspace.py", workspace)):
+        assert '"note": _ci_handoff_note(),' in text, (
+            f"{name} does not answer a handoff with the shared note"
+        )
+    assert govern.count("your run is still in flight") == 1, (
+        "the sentence lives once, in _ci_handoff_note"
+    )
+    assert workspace.count("your run is still in flight") == 0, (
+        "_workspace.py re-inlined the handoff note"
+    )
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -1900,6 +1942,8 @@ def main():
     test_fast_run_stamps_run_id_on_result_and_event()
     test_conflict_path_stamps_run_id_on_payload_and_event()
     test_audit_late_failure_modes_and_status_kinds()
+    test_handoff_note_reads_as_prose()
+    test_both_handoff_sites_share_one_note()
     print("test_ci_runner: all ok")
 
 
