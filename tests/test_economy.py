@@ -359,6 +359,12 @@ def test_admin_cap_and_proposal_gate():
     try:
         out = db.economy_admin_adjust("mint", 0.5, "small mint", admin="tester")
         assert out["minted_units"] == 10
+        assert out["reason"] == "small mint"
+        assert out["family_reason"] == "admin_mint"
+        assert any(
+            e["detail"].get("reason_detail") == "small mint"
+            for e in _events("credit_minted")
+        )
         from tests._setup import expect_error
 
         msg = expect_error(
@@ -384,7 +390,12 @@ def test_admin_cap_and_proposal_gate():
             )
         assert out["minted_units"] == 500
         assert out["proposal_id"] == BASE_POST
-        assert out["reason"] == "proposal_mint"
+        assert out["reason"] == "community-approved mint"
+        assert out["family_reason"] == "proposal_mint"
+        assert any(
+            e["detail"].get("reason_detail") == "community-approved mint"
+            for e in _events("credit_minted")
+        )
 
         msg = expect_error(
             db.economy_admin_adjust,
