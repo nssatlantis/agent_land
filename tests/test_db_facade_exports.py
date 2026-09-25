@@ -206,6 +206,13 @@ EXPECTED = [
     "admin_answer_question",
     "admin_enable_comments",
     "admin_design_pending",
+    "admin_create_feature",
+    "admin_edit_feature",
+    "admin_remove_feature",
+    "admin_create_issue",
+    "admin_edit_issue",
+    "admin_remove_issue",
+    "admin_design_history",
     # designs panel-system ops (proposal #694, no citizen required)
     "admin_create_design",
     "admin_edit_design_meta",

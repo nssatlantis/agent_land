@@ -186,6 +186,16 @@ def main():
         csrf,
     )
     assert "rejected" in r.body.decode("utf-8")
+    rejectdet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "No plaid" in rejectdet.body.decode("utf-8")
     print("  decide-feature: ok")
 
     # --- answer + resolve + move + toggle --------------------------------------
@@ -214,6 +224,25 @@ def main():
         csrf,
     )
     assert "resolved" in r.body.decode("utf-8")
+    resolveddet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "<td>resolved</td>" in resolveddet.body.decode("utf-8")
+    f3 = designs.propose_feature(beta["token"], did, "Panel second accepted feature")
+    r = _post(
+        admin.design_admin_decide_feature,
+        f"/admin/designs/{did}/decide-feature",
+        {"design_id": did},
+        {"feature_id": str(f3["feature_id"]), "decision": "approve"},
+        csrf,
+    )
+    assert "accepted" in r.body.decode("utf-8")
     r = _post(
         admin.design_admin_move_item,
         f"/admin/designs/{did}/move-item",
@@ -222,6 +251,35 @@ def main():
         csrf,
     )
     assert "moved" in r.body.decode("utf-8")
+    movedet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{did}",
+            params={"design_id": did},
+            headers=_ok_auth(),
+        ),
+    )
+    movedbody = movedet.body.decode("utf-8")
+    assert "<td>moved</td>" in movedbody
+    assert "down " in movedbody
+    assert "->" in movedbody
+    r = _post(
+        admin.design_admin_move_item,
+        f"/admin/designs/{did}/move-item",
+        {"design_id": did},
+        {"kind": "feature", "item_id": str(f3["feature_id"]), "direction": "up"},
+        csrf,
+    )
+    assert "unchanged" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_move_item,
+        f"/admin/designs/{did}/move-item",
+        {"design_id": did},
+        {"kind": "feature", "item_id": str(f1["feature_id"]), "direction": "down"},
+        csrf,
+    )
+    assert "unchanged" in r.body.decode("utf-8")
     r = _post(
         admin.design_admin_toggle_comments,
         f"/admin/designs/{did}/toggle-comments",
@@ -266,13 +324,215 @@ def main():
     sysbody = sysdet.body.decode("utf-8")
     assert f"/admin/designs/{sysdid}/edit-meta" in sysbody
     assert f"/admin/designs/{sysdid}/close" in sysbody
+    assert "Author content directly" in sysbody
+    assert "preview_feature_ids" in sysbody
+    route_paths = {route.path for route in admin.ROUTES}
+    for suffix in (
+        "feature/create",
+        "feature/edit",
+        "feature/remove",
+        "issue/create",
+        "issue/edit",
+        "issue/remove",
+    ):
+        assert f"/admin/designs/{{design_id:int}}/{suffix}" in route_paths
+    r = _post(
+        admin.design_admin_create_feature,
+        f"/admin/designs/{sysdid}/feature/create",
+        {"design_id": sysdid},
+        {"text": "Panel authored feature"},
+        csrf,
+    )
+    assert "added and accepted" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        direct_fid = int(
+            conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Panel authored feature"),
+            ).fetchone()[0]
+        )
+    r = _post(
+        admin.design_admin_create_issue,
+        f"/admin/designs/{sysdid}/issue/create",
+        {"design_id": sysdid},
+        {"text": "Panel authored issue", "feature_id": str(direct_fid)},
+        csrf,
+    )
+    assert "added and accepted" in r.body.decode("utf-8")
+    hidden_fid_result = _post(
+        admin.design_admin_create_feature,
+        f"/admin/designs/{sysdid}/feature/create",
+        {"design_id": sysdid},
+        {"text": "Hidden parent feature"},
+        csrf,
+    )
+    assert "added and accepted" in hidden_fid_result.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_fid = int(
+            conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Hidden parent feature"),
+            ).fetchone()[0]
+        )
+    hidden_iid_result = _post(
+        admin.design_admin_create_issue,
+        f"/admin/designs/{sysdid}/issue/create",
+        {"design_id": sysdid},
+        {"text": "Issue with hidden parent", "feature_id": str(hidden_fid)},
+        csrf,
+    )
+    assert "added and accepted" in hidden_iid_result.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_iid = int(
+            conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Issue with hidden parent"),
+            ).fetchone()[0]
+        )
+    _post(
+        admin.design_admin_resolve_issue,
+        f"/admin/designs/{sysdid}/resolve-issue",
+        {"design_id": sysdid},
+        {"issue_id": str(hidden_iid)},
+        csrf,
+    )
+    _post(
+        admin.design_admin_remove_feature,
+        f"/admin/designs/{sysdid}/feature/remove",
+        {"design_id": sysdid},
+        {"feature_id": str(hidden_fid)},
+        csrf,
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_issues SET state = 'accepted' WHERE id = ?", (hidden_iid,)
+        )
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {"issue_id": str(hidden_iid), "text": "Edited after hidden parent"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link == hidden_fid, hidden_link
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {
+            "issue_id": str(hidden_iid),
+            "text": "Kept via explicit sentinel",
+            "feature_id": "__keep__",
+        },
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link == hidden_fid, hidden_link
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {
+            "issue_id": str(hidden_iid),
+            "text": "Explicitly unlinked",
+            "feature_id": "",
+        },
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link is None, hidden_link
+    sysdet_after = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    sysbody_after = sysdet_after.body.decode("utf-8")
+    for suffix in (
+        "feature/create",
+        "feature/edit",
+        "feature/remove",
+        "issue/create",
+        "issue/edit",
+        "issue/remove",
+    ):
+        assert f"/admin/designs/{sysdid}/{suffix}" in sysbody_after
+    with db._conn() as conn:
+        direct_iid = int(
+            conn.execute(
+                "SELECT id FROM design_issues WHERE design_id = ?"
+                " AND text = ? AND state = 'accepted'",
+                (sysdid, "Panel authored issue"),
+            ).fetchone()[0]
+        )
+    r = _post(
+        admin.design_admin_edit_feature,
+        f"/admin/designs/{sysdid}/feature/edit",
+        {"design_id": sysdid},
+        {"feature_id": str(direct_fid), "text": "Panel authored feature v2"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {"issue_id": str(direct_iid), "text": "Panel authored issue v2"},
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_remove_issue,
+        f"/admin/designs/{sysdid}/issue/remove",
+        {"design_id": sysdid},
+        {"issue_id": str(direct_iid)},
+        csrf,
+    )
+    assert "removed" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_remove_feature,
+        f"/admin/designs/{sysdid}/feature/remove",
+        {"design_id": sysdid},
+        {"feature_id": str(direct_fid)},
+        csrf,
+    )
+    assert "removed" in r.body.decode("utf-8")
+    decisiondet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    assert "<td>remove</td>" in decisiondet.body.decode("utf-8")
     r = _post(
         admin.design_admin_edit_design_meta,
         f"/admin/designs/{sysdid}/edit-meta",
         {"design_id": sysdid},
         {
             "title": "Panel system design v2",
-            "description": "Made by panel",
+            "description": "Made by panel v2",
             "request_text": "Wanted: quiet",
             "tag_new_ideas": "on",
             "tag_improvements": "on",
@@ -280,6 +540,18 @@ def main():
         csrf,
     )
     assert "updated" in r.body.decode("utf-8")
+    metadet = _call(
+        admin.design_admin_detail_page,
+        _req(
+            "GET",
+            f"/admin/designs/{sysdid}",
+            params={"design_id": sysdid},
+            headers=_ok_auth(),
+        ),
+    )
+    metabody = metadet.body.decode("utf-8")
+    assert "Made by panel" in metabody
+    assert "Made by panel v2" in metabody
     designs.propose_feature(beta["token"], sysdid, "Panel pending widget")
     r = _post(
         admin.design_admin_close_design,
@@ -289,11 +561,44 @@ def main():
         csrf,
     )
     assert "tick confirm" in r.body.decode("utf-8")
+    designs.propose_feature(beta["token"], sysdid, "Panel drift row")
     r = _post(
         admin.design_admin_close_design,
         f"/admin/designs/{sysdid}/close",
         {"design_id": sysdid},
         {"confirm": "on"},
+        csrf,
+    )
+    assert "preview changed" in r.body.decode("utf-8")
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {},
+        csrf,
+    )
+    assert "tick confirm" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        preview_feature_ids = ",".join(
+            str(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM design_features WHERE design_id = ? AND state = 'pending'"
+                " ORDER BY id",
+                (sysdid,),
+            ).fetchall()
+        )
+    preview_digest = db.admin_design_history("alpha", sysdid)["preview_digest"]
+    r = _post(
+        admin.design_admin_close_design,
+        f"/admin/designs/{sysdid}/close",
+        {"design_id": sysdid},
+        {
+            "confirm": "on",
+            "preview_feature_ids": preview_feature_ids,
+            "preview_issue_ids": "",
+            "preview_question_ids": "",
+            "preview_digest": preview_digest,
+        },
         csrf,
     )
     assert "archived" in r.body.decode("utf-8")

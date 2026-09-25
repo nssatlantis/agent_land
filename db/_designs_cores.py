@@ -37,7 +37,20 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
     row = _feature_row(conn, feature_id, design["id"])
     if row["state"] != "pending":
         raise ForumError("only pending proposals can be decided.")
+    if approve and row["op"] == "remove":
+        target = _feature_row(conn, row["target_feature_id"], design["id"])
+        linked = conn.execute(
+            "SELECT id FROM design_issues WHERE design_id = ? AND feature_id = ?"
+            " AND state IN ('pending', 'accepted') LIMIT 1",
+            (int(design["id"]), int(target["id"])),
+        ).fetchone()
+        if linked is not None:
+            raise ForumError("cannot remove a feature with linked issues.")
     now = _now_iso()
+    if approve and row["op"] in ("edit", "remove"):
+        target = _feature_row(conn, row["target_feature_id"], design["id"])
+        if target["op"] != "add" or target["state"] != "accepted":
+            raise ForumError("only accepted add features can be edit/remove targets.")
     if approve:
         if row["op"] == "add":
             conn.execute(
@@ -74,7 +87,12 @@ def _core_decide_feature(conn, agent, design_id, feature_id, approve, note=""):
                 " decided_at = ?, decided_by = ? WHERE id = ?",
                 (now, agent["id"], int(row["id"])),
             )
-        _log_decided(conn, agent, design["id"], {"fid": int(row["id"]), "ok": True})
+        _log_decided(
+            conn,
+            agent,
+            design["id"],
+            {"fid": int(row["id"]), "ok": True, "note": (note or "")[:200]},
+        )
         _notify_author(
             conn,
             design["id"],
@@ -122,7 +140,14 @@ def _core_decide_issue(conn, agent, design_id, issue_id, approve, note=""):
         (state, now, agent["id"], int(row["id"])),
     )
     _log_decided(
-        conn, agent, design["id"], {"issue_id": int(row["id"]), "ok": bool(approve)}
+        conn,
+        agent,
+        design["id"],
+        {
+            "issue_id": int(row["id"]),
+            "ok": bool(approve),
+            "note": (note or "")[:200],
+        },
     )
     verb = "accepted" if approve else "declined"
     _notify_author(
@@ -152,7 +177,14 @@ def _core_resolve_issue(conn, agent, design_id, issue_id, note=""):
         (now, agent["id"], int(row["id"])),
     )
     _log_decided(
-        conn, agent, design["id"], {"issue_id": int(row["id"]), "resolved": True}
+        conn,
+        agent,
+        design["id"],
+        {
+            "issue_id": int(row["id"]),
+            "resolved": True,
+            "note": (note or "")[:200],
+        },
     )
     return {"issue_id": int(row["id"]), "resolved": True}
 
@@ -178,11 +210,13 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     if row is None:
         raise ForumError(f"no {kind} #{item_id} on design #{design['id']}.")
     row = dict(row)
-    if row["state"] != "accepted":
-        raise ForumError("only accepted items can be reordered.")
+    if row["state"] != "accepted" or (kind == "feature" and row["op"] != "add"):
+        raise ForumError("only accepted add features can be reordered.")
+    feature_filter = " AND op = 'add'" if kind == "feature" else ""
     if direction == "up":
         other = conn.execute(
             f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
+            f"{feature_filter}"
             " AND (position < ? OR (position = ? AND id < ?))"
             " ORDER BY position DESC, id DESC LIMIT 1",
             (int(design["id"]), row["position"], row["position"], int(row["id"])),
@@ -190,6 +224,7 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     else:
         other = conn.execute(
             f"SELECT * FROM {table} WHERE design_id = ? AND state = 'accepted'"
+            f"{feature_filter}"
             " AND (position > ? OR (position = ? AND id > ?))"
             " ORDER BY position ASC, id ASC LIMIT 1",
             (int(design["id"]), row["position"], row["position"], int(row["id"])),
@@ -204,6 +239,20 @@ def _core_move_item(conn, agent, design_id, kind, item_id, direction):
     conn.execute(
         f"UPDATE {table} SET position = ? WHERE id = ?",
         (row["position"], int(other["id"])),
+    )
+    _log_decided(
+        conn,
+        agent,
+        design["id"],
+        {
+            "op": "move",
+            "kind": kind,
+            "item_id": int(row["id"]),
+            "other_id": int(other["id"]),
+            "direction": direction,
+            "old_position": int(row["position"]),
+            "new_position": int(other["position"]),
+        },
     )
     return {"item_id": int(row["id"]), "moved": True}
 
