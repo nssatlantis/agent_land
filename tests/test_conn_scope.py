@@ -121,35 +121,88 @@ def _is_conn_call(node):
     )
 
 
-def _leaks_in_function(func):
-    leaks = []
-    for with_node in ast.walk(func):
-        if not isinstance(with_node, ast.With):
-            continue
-        for item in with_node.items:
-            if not _is_conn_call(item.context_expr):
-                continue
-            if not isinstance(item.optional_vars, ast.Name):
-                continue
-            name = item.optional_vars.id
-            allowed = set()
-            for stmt in with_node.body:
-                for sub in ast.walk(stmt):
-                    if (
-                        isinstance(sub, ast.Name)
-                        and isinstance(sub.ctx, ast.Load)
-                        and sub.id == name
-                    ):
-                        allowed.add(id(sub))
-            for sub in ast.walk(func):
-                if (
-                    isinstance(sub, ast.Name)
-                    and isinstance(sub.ctx, ast.Load)
-                    and sub.id == name
-                ):
-                    if id(sub) not in allowed:
-                        leaks.append((name, sub.lineno))
+def _collect_scope(stmts):
+    """Split one lexical scope into with-bindings, loads and nested scopes.
+
+    Only With nodes directly in this scope count as bindings, and only
+    Name loads directly in this scope count as uses: a nested def or
+    lambda (e.g. a `def _exec(c)` callback parameter) lives in its own
+    scope, so its same-spelled names never leak into - or out of - this
+    one. Sequential `with db._conn() as conn:` blocks rebind the name,
+    so a load sheltered by ANY same-name body refers to a live handle;
+    only a load outside every same-name body is a genuine use-after-close.
+    """
+    bindings = []
+    loads = []
+    nested = []
+
+    def visit(node):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            nested.append(node)
+            return
+        if isinstance(node, ast.With):
+            for item in node.items:
+                if not _is_conn_call(item.context_expr):
+                    continue
+                if not isinstance(item.optional_vars, ast.Name):
+                    continue
+                owned = set()
+                for stmt in node.body:
+                    for sub in ast.walk(stmt):
+                        if (
+                            isinstance(sub, ast.Name)
+                            and isinstance(sub.ctx, ast.Load)
+                            and sub.id == item.optional_vars.id
+                        ):
+                            owned.add(id(sub))
+                bindings.append((item.optional_vars.id, owned))
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            loads.append(node)
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    for stmt in stmts:
+        visit(stmt)
+    return bindings, loads, nested
+
+
+def _leaks_in_body(stmts):
+    bindings, loads, nested = _collect_scope(stmts)
+    sheltered = {}
+    for name, owned in bindings:
+        sheltered.setdefault(name, set()).update(owned)
+    leaks = [
+        (node.id, node.lineno)
+        for node in loads
+        if node.id in sheltered and id(node) not in sheltered[node.id]
+    ]
+    for scope_node in nested:
+        if isinstance(scope_node, ast.Lambda):
+            leaks.extend(_leaks_in_body([scope_node.body]))
+        else:
+            leaks.extend(_leaks_in_body(scope_node.body))
     return leaks
+
+
+def _leaks_in_function(func):
+    return _leaks_in_body(func.body)
+
+
+def test_checker_shapes():
+    """The scope/rebind logic must discriminate: sequential rebinds shelter
+    each other's bodies, while a post-close load still fails loudly."""
+    rebound = ast.parse(
+        "def f():\n"
+        " with db._conn() as conn:\n"
+        "  a = conn.execute(1)\n"
+        " with db._conn() as conn:\n"
+        "  b = conn.execute(2)\n"
+    ).body[0]
+    assert _leaks_in_function(rebound) == []
+    leaky = ast.parse(
+        "def f():\n with db._conn() as conn:\n  pass\n return conn\n"
+    ).body[0]
+    assert _leaks_in_function(leaky) == [("conn", 4)]
 
 
 def test_no_db_handle_escapes_its_with_block():
@@ -167,3 +220,13 @@ def test_no_db_handle_escapes_its_with_block():
                     f"is referenced outside its `with` block (connection-lifetime "
                     f"misuse, audit item #2952)"
                 )
+
+
+def main():
+    test_checker_shapes()
+    test_no_db_handle_escapes_its_with_block()
+    print("test_conn_scope: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()
