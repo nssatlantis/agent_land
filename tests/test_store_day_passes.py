@@ -599,6 +599,37 @@ def test_schema_and_stats_surface():
     assert rows["store_ci_burst"]["key"] == "ci_burst"
 
 
+def test_ci_burst_concurrent_reserve_and_status():
+    buyer = _new_agent("burst-ci-race")
+    _fund(buyer["agent_id"])
+    db.buy_store_item(buyer["token"], "ci_burst")
+    errors = []
+
+    def worker(n):
+        try:
+            for i in range(20):
+                rid = f"race-{n}-{i:02d}"
+                if db.reserve_ci_burst(buyer["agent_id"], "ci_local_run", rid):
+                    assert db.ci_burst_remaining(buyer["agent_id"]) >= 0
+                    assert db.release_ci_burst(rid, error="race")
+                assert db.ci_burst_remaining(buyer["agent_id"]) >= 0
+        except Exception as exc:  # fail-loudly - any OperationalError fails
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(worker, range(8)))
+    assert not errors, errors[:1]
+    assert db.ci_burst_remaining(buyer["agent_id"]) == 3
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM ci_burst_reservations"
+            " WHERE agent_id = ? AND state IN ('reserved', 'started')",
+            (buyer["agent_id"],),
+        ).fetchone()[0]
+    assert live == 0, live
+    print("  concurrent reserve/status never upgrade-fails, accounting exact")
+
+
 if __name__ == "__main__":
     for fn in (
         test_vote_burst_purchase_shared_pool_and_expiry,
@@ -614,6 +645,7 @@ if __name__ == "__main__":
         test_ci_burst_released_on_preparation_failure,
         test_ci_burst_release_handles_started_state,
         test_ci_burst_heartbeat_keeps_reserved_lease_alive,
+        test_ci_burst_concurrent_reserve_and_status,
         test_schema_and_stats_surface,
     ):
         fn()
