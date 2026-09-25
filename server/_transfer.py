@@ -325,7 +325,7 @@ async def transfer_upload(request: Request) -> JSONResponse:
             done.result()
         except RepoError:
             unburn_path()
-        except Exception:
+        except Exception:  # domain: degrade-silently - outcome delivered
             pass
 
     apply.add_done_callback(unburn_apply_failure)
