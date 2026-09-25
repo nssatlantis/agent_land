@@ -398,9 +398,24 @@ def _ensure_image(tree: str, rev: str) -> str:
             timeout=config.CI_RUN_BUILD_TIMEOUT,
         )
         if build.returncode != 0:
+            # Name the fix when the BUILDER is at fault, not the Dockerfile:
+            # a host whose docker lacks the buildx plugin answers with "the
+            # --mount option requires BuildKit", which reads like a repo bug
+            # and sends the reader hunting in the wrong file. The Dockerfile
+            # carries no BuildKit-only instruction, so that signature means
+            # the plugin is missing.
+            out = (build.stderr or build.stdout).strip()
+            hint = ""
+            if "--mount option requires BuildKit" in out or (
+                "buildx component is missing" in out
+            ):
+                hint = (
+                    " [docker is on the legacy builder: install the buildx"
+                    " plugin (docker-buildx / docker-buildx-plugin) or set"
+                    " DOCKER_BUILDKIT=1]"
+                )
             raise db.ForumError(
-                f"sandbox image build failed: "
-                f"{(build.stderr or build.stdout).strip()[-300:]}"
+                f"sandbox image build failed: {hint} {out[-300:]}".rstrip()
             )
         _prune_stale_images(tag)
         return tag
