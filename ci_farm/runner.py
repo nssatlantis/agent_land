@@ -16,7 +16,7 @@ Env:
   CIFARM_TOKEN       bearer token required on POST /run (required)
   CIFARM_REPO_DIR    repo checkout to import from (default: the repo
                      root containing this file)
-  AGENTLAND_DATA_DIR data dir (default: <repo>/ci_farm/data)
+  AGENTLAND_DATA_DIR data dir (default: <repo parent>/agent_land_farm_data)
 """
 
 from __future__ import annotations
@@ -68,6 +68,17 @@ _mods: dict | None = None
 _START_TIME = time.time()
 _START_SHA: str | None = None  # checkout HEAD at startup, set by main()
 
+# Last thing that went wrong on THIS runner, reported verbatim by /health.
+# The host's pick_runner treats any 200 from /health as healthy, so a runner
+# that fails every dispatch (a missing buildx plugin, a dead image build)
+# otherwise looks fine forever while the host silently falls back to local
+# CI. Set on a self-reported problem; cleared by the next dispatch that runs
+# to completion (a red suite is still a working runner). Deliberately NOT an
+# eligibility signal: skipping a runner on its own error, with no
+# self-clearing path, would brick dispatch until a human intervened - see
+# the matching note in server/ci_runner/_farm.py.
+_LAST_ERROR: str | None = None
+
 
 def _repo_root() -> str:
     env = os.environ.get("CIFARM_REPO_DIR")
@@ -79,8 +90,10 @@ def _repo_root() -> str:
 def _data_dir() -> str:
     dd = os.environ.get("AGENTLAND_DATA_DIR")
     if not dd:
-        root = _repo_root()
-        dd = os.path.join(root, "ci_farm", "data")
+        # A sibling of the checkout, never a child: the warm CI trees under
+        # agentland_ws/ are untracked, and anything a `git clean` in the
+        # repo removes takes them with it. Mirrors config.py's DATA_DIR.
+        dd = os.path.join(os.path.dirname(_repo_root()), "agent_land_farm_data")
         os.makedirs(dd, exist_ok=True)
         os.environ["AGENTLAND_DATA_DIR"] = dd
     return dd
@@ -400,12 +413,14 @@ class FarmHandler(BaseHTTPRequestHandler):
                     "docker_available": docker_ok,
                     "active_runs": 1 if self.lock.locked() else 0,
                     "head_sha": _repo_head(),
+                    "last_error": _LAST_ERROR,
                 },
             )
         else:
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        global _LAST_ERROR
         if self.path != "/run":
             self._json(404, {"error": "not found"})
             return
@@ -437,6 +452,7 @@ class FarmHandler(BaseHTTPRequestHandler):
             if not _deps_fresh(_START_TIME):
                 # requirements*.txt changed since startup: the venv predates
                 # them. Fail loud (503) instead of serving stale dependencies.
+                _LAST_ERROR = "runner dependencies changed; restart the runner"
                 self._json(
                     503, {"error": "runner dependencies changed; restart the runner"}
                 )
@@ -460,7 +476,10 @@ class FarmHandler(BaseHTTPRequestHandler):
                 self._json(200, _run_job(payload))
             except Exception as exc:
                 sys.stderr.write(f"ci_farm runner error: {exc}\n")
+                _LAST_ERROR = str(exc)[:300]
                 self._json(500, {"error": "internal runner error"})
+            else:
+                _LAST_ERROR = None
         finally:
             self.lock.release()
 
