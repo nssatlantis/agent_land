@@ -383,12 +383,33 @@ def ci_burst_remaining(
     agent_id: int,
     *,
     now: datetime | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> int:
     current = _day_now(now)
-    # Reconcile writes: take the write lock up front, so a status read
-    # racing a concurrent writer busy-waits instead of dying on a deferred
-    # read-to-write lock upgrade. No conn passthrough: a caller-passed read
-    # connection would silently reintroduce that exact failure.
+    if conn is not None:
+        # Caller-owned transaction (#B110): the caller may already hold
+        # the write lock - whoami inside my_profile/check_in performs
+        # first-touch writes before reading quotas.  Reconciling on
+        # their connection reuses that lock instead of opening a second
+        # immediate connection whose BEGIN IMMEDIATE would deadlock
+        # against it until the busy timeout.  If their connection
+        # cannot take the write lock (a deferred reader under
+        # contention), fall through to the owned immediate transaction
+        # below - the same serialization the conn-less path always had.
+        try:
+            with nullcontext(conn):
+                _reconcile_ci_burst_reservations(conn, current)
+                return int(
+                    _day_pass_state(conn, agent_id, "ci_burst", now=current)[
+                        "credits_remaining"
+                    ]
+                )
+        except sqlite3.OperationalError:  # domain: never-lose-data - caller-conn write failure falls back to the owned immediate transaction below; reconcile is idempotent so a half-run retries cleanly
+            pass
+    # Conn-less path (and contended-deferred fallback above):
+    # reconcile writes take the write lock up front, so a status read
+    # racing a concurrent writer busy-waits instead of dying on a
+    # deferred read-to-write lock upgrade.
     with _conn(immediate=True) as c:
         _reconcile_ci_burst_reservations(c, current)
         return int(
