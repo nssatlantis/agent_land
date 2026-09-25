@@ -939,7 +939,6 @@ def main():
     test_native_test_dispatch_remote_first()
     test_dispatch_timeout_derives_from_run_timeout()
     print("All CI farm tests passed.")
-    print("All CI farm tests passed.")
 
 
 def test_farm_retry_exhaustion_audited():
@@ -1165,7 +1164,13 @@ def test_run_checks_native_test_remote_first_gate():
         "output_tail": "ok",
         "summary": {"tests_run": True},
     }
-    farm.dispatch_to_runner = lambda runner, payload: remote
+    calls = []
+
+    def _record(runner, payload):
+        calls.append((runner, payload))
+        return remote
+
+    farm.dispatch_to_runner = _record
 
     class _Gate:
         def __call__(self, kind_event, agent_id, _system=False, run_id=None):
@@ -1176,9 +1181,29 @@ def test_run_checks_native_test_remote_first_gate():
     orig_enabled = config.CI_FARM_ENABLED
     orig_test_first = config.CI_FARM_TEST_REMOTE_FIRST
     config.CI_FARM_ENABLED = True
-    config.CI_FARM_TEST_REMOTE_FIRST = True
     try:
+        config.CI_FARM_TEST_REMOTE_FIRST = True
+        calls.clear()
         result = runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        assert result["mode"] == "native", result
+        assert result["runner"] == "nt-gate", result
+        assert len(calls) == 1, f"expected 1 dispatch, got {len(calls)}"
+
+        config.CI_FARM_TEST_REMOTE_FIRST = False
+        calls.clear()
+        try:
+            runs_mod.run_checks(agent_id=1, name="t", checks="tests")
+        except Exception:
+            pass
+        assert len(calls) == 0, f"knob-off: no dispatch expected, got {len(calls)}"
+
+        config.CI_FARM_TEST_REMOTE_FIRST = True
+        calls.clear()
+        try:
+            runs_mod.run_checks(agent_id=1, name="t", checks="static")
+        except Exception:
+            pass
+        assert len(calls) == 0, f"scope: no dispatch for checks=static, got {len(calls)}"
     finally:
         runs_mod._gate = orig_gate
         config.CI_FARM_ENABLED = orig_enabled
@@ -1186,8 +1211,6 @@ def test_run_checks_native_test_remote_first_gate():
         farm.dispatch_to_runner = orig_disp
         farm._ping = orig_ping
         farm.remove_runner(row["id"])
-    assert result["mode"] == "native", result
-    assert result["runner"] == "nt-gate", result
 
 
 def test_native_test_dispatch_remote_first():
