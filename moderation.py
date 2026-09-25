@@ -1483,6 +1483,10 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
         from db._proposal_todos import release_claims_for_proposal
 
         release_claims_for_proposal(post_id, conn=conn)
+        try:
+            db.release_workspaces_for_proposal(conn, post_id)
+        except Exception:
+            pass
         # notify collaborators
         try:
             from db._collaborative import list_proposal_collaborators
