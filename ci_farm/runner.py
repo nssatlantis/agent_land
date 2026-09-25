@@ -99,6 +99,19 @@ def _data_dir() -> str:
     return dd
 
 
+def _result_error(result: dict) -> str | None:
+    """What /health should report after a dispatch produced this result.
+
+    A runner-side refusal comes back as a normal 200 carrying an `error`
+    key (unknown checks, bad base_ref, an unusable warm tree) and the host
+    drops exactly those as failed dispatches - so they must read as a
+    self-reported problem here too, not be cleared like a finished run. A
+    red suite is not a refusal: with no `error` key the runner did its job.
+    """
+    err = result.get("error")
+    return str(err)[:300] if err else None
+
+
 def _bootstrap() -> dict:
     """Import the host CI modules from the pinned checkout (idempotent).
 
@@ -473,13 +486,14 @@ class FarmHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "body must be a JSON object"})
                 return
             try:
-                self._json(200, _run_job(payload))
+                result = _run_job(payload)
+                self._json(200, result)
             except Exception as exc:
                 sys.stderr.write(f"ci_farm runner error: {exc}\n")
                 _LAST_ERROR = str(exc)[:300]
                 self._json(500, {"error": "internal runner error"})
             else:
-                _LAST_ERROR = None
+                _LAST_ERROR = _result_error(result)
         finally:
             self.lock.release()
 
