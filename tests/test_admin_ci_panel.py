@@ -174,6 +174,12 @@ def test_farm_panel_renders_and_redacts():
         assert 'x.type!=="hidden"' in html
         assert "document.activeElement===f||f.contains(document.activeElement)" in html
         assert "else{tick();}" in html
+        # The refresh script must wait for the form to be in the DOM before it
+        # can read it: an inline script that runs before the <form> parses
+        # sees f=null and reloads unconditionally, wiping the form.
+        assert 'document.addEventListener("DOMContentLoaded"' in html, (
+            "refresh script must be gated on DOMContentLoaded"
+        )
         assert "last probe" in html
         assert "free means an in-process persistent slot token is available" in html
         assert "Process stats: acquires" in html
