@@ -772,7 +772,7 @@ def _render_ci_dashboard(request) -> str:
 
     refresh = 5 if (pending or inflight) else 10
 
-    refresh_html = f"""<p style="color:var(--muted)">auto-refresh {refresh}s (paused while the runner form is focused or dirty) | <a href="/admin/ci">refresh now</a></p><script>(function(){{const f=document.getElementById("farm-register-form");function tick(){{setTimeout(()=>{{const active=f&&(document.activeElement===f||f.contains(document.activeElement));const dirty=f&&Array.from(f.querySelectorAll("input")).some(x=>x.type!=="hidden"&&x.value.trim());if(!active&&!dirty){{location.reload();}}else{{tick();}}}},{refresh * 1000});}}tick();}})();</script>"""
+    refresh_html = f"""<p style="color:var(--muted)">auto-refresh {refresh}s (paused while the runner form is focused or dirty) | <a href="/admin/ci">refresh now</a></p><script>document.addEventListener("DOMContentLoaded",function(){{const f=document.getElementById("farm-register-form");function tick(){{setTimeout(()=>{{const active=f&&(document.activeElement===f||f.contains(document.activeElement));const dirty=f&&Array.from(f.querySelectorAll("input")).some(x=>x.type!=="hidden"&&x.value.trim());if(!active&&!dirty){{location.reload();}}else{{tick();}}}},{refresh * 1000});}}tick();}})();</script>"""
 
     return (
         "<h1>CI / Workspaces</h1>"
