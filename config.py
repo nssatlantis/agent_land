@@ -1182,7 +1182,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # facts already ride structured detail.summary, so nothing is lost
     # (slowest_s and static.ruff_format_paths cover the last transcript-only
     # bits). 0 keeps the full tail.
-    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 1600, int),
+    "CI_RUN_EVENT_TAIL_BYTES": ("FORUM_CI_RUN_EVENT_TAIL_BYTES", 4096, int),
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.
