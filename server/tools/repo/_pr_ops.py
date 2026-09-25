@@ -230,6 +230,7 @@ async def repo_update_pr(
         raise
     with db._conn() as conn:
         db.require_active(token, conn)
+        via_fixer_lane = False
         try:
             who, pr = _require_pr_owner(token, number, conn, pr=pr)
         except db.ForumError:  # domain: fail-loudly - ownership refusal propagates unless the public-branch lane below accepts it
@@ -252,6 +253,11 @@ async def repo_update_pr(
                     "shared fixes push files only - title and body"
                     " belong to the PR opener"
                 ) from None
+            if any(c.get("delete") is True or c.get("reset") is True for c in changes):
+                raise db.ForumError(
+                    "shared fixes add or patch files only - deletions and"
+                    " resets stay with the PR opener"
+                ) from None
             # Re-check openness for the fixer lane (the owner gate did
             # it for owners; fixers arrive through the refusal above).
             # Processed aget_pr shape carries state; other shapes carry
@@ -262,6 +268,7 @@ async def repo_update_pr(
                     " pull requests can be changed."
                 ) from None
             db.check_fixer_eligible(conn, who["agent_id"])
+            via_fixer_lane = True
         agents_map = db._load_agents_map(conn)
         if body is not None:
             # The ownership gate's connection stays open so the body's
@@ -324,6 +331,41 @@ async def repo_update_pr(
                 "files_changed": bool(changes),
             },
         )
+        if via_fixer_lane:
+            # Race audit (proposal #710, phase 3): the flag/karma read
+            # above ran before the network push, and no SQLite lock may
+            # be held across that push - so an opener toggling the flag
+            # off mid-push cannot stop the bytes.  Re-read after the
+            # fact: on mismatch the opener (who keeps full revert
+            # power) hears about it at once instead of discovering it.
+            try:
+                with db._conn() as _rc:
+                    _still_open = db.is_public_branch(_rc, number)
+                if not _still_open:
+                    import logutil as _logutil_race
+
+                    _logutil_race.log(
+                        "public_branch_race",
+                        pr_number=number,
+                        fixer_id=who["agent_id"],
+                    )
+                    from notifications import _notify as _notify_race
+
+                    _opener = db.pr_opener(number)
+                    if _opener:
+                        with db._conn() as _nc:
+                            _notify_race(
+                                _nc,
+                                _opener["agent_id"],
+                                "pr",
+                                "pr",
+                                number,
+                                f"PR #{number} received a shared fix after its"
+                                " public-branch flag was turned off - review"
+                                " the new commits and revert if needed.",
+                            )
+            except Exception:
+                pass  # domain: degrade-silently - post-push audit never fails the update response
         # Debounced local CI for file-at-a-time updates (15s coalesce)
         if changes:
             try:
