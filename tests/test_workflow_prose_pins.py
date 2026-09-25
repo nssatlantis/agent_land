@@ -156,9 +156,12 @@ def _live_names():
 
 
 def test_removed_tools_absent():
+    # Same span rule as the live-tool half: a removed tool reintroduced in
+    # call form (`repo_my_proposals(view='mine')`) is the same drift, and an
+    # exact "`name`" match would wave it straight through (#B93's mirror).
     for fname in sorted(_TEXTS):
         for name in sorted(_REMOVED):
-            assert f"`{name}`" not in _TEXTS[fname], (
+            assert not _span_pat(name).search(_TEXTS[fname]), (
                 f"{fname} names removed tool `{name}`"
             )
 
@@ -192,20 +195,61 @@ def test_load_bearing_tools_live():
     assert not missing_live, f"load-bearing tools gone from registry: {missing_live}"
 
 
+def _span_pat(name: str) -> re.Pattern[str]:
+    """A backticked span naming `name` - bare (`vote`) or as a call form
+    (`claim_job(job_id)`), which is how the checklists write most of them.
+    The trailing lookahead stops a prefix from matching a longer tool name,
+    so `list_jobs` cannot satisfy itself off a hypothetical `list_jobs_deep`
+    and `vote` cannot satisfy itself off `vote_on_prs`.
+
+    BOTH halves of this file judge spans with this one rule (#B93): an exact
+    "`name`" match misses every call form, which reads a live tool as absent
+    and, pointed the other way, waves a removed tool back in unnoticed."""
+    return re.compile("`" + re.escape(name) + r"(?![A-Za-z0-9_])")
+
+
 def _mentioned(name: str) -> bool:
     """True when `name` appears in a backticked span anywhere across
-    workflows/*.md - bare (`vote`) or as a call form (`claim_job(job_id)`),
-    which is how the checklists write most of them. The trailing lookahead
-    stops a prefix from matching a longer tool name, so `list_jobs` cannot
-    satisfy itself off a hypothetical `list_jobs_deep`."""
-    pat = re.compile("`" + re.escape(name) + r"(?![A-Za-z0-9_])")
-    return any(pat.search(text) for text in _TEXTS.values())
+    workflows/*.md."""
+    return any(_span_pat(name).search(text) for text in _TEXTS.values())
 
 
 def test_load_bearing_tools_mentioned_in_prose():
     missing = sorted(n for n in _LOAD_BEARING if not _mentioned(n))
     assert not missing, (
         f"load-bearing tools absent from workflows/*.md prose: {missing}"
+    )
+
+
+def test_span_matcher_accepts_bare_and_call_forms_only():
+    """The span rule both halves share, pinned directly: a bare span and a
+    call form count; a longer name sharing the prefix does not, in either
+    direction; an unbackticked mention is prose, not an instruction."""
+    probe = "see `list_jobs(view='open')` and `vote` and `claim_jobber` here"
+    assert _span_pat("list_jobs").search(probe), "call form must count"
+    assert _span_pat("vote").search(probe), "bare span must count"
+    assert not _span_pat("claim_job").search(probe), "claim_jobber is not claim_job"
+    assert not _span_pat("list_jobs_deep").search(probe), "no such span here"
+    only_long = "only `vote_on_prs(pr_number)` here"
+    assert not _span_pat("vote").search(only_long), (
+        "vote must not satisfy itself off vote_on_prs"
+    )
+    plain = "plain list_jobs without backticks"
+    assert not _span_pat("list_jobs").search(plain), (
+        "an unbackticked mention is prose, not an instruction"
+    )
+
+
+def test_removed_tools_absent_sees_call_forms():
+    """The absence half must catch a removed tool wearing a call form - the
+    exact evasion #B93 exposed, pointed the other way."""
+    name = sorted(_REMOVED)[0]
+    assert _span_pat(name).search(f"call `{name}(view='mine')` for your own"), (
+        "a removed tool in call form must be seen"
+    )
+    assert _span_pat(name).search(f"see `{name}` too"), "bare form still seen"
+    assert not _span_pat(name).search(f"{name} is mentioned without backticks"), (
+        "unbackticked prose is not an instruction"
     )
 
 
@@ -235,5 +279,9 @@ if __name__ == "__main__":
     print("ok - test_load_bearing_tools_live")
     test_load_bearing_tools_mentioned_in_prose()
     print("ok - test_load_bearing_tools_mentioned_in_prose")
+    test_span_matcher_accepts_bare_and_call_forms_only()
+    print("ok - test_span_matcher_accepts_bare_and_call_forms_only")
+    test_removed_tools_absent_sees_call_forms()
+    print("ok - test_removed_tools_absent_sees_call_forms")
     test_spans_ascii_audit()
     print("ok - test_spans_ascii_audit")
