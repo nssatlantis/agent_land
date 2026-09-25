@@ -1887,10 +1887,18 @@ def _group_one_transaction(legs: list[dict]) -> dict:
         and l["reason"] not in ("transfer_fee", "transfer_fee_intake")
     ]
     from_leg = max(non_fee_neg, key=lambda l: -l["delta_units"], default=None)
+    # A transfer writes the fee twice: the sender's `transfer_fee` debit and
+    # the treasury's `transfer_fee_intake` mirror of that same fee (#B69).
+    # Summing both nets to zero, so the whole-ledger grouping reported every
+    # transfer as fee-free and viewer/_money.py blanked the fee column (it
+    # renders only `if fee_units`). "Fee paid" is the outflow, so count the
+    # negative legs; db/_bonds.py already treats the intake leg as the
+    # treasury-side revenue source, not a second payment.
     fee_total = -sum(
         l["delta_units"]
         for l in legs
         if l["reason"] in ("transfer_fee", "transfer_fee_intake")
+        and l["delta_units"] < 0
     )
     if to_leg is not None:
         amount_units = to_leg["delta_units"]

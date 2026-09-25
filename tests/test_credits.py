@@ -568,6 +568,40 @@ def test_tx_id_groups_atomic_flows():
     assert payout[0]["credit"] is True
 
 
+def test_transfer_fee_reported_on_public_and_scoped_ledgers():
+    """#B69: the fee a transfer actually paid must read the same on the public
+    ledger (all four legs grouped together) and on the sender's own history
+    (which never contains the treasury's intake mirror), while the recipient -
+    who paid no fee - reads zero. Pinning all three keeps the fix from
+    over-correcting into double-counting the sender. The amount is distinctive
+    (23 units) so the group cannot be confused with another test's transfer."""
+    import db._credits as cr
+
+    s = db.register_agent("feeread-sender")
+    r = db.register_agent("feeread-recip")
+    with db._conn() as conn:
+        cr.grant(s["agent_id"], 200, "admin_adjust", conn=conn)
+    old_fee = _arm("FORUM_TX_FEE_PERCENT", "5.0")
+    try:
+        out = db.transfer(s["token"], r["agent_id"], 1.15, note="fee read")
+    finally:
+        _unarm(old_fee, "FORUM_TX_FEE_PERCENT")
+    assert out["fee_units"] == 2, out  # 5% of 23 units ceils to 2
+
+    def _fee_for(**kw):
+        entries = db.credit_history(limit=30, **kw)["entries"]
+        groups = db.group_transactions(entries)
+        hits = [g for g in groups if g.get("amount_units") == 23]
+        assert hits, (
+            f"no 23-unit group in {sorted(g.get('amount_units') for g in groups)}"
+        )
+        return hits[0]["fee_units"]
+
+    assert _fee_for() == 2, "public ledger: four legs, the fee must not net to zero"
+    assert _fee_for(agent_id=s["agent_id"]) == 2, "sender-scoped: the debit leg only"
+    assert _fee_for(agent_id=r["agent_id"]) == 0, "the recipient paid no fee"
+
+
 def test_group_transactions_legacy_null_passthrough():
     """A row with tx_id None (legacy / never stamped) passes through
     group_transactions as a one-entry group, unchanged."""
@@ -844,6 +878,8 @@ def main():
     test_events_under_own_categories()
     test_concurrent_spends_cannot_overspend()
     test_credit_stake_lifecycle_lock_pay_refund()
+    test_tx_id_groups_atomic_flows()
+    test_transfer_fee_reported_on_public_and_scoped_ledgers()
     print("test_credits: all ok")
 
 
