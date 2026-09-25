@@ -206,6 +206,11 @@ def main():
     )
     admin.admin_resolve_issue("alpha", did, resolved_child["issue_id"])
     admin.admin_remove_feature("alpha", did, resolved_parent["feature_id"])
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_issues SET state = 'accepted' WHERE id = ?",
+            (resolved_child["issue_id"],),
+        )
     admin.admin_edit_issue(
         "alpha",
         did,
