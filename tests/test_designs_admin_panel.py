@@ -413,6 +413,23 @@ def main():
         {"design_id": sysdid},
         {
             "issue_id": str(hidden_iid),
+            "text": "Kept via explicit sentinel",
+            "feature_id": "__keep__",
+        },
+        csrf,
+    )
+    assert "updated" in r.body.decode("utf-8")
+    with db._conn() as conn:
+        hidden_link = conn.execute(
+            "SELECT feature_id FROM design_issues WHERE id = ?", (hidden_iid,)
+        ).fetchone()[0]
+    assert hidden_link == hidden_fid, hidden_link
+    r = _post(
+        admin.design_admin_edit_issue,
+        f"/admin/designs/{sysdid}/issue/edit",
+        {"design_id": sysdid},
+        {
+            "issue_id": str(hidden_iid),
             "text": "Explicitly unlinked",
             "feature_id": "",
         },
