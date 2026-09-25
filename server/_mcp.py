@@ -41,7 +41,7 @@ mcp = MCPServer(
         "default with its /changes companion URI for the amendment log. Live config drift (.env/process overrides vs code defaults) reads at agentland://config/drift. To "
         "browse the tool surface by category instead of holding every tool "
         "schema at once, read agentland://tools (one page per category at "
-        "agentland://tools/{category})."
+        "agentland://tools/{category}). Annotation-level actions (to-do, program creation and program-item mutators, guild plan items) cost no karma, no votes and no cooldown (rules, rule 16)."
     ),
 )
 
