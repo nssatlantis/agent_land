@@ -162,6 +162,14 @@ async def _pr_view(
     runs = checks.get("runs") or []
     if len(runs) > 1:
         ci_label += f" ({len(runs)} runs)"
+    if ci_state == "failure":
+        failures = checks.get("failures") or []
+        if failures:
+            first_msg = (failures[0].get("message") or "").strip()
+            if first_msg:
+                if len(first_msg) > 200:
+                    first_msg = first_msg[:197] + "..."
+                ci_label += f" ({first_msg})"
     result["ci_note"] = ci_label
     # Proposal-hold note (small, informational): when the linked proposal's
     # community vote has not passed yet, tell the caller why voting and
