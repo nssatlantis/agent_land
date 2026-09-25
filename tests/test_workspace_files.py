@@ -1352,6 +1352,62 @@ def test_release_author_and_missing_tree(agents, wstools):
     print("  author release + missing-tree release: ok")
 
 
+def test_lock_sibling_survives_release(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        pid, tok = _claim(agents, wstools, "alpha", "Lockfile Shop")
+        dest = ws._claim_dir(agents["alpha"]["agent_id"], pid, "dev")
+        lock_path = dest + ".workspace.lock"
+        assert os.path.isfile(lock_path), lock_path
+        before = os.stat(lock_path)
+        wstools.release_workspace(tok, pid, "dev")
+        assert not os.path.isdir(dest), dest
+        assert os.path.isfile(lock_path), lock_path
+        # A reclaim reuses the identical rendezvous path and inode: no
+        # unlink may ever split a live holder from future contenders.
+        wstools.claim_workspace(tok, pid, "dev")
+        assert os.path.isfile(lock_path), lock_path
+        assert os.stat(lock_path).st_ino == before.st_ino, lock_path
+        wstools.release_workspace(tok, pid, "dev")
+        assert os.path.isfile(lock_path), lock_path
+    finally:
+        sb.close()
+    print("  lock sibling survives release + reclaim: ok")
+
+
+def test_release_same_name_two_agents(agents, wstools):
+    sb = _FilesSandbox()
+    try:
+        gamma = agents["gamma"]
+        alpha = agents["alpha"]
+        beta = agents["beta"]
+        pid = db.create_proposal(
+            gamma["token"], "Shared Name Shop", "body", collaborative=True
+        )["post_id"]
+        db.create_todo_list(gamma["token"], pid, "Work", [])
+        db.join_proposal(alpha["token"], pid)
+        db.join_proposal(beta["token"], pid)
+        wstools.claim_workspace(alpha["token"], pid, "dev")
+        wstools.claim_workspace(beta["token"], pid, "dev")
+        dest_alpha = ws._claim_dir(alpha["agent_id"], pid, "dev")
+        dest_beta = ws._claim_dir(beta["agent_id"], pid, "dev")
+        # The author holds no row: two same-name rows refuse as ambiguous
+        # instead of retiring an arbitrary tree.
+        err = _expect_tool_error(wstools.release_workspace, gamma["token"], pid, "dev")
+        assert "multiple active workspaces" in err, err
+        assert os.path.isdir(dest_alpha) and os.path.isdir(dest_beta)
+        # Owner-first: alpha's release retires only her own tree.
+        wstools.release_workspace(alpha["token"], pid, "dev")
+        assert not os.path.isdir(dest_alpha), dest_alpha
+        assert os.path.isdir(dest_beta), dest_beta
+        # Beta's claim survived: she releases it herself.
+        wstools.release_workspace(beta["token"], pid, "dev")
+        assert not os.path.isdir(dest_beta), dest_beta
+    finally:
+        sb.close()
+    print("  same-name release scopes to the owner, author disambiguates: ok")
+
+
 def main():
     from server.tools.repo import _workspace as wstools  # noqa: E402
 
@@ -1369,6 +1425,8 @@ def main():
     test_workspace_serialized_cancellation(agents, wstools)
     test_workspace_serialized_cancelled_worker_keeps_lock(agents, wstools)
     test_release_author_and_missing_tree(agents, wstools)
+    test_lock_sibling_survives_release(agents, wstools)
+    test_release_same_name_two_agents(agents, wstools)
     test_owner_isolation(agents, wstools)
     print("test_workspace_files: all scenarios passed")
 
