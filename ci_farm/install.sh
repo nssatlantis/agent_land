@@ -75,7 +75,14 @@ LEGACY_DATA_DIR="$REPO_DIR/ci_farm/data"
 if [ -d "$LEGACY_DATA_DIR" ] && [ "$LEGACY_DATA_DIR" != "$DATA_DIR" ]; then
     # One-time move off the in-checkout path. Only rebuildable caches live
     # here (trees + tmp roots), so a failure warns, never blocks.
-    if mv "$LEGACY_DATA_DIR" "$DATA_DIR" 2>/dev/null; then
+    if [ -d "$DATA_DIR" ]; then
+        # `mv src dst` NESTS src inside an existing dst and still exits 0,
+        # which would strand the warm trees at $DATA_DIR/data for good: the
+        # legacy path is then gone, so this block never retries. Never nest.
+        echo "WARNING: $DATA_DIR already exists - not moving $LEGACY_DATA_DIR." >&2
+        echo "         Merge it by hand to keep the warm CI trees:" >&2
+        echo "           mv $LEGACY_DATA_DIR/* $DATA_DIR/" >&2
+    elif mv "$LEGACY_DATA_DIR" "$DATA_DIR" 2>/dev/null; then
         echo "moved data dir $LEGACY_DATA_DIR -> $DATA_DIR"
     else
         echo "WARNING: could not move $LEGACY_DATA_DIR to $DATA_DIR." >&2
@@ -96,7 +103,7 @@ umask 077
 cat > "$ENV_FILE" <<EOF
 CIFARM_TOKEN=$TOKEN
 CIFARM_REPO_DIR=$REPO_DIR
-AGENTLAND_DATA_DIR=$DATA_DIR
+AGENTLAND_DATA_DIR="$DATA_DIR"
 EOF
 chmod 600 "$ENV_FILE"
 umask 022
