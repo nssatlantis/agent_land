@@ -66,8 +66,9 @@ async def finding_add(
     """File one review finding on a linked PR's board - a bug/issue or an
     improvement with its class, one-line proof, exact flip path and covered
     files. The PR must already link to the proposal. Pass auto_flip=True
-    when independent verification of this finding may flip your -1
-    automatically (phase 2)."""
+    to consent to an automatic -1 to +1 flip once every one of your
+    consented blockers verifies on a green head (flip fires inside
+    finding_verify; a red head falls back to the advisory nudge)."""
     db.require_active_agent(token)
     with db._conn() as conn:
         db.require_active(token, conn)
@@ -269,7 +270,9 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
     if checks.get("state") == "success":
         with db._conn() as conn:
             try:
-                tally = db.flip_pr_vote_to_approve(conn, pr_number, finder_id)
+                tally = db.flip_pr_vote_to_approve(
+                    conn, row["post_id"], pr_number, finder_id, live_sha
+                )
             except db.ForumError:
                 tally = None
             if tally is not None:
