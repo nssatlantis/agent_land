@@ -88,6 +88,7 @@ def main():
             " VALUES (4242, ?, ?)",
             (pid, agents["alpha"]["agent_id"]),
         )
+    # (beta's -1 on 4242 lands later at the nudge block, which owns it.)
 
     with db._conn() as conn:
         # --- add + filters ------------------------------------------------
@@ -122,6 +123,10 @@ def main():
         # --- self-verify refused ------------------------------------------
         err = expect_error(db.finding_verify, conn, fid, alpha, _SHA_A)
         assert "cannot verify their own fix" in err, err
+
+        # --- finder cannot verify their own finding (third-party rule) ----
+        err = expect_error(db.finding_verify, conn, fid, beta, _SHA_A)
+        assert "independent verification required" in err, err
 
         # --- stale/garbage head refused -----------------------------------
         err = expect_error(db.finding_verify, conn, fid, gamma, "not-a-sha")
@@ -342,15 +347,38 @@ def main():
         db.finding_mark_resolved(conn, fid3, alpha, "fixed")
         db.finding_verify(conn, fid3, gamma, _SHA_A)
         assert _maybe_nudge_reviewer(conn, pid, 4242, beta, gamma) is True
-        # the finder verifying their own finding's fix self-noops the ping
+        # the finder can no longer verify their own finding (third-party
+        # rule, refused at the db layer); the nudge still self-noops a
+        # finder==verifier ping defensively for legacy rows.
         fid4 = _finding(conn, pid, beta)
         db.finding_mark_resolved(conn, fid4, alpha, "fixed")
-        db.finding_verify(conn, fid4, beta, _SHA_A)
+        err = expect_error(db.finding_verify, conn, fid4, beta, _SHA_A)
+        assert "independent verification required" in err, err
+        db.finding_verify(conn, fid4, gamma, _SHA_A)
         assert _maybe_nudge_reviewer(conn, pid, 4242, beta, beta) is False
 
         # --- dispute of a verified finding is refused ----------------------
         err = expect_error(db.finding_dispute, conn, fid4, alpha, "reopen")
         assert "already verified" in err, err
+
+        # --- stale rows never flip, even with witnesses retained ---------
+        # finding_stale_all keeps verifier+head while moving state to
+        # stale: the shared cleared predicate must still refuse the
+        # flip, and re-verify at the live head restores the board.
+        assert db.finding_stale_all(conn, 4242) == 4, "fail-closed stales"
+        r = db.flip_ready(conn, pid, 4242, beta, _SHA_B)
+        assert r == {
+            "ready": False,
+            "reason": "open-blockers",
+            "finding_ids": [fid, fid2, fid3, fid4],
+        }, r
+        db.finding_verify(conn, fid, gamma, _SHA_B)
+        db.finding_verify(conn, fid2, delta, _SHA_B)
+        db.finding_verify(conn, fid3, gamma, _SHA_B)
+        db.finding_verify(conn, fid4, delta, _SHA_B)
+        assert db.reviewer_blockers(conn, pid, 4242, beta) == [], (
+            "re-verify clears again"
+        )
 
     # --- push hook stales via live head (mocked GitHub) -----------------
     # Own scope: the hook opens its own connection, so this must run
@@ -606,6 +634,45 @@ def main():
             (beta,),
         ).fetchone()[0]
         assert v == 1, "green head flips the -1"
+
+    # --- raising second read stales fail-closed ---------------------------
+    # The db write commits before the post-write head re-read: if that
+    # read raises, the row must stale rather than sit resolved+verified
+    # with no post-write attestation.
+    pid_flip4 = _proposal(agents, "flip4")
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (4250, ?, ?)",
+            (pid_flip4, alpha),
+        )
+        flip4 = db.finding_add(
+            conn, pid_flip4, 4250, beta, "bug", "other", "c", "f", ["a.py"], True
+        )
+        db.finding_mark_resolved(conn, flip4, alpha, "fixed")
+    db.vote_on_pr(agents["beta"]["token"], 4250, -1)
+    _second_read = {"n": 0}
+
+    def _fake_raw_50(number):
+        assert number == 4250
+        _second_read["n"] += 1
+        if _second_read["n"] == 1:
+            return {"head": {"sha": _SHA_B}}
+        raise RuntimeError("github is down")
+
+    _gh._pr_raw = _fake_raw_50
+    try:
+        asyncio.run(ftools.finding_verify(agents["gamma"]["token"], flip4, _SHA_B))
+        raise AssertionError("expected the raising second read to refuse")
+    except db.ForumError as exc:
+        assert "fail-closed" in str(exc), exc
+    finally:
+        _gh._pr_raw = real_raw2
+    with db._conn() as conn:
+        st = conn.execute(
+            "SELECT state FROM review_findings WHERE id = ?", (flip4,)
+        ).fetchone()["state"]
+        assert st == "stale", "raising second read stales fail-closed"
 
     # --- sweep reconcile backstop ----------------------------------------
     # Heads moving outside the forum's push tools (poller rebase, direct
