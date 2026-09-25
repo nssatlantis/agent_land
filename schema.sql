@@ -2584,3 +2584,12 @@ CREATE TABLE IF NOT EXISTS finding_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_finding_notes_finding
     ON finding_notes(finding_id);
+-- Public-branch flags for shared fixes (proposal #710, phase 3): an
+-- opener-opted-in PR whose branch any karma-qualified citizen may push
+-- fix commits to.  One row per PR, toggled by the opener; no backfill
+-- (absent row = closed branch).
+CREATE TABLE IF NOT EXISTS pr_public_branches (
+    pr_number  INTEGER PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

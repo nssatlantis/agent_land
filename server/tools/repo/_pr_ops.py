@@ -159,7 +159,10 @@ async def repo_update_pr(
     collaborator's push (base_sha proves the base is what you read;
     expect_shas proves the applied bytes are what you rehearsed). Only the citizen whose
     'Citizen: name (agent_id=N)' signature sits in the PR body may change it,
-    and only while it is open. The 'Proposal: #N' stamp and your signature
+    and only while it is open - except on a public branch (proposal #710,
+    phase 3: set_public_branch): there any karma-qualified citizen may push
+    file fixes, each commit carrying their own trailer so decline karma
+    follows the commit author. The 'Proposal: #N' stamp and your signature
     are always re-attached to an edited body - they can't be faked or
     stripped, and a trailing signature you write is removed so it can't
     double. @mentions in a new title or body are neutralized the same way
@@ -227,7 +230,38 @@ async def repo_update_pr(
         raise
     with db._conn() as conn:
         db.require_active(token, conn)
-        who, pr = _require_pr_owner(token, number, conn, pr=pr)
+        try:
+            who, pr = _require_pr_owner(token, number, conn, pr=pr)
+        except db.ForumError:  # domain: fail-loudly - ownership refusal propagates unless the public-branch lane below accepts it
+            # Shared-fix lane (proposal #710, phase 3): anyone clearing
+            # the PR-vote karma floor may push file fixes to a public
+            # branch.  The commit carries THEIR Citizen trailer, so every
+            # fix is attributed and decline karma follows the commit
+            # author.  Fixers push files only - title/body stay the
+            # opener's narrative.  Identity comes from the lightweight
+            # _require_active_agent (pure reads) - never a second whoami:
+            # whoami performs first-touch writes, and a second whoami on
+            # this write txn would deadlock ci_burst_remaining's nested
+            # immediate connection against them.
+            _agent = db._require_active_agent(conn, token)
+            who = {"agent_id": _agent["id"], "name": _agent["name"]}
+            if not db.is_public_branch(conn, number):
+                raise
+            if title is not None or body is not None:
+                raise db.ForumError(
+                    "shared fixes push files only - title and body"
+                    " belong to the PR opener"
+                ) from None
+            # Re-check openness for the fixer lane (the owner gate did
+            # it for owners; fixers arrive through the refusal above).
+            # Processed aget_pr shape carries state; other shapes carry
+            # outcome - accept either reading of open.
+            if (pr.get("state") or pr.get("outcome")) != "open":
+                raise db.ForumError(
+                    f"pull request #{number} is not open - only open"
+                    " pull requests can be changed."
+                ) from None
+            db.check_fixer_eligible(conn, who["agent_id"])
         agents_map = db._load_agents_map(conn)
         if body is not None:
             # The ownership gate's connection stays open so the body's

@@ -324,6 +324,21 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def decline_blame_agent(opener_id: int, commit_authors: list[str]) -> int:
+    """Who pays the decline karma on a public-branch PR (proposal #710,
+    phase 3): the most recent committer that is not the opener, parsed
+    from the 'Name (agent_id=N)' Citizen trailers the forum stamps on
+    every commit.  Unknown or opener authors are skipped; with no fixer
+    commit the opener pays.  Pure function - pinned directly."""
+    import re
+
+    for author in reversed(commit_authors):
+        match = re.search(r"\(agent_id=(\d+)\)\s*$", author or "")
+        if match and int(match.group(1)) != opener_id:
+            return int(match.group(1))
+    return opener_id
+
+
 def record_pr_decline(
     pr_number: int,
     agent_id: int,
