@@ -1148,26 +1148,29 @@ def test_run_checks_bench_overflow_passes_allow_remote():
 
 def test_run_checks_native_test_remote_first_gate():
     from server.ci_runner import _runs as runs_mod
-    row = farm.register_runner('nt-gate', 'http://x', token='t')
+
+    row = farm.register_runner("nt-gate", "http://x", token="t")
     orig_ping = farm._ping
-    farm._ping = lambda url, token: {'ok': True, 'busy': False}
+    farm._ping = lambda url, token: {"ok": True, "busy": False}
     orig_disp = farm.dispatch_to_runner
     remote = {
-        'checks': 'tests',
-        'mode': 'main',
-        'sandboxed': True,
-        'ok': True,
-        'timed_out': False,
-        'exit_code': 0,
-        'duration_seconds': 120.0,
-        'head_sha': 'abc123',
-        'output_tail': 'ok',
-        'summary': {'tests_run': True},
+        "checks": "tests",
+        "mode": "main",
+        "sandboxed": True,
+        "ok": True,
+        "timed_out": False,
+        "exit_code": 0,
+        "duration_seconds": 120.0,
+        "head_sha": "abc123",
+        "output_tail": "ok",
+        "summary": {"tests_run": True},
     }
     farm.dispatch_to_runner = lambda runner, payload: remote
+
     class _Gate:
         def __call__(self, kind_event, agent_id, _system=False, run_id=None):
             return 0
+
     orig_gate = runs_mod._gate
     runs_mod._gate = _Gate()
     orig_enabled = config.CI_FARM_ENABLED
