@@ -390,6 +390,10 @@ def main():
         {"feature_id": str(hidden_fid)},
         csrf,
     )
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE design_issues SET state = 'accepted' WHERE id = ?", (hidden_iid,)
+        )
     r = _post(
         admin.design_admin_edit_issue,
         f"/admin/designs/{sysdid}/issue/edit",
