@@ -462,6 +462,18 @@ def run(conn) -> set:
     _widen_notifications_check(conn, "guild")
     # The mailbox gained a 'design' notification kind (proposal #652).
     _widen_notifications_check(conn, "design")
+    # designs: explicit system-owned marker (proposal #713 / bug #B103).
+    # owner_admin_id IS NULL historically meant "panel-created", but the
+    # owner FK is ON DELETE SET NULL: a later owner hard-delete forges the
+    # same NULL, and the panel marker would then grant authority gained
+    # through deletion. Column presence gates the ALTER AND the backfill
+    # so the backfill is one-shot: a post-cutover orphan never inherits
+    # the marker. Fresh databases carry the column via schema.sql and
+    # skip both statements.
+    _design_cols = {row[1] for row in conn.execute("PRAGMA table_info(designs)")}
+    if "system_owned" not in _design_cols:
+        _ensure_column(conn, "designs", "system_owned", "INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE designs SET system_owned = 1 WHERE owner_admin_id IS NULL")
     _guild_tables = {
         row[0]
         for row in conn.execute(
