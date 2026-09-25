@@ -52,8 +52,10 @@ from ._flow import (  # noqa: F401
     _seed_next_cycle,
     accept_job_offer,
     claim_job,
+    clear_job_settlement_beneficiary,
     decline_job_offer,
     review_job,
+    set_job_settlement_beneficiary,
     submit_job,
     tick_job_step,
 )
