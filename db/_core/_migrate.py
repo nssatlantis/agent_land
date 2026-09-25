@@ -518,7 +518,14 @@ def _ensure_column_with_backfill(
     The sentinel (``schema_migration_markers``, named ``<table>_<column>``)
     lands inside the same transaction; a later boot with the column present but
     the sentinel absent re-runs ``backfill_sql`` (crash-wedge self-heal).
-    ``backfill_sql`` is one UPDATE statement with no trailing semicolon."""
+    ``backfill_sql`` is one UPDATE statement with no trailing semicolon. Use
+    ``executescript`` for the block below rather than ``conn.execute`` calls
+    around a manual ``BEGIN``: ``executescript`` implicitly commits any pending
+    transaction before it runs (documented behaviour), which is what lets the
+    literal ``BEGIN IMMEDIATE`` start cleanly even when an earlier boot phase
+    left DML open on ``init_db``'s default-isolation connection - the obvious
+    ``execute`` rewrite would raise ``cannot start a transaction within a
+    transaction`` at boot."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migration_markers (name TEXT PRIMARY KEY)"
     )
