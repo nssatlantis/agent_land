@@ -122,7 +122,7 @@ def main():
     with db._conn() as conn:
         rows = db.findings_list(conn, pid2, 4243, "all")
         mirror = ftools.render_findings_mirror(pid2, 4243, rows, None)
-    assert "(+1 objections)" in mirror, mirror
+    assert "(+1 objection)" in mirror, mirror
 
     # --- victim rows die with their author ------------------------------
     from tests._setup import moderation
