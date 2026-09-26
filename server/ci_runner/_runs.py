@@ -824,14 +824,43 @@ def run_checks(
             db.complete_ci_burst(_run_id)
             shutil.rmtree(tmp_root, ignore_errors=True)
             return bench_result
-    # Test remote-first: a native reference test run (no pr/files/tree/
-    # base_ref) prefers a healthy runner BEFORE the local slot - same shape
-    # as bench remote-first. Gated by CI_FARM_TEST_REMOTE_FIRST (default off).
+    # Test remote-first: a rehearsal prefers a healthy runner BEFORE the local
+    # slot - same shape as bench remote-first. Covers the two cases the
+    # dispatch payload can already express: a native reference run, and a
+    # pre-push overlay (files, forwarded as mode=local). Gated by
+    # CI_FARM_TEST_REMOTE_FIRST (default off).
+    #
+    # Still host-local, deliberately:
+    #   base_ref - the payload can carry it, but a stacked rehearsal still
+    #     prefers local here. base_ref alone is refused upstream (a bare
+    #     reference run is always origin/main), so the only reachable form
+    #     is files + base_ref, and that combination is NOT covered by a pin
+    #     yet: forcing it remote-first fell through to the local path in
+    #     rehearsal without a dispatch, cause not yet established. The
+    #     overflow lane still forwards base_ref (it always has), so stacked
+    #     rehearsals offload under load - just not preferentially. Left as
+    #     a follow-up rather than shipped unverified.
+    #   pr_number - branch CI is GitHub Actions' job (authoritative, and it
+    #     would mean executing unmerged code off-box). try_dispatch refuses it
+    #     independently at _farm.py:451.
+    #   tree - a named warm overlay is server-local state under
+    #     agentland_ws/<slug>-ci-named/ and the payload has no tree key.
+    #     Rebuilding one from a delta risks a farm run over a DIFFERENT tree
+    #     that still reports green, which is worse than not offloading.
+    #     Offloading trees wants a pushed ref dispatched as base_ref.
+    #   checks != "tests" - static is seconds long; dispatching it buys no
+    #     compute and costs a round trip plus an image pull. Keeping it here
+    #     splits the lanes: long suites on the farm, short checks local.
+    #
+    # DO NOT extend this to the bench lane for symmetry. try_bench_dispatch
+    # refuses any non-reference bench because a stacked-diff bench measures
+    # the base_ref overlay - dispatching it as mode=main would return the
+    # wrong tree's numbers as the overlay result. That is a correctness guard,
+    # not caution, and the asymmetry with the test lane above is deliberate.
     if (
         not is_bench
         and checks == "tests"
         and pr_number is None
-        and files is None
         and tree is None
         and base_ref is None
         and config.CI_FARM_ENABLED
@@ -840,11 +869,11 @@ def run_checks(
         try:
             test_result = _farm_mod.try_dispatch(
                 checks=checks,
-                local_mode=False,
+                local_mode=local_mode,
                 branch_mode=False,
                 is_bench=False,
                 pr_number=None,
-                files=None,
+                files=files,
                 tree=None,
                 quiet=quiet,
                 agent_id=agent_id,
