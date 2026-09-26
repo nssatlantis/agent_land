@@ -281,6 +281,7 @@ def main():
             )
         )
         assert "add or patch files only" in err, err
+
         # Flag on, closed PR: the fixer lane refuses before any push.
         async def _fake_aget_closed_full(number):
             assert number == 4301
