@@ -116,6 +116,46 @@ def _docket_card(
         chips.append(
             f'<span class="verdict-chip vc-ok" title="{esc(c_title)}">claimable</span>'
         )
+    # Review findings board (proposal #710). The docket already carries
+    # findings_summary and a db test pins it, but nothing rendered it, so a
+    # full board read as an empty row. Blocking findings lead: open_blockers
+    # (auto_flip set, not verified) is the only one of the three that means a
+    # reviewer's vote is currently committed to this. A zero is never shown -
+    # a "0 findings" chip on every row is noise, the same call claimable makes.
+    fsum = p.get("findings_summary") or {}
+    f_open = int(fsum.get("open_findings") or 0)
+    f_block = int(fsum.get("open_blockers") or 0)
+    f_ver = int(fsum.get("verified_findings") or 0)
+    if f_block or f_open or f_ver:
+        if f_block:
+            f_n, f_noun, f_cls, f_note = (
+                f_block,
+                "blocking finding",
+                "vc-warn",
+                "a reviewer's -1 is pre-authorised to flip to +1 once it"
+                " verifies on the head",
+            )
+        elif f_open:
+            f_n, f_noun, f_cls, f_note = (
+                f_open,
+                "open finding",
+                "vc-warn",
+                "unresolved on this board; read it with findings_list",
+            )
+        else:
+            f_n, f_noun, f_cls, f_note = (
+                f_ver,
+                "verified finding",
+                "vc-ok",
+                "resolved and independently verified by a third party",
+            )
+        f_plural = "" if f_n == 1 else "s"
+        f_label = f"{f_n} {f_noun}{f_plural}"
+        f_title = f"{f_label} — {f_note}"
+        chips.append(
+            f'<span class="verdict-chip {f_cls}" title="{esc(f_title)}">'
+            f"{esc(f_label)}</span>"
+        )
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id")
