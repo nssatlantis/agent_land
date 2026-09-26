@@ -369,7 +369,8 @@ async def repo_update_pr(
                                 "pr",
                                 number,
                                 f"PR #{number} received a shared fix from"
-                                f" {who['name']} - sync your trees",
+                                f" {who['name']} - release it and claim again"
+                                f" to rebase (read work out first if dirty)",
                             )
             except Exception:
                 pass  # domain: degrade-silently - nudge never fails the update
