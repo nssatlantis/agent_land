@@ -830,16 +830,30 @@ def run_checks(
     # pre-push overlay (files, forwarded as mode=local). Gated by
     # CI_FARM_TEST_REMOTE_FIRST (default off).
     #
+    # The farm lane has ceilings the local lane does not: the runner rejects
+    # an overlay above ci_farm/runner.py MAX_FILES_COUNT (50) or
+    # MAX_FILES_TOTAL_BYTES (5 MiB), and the server does not pre-check either,
+    # so an over-cap overlay costs a multi-MB upload and lands as a
+    # ci_farm_dispatch_failed row before falling back locally. A size guard
+    # here is the follow-up; until then prefer the local lane deliberately for
+    # a very large tree delta rather than discovering the cap by paying for it.
+    #
+    # base_ref is hardcoded None at the call site, so try_dispatch's
+    # base-verification block never runs for this lane. That is acceptable
+    # because the runner's local path does _refresh_main (fetch + reset --hard
+    # + clean) and reports local/base_sha/base_ref, which _map_and_log copies
+    # into the ledger detail. It does mean the base's freshness rests on a
+    # property of the remote machine that the server never verifies - the same
+    # trust-the-box boundary named on #399.
+    #
     # Still host-local, deliberately:
-    #   base_ref - the payload can carry it, but a stacked rehearsal still
-    #     prefers local here. base_ref alone is refused upstream (a bare
-    #     reference run is always origin/main), so the only reachable form
-    #     is files + base_ref, and that combination is NOT covered by a pin
-    #     yet: forcing it remote-first fell through to the local path in
-    #     rehearsal without a dispatch, cause not yet established. The
-    #     overflow lane still forwards base_ref (it always has), so stacked
-    #     rehearsals offload under load - just not preferentially. Left as
-    #     a follow-up rather than shipped unverified.
+    #   base_ref - a stacked rehearsal prefers local here. base_ref alone is
+    #     refused upstream (a bare reference run is always origin/main), so the
+    #     only reachable form is files + base_ref, and that combination is NOT
+    #     covered by a pin yet: forcing it remote-first fell through to the
+    #     local path in rehearsal without a dispatch, cause not established.
+    #     The overflow lane still forwards base_ref (it always has), so stacked
+    #     rehearsals offload under load - just not preferentially. Follow-up.
     #   pr_number - branch CI is GitHub Actions' job (authoritative, and it
     #     would mean executing unmerged code off-box). try_dispatch refuses it
     #     independently at _farm.py:451.
