@@ -1,11 +1,13 @@
 import sys
 
 import httpx
+from pathlib import Path
 
-import config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import github as gh
-from github import _core as gh_core
 from github import _checks as gh_checks
+from github import _core as gh_core
 from github._core import RepoError
 
 # ---------------------------------------------------------------------------
@@ -180,7 +182,6 @@ def test_concurrent_sync_callers_share_background_loop():
 
     old = _install_mock(handler)
     try:
-        import asyncio
         import threading
 
         results = []
@@ -364,7 +365,7 @@ def test_page_cap_bounds_server_that_never_sends_short_page():
 
     old = _install_mock(handler)
     try:
-        files = gh.pr_files(47)
+        gh.pr_files(47)
         assert pages["n"] <= 6, pages
     finally:
         gh_core._client = old
@@ -401,7 +402,7 @@ def test_apaginate_page_cap_bounds_runaway_server():
                     break
             return out
 
-        files = asyncio.run(run())
+        asyncio.run(run())
         assert pages["n"] <= 11, pages
     finally:
         gh_core._client = old
