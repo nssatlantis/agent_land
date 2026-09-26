@@ -403,7 +403,11 @@ def main():
             (4305, alpha, "2026-09-25T00:00:00.000Z"),
         )
         assert db.record_pr_decline(
-            4305, beta, "2026-09-25T00:00:00.000Z", conn=conn, blamed_fixer=True
+            4305,
+                beta,
+                "2026-09-25T00:00:00.000Z",
+                conn=conn,
+                blamed_fixer=True,
         ) is True
         rec = conn.execute(
             "SELECT agent_id, status FROM pr_record WHERE pr_number = 4305"
