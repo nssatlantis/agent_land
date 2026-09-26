@@ -1,10 +1,12 @@
 """Combined "tests + static" CI harness (server-side CI runner).
 
-Runs the repository's full CI surface the way GitHub's `test` + `static`
-jobs do: the test suite (tests/run_all.py) followed by the static checks
+Runs the test suite (tests/run_all.py) followed by the static checks
 (compileall, mypy, ruff check, ruff format --check, bash -n).  It is what
 the server's repo_ci_run(checks="tests") executes, so a green run covers
-the same ground GitHub CI does - no separate static rehearsal needed.
+run_all + static in one go - no separate static rehearsal needed.  It is
+NOT GitHub test-job parity: run_all.py skips the four test_e2e_0*.py
+suites that .github/workflows/ci.yml runs in its `test` job (run those
+via tests/run_e2e.py; the GitHub verdict itself is repo_pr_checks).
 
 The static half lives in tests/run_static.py (imported here - one source,
 never two copies): the static-only harness repo_ci_run(checks="static")
