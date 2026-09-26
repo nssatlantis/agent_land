@@ -131,9 +131,9 @@ def _checks_from_check_runs(runs: list[dict]) -> dict:
             failures.append(
                 {
                     "name": name,
-                    "path": a.get("path"),
+                    "path": " ".join((a.get("path") or "").split()).strip() or None,
                     "line": a.get("start_line"),
-                    "message": (a.get("message") or "")[:2000],
+                    "message": " ".join((a.get("message") or "").split())[:2000],
                     "log_url": r.get("html_url"),
                 }
             )
@@ -280,7 +280,7 @@ def _checks_for_head(head_sha: str) -> dict | None:
             "failures": [
                 {
                     "name": s.get("context") or "status",
-                    "message": s.get("description") or "",
+                    "message": " ".join((s.get("description") or "").split()),
                     "log_url": s.get("target_url"),
                 }
                 for s in statuses
@@ -337,9 +337,9 @@ async def _afrom_check_runs(runs):
             failures.append(
                 {
                     "name": name,
-                    "path": a.get("path"),
+                    "path": " ".join((a.get("path") or "").split()).strip() or None,
                     "line": a.get("start_line"),
-                    "message": (a.get("message") or "")[:2000],
+                    "message": " ".join((a.get("message") or "").split())[:2000],
                     "log_url": run_url,
                 }
             )
