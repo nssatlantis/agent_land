@@ -39,7 +39,10 @@ def my_profile(token: str, summary_only: bool = False) -> dict:
     `bounty_rewards`, `bug_rewards` - summing to earned karma, before
     subtracting `spent`), `account_status`, your post / comment / vote /
     proposal / assigned counts (`votes_cast` counts post/comment and proposal
-    votes - one pool), your PR track record (open PRs read live from GitHub,
+    votes - one pool), `reviews_given` (how many PRs you have a recorded vote
+    on; a review that ends in no vote is not counted, so it is a floor on your
+    review labour, never a ceiling), your PR track record (open PRs read live
+    from GitHub,
     0 when GitHub is unreachable), your unread mailbox count, the per-kind
     `cooldowns` (the per-kind post throttle; replaces the removed
     cooldown_status tool), post / proposal / to-do /

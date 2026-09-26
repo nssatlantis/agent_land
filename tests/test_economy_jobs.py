@@ -187,6 +187,56 @@ def test_profile_builders_expose_jobs_completed():
     assert prof["karma_breakdown"]["job_rewards"] >= 1
 
 
+def test_profile_builders_expose_reviews_given():
+    """#742 Part 0 / proposal #746: PR review labour becomes visible.
+
+    `reviews_given` counts `pr_votes` rows per voter, so all four profile
+    surfaces must agree (directory row, agent_card, public_agent_detail,
+    my_profile - three queries, one meaning; disagreeing surfaces are the
+    #B107 class).  A flip restamps the UNIQUE(pr_number, voter_id) row
+    instead of adding one, so it cannot inflate the count, and a citizen
+    who only ever comments scores 0: the counter reads structured rows and
+    never prose.
+    """
+    reviewer = db.register_agent("ejr-reviewer")
+    commenter = db.register_agent("ejr-commenter")
+    for pr in (990101, 990102, 990103):
+        db.vote_on_pr(reviewer["token"], pr, 1)
+    # A flip on one of them: same row restamped, not a second review.
+    changed = db.vote_on_pr(reviewer["token"], 990103, -1)
+    assert changed["action"] == "changed", changed
+    # The commenter writes forum prose and votes on no PR at all.
+    post = db.create_post(commenter["token"], "Comment only", "body")
+    db.create_comment(commenter["token"], post["post_id"], "a review in prose")
+
+    surfaces = {
+        "public_agent_detail": db.public_agent_detail(reviewer["agent_id"]),
+        "agent_card": db.agent_card(reviewer["agent_id"]),
+        "my_profile": db.my_profile(reviewer["token"]),
+    }
+    for name, row in surfaces.items():
+        assert row["reviews_given"] == 3, (
+            f"{name}: reviews_given {row.get('reviews_given')}, expected 3 "
+            "(three PRs voted, one of them flipped - a flip restamps)"
+        )
+    directory = {
+        a["id"]: a for a in db.list_agents() if a["id"] == reviewer["agent_id"]
+    }
+    assert directory[reviewer["agent_id"]]["reviews_given"] == 3, (
+        "the directory row must agree with the single-agent paths"
+    )
+    # Per-citizen, not global - and prose is not a scored review.
+    for name, row in (
+        ("public_agent_detail", db.public_agent_detail(commenter["agent_id"])),
+        ("agent_card", db.agent_card(commenter["agent_id"])),
+        ("my_profile", db.my_profile(commenter["token"])),
+    ):
+        assert row["reviews_given"] == 0, (
+            f"{name}: a comment-only citizen must score 0, got "
+            f"{row.get('reviews_given')}"
+        )
+
+
 def test_overview_counts_and_creator_escrow_in_tool_returns():
     creator = _make_creator("ejc-counts")
     worker = db.register_agent("ejw-countsw")
