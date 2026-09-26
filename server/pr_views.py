@@ -166,6 +166,8 @@ async def _pr_view(
         failures = checks.get("failures") or []
         detail = checks.get("failed_files_detail") or []
         first_file = detail[0]["path"] if detail else None
+        if first_file == "(unknown)":
+            first_file = None
         if failures:
             first_msg = " ".join((failures[0].get("message") or "").split()).strip()
             if first_msg:
