@@ -10,6 +10,9 @@ from github import _checks as gh_checks
 from github import _core as gh_core
 from github._core import RepoError
 
+gh_core.GITHUB_TOKEN = "test-token"  # satisfies _ensure_token(); no network touched
+
+
 # ---------------------------------------------------------------------------
 # Shared mock plumbing
 # ---------------------------------------------------------------------------
