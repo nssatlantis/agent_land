@@ -902,6 +902,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         2,
         int,
     ),
+    # A founder may self-designate without the two gates above (1 = skip,
+    # 0 = keep them for founders; the ADMIN_USER override layers on top
+    # either way). The crucible gates WHICH project a guild pursues, never
+    # the money - the grant still waits on an admin and still passes the
+    # pooled 7d budget, cooldown, decay, cap and runway gates.
+    "GUILD_PROJECT_FOUNDER_SKIP_CRUCILE": (
+        "FORUM_GUILD_PROJECT_FOUNDER_SKIP",
+        1,
+        int,
+    ),
     # Treasury runway floor for grant settlement.
     "GUILD_GRANT_MIN_RUNWAY_DAYS": ("FORUM_GUILD_GRANT_MIN_RUNWAY_DAYS", 7, int),
     # Auto-tier ceiling: at or below pays immediately.
