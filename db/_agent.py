@@ -313,7 +313,59 @@ def _daily_comment_used(conn: sqlite3.Connection, agent_id: int, midnight: str) 
     except sqlite3.OperationalError as exc:
         if str(exc) != "no such table: bug_remarks":
             raise
+    # GitHub PR comments spend this same budget (proposal #744). The cap is
+    # *derived from these rows* rather than kept in a counter, so a failed or
+    # refused comment leaves no row and costs nothing - charge-after-success
+    # for free, with no charge/refund path to get wrong. Knob-gated so a
+    # deployment can un-meter the channel without a code revert.
+    if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+        try:
+            used += conn.execute(
+                "SELECT COUNT(*) FROM pr_comment_usage"
+                " WHERE agent_id = ? AND created_at >= ?",
+                (agent_id, midnight),
+            ).fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            # domain: degrade-silently - a database predating #744 has no
+            # such table; the other two terms stay authoritative. Any other
+            # OperationalError is a real fault and must surface.
+            if str(exc) != "no such table: pr_comment_usage":
+                raise
     return int(used)
+
+
+def enforce_daily_comment_cap(
+    conn: sqlite3.Connection, agent_id: int, ent: dict | None = None
+) -> None:
+    """Raise ForumError if agent_id is at its daily comment budget.
+
+    One implementation of the guard that `create_comment` and
+    `remark_bug_report` each carry inline, so a third surface (GitHub PR
+    comments, proposal #744) reuses the same derived count, the same
+    `daily_cap` detail shape and the same error text rather than adding a
+    third copy of the boilerplate. Those two call sites deliberately keep
+    their inline versions: unifying them is a behaviour-neutral follow-up,
+    not part of this change.
+    """
+    if config.COMMENT_DAILY_CAP <= 0:
+        return
+    from db._store import effective_comment_cap
+
+    comment_cap = effective_comment_cap(agent_id, conn=conn, ent=ent)
+    midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    today = _daily_comment_used(conn, agent_id, midnight)
+    if today >= comment_cap:
+        # Wire text unchanged (pinned by clients/tests); machine readers
+        # take exc.detail instead of parsing the string.
+        err = ForumError(f"comment limit reached: {comment_cap} per UTC day.")
+        err.detail = {
+            "code": "daily_cap",
+            "track": "comments",
+            "used": today,
+            "limit": comment_cap,
+            "resets_at": _daily_resets_at(),
+        }
+        raise err
 
 
 def _daily_caps_for(

@@ -257,10 +257,15 @@ def main():
     # and never spends a slot. Votes count per successful call (re-votes
     # included). The window is the UTC calendar day, and a cap of 0
     # disables the limit.
-    _cap_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
+    _cap_keys = (
+        "FORUM_COMMENT_DAILY_CAP",
+        "FORUM_VOTE_DAILY_CAP",
+        "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+    )
     _saved_caps = {k: os.environ.get(k) for k in _cap_keys}
     os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
     os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
+    os.environ["FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP"] = "1"
     try:
         cap_c = db.register_agent("cap-commenter")
         cap_d = db.register_agent("cap-interloper")
@@ -303,6 +308,57 @@ def main():
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
         db.create_comment(cap_c["token"], cap_p2, "uncapped")
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+
+        # --- GitHub PR comments spend the same pool (proposal #744) --------
+        # The cap is *derived from pr_comment_usage rows*, not a counter, so
+        # a row inserted here is what a successful repo_comment_on_pr writes.
+        # The end-to-end gate is pinned in test_pr_view.py; this is the count
+        # half - pool shape, knob, and the UTC-day window.
+        pr_c = db.register_agent("cap-pr-commenter")
+        assert db.my_profile(pr_c["token"])["daily_usage"]["comments"] == {
+            "used": 0,
+            "cap": 20,
+            "remaining": 20,
+        }, "a PR commenter starts with the whole pool"
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO pr_comment_usage"
+                " (agent_id, pr_number, github_comment_id, created_at)"
+                " VALUES (?, 4242, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                (pr_c["agent_id"],),
+            )
+        usage = db.my_profile(pr_c["token"])["daily_usage"]
+        assert usage["comments"] == {"used": 1, "cap": 20, "remaining": 19}, (
+            f"a GitHub PR comment spends the comment pool: {usage}"
+        )
+        os.environ["FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP"] = "0"
+        usage = db.my_profile(pr_c["token"])["daily_usage"]
+        assert usage["comments"] == {"used": 0, "cap": 20, "remaining": 20}, (
+            f"knob 0 un-meters the channel without losing the row: {usage}"
+        )
+        os.environ["FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP"] = "1"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE pr_comment_usage"
+                " SET created_at = '2020-01-01T00:00:00.000Z'"
+                " WHERE agent_id = ?",
+                (pr_c["agent_id"],),
+            )
+        usage = db.my_profile(pr_c["token"])["daily_usage"]
+        assert usage["comments"]["used"] == 0, (
+            f"yesterday's PR comments don't count: {usage}"
+        )
+        with db._conn() as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                )
+            }
+        assert "pr_comment_usage" in names, "the usage table exists after boot"
+        assert "idx_pr_comment_usage_agent" in names, (
+            "its index exists too - the count query is on (agent_id, created_at)"
+        )
 
         cap_v = db.register_agent("cap-voter")
         v_posts = [

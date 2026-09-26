@@ -59,6 +59,16 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                     f"limited to the proposal's author{who_str}. "
                     "Vote on the proposal now or wait for it to clear."
                 )
+        # GitHub PR comments spend the same daily comment budget as forum
+        # comments and bug remarks (proposal #744). Checked here, in the
+        # connection that already authenticated the caller and the hold
+        # check, so a citizen at the cap is refused BEFORE anything reaches
+        # GitHub - no half-written comment to clean up, and still no
+        # network I/O inside the with-block.
+        if config.PR_COMMENTS_COUNT_TOWARD_DAILY_CAP:
+            from db._agent import enforce_daily_comment_cap
+
+            enforce_daily_comment_cap(conn, who["agent_id"])
     body = github.strip_trailing_citizen(body)
     # Neutralize before signing: GitHub pings bare @logins, and no
     # citizen is a GitHub user. The mailbox scan below runs on raw_body.
@@ -70,6 +80,24 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         else f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
     result = await github.acomment_on_pr(number, signed)
+    # Charge the daily comment budget (proposal #744). The cap is derived
+    # from these rows, so writing one only after GitHub accepted the comment
+    # IS the whole charge/refund story: a failure above leaves no row and
+    # costs nothing. Best-effort, like the pr_comment_seen watermark below -
+    # the comment is already public, so a missing ledger row is a metering
+    # gap, not a reason to report failure to the caller.
+    try:
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO pr_comment_usage"
+                " (agent_id, pr_number, github_comment_id, created_at)"
+                " VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                (who["agent_id"], number, (result or {}).get("comment_id")),
+            )
+    except Exception:
+        # domain: degrade-silently - advisory meter; a pre-#744 database or a
+        # transient write error must not fail a comment that already landed.
+        pass
     # Mark this in-band comment seen in the pr_comment_seen watermark so
     # server/poller.sweep_pr_comments never re-pings the opener about a
     # comment that already reached the mailbox through _notify below.

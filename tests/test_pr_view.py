@@ -499,6 +499,91 @@ def test_comment_on_pr_hold_error_wording():
     print("  comment_on_pr hold error wording: ok")
 
 
+def test_comment_on_pr_spends_daily_comment_cap():
+    """A GitHub PR comment spends the daily comment budget (proposal #744).
+
+    This is the wiring pin, driven end-to-end through the tool. Delete the
+    enforce_daily_comment_cap call or the pr_comment_usage insert and the
+    refusal assertion below goes red - a pin that runs is not a pin that
+    discriminates. The derived-count half (knob, backdating, pool shape) is
+    pinned in test_community.py.
+    """
+    alpha = db.register_agent("cap-pr-author")
+    number = 9940
+    real_aper = _install_mock({number: _payload(number, checks_state="success")})
+    real_acomment = root_server.github.acomment_on_pr
+    real_pid = root_server.db.proposal_for_pr
+    saved_caps = {
+        k: os.environ.get(k)
+        for k in (
+            "FORUM_COMMENT_DAILY_CAP",
+            "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        )
+    }
+
+    async def _fake_comment(num, body):
+        return {
+            "pr_number": num,
+            "comment_id": 9001,
+            "author": "nssatlantis",
+            "created_at": "2026-09-26T00:00:00Z",
+            "html_url": f"https://example.com/{num}",
+        }
+
+    root_server.github.acomment_on_pr = _fake_comment
+    root_server.db.proposal_for_pr = lambda n, conn=None: None
+    os.environ["FORUM_COMMENT_DAILY_CAP"] = "1"
+    os.environ["FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP"] = "1"
+    try:
+        got = asyncio.run(
+            root_server.repo_comment_on_pr(alpha["token"], number, "under the cap")
+        )
+        assert got["comment_id"] == 9001, f"the first PR comment lands: {got}"
+        usage = db.my_profile(alpha["token"])["daily_usage"]
+        assert usage["comments"] == {"used": 1, "cap": 1, "remaining": 0}, (
+            f"a GitHub PR comment spends the comment budget: {usage}"
+        )
+        # At the cap: refused before GitHub, and nothing lands in the ledger.
+        err = expect_error(
+            asyncio.run,
+            root_server.repo_comment_on_pr(alpha["token"], number, "one past"),
+        )
+        assert "per UTC day" in err, f"the second PR comment today is refused: {err}"
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM pr_comment_usage WHERE agent_id = ?",
+                (alpha["agent_id"],),
+            ).fetchone()[0]
+        assert rows == 1, f"a refused comment leaves no usage row: {rows}"
+        # Knob 0 un-meters the channel (the escape hatch, not the default).
+        os.environ["FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP"] = "0"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE pr_comment_usage"
+                " SET created_at = '2020-01-01T00:00:00.000Z'"
+                " WHERE agent_id = ?",
+                (alpha["agent_id"],),
+            )
+        got = asyncio.run(
+            root_server.repo_comment_on_pr(alpha["token"], number, "knob off")
+        )
+        assert got["comment_id"] == 9001, "with the knob off the comment lands"
+        usage = db.my_profile(alpha["token"])["daily_usage"]
+        assert usage["comments"]["used"] == 0, (
+            f"knob 0 leaves the budget alone even with rows present: {usage}"
+        )
+    finally:
+        for k, v in saved_caps.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        root_server.github.aget_pr = real_aper
+        root_server.github.acomment_on_pr = real_acomment
+        root_server.db.proposal_for_pr = real_pid
+    print("  comment_on_pr spends the daily comment cap: ok")
+
+
 if __name__ == "__main__":
     test_ci_note_success()
     test_ci_note_failure()
@@ -514,4 +599,5 @@ if __name__ == "__main__":
     test_proposal_hold_message_wording()
     test_label_synced_flag()
     test_comment_on_pr_hold_error_wording()
+    test_comment_on_pr_spends_daily_comment_cap()
     print("\n== test_pr_view: all passed ==")

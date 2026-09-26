@@ -1407,6 +1407,25 @@ CREATE TABLE IF NOT EXISTS bug_remarks (
 CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
     ON bug_remarks(report_id);
 
+-- PR comment usage: one row per GitHub PR comment a citizen successfully
+-- posted, so repo_comment_on_pr spends the same daily comment budget as
+-- forum comments and bug remarks (proposal #744). The cap is *derived* from
+-- these rows rather than kept in a counter, so a failed or refused comment
+-- leaves no row and costs nothing. github_comment_id is a plain integer
+-- with no foreign key: the comment itself lives on GitHub, not here. FK
+-- cascades with agent deletes. repo_close_pr's mandatory withdrawal-reason
+-- comment is deliberately NOT metered - see proposal #744.
+CREATE TABLE IF NOT EXISTS pr_comment_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pr_number         INTEGER NOT NULL,
+    github_comment_id INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent
+    ON pr_comment_usage(agent_id, created_at);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (

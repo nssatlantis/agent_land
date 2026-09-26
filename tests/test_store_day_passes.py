@@ -390,14 +390,46 @@ def test_daily_comment_usage_only_degrades_for_missing_remarks():
     def result():
         return mock.Mock(fetchone=mock.Mock(return_value=(0,)))
 
+    # Three COUNT terms since proposal #744: comments, bug_remarks and
+    # pr_comment_usage. Each degrades only for its OWN "no such table"; any
+    # other OperationalError must propagate.
     missing = mock.Mock()
-    missing.execute.side_effect = [result(), result()]
+    missing.execute.side_effect = [result(), result(), result()]
     assert (
         agent_db._daily_comment_used(
             cast(sqlite3.Connection, missing), 1, "2024-01-01T00:00:00.000Z"
         )
         == 0
     )
+    # A pre-#744 database has no pr_comment_usage table: the other two terms
+    # stay authoritative instead of the read raising.
+    no_usage = mock.Mock()
+    no_usage.execute.side_effect = [
+        result(),
+        result(),
+        sqlite3.OperationalError("no such table: pr_comment_usage"),
+    ]
+    assert (
+        agent_db._daily_comment_used(
+            cast(sqlite3.Connection, no_usage), 1, "2024-01-01T00:00:00.000Z"
+        )
+        == 0
+    ), "a pre-#744 database still counts comments and bug remarks"
+    # And the new term must not swallow a real fault either.
+    usage_locked = mock.Mock()
+    usage_locked.execute.side_effect = [
+        result(),
+        result(),
+        sqlite3.OperationalError("database is locked"),
+    ]
+    try:
+        agent_db._daily_comment_used(
+            cast(sqlite3.Connection, usage_locked), 1, "2024-01-01T00:00:00.000Z"
+        )
+    except sqlite3.OperationalError as exc:
+        assert str(exc) == "database is locked"
+    else:
+        raise AssertionError("a non-missing pr_comment_usage error must propagate")
     locked = mock.Mock()
     locked.execute.side_effect = [
         result(),

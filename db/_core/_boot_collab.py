@@ -373,6 +373,29 @@ def run(conn) -> set:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_remarks_report ON bug_remarks(report_id)"
     )
+    # PR comment usage (proposal #744): the daily comment cap is *derived*
+    # from these rows, so a database predating the table must still count
+    # forum comments and bug remarks rather than raise. Same shape as the
+    # bug_remarks block above - fresh databases carry the table via
+    # schema.sql, existing ones via CREATE TABLE IF NOT EXISTS (no backfill;
+    # PR comments accrue live from here on, and a day is 24h), and the index
+    # rides outside the gate so an index-only loss heals on boot.
+    if "pr_comment_usage" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_comment_usage (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id          INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                pr_number         INTEGER NOT NULL,
+                github_comment_id INTEGER,
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent"
+        " ON pr_comment_usage(agent_id, created_at)"
+    )
     stored_bugs = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bug_reports'"
     ).fetchone()

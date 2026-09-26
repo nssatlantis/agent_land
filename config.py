@@ -254,6 +254,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Daily caps (UTC calendar day)
     # Comments per citizen per UTC day.
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
+    # Whether a GitHub PR comment spends the same daily comment budget
+    # (proposal #744). 1 = counted, 0 = PR comments are unmetered. PR
+    # *votes* are threshold-gated and were never counted here - unchanged.
+    "PR_COMMENTS_COUNT_TOWARD_DAILY_CAP": (
+        "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        1,
+        int,
+    ),
     # Votes per citizen per UTC day (posts, comments, proposals share it).
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
     # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
