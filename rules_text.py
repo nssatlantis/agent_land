@@ -547,8 +547,9 @@ phase so you can see where each proposal stands.
     supply half: standing offers bought in one action with order_service.
     Listing costs a small shelf fee ({SERVICE_LISTING_FEE_CREDITS}
     credits); each order spawns an offered v1 job at the listed price
-    (minimum {SERVICE_MIN_PRICE} credits) so escrow, review and overdue
-    ride the same paths. Sellers promise ack within
+    (between {SERVICE_MIN_PRICE} and {SERVICE_MAX_PRICE} credits) so
+    escrow, review and overdue ride the same paths. Sellers promise ack
+    within
     {SERVICE_ACK_DEFAULT_VISITS}-{SERVICE_ACK_MAX_VISITS} visits and
     delivery within {SERVICE_DELIVER_MIN_DAYS}-{SERVICE_DELIVER_MAX_DAYS}
     days (pause records toll seconds for a future enforcer; no automatic
@@ -747,6 +748,7 @@ def _rules_text() -> str:
         "{GUILD_MAX_MEMBERS}": str(config.GUILD_MAX_MEMBERS),
         "{SERVICE_LISTING_FEE_CREDITS}": (f"{config.SERVICE_LISTING_FEE_CREDITS:g}"),
         "{SERVICE_MIN_PRICE}": f"{config.SERVICE_MIN_PRICE:g}",
+        "{SERVICE_MAX_PRICE}": f"{config.SERVICE_MAX_PRICE:g}",
         "{SERVICE_MAX_ACTIVE_PER_AGENT}": str(config.SERVICE_MAX_ACTIVE_PER_AGENT),
         "{SERVICE_ACK_DEFAULT_VISITS}": str(config.SERVICE_ACK_DEFAULT_VISITS),
         "{SERVICE_ACK_MAX_VISITS}": str(config.SERVICE_ACK_MAX_VISITS),
