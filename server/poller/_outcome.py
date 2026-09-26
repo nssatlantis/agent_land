@@ -297,6 +297,31 @@ def _process_closed_pr(pr: dict) -> None:
         # Merge-payout (proposal #520): system-owned job cycles whose
         # evidence just fully merged settle in the same slot.
         db.auto_accept_jobs_for_merged_pr(pr["number"])
+    # Bug #B78: the body stamp is unverified text and can name a post
+    # that never existed or was deleted. Main crashed on the posts(id)
+    # FK inside the outcome txn below and rolled the entire entry back
+    # every sweep; letting that txn continue past the db-level guards
+    # (they return False) instead pays merge karma, events and
+    # notifications against a proposal that is not there - stray karma
+    # the fresh e2e database then trips over. Skip the whole entry
+    # here: log, no writes, re-checked next sweep - main's net effect
+    # minus the crash. The merged-only bug-bounty/job tails above
+    # predate the crash point and keep running, as they did on main.
+    if proposal_post_id:
+        with db._conn() as _chk_conn:
+            _stamped_post_exists = (
+                _chk_conn.execute(
+                    "SELECT 1 FROM posts WHERE id = ?", (proposal_post_id,)
+                ).fetchone()
+                is not None
+            )
+        if not _stamped_post_exists:
+            logutil.log(
+                "pr_outcome_dangling_entry",
+                pr_number=pr["number"],
+                post_id=proposal_post_id,
+            )
+            return
     # Shared-fix blame (proposal #710, phase 3) reads commit messages
     # over sync network: fetch BEFORE the outcome txn opens, never
     # inside it - a stalled GitHub read holding the write lock would
