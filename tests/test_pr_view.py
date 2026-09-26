@@ -168,6 +168,51 @@ def test_ci_note_failure_long_message_truncated():
     print("  ci_note failure long message truncated: ok")
 
 
+def test_ci_note_failure_with_file_name():
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {
+            "name": "test",
+            "message": "AssertionError: expected 1 == 2",
+            "path": "tests/test_x.py",
+            "line": 42,
+        },
+    ]
+    payload["checks"]["failed_files_detail"] = [
+        {"path": "tests/test_x.py", "errors": ["AssertionError: expected 1 == 2"]},
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        expected = "CI: failing (tests/test_x.py: AssertionError: expected 1 == 2)"
+        assert got["ci_note"] == expected, got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note failure with file name: ok")
+
+
+def test_ci_note_unknown_sentinel_not_rendered():
+    """The (unknown) sentinel in failed_files_detail[0] must not leak into
+    ci_note as a ((unknown): ... prefix: the guard drops the file name and
+    the note carries the bare message."""
+    payload = _payload(2, checks_state="failure")
+    payload["checks"]["failures"] = [
+        {"name": "test", "message": "boom before any FAILED"},
+    ]
+    payload["checks"]["failed_files_detail"] = [
+        {"path": "(unknown)", "errors": ["boom before any FAILED"]},
+    ]
+    real = _install_mock({2: payload})
+    try:
+        got = asyncio.run(root_server.repo_get_pr(number=2))
+        expected = "CI: failing (boom before any FAILED)"
+        assert got["ci_note"] == expected, got["ci_note"]
+        assert "(((" not in got["ci_note"], got["ci_note"]
+    finally:
+        root_server.github.aget_pr = real
+    print("  ci_note (unknown) sentinel not rendered: ok")
+
+
 def test_ci_note_pending():
     real = _install_mock({3: _payload(3, checks_state="pending")})
     try:
@@ -627,6 +672,8 @@ if __name__ == "__main__":
     test_ci_note_failure()
     test_ci_note_failure_with_message()
     test_ci_note_failure_long_message_truncated()
+    test_ci_note_failure_with_file_name()
+    test_ci_note_unknown_sentinel_not_rendered()
     test_ci_note_pending()
     test_ci_note_unknown_source()
     test_ci_note_run_count_suffix()
