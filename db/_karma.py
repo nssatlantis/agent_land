@@ -475,8 +475,10 @@ def link_pr_to_proposal(
         # INSERT OR IGNORE does not swallow FK violations, so a
         # body-stamped id naming a post that never existed (or was
         # deleted) would abort the caller's transaction here. Record
-        # nothing and let the caller continue - a PR can only implement
-        # a real proposal.
+        # nothing and return - a PR can only implement a real proposal;
+        # the outcome poller skips such an entry before its txn opens
+        # (`pr_outcome_dangling_entry`), and this guard covers every
+        # other caller.
         if c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
             logutil.log(
                 "proposal_link_dangling_post",
@@ -855,8 +857,11 @@ def record_proposal_outcome(
         # deleted). Writing it raises the posts(id) FK IntegrityError
         # inside the caller's outcome txn, rolling back merge karma, stake
         # settlement and the link backfill with it. Degrade to 'no outcome
-        # recorded': log and return, so the caller's remaining legs commit.
-        # The post read below for the verdict fan-out then always finds its
+        # recorded': log and return False with no partial write. The
+        # outcome poller skips its whole entry before the txn opens
+        # (`pr_outcome_dangling_entry` in `_process_closed_pr`); these
+        # guards stay as defense-in-depth for every other caller. The post
+        # read below for the verdict fan-out then always finds its
         # row.
         if c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
             logutil.log(
