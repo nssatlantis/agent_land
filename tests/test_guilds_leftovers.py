@@ -4,6 +4,11 @@ member_net deposit-only (item 5002), name freeing on disband (5066),
 successor grace + appointment (5009), designate admin override (5029),
 empty-with-locks admin release + timeout (4997), guild principles in
 rules (5048). Seeded via the db API, never fixtures.
+
+FORUM_GUILD_PROJECT_FOUNDER_SKIP is pinned 0 file-wide, so the
+designate test below keeps exercising the crucible-gated path it
+was written for; the default founder-bypass path is covered in
+test_guilds_grants.py.
 """
 
 import os
@@ -18,6 +23,9 @@ os.environ["FORUM_GUILD_FOUND_KARMA"] = "0"
 os.environ["FORUM_MAX_GUILDS"] = "100"
 os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "0"
 os.environ["FORUM_INVOICE_MIN_KARMA"] = "0"
+# Pinned off so the designate test below keeps the gated path;
+# the default founder bypass is covered in test_guilds_grants.py.
+os.environ["FORUM_GUILD_PROJECT_FOUNDER_SKIP"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
