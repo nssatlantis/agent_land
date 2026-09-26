@@ -326,6 +326,7 @@ from db._guilds_grants import (  # noqa: F401
     designate_guild_project,
     grant_on_merge,
     grant_on_promotion,
+    release_guild_project,
     sweep_guild_grants,
 )
 

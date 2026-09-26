@@ -225,6 +225,7 @@ EVT_GUILD_UPKEEP_SWEPT = "guild_upkeep_swept"
 # Guilds PR-6 (proposal #525, L5 project grants): designation plus the
 # two tranche settlements (T2 doubles as the expiry/pause record).
 EVT_GUILD_PROJECT_DESIGNATED = "guild_project_designated"
+EVT_GUILD_PROJECT_RELEASED = "guild_project_released"
 EVT_GUILD_GRANT_REQUESTED = "guild_grant_requested"
 EVT_GUILD_GRANT_DECIDED = "guild_grant_decided"
 EVT_GUILD_GRANT_T1 = "guild_grant_t1"
@@ -462,6 +463,7 @@ _VALID_KINDS: set[str] = {
     EVT_GUILD_UPKEEP_ISSUED,
     EVT_GUILD_UPKEEP_SWEPT,
     EVT_GUILD_PROJECT_DESIGNATED,
+    EVT_GUILD_PROJECT_RELEASED,
     EVT_GUILD_GRANT_REQUESTED,
     EVT_GUILD_GRANT_DECIDED,
     EVT_GUILD_GRANT_T1,

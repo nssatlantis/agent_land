@@ -243,6 +243,7 @@ from server.tools.guilds import (  # noqa: F401
     post_guild_chat,
     propose_guild_plan_item,
     rejoin_guild,
+    release_guild_project,
     rename_guild,
     request_guild_cosign,
     request_guild_grant,
