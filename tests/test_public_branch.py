@@ -569,6 +569,15 @@ def main():
                 (_who, 4311),
             ).fetchone()[0]
             assert (_n >= 1) == _expect, (_who, _n)
+    # The nudge's instruction must be carry-out-able: pushed trees
+    # cannot sync (orphan guard), so holders are told to reclaim.
+    with db._conn() as conn:
+        _body = conn.execute(
+            "SELECT body FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_id = ? AND body LIKE '%shared fix%'",
+            (alpha, 4311),
+        ).fetchone()[0]
+        assert "claim again" in _body, _body
     # --- victim roster rows die with their author ------------------------
     doomed3 = db.register_agent("doomed-roster")
     with db._conn() as conn:
