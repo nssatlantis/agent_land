@@ -763,6 +763,18 @@ def test_push_refuses_proposal_duplicate():
         )
         assert "already has open PR" in err and "repo_update_pr" in err, err
         assert len(sb.open_prs) == 1, "refused push opens nothing"
+        missing = subprocess.run(
+            ["git", "branch", "--list", "claim/11/45/second"],
+            cwd=other["path"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert missing == "", "refused push commits nothing"
+        # API-shape rows (head.ref) take the same path as test-shape rows.
+        sb.open_prs.append({"number": 9, "head": {"ref": "claim/11/45/other"}})
+        found = ws._find_open_claim_prs_for_proposal(11, 45)
+        assert sorted(r.get("number") for r in found) == [7, 9], found
     finally:
         sb.close()
     print("  push refuses proposal duplicates before committing: ok")
