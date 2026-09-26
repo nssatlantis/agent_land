@@ -12,6 +12,7 @@ the economy conservation audit green; pre-fund databases migrate.
 
 import asyncio
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -261,6 +262,20 @@ def main():
         assert "already paid out" in err, err
         audit = db._economy.verify_conservation()
         assert audit["ok"] is True, audit
+        # the race guard is a real UNIQUE, not just the early return:
+        # a raw duplicate payout row must die at the database (note:
+        # expect_error only catches ForumError, so IntegrityError needs
+        # its own except - mispackaging this assert is exactly the bug).
+        try:
+            conn.execute(
+                "INSERT INTO finding_payouts (finding_id, payee_agent_id, units)"
+                " VALUES (?, ?, ?)",
+                (g1, alpha, 40),
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "UNIQUE" in str(exc) or "constraint" in str(exc), exc
+        else:
+            raise AssertionError("payout guard needs its UNIQUE")
         # cap boundary: fund to exactly the cap, one more unit refused
         g2 = _finding(conn, pid, beta, pr=_PR2)
         db.finding_fund(conn, g2, alpha, 100)
@@ -325,10 +340,47 @@ def main():
             " WHERE account = 'escrow'"
         ).fetchone()[0]
         assert legs_after - legs_before == 20, "the +escrow leg lands"
+        # late funds before quorum join the single payout at full total
+        g7 = _finding(conn, pid, beta, pr=_PR2)
+        db.finding_fund(conn, g7, alpha, 20)
+        db.finding_fund(conn, g7, gamma, 20)
+        db.finding_mark_resolved(conn, g7, alpha, "fixed")
+        db.finding_verify(conn, g7, delta, _SHA_A)
+        db.finding_verify(conn, g7, epsilon, _SHA_A)
+        out = db.maybe_pay_finding_bounty(conn, g7, _SHA_A)
+        assert out["paid"] is True and out["units"] == 40, out
+        assert out["payee_agent_id"] == alpha, out
     # Panel reads through its own connection, so it runs after this
     # block commits (uncommitted rows are invisible to it).
     html2 = _pr_findings_panel(_PR2)
     assert "bounty" in html2, "funded rows still badge"
+    # --- deleting a post refunds its findings' funders ------------------
+    # The refund wiring must run BEFORE the cascade: move the call below
+    # _remove_posts and the finding rows are gone before the refund reads
+    # them, funders lose escrow, and this section is the tripwire.
+    pid3 = _proposal(agents, "postdelete")
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (?, ?, ?)",
+            (4406, pid3, alpha),
+        )
+        dp = _finding(conn, pid3, beta, pr=4406)
+        db.finding_fund(conn, dp, alpha, 30)
+        db.finding_fund(conn, dp, gamma, 20)
+        a_before = _balance(conn, alpha)
+        g_before = _balance(conn, gamma)
+    moderation.delete_post(pid3, "root")
+    with db._conn() as conn:
+        assert _balance(conn, alpha) == a_before + 30, "post refund whole"
+        assert _balance(conn, gamma) == g_before + 20, "post refund whole"
+        assert (
+            conn.execute(
+                "SELECT id FROM review_findings WHERE id = ?", (dp,)
+            ).fetchone()
+            is None
+        ), "the finding died with its post"
+        assert db._economy.verify_conservation()["ok"] is True
     # --- deleting a finder refunds live funders, treasury takes orphans --
     with db._conn() as conn:
         hold = _finding(conn, pid, zeta)
@@ -343,6 +395,41 @@ def main():
         assert (
             conn.execute(
                 "SELECT bounty_units FROM review_findings WHERE id = ?", (hold,)
+            ).fetchone()
+            is None
+        ), "the finding died with its finder"
+        assert db._economy.verify_conservation()["ok"] is True
+
+    # --- victim funder shares sweep whole to the treasury ----------------
+    # Balances-plus-conservation alone cannot see the dead branch (a
+    # release-then-forfeit would also balance, at half value): the
+    # stranded-reason treasury legs prove the whole share arrived.
+    victim = db.register_agent("orphan-funder")
+    victim_id = victim["agent_id"]
+    _fund(victim_id)
+    for _ in range(3):
+        c = db.create_comment(victim["token"], post_id, "karma seed")
+        db.vote(agents["alpha"]["token"], "comment", c["comment_id"], 1)
+    with db._conn() as conn:
+        oh = _finding(conn, pid, victim_id)
+        db.finding_fund(conn, oh, victim_id, 20)
+        db.finding_fund(conn, oh, alpha, 30)
+        a_before = _balance(conn, alpha)
+        t_before = conn.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            " WHERE reason = 'finding_bounty_stranded' AND account = 'treasury'"
+        ).fetchone()[0]
+    moderation.delete_agent(victim_id, "root", destroy_content=True)
+    with db._conn() as conn:
+        assert _balance(conn, alpha) == a_before + 30, "live funder whole"
+        t_after = conn.execute(
+            "SELECT COALESCE(SUM(delta_units), 0) FROM credit_entries"
+            " WHERE reason = 'finding_bounty_stranded' AND account = 'treasury'"
+        ).fetchone()[0]
+        assert t_after - t_before == 20, "dead share sweeps whole"
+        assert (
+            conn.execute(
+                "SELECT id FROM review_findings WHERE id = ?", (oh,)
             ).fetchone()
             is None
         ), "the finding died with its finder"

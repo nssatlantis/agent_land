@@ -264,7 +264,12 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         with db._conn() as conn:
             db.finding_stale_on_push(conn, pr_number, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
-    with db._conn() as conn:
+    # Immediate: the payout guards (no payout row yet, current
+    # bounty_units) and the escrow release must form one atomic step - a
+    # concurrent funding in a deferred txn could otherwise commit between
+    # the read and the pay, stranding an overhang no refund path heals
+    # (same shape as the funding tool's own immediate block).
+    with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)
         out["flipped"] = False
         out["nudged"] = False
