@@ -66,6 +66,10 @@ def main():
     assert "- #3 [bug] wire-shape - verified" in section
     assert "- #4 [bug] wire-shape - stale" in section
     assert "- #5 [bug] wire-shape - resolved" in section
+    sec = ftools.render_findings_mirror(
+        pid, 4242, rows, {"open_auto_flip_by_voter": [{"finder_agent_id": 1, "n": 3}]}
+    )
+    assert "3 open auto-flip findings." in sec
     assert ftools._MIRROR_START in section
     assert ftools._MIRROR_END in section
     # --- bounded: 30 rows show 20 plus a +N note -----------------------
