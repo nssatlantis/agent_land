@@ -85,6 +85,13 @@ class _PushSandbox:
         if method == "GET" and path.startswith("pulls?head="):
             want = path.split("head=", 1)[1].split("&")[0].split(":", 1)[1]
             return [pr for pr in self.open_prs if pr.get("branch") == want]
+        if method == "GET" and path.startswith("pulls?state=open"):
+            tail = path.split("?", 1)[1]
+            args = dict(p.split("=", 1) for p in tail.split("&") if "=" in p)
+            per_page = int(args.get("per_page", 100))
+            page = int(args.get("page", 1))
+            start = (page - 1) * per_page
+            return list(self.open_prs)[start : start + per_page]
         if method == "POST" and path == "pulls":
             pr = {
                 "number": 7,
@@ -744,6 +751,50 @@ def test_push_refuses_behind_tree():
     print("  push refuses behind trees before committing: ok")
 
 
+def test_push_refuses_proposal_duplicate():
+    sb = _PushSandbox()
+    try:
+        tree = ws.ensure_claim_tree(11, 45, "first")
+        dest = tree["path"]
+        Path(dest, "one.txt").write_text("one\n", encoding="utf-8")
+        first = ws.push_claim_tree(11, 45, "first", "Ship it", "b", "c (agent_id=11)")
+        assert first["first_push"] is True, first
+        # A second workspace on the same proposal mints a different
+        # branch, invisible to the branch-keyed guard.
+        other = ws.ensure_claim_tree(11, 45, "second")
+        Path(other["path"], "two.txt").write_text("two\n", encoding="utf-8")
+        err = _expect_repo_error(
+            ws.push_claim_tree, 11, 45, "second", "More", "b", "c (agent_id=11)"
+        )
+        assert "already has open PR" in err and "repo_update_pr" in err, err
+        assert len(sb.open_prs) == 1, "refused push opens nothing"
+        missing = subprocess.run(
+            ["git", "branch", "--list", "claim/11/45/second"],
+            cwd=other["path"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert missing == "", "refused push commits nothing"
+        # API-shape rows (head.ref) take the same path as test-shape rows.
+        sb.open_prs.append({"number": 9, "head": {"ref": "claim/11/45/other"}})
+        found = ws._find_open_claim_prs_for_proposal(11, 45)
+        assert sorted(r.get("number") for r in found) == [7, 9], found
+        # Pagination is real: with two rows per page the claim PR on
+        # page 2 must still be found (a single-page lookup misses it).
+        old_per_page = config.GITHUB_PRS_PER_PAGE
+        config.GITHUB_PRS_PER_PAGE = 2
+        try:
+            sb.open_prs.append({"number": 10, "head": {"ref": "claim/11/45/third"}})
+            found = ws._find_open_claim_prs_for_proposal(11, 45)
+            assert sorted(r.get("number") for r in found) == [7, 9, 10], found
+        finally:
+            config.GITHUB_PRS_PER_PAGE = old_per_page
+    finally:
+        sb.close()
+    print("  push refuses proposal duplicates before committing: ok")
+
+
 def _push_guard(wstools):
     def _guard(*args, **kw):
         return asyncio.run(wstools.workspace_push(*args, **kw))
@@ -768,6 +819,7 @@ def main():
     test_push_failure_restores_dirty()
     test_post_failure_finishes_on_retry()
     test_push_refuses_behind_tree()
+    test_push_refuses_proposal_duplicate()
     test_sync_refuses_pushed_tree()
     test_tool_push_wiring(agents, wstools)
     test_push_manifest_and_expect_shas()

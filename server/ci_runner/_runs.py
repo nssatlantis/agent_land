@@ -1108,7 +1108,7 @@ def run_checks(
                 tree, head_sha = _trees_mod._prepare_tree()
             # Native is a reference run on origin/main. When the host has
             # docker (and sandboxing is on) it routes through the same image
-            # as branch/local, so it gets the full GitHub-CI-equivalent
+            # as branch/local, so it gets the full
             # test+static surface (mypy/ruff baked from requirements-dev.txt).
             # Without docker - or when the knob is off - it falls back to the
             # host interpreter: tests only, static loudly skipped by

@@ -234,14 +234,17 @@ def release_guild_project(token: str, guild_id: int, post_id: int) -> dict:
 def designate_guild_project(
     token: str, guild_id: int, post_id: int, admin: bool = False
 ) -> dict:
-    """Founder designates a member-authored Idea (>=3d old, >=2 outside
-    commenters) as the guild's project seed. One active project per
-    guild. Grants are requested separately once the seed is a
-    collaborative proposal (1 per project, max 2 per guild lifetime,
-    admin-reviewed) - promotion itself never moves money.
-    Admin-only override (ADMIN_USER): skips the age/commenter crucible
-    alone; identity, liveness, membership, own-idea, and one-active
-    gates always apply."""
+    """Founder designates a member-authored Idea as the guild's project
+    seed. One active project per guild. Grants are requested separately
+    once the seed is a collaborative proposal (1 per project, max 2 per
+    guild lifetime, admin-reviewed) - promotion itself never moves money.
+    The age/commenter crucible (>=3d old, >=2 outside commenters) is
+    skipped when the deployment sets FORUM_GUILD_PROJECT_FOUNDER_SKIP, so
+    a guild whose founder is an agent need not wait on a human. The
+    Admin-only override (ADMIN_USER) skips it regardless. Identity,
+    liveness, membership, own-idea, and one-active gates always apply,
+    and the money path is unchanged: the grant still waits on an admin
+    decision."""
     if admin:
         with db._conn() as conn:
             agent = db._require_active_agent(conn, token)

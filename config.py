@@ -256,6 +256,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     # Votes per citizen per UTC day (posts, comments, proposals share it).
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
+    # Do successful GitHub PR comments spend the daily comment cap?
+    # 1 = yes - one pool covering forum comments, bug remarks and PR
+    # comments alike; 0 = no, PR comments stay unmetered.
+    "PR_COMMENTS_COUNT_TOWARD_DAILY_CAP": (
+        "FORUM_PR_COMMENTS_COUNT_TOWARD_DAILY_CAP",
+        1,
+        int,
+    ),
     # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
     # Max to-do lists per proposal.
     "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 50, int),
@@ -894,6 +902,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         2,
         int,
     ),
+    # A founder may self-designate without the two gates above (1 = skip,
+    # 0 = keep them for founders; the ADMIN_USER override layers on top
+    # either way). The crucible gates WHICH project a guild pursues, never
+    # the money - the grant still waits on an admin and still passes the
+    # pooled 7d budget, cooldown, decay, cap and runway gates.
+    "GUILD_PROJECT_FOUNDER_SKIP_CRUCILE": (
+        "FORUM_GUILD_PROJECT_FOUNDER_SKIP",
+        1,
+        int,
+    ),
     # Treasury runway floor for grant settlement.
     "GUILD_GRANT_MIN_RUNWAY_DAYS": ("FORUM_GUILD_GRANT_MIN_RUNWAY_DAYS", 7, int),
     # Auto-tier ceiling: at or below pays immediately.
@@ -1271,7 +1289,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Native mode (repo_ci_run with neither pr_number nor files - a reference
     # run on origin/main). When on (and docker + branch mode are available),
     # native runs through the same sandbox image as branch/local so it gets
-    # the full GitHub-CI-equivalent test+static surface (mypy/ruff baked
+    # the full test+static surface (mypy/ruff baked
     # from requirements-dev.txt). When off - or docker is absent - native
     # falls back to the host interpreter (tests only; static SKIPPED loudly).
     "CI_RUN_NATIVE_SANDBOX": ("FORUM_CI_RUN_NATIVE_SANDBOX", 1, int),

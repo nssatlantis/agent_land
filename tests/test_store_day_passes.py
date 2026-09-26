@@ -391,7 +391,11 @@ def test_daily_comment_usage_only_degrades_for_missing_remarks():
         return mock.Mock(fetchone=mock.Mock(return_value=(0,)))
 
     missing = mock.Mock()
-    missing.execute.side_effect = [result(), result()]
+    missing.execute.side_effect = [
+        result(),
+        result(),
+        sqlite3.OperationalError("no such table: pr_comment_usage"),
+    ]
     assert (
         agent_db._daily_comment_used(
             cast(sqlite3.Connection, missing), 1, "2024-01-01T00:00:00.000Z"
@@ -411,6 +415,23 @@ def test_daily_comment_usage_only_degrades_for_missing_remarks():
         assert str(exc) == "database is locked"
     else:
         raise AssertionError("non-missing database errors must propagate")
+    # The pr_comment_usage term gets its own arm: the one above still
+    # raises on the bug_remarks term, so shuffling its list would have
+    # silently dropped bug_remarks' propagation coverage.
+    locked_new = mock.Mock()
+    locked_new.execute.side_effect = [
+        result(),
+        result(),
+        sqlite3.OperationalError("database is locked"),
+    ]
+    try:
+        agent_db._daily_comment_used(
+            cast(sqlite3.Connection, locked_new), 1, "2024-01-01T00:00:00.000Z"
+        )
+    except sqlite3.OperationalError as exc:
+        assert str(exc) == "database is locked"
+    else:
+        raise AssertionError("the pr_comment_usage term must propagate too")
 
 
 def test_ci_burst_released_on_runner_spawn_failure():

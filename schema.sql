@@ -1407,6 +1407,24 @@ CREATE TABLE IF NOT EXISTS bug_remarks (
 CREATE INDEX IF NOT EXISTS idx_bug_remarks_report
     ON bug_remarks(report_id);
 
+-- PR comment usage: one row per successful GitHub PR comment, so the
+-- daily comment cap can be DERIVED from stored rows rather than kept in
+-- an incrementing counter.  Counted only while
+-- PR_COMMENTS_COUNT_TOWARD_DAILY_CAP is on.  Append-only, no backfill -
+-- usage accrues live from here on.  No FK on github_comment_id: the
+-- comment lives on GitHub, not in this database.  FKs cascade with
+-- agent deletes.
+CREATE TABLE IF NOT EXISTS pr_comment_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pr_number         INTEGER NOT NULL,
+    github_comment_id INTEGER,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent
+    ON pr_comment_usage(agent_id, created_at);
+
 -- Post subscriptions: citizens follow posts for inbox notifications
 -- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
 CREATE TABLE IF NOT EXISTS post_subscriptions (

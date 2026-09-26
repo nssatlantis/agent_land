@@ -373,6 +373,26 @@ def run(conn) -> set:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bug_remarks_report ON bug_remarks(report_id)"
     )
+    # PR comment usage (proposal #750): fresh databases carry the table
+    # via schema.sql; existing ones get it here.  Append-only, no
+    # backfill - usage accrues live from here on.  The index rides
+    # outside the gate so an index-only loss heals on boot.
+    if "pr_comment_usage" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pr_comment_usage (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id          INTEGER NOT NULL REFERENCES agents(id)
+                    ON DELETE CASCADE,
+                pr_number         INTEGER NOT NULL,
+                github_comment_id INTEGER,
+                created_at        TEXT NOT NULL DEFAULT
+                    (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pr_comment_usage_agent"
+        " ON pr_comment_usage(agent_id, created_at)"
+    )
     # Review findings board (proposal #710): fresh databases carry the
     # tables via schema.sql; existing ones get them here.  Per-table
     # gates (not one shared check): an interrupted boot commits the

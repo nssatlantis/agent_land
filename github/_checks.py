@@ -54,18 +54,69 @@ def _extract_failure_lines(log: str) -> list[str]:
     return hits
 
 
-def _ci_state(mapped: list[dict]) -> str:
+def _superseded_ids(runs: list[dict]) -> set:
+    """Ids of runs that a newer run of the same check name supersedes.
+
+    Both tier queries are head_sha-scoped, so one head's run list can hold
+    several runs of a single check: GitHub cancels a superseded run
+    automatically when a newer one starts for the same ref, and both entries
+    describe the same head. Ranking by the numeric run id both tiers already
+    expose makes the newest authoritative - which is also what GitHub's own
+    UI renders. Bug #B123.
+
+    Two deliberate refusals to collapse, both because collapsing too eagerly
+    would trade a false red for a false GREEN, which is the worse direction
+    for a gate:
+      - an unnamed run is not verifiably the same logical check as another
+        unnamed run, so each gets its own key and supersedes nothing;
+      - a run with no numeric id cannot be ranked, so it is never reported
+        superseded and the list degrades to the pre-#B123 behaviour instead
+        of guessing.
+    """
+    best: dict[tuple, tuple[tuple[int, int], object]] = {}
+    superseded: set = set()
+    for i, r in enumerate(runs):
+        rid = r.get("id")
+        name = (r.get("name") or "").strip()
+        key = ("named", name) if name else ("anon", i)
+        rank = (rid if isinstance(rid, int) else -1, i)
+        cur = best.get(key)
+        if cur is None:
+            best[key] = (rank, rid)
+        elif rank > cur[0]:
+            best[key] = (rank, rid)
+            superseded.add(cur[1])
+        else:
+            superseded.add(rid)
+    return {s for s in superseded if s is not None}
+
+
+def _ci_state(mapped: list[dict], superseded: set) -> str:
     """One green/red/pending verdict across a run list: 'failure' when any
     run failed, 'pending' while any is unfinished, else 'success'.
     Includes 'error' (the combined commit status API's configuration-failure
-    state) alongside the check-run / Actions failure vocabularies."""
+    state) alongside the check-run / Actions failure vocabularies.
+
+    `superseded` is the calling tier's _superseded_ids(runs) set, and it is
+    computed from the RAW run list on purpose: that is the only place where a
+    missing name is still visibly missing. _map_run substitutes "check" /
+    "workflow" for an unnamed run, so a verdict that re-derived supersession
+    from `mapped` would see two unrelated unnamed runs as one check name and
+    let the newer hide the older's failure - a false green. Bug #B123.
+
+    The verdict reads the newest run per check name, so a superseded
+    duplicate that GitHub cancelled automatically cannot outvote the run
+    that describes the tip. 'cancelled' remains a failure when it is the
+    NEWEST run of its name - a cancelled tip genuinely has no green verdict.
+    """
+    current = [r for r in mapped if r.get("id") not in superseded]
     if any(
         r["conclusion"]
         in ("failure", "cancelled", "timed_out", "action_required", "error")
-        for r in mapped
+        for r in current
     ):
         return "failure"
-    if any(r["conclusion"] is None or r["status"] != "completed" for r in mapped):
+    if any(r["conclusion"] is None or r["status"] != "completed" for r in current):
         return "pending"
     return "success"
 
@@ -96,6 +147,10 @@ def _map_run(r: dict, *, name_default: str, status_default: str) -> dict:
         "status": r.get("status") or status_default,
         "conclusion": r.get("conclusion"),
         "html_url": r.get("html_url"),
+        # The run id is the tiebreak _superseded_ids ranks on, and it lets a
+        # reader name the exact run a verdict came from without parsing
+        # html_url. Additive: every pre-existing key is unchanged.
+        "id": r.get("id"),
     }
 
 
@@ -105,9 +160,14 @@ def _checks_from_check_runs(runs: list[dict]) -> dict:
     carries its reason in the tool result."""
     mapped: list[dict] = []
     failures: list[dict] = []
+    superseded = _superseded_ids(runs)
     for r in runs:
         name = r.get("name") or "check"
         mapped.append(_map_run(r, name_default="check", status_default="queued"))
+        if r.get("id") in superseded:
+            # A newer run of this check already answered for the head; this
+            # copy's annotations describe a superseded attempt, not the tip.
+            continue
         if r.get("conclusion") not in (
             "failure",
             "cancelled",
@@ -139,7 +199,7 @@ def _checks_from_check_runs(runs: list[dict]) -> dict:
             )
     return {
         "source": "check_runs",
-        "state": _ci_state(mapped),
+        "state": _ci_state(mapped, superseded),
         "runs": mapped,
         "failures": failures,
     }
@@ -151,11 +211,16 @@ def _checks_from_actions(runs: list[dict]) -> dict:
     or log that cannot be read leaves the run link, never an error."""
     mapped: list[dict] = []
     failures: list[dict] = []
+    superseded = _superseded_ids(runs)
     for r in runs:
         name = r.get("name") or "workflow"
         conclusion = r.get("conclusion")
         run_id = r.get("id")
         mapped.append(_map_run(r, name_default="workflow", status_default="completed"))
+        if run_id in superseded:
+            # A newer run of this workflow already answered for the head; do
+            # not spend a jobs fetch or a log tail on a superseded attempt.
+            continue
         if conclusion not in ("failure", "cancelled", "timed_out") or run_id is None:
             continue
         jobs: list[dict] = []
@@ -190,7 +255,7 @@ def _checks_from_actions(runs: list[dict]) -> dict:
                 )
     return {
         "source": "actions",
-        "state": _ci_state(mapped),
+        "state": _ci_state(mapped, superseded),
         "runs": mapped,
         "failures": failures,
     }
@@ -315,9 +380,13 @@ async def _afrom_check_runs(runs):
     gathered concurrently instead of chaining."""
     mapped = []
     failed = []
+    superseded = _superseded_ids(runs)
     for r in runs:
         name = r.get("name") or "check"
         mapped.append(_map_run(r, name_default="check", status_default="queued"))
+        if r.get("id") in superseded:
+            # Sync twin's counterpart to the skip in _checks_from_check_runs.
+            continue
         if r.get("conclusion") not in (
             "failure",
             "cancelled",
@@ -345,7 +414,7 @@ async def _afrom_check_runs(runs):
             )
     return {
         "source": "check_runs",
-        "state": _ci_state(mapped),
+        "state": _ci_state(mapped, superseded),
         "runs": mapped,
         "failures": failures,
     }
@@ -395,9 +464,13 @@ async def _afrom_actions(runs):
     (the expensive tail - each can be tens of KB behind a redirect)."""
     mapped = []
     failed_runs = []
+    superseded = _superseded_ids(runs)
     for r in runs:
         name = r.get("name") or "workflow"
         mapped.append(_map_run(r, name_default="workflow", status_default="completed"))
+        if r.get("id") in superseded:
+            # Async twin's counterpart to the skip in _checks_from_actions.
+            continue
         if r.get("conclusion") not in ("failure", "cancelled", "timed_out"):
             continue
         failed_runs.append((name, r.get("id"), r.get("html_url")))
@@ -431,7 +504,7 @@ async def _afrom_actions(runs):
             failures.append({"name": fq_name, "message": line, "log_url": log_url})
     return {
         "source": "actions",
-        "state": _ci_state(mapped),
+        "state": _ci_state(mapped, superseded),
         "runs": mapped,
         "failures": failures,
     }
