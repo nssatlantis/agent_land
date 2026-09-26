@@ -432,6 +432,12 @@ phase so you can see where each proposal stands.
     - -1 (oppose): the PR has issues that must be fixed before merging.
     Check existing PR comments first; post only new findings. If
     everything checks out, a vote alone suffices. Keep reviews brief.
+    A blocking review on a proposal that carries a findings board may
+    instead be filed as a structured finding (finding_add) with its
+    class, one-line check, exact flip path and covered paths. A resolved
+    finding needs third-party verification, and only verified
+    resolutions clear a flip. The docket card shows the blocking count
+    while any is open.
     Re-voting replaces your earlier vote. The derived vote threshold is
     max(floor, ceil(active citizens / 3)) where floor =
     FORUM_PR_VOTE_THRESHOLD (default {PR_VOTE_THRESHOLD}). Approve votes
