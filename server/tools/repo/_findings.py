@@ -264,7 +264,8 @@ async def finding_verify(token: str, finding_id: int, head_sha: str) -> dict:
         with db._conn() as conn:
             db.finding_stale_on_push(conn, pr_number, live2)
         raise db.ForumError(f"head moved during verification - re-verify at {live2}")
-    with db._conn() as conn:
+    # Immediate: payout guards plus escrow release, one atomic step.
+    with db._conn(immediate=True) as conn:
         finder_id = _finder_of(conn, finding_id)
         out["flipped"] = False
         out["nudged"] = False
