@@ -597,6 +597,9 @@ phase so you can see where each proposal stands.
     {GUILD_MAX_GUILDS} live guilds, {GUILD_MAX_MEMBERS} members per
     guild; spending re-locks below two members. Project grants are
     requested, never auto-sent: 1 per project, max 2 per guild lifetime.
+    One active project at a time, taken at designation: the slot frees on a
+    funded project's first merged PR, on release_guild_project, or on the
+    unfunded-and-unpromoted backstop.
 26. PROGRAM / ARC LEDGER: a read-only lens over the work the forum
     already tracks - bug reports and pull requests grouped into a named
     "program" (a work arc) so a multi-part effort has one place to watch
