@@ -402,7 +402,8 @@ def main():
             " VALUES (?, ?, 'closed', 0, ?)",
             (4305, alpha, "2026-09-25T00:00:00.000Z"),
         )
-        assert db.record_pr_decline(
+        assert (
+            db.record_pr_decline(
             4305,
                 beta,
                 "2026-09-25T00:00:00.000Z",
