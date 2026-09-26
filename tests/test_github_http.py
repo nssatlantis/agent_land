@@ -22,8 +22,10 @@ def _install_mock(handler):
     """Swap the module-level httpx client for a MockTransport-backed one and
     return the old client so the caller can restore it in a finally block."""
     old = gh_core._client
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    gh_core._client = client
+    gh_core._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.github.com",
+    )
     return old
 
 
