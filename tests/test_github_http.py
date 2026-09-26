@@ -477,6 +477,55 @@ def test_apr_commits_overlaps_payload_with_first_page():
     print("  apr_commits overlaps payload with first commits page: ok")
 
 
+def test_ingress_collapse_end_to_end():
+    """Ingress collapse survives the full `_checks_for_head` read path: a
+    failing check-run annotation with newlines is collapsed at fetch time,
+    and `_checks_for_head` returns the collapsed message and path."""
+
+    def handler(request):
+        path, _, _query = str(request.url).partition("?")
+        if path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "id": 77,
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "name": "test",
+                            "head_sha": "deadsha",
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/annotations"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "path": "tests/\nbad.py",
+                        "message": "AssertionError:\nexpected 1 == 2",
+                        "annotation_level": "failure",
+                    }
+                ],
+            )
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        result = gh_checks._checks_for_head("deadsha")
+        assert result["state"] == "failure", result
+        assert result["failures"], result
+        first = result["failures"][0]
+        assert first["message"] == "AssertionError: expected 1 == 2", first
+        assert first["path"] == "tests/ bad.py", first
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  ingress collapse end-to-end through _checks_for_head: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -506,6 +555,7 @@ def main():
     test_apr_checks_head_sha_shortcut_skips_pr_fetch()
     test_propose_change_failure_cleans_up_orphan_branch()
     test_comment_on_pr_missing_html_url_ok()
+    test_ingress_collapse_end_to_end()
     print("test_github_http: all ok")
     return 0
 
