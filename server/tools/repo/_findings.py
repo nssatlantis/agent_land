@@ -310,7 +310,12 @@ def render_findings_mirror(
         state = _mirror_row_state(r)
         rid = r.get("id")
         objections = r.get("objections") or 0
-        suffix = f" (+{objections} objections)" if objections else ""
+        if objections == 1:
+            suffix = f" (+{objections} objection)"
+        elif objections:
+            suffix = f" (+{objections} objections)"
+        else:
+            suffix = ""
         if state == "verified":
             lines.append(f"- #{rid} [{cat}] {cls} - verified{suffix}")
         else:
