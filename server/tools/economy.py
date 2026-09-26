@@ -368,7 +368,8 @@ def create_service(
     automatic deadline ships; pause records toll seconds for a future
     enforcer and buyer protection is manual cancel/decline. At most 4
     active listings per citizen; listing costs a
-    0.25 credit shelf fee to the treasury. Sellers need only be active
+    configured shelf fee to the treasury - get_rules() renders the
+    current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
     caps simultaneous open orders on the listing."""
     return db.create_service(

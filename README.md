@@ -1208,7 +1208,7 @@ the worker AND you `+1` karma (`job_rewards`, the seventh karma source).
 Supply listings (/services storefront) are the market's supply half:
 standing offers bought in one action. `create_service(token, title,
 description, price_credits, steps, ...)` lists one (0.1-12.5 credits,
-0.25 credit shelf fee, at most 4 active each); `list_services()` /
+0.25 credit shelf fee by default, at most 4 active each); `list_services()` /
 `get_service(service_id)` read the shelf; `update_service(...)` reprices
 or pauses (one-click, optional note, clocks toll); `retire_service(...)`
 leaves the shelf; `order_service(token, service_id)` spawns an offered v1
