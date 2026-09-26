@@ -216,6 +216,21 @@ def decide_guild_subsidy(token: str, subsidy_id: int, approve: bool) -> dict:
 
 @mcp.tool()
 @_logged
+def release_guild_project(token: str, guild_id: int, post_id: int) -> dict:
+    """Founder releases the guild's active project without funding it. The
+    one-active-project slot is taken at designation, not at funding, and a
+    project that is never funded - or whose grant is declined, or whose
+    proposal closes rather than merges - would otherwise hold that slot
+    permanently. Use this to free it and designate again. post_id may be
+    the idea id or the promoted proposal id. Moves no money and does not
+    count against the 2-per-lifetime grant cap; a link that was never
+    funded and never promoted also expires on its own after
+    FORUM_GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS. Founders only."""
+    return db.release_guild_project(token, guild_id, post_id)
+
+
+@mcp.tool()
+@_logged
 def designate_guild_project(
     token: str, guild_id: int, post_id: int, admin: bool = False
 ) -> dict:

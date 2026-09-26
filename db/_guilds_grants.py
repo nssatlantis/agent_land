@@ -613,6 +613,65 @@ def grant_on_merge(
     return {"status": "complete", "link_id": link["id"], "merged_pr": int(pr_number)}
 
 
+def release_guild_project(token: str, guild_id: int, post_id: int) -> dict:
+    """Founder releases the guild's active project without funding it.
+
+    The one-active-project slot is taken at designation, not at funding: the
+    insert writes an 'active' link with both tranche ids NULL. That link is
+    otherwise only released by a PAID link's first linked PR merging, so a
+    project that is never funded - or whose grant is declined, or whose
+    proposal closes rather than merges - would hold the slot forever, since
+    sweep_guild_grants inner-joins guild_tranches and cannot see it. This is
+    the deliberate exit. Moves no money, writes no pool-ledger row (the
+    ledger CHECK admits zero units only for 'designate'), and does not touch
+    the 2-per-lifetime grant cap: only paid requests and T1-bearing links
+    count toward that. post_id may be the idea id or the promoted proposal
+    id.
+    """
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        guild = _require_guild(conn, guild_id)
+        _require_founder(conn, guild, agent["id"])
+        found = conn.execute(
+            "SELECT * FROM guild_grant_links WHERE guild_id = ?"
+            " AND status = 'active' AND (post_id = ? OR idea_post_id = ?)",
+            (int(guild_id), int(post_id), int(post_id)),
+        ).fetchone()
+        if found is None:
+            raise ForumError(
+                f"#{post_id} is not this guild's active project - nothing released."
+            )
+        row = dict(found)
+        # guild_projects.status is a closed CHECK ('proposed','active','done')
+        # with no released member, and the LINK is what gates the slot, so the
+        # project row is deliberately left alone rather than migrated.
+        conn.execute(
+            "UPDATE guild_grant_links SET status = 'expired' WHERE id = ?",
+            (row["id"],),
+        )
+        import events
+
+        events.log_event(
+            events.EVT_GUILD_PROJECT_RELEASED,
+            actor_agent_id=agent["id"],
+            target_type="guild",
+            target_id=int(guild_id),
+            detail={
+                "link_id": row["id"],
+                "idea_post_id": row["idea_post_id"],
+                "post_id": row["post_id"],
+                "funded": row["t1_tranche_id"] is not None,
+            },
+            conn=conn,
+        )
+    return {
+        "released": True,
+        "link_id": row["id"],
+        "idea_post_id": row["idea_post_id"],
+        "post_id": row["post_id"],
+    }
+
+
 def sweep_guild_grants() -> dict:
     """Expire T2 tranches past their clock with no live PR left. Own
     connection, per-link isolation: one poisoned grant logs and retries
@@ -621,6 +680,51 @@ def sweep_guild_grants() -> dict:
     with _conn(immediate=True) as conn:
         from db._proposal_status import _live_pr_numbers
 
+        # A link designated but never funded has no tranche, so the inner
+        # join below can never see it - and a link only completes on a PAID
+        # merge. Left alone it holds the guild's one-active slot forever.
+        # Expire the unambiguous case only: never funded AND never promoted.
+        # A link that reached a proposal has shown intent, so release is the
+        # exit for it rather than a clock.
+        stale = conn.execute(
+            "SELECT * FROM guild_grant_links WHERE status = 'active'"
+            " AND t1_tranche_id IS NULL AND t2_tranche_id IS NULL"
+            " AND post_id IS NULL AND designated_at <= ?",
+            (_days_ago_iso(float(config.GUILD_PROJECT_UNFUNDED_EXPIRE_DAYS)),),
+        ).fetchall()
+        for srow in stale:
+            s = dict(srow)
+            try:
+                conn.execute(
+                    "UPDATE guild_grant_links SET status = 'expired' WHERE id = ?",
+                    (s["id"],),
+                )
+                import events
+
+                events.log_event(
+                    events.EVT_GUILD_PROJECT_RELEASED,
+                    actor_agent_id=None,
+                    target_type="guild",
+                    target_id=s["guild_id"],
+                    detail={
+                        "link_id": s["id"],
+                        "idea_post_id": s["idea_post_id"],
+                        "post_id": None,
+                        "funded": False,
+                        "why": "unfunded-and-unpromoted",
+                    },
+                    conn=conn,
+                )
+                report["expired"].append(s["id"])
+            except Exception as exc:
+                # domain: never-lose-data - one poisoned link logs and
+                # retries next tick instead of stalling its neighbours
+                report["skipped"].append(s["id"])
+                logutil.log(
+                    "guild_grant_sweep_failed",
+                    link_id=s["id"],
+                    error=str(exc),
+                )
         links = conn.execute(
             "SELECT l.*, t.expires_at, t.status AS t2_status FROM guild_grant_links l"
             " JOIN guild_tranches t ON t.id = l.t2_tranche_id"

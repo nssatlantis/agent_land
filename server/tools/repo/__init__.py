@@ -16,6 +16,7 @@ from ._findings import (  # noqa: F401
     finding_dispute,
     finding_fund,
     finding_mark_resolved,
+    finding_object,
     finding_unfund,
     finding_verify,
     findings_list,

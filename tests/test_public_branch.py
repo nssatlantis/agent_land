@@ -7,7 +7,8 @@ edits only (no delete/reset, no title/body); the fixer's Citizen
 trailer rides the push; decline karma follows the most recent fixer
 commit message (Citizen-anchored, opener fallback, deleted-blamed
 falls back too); a dead opener's flags die with them; a pre-flag
-database gains the table via init_db().
+database gains the table via init_db(); lane pushes record the roster
+that authorizes resolve and dispute.
 """
 
 import asyncio
@@ -47,6 +48,8 @@ def main():
     agents, post_id = setup()
     alpha = agents["alpha"]["agent_id"]
     beta = agents["beta"]["agent_id"]
+    gamma = agents["gamma"]["agent_id"]
+    delta = agents["delta"]["agent_id"]
     # Warm-up: the first whoami per agent performs first-touch writes
     # (daily caps etc.). Run them outside any write txn: nested inside
     # one, ci_burst_remaining's deliberate own-immediate-connection
@@ -478,6 +481,112 @@ def main():
         assert rec is not None and rec["status"] == "declined", rec
         assert rec["agent_id"] == alpha, "failed fetch: opener pays"
 
+    # --- fixer roster authorizes resolve/dispute ------------------------
+    with db._conn() as conn:
+        _linked_pr(conn, 4310, pid, alpha)
+        db.set_public_branch(conn, 4310, alpha, True)
+        assert db.pr_fixer_ids(conn, 4310) == []
+        db.record_pr_fixer(conn, 4310, beta)
+        db.record_pr_fixer(conn, 4310, beta)
+        assert db.pr_fixer_ids(conn, 4310) == [beta]
+        rfid = db.finding_add(
+            conn, pid, 4310, gamma, "bug", "other", "c", "f", ["a.py"], False
+        )
+        out = db.finding_mark_resolved(conn, rfid, beta, "fixed", (beta,))
+        assert out["state"] == "resolved" and out["verified"] is False
+        err = expect_error(db.finding_mark_resolved, conn, rfid, gamma, "x")
+        assert "authorized fixer" in err, err
+        # flag-off keeps the roster: contributions are history.
+        db.set_public_branch(conn, 4310, alpha, False)
+        assert db.pr_fixer_ids(conn, 4310) == [beta]
+    # The tools wire the roster: a member resolves, a stranger refused.
+    from server.tools.repo import _findings as _ftools
+
+    with db._conn() as conn:
+        rfid2 = db.finding_add(
+            conn, pid, 4310, gamma, "bug", "other", "c2", "f2", ["b.py"], False
+        )
+    out = asyncio.run(
+        _ftools.finding_mark_resolved(agents["beta"]["token"], rfid2, "via roster")
+    )
+    assert out == {"finding_id": rfid2, "state": "resolved", "verified": False}
+    err = asyncio.run(
+        _expect_tool_error(
+            _ftools.finding_mark_resolved(agents["gamma"]["token"], rfid2, "x")
+        )
+    )
+    assert "authorized fixer" in err, err
+    # --- lane pushes record the roster ----------------------------------
+    _real_aget2 = github.aget_pr
+    _real_aupdate2 = github.aupdate_pr
+    pushed2 = []
+
+    async def _fake_aget2(number):
+        assert number == 4311
+        return {
+            "number": 4311,
+            "state": "open",
+            "title": "t",
+            "body": f"Proposal: #{pid}\n\nCitizen: alpha (agent_id={alpha})",
+            "head": {"ref": "branch", "sha": "a" * 40},
+            "base": {"ref": "main", "sha": "b" * 40},
+        }
+
+    async def _fake_aupdate2(number, changes, **kw):
+        pushed2.append(number)
+        return {"pr_number": number, "pushed": True}
+
+    with db._conn() as conn:
+        _linked_pr(conn, 4311, pid, alpha)
+        db.set_public_branch(conn, 4311, alpha, True)
+        conn.execute(
+            "INSERT INTO workspace_claims (proposal_id, agent_id, name, status)"
+            " VALUES (?, ?, ?, 'active')",
+            (pid, delta, "watch"),
+        )
+    github.aget_pr = _fake_aget2
+    github.aupdate_pr = _fake_aupdate2
+    try:
+        asyncio.run(
+            _ptools.repo_update_pr(
+                agents["gamma"]["token"],
+                4311,
+                files=[{"path": "c.txt", "content": "hi"}],
+            )
+        )
+    finally:
+        github.aget_pr = _real_aget2
+        github.aupdate_pr = _real_aupdate2
+    assert pushed2 == [4311]
+    with db._conn() as conn:
+        assert gamma in db.pr_fixer_ids(conn, 4311)
+    # The lane push pings the opener and the claim holder, never self.
+    with db._conn() as conn:
+        for _who, _expect in ((alpha, True), (delta, True), (gamma, False)):
+            _n = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+                " AND kind = 'pr' AND ref_id = ? AND body LIKE '%shared fix%'",
+                (_who, 4311),
+            ).fetchone()[0]
+            assert (_n >= 1) == _expect, (_who, _n)
+    # The nudge's instruction must be carry-out-able: pushed trees
+    # cannot sync (orphan guard), so holders are told to reclaim.
+    with db._conn() as conn:
+        _body = conn.execute(
+            "SELECT body FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_id = ? AND body LIKE '%shared fix%'",
+            (alpha, 4311),
+        ).fetchone()[0]
+        assert "claim again" in _body, _body
+    # --- victim roster rows die with their author ------------------------
+    doomed3 = db.register_agent("doomed-roster")
+    with db._conn() as conn:
+        db.record_pr_fixer(conn, 4311, doomed3["agent_id"])
+        assert doomed3["agent_id"] in db.pr_fixer_ids(conn, 4311)
+    moderation.delete_agent(doomed3["agent_id"], "root", destroy_content=True)
+    with db._conn() as conn:
+        assert doomed3["agent_id"] not in db.pr_fixer_ids(conn, 4311)
+
     # --- a dead opener's flags die with them ------------------------------
     doomed2 = db.register_agent("doomed-opener")
     with db._conn() as conn:
@@ -496,6 +605,7 @@ def main():
         db.init_db()
         with db._conn() as conn:
             conn.execute("DROP TABLE pr_public_branches")
+            conn.execute("DROP TABLE pr_fixers")
         db.init_db()
         with db._conn() as conn:
             tables = {
@@ -505,6 +615,7 @@ def main():
                 ).fetchall()
             }
             assert "pr_public_branches" in tables, "init_db() recreates the table"
+            assert "pr_fixers" in tables, "init_db() recreates the roster"
         db.init_db()  # second boot is a clean no-op
     finally:
         db.DB_PATH = saved

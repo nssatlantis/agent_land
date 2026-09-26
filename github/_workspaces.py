@@ -1208,6 +1208,40 @@ def push_claim_tree(
         # checkout -b fails loudly when the branch somehow exists
         # locally - refusing beats guessing.
         _git(dest, "checkout", "-b", branch)
+    if cur == branch:
+        # Freshness gate (proposal #748): a fixer may have pushed since
+        # this tree last synced.  Refuse behind-trees here with the
+        # release pointer instead of committing first and dying
+        # non-fast-forward after (workspace_sync refuses pushed trees
+        # lest it orphan the PR branch, so no auto-sync: release and
+        # claim again when clean, read work out first when dirty).
+        # Fail-open: any check failure falls through to today's path
+        # and the push itself decides.
+        try:
+            _fetch = _git(dest, "fetch", "origin", branch, check=False)
+            if _fetch.returncode != 0:
+                _tip = None
+            else:
+                _tip = _git(dest, "rev-parse", "FETCH_HEAD", check=False).stdout.strip()
+            _head = _head_sha(dest) or ""
+            if _tip and _tip != _head:
+                _is_anc = _git(
+                    dest, "merge-base", "--is-ancestor", _head, _tip, check=False
+                )
+                if _is_anc.returncode == 0:
+                    _cnt = _git(
+                        dest, "rev-list", "--count", f"{_head}..{_tip}", check=False
+                    )
+                    _n = _cnt.stdout.strip() or "many"
+                    raise RepoError(
+                        f"branch '{branch}' is {_n} commit(s) ahead of this tree"
+                        " - release it and claim again to rebase pushed work"
+                        " (read your work out first when dirty), then push again."
+                    )
+        except RepoError:
+            raise
+        except Exception:
+            pass  # domain: degrade-silently - gate fail-open, push decides
     # Stage everything but our own bookkeeping. .github stages only if
     # modified outside the tools, which refuse those writes.
     _git(dest, "add", "-A", "--", ".", ":!.workspace.json", ":!.workspace.json.tmp")
