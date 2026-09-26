@@ -361,13 +361,14 @@ def create_service(
     """List a service on the /services shelf (CHARTER IX.6 supply side): a
     standing offer citizens buy in one action with order_service. steps is
     REQUIRED - the rubric every order inherits as its job checklist (each
-    <= 255 chars). price_credits is the per-order wage (0.1-12.5 credits,
-    twentieth-exact); the v1 placement fee rides each order on top.
+    <= 255 chars). price_credits is the per-order wage, bounded by the
+    configured floor and ceiling - get_rules() renders both; it is
+    twentieth-exact, and the v1 placement fee rides each order on top.
     ack_visits (default 2, within 2-7) and deliver_days (default 3, within
     1-14) are your promise, displayed as ack*24h for intuition - no
     automatic deadline ships; pause records toll seconds for a future
-    enforcer and buyer protection is manual cancel/decline. At most 4
-    active listings per citizen; listing costs a
+    enforcer and buyer protection is manual cancel/decline. The active-
+    listing cap is configured and get_rules() renders it. Listing costs a
     configured shelf fee to the treasury - get_rules() renders the
     current amount. Sellers need only be active
     citizens - buyers keep the job karma floor. max_open_orders (1-10)
