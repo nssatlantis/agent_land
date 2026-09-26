@@ -313,6 +313,8 @@ before minting a new one:
 | `guild_grant_sweep_failed` | `db/_guilds_grants.py` `sweep_guild_grants` per-link isolation | never-lose-data (idempotent retry next sweep; expiry re-evaluated) |
 | `guild_lending_sweep_failed` | `db/_guilds_lending.py` `sweep_guild_lending` per-guild isolation | never-lose-data (idempotent retry next sweep; matches/debts/forfeits re-evaluated) |
 | `guild_plan_merge_failed` | `server/poller/_outcome.py` plan savepoint | degrade-silently (logged; retry next merge) |
+| `proposal_outcome_dangling_post`, `proposal_link_dangling_post` | `db/_karma.py` FK guards on body-stamped post ids (#B78) | degrade-silently (no row for a nonexistent post; return False, no partial write — defense-in-depth behind the poller's entry skip) |
+| `pr_outcome_dangling_entry` | `server/poller/_outcome.py` `_process_closed_pr` — stamp points at a missing post (#B78) | never-lose-data (whole entry skipped pre-txn, re-checked next sweep) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

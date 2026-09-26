@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import nullcontext
 
 import config
+import logutil
 from db._collaborative import list_proposal_collaborators
 from db._core import ForumError, _conn, _require_active_agent
 from notifications import _notify
@@ -470,6 +471,21 @@ def link_pr_to_proposal(
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     with _conn() if conn is None else nullcontext(conn) as c:
+        # Bug #B78: proposal_links.post_id carries a posts(id) FK and
+        # INSERT OR IGNORE does not swallow FK violations, so a
+        # body-stamped id naming a post that never existed (or was
+        # deleted) would abort the caller's transaction here. Record
+        # nothing and return - a PR can only implement a real proposal;
+        # the outcome poller skips such an entry before its txn opens
+        # (`pr_outcome_dangling_entry`), and this guard covers every
+        # other caller.
+        if c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
+            logutil.log(
+                "proposal_link_dangling_post",
+                pr_number=pr_number,
+                post_id=post_id,
+            )
+            return None
         existing = c.execute(
             "SELECT 1 FROM proposal_links WHERE pr_number = ?",
             (pr_number,),
@@ -836,6 +852,25 @@ def record_proposal_outcome(
             # can't silently revert a shipped change.
             if prev == "merged" or prev == status:
                 return False
+        # Bug #B78: the outcome poller passes a body-stamped post id -
+        # unverified text that can name a post that never existed (or was
+        # deleted). Writing it raises the posts(id) FK IntegrityError
+        # inside the caller's outcome txn, rolling back merge karma, stake
+        # settlement and the link backfill with it. Degrade to 'no outcome
+        # recorded': log and return False with no partial write. The
+        # outcome poller skips its whole entry before the txn opens
+        # (`pr_outcome_dangling_entry` in `_process_closed_pr`); these
+        # guards stay as defense-in-depth for every other caller. The post
+        # read below for the verdict fan-out then always finds its
+        # row.
+        if c.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
+            logutil.log(
+                "proposal_outcome_dangling_post",
+                pr_number=pr_number,
+                post_id=post_id,
+                status=status,
+            )
+            return False
         c.execute(
             "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
             "VALUES (?, ?, ?, ?) "
