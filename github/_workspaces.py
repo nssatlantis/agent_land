@@ -714,10 +714,16 @@ def _claim_head_ref(row: dict) -> str:
 def _find_open_claim_prs_for_proposal(agent_id: int, proposal_id: int) -> list[dict]:
     """Open PRs on any push branch of one citizen's proposal (#B116).
     The per-branch lookup above cannot see a second workspace's branch,
-    so the per-proposal lookup closes the duplicate-PR hole."""
-    rows = _core._request("GET", "pulls?state=open&per_page=100")
+    so the per-proposal lookup closes the duplicate-PR hole. Paginated:
+    a claim PR older than one listing page still refuses."""
+    from github._reads import _paginated_open_pulls
+
     prefix = f"claim/{int(agent_id)}/{int(proposal_id)}/"
-    return [r for r in rows or [] if _claim_head_ref(r).startswith(prefix)]
+    return [
+        r
+        for r in _paginated_open_pulls(config.GITHUB_PRS_PER_PAGE)
+        if _claim_head_ref(r).startswith(prefix)
+    ]
 
 
 def _strip_wip_prefix(text: str) -> str:
@@ -1190,6 +1196,22 @@ def push_claim_tree(
     prior = _find_open_claim_pr(branch)
     pr_body = f"{body}\n\nCitizen: {citizen}" if body else f"Citizen: {citizen}"
     commit_sha = _head_sha(dest) or ""
+    if prior is None:
+        # Per-proposal duplicate guard (#B116): the branch-keyed lookup
+        # above cannot see another workspace's branch, so a second tree
+        # would silently fork a second PR. Runs before the already-retry
+        # below so a retried push cannot fork either (a same-branch open
+        # PR is already in `prior`, so this only fires cross-branch).
+        for other in _find_open_claim_prs_for_proposal(agent_id, proposal_id):
+            other_branch = _claim_head_ref(other)
+            if other_branch and other_branch != branch:
+                raise RepoError(
+                    f"proposal #{int(proposal_id)} already has open PR"
+                    f" #{other.get('number')} on branch '{other_branch}' -"
+                    " push follow-ups from the tree that opened it, or update"
+                    " its PR directly (repo_update_pr); a second PR would"
+                    " fragment review."
+                )
     if already:
         # Retry after a pushed-but-unlinked outcome (commit + push +
         # manifest landed while the PR POST failed): the tree already
@@ -1212,22 +1234,8 @@ def push_claim_tree(
         raise RepoError(
             f"branch '{branch}' already has open PR #{prior['number']} from an "
             "earlier push - push follow-ups from the tree that opened it, "
-            "update its PR directly, or push this work under a new workspace name."
+            "or update its PR directly (repo_update_pr)."
         )
-    if prior is None:
-        # Per-proposal duplicate guard (#B116): the branch-keyed lookup
-        # above cannot see another workspace's branch, so a second tree
-        # would silently fork a second PR. Refuse naming it instead.
-        for other in _find_open_claim_prs_for_proposal(agent_id, proposal_id):
-            other_branch = _claim_head_ref(other)
-            if other_branch and other_branch != branch:
-                raise RepoError(
-                    f"proposal #{int(proposal_id)} already has open PR"
-                    f" #{other.get('number')} on branch '{other_branch}' -"
-                    " push follow-ups from the tree that opened it, or update"
-                    " its PR directly (repo_update_pr); a second PR would"
-                    " fragment review."
-                )
     if cur != branch:
         # First push from this tree: refuse a retained remote branch
         # (past life whose PR is closed) before creating ours - a plain
