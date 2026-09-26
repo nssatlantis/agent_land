@@ -27,7 +27,8 @@ def is_public_branch(conn: sqlite3.Connection, pr_number: int) -> bool:
 def set_public_branch(
     conn: sqlite3.Connection, pr_number: int, opener_id: int, enabled: bool
 ) -> bool:
-    """Opener-only toggle for the public-branch flag.  Returns the flag."""
+    """Opener-only toggle for the public-branch flag.  Returns the flag.
+    Reflips re-stamp updated_at (audit trail for flag flaps)."""
     link = conn.execute(
         "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
         (pr_number,),
@@ -38,7 +39,8 @@ def set_public_branch(
         raise ForumError("only the PR opener toggles the public-branch flag")
     conn.execute(
         "INSERT INTO pr_public_branches (pr_number, enabled) VALUES (?, ?)"
-        " ON CONFLICT(pr_number) DO UPDATE SET enabled = excluded.enabled",
+        " ON CONFLICT(pr_number) DO UPDATE SET enabled = excluded.enabled,"
+        " updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         (pr_number, 1 if enabled else 0),
     )
     log_event(
