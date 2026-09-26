@@ -49,7 +49,6 @@ _DYNAMIC_DISCOVERY = frozenset({"globals", "locals", "dir", "vars"})
 EXPECTED_UNWIRED_COUNTS = {
     "test_viewer.py": 28,
     "test_credits.py": 3,
-    "test_github_http.py": 3,
     "test_farm.py": 2,
     "test_bench_gate.py": 1,
     "test_economy.py": 1,
