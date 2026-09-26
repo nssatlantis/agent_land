@@ -110,7 +110,7 @@ def test_knob_defaults():
     assert config.CI_RUN_COOLDOWN_SECONDS == 45
     assert config.CI_RUN_DAILY_CAP == 24
     assert config.CI_RUN_TAIL_BYTES == 16 * 1024
-    assert config.CI_RUN_EVENT_TAIL_BYTES == 1600
+    assert config.CI_RUN_EVENT_TAIL_BYTES == 4096
 
 
 def test_unknown_checks_rejected():
@@ -1663,6 +1663,7 @@ def test_ci_run_status_running_completed_unknown():
             "failed_files": ["tests/test_x.py"],
             "base_sha": "base123",
             "tree_warm": True,
+            "output_tail": "tail one\ntail two",
         },
     )
     done = runs.ci_run_status(uid, rid)
@@ -1672,6 +1673,7 @@ def test_ci_run_status_running_completed_unknown():
     assert done["failed_files"] == ["tests/test_x.py"], done
     assert done["base_sha"] == "base123", done
     assert done["tree_warm"] is True, done
+    assert done["output_tail"] == "tail one\ntail two", done
     assert "pr_number" in done, done
     legacy_rid = "c" * 32
     events.log_event(
