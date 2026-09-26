@@ -165,7 +165,7 @@ async def _pr_view(
     if ci_state == "failure":
         failures = checks.get("failures") or []
         if failures:
-            first_msg = (failures[0].get("message") or "").strip()
+            first_msg = " ".join((failures[0].get("message") or "").split()).strip()
             if first_msg:
                 if len(first_msg) > 200:
                     first_msg = first_msg[:197] + "..."
