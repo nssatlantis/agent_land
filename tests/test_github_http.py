@@ -598,6 +598,9 @@ def main():
     test_comment_on_pr_missing_html_url_ok()
     test_ingress_collapse_end_to_end()
     test_apr_checks_statuses_tier_collapses_description()
+    test_etag_revalidation_serves_304_without_a_body()
+    test_etag_stale_copy_refetches_with_a_fresh_validator()
+    test_pr_has_label_reuses_passed_row_without_a_fetch()
     print("test_github_http: all ok")
     return 0
 
